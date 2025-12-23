@@ -1,0 +1,57 @@
+# =============================================================================
+# Ragtime - Production Docker Compose
+# =============================================================================
+# For production deployment with security hardening
+#
+# Requires: .env.prod file (copy from .env.prod.example)
+
+services:
+  ragtime:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: ragtime-prod
+    restart: always
+    ports:
+      - "127.0.0.1:8000:8000"  # Only expose to localhost (use reverse proxy)
+    env_file:
+      - ../.env.prod
+    environment:
+      # Production overrides (security hardening)
+      - DEBUG_MODE=false
+      - ENABLE_WRITE_OPERATIONS=false
+    volumes:
+      # Mount FAISS indexes (read-only)
+      - ${FAISS_DATA_PATH:-./data/faiss_index}:/app/data/faiss_index:ro
+      # Mount Docker socket for container exec (if needed)
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - ragtime-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+
+networks:
+  ragtime-network:
+    driver: bridge

@@ -1,0 +1,191 @@
+// =============================================================================
+// Ragtime RAG API - Prisma Schema
+// =============================================================================
+// Database schema for indexer job and metadata persistence
+
+generator client {
+  provider             = "prisma-client-py"
+  interface            = "asyncio"
+  recursive_type_depth = 5
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// -----------------------------------------------------------------------------
+// Indexer Job Models
+// -----------------------------------------------------------------------------
+
+/// Status of an indexing job
+enum IndexStatus {
+  pending
+  processing
+  completed
+  failed
+}
+
+/// Configuration for creating an index (stored as part of job)
+model IndexConfig {
+  id              String   @id @default(uuid())
+  name            String
+  filePatterns    String[] @default(["**/*.py", "**/*.md", "**/*.rst", "**/*.txt", "**/*.xml"])
+  excludePatterns String[] @default(["**/node_modules/**", "**/__pycache__/**", "**/venv/**", "**/.git/**"])
+  chunkSize       Int      @default(1000)
+  chunkOverlap    Int      @default(200)
+  embeddingModel  String   @default("text-embedding-3-small")
+
+  // Relation to job
+  job   IndexJob?
+  jobId String?
+
+  @@map("index_configs")
+}
+
+/// An indexing job
+model IndexJob {
+  id     String      @id
+  name   String
+  status IndexStatus @default(pending)
+
+  // Source information
+  sourceType String  @map("source_type") // 'upload' or 'git'
+  sourcePath String? @map("source_path")
+  gitUrl     String? @map("git_url")
+  gitBranch  String  @default("main") @map("git_branch")
+
+  // Progress tracking
+  totalFiles      Int     @default(0) @map("total_files")
+  processedFiles  Int     @default(0) @map("processed_files")
+  totalChunks     Int     @default(0) @map("total_chunks")
+  processedChunks Int     @default(0) @map("processed_chunks")
+  errorMessage    String? @map("error_message")
+
+  // Timestamps
+  createdAt   DateTime  @default(now()) @map("created_at")
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+
+  // Configuration relation
+  config   IndexConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
+  configId String      @unique @map("config_id")
+
+  @@map("index_jobs")
+}
+
+/// Metadata for a FAISS index on disk
+model IndexMetadata {
+  id            String   @id @default(uuid())
+  name          String   @unique
+  path          String
+  documentCount Int      @default(0) @map("document_count")
+  chunkCount    Int      @default(0) @map("chunk_count")
+  sizeBytes     BigInt   @default(0) @map("size_bytes")
+  enabled       Boolean  @default(true) // Include in RAG context
+
+  // Source info
+  sourceType String  @map("source_type")
+  source     String?
+
+  // Config snapshot (JSON)
+  configSnapshot Json? @map("config_snapshot")
+
+  // Timestamps
+  createdAt    DateTime @default(now()) @map("created_at")
+  lastModified DateTime @default(now()) @map("last_modified")
+
+  @@map("index_metadata")
+}
+
+// -----------------------------------------------------------------------------
+// Application Settings (configurable via UI)
+// -----------------------------------------------------------------------------
+
+/// Application settings stored in database
+model AppSettings {
+  id    String @id @default("default")
+
+  // Embedding Configuration (for FAISS indexing)
+  embeddingProvider String   @default("ollama") @map("embedding_provider") // "ollama" or "openai"
+  embeddingModel    String   @default("nomic-embed-text") @map("embedding_model")
+  // Ollama connection settings (separate fields for UI)
+  ollamaProtocol    String   @default("http") @map("ollama_protocol") // "http" or "https"
+  ollamaHost        String   @default("localhost") @map("ollama_host")
+  ollamaPort        Int      @default(11434) @map("ollama_port")
+  ollamaBaseUrl     String   @default("http://localhost:11434") @map("ollama_base_url")
+
+  // LLM Configuration (for chat/RAG responses)
+  llmProvider       String   @default("openai") @map("llm_provider") // "openai" or "anthropic"
+  llmModel          String   @default("gpt-4-turbo") @map("llm_model")
+  openaiApiKey      String   @default("") @map("openai_api_key")
+  anthropicApiKey   String   @default("") @map("anthropic_api_key")
+
+  // Legacy tool configuration (deprecated - use ToolConfig table)
+  enabledTools      String[] @default([]) @map("enabled_tools")
+  odooContainer     String   @default("odoo-server") @map("odoo_container")
+  postgresContainer String   @default("odoo-postgres") @map("postgres_container")
+  postgresHost      String   @default("") @map("postgres_host")
+  postgresPort      Int      @default(5432) @map("postgres_port")
+  postgresUser      String   @default("") @map("postgres_user")
+  postgresPassword  String   @default("") @map("postgres_password")
+  postgresDb        String   @default("") @map("postgres_db")
+
+  // Query Limits
+  maxQueryResults   Int      @default(100) @map("max_query_results")
+  queryTimeout      Int      @default(30) @map("query_timeout")
+
+  // Security
+  enableWriteOps    Boolean  @default(false) @map("enable_write_ops")
+
+  // Timestamps
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("app_settings")
+}
+
+// -----------------------------------------------------------------------------
+// Tool Configurations (multiple instances per tool type)
+// -----------------------------------------------------------------------------
+
+/// Type of tool connection
+enum ToolType {
+  postgres
+  odoo_shell
+  ssh_shell
+}
+
+/// Configuration for a tool instance
+model ToolConfig {
+  id          String   @id @default(uuid())
+  name        String   // User-friendly name (e.g., "Production DB", "Staging Odoo")
+  toolType    ToolType @map("tool_type")
+  enabled     Boolean  @default(true)
+
+  // Description for RAG context - presented to the model
+  description String   @default("")
+
+  // Connection configuration stored as JSON
+  // For postgres: host, port, user, password, database, container (optional)
+  // For odoo_shell: container, database
+  // For ssh_shell: host, port, user, key_path or password, command_prefix
+  connectionConfig Json @map("connection_config")
+
+  // Query/execution limits
+  maxResults  Int      @default(100) @map("max_results")
+  timeout     Int      @default(30) // seconds
+
+  // Security
+  allowWrite  Boolean  @default(false) @map("allow_write")
+
+  // Connection test results
+  lastTestAt     DateTime? @map("last_test_at")
+  lastTestResult Boolean?  @map("last_test_result")
+  lastTestError  String?   @map("last_test_error")
+
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("tool_configs")
+}

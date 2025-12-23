@@ -1,0 +1,99 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Docker: Start Stack",
+      "type": "shell",
+      "command": "docker compose up",
+      "group": "build",
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "shared"
+      },
+      "problemMatcher": [
+        {
+          "pattern": [
+            {
+              "regexp": ".*",
+              "file": 1,
+              "location": 2,
+              "message": 3
+            }
+          ],
+          "background": {
+            "activeOnStart": true,
+            "beginsPattern": "^.*Building.*|^.*Pulling.*|^.*Creating.*|^.*Starting.*|^\\[\\+\\] Running [0-9]+/[0-9]+$",
+            "endsPattern": "^\\[\\+\\] Running [0-9]+/[0-9]+$|^Attaching to .*|^.*Uvicorn running.*|^.*Application startup complete.*"
+          }
+        }
+      ],
+      "detail": "Start Ragtime Docker development stack"
+    },
+    {
+      "label": "Docker: Stop Stack",
+      "type": "shell",
+      "command": "docker compose down",
+      "group": "build",
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Stop all Ragtime containers"
+    },
+    {
+      "label": "Docker: Rebuild and Restart",
+      "type": "shell",
+      "command": "docker compose up --build --force-recreate",
+      "group": "build",
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "shared"
+      },
+      "problemMatcher": [
+        {
+          "pattern": [
+            {
+              "regexp": ".*",
+              "file": 1,
+              "location": 2,
+              "message": 3
+            }
+          ],
+          "background": {
+            "activeOnStart": true,
+            "beginsPattern": "^.*Building.*|^.*Pulling.*|^.*Creating.*|^.*Starting.*|^\\[\\+\\] Running [0-9]+/[0-9]+$",
+            "endsPattern": "^\\[\\+\\] Running [0-9]+/[0-9]+$|^Attaching to .*|^.*Uvicorn running.*|^.*Application startup complete.*"
+          }
+        }
+      ],
+      "detail": "Rebuild and restart Ragtime Docker development stack"
+    },
+    {
+      "label": "Docker: Restart Ragtime",
+      "type": "shell",
+      "command": "docker restart ragtime-dev",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "shared"
+      },
+      "problemMatcher": [],
+      "detail": "Restart the Ragtime container"
+    }
+  ]
+}

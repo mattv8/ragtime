@@ -1,0 +1,55 @@
+[project]
+name = "ragtime"
+version = "2.0.0"
+description = "RAG API with Tool Calling - OpenAI-Compatible FastAPI Server"
+requires-python = ">=3.10"
+readme = "README.md"
+
+[tool.pylint.main]
+py-version = "3.12"
+ignore = ["CVS", ".git", "__pycache__", ".venv", "venv", "data"]
+extension-pkg-allow-list = ["pydantic"]
+
+[tool.pylint."messages control"]
+disable = [
+    "C0114",  # missing-module-docstring
+    "C0115",  # missing-class-docstring
+    "C0116",  # missing-function-docstring
+    "R0903",  # too-few-public-methods
+    "W0511",  # fixme
+    "W1203",  # logging-fstring-interpolation
+    "W0718",  # broad-exception-caught
+    "R0801",  # duplicate-code
+    "E0401",  # import-error
+]
+
+[tool.pylint.format]
+max-line-length = 120
+
+[tool.pylint.typecheck]
+ignored-modules = ["pydantic", "langchain", "langchain_core", "langchain_openai", "langchain_anthropic", "langchain_community"]
+
+[tool.pyright]
+include = ["app", "ragtime", "indexer", "scripts"]
+exclude = ["**/node_modules", "**/__pycache__", ".git", "data", ".data", ".venv", "venv"]
+extraPaths = ["./ragtime", "./indexer", "./app"]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.12"
+pythonPlatform = "Linux"
+typeCheckingMode = "basic"
+reportMissingImports = "warning"
+reportMissingTypeStubs = "none"
+reportUnknownMemberType = "none"
+reportUnknownArgumentType = "none"
+reportUnknownVariableType = "none"
+reportUnknownParameterType = "none"
+stubPath = "typings"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]

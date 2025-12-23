@@ -1,0 +1,72 @@
+# =============================================================================
+# Ragtime - Development Docker Compose
+# =============================================================================
+# Root-level compose file for local development
+
+services:
+  # PostgreSQL database for Prisma persistence
+  ragtime-db:
+    image: postgres:latest
+    container_name: ragtime-db-dev
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_USER: ragtime
+      POSTGRES_PASSWORD: ragtime_dev
+      POSTGRES_DB: ragtime
+    volumes:
+      - ragtime-db-data:/var/lib/postgresql
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ragtime -d ragtime"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Unified Ragtime service (RAG API + Indexer)
+  ragtime:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dev
+    container_name: ragtime-dev
+    ports:
+      - "8000:8000"
+      - "${INDEXER_PORT:-8001}:${INDEXER_PORT:-8001}"
+    env_file:
+      - .env
+    environment:
+      # Development overrides
+      - DEBUG_MODE=true
+      - ALLOWED_ORIGINS=*
+      - ENABLE_INDEXER=true
+      - INDEX_DATA_PATH=/ragtime/data
+      - INDEXER_PORT=${INDEXER_PORT:-8001}
+    volumes:
+      # Mount source code for hot reload (indexer is now inside ragtime/)
+      - ./ragtime:/ragtime/ragtime
+      # Mount requirements for runtime install
+      - ./requirements.txt:/ragtime/requirements.txt:ro
+      # Mount Prisma schema for client generation
+      - ./prisma:/ragtime/prisma:ro
+      # Mount FAISS indexes (read-write for indexing)
+      - ./.data:/ragtime/data
+      # Mount Docker socket for container exec
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - default
+    depends_on:
+      ragtime-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  default:
+    driver: bridge
+
+volumes:
+  ragtime-db-data:

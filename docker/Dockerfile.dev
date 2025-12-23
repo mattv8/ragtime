@@ -1,0 +1,44 @@
+# =============================================================================
+# Ragtime - Development Dockerfile
+# =============================================================================
+# Unified container for RAG API + Indexer (development)
+
+FROM python:3.12-slim
+
+# Environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/ragtime
+
+# Install system dependencies including Node.js for frontend dev
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    git \
+    postgresql-client \
+    libmagic1 \
+    ca-certificates \
+    gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    # Install Docker CLI (for container-to-container communication)
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y docker-ce-cli \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create working directory and data directory
+WORKDIR /ragtime
+RUN mkdir -p /ragtime/data/faiss_index
+
+# Copy entrypoint (unified script, uses DEBUG_MODE for dev behavior)
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Expose ports (API on 8000, Vite dev server on 8001)
+EXPOSE 8000 8001
+
+ENTRYPOINT ["/entrypoint.sh"]
