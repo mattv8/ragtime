@@ -2,7 +2,6 @@
 API route definitions.
 """
 
-import asyncio
 import json
 import time
 from typing import Optional
@@ -111,17 +110,17 @@ async def chat_completions(request: ChatCompletionRequest):
         elif msg.role == "assistant":
             chat_history.append(AIMessage(content=msg.content))
 
-    # Process the query
+    # Handle streaming response - use true LLM streaming
+    if request.stream:
+        return StreamingResponse(
+            _stream_response_tokens(user_msg, chat_history, request.model),
+            media_type="text/event-stream"
+        )
+
+    # Non-streaming: process the query normally
     answer = await rag.process_query(user_msg, chat_history)
 
     logger.info(f"Response generated ({len(answer)} chars)")
-
-    # Handle streaming response
-    if request.stream:
-        return StreamingResponse(
-            _stream_response(answer, request.model),
-            media_type="text/event-stream"
-        )
 
     # Standard JSON response
     return ChatCompletionResponse(
@@ -138,14 +137,18 @@ async def chat_completions(request: ChatCompletionRequest):
     )
 
 
-async def _stream_response(answer: str, model: str):
-    """Generate streaming response chunks."""
+async def _stream_response_tokens(user_msg: str, chat_history: list, model: str):
+    """
+    Generate true streaming response by yielding tokens from the LLM.
+
+    Streams tokens as they're generated, supporting <think> tags and other
+    structured output without filtering. Tool calls are executed first,
+    then the response is streamed.
+    """
     chunk_id = f"chatcmpl-{int(time.time())}"
 
-    # Send content in chunks for a more realistic streaming feel
-    chunk_size = 50
-    for i in range(0, len(answer), chunk_size):
-        chunk_content = answer[i:i + chunk_size]
+    # Stream tokens directly from the LLM/agent
+    async for token in rag.process_query_stream(user_msg, chat_history):
         chunk = {
             "id": chunk_id,
             "object": "chat.completion.chunk",
@@ -153,12 +156,11 @@ async def _stream_response(answer: str, model: str):
             "model": model,
             "choices": [{
                 "index": 0,
-                "delta": {"content": chunk_content},
+                "delta": {"content": token},
                 "finish_reason": None
             }]
         }
         yield f"data: {json.dumps(chunk)}\n\n"
-        await asyncio.sleep(0.01)  # Small delay for streaming effect
 
     # Final chunk with finish_reason
     final_chunk = {

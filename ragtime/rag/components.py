@@ -173,6 +173,20 @@ class RAGComponents:
         provider = self._app_settings.get("llm_provider", "openai").lower()
         model = self._app_settings.get("llm_model", "gpt-4-turbo")
 
+        if provider == "ollama":
+            try:
+                from langchain_ollama import ChatOllama
+                base_url = self._app_settings.get("ollama_base_url", "http://localhost:11434")
+                self.llm = ChatOllama(
+                    model=model,
+                    base_url=base_url,
+                    temperature=0,
+                )
+                logger.info(f"Using Ollama LLM: {model} at {base_url}")
+                return
+            except ImportError:
+                logger.warning("langchain-ollama not installed, falling back to OpenAI")
+
         if provider == "anthropic":
             api_key = self._app_settings.get("anthropic_api_key", "")
             if api_key:
@@ -737,13 +751,25 @@ except Exception as e:
 
         return "\n\n---\n\n".join(all_docs) if all_docs else ""
 
+    def _build_augmented_input(self, user_message: str) -> str:
+        """Build the augmented input with FAISS context."""
+        context = self.get_context_from_retrievers(user_message)
+        if context:
+            return f"""Question: {user_message}
+
+Relevant documentation context:
+{context}
+
+Please answer the question using the context above and/or query tools if you need live data."""
+        return user_message
+
     async def process_query(
         self,
         user_message: str,
         chat_history: List[Any] = None
     ) -> str:
         """
-        Process a user query through the RAG pipeline.
+        Process a user query through the RAG pipeline (non-streaming).
 
         Args:
             user_message: The user's question or request.
@@ -755,18 +781,7 @@ except Exception as e:
         if chat_history is None:
             chat_history = []
 
-        # Get relevant context from FAISS
-        context = self.get_context_from_retrievers(user_message)
-
-        # Augment the query with context if available
-        augmented_input = user_message
-        if context:
-            augmented_input = f"""Question: {user_message}
-
-Relevant documentation context:
-{context}
-
-Please answer the question using the context above and/or query tools if you need live data."""
+        augmented_input = self._build_augmented_input(user_message)
 
         try:
             if self.agent_executor and settings.enable_tools:
@@ -790,6 +805,58 @@ Please answer the question using the context above and/or query tools if you nee
         except Exception as e:
             logger.exception("Error processing query")
             return f"I encountered an error processing your request: {str(e)}"
+
+    async def process_query_stream(
+        self,
+        user_message: str,
+        chat_history: List[Any] = None
+    ):
+        """
+        Process a user query with true token-by-token streaming.
+
+        For agent with tools: executes tool calls first, then streams the final response.
+        For direct LLM: streams tokens directly from the LLM.
+
+        Yields:
+            str: Individual tokens/chunks from the LLM response.
+        """
+        if chat_history is None:
+            chat_history = []
+
+        augmented_input = self._build_augmented_input(user_message)
+
+        try:
+            if self.agent_executor and settings.enable_tools:
+                # Agent with tools: use astream_events for true streaming
+                # This streams tool calls and final response tokens
+                async for event in self.agent_executor.astream_events(
+                    {"input": augmented_input, "chat_history": chat_history},
+                    version="v2"
+                ):
+                    kind = event.get("event", "")
+                    # Stream tokens from the chat model
+                    if kind == "on_chat_model_stream":
+                        chunk = event.get("data", {}).get("chunk")
+                        if chunk and hasattr(chunk, "content") and chunk.content:
+                            yield chunk.content
+            else:
+                # Direct LLM streaming without tools
+                if self.llm is None:
+                    yield "Error: No LLM configured. Please configure an LLM in Settings."
+                    return
+
+                messages = [SystemMessage(content=self._system_prompt)]
+                messages.extend(chat_history)
+                messages.append(HumanMessage(content=augmented_input))
+
+                # Use astream for true token-by-token streaming
+                async for chunk in self.llm.astream(messages):
+                    if hasattr(chunk, "content") and chunk.content:
+                        yield chunk.content
+
+        except Exception as e:
+            logger.exception("Error in streaming query")
+            yield f"I encountered an error processing your request: {str(e)}"
 
 
 # Global RAG components instance
