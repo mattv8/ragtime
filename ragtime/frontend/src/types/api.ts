@@ -253,6 +253,19 @@ export interface ToolTestResponse {
   details?: Record<string, unknown>;
 }
 
+// Heartbeat Status Types
+export interface HeartbeatStatus {
+  tool_id: string;
+  alive: boolean;
+  latency_ms: number | null;
+  error: string | null;
+  checked_at: string;
+}
+
+export interface HeartbeatResponse {
+  statuses: Record<string, HeartbeatStatus>;
+}
+
 // Tool type metadata for the wizard UI
 export const TOOL_TYPE_INFO: Record<ToolType, { name: string; description: string; icon: string }> = {
   postgres: {

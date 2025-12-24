@@ -1014,11 +1014,68 @@ input[type="password"]:focus {
   color: var(--color-text-secondary);
 }
 
+/* Heartbeat Indicator */
+.tool-card-heartbeat {
+  display: flex;
+  align-items: center;
+  margin-right: 8px;
+}
+
+.heartbeat-indicator {
+  font-size: 1.5rem;
+  cursor: default;
+  transition: all 0.3s ease;
+}
+
+.heartbeat-indicator.alive {
+  color: var(--color-success);
+  animation: heartbeat-pulse 2s ease-in-out infinite;
+}
+
+.heartbeat-indicator.dead {
+  color: var(--color-error);
+}
+
+.heartbeat-indicator.checking {
+  color: var(--color-text-secondary);
+  animation: heartbeat-spin 1s linear infinite;
+}
+
+.heartbeat-indicator.disabled {
+  color: var(--color-text-muted);
+}
+
+@keyframes heartbeat-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(1.1);
+  }
+}
+
+@keyframes heartbeat-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .tool-card-description {
   font-size: 0.85rem;
   color: var(--color-text-secondary);
   margin-bottom: 12px;
   line-height: 1.4;
+  /* Truncate long descriptions */
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  max-height: 4rem;
 }
 
 .tool-card-connection {
@@ -1060,6 +1117,24 @@ input[type="password"]:focus {
   background: var(--color-error-bg);
   border: 1px solid var(--color-error-border);
   color: var(--color-error);
+}
+
+/* Heartbeat Error Display */
+.tool-card-heartbeat-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  margin-bottom: 12px;
+  background: var(--color-error-bg);
+  border: 1px solid var(--color-error-border);
+  color: var(--color-error);
+}
+
+.error-icon {
+  font-weight: bold;
 }
 
 .test-icon {

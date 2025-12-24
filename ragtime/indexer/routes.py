@@ -323,6 +323,84 @@ async def create_tool_config(request: CreateToolConfigRequest):
     return await repository.create_tool_config(config)
 
 
+# Heartbeat models - must be defined before the route
+class HeartbeatStatus(BaseModel):
+    """Heartbeat status for a single tool."""
+    tool_id: str
+    alive: bool
+    latency_ms: float | None = None
+    error: str | None = None
+    checked_at: str
+
+
+class HeartbeatResponse(BaseModel):
+    """Response from batch heartbeat check."""
+    statuses: dict[str, HeartbeatStatus]
+
+
+@router.get("/tools/heartbeat", response_model=HeartbeatResponse, tags=["Tools"])
+async def check_tool_heartbeats():
+    """
+    Check connection heartbeat for all enabled tools.
+    Returns quick connectivity status without updating database test results.
+    Designed for frequent polling (every 10-30 seconds).
+    """
+    import asyncio
+    from datetime import datetime, timezone
+
+    tools = await repository.list_tool_configs(enabled_only=True)
+    statuses: dict[str, HeartbeatStatus] = {}
+
+    async def check_single_tool(tool) -> HeartbeatStatus:
+        """Check heartbeat for a single tool with timeout."""
+        start_time = asyncio.get_event_loop().time()
+        checked_at = datetime.now(timezone.utc).isoformat()
+
+        try:
+            # Quick ping-style check with short timeout
+            result = await asyncio.wait_for(
+                _heartbeat_check(tool.tool_type, tool.connection_config),
+                timeout=5.0  # Short timeout for heartbeat
+            )
+            latency = (asyncio.get_event_loop().time() - start_time) * 1000
+
+            return HeartbeatStatus(
+                tool_id=tool.id,
+                alive=result.success,
+                latency_ms=round(latency, 1) if result.success else None,
+                error=result.message if not result.success else None,
+                checked_at=checked_at
+            )
+        except asyncio.TimeoutError:
+            return HeartbeatStatus(
+                tool_id=tool.id,
+                alive=False,
+                latency_ms=None,
+                error="Heartbeat timeout (5s)",
+                checked_at=checked_at
+            )
+        except Exception as e:
+            return HeartbeatStatus(
+                tool_id=tool.id,
+                alive=False,
+                latency_ms=None,
+                error=str(e),
+                checked_at=checked_at
+            )
+
+    # Check all tools concurrently
+    results = await asyncio.gather(
+        *[check_single_tool(tool) for tool in tools],
+        return_exceptions=True
+    )
+
+    for result in results:
+        if isinstance(result, HeartbeatStatus):
+            statuses[result.tool_id] = result
+
+    return HeartbeatResponse(statuses=statuses)
+
+
 @router.get("/tools/{tool_id}", response_model=ToolConfig, tags=["Tools"])
 async def get_tool_config(tool_id: str):
     """Get a specific tool configuration."""
@@ -444,6 +522,151 @@ async def test_saved_tool_connection(tool_id: str):
     )
 
     return result
+
+
+async def _heartbeat_check(tool_type: str, config: dict) -> ToolTestResponse:
+    """
+    Quick heartbeat check for a tool connection.
+    Uses minimal queries/commands to verify connectivity.
+    """
+    import asyncio
+    import subprocess
+
+    if tool_type == "postgres":
+        return await _heartbeat_postgres(config)
+    elif tool_type == "odoo_shell":
+        return await _heartbeat_odoo(config)
+    elif tool_type == "ssh_shell":
+        return await _heartbeat_ssh(config)
+    else:
+        return ToolTestResponse(success=False, message=f"Unknown tool type: {tool_type}")
+
+
+async def _heartbeat_postgres(config: dict) -> ToolTestResponse:
+    """Quick PostgreSQL heartbeat check."""
+    import asyncio
+    import subprocess
+
+    host = config.get("host", "")
+    port = config.get("port", 5432)
+    user = config.get("user", "")
+    password = config.get("password", "")
+    database = config.get("database", "")
+    container = config.get("container", "")
+
+    try:
+        if host:
+            cmd = ["psql", "-h", host, "-p", str(port), "-U", user, "-d", database, "-c", "SELECT 1;"]
+            env = {"PGPASSWORD": password}
+        elif container:
+            cmd = [
+                "docker", "exec", "-i", container,
+                "bash", "-c",
+                'PGPASSWORD="${POSTGRES_PASSWORD}" psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -c "SELECT 1;"'
+            ]
+            env = None
+        else:
+            return ToolTestResponse(success=False, message="No connection configured")
+
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env
+        )
+        stdout, stderr = await process.communicate()
+
+        return ToolTestResponse(
+            success=process.returncode == 0,
+            message="OK" if process.returncode == 0 else stderr.decode("utf-8", errors="replace").strip()[:100]
+        )
+    except Exception as e:
+        return ToolTestResponse(success=False, message=str(e)[:100])
+
+
+async def _heartbeat_odoo(config: dict) -> ToolTestResponse:
+    """Quick Odoo container/SSH heartbeat check."""
+    import asyncio
+    import subprocess
+
+    mode = config.get("mode", "docker")
+
+    if mode == "ssh":
+        # SSH mode - check SSH connectivity
+        ssh_host = config.get("ssh_host", "")
+        ssh_port = config.get("ssh_port", 22)
+        ssh_user = config.get("ssh_user", "")
+        ssh_key_path = config.get("ssh_key_path", "")
+
+        if not ssh_host or not ssh_user:
+            return ToolTestResponse(success=False, message="SSH not configured")
+
+        cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3"]
+        if ssh_port != 22:
+            cmd.extend(["-p", str(ssh_port)])
+        if ssh_key_path:
+            cmd.extend(["-i", ssh_key_path])
+        cmd.append(f"{ssh_user}@{ssh_host}")
+        cmd.append("echo OK")
+    else:
+        # Docker mode - check container is running
+        container = config.get("container", "")
+        if not container:
+            return ToolTestResponse(success=False, message="No container configured")
+
+        cmd = ["docker", "exec", "-i", container, "echo", "OK"]
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+
+        return ToolTestResponse(
+            success=process.returncode == 0,
+            message="OK" if process.returncode == 0 else stderr.decode("utf-8", errors="replace").strip()[:100]
+        )
+    except Exception as e:
+        return ToolTestResponse(success=False, message=str(e)[:100])
+
+
+async def _heartbeat_ssh(config: dict) -> ToolTestResponse:
+    """Quick SSH heartbeat check."""
+    import asyncio
+    import subprocess
+
+    host = config.get("host", "")
+    port = config.get("port", 22)
+    user = config.get("user", "")
+    key_path = config.get("key_path", "")
+
+    if not host or not user:
+        return ToolTestResponse(success=False, message="SSH not configured")
+
+    cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3"]
+    if port != 22:
+        cmd.extend(["-p", str(port)])
+    if key_path:
+        cmd.extend(["-i", key_path])
+    cmd.append(f"{user}@{host}")
+    cmd.append("echo OK")
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+
+        return ToolTestResponse(
+            success=process.returncode == 0,
+            message="OK" if process.returncode == 0 else stderr.decode("utf-8", errors="replace").strip()[:100]
+        )
+    except Exception as e:
+        return ToolTestResponse(success=False, message=str(e)[:100])
 
 
 async def _test_postgres_connection(config: dict) -> ToolTestResponse:

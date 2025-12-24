@@ -2,7 +2,7 @@
  * API client for Ragtime Indexer
  */
 
-import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, LLMModelsRequest, LLMModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse } from '@/types';
+import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, LLMModelsRequest, LLMModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, HeartbeatResponse } from '@/types';
 
 const API_BASE = '/indexes';
 
@@ -288,6 +288,14 @@ export const api = {
       method: 'POST',
     });
     return handleResponse<ToolTestResponse>(response);
+  },
+
+  /**
+   * Get heartbeat status for all enabled tools
+   */
+  async getToolHeartbeats(): Promise<HeartbeatResponse> {
+    const response = await fetch(`${API_BASE}/tools/heartbeat`);
+    return handleResponse<HeartbeatResponse>(response);
   },
 
   /**

@@ -1,11 +1,15 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '@/api';
-import type { ToolConfig, ToolType } from '@/types';
+import type { ToolConfig, HeartbeatStatus } from '@/types';
 import { TOOL_TYPE_INFO } from '@/types';
 import { ToolWizard } from './ToolWizard';
 
+// Heartbeat polling interval (15 seconds)
+const HEARTBEAT_INTERVAL = 15000;
+
 interface ToolCardProps {
   tool: ToolConfig;
+  heartbeat: HeartbeatStatus | null;
   onEdit: (tool: ToolConfig) => void;
   onDelete: (toolId: string) => void;
   onToggle: (toolId: string, enabled: boolean) => void;
@@ -13,7 +17,7 @@ interface ToolCardProps {
   testing: boolean;
 }
 
-function ToolCard({ tool, onEdit, onDelete, onToggle, onTest, testing }: ToolCardProps) {
+function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing }: ToolCardProps) {
   const typeInfo = TOOL_TYPE_INFO[tool.tool_type];
 
   const getConnectionSummary = (): string => {
@@ -36,6 +40,23 @@ function ToolCard({ tool, onEdit, onDelete, onToggle, onTest, testing }: ToolCar
     }
   };
 
+  // Determine heartbeat display status
+  const getHeartbeatDisplay = () => {
+    if (!tool.enabled) {
+      return { status: 'disabled', label: 'Disabled', icon: '○' };
+    }
+    if (!heartbeat) {
+      return { status: 'checking', label: 'Checking...', icon: '◌' };
+    }
+    if (heartbeat.alive) {
+      const latency = heartbeat.latency_ms ? `${Math.round(heartbeat.latency_ms)}ms` : '';
+      return { status: 'alive', label: latency || 'Connected', icon: '●' };
+    }
+    return { status: 'dead', label: heartbeat.error || 'Disconnected', icon: '●' };
+  };
+
+  const heartbeatDisplay = getHeartbeatDisplay();
+
   return (
     <div className={`tool-card ${!tool.enabled ? 'disabled' : ''}`}>
       <div className="tool-card-header">
@@ -43,6 +64,14 @@ function ToolCard({ tool, onEdit, onDelete, onToggle, onTest, testing }: ToolCar
         <div className="tool-card-title">
           <h3>{tool.name}</h3>
           <span className="tool-card-type">{typeInfo?.name || tool.tool_type}</span>
+        </div>
+        <div className="tool-card-heartbeat">
+          <span
+            className={`heartbeat-indicator ${heartbeatDisplay.status}`}
+            title={heartbeatDisplay.label}
+          >
+            {heartbeatDisplay.icon}
+          </span>
         </div>
         <div className="tool-card-status">
           <label className="toggle-switch">
@@ -65,7 +94,16 @@ function ToolCard({ tool, onEdit, onDelete, onToggle, onTest, testing }: ToolCar
         <code>{getConnectionSummary()}</code>
       </div>
 
-      {tool.last_test_at && (
+      {/* Show heartbeat error if connection failed */}
+      {heartbeat && !heartbeat.alive && (
+        <div className="tool-card-heartbeat-error">
+          <span className="error-icon">✗</span>
+          <span>{heartbeat.error || 'Connection failed'}</span>
+        </div>
+      )}
+
+      {/* Show traditional test result only if no heartbeat available */}
+      {!heartbeat && tool.last_test_at && (
         <div className={`tool-card-test-result ${tool.last_test_result ? 'success' : 'error'}`}>
           <span className="test-icon">{tool.last_test_result ? '✓' : '✗'}</span>
           <span>
@@ -119,6 +157,8 @@ export function ToolsPanel() {
   const [showWizard, setShowWizard] = useState(false);
   const [editingTool, setEditingTool] = useState<ToolConfig | null>(null);
   const [testingToolId, setTestingToolId] = useState<string | null>(null);
+  const [heartbeats, setHeartbeats] = useState<Record<string, HeartbeatStatus>>({});
+  const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadTools = useCallback(async () => {
     try {
@@ -133,9 +173,42 @@ export function ToolsPanel() {
     }
   }, []);
 
+  // Fetch heartbeat status for all enabled tools
+  const fetchHeartbeats = useCallback(async () => {
+    try {
+      const response = await api.getToolHeartbeats();
+      setHeartbeats(response.statuses);
+    } catch (err) {
+      // Silently fail on heartbeat errors - don't disrupt the UI
+      console.warn('Heartbeat check failed:', err);
+    }
+  }, []);
+
+  // Initial load
   useEffect(() => {
     loadTools();
   }, [loadTools]);
+
+  // Heartbeat polling
+  useEffect(() => {
+    // Initial heartbeat check after tools load
+    if (!loading && tools.length > 0) {
+      fetchHeartbeats();
+    }
+
+    // Set up interval for periodic heartbeat checks
+    heartbeatTimerRef.current = setInterval(() => {
+      if (!showWizard) {
+        fetchHeartbeats();
+      }
+    }, HEARTBEAT_INTERVAL);
+
+    return () => {
+      if (heartbeatTimerRef.current) {
+        clearInterval(heartbeatTimerRef.current);
+      }
+    };
+  }, [loading, tools.length, showWizard, fetchHeartbeats]);
 
   const handleAddTool = () => {
     setEditingTool(null);
@@ -248,6 +321,7 @@ export function ToolsPanel() {
               <ToolCard
                 key={tool.id}
                 tool={tool}
+                heartbeat={heartbeats[tool.id] || null}
                 onEdit={handleEditTool}
                 onDelete={handleDeleteTool}
                 onToggle={handleToggleTool}

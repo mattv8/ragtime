@@ -26,13 +26,16 @@ CAPABILITIES:
 1. **Code Knowledge**: You have access to indexed documentation about codebases and custom modules.
 2. **Live Data Queries**: You can query connected systems using the available tools.
 
-GUIDELINES:
-- Always explain what you're doing before executing queries
+CRITICAL GUIDELINES:
+- **ALWAYS use tools** when users ask about data, databases, counts, tables, or live system state
+- **ALWAYS use knowledge sources** when users ask about code structure, implementation, or how things work
+- When a question relates to both code AND data, use BOTH the knowledge sources AND the query tools
+- Explain what you're doing before executing queries
 - Format results in a clear, readable way (tables, lists, summaries)
 - If a query fails, explain the error and suggest alternatives
-- For sensitive data, remind users about data access policies
 - Always include appropriate LIMIT clauses to prevent large result sets
 
+IMPORTANT: Do not say "I don't have access" when tools are available. Check the tools list and USE THEM.
 When answering questions about code or documentation, use your knowledge from the indexed sources.
 When answering questions about live data, use the appropriate query tool."""
 
@@ -116,7 +119,10 @@ def build_tool_system_prompt(tool_configs: List[dict]) -> str:
 AVAILABLE TOOLS:
 {chr(10).join(tool_sections)}
 
-When a user asks about data, determine which tool is most appropriate based on the descriptions above.
+TOOL USAGE RULES:
+- When a user mentions any of these systems, databases, or applications by name, ALWAYS use the corresponding tool
+- Never say you don't have access to data - check if there's a tool that can query it
+- If unsure which tool to use, read the descriptions carefully - they explain what each tool connects to
 """
 
 
@@ -316,7 +322,7 @@ class RAGComponents:
                 tools=tools,
                 verbose=settings.debug_mode,
                 handle_parsing_errors=True,
-                max_iterations=5,
+                max_iterations=10,
                 return_intermediate_steps=settings.debug_mode
             )
         else:
