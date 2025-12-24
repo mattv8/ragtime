@@ -20,6 +20,7 @@ export function GitForm({ onJobCreated }: GitFormProps) {
     const form = e.currentTarget;
 
     const name = (form.elements.namedItem('name') as HTMLInputElement).value;
+    const description = (form.elements.namedItem('description') as HTMLTextAreaElement).value;
     const gitUrl = (form.elements.namedItem('git_url') as HTMLInputElement).value;
     const gitBranch = (form.elements.namedItem('git_branch') as HTMLInputElement).value;
     const filePatterns = (form.elements.namedItem('file_patterns') as HTMLInputElement).value;
@@ -35,6 +36,7 @@ export function GitForm({ onJobCreated }: GitFormProps) {
         git_branch: gitBranch,
         config: {
           name,
+          description,
           file_patterns: filePatterns.split(',').map((s) => s.trim()),
           exclude_patterns: excludePatterns.split(',').map((s) => s.trim()),
         },
@@ -58,6 +60,16 @@ export function GitForm({ onJobCreated }: GitFormProps) {
           name="name"
           placeholder="e.g., odoo-17, my-codebase"
           required
+        />
+      </div>
+
+      <div className="form-group">
+        <label>Description (for AI context)</label>
+        <textarea
+          name="description"
+          placeholder="Describe what this index contains so the AI knows when to use it, e.g., 'Odoo 17 modules source code including accounting, inventory, and sales apps'"
+          rows={2}
+          style={{ resize: 'vertical', minHeight: '60px' }}
         />
       </div>
 

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { api, DockerContainer, DockerNetwork } from '@/api';
+import { api } from '@/api';
+import type { DockerContainer, DockerNetwork } from '@/api';
 import type {
   ToolConfig,
   ToolType,
@@ -10,6 +11,161 @@ import type {
   ConnectionConfig,
 } from '@/types';
 import { TOOL_TYPE_INFO } from '@/types';
+
+// Shared Docker connection panel props
+interface DockerConnectionPanelProps {
+  // State
+  dockerContainers: DockerContainer[];
+  dockerNetworks: DockerNetwork[];
+  currentNetwork: string | null;
+  currentContainer: string | null;
+  loadingDocker: boolean;
+  connectingNetwork: boolean;
+  // Current values
+  selectedNetwork: string;
+  selectedContainer: string;
+  // Handlers
+  onDiscoverDocker: () => void;
+  onConnectNetwork: (e: React.MouseEvent, networkName: string) => void;
+  onNetworkChange: (network: string) => void;
+  onContainerChange: (container: string) => void;
+  // Configuration
+  containerFilter?: (container: DockerContainer) => boolean;
+  containerLabel?: (container: DockerContainer) => string;
+  containerCountLabel: string;
+  containerHelpText: string;
+  fallbackPlaceholder: string;
+}
+
+// Reusable Docker connection panel component
+function DockerConnectionPanel({
+  dockerContainers,
+  dockerNetworks,
+  currentNetwork,
+  currentContainer,
+  loadingDocker,
+  connectingNetwork,
+  selectedNetwork,
+  selectedContainer,
+  onDiscoverDocker,
+  onConnectNetwork,
+  onNetworkChange,
+  onContainerChange,
+  containerFilter = () => true,
+  containerLabel = (c) => c.name,
+  containerCountLabel,
+  containerHelpText,
+  fallbackPlaceholder,
+}: DockerConnectionPanelProps) {
+  const filteredContainers = dockerContainers.filter(containerFilter);
+  const networkContainers = dockerContainers.filter(
+    c => currentNetwork && c.networks.includes(currentNetwork) && c.name !== currentContainer
+  );
+
+  return (
+    <>
+      {/* Discover Docker button */}
+      <div className="form-group">
+        <label>Discover Docker Environment</label>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={onDiscoverDocker}
+          disabled={loadingDocker}
+          style={{ width: '100%' }}
+        >
+          {loadingDocker ? 'Scanning...' : dockerContainers.length > 0 ? 'Refresh' : 'Discover Containers'}
+        </button>
+        <p className="field-help">
+          {dockerContainers.length > 0
+            ? `Found ${filteredContainers.length} ${containerCountLabel} across ${dockerNetworks.length} network(s).`
+            : `Scan for Docker containers running ${containerCountLabel.replace(/\(s\)$/, '')}.`}
+        </p>
+      </div>
+
+      {/* Network selection (after discovery) */}
+      {dockerNetworks.length > 0 && (
+        <div className="form-group">
+          <label>Docker Network</label>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <select
+              value={selectedNetwork}
+              onChange={(e) => onNetworkChange(e.target.value)}
+              style={{ flex: 1 }}
+            >
+              <option value="">Select network...</option>
+              {dockerNetworks.map(n => (
+                <option key={n.name} value={n.name}>
+                  {n.name} ({n.containers.length})
+                  {n.name === currentNetwork ? ' - connected' : ''}
+                </option>
+              ))}
+            </select>
+            {selectedNetwork && selectedNetwork !== currentNetwork && (
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={(e) => onConnectNetwork(e, selectedNetwork)}
+                disabled={connectingNetwork}
+              >
+                {connectingNetwork ? '...' : 'Connect'}
+              </button>
+            )}
+          </div>
+          <p className="field-help">
+            {currentNetwork
+              ? `Connected to ${currentNetwork}.`
+              : 'Select a network and click Connect to access containers.'}
+          </p>
+        </div>
+      )}
+
+      {/* Container selection (after connected) */}
+      {currentNetwork && (
+        <div className="form-group">
+          <label>Container Name</label>
+          {networkContainers.length > 0 ? (
+            <select
+              value={selectedContainer}
+              onChange={(e) => onContainerChange(e.target.value)}
+            >
+              <option value="">Select container...</option>
+              {networkContainers.map(c => (
+                <option key={c.name} value={c.name}>
+                  {containerLabel(c)}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              type="text"
+              value={selectedContainer}
+              onChange={(e) => onContainerChange(e.target.value)}
+              placeholder="No containers found on this network"
+            />
+          )}
+          <p className="field-help">{containerHelpText}</p>
+        </div>
+      )}
+
+      {/* Fallback: Manual container name if no networks discovered */}
+      {dockerNetworks.length === 0 && (
+        <div className="form-group">
+          <label>Container Name</label>
+          <input
+            type="text"
+            value={selectedContainer}
+            onChange={(e) => onContainerChange(e.target.value)}
+            placeholder={fallbackPlaceholder}
+          />
+          <p className="field-help">
+            Enter the Docker container name manually, or click Discover above to find containers.
+          </p>
+        </div>
+      )}
+    </>
+  );
+}
 
 interface ToolWizardProps {
   existingTool: ToolConfig | null;
@@ -72,19 +228,25 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
   const [postgresConfig, setPostgresConfig] = useState<PostgresConnectionConfig>(
     existingTool?.tool_type === 'postgres'
       ? (existingTool.connection_config as PostgresConnectionConfig)
-      : { host: '', port: 5432, user: '', password: '', database: '', container: '' }
+      : { host: '', port: 5432, user: '', password: '', database: '', container: '', docker_network: '' }
   );
 
+  const [odooConnectionMode, setOdooConnectionMode] = useState<'docker' | 'ssh'>(
+    existingTool?.tool_type === 'odoo_shell' && (existingTool.connection_config as OdooShellConnectionConfig).mode === 'ssh'
+      ? 'ssh'
+      : 'docker'
+  );
   const [odooConfig, setOdooConfig] = useState<OdooShellConnectionConfig>(
     existingTool?.tool_type === 'odoo_shell'
       ? (existingTool.connection_config as OdooShellConnectionConfig)
-      : { container: '', database: 'odoo', docker_network: '', config_path: '' }
+      : { mode: 'docker', container: '', database: 'odoo', docker_network: '', config_path: '', ssh_host: '', ssh_port: 22, ssh_user: '', ssh_key_path: '', ssh_password: '', odoo_bin_path: '', working_directory: '', run_as_user: '' }
   );
 
   // Docker discovery state
   const [dockerContainers, setDockerContainers] = useState<DockerContainer[]>([]);
   const [dockerNetworks, setDockerNetworks] = useState<DockerNetwork[]>([]);
   const [currentNetwork, setCurrentNetwork] = useState<string | null>(null);
+  const [currentContainer, setCurrentContainer] = useState<string | null>(null);
   const [loadingDocker, setLoadingDocker] = useState(false);
   const [connectingNetwork, setConnectingNetwork] = useState(false);
 
@@ -99,9 +261,70 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
       case 'postgres':
         return postgresConfig;
       case 'odoo_shell':
-        return odooConfig;
+        return { ...odooConfig, mode: odooConnectionMode };
       case 'ssh_shell':
         return sshConfig;
+    }
+  };
+
+  // Shared Docker discovery handlers for PostgreSQL container mode and Odoo Docker mode
+  const handleDiscoverDocker = async () => {
+    setLoadingDocker(true);
+    try {
+      const result = await api.discoverDocker();
+      if (result.success) {
+        setDockerContainers(result.containers);
+        setDockerNetworks(result.networks);
+        setCurrentNetwork(result.current_network);
+        setCurrentContainer(result.current_container);
+
+        // Auto-select first relevant container if none selected
+        if (toolType === 'postgres' && !postgresConfig.container) {
+          const firstPg = result.containers.find(c => c.image.toLowerCase().includes('postgres') && c.name !== result.current_container);
+          if (firstPg) {
+            setPostgresConfig({
+              ...postgresConfig,
+              container: firstPg.name,
+              docker_network: firstPg.networks[0] || ''
+            });
+          }
+        } else if (toolType === 'odoo_shell' && !odooConfig.container) {
+          const firstOdoo = result.containers.find(c => c.has_odoo && c.name !== result.current_container);
+          if (firstOdoo) {
+            setOdooConfig({
+              ...odooConfig,
+              container: firstOdoo.name,
+              docker_network: firstOdoo.networks[0] || ''
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Docker discovery failed:', err);
+    } finally {
+      setLoadingDocker(false);
+    }
+  };
+
+  const handleConnectNetwork = async (e: React.MouseEvent, networkName: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setConnectingNetwork(true);
+    try {
+      const result = await api.connectToNetwork(networkName);
+      if (result.success) {
+        setCurrentNetwork(networkName);
+        // Update the appropriate config
+        if (toolType === 'postgres') {
+          setPostgresConfig({ ...postgresConfig, docker_network: networkName });
+        } else if (toolType === 'odoo_shell') {
+          setOdooConfig({ ...odooConfig, docker_network: networkName });
+        }
+      }
+    } catch (err) {
+      console.error('Network connection failed:', err);
+    } finally {
+      setConnectingNetwork(false);
     }
   };
 
@@ -336,18 +559,26 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
           </div>
         ) : pgConnectionMode === 'container' ? (
           <div className="connection-panel">
-            <div className="form-group">
-              <label>Container Name</label>
-              <input
-                type="text"
-                value={postgresConfig.container || ''}
-                onChange={(e) => setPostgresConfig({ ...postgresConfig, container: e.target.value })}
-                placeholder="my-postgres-container"
-              />
-              <p className="field-help">
-                Uses container's POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB environment variables.
-              </p>
-            </div>
+            <DockerConnectionPanel
+              dockerContainers={dockerContainers}
+              dockerNetworks={dockerNetworks}
+              currentNetwork={currentNetwork}
+              currentContainer={currentContainer}
+              loadingDocker={loadingDocker}
+              connectingNetwork={connectingNetwork}
+              selectedNetwork={postgresConfig.docker_network || ''}
+              selectedContainer={postgresConfig.container || ''}
+              onDiscoverDocker={handleDiscoverDocker}
+              onConnectNetwork={handleConnectNetwork}
+              onNetworkChange={(network) => setPostgresConfig({ ...postgresConfig, docker_network: network })}
+              onContainerChange={(container) => setPostgresConfig({ ...postgresConfig, container })}
+              containerFilter={(c) => c.image.toLowerCase().includes('postgres')}
+              containerLabel={(c) => `${c.name}${c.image.toLowerCase().includes('postgres') ? ' (PostgreSQL)' : ''}`}
+              containerCountLabel="PostgreSQL container(s)"
+              containerHelpText="Uses container's POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB environment variables."
+              fallbackPlaceholder="my-postgres-container"
+            />
+
             <div className="form-group">
               <label>Database (optional override)</label>
               <input
@@ -364,152 +595,214 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
   };
 
   const renderOdooConnection = () => {
-    const odooContainers = dockerContainers.filter(c => c.has_odoo);
-
-    const handleDiscoverDocker = async () => {
-      setLoadingDocker(true);
-      try {
-        const result = await api.discoverDocker();
-        if (result.success) {
-          setDockerContainers(result.containers);
-          setDockerNetworks(result.networks);
-          setCurrentNetwork(result.current_network);
-
-          // Auto-select first Odoo container if none selected
-          if (!odooConfig.container && result.containers.some(c => c.has_odoo)) {
-            const firstOdoo = result.containers.find(c => c.has_odoo);
-            if (firstOdoo) {
-              setOdooConfig({
-                ...odooConfig,
-                container: firstOdoo.name,
-                docker_network: firstOdoo.networks[0] || ''
-              });
-            }
-          }
-        }
-      } catch (err) {
-        console.error('Docker discovery failed:', err);
-      } finally {
-        setLoadingDocker(false);
-      }
-    };
-
-    const handleConnectNetwork = async (networkName: string) => {
-      setConnectingNetwork(true);
-      try {
-        const result = await api.connectToNetwork(networkName);
-        if (result.success) {
-          setCurrentNetwork(networkName);
-          setOdooConfig({ ...odooConfig, docker_network: networkName });
-        }
-      } catch (err) {
-        console.error('Network connection failed:', err);
-      } finally {
-        setConnectingNetwork(false);
-      }
-    };
-
     return (
       <div className="wizard-content">
         <p className="wizard-help">
-          Connect to an Odoo instance running in a Docker container.
+          Connect to an Odoo instance via Docker container or SSH.
         </p>
 
-        <div className="form-group">
-          <div className="form-row" style={{ alignItems: 'flex-end' }}>
-            <div className="form-group" style={{ flex: 1 }}>
-              <label>Container Name</label>
-              <input
-                type="text"
-                value={odooConfig.container}
-                onChange={(e) => setOdooConfig({ ...odooConfig, container: e.target.value })}
-                placeholder="odoo-server"
-                list="odoo-containers"
-              />
-              <datalist id="odoo-containers">
-                {odooContainers.map(c => (
-                  <option key={c.name} value={c.name} />
-                ))}
-              </datalist>
-            </div>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={handleDiscoverDocker}
-              disabled={loadingDocker}
-              style={{ marginBottom: '0.5rem' }}
-            >
-              {loadingDocker ? 'Scanning...' : 'Discover'}
-            </button>
-          </div>
-          <p className="field-help">
-            The Docker container running the Odoo server.
-            {odooContainers.length > 0 && ` Found ${odooContainers.length} Odoo container(s).`}
-          </p>
+        {/* Connection mode tabs */}
+        <div className="connection-tabs">
+          <button
+            type="button"
+            className={`connection-tab ${odooConnectionMode === 'docker' ? 'active' : ''}`}
+            onClick={() => setOdooConnectionMode('docker')}
+          >
+            Docker Container
+          </button>
+          <button
+            type="button"
+            className={`connection-tab ${odooConnectionMode === 'ssh' ? 'active' : ''}`}
+            onClick={() => setOdooConnectionMode('ssh')}
+          >
+            SSH Shell
+          </button>
         </div>
 
-        <div className="form-row">
-          <div className="form-group">
-            <label>Database Name</label>
-            <input
-              type="text"
-              value={odooConfig.database || 'odoo'}
-              onChange={(e) => setOdooConfig({ ...odooConfig, database: e.target.value })}
-              placeholder="odoo"
+        {odooConnectionMode === 'docker' ? (
+          <div className="connection-panel">
+            <DockerConnectionPanel
+              dockerContainers={dockerContainers}
+              dockerNetworks={dockerNetworks}
+              currentNetwork={currentNetwork}
+              currentContainer={currentContainer}
+              loadingDocker={loadingDocker}
+              connectingNetwork={connectingNetwork}
+              selectedNetwork={odooConfig.docker_network || ''}
+              selectedContainer={odooConfig.container || ''}
+              onDiscoverDocker={handleDiscoverDocker}
+              onConnectNetwork={handleConnectNetwork}
+              onNetworkChange={(network) => setOdooConfig({ ...odooConfig, docker_network: network })}
+              onContainerChange={(container) => setOdooConfig({ ...odooConfig, container })}
+              containerFilter={(c) => c.has_odoo}
+              containerLabel={(c) => `${c.name}${c.has_odoo ? ' (Odoo)' : ''}`}
+              containerCountLabel="Odoo container(s)"
+              containerHelpText="The Docker container running the Odoo server."
+              fallbackPlaceholder="odoo-server"
             />
-            <p className="field-help">
-              The Odoo database to connect to.
-            </p>
-          </div>
-          <div className="form-group">
-            <label>Config Path (optional)</label>
-            <input
-              type="text"
-              value={odooConfig.config_path || ''}
-              onChange={(e) => setOdooConfig({ ...odooConfig, config_path: e.target.value })}
-              placeholder="Leave empty to use container defaults"
-            />
-            <p className="field-help">
-              Path to odoo.conf inside the container. Leave empty if container uses environment variables.
-            </p>
-          </div>
-        </div>
 
-        {dockerNetworks.length > 0 && (
-          <div className="form-group">
-            <label>Docker Network</label>
-            <div className="form-row" style={{ alignItems: 'flex-start' }}>
-              <select
-                value={odooConfig.docker_network || ''}
-                onChange={(e) => setOdooConfig({ ...odooConfig, docker_network: e.target.value })}
-                style={{ flex: 1 }}
-              >
-                <option value="">Select network...</option>
-                {dockerNetworks.map(n => (
-                  <option key={n.name} value={n.name}>
-                    {n.name} ({n.containers.length} containers)
-                    {n.name === currentNetwork ? ' - connected' : ''}
-                  </option>
-                ))}
-              </select>
-              {odooConfig.docker_network && odooConfig.docker_network !== currentNetwork && (
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => handleConnectNetwork(odooConfig.docker_network!)}
-                  disabled={connectingNetwork}
-                  style={{ marginLeft: '0.5rem' }}
-                >
-                  {connectingNetwork ? 'Connecting...' : 'Connect'}
-                </button>
-              )}
+            {/* Database and config path (always show for Docker mode) */}
+            <div className="form-row">
+              <div className="form-group">
+                <label>Database Name</label>
+                <input
+                  type="text"
+                  value={odooConfig.database || 'odoo'}
+                  onChange={(e) => setOdooConfig({ ...odooConfig, database: e.target.value })}
+                  placeholder="odoo"
+                />
+                <p className="field-help">
+                  The Odoo database to connect to.
+                </p>
+              </div>
+              <div className="form-group">
+                <label>Config Path (optional)</label>
+                <input
+                  type="text"
+                  value={odooConfig.config_path || ''}
+                  onChange={(e) => setOdooConfig({ ...odooConfig, config_path: e.target.value })}
+                  placeholder="Leave empty to use container defaults"
+                />
+                <p className="field-help">
+                  Path to odoo.conf inside the container.
+                </p>
+              </div>
             </div>
-            <p className="field-help">
-              Connect Ragtime to the same Docker network as the Odoo container for direct access.
-              {currentNetwork && ` Currently connected to: ${currentNetwork}`}
-            </p>
           </div>
-        )}
+        ) : odooConnectionMode === 'ssh' ? (
+          <div className="connection-panel">
+            {/* SSH Connection Settings */}
+            <div className="form-row">
+              <div className="form-group" style={{ flex: 2 }}>
+                <label>SSH Host</label>
+                <input
+                  type="text"
+                  value={odooConfig.ssh_host || ''}
+                  onChange={(e) => setOdooConfig({ ...odooConfig, ssh_host: e.target.value })}
+                  placeholder="odoo.example.com"
+                />
+                <p className="field-help">
+                  Hostname or IP address of the Odoo server.
+                </p>
+              </div>
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>SSH Port</label>
+                <input
+                  type="number"
+                  value={odooConfig.ssh_port || 22}
+                  onChange={(e) => setOdooConfig({ ...odooConfig, ssh_port: parseInt(e.target.value) || 22 })}
+                  placeholder="22"
+                />
+              </div>
+            </div>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label>SSH User</label>
+                <input
+                  type="text"
+                  value={odooConfig.ssh_user || ''}
+                  onChange={(e) => setOdooConfig({ ...odooConfig, ssh_user: e.target.value })}
+                  placeholder="odoo"
+                />
+                <p className="field-help">
+                  User to connect as via SSH.
+                </p>
+              </div>
+              <div className="form-group">
+                <label>Run As User (optional)</label>
+                <input
+                  type="text"
+                  value={odooConfig.run_as_user || ''}
+                  onChange={(e) => setOdooConfig({ ...odooConfig, run_as_user: e.target.value })}
+                  placeholder="odoo"
+                />
+                <p className="field-help">
+                  User to run odoo-bin as (sudo -u).
+                </p>
+              </div>
+            </div>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label>SSH Key Path</label>
+                <input
+                  type="text"
+                  value={odooConfig.ssh_key_path || ''}
+                  onChange={(e) => setOdooConfig({ ...odooConfig, ssh_key_path: e.target.value })}
+                  placeholder="/root/.ssh/id_rsa"
+                />
+                <p className="field-help">
+                  Path to SSH private key file (inside ragtime container).
+                </p>
+              </div>
+              <div className="form-group">
+                <label>SSH Password (alternative)</label>
+                <input
+                  type="password"
+                  value={odooConfig.ssh_password || ''}
+                  onChange={(e) => setOdooConfig({ ...odooConfig, ssh_password: e.target.value })}
+                  placeholder="Leave empty if using key"
+                />
+              </div>
+            </div>
+
+            {/* Odoo-specific settings for SSH mode */}
+            <div className="form-row">
+              <div className="form-group">
+                <label>Database Name</label>
+                <input
+                  type="text"
+                  value={odooConfig.database || 'odoo'}
+                  onChange={(e) => setOdooConfig({ ...odooConfig, database: e.target.value })}
+                  placeholder="odoo"
+                />
+                <p className="field-help">
+                  The Odoo database to connect to.
+                </p>
+              </div>
+              <div className="form-group">
+                <label>Config Path</label>
+                <input
+                  type="text"
+                  value={odooConfig.config_path || ''}
+                  onChange={(e) => setOdooConfig({ ...odooConfig, config_path: e.target.value })}
+                  placeholder="/etc/odoo/odoo.conf"
+                />
+                <p className="field-help">
+                  Path to odoo.conf on the remote server.
+                </p>
+              </div>
+            </div>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label>Odoo Binary Path</label>
+                <input
+                  type="text"
+                  value={odooConfig.odoo_bin_path || ''}
+                  onChange={(e) => setOdooConfig({ ...odooConfig, odoo_bin_path: e.target.value })}
+                  placeholder="/opt/odoo/odoo-bin"
+                />
+                <p className="field-help">
+                  Full path to odoo-bin executable.
+                </p>
+              </div>
+              <div className="form-group">
+                <label>Working Directory (optional)</label>
+                <input
+                  type="text"
+                  value={odooConfig.working_directory || ''}
+                  onChange={(e) => setOdooConfig({ ...odooConfig, working_directory: e.target.value })}
+                  placeholder="/opt/odoo"
+                />
+                <p className="field-help">
+                  Directory to run odoo-bin from.
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
     );
   };

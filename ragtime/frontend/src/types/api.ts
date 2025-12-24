@@ -7,6 +7,7 @@ export type IndexStatus = 'pending' | 'processing' | 'completed' | 'failed';
 
 export interface IndexConfig {
   name: string;
+  description?: string;
   file_patterns: string[];
   exclude_patterns: string[];
   chunk_size: number;
@@ -34,6 +35,7 @@ export interface IndexInfo {
   path: string;
   size_mb: number;
   document_count: number;
+  description: string;
   enabled: boolean;
   created_at: string | null;
   last_modified: string | null;
@@ -170,13 +172,26 @@ export interface PostgresConnectionConfig {
   password?: string;
   database?: string;
   container?: string;
+  docker_network?: string;
 }
 
 export interface OdooShellConnectionConfig {
-  container: string;
-  database?: string;
+  mode?: 'docker' | 'ssh';
+  // Docker mode
+  container?: string;
   docker_network?: string;
+  // SSH mode
+  ssh_host?: string;
+  ssh_port?: number;
+  ssh_user?: string;
+  ssh_key_path?: string;
+  ssh_password?: string;
+  // Common Odoo fields
+  database?: string;
+  odoo_bin_path?: string;
   config_path?: string;
+  working_directory?: string;
+  run_as_user?: string;
 }
 
 export interface SSHShellConnectionConfig {

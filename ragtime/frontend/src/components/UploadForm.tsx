@@ -19,6 +19,7 @@ function getIndexNameFromFile(filename: string): string {
 export function UploadForm({ onJobCreated }: UploadFormProps) {
   const [file, setFile] = useState<File | null>(null);
   const [indexName, setIndexName] = useState('');
+  const [description, setDescription] = useState('');
   const [isDragOver, setIsDragOver] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -72,6 +73,7 @@ export function UploadForm({ onJobCreated }: UploadFormProps) {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('name', indexName);
+    formData.append('description', description);
     formData.append('file_patterns', (form.elements.namedItem('file_patterns') as HTMLInputElement).value);
     formData.append('exclude_patterns', (form.elements.namedItem('exclude_patterns') as HTMLInputElement).value);
     formData.append('chunk_size', (form.elements.namedItem('chunk_size') as HTMLInputElement).value);
@@ -88,6 +90,7 @@ export function UploadForm({ onJobCreated }: UploadFormProps) {
       form.reset();
       setFile(null);
       setIndexName('');
+      setDescription('');
       onJobCreated();
     } catch (err) {
       setStatus({ type: 'error', message: `Error: ${err instanceof Error ? err.message : 'Upload failed'}` });
@@ -134,6 +137,18 @@ export function UploadForm({ onJobCreated }: UploadFormProps) {
               onChange={(e) => setIndexName(e.target.value)}
               placeholder="e.g., odoo-17, my-codebase"
               required
+            />
+          </div>
+
+          <div className="form-group">
+            <label>Description (for AI context)</label>
+            <textarea
+              name="description"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Describe what this index contains so the AI knows when to use it, e.g., 'Odoo 17 modules source code including accounting, inventory, and sales apps'"
+              rows={2}
+              style={{ resize: 'vertical', minHeight: '60px' }}
             />
           </div>
 

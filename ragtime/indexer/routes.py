@@ -131,6 +131,10 @@ SUPPORTED_ARCHIVE_EXTENSIONS = (".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", "
 async def upload_and_index(
     file: UploadFile = File(..., description="Archive file containing source code (.zip, .tar, .tar.gz, .tar.bz2)"),
     name: str = Form(..., description="Name for the index"),
+    description: str = Form(
+        default="",
+        description="Description for AI context - helps the model understand what this index contains"
+    ),
     file_patterns: str = Form(
         default="**/*.py,**/*.md,**/*.rst,**/*.txt,**/*.xml",
         description="Comma-separated glob patterns for files to include"
@@ -158,6 +162,7 @@ async def upload_and_index(
 
     config = IndexConfig(
         name=name,
+        description=description,
         file_patterns=[p.strip() for p in file_patterns.split(",")],
         exclude_patterns=[p.strip() for p in exclude_patterns.split(",")],
         chunk_size=chunk_size,
@@ -237,6 +242,11 @@ class ToggleIndexRequest(BaseModel):
     enabled: bool = Field(description="Whether the index is enabled for RAG context")
 
 
+class UpdateIndexDescriptionRequest(BaseModel):
+    """Request to update index description."""
+    description: str = Field(description="Description for AI context")
+
+
 @router.patch("/{name}/toggle")
 async def toggle_index(name: str, request: ToggleIndexRequest):
     """Toggle an index's enabled status for RAG context."""
@@ -244,6 +254,15 @@ async def toggle_index(name: str, request: ToggleIndexRequest):
     if not success:
         raise HTTPException(status_code=404, detail="Index not found")
     return {"message": f"Index '{name}' {'enabled' if request.enabled else 'disabled'}", "enabled": request.enabled}
+
+
+@router.patch("/{name}/description")
+async def update_index_description(name: str, request: UpdateIndexDescriptionRequest):
+    """Update an index's description for AI context."""
+    success = await repository.update_index_description(name, request.description)
+    if not success:
+        raise HTTPException(status_code=404, detail="Index not found")
+    return {"message": f"Description updated for '{name}'", "description": request.description}
 
 
 # -----------------------------------------------------------------------------
@@ -325,10 +344,46 @@ async def update_tool_config(tool_id: str, request: UpdateToolConfigRequest):
 
 @router.delete("/tools/{tool_id}", tags=["Tools"])
 async def delete_tool_config(tool_id: str):
-    """Delete a tool configuration."""
+    """
+    Delete a tool configuration.
+
+    For Odoo tools, also disconnects from the Docker network if no other
+    tools are using it.
+    """
+    # Get the tool config before deleting to check for network cleanup
+    tool = await repository.get_tool_config(tool_id)
+    if tool is None:
+        raise HTTPException(status_code=404, detail="Tool configuration not found")
+
+    # Check if this is an Odoo tool with a docker network
+    docker_network = None
+    if tool.tool_type == "odoo_shell" and tool.connection_config:
+        docker_network = tool.connection_config.get("docker_network")
+
+    # Delete the tool
     success = await repository.delete_tool_config(tool_id)
     if not success:
         raise HTTPException(status_code=404, detail="Tool configuration not found")
+
+    # Cleanup: disconnect from network if no other tools need it
+    if docker_network:
+        # Check if any other odoo_shell tools use this network
+        all_tools = await repository.list_tool_configs()
+        network_still_needed = any(
+            t.tool_type == "odoo_shell" and
+            t.connection_config.get("docker_network") == docker_network and
+            t.id != tool_id
+            for t in all_tools
+        )
+
+        if not network_still_needed:
+            # Disconnect from the network
+            try:
+                await disconnect_from_network(docker_network)
+                logger.info(f"Disconnected from network '{docker_network}' after tool deletion")
+            except Exception as e:
+                logger.warning(f"Failed to disconnect from network '{docker_network}': {e}")
+
     return {"message": "Tool configuration deleted"}
 
 
@@ -471,13 +526,136 @@ async def _test_postgres_connection(config: dict) -> ToolTestResponse:
 
 
 async def _test_odoo_connection(config: dict) -> ToolTestResponse:
-    """Test Odoo shell connection."""
+    """Test Odoo shell connection (Docker or SSH mode)."""
+    import asyncio
+    import subprocess
+
+    mode = config.get("mode", "docker")
+
+    if mode == "ssh":
+        return await _test_odoo_ssh_connection(config)
+    else:
+        return await _test_odoo_docker_connection(config)
+
+
+async def _test_odoo_ssh_connection(config: dict) -> ToolTestResponse:
+    """Test Odoo shell connection via SSH."""
+    import asyncio
+    import subprocess
+
+    ssh_host = config.get("ssh_host", "")
+    ssh_port = config.get("ssh_port", 22)
+    ssh_user = config.get("ssh_user", "")
+    ssh_key_path = config.get("ssh_key_path", "")
+    database = config.get("database", "odoo")
+    config_path = config.get("config_path", "")
+    odoo_bin_path = config.get("odoo_bin_path", "odoo-bin")
+    working_directory = config.get("working_directory", "")
+    run_as_user = config.get("run_as_user", "")
+
+    if not ssh_host or not ssh_user:
+        return ToolTestResponse(
+            success=False,
+            message="SSH host and user are required"
+        )
+
+    try:
+        # First test basic SSH connectivity
+        ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
+        if ssh_port != 22:
+            ssh_cmd.extend(["-p", str(ssh_port)])
+        if ssh_key_path:
+            ssh_cmd.extend(["-i", ssh_key_path])
+        ssh_cmd.append(f"{ssh_user}@{ssh_host}")
+        ssh_cmd.append("echo SSH_TEST_SUCCESS")
+
+        process = await asyncio.wait_for(
+            asyncio.create_subprocess_exec(
+                *ssh_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            ),
+            timeout=15.0
+        )
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            error_msg = stderr.decode().strip()
+            return ToolTestResponse(
+                success=False,
+                message=f"SSH connection failed: {error_msg or 'Unknown error'}"
+            )
+
+        # Build Odoo shell command
+        odoo_cmd = f"{odoo_bin_path} shell --no-http -d {database}"
+        if config_path:
+            odoo_cmd = f"{odoo_cmd} -c {config_path}"
+        if run_as_user:
+            odoo_cmd = f"sudo -u {run_as_user} {odoo_cmd}"
+        if working_directory:
+            odoo_cmd = f"cd {working_directory} && {odoo_cmd}"
+
+        # Test Odoo shell
+        ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes"]
+        if ssh_port != 22:
+            ssh_cmd.extend(["-p", str(ssh_port)])
+        if ssh_key_path:
+            ssh_cmd.extend(["-i", ssh_key_path])
+        ssh_cmd.append(f"{ssh_user}@{ssh_host}")
+        ssh_cmd.append(odoo_cmd)
+
+        process = await asyncio.wait_for(
+            asyncio.create_subprocess_exec(
+                *ssh_cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT
+            ),
+            timeout=120.0
+        )
+
+        test_input = "print('ODOO_TEST_SUCCESS')\nexit()\n"
+        stdout, _ = await process.communicate(input=test_input.encode())
+        output = stdout.decode()
+
+        if "ODOO_TEST_SUCCESS" in output:
+            return ToolTestResponse(
+                success=True,
+                message=f"Odoo shell accessible via SSH",
+                details={
+                    "host": ssh_host,
+                    "database": database,
+                    "mode": "ssh"
+                }
+            )
+        else:
+            output_snippet = output[-500:] if len(output) > 500 else output
+            return ToolTestResponse(
+                success=False,
+                message="Odoo shell test failed via SSH",
+                details={"output_tail": output_snippet}
+            )
+
+    except asyncio.TimeoutError:
+        return ToolTestResponse(
+            success=False,
+            message="SSH connection timed out"
+        )
+    except Exception as e:
+        return ToolTestResponse(
+            success=False,
+            message=f"SSH test failed: {str(e)}"
+        )
+
+
+async def _test_odoo_docker_connection(config: dict) -> ToolTestResponse:
+    """Test Odoo shell connection via Docker."""
     import asyncio
     import subprocess
 
     container = config.get("container", "")
     database = config.get("database", "odoo")
-    config_path = config.get("config_path", "/etc/odoo/odoo.conf")
+    config_path = config.get("config_path", "")
     docker_network = config.get("docker_network", "")
 
     if not container:
@@ -543,7 +721,6 @@ async def _test_odoo_connection(config: dict) -> ToolTestResponse:
             version = "detected (custom wrapper)"
 
         # Test shell execution with stdin pipe (standard approach)
-        # Build command - only include -c config_path if it's specified
         cmd = [
             "docker", "exec", "-i", container,
             "odoo", "shell", "--no-http", "-d", database
@@ -573,7 +750,8 @@ async def _test_odoo_connection(config: dict) -> ToolTestResponse:
                     "container": container,
                     "database": database,
                     "version": version,
-                    "docker_network": docker_network
+                    "docker_network": docker_network,
+                    "mode": "docker"
                 }
             )
         else:
@@ -587,7 +765,7 @@ async def _test_odoo_connection(config: dict) -> ToolTestResponse:
             output_snippet = output[-500:] if len(output) > 500 else output
             return ToolTestResponse(
                 success=False,
-                message=f"Odoo shell test failed - could not verify shell access",
+                message="Odoo shell test failed - could not verify shell access",
                 details={"output_tail": output_snippet}
             )
 
@@ -698,6 +876,7 @@ class DockerDiscoveryResponse(BaseModel):
     networks: List[DockerNetwork] = []
     containers: List[DockerContainer] = []
     current_network: Optional[str] = None
+    current_container: Optional[str] = None
 
 
 @router.get("/docker/discover", response_model=DockerDiscoveryResponse, tags=["Tools"])
@@ -715,8 +894,24 @@ async def discover_docker_resources():
     networks = []
     containers = []
     current_network = None
+    current_container = None
 
     try:
+        # Get our own container name by querying Docker
+        import os
+        hostname = os.environ.get("HOSTNAME", "")
+        if hostname:
+            # The hostname in Docker is typically the container ID
+            # Get the actual container name from the ID
+            cmd = ["docker", "inspect", "-f", "{{.Name}}", hostname]
+            process = await asyncio.create_subprocess_exec(
+                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            stdout, _ = await process.communicate()
+            if process.returncode == 0:
+                # Remove leading slash from container name
+                current_container = stdout.decode().strip().lstrip("/")
+
         # Get networks
         cmd = ["docker", "network", "ls", "--format", "{{json .}}"]
         process = await asyncio.wait_for(
@@ -764,7 +959,7 @@ async def discover_docker_resources():
                         container_networks = net_stdout.decode().strip().split() if net_process.returncode == 0 else []
 
                         # Check if this is the ragtime container
-                        if container_name in ["ragtime-dev", "ragtime"]:
+                        if current_container and container_name == current_container:
                             current_network = container_networks[0] if container_networks else None
 
                         # Check if container has Odoo (simple version check)
@@ -802,7 +997,8 @@ async def discover_docker_resources():
             message=f"Found {len(networks)} networks and {len(containers)} containers",
             networks=networks,
             containers=containers,
-            current_network=current_network
+            current_network=current_network,
+            current_container=current_container
         )
 
     except asyncio.TimeoutError:
@@ -863,6 +1059,56 @@ async def connect_to_network(network_name: str):
 
     except asyncio.TimeoutError:
         return {"success": False, "message": "Network connection timed out"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@router.post("/docker/disconnect-network", tags=["Tools"])
+async def disconnect_from_network(network_name: str):
+    """
+    Disconnect the ragtime container from a Docker network.
+
+    Used for cleanup when removing tools that required network access.
+    """
+    import asyncio
+    import subprocess
+    import os
+
+    # Get current container name
+    container_name = os.environ.get("HOSTNAME", "ragtime-dev")
+
+    # Don't disconnect from default networks
+    protected_networks = ["ragtime_default", "bridge", "host", "none"]
+    if network_name in protected_networks:
+        return {"success": True, "message": f"Network '{network_name}' is protected, skipping disconnect"}
+
+    try:
+        # Check if connected
+        cmd = ["docker", "inspect", "-f", "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}", container_name]
+        process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, _ = await process.communicate()
+
+        current_networks = stdout.decode().strip().split() if process.returncode == 0 else []
+
+        if network_name not in current_networks:
+            return {"success": True, "message": f"Not connected to network '{network_name}'"}
+
+        # Disconnect from the network
+        cmd = ["docker", "network", "disconnect", network_name, container_name]
+        process = await asyncio.wait_for(
+            asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE),
+            timeout=10.0
+        )
+        _, stderr = await process.communicate()
+
+        if process.returncode == 0:
+            return {"success": True, "message": f"Disconnected from network '{network_name}'"}
+        else:
+            error = stderr.decode().strip()
+            return {"success": False, "message": f"Failed to disconnect: {error}"}
+
+    except asyncio.TimeoutError:
+        return {"success": False, "message": "Network disconnection timed out"}
     except Exception as e:
         return {"success": False, "message": str(e)}
 

@@ -141,6 +141,18 @@ export const api = {
   },
 
   /**
+   * Update an index's description for AI context
+   */
+  async updateIndexDescription(name: string, description: string): Promise<{ description: string }> {
+    const response = await fetch(`${API_BASE}/${encodeURIComponent(name)}/description`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description }),
+    });
+    return handleResponse<{ description: string }>(response);
+  },
+
+  /**
    * Get application settings
    */
   async getSettings(): Promise<AppSettings> {
@@ -295,6 +307,16 @@ export const api = {
     });
     return handleResponse<{ success: boolean; message: string }>(response);
   },
+
+  /**
+   * Disconnect ragtime container from a Docker network
+   */
+  async disconnectFromNetwork(networkName: string): Promise<{ success: boolean; message: string }> {
+    const response = await fetch(`${API_BASE}/docker/disconnect-network?network_name=${encodeURIComponent(networkName)}`, {
+      method: 'POST',
+    });
+    return handleResponse<{ success: boolean; message: string }>(response);
+  },
 };
 
 // Docker discovery types
@@ -319,6 +341,7 @@ export interface DockerDiscoveryResponse {
   networks: DockerNetwork[];
   containers: DockerContainer[];
   current_network: string | null;
+  current_container: string | null;
 }
 
 export { ApiError };

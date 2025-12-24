@@ -19,6 +19,10 @@ class IndexStatus(str, Enum):
 class IndexConfig(BaseModel):
     """Configuration for creating an index."""
     name: str = Field(description="Name for the index (used as directory name)")
+    description: str = Field(
+        default="",
+        description="Description of what this index contains (shown to LLM for context)"
+    )
     file_patterns: List[str] = Field(
         default=["**/*.py", "**/*.md", "**/*.rst", "**/*.txt", "**/*.xml"],
         description="Glob patterns for files to include"
@@ -68,6 +72,7 @@ class IndexInfo(BaseModel):
     path: str
     size_mb: float
     document_count: int
+    description: str = ""
     enabled: bool = True
     created_at: Optional[datetime] = None
     last_modified: Optional[datetime] = None
@@ -260,21 +265,48 @@ class PostgresConnectionConfig(BaseModel):
     password: str = Field(default="", description="PostgreSQL password")
     database: str = Field(default="", description="Database name")
     container: str = Field(default="", description="Docker container name (alternative to host)")
+    docker_network: str = Field(
+        default="",
+        description="Docker network to connect ragtime to the PostgreSQL container's network"
+    )
 
 
 class OdooShellConnectionConfig(BaseModel):
     """Connection configuration for Odoo shell tool."""
-    container: str = Field(description="Docker container name running Odoo")
-    database: str = Field(default="odoo", description="Odoo database name")
-    # Docker network for container-to-container communication
+    # Connection mode: 'docker' or 'ssh'
+    mode: str = Field(
+        default="docker",
+        description="Connection mode: 'docker' for container or 'ssh' for remote server"
+    )
+    # Docker mode fields
+    container: str = Field(default="", description="Docker container name running Odoo")
     docker_network: str = Field(
         default="",
         description="Docker network to connect ragtime to the Odoo container's network"
     )
-    # Custom config path for Odoo (empty string = use container defaults)
+    # SSH mode fields
+    ssh_host: str = Field(default="", description="SSH host for remote Odoo server")
+    ssh_port: int = Field(default=22, ge=1, le=65535, description="SSH port")
+    ssh_user: str = Field(default="", description="SSH username")
+    ssh_key_path: str = Field(default="", description="Path to SSH private key")
+    ssh_password: str = Field(default="", description="SSH password (if not using key)")
+    # Odoo-specific fields (used in both modes)
+    database: str = Field(default="odoo", description="Odoo database name")
+    odoo_bin_path: str = Field(
+        default="",
+        description="Path to odoo-bin or odoo command (e.g., '/var/odoo/venv/bin/python3 /var/odoo/src/odoo-bin')"
+    )
     config_path: str = Field(
         default="",
-        description="Path to odoo.conf inside container (leave empty for container defaults)"
+        description="Path to odoo.conf (leave empty for defaults)"
+    )
+    working_directory: str = Field(
+        default="",
+        description="Working directory to cd into before running Odoo shell"
+    )
+    run_as_user: str = Field(
+        default="",
+        description="User to run Odoo shell as (e.g., 'odoo' for sudo -u odoo)"
     )
 
 

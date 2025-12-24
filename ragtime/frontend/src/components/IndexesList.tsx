@@ -8,11 +8,75 @@ interface IndexesListProps {
   error: string | null;
   onDelete: () => void;
   onToggle?: () => void;
+  onDescriptionUpdate?: () => void;
 }
 
-export function IndexesList({ indexes, loading, error, onDelete, onToggle }: IndexesListProps) {
+interface EditModalProps {
+  index: IndexInfo;
+  onSave: (name: string, description: string) => Promise<void>;
+  onClose: () => void;
+  saving: boolean;
+}
+
+function EditDescriptionModal({ index, onSave, onClose, saving }: EditModalProps) {
+  const [description, setDescription] = useState(index.description);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await onSave(index.name, description);
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>Edit Description: {index.name}</h3>
+          <button className="modal-close" onClick={onClose}>&times;</button>
+        </div>
+        <form onSubmit={handleSubmit}>
+          <div className="modal-body">
+            <p style={{ fontSize: '0.9rem', color: '#888', marginBottom: '12px' }}>
+              This description helps the AI understand what knowledge is available in this index.
+              It was auto-generated during indexing and can be customized.
+            </p>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Describe what this index contains for AI context..."
+              rows={4}
+              style={{ width: '100%', resize: 'vertical', minHeight: '100px' }}
+              disabled={saving}
+              autoFocus
+            />
+          </div>
+          <div className="modal-footer">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={onClose}
+              disabled={saving}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="btn"
+              disabled={saving}
+            >
+              {saving ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDescriptionUpdate }: IndexesListProps) {
   const [deleting, setDeleting] = useState<string | null>(null);
   const [toggling, setToggling] = useState<string | null>(null);
+  const [editingIndex, setEditingIndex] = useState<IndexInfo | null>(null);
+  const [savingDescription, setSavingDescription] = useState(false);
 
   const handleDelete = async (name: string) => {
     if (!confirm(`Are you sure you want to delete "${name}"?`)) return;
@@ -37,6 +101,19 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle }: Ind
       alert(`Error: ${err instanceof Error ? err.message : 'Toggle failed'}`);
     } finally {
       setToggling(null);
+    }
+  };
+
+  const handleSaveDescription = async (name: string, description: string) => {
+    setSavingDescription(true);
+    try {
+      await api.updateIndexDescription(name, description);
+      setEditingIndex(null);
+      onDescriptionUpdate?.();
+    } catch (err) {
+      alert(`Error: ${err instanceof Error ? err.message : 'Save failed'}`);
+    } finally {
+      setSavingDescription(false);
     }
   };
 
@@ -86,15 +163,33 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle }: Ind
               {!idx.enabled && <span className="index-status-disabled"> • Excluded from RAG</span>}
             </div>
           </div>
-          <button
-            className="btn btn-sm btn-danger"
-            onClick={() => handleDelete(idx.name)}
-            disabled={deleting === idx.name}
-          >
-            {deleting === idx.name ? 'Deleting...' : 'Delete'}
-          </button>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button
+              className="btn btn-sm btn-secondary"
+              onClick={() => setEditingIndex(idx)}
+              title="Edit description for AI context"
+            >
+              Edit
+            </button>
+            <button
+              className="btn btn-sm btn-danger"
+              onClick={() => handleDelete(idx.name)}
+              disabled={deleting === idx.name}
+            >
+              {deleting === idx.name ? 'Deleting...' : 'Delete'}
+            </button>
+          </div>
         </div>
       ))}
+
+      {editingIndex && (
+        <EditDescriptionModal
+          index={editingIndex}
+          onSave={handleSaveDescription}
+          onClose={() => setEditingIndex(null)}
+          saving={savingDescription}
+        />
+      )}
     </div>
   );
 }

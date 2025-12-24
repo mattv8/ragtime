@@ -174,6 +174,7 @@ class IndexerRepository:
         source_type: str,
         source: Optional[str],
         config_snapshot: Optional[dict],
+        description: str = "",
     ) -> None:
         """Create or update index metadata."""
         db = await self._get_db()
@@ -183,6 +184,7 @@ class IndexerRepository:
             data={
                 "create": {
                     "name": name,
+                    "description": description,
                     "path": path,
                     "documentCount": document_count,
                     "chunkCount": chunk_count,
@@ -194,6 +196,7 @@ class IndexerRepository:
                     "lastModified": datetime.utcnow(),
                 },
                 "update": {
+                    "description": description,
                     "path": path,
                     "documentCount": document_count,
                     "chunkCount": chunk_count,
@@ -243,6 +246,21 @@ class IndexerRepository:
             return True
         except Exception as e:
             logger.warning(f"Failed to update enabled status for index {name}: {e}")
+            return False
+
+    async def update_index_description(self, name: str, description: str) -> bool:
+        """Update the description for an index."""
+        db = await self._get_db()
+
+        try:
+            await db.indexmetadata.update(
+                where={"name": name},
+                data={"description": description}
+            )
+            logger.debug(f"Updated description for index {name}")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to update description for index {name}: {e}")
             return False
 
     # -------------------------------------------------------------------------

@@ -30,6 +30,7 @@ enum IndexStatus {
 model IndexConfig {
   id              String   @id @default(uuid())
   name            String
+  description     String   @default("") // Description for LLM context
   filePatterns    String[] @default(["**/*.py", "**/*.md", "**/*.rst", "**/*.txt", "**/*.xml"])
   excludePatterns String[] @default(["**/node_modules/**", "**/__pycache__/**", "**/venv/**", "**/.git/**"])
   chunkSize       Int      @default(1000)
@@ -78,6 +79,7 @@ model IndexJob {
 model IndexMetadata {
   id            String   @id @default(uuid())
   name          String   @unique
+  description   String   @default("") // Description for LLM context
   path          String
   documentCount Int      @default(0) @map("document_count")
   chunkCount    Int      @default(0) @map("chunk_count")

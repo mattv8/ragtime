@@ -30,6 +30,76 @@ logger = get_logger(__name__)
 UPLOAD_STAGING_DIR = Path(settings.index_data_path) / "staging"
 
 
+async def generate_index_description(
+    index_name: str,
+    documents: List,
+    source_type: str,
+    source: Optional[str] = None,
+) -> str:
+    """
+    Auto-generate a description for an index using the LLM.
+
+    Samples file paths and content to create a concise description
+    that helps the AI understand what knowledge is available.
+    """
+    try:
+        from ragtime.core.app_settings import get_app_settings
+        from langchain_openai import ChatOpenAI
+
+        app_settings = await get_app_settings()
+        api_key = app_settings.get("openai_api_key", "")
+
+        if not api_key:
+            logger.debug("No OpenAI API key - skipping auto-description generation")
+            return ""
+
+        # Sample file paths for context (unique paths only)
+        file_paths = list(set(
+            doc.metadata.get("source", "unknown")
+            for doc in documents[:100]
+        ))[:20]
+
+        # Sample some content snippets
+        content_samples = [
+            doc.page_content[:500] for doc in documents[:5]
+        ]
+
+        prompt = f"""Analyze this indexed codebase and write a brief description (1-2 sentences) for an AI assistant to understand what knowledge is available.
+
+Index name: {index_name}
+Source type: {source_type}
+Source: {source or 'uploaded archive'}
+
+Sample file paths:
+{chr(10).join(f'- {p}' for p in file_paths)}
+
+Sample content snippets:
+{chr(10).join(f'---{chr(10)}{s}{chr(10)}' for s in content_samples)}
+
+Write a concise description focusing on:
+- What type of project/codebase this is
+- Key technologies, frameworks, or domains covered
+- What questions this index can help answer
+
+Description:"""
+
+        llm = ChatOpenAI(
+            model="gpt-4o-mini",  # Use cheaper model for descriptions
+            temperature=0.3,
+            openai_api_key=api_key,
+            max_tokens=150,
+        )
+
+        response = await llm.ainvoke(prompt)
+        description = response.content.strip()
+        logger.info(f"Auto-generated description for {index_name}: {description[:100]}...")
+        return description
+
+    except Exception as e:
+        logger.warning(f"Failed to auto-generate description: {e}")
+        return ""
+
+
 class IndexerService:
     """Service for creating and managing FAISS indexes.
 
@@ -208,12 +278,14 @@ class IndexerService:
                     doc_count = 0
                     created_at = None
                     enabled = True  # Default to enabled
+                    description = ""
 
                     if path.name in metadata_by_name:
                         meta = metadata_by_name[path.name]
                         doc_count = meta.documentCount
                         created_at = meta.createdAt
                         enabled = meta.enabled
+                        description = getattr(meta, "description", "")
                     else:
                         # Fallback to legacy .metadata.json file
                         meta_file = path / ".metadata.json"
@@ -233,6 +305,7 @@ class IndexerService:
                         path=str(path),
                         size_mb=round(size_bytes / (1024 * 1024), 2),
                         document_count=doc_count,
+                        description=description,
                         enabled=enabled,
                         created_at=created_at,
                         last_modified=datetime.fromtimestamp(path.stat().st_mtime)
@@ -566,6 +639,16 @@ class IndexerService:
         # Calculate index size
         size_bytes = sum(f.stat().st_size for f in index_path.rglob("*") if f.is_file())
 
+        # Auto-generate description if not provided
+        description = getattr(config, "description", "")
+        if not description:
+            description = await generate_index_description(
+                index_name=job.name,
+                documents=documents,
+                source_type=job.source_type,
+                source=job.git_url or job.source_path,
+            )
+
         # Save metadata to database
         await repository.upsert_index_metadata(
             name=job.name,
@@ -576,6 +659,7 @@ class IndexerService:
             source_type=job.source_type,
             source=job.git_url or job.source_path,
             config_snapshot=config.model_dump(),
+            description=description,
         )
 
         logger.info(f"Index {job.name} created successfully!")

@@ -18,12 +18,12 @@ from ragtime.tools import get_enabled_tools, get_all_tools
 
 logger = get_logger(__name__)
 
-# Base system prompt template - tool descriptions will be appended
+# Base system prompt template - tool and index descriptions will be appended
 BASE_SYSTEM_PROMPT = """You are a helpful AI assistant with access to business data and code documentation.
 You help users query and understand their data using natural language.
 
 CAPABILITIES:
-1. **Code Knowledge**: You have access to documentation about the codebase and custom modules.
+1. **Code Knowledge**: You have access to indexed documentation about codebases and custom modules.
 2. **Live Data Queries**: You can query connected systems using the available tools.
 
 GUIDELINES:
@@ -33,8 +33,48 @@ GUIDELINES:
 - For sensitive data, remind users about data access policies
 - Always include appropriate LIMIT clauses to prevent large result sets
 
-When answering questions about the codebase, use your knowledge from the documentation.
+When answering questions about code or documentation, use your knowledge from the indexed sources.
 When answering questions about live data, use the appropriate query tool."""
+
+
+def build_index_system_prompt(index_metadata: List[dict]) -> str:
+    """
+    Build system prompt section describing available knowledge indexes.
+
+    Args:
+        index_metadata: List of index metadata dictionaries from database.
+
+    Returns:
+        System prompt section with index descriptions.
+    """
+    if not index_metadata:
+        return ""
+
+    # Filter to only enabled indexes
+    enabled_indexes = [idx for idx in index_metadata if idx.get("enabled", True)]
+    if not enabled_indexes:
+        return ""
+
+    index_sections = []
+    for idx in enabled_indexes:
+        name = idx.get("name", "Unnamed Index")
+        description = idx.get("description", "")
+        doc_count = idx.get("document_count", 0)
+        chunk_count = idx.get("chunk_count", 0)
+        source_type = idx.get("source_type", "unknown")
+
+        section = f"- **{name}** ({source_type}, {doc_count} files, {chunk_count} chunks)"
+        if description:
+            section += f"\n  {description}"
+        index_sections.append(section)
+
+    return f"""
+
+KNOWLEDGE SOURCES:
+{chr(10).join(index_sections)}
+
+When users ask about code, documentation, or specific modules, the relevant information may be found in these knowledge sources.
+"""
 
 
 def build_tool_system_prompt(tool_configs: List[dict]) -> str:
@@ -90,6 +130,7 @@ class RAGComponents:
         self.is_ready: bool = False
         self._app_settings: Optional[dict] = None
         self._tool_configs: Optional[List[dict]] = None
+        self._index_metadata: Optional[List[dict]] = None
         self._system_prompt: str = BASE_SYSTEM_PROMPT
 
     async def initialize(self):
@@ -99,10 +140,12 @@ class RAGComponents:
         # Load settings from database
         self._app_settings = await get_app_settings()
         self._tool_configs = await get_tool_configs()
+        self._index_metadata = await self._load_index_metadata()
 
-        # Build system prompt with tool descriptions
+        # Build system prompt with tool and index descriptions
         tool_prompt_section = build_tool_system_prompt(self._tool_configs)
-        self._system_prompt = BASE_SYSTEM_PROMPT + tool_prompt_section
+        index_prompt_section = build_index_system_prompt(self._index_metadata)
+        self._system_prompt = BASE_SYSTEM_PROMPT + index_prompt_section + tool_prompt_section
 
         # Initialize LLM based on provider from database settings
         await self._init_llm()
@@ -208,6 +251,27 @@ class RAGComponents:
 
             if not loaded:
                 logger.warning(f"FAISS index not found: {index_path}")
+
+    async def _load_index_metadata(self) -> list[dict]:
+        """Load index metadata from database for system prompt."""
+        from ragtime.indexer.repository import repository
+
+        try:
+            metadata_list = await repository.list_index_metadata()
+            return [
+                {
+                    "name": m.name,
+                    "description": getattr(m, "description", ""),
+                    "enabled": m.enabled,
+                    "document_count": m.documentCount,
+                    "chunk_count": m.chunkCount,
+                    "source_type": m.sourceType,
+                }
+                for m in metadata_list
+            ]
+        except Exception as e:
+            logger.warning(f"Failed to load index metadata: {e}")
+            return []
 
     async def _create_agent(self):
         """Create the LangChain agent with tools."""
@@ -371,7 +435,7 @@ class RAGComponents:
         )
 
     async def _create_odoo_tool(self, config: dict, tool_name: str, tool_id: str):
-        """Create an Odoo shell tool from config."""
+        """Create an Odoo shell tool from config (Docker or SSH mode)."""
         from langchain_core.tools import StructuredTool
         from pydantic import BaseModel, Field
         import asyncio
@@ -382,37 +446,151 @@ class RAGComponents:
         timeout = config.get("timeout", 60)  # Odoo shell needs more time to initialize
         allow_write = config.get("allow_write", False)
         description = config.get("description", "")
+        mode = conn_config.get("mode", "docker")  # docker or ssh
 
         class OdooInput(BaseModel):
             code: str = Field(description="Python code to execute in Odoo shell using ORM methods")
             reason: str = Field(description="Brief description of what this code does")
 
+        def _build_docker_command(container: str, database: str, config_path: str) -> list:
+            """Build Docker exec command for Odoo shell."""
+            cmd = [
+                "docker", "exec", "-i", container,
+                "odoo", "shell", "--no-http", "-d", database
+            ]
+            if config_path:
+                cmd.extend(["-c", config_path])
+            return cmd
+
+        def _build_ssh_command(conn_config: dict, database: str) -> list:
+            """Build SSH command for remote Odoo shell."""
+            host = conn_config.get("ssh_host", "")
+            port = conn_config.get("ssh_port", 22)
+            user = conn_config.get("ssh_user", "")
+            key_path = conn_config.get("ssh_key_path", "")
+            password = conn_config.get("ssh_password", "")
+            config_path = conn_config.get("config_path", "")
+            odoo_bin_path = conn_config.get("odoo_bin_path", "odoo-bin")
+            working_directory = conn_config.get("working_directory", "")
+            run_as_user = conn_config.get("run_as_user", "")
+
+            # Build the remote Odoo shell command
+            odoo_cmd = f"{odoo_bin_path} shell --no-http -d {database}"
+            if config_path:
+                odoo_cmd = f"{odoo_cmd} -c {config_path}"
+
+            # Wrap with sudo if run_as_user specified
+            if run_as_user:
+                odoo_cmd = f"sudo -u {run_as_user} {odoo_cmd}"
+
+            # Wrap with cd if working directory specified
+            if working_directory:
+                odoo_cmd = f"cd {working_directory} && {odoo_cmd}"
+
+            # Build SSH command
+            ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes"]
+            if port != 22:
+                ssh_cmd.extend(["-p", str(port)])
+            if key_path:
+                ssh_cmd.extend(["-i", key_path])
+            ssh_cmd.append(f"{user}@{host}")
+            ssh_cmd.append(odoo_cmd)
+
+            return ssh_cmd
+
+        def _filter_odoo_output(output: str) -> str:
+            """Filter Odoo shell initialization noise from output."""
+            result_lines = []
+            command_started = False
+
+            # Patterns to skip during initialization
+            init_skip_patterns = [
+                r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} \d+ INFO',
+                r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} \d+ WARNING',
+                r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} \d+ DEBUG',
+                r'^/.*\.py:\d+: UserWarning:',
+                r'^\s*import pkg_resources',
+                r'^\s*The pkg_resources package',
+                r'^profiling:.*Cannot open',
+                r'^Python \d+\.\d+\.\d+',
+                r'^IPython.*--',
+                r'^Tip:',
+                r'^In \[\d+\]:',
+                r'^>>>',
+                r'^\.\.\.',
+                r'^odoo:',
+                r'^openerp:',
+                r'^werkzeug:',
+            ]
+
+            for line in output.split("\n"):
+                line_stripped = line.rstrip()
+
+                # Check for our error marker
+                if line_stripped.startswith("ODOO_ERROR:"):
+                    return f"Error: {line_stripped[11:].strip()}"
+
+                # Check for Python exceptions
+                if any(re.match(pattern, line_stripped) for pattern in [
+                    r'^Traceback \(most recent call last\):',
+                    r'^\w+Error:',
+                    r'^\w+Exception:',
+                ]):
+                    result_lines.append(line_stripped)
+                    command_started = True
+                    continue
+
+                # Skip initialization noise
+                if not command_started:
+                    if any(re.match(pattern, line_stripped) for pattern in init_skip_patterns):
+                        continue
+                    # Look for indicators that command output is starting
+                    if line_stripped and not line_stripped.startswith((' ', '\t')):
+                        if not any(skip in line_stripped.lower() for skip in [
+                            'loading', 'loaded', 'initializing', 'registering',
+                            'odoo.', 'werkzeug', 'modules.'
+                        ]):
+                            command_started = True
+                            result_lines.append(line_stripped)
+                else:
+                    # After command starts, capture everything except profiling noise
+                    if not re.match(r'^profiling:.*Cannot open', line_stripped):
+                        result_lines.append(line_stripped)
+
+            result = "\n".join(result_lines).strip()
+
+            # Clean up common shell artifacts
+            result = re.sub(r'^In \[\d+\]:\s*', '', result, flags=re.MULTILINE)
+            result = re.sub(r'^Out\[\d+\]:\s*', '', result, flags=re.MULTILINE)
+            result = re.sub(r'^\.\.\.:?\s*', '', result, flags=re.MULTILINE)
+
+            return result
+
         async def execute_odoo(code: str, reason: str) -> str:
             """Execute Odoo shell command using this tool's configuration."""
             from ragtime.core.security import validate_odoo_code, sanitize_output
 
-            logger.info(f"[{tool_name}] Odoo: {reason}")
+            logger.info(f"[{tool_name}] Odoo ({mode}): {reason}")
 
             # Validate code
             is_safe, validation_reason = validate_odoo_code(code, enable_write_ops=allow_write)
             if not is_safe:
                 return f"Error: {validation_reason}"
 
-            container = conn_config.get("container", "")
             database = conn_config.get("database", "odoo")
             config_path = conn_config.get("config_path", "")
 
-            if not container:
-                return "Error: No container configured"
-
-            # Build the shell command - use standard Odoo shell with stdin piping
-            cmd = [
-                "docker", "exec", "-i", container,
-                "odoo", "shell", "--no-http", "-d", database
-            ]
-            # Only add config path if specified (some containers use env vars)
-            if config_path:
-                cmd.extend(["-c", config_path])
+            # Build command based on mode
+            if mode == "ssh":
+                ssh_host = conn_config.get("ssh_host", "")
+                if not ssh_host:
+                    return "Error: No SSH host configured"
+                cmd = _build_ssh_command(conn_config, database)
+            else:  # docker mode
+                container = conn_config.get("container", "")
+                if not container:
+                    return "Error: No container configured"
+                cmd = _build_docker_command(container, database, config_path)
 
             # Wrap user code with env setup and error handling
             wrapped_code = f'''
@@ -438,85 +616,20 @@ except Exception as e:
                 stdout, _ = await process.communicate(input=full_input.encode())
                 output = stdout.decode("utf-8", errors="replace")
 
-                # Filter output similar to odoo-shell-exec.py
-                result_lines = []
-                command_started = False
-
-                # Patterns to skip during initialization
-                init_skip_patterns = [
-                    r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} \d+ INFO',
-                    r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} \d+ WARNING',
-                    r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} \d+ DEBUG',
-                    r'^/.*\.py:\d+: UserWarning:',
-                    r'^\s*import pkg_resources',
-                    r'^\s*The pkg_resources package',
-                    r'^profiling:.*Cannot open',
-                    r'^Python \d+\.\d+\.\d+',
-                    r'^IPython.*--',
-                    r'^Tip:',
-                    r'^In \[\d+\]:',
-                    r'^>>>',
-                    r'^\.\.\.',
-                    r'^odoo:',
-                    r'^openerp:',
-                    r'^werkzeug:',
-                ]
-
-                for line in output.split("\n"):
-                    line_stripped = line.rstrip()
-
-                    # Check for our error marker
-                    if line_stripped.startswith("ODOO_ERROR:"):
-                        return f"Error: {line_stripped[11:].strip()}"
-
-                    # Check for Python exceptions
-                    if any(re.match(pattern, line_stripped) for pattern in [
-                        r'^Traceback \(most recent call last\):',
-                        r'^\w+Error:',
-                        r'^\w+Exception:',
-                    ]):
-                        # Capture the error and remaining output
-                        result_lines.append(line_stripped)
-                        command_started = True
-                        continue
-
-                    # Skip initialization noise
-                    if not command_started:
-                        if any(re.match(pattern, line_stripped) for pattern in init_skip_patterns):
-                            continue
-                        # Look for indicators that command output is starting
-                        # (non-empty lines that aren't init noise)
-                        if line_stripped and not line_stripped.startswith((' ', '\t')):
-                            # Check if this looks like actual output
-                            if not any(skip in line_stripped.lower() for skip in [
-                                'loading', 'loaded', 'initializing', 'registering',
-                                'odoo.', 'werkzeug', 'modules.'
-                            ]):
-                                command_started = True
-                                result_lines.append(line_stripped)
-                    else:
-                        # After command starts, capture everything except profiling noise
-                        if not re.match(r'^profiling:.*Cannot open', line_stripped):
-                            result_lines.append(line_stripped)
-
-                result = "\n".join(result_lines).strip()
-
-                # Clean up common shell artifacts
-                result = re.sub(r'^In \[\d+\]:\s*', '', result, flags=re.MULTILINE)
-                result = re.sub(r'^Out\[\d+\]:\s*', '', result, flags=re.MULTILINE)
-                result = re.sub(r'^\.\.\.:?\s*', '', result, flags=re.MULTILINE)
-
+                result = _filter_odoo_output(output)
                 return sanitize_output(result) if result else "Query executed successfully (no output)"
 
             except asyncio.TimeoutError:
                 return f"Error: Query timed out after {timeout}s"
             except FileNotFoundError:
-                return "Error: Docker command not found"
+                cmd_name = "SSH" if mode == "ssh" else "Docker"
+                return f"Error: {cmd_name} command not found"
             except Exception as e:
                 logger.exception(f"Odoo shell error: {e}")
                 return f"Error: {str(e)}"
 
-        tool_description = f"Execute Python ORM code in {config.get('name', 'Odoo')} shell."
+        mode_label = "SSH" if mode == "ssh" else "Docker"
+        tool_description = f"Execute Python ORM code in {config.get('name', 'Odoo')} shell ({mode_label})."
         if description:
             tool_description += f" {description}"
         tool_description += " Use env['model'].search_read() for queries."
