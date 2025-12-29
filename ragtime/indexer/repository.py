@@ -6,8 +6,8 @@ replacing the previous JSON file-based storage.
 """
 
 import json
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, timedelta
+from typing import Optional, List
 
 from prisma import Prisma, Json
 from prisma.models import IndexJob as PrismaIndexJob, IndexMetadata as PrismaIndexMetadata
@@ -294,6 +294,7 @@ class IndexerRepository:
             llm_model=prisma_settings.llmModel,
             openai_api_key=prisma_settings.openaiApiKey,
             anthropic_api_key=prisma_settings.anthropicApiKey,
+            allowed_chat_models=prisma_settings.allowedChatModels or [],
             # Tool settings
             enabled_tools=prisma_settings.enabledTools,
             odoo_container=prisma_settings.odooContainer,
@@ -327,6 +328,7 @@ class IndexerRepository:
             "llm_model": "llmModel",
             "openai_api_key": "openaiApiKey",
             "anthropic_api_key": "anthropicApiKey",
+            "allowed_chat_models": "allowedChatModels",
             # Tool settings
             "enabled_tools": "enabledTools",
             "odoo_container": "odooContainer",
@@ -501,6 +503,517 @@ class IndexerRepository:
             last_test_error=prisma_config.lastTestError,
             created_at=prisma_config.createdAt,
             updated_at=prisma_config.updatedAt,
+        )
+
+    # -------------------------------------------------------------------------
+    # Conversation Operations
+    # -------------------------------------------------------------------------
+
+    async def create_conversation(
+        self,
+        title: str = "New Chat",
+        model: str = "gpt-4-turbo"
+    ) -> "Conversation":
+        """Create a new conversation."""
+        from ragtime.indexer.models import Conversation
+        import uuid
+
+        db = await self._get_db()
+
+        prisma_conv = await db.conversation.create(
+            data={
+                "id": str(uuid.uuid4()),
+                "title": title,
+                "model": model,
+                "messages": Json([]),
+                "totalTokens": 0,
+            }
+        )
+
+        return self._prisma_conversation_to_model(prisma_conv)
+
+    async def get_conversation(self, conversation_id: str) -> Optional["Conversation"]:
+        """Get a conversation by ID."""
+        db = await self._get_db()
+
+        prisma_conv = await db.conversation.find_unique(
+            where={"id": conversation_id}
+        )
+
+        if prisma_conv is None:
+            return None
+
+        return self._prisma_conversation_to_model(prisma_conv)
+
+    async def list_conversations(self) -> list["Conversation"]:
+        """List all conversations, newest first."""
+        db = await self._get_db()
+
+        prisma_convs = await db.conversation.find_many(
+            order={"updatedAt": "desc"}
+        )
+
+        return [self._prisma_conversation_to_model(c) for c in prisma_convs]
+
+    async def add_message(
+        self,
+        conversation_id: str,
+        role: str,
+        content: str,
+        tool_calls: Optional[List[dict]] = None,
+        events: Optional[List[dict]] = None
+    ) -> Optional["Conversation"]:
+        """Add a message to a conversation."""
+        from ragtime.indexer.models import ChatMessage
+
+        db = await self._get_db()
+
+        # Get current conversation
+        prisma_conv = await db.conversation.find_unique(
+            where={"id": conversation_id}
+        )
+        if not prisma_conv:
+            return None
+
+        # Add new message
+        messages = list(prisma_conv.messages) if prisma_conv.messages else []
+        new_message = {
+            "role": role,
+            "content": content,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+        # Add tool calls if provided (deprecated, for backward compatibility)
+        if tool_calls:
+            new_message["tool_calls"] = tool_calls
+        # Add chronological events if provided (preferred)
+        if events:
+            new_message["events"] = events
+        messages.append(new_message)
+
+        # Estimate tokens (rough: 1 token ~= 4 chars)
+        total_tokens = sum(len(m.get("content", "")) for m in messages) // 4
+
+        # Update conversation
+        updated = await db.conversation.update(
+            where={"id": conversation_id},
+            data={
+                "messages": Json(messages),
+                "totalTokens": total_tokens,
+                "updatedAt": datetime.utcnow(),
+            }
+        )
+
+        return self._prisma_conversation_to_model(updated)
+
+    async def update_conversation_title(
+        self,
+        conversation_id: str,
+        title: str
+    ) -> Optional["Conversation"]:
+        """Update a conversation's title."""
+        db = await self._get_db()
+
+        try:
+            updated = await db.conversation.update(
+                where={"id": conversation_id},
+                data={"title": title, "updatedAt": datetime.utcnow()}
+            )
+            return self._prisma_conversation_to_model(updated)
+        except Exception as e:
+            logger.warning(f"Failed to update conversation title: {e}")
+            return None
+
+    async def update_conversation_model(
+        self,
+        conversation_id: str,
+        model: str
+    ) -> Optional["Conversation"]:
+        """Update a conversation's model."""
+        db = await self._get_db()
+
+        try:
+            updated = await db.conversation.update(
+                where={"id": conversation_id},
+                data={"model": model, "updatedAt": datetime.utcnow()}
+            )
+            return self._prisma_conversation_to_model(updated)
+        except Exception as e:
+            logger.warning(f"Failed to update conversation model: {e}")
+            return None
+
+    async def clear_conversation(self, conversation_id: str) -> Optional["Conversation"]:
+        """Clear all messages in a conversation."""
+        db = await self._get_db()
+
+        try:
+            updated = await db.conversation.update(
+                where={"id": conversation_id},
+                data={
+                    "messages": Json([]),
+                    "totalTokens": 0,
+                    "updatedAt": datetime.utcnow(),
+                }
+            )
+            return self._prisma_conversation_to_model(updated)
+        except Exception as e:
+            logger.warning(f"Failed to clear conversation: {e}")
+            return None
+
+    async def truncate_messages(
+        self,
+        conversation_id: str,
+        keep_count: int
+    ) -> Optional["Conversation"]:
+        """Truncate messages to keep only the first N messages."""
+        db = await self._get_db()
+
+        try:
+            prisma_conv = await db.conversation.find_unique(
+                where={"id": conversation_id}
+            )
+            if not prisma_conv:
+                return None
+
+            messages = list(prisma_conv.messages) if prisma_conv.messages else []
+            truncated = messages[:keep_count]
+
+            # Recalculate tokens
+            total_tokens = sum(len(m.get("content", "")) for m in truncated) // 4
+
+            updated = await db.conversation.update(
+                where={"id": conversation_id},
+                data={
+                    "messages": Json(truncated),
+                    "totalTokens": total_tokens,
+                    "updatedAt": datetime.utcnow(),
+                }
+            )
+            return self._prisma_conversation_to_model(updated)
+        except Exception as e:
+            logger.warning(f"Failed to truncate conversation: {e}")
+            return None
+
+    async def delete_conversation(self, conversation_id: str) -> bool:
+        """Delete a conversation."""
+        db = await self._get_db()
+
+        try:
+            await db.conversation.delete(where={"id": conversation_id})
+            logger.info(f"Deleted conversation {conversation_id}")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to delete conversation {conversation_id}: {e}")
+            return False
+
+    def _prisma_conversation_to_model(self, prisma_conv) -> "Conversation":
+        """Convert Prisma Conversation to Pydantic model."""
+        from ragtime.indexer.models import Conversation, ChatMessage, ToolCallRecord
+
+        # Parse messages from JSON
+        messages_data = prisma_conv.messages if prisma_conv.messages else []
+        messages = []
+        for m in messages_data:
+            # Parse tool_calls if present (deprecated)
+            tool_calls = None
+            if "tool_calls" in m and m["tool_calls"]:
+                tool_calls = [
+                    ToolCallRecord(
+                        tool=tc.get("tool", ""),
+                        input=tc.get("input"),
+                        output=tc.get("output")
+                    )
+                    for tc in m["tool_calls"]
+                ]
+
+            # Parse events if present (preferred)
+            events = None
+            if "events" in m and m["events"]:
+                events = m["events"]  # Keep as raw dicts for now
+
+            messages.append(ChatMessage(
+                role=m.get("role", "user"),
+                content=m.get("content", ""),
+                timestamp=datetime.fromisoformat(m["timestamp"]) if "timestamp" in m else datetime.utcnow(),
+                tool_calls=tool_calls,
+                events=events,
+            ))
+
+        return Conversation(
+            id=prisma_conv.id,
+            title=prisma_conv.title,
+            model=prisma_conv.model,
+            messages=messages,
+            total_tokens=prisma_conv.totalTokens,
+            created_at=prisma_conv.createdAt,
+            updated_at=prisma_conv.updatedAt,
+            active_task_id=getattr(prisma_conv, 'activeTaskId', None),
+        )
+
+    # -------------------------------------------------------------------------
+    # Background Chat Task Operations
+    # -------------------------------------------------------------------------
+
+    async def create_chat_task(
+        self,
+        conversation_id: str,
+        user_message: str
+    ) -> "ChatTask":
+        """Create a new background chat task."""
+        from ragtime.indexer.models import ChatTask, ChatTaskStatus
+        import uuid
+
+        db = await self._get_db()
+
+        prisma_task = await db.chattask.create(
+            data={
+                "id": str(uuid.uuid4()),
+                "conversation": {"connect": {"id": conversation_id}},
+                "status": ChatTaskStatus.pending.value,
+                "userMessage": user_message,
+            }
+        )
+
+        # Update conversation to track active task
+        await db.conversation.update(
+            where={"id": conversation_id},
+            data={"activeTaskId": prisma_task.id}
+        )
+
+        return self._prisma_task_to_model(prisma_task)
+
+    async def get_chat_task(self, task_id: str) -> Optional["ChatTask"]:
+        """Get a chat task by ID."""
+        db = await self._get_db()
+
+        prisma_task = await db.chattask.find_unique(
+            where={"id": task_id}
+        )
+
+        if prisma_task is None:
+            return None
+
+        return self._prisma_task_to_model(prisma_task)
+
+    async def get_active_task_for_conversation(
+        self,
+        conversation_id: str
+    ) -> Optional["ChatTask"]:
+        """Get the active (pending/running) task for a conversation."""
+        db = await self._get_db()
+
+        prisma_task = await db.chattask.find_first(
+            where={
+                "conversationId": conversation_id,
+                "status": {"in": ["pending", "running"]}
+            },
+            order={"createdAt": "desc"}
+        )
+
+        if prisma_task is None:
+            return None
+
+        return self._prisma_task_to_model(prisma_task)
+
+    async def update_chat_task_status(
+        self,
+        task_id: str,
+        status: "ChatTaskStatus",
+        error_message: Optional[str] = None
+    ) -> Optional["ChatTask"]:
+        """Update a chat task's status."""
+        from ragtime.indexer.models import ChatTaskStatus
+
+        db = await self._get_db()
+
+        update_data = {
+            "status": status.value,
+            "lastUpdateAt": datetime.utcnow(),
+        }
+
+        if status == ChatTaskStatus.running:
+            update_data["startedAt"] = datetime.utcnow()
+        elif status in (ChatTaskStatus.completed, ChatTaskStatus.failed, ChatTaskStatus.cancelled):
+            update_data["completedAt"] = datetime.utcnow()
+
+        if error_message:
+            update_data["errorMessage"] = error_message
+
+        try:
+            prisma_task = await db.chattask.update(
+                where={"id": task_id},
+                data=update_data
+            )
+            return self._prisma_task_to_model(prisma_task)
+        except Exception as e:
+            logger.warning(f"Failed to update chat task status: {e}")
+            return None
+
+    async def update_chat_task_streaming_state(
+        self,
+        task_id: str,
+        content: str,
+        events: List[dict],
+        tool_calls: List[dict],
+        hit_max_iterations: bool = False
+    ) -> Optional["ChatTask"]:
+        """Update a chat task's streaming state."""
+        db = await self._get_db()
+
+        streaming_state = {
+            "content": content,
+            "events": events,
+            "tool_calls": tool_calls,
+            "hit_max_iterations": hit_max_iterations,
+        }
+
+        try:
+            prisma_task = await db.chattask.update(
+                where={"id": task_id},
+                data={
+                    "streamingState": Json(streaming_state),
+                    "lastUpdateAt": datetime.utcnow(),
+                }
+            )
+            return self._prisma_task_to_model(prisma_task)
+        except Exception as e:
+            logger.warning(f"Failed to update chat task streaming state: {e}")
+            return None
+
+    async def complete_chat_task(
+        self,
+        task_id: str,
+        response_content: str,
+        final_events: List[dict],
+        tool_calls: List[dict],
+        hit_max_iterations: bool = False
+    ) -> Optional["ChatTask"]:
+        """Mark a chat task as completed with the final response."""
+        from ragtime.indexer.models import ChatTaskStatus
+
+        db = await self._get_db()
+
+        streaming_state = {
+            "content": response_content,
+            "events": final_events,
+            "tool_calls": tool_calls,
+            "hit_max_iterations": hit_max_iterations,
+        }
+
+        try:
+            prisma_task = await db.chattask.update(
+                where={"id": task_id},
+                data={
+                    "status": ChatTaskStatus.completed.value,
+                    "responseContent": response_content,
+                    "streamingState": Json(streaming_state),
+                    "completedAt": datetime.utcnow(),
+                    "lastUpdateAt": datetime.utcnow(),
+                }
+            )
+
+            # Clear active task from conversation
+            await db.conversation.update(
+                where={"id": prisma_task.conversationId},
+                data={"activeTaskId": None}
+            )
+
+            return self._prisma_task_to_model(prisma_task)
+        except Exception as e:
+            logger.warning(f"Failed to complete chat task: {e}")
+            return None
+
+    async def cancel_chat_task(self, task_id: str) -> Optional["ChatTask"]:
+        """Cancel a chat task."""
+        from ragtime.indexer.models import ChatTaskStatus
+
+        db = await self._get_db()
+
+        try:
+            prisma_task = await db.chattask.update(
+                where={"id": task_id},
+                data={
+                    "status": ChatTaskStatus.cancelled.value,
+                    "completedAt": datetime.utcnow(),
+                    "lastUpdateAt": datetime.utcnow(),
+                }
+            )
+
+            # Clear active task from conversation
+            await db.conversation.update(
+                where={"id": prisma_task.conversationId},
+                data={"activeTaskId": None}
+            )
+
+            return self._prisma_task_to_model(prisma_task)
+        except Exception as e:
+            logger.warning(f"Failed to cancel chat task: {e}")
+            return None
+
+    async def cleanup_stale_tasks(self, max_age_seconds: int = 3600) -> int:
+        """Clean up stale tasks that have been running for too long."""
+        from ragtime.indexer.models import ChatTaskStatus
+
+        db = await self._get_db()
+        cutoff = datetime.utcnow() - timedelta(seconds=max_age_seconds)
+
+        try:
+            # Find stale running tasks
+            stale_tasks = await db.chattask.find_many(
+                where={
+                    "status": {"in": ["pending", "running"]},
+                    "lastUpdateAt": {"lt": cutoff}
+                }
+            )
+
+            count = 0
+            for task in stale_tasks:
+                await db.chattask.update(
+                    where={"id": task.id},
+                    data={
+                        "status": ChatTaskStatus.failed.value,
+                        "errorMessage": "Task timed out",
+                        "completedAt": datetime.utcnow(),
+                    }
+                )
+                # Clear from conversation
+                await db.conversation.update(
+                    where={"id": task.conversationId},
+                    data={"activeTaskId": None}
+                )
+                count += 1
+
+            if count > 0:
+                logger.info(f"Cleaned up {count} stale chat tasks")
+            return count
+        except Exception as e:
+            logger.warning(f"Failed to cleanup stale tasks: {e}")
+            return 0
+
+    def _prisma_task_to_model(self, prisma_task) -> "ChatTask":
+        """Convert Prisma ChatTask to Pydantic model."""
+        from ragtime.indexer.models import ChatTask, ChatTaskStatus, ChatTaskStreamingState
+
+        streaming_state = None
+        if prisma_task.streamingState:
+            state_data = prisma_task.streamingState
+            streaming_state = ChatTaskStreamingState(
+                content=state_data.get("content", ""),
+                events=state_data.get("events", []),
+                tool_calls=state_data.get("tool_calls", []),
+            )
+
+        return ChatTask(
+            id=prisma_task.id,
+            conversation_id=prisma_task.conversationId,
+            status=ChatTaskStatus(prisma_task.status),
+            user_message=prisma_task.userMessage,
+            streaming_state=streaming_state,
+            response_content=prisma_task.responseContent,
+            error_message=prisma_task.errorMessage,
+            created_at=prisma_task.createdAt,
+            started_at=prisma_task.startedAt,
+            completed_at=prisma_task.completedAt,
+            last_update_at=prisma_task.lastUpdateAt,
         )
 
 

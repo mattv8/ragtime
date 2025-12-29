@@ -122,6 +122,7 @@ model AppSettings {
   llmModel          String   @default("gpt-4-turbo") @map("llm_model")
   openaiApiKey      String   @default("") @map("openai_api_key")
   anthropicApiKey   String   @default("") @map("anthropic_api_key")
+  allowedChatModels String[] @default([]) @map("allowed_chat_models") // Empty = all models allowed
 
   // Legacy tool configuration (deprecated - use ToolConfig table)
   enabledTools      String[] @default([]) @map("enabled_tools")
@@ -190,4 +191,74 @@ model ToolConfig {
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@map("tool_configs")
+}
+
+// -----------------------------------------------------------------------------
+// Chat Conversations
+// -----------------------------------------------------------------------------
+
+/// Status of a background chat task
+enum ChatTaskStatus {
+  pending
+  running
+  completed
+  failed
+  cancelled
+}
+
+/// A chat conversation with the RAG assistant
+model Conversation {
+  id        String    @id @default(uuid())
+  title     String    @default("New Chat") // Auto-generated from first message or user-set
+  model     String    @default("gpt-4-turbo") // Model used for this conversation
+
+  // Messages stored as JSON array
+  // Each message: { role: 'user' | 'assistant' | 'system', content: string, timestamp: string }
+  messages  Json      @default("[]")
+
+  // Token tracking for context management
+  totalTokens Int     @default(0) @map("total_tokens")
+
+  // Background task tracking - active task for this conversation
+  activeTaskId String? @map("active_task_id")
+
+  // Timestamps
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  // Relation to background tasks
+  tasks     ChatTask[]
+
+  @@map("conversations")
+}
+
+/// Background chat task for async message processing
+model ChatTask {
+  id             String         @id @default(uuid())
+  conversationId String         @map("conversation_id")
+  status         ChatTaskStatus @default(pending)
+
+  // Input message that triggered this task
+  userMessage    String         @map("user_message")
+
+  // Streaming state - stored as JSON
+  // Contains: { content: string, events: array, toolCalls: array }
+  streamingState Json?          @map("streaming_state")
+
+  // Final response content (populated on completion)
+  responseContent String?       @map("response_content")
+
+  // Error info if task failed
+  errorMessage   String?        @map("error_message")
+
+  // Timestamps
+  createdAt      DateTime       @default(now()) @map("created_at")
+  startedAt      DateTime?      @map("started_at")
+  completedAt    DateTime?      @map("completed_at")
+  lastUpdateAt   DateTime       @default(now()) @map("last_update_at")
+
+  // Relation to conversation
+  conversation   Conversation   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@map("chat_tasks")
 }

@@ -167,6 +167,270 @@ function DockerConnectionPanel({
   );
 }
 
+// =============================================================================
+// Reusable SSH Authentication Panel
+// =============================================================================
+
+interface SSHAuthConfig {
+  host: string;
+  port: number;
+  user: string;
+  key_path?: string;
+  key_content?: string;
+  public_key?: string;
+  key_passphrase?: string;
+  password?: string;
+}
+
+type SSHAuthMode = 'generate' | 'upload' | 'path' | 'password';
+
+interface SSHAuthPanelProps {
+  config: SSHAuthConfig;
+  onConfigChange: (config: SSHAuthConfig) => void;
+  authMode: SSHAuthMode;
+  onAuthModeChange: (mode: SSHAuthMode) => void;
+  generatingKey: boolean;
+  onGenerateKey: () => void;
+  keyCopied: boolean;
+  onCopyPublicKey: () => void;
+  toolName?: string;
+  showHostPort?: boolean;  // Whether to show host/port fields (true for generic SSH, false for Odoo which shows them separately)
+}
+
+function SSHAuthPanel({
+  config,
+  onConfigChange,
+  authMode,
+  onAuthModeChange,
+  generatingKey,
+  onGenerateKey,
+  keyCopied,
+  onCopyPublicKey,
+  toolName = 'ragtime',
+  showHostPort = false,
+}: SSHAuthPanelProps) {
+  return (
+    <div className="ssh-auth-panel">
+      {showHostPort && (
+        <>
+          <div className="form-row">
+            <div className="form-group" style={{ flex: 2 }}>
+              <label>SSH Host</label>
+              <input
+                type="text"
+                value={config.host || ''}
+                onChange={(e) => onConfigChange({ ...config, host: e.target.value })}
+                placeholder="server.example.com"
+              />
+              <p className="field-help">Hostname or IP address of the remote server.</p>
+            </div>
+            <div className="form-group" style={{ flex: 1 }}>
+              <label>SSH Port</label>
+              <input
+                type="number"
+                value={config.port || 22}
+                onChange={(e) => onConfigChange({ ...config, port: parseInt(e.target.value) || 22 })}
+                min={1}
+                max={65535}
+              />
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label>SSH User</label>
+            <input
+              type="text"
+              value={config.user || ''}
+              onChange={(e) => onConfigChange({ ...config, user: e.target.value })}
+              placeholder="ubuntu"
+            />
+            <p className="field-help">Username for SSH connection.</p>
+          </div>
+        </>
+      )}
+
+      {/* SSH Authentication Method */}
+      <div className="ssh-key-section">
+        <label>SSH Authentication</label>
+        <div className="ssh-key-tabs">
+          <button
+            type="button"
+            className={`ssh-key-tab ${authMode === 'generate' ? 'active' : ''}`}
+            onClick={() => onAuthModeChange('generate')}
+          >
+            Generate Key
+          </button>
+          <button
+            type="button"
+            className={`ssh-key-tab ${authMode === 'upload' ? 'active' : ''}`}
+            onClick={() => onAuthModeChange('upload')}
+          >
+            Paste Key
+          </button>
+          <button
+            type="button"
+            className={`ssh-key-tab ${authMode === 'path' ? 'active' : ''}`}
+            onClick={() => onAuthModeChange('path')}
+          >
+            File Path
+          </button>
+          <button
+            type="button"
+            className={`ssh-key-tab ${authMode === 'password' ? 'active' : ''}`}
+            onClick={() => onAuthModeChange('password')}
+          >
+            Password
+          </button>
+        </div>
+
+        {authMode === 'generate' && (
+          <div className="ssh-key-panel">
+            <p className="field-help">
+              Generate a new SSH keypair. The private key will be stored securely with this tool configuration.
+              Copy the public key to the remote server's <code>~/.ssh/authorized_keys</code>.
+            </p>
+            <div className="form-group" style={{ marginTop: '0.5rem' }}>
+              <label>Key Passphrase (optional)</label>
+              <input
+                type="password"
+                value={config.key_passphrase || ''}
+                onChange={(e) => onConfigChange({ ...config, key_passphrase: e.target.value })}
+                placeholder="Leave blank for no passphrase"
+              />
+              <p className="field-help">
+                {config.key_content
+                  ? 'Enter a new passphrase to regenerate the key, or leave blank for no passphrase.'
+                  : 'Optionally encrypt the private key with a passphrase.'}
+              </p>
+            </div>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={onGenerateKey}
+              disabled={generatingKey}
+              style={{ marginTop: '0.5rem' }}
+            >
+              {generatingKey ? 'Generating...' : (config.key_content ? 'Regenerate SSH Keypair' : 'Generate SSH Keypair')}
+            </button>
+            {config.public_key && (
+              <div className="public-key-display" style={{ marginTop: '1rem' }}>
+                <label>Public Key (add to remote server):</label>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
+                  <textarea
+                    readOnly
+                    value={config.public_key}
+                    rows={3}
+                    style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.8rem' }}
+                  />
+                  <button
+                    type="button"
+                    className={`btn ${keyCopied ? 'btn-success' : 'btn-secondary'}`}
+                    onClick={onCopyPublicKey}
+                    title="Copy to clipboard"
+                    style={keyCopied ? { backgroundColor: '#28a745', borderColor: '#28a745', color: 'white' } : undefined}
+                  >
+                    {keyCopied ? '✓ Copied!' : 'Copy'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {authMode === 'upload' && (
+          <div className="ssh-key-panel">
+            <div className="form-group">
+              <label>Private Key Content</label>
+              <textarea
+                value={config.key_content || ''}
+                onChange={(e) => onConfigChange({ ...config, key_content: e.target.value, key_path: '' })}
+                placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;...&#10;-----END RSA PRIVATE KEY-----"
+                rows={6}
+                style={{ fontFamily: 'monospace', fontSize: '0.8rem' }}
+              />
+              <p className="field-help">Paste your SSH private key content here.</p>
+            </div>
+            <div className="form-group">
+              <label>Key Passphrase (optional)</label>
+              <input
+                type="password"
+                value={config.key_passphrase || ''}
+                onChange={(e) => onConfigChange({ ...config, key_passphrase: e.target.value })}
+                placeholder="Leave blank if key is not encrypted"
+              />
+              <p className="field-help">If your private key is encrypted with a passphrase, enter it here.</p>
+            </div>
+            {config.public_key && (
+              <div className="form-group">
+                <label>Public Key (for reference):</label>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
+                  <textarea
+                    readOnly
+                    value={config.public_key}
+                    rows={2}
+                    style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.8rem' }}
+                  />
+                  <button
+                    type="button"
+                    className={`btn ${keyCopied ? 'btn-success' : 'btn-secondary'}`}
+                    onClick={onCopyPublicKey}
+                    style={keyCopied ? { backgroundColor: '#28a745', borderColor: '#28a745', color: 'white' } : undefined}
+                  >
+                    {keyCopied ? '✓ Copied!' : 'Copy'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {authMode === 'path' && (
+          <div className="ssh-key-panel">
+            <div className="form-group">
+              <label>SSH Key File Path</label>
+              <input
+                type="text"
+                value={config.key_path || ''}
+                onChange={(e) => onConfigChange({ ...config, key_path: e.target.value, key_content: '' })}
+                placeholder="/root/.ssh/id_rsa"
+              />
+              <p className="field-help">
+                Path to SSH private key file inside the ragtime container.
+                Host keys from ~/.ssh are mounted at /root/.ssh/
+              </p>
+            </div>
+            <div className="form-group">
+              <label>Key Passphrase (optional)</label>
+              <input
+                type="password"
+                value={config.key_passphrase || ''}
+                onChange={(e) => onConfigChange({ ...config, key_passphrase: e.target.value })}
+                placeholder="Leave blank if key is not encrypted"
+              />
+              <p className="field-help">If your private key is encrypted with a passphrase, enter it here.</p>
+            </div>
+          </div>
+        )}
+
+        {authMode === 'password' && (
+          <div className="ssh-key-panel">
+            <div className="form-group">
+              <label>SSH Password</label>
+              <input
+                type="password"
+                value={config.password || ''}
+                onChange={(e) => onConfigChange({ ...config, password: e.target.value, key_path: '', key_content: '' })}
+                placeholder="Enter SSH password"
+              />
+              <p className="field-help">Use password authentication instead of SSH key.</p>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 interface ToolWizardProps {
   existingTool: ToolConfig | null;
   onClose: () => void;
@@ -239,7 +503,7 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
   const [odooConfig, setOdooConfig] = useState<OdooShellConnectionConfig>(
     existingTool?.tool_type === 'odoo_shell'
       ? (existingTool.connection_config as OdooShellConnectionConfig)
-      : { mode: 'docker', container: '', database: 'odoo', docker_network: '', config_path: '', ssh_host: '', ssh_port: 22, ssh_user: '', ssh_key_path: '', ssh_password: '', odoo_bin_path: '', working_directory: '', run_as_user: '' }
+      : { mode: 'docker', container: '', database: 'odoo', docker_network: '', config_path: '', ssh_host: '', ssh_port: 22, ssh_user: '', ssh_key_path: '', ssh_key_content: '', ssh_public_key: '', ssh_key_passphrase: '', ssh_password: '', odoo_bin_path: '', working_directory: '', run_as_user: '' }
   );
 
   // Docker discovery state
@@ -253,8 +517,29 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
   const [sshConfig, setSshConfig] = useState<SSHShellConnectionConfig>(
     existingTool?.tool_type === 'ssh_shell'
       ? (existingTool.connection_config as SSHShellConnectionConfig)
-      : { host: '', port: 22, user: '', key_path: '', password: '', command_prefix: '' }
+      : { host: '', port: 22, user: '', key_path: '', key_content: '', public_key: '', key_passphrase: '', password: '', command_prefix: '' }
   );
+
+  // SSH Key management state
+  const [sshKeyMode, setSshKeyMode] = useState<'generate' | 'upload' | 'path' | 'password'>(
+    (() => {
+      // Determine initial mode based on existing config
+      const config = existingTool?.connection_config as (OdooShellConnectionConfig | SSHShellConnectionConfig) | undefined;
+      if (config) {
+        if ('ssh_key_content' in config && config.ssh_key_content) return 'upload';
+        if ('key_content' in config && config.key_content) return 'upload';
+        if ('ssh_key_path' in config && config.ssh_key_path) return 'path';
+        if ('key_path' in config && config.key_path) return 'path';
+        if ('ssh_password' in config && config.ssh_password) return 'password';
+        if ('password' in config && config.password) return 'password';
+      }
+      return 'generate';
+    })()
+  );
+  const [generatingKey, setGeneratingKey] = useState(false);
+  const [generatedPublicKey, setGeneratedPublicKey] = useState<string | null>(null);
+  const [showPrivateKey, setShowPrivateKey] = useState(false);
+  const [keyCopied, setKeyCopied] = useState(false);
 
   const getConnectionConfig = (): ConnectionConfig => {
     switch (toolType) {
@@ -328,6 +613,53 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
     }
   };
 
+  // SSH Key generation handler
+  const handleGenerateSSHKey = async () => {
+    setGeneratingKey(true);
+    setError(null);
+    try {
+      // Get passphrase from the appropriate config
+      const passphrase = toolType === 'odoo_shell'
+        ? odooConfig.ssh_key_passphrase
+        : sshConfig.key_passphrase;
+      const result = await api.generateSSHKeypair(name || 'ragtime', passphrase || undefined);
+      // Store the keys in the appropriate config
+      if (toolType === 'odoo_shell') {
+        setOdooConfig({
+          ...odooConfig,
+          ssh_key_content: result.private_key,
+          ssh_public_key: result.public_key,
+          ssh_key_path: '', // Clear path when using content
+          // Keep the passphrase that was set before generation
+        });
+      } else if (toolType === 'ssh_shell') {
+        setSshConfig({
+          ...sshConfig,
+          key_content: result.private_key,
+          public_key: result.public_key,
+          key_path: '', // Clear path when using content
+          // Keep the passphrase that was set before generation
+        });
+      }
+      setGeneratedPublicKey(result.public_key);
+      // Stay on generate tab to show the public key for copying
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to generate SSH keypair');
+    } finally {
+      setGeneratingKey(false);
+    }
+  };
+
+  // Copy public key to clipboard
+  const handleCopyPublicKey = async () => {
+    const pubKey = toolType === 'odoo_shell' ? odooConfig.ssh_public_key : sshConfig.public_key;
+    if (pubKey) {
+      await navigator.clipboard.writeText(pubKey);
+      setKeyCopied(true);
+      setTimeout(() => setKeyCopied(false), 2000);
+    }
+  };
+
   const getCurrentStepIndex = () => WIZARD_STEPS.indexOf(currentStep);
 
   const canNavigateToStep = (stepIndex: number): boolean => {
@@ -376,6 +708,18 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
     setError(null);
 
     try {
+      // Auto-save when editing an existing tool before testing
+      if (isEditing && existingTool) {
+        await api.updateToolConfig(existingTool.id, {
+          name,
+          description,
+          connection_config: getConnectionConfig(),
+          max_results: maxResults,
+          timeout,
+          allow_write: allowWrite,
+        });
+      }
+
       const result = await api.testToolConnection({
         tool_type: toolType,
         connection_config: getConnectionConfig(),
@@ -442,9 +786,23 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
         // Either host or container must be specified
         return Boolean((postgresConfig.host && postgresConfig.user) || postgresConfig.container);
       case 'odoo_shell':
+        // For Docker mode, need container. For SSH mode, need host and user.
+        if (odooConnectionMode === 'ssh') {
+          const hasAuth = Boolean(
+            odooConfig.ssh_key_content ||
+            odooConfig.ssh_key_path ||
+            odooConfig.ssh_password
+          );
+          return Boolean(odooConfig.ssh_host && odooConfig.ssh_user && hasAuth);
+        }
         return Boolean(odooConfig.container);
       case 'ssh_shell':
-        return Boolean(sshConfig.host && sshConfig.user);
+        const hasSshAuth = Boolean(
+          sshConfig.key_content ||
+          sshConfig.key_path ||
+          sshConfig.password
+        );
+        return Boolean(sshConfig.host && sshConfig.user && hasSshAuth);
     }
   };
 
@@ -671,7 +1029,7 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
           </div>
         ) : odooConnectionMode === 'ssh' ? (
           <div className="connection-panel">
-            {/* SSH Connection Settings */}
+            {/* SSH Connection Settings using reusable component */}
             <div className="form-row">
               <div className="form-group" style={{ flex: 2 }}>
                 <label>SSH Host</label>
@@ -681,9 +1039,7 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
                   onChange={(e) => setOdooConfig({ ...odooConfig, ssh_host: e.target.value })}
                   placeholder="odoo.example.com"
                 />
-                <p className="field-help">
-                  Hostname or IP address of the Odoo server.
-                </p>
+                <p className="field-help">Hostname or IP address of the Odoo server.</p>
               </div>
               <div className="form-group" style={{ flex: 1 }}>
                 <label>SSH Port</label>
@@ -696,19 +1052,49 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
               </div>
             </div>
 
-            <div className="form-row">
-              <div className="form-group">
-                <label>SSH User</label>
-                <input
-                  type="text"
-                  value={odooConfig.ssh_user || ''}
-                  onChange={(e) => setOdooConfig({ ...odooConfig, ssh_user: e.target.value })}
-                  placeholder="odoo"
-                />
-                <p className="field-help">
-                  User to connect as via SSH.
-                </p>
-              </div>
+            <div className="form-group">
+              <label>SSH User</label>
+              <input
+                type="text"
+                value={odooConfig.ssh_user || ''}
+                onChange={(e) => setOdooConfig({ ...odooConfig, ssh_user: e.target.value })}
+                placeholder="root"
+              />
+              <p className="field-help">User to connect as via SSH.</p>
+            </div>
+
+            {/* SSH Authentication - using reusable component */}
+            <SSHAuthPanel
+              config={{
+                host: odooConfig.ssh_host || '',
+                port: odooConfig.ssh_port || 22,
+                user: odooConfig.ssh_user || '',
+                key_path: odooConfig.ssh_key_path,
+                key_content: odooConfig.ssh_key_content,
+                public_key: odooConfig.ssh_public_key,
+                key_passphrase: odooConfig.ssh_key_passphrase,
+                password: odooConfig.ssh_password,
+              }}
+              onConfigChange={(sshAuthConfig) => setOdooConfig({
+                ...odooConfig,
+                ssh_key_path: sshAuthConfig.key_path || '',
+                ssh_key_content: sshAuthConfig.key_content || '',
+                ssh_public_key: sshAuthConfig.public_key || '',
+                ssh_key_passphrase: sshAuthConfig.key_passphrase || '',
+                ssh_password: sshAuthConfig.password || '',
+              })}
+              authMode={sshKeyMode}
+              onAuthModeChange={setSshKeyMode}
+              generatingKey={generatingKey}
+              onGenerateKey={handleGenerateSSHKey}
+              keyCopied={keyCopied}
+              onCopyPublicKey={handleCopyPublicKey}
+              toolName={name || 'odoo'}
+              showHostPort={false}
+            />
+
+            {/* Odoo-specific settings for SSH mode */}
+            <div className="form-row" style={{ marginTop: '1rem' }}>
               <div className="form-group">
                 <label>Run As User (optional)</label>
                 <input
@@ -717,38 +1103,8 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
                   onChange={(e) => setOdooConfig({ ...odooConfig, run_as_user: e.target.value })}
                   placeholder="odoo"
                 />
-                <p className="field-help">
-                  User to run odoo-bin as (sudo -u).
-                </p>
+                <p className="field-help">User to run odoo-bin as (sudo -u).</p>
               </div>
-            </div>
-
-            <div className="form-row">
-              <div className="form-group">
-                <label>SSH Key Path</label>
-                <input
-                  type="text"
-                  value={odooConfig.ssh_key_path || ''}
-                  onChange={(e) => setOdooConfig({ ...odooConfig, ssh_key_path: e.target.value })}
-                  placeholder="/root/.ssh/id_rsa"
-                />
-                <p className="field-help">
-                  Path to SSH private key file (inside ragtime container).
-                </p>
-              </div>
-              <div className="form-group">
-                <label>SSH Password (alternative)</label>
-                <input
-                  type="password"
-                  value={odooConfig.ssh_password || ''}
-                  onChange={(e) => setOdooConfig({ ...odooConfig, ssh_password: e.target.value })}
-                  placeholder="Leave empty if using key"
-                />
-              </div>
-            </div>
-
-            {/* Odoo-specific settings for SSH mode */}
-            <div className="form-row">
               <div className="form-group">
                 <label>Database Name</label>
                 <input
@@ -757,49 +1113,42 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
                   onChange={(e) => setOdooConfig({ ...odooConfig, database: e.target.value })}
                   placeholder="odoo"
                 />
-                <p className="field-help">
-                  The Odoo database to connect to.
-                </p>
+                <p className="field-help">The Odoo database to connect to.</p>
               </div>
+            </div>
+
+            <div className="form-row">
               <div className="form-group">
-                <label>Config Path</label>
+                <label>Config Path (optional)</label>
                 <input
                   type="text"
                   value={odooConfig.config_path || ''}
                   onChange={(e) => setOdooConfig({ ...odooConfig, config_path: e.target.value })}
                   placeholder="/etc/odoo/odoo.conf"
                 />
-                <p className="field-help">
-                  Path to odoo.conf on the remote server.
-                </p>
+                <p className="field-help">Path to odoo.conf on the remote server.</p>
               </div>
-            </div>
-
-            <div className="form-row">
               <div className="form-group">
                 <label>Odoo Binary Path</label>
                 <input
                   type="text"
                   value={odooConfig.odoo_bin_path || ''}
                   onChange={(e) => setOdooConfig({ ...odooConfig, odoo_bin_path: e.target.value })}
-                  placeholder="/opt/odoo/odoo-bin"
+                  placeholder="venv/bin/python3 src/odoo-bin"
                 />
-                <p className="field-help">
-                  Full path to odoo-bin executable.
-                </p>
+                <p className="field-help">Path to odoo-bin executable (relative to working dir).</p>
               </div>
-              <div className="form-group">
-                <label>Working Directory (optional)</label>
-                <input
-                  type="text"
-                  value={odooConfig.working_directory || ''}
-                  onChange={(e) => setOdooConfig({ ...odooConfig, working_directory: e.target.value })}
-                  placeholder="/opt/odoo"
-                />
-                <p className="field-help">
-                  Directory to run odoo-bin from.
-                </p>
-              </div>
+            </div>
+
+            <div className="form-group">
+              <label>Working Directory (optional)</label>
+              <input
+                type="text"
+                value={odooConfig.working_directory || ''}
+                onChange={(e) => setOdooConfig({ ...odooConfig, working_directory: e.target.value })}
+                placeholder="/var/odoo/staging-odoo.example.com"
+              />
+              <p className="field-help">Directory to cd into before running Odoo shell.</p>
             </div>
           </div>
         ) : null}
@@ -813,9 +1162,10 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
         Connect to a remote server via SSH to run shell commands.
       </p>
 
+      {/* SSH Connection using reusable component with host/port */}
       <div className="form-row">
-        <div className="form-group">
-          <label>Host</label>
+        <div className="form-group" style={{ flex: 2 }}>
+          <label>SSH Host</label>
           <input
             type="text"
             value={sshConfig.host}
@@ -823,7 +1173,7 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
             placeholder="server.example.com"
           />
         </div>
-        <div className="form-group form-group-small">
+        <div className="form-group" style={{ flex: 1 }}>
           <label>Port</label>
           <input
             type="number"
@@ -836,7 +1186,7 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
       </div>
 
       <div className="form-group">
-        <label>User</label>
+        <label>SSH User</label>
         <input
           type="text"
           value={sshConfig.user}
@@ -845,20 +1195,37 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
         />
       </div>
 
-      <div className="form-group">
-        <label>SSH Key Path (optional)</label>
-        <input
-          type="text"
-          value={sshConfig.key_path || ''}
-          onChange={(e) => setSshConfig({ ...sshConfig, key_path: e.target.value })}
-          placeholder="/home/user/.ssh/id_rsa"
-        />
-        <p className="field-help">
-          Path to SSH private key. Leave empty to use default key or password.
-        </p>
-      </div>
+      {/* SSH Authentication - using reusable component */}
+      <SSHAuthPanel
+        config={{
+          host: sshConfig.host,
+          port: sshConfig.port || 22,
+          user: sshConfig.user,
+          key_path: sshConfig.key_path,
+          key_content: sshConfig.key_content,
+          public_key: sshConfig.public_key,
+          key_passphrase: sshConfig.key_passphrase,
+          password: sshConfig.password,
+        }}
+        onConfigChange={(sshAuthConfig) => setSshConfig({
+          ...sshConfig,
+          key_path: sshAuthConfig.key_path || '',
+          key_content: sshAuthConfig.key_content || '',
+          public_key: sshAuthConfig.public_key || '',
+          key_passphrase: sshAuthConfig.key_passphrase || '',
+          password: sshAuthConfig.password || '',
+        })}
+        authMode={sshKeyMode}
+        onAuthModeChange={setSshKeyMode}
+        generatingKey={generatingKey}
+        onGenerateKey={handleGenerateSSHKey}
+        keyCopied={keyCopied}
+        onCopyPublicKey={handleCopyPublicKey}
+        toolName={name || 'ssh'}
+        showHostPort={false}
+      />
 
-      <div className="form-group">
+      <div className="form-group" style={{ marginTop: '1rem' }}>
         <label>Command Prefix (optional)</label>
         <input
           type="text"
@@ -898,9 +1265,34 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
             {testing ? 'Testing...' : testResult?.success ? 'Connected' : 'Test Connection'}
           </button>
           {testResult && (
-            <span className={`test-result ${testResult.success ? 'success' : 'error'}`}>
-              {testResult.message}
-            </span>
+            <div className={`test-result-container ${testResult.success ? 'success' : 'error'}`}>
+              <span className={`test-result ${testResult.success ? 'success' : 'error'}`}>
+                {testResult.message}
+              </span>
+              {!testResult.success && testResult.details && (
+                <details className="test-error-details" style={{ marginTop: '0.5rem' }}>
+                  <summary style={{ cursor: 'pointer', fontSize: '0.85rem', color: '#666' }}>
+                    Show error details
+                  </summary>
+                  <pre style={{
+                    marginTop: '0.5rem',
+                    padding: '0.75rem',
+                    backgroundColor: '#1e1e1e',
+                    color: '#f8f8f2',
+                    borderRadius: '4px',
+                    fontSize: '0.75rem',
+                    overflow: 'auto',
+                    maxHeight: '200px',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word'
+                  }}>
+                    {typeof testResult.details === 'string'
+                      ? testResult.details
+                      : JSON.stringify(testResult.details, null, 2)}
+                  </pre>
+                </details>
+              )}
+            </div>
           )}
         </div>
       </>

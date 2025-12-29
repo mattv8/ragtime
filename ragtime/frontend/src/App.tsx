@@ -1,18 +1,19 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/api';
-import { UploadForm, GitForm, JobsTable, IndexesList, SettingsPanel, ToolsPanel } from '@/components';
+import { UploadForm, GitForm, JobsTable, IndexesList, SettingsPanel, ToolsPanel, ChatPanel } from '@/components';
 import type { IndexJob, IndexInfo } from '@/types';
 import '@/styles/global.css';
 
 type SourceType = 'upload' | 'git';
-type ViewType = 'indexer' | 'tools' | 'settings';
+type ViewType = 'chat' | 'indexer' | 'tools' | 'settings';
 
 function getInitialView(): ViewType {
   const params = new URLSearchParams(window.location.search);
   const view = params.get('view');
   if (view === 'settings') return 'settings';
   if (view === 'tools') return 'tools';
-  return 'indexer';
+  if (view === 'indexer') return 'indexer';
+  return 'chat';
 }
 
 function getInitialSource(): SourceType {
@@ -99,6 +100,12 @@ export function App() {
         <span className="topnav-brand">Ragtime</span>
         <div className="topnav-links">
           <button
+            className={`topnav-link ${activeView === 'chat' ? 'active' : ''}`}
+            onClick={() => setActiveView('chat')}
+          >
+            Chat
+          </button>
+          <button
             className={`topnav-link ${activeView === 'indexer' ? 'active' : ''}`}
             onClick={() => setActiveView('indexer')}
           >
@@ -120,7 +127,9 @@ export function App() {
       </nav>
       <div className="container">
 
-      {activeView === 'settings' ? (
+      {activeView === 'chat' ? (
+        <ChatPanel />
+      ) : activeView === 'settings' ? (
         <SettingsPanel />
       ) : activeView === 'tools' ? (
         <ToolsPanel />

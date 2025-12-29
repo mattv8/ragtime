@@ -5,3 +5,4 @@ export { IndexesList } from './IndexesList';
 export { SettingsPanel } from './SettingsPanel';
 export { ToolsPanel } from './ToolsPanel';
 export { ToolWizard } from './ToolWizard';
+export { ChatPanel } from './ChatPanel';

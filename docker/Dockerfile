@@ -68,6 +68,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     postgresql-client \
     docker.io \
     libmagic1 \
+    openssh-client \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 

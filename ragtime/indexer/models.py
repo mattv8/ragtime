@@ -156,6 +156,10 @@ class AppSettings(BaseModel):
         default="",
         description="Anthropic API key (used when llm_provider is 'anthropic')"
     )
+    allowed_chat_models: List[str] = Field(
+        default=[],
+        description="List of allowed model IDs for chat. Empty = all models allowed."
+    )
 
     # Legacy tool configuration (deprecated - use ToolConfig)
     enabled_tools: List[str] = Field(
@@ -232,6 +236,7 @@ class UpdateSettingsRequest(BaseModel):
     llm_model: Optional[str] = None
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
+    allowed_chat_models: Optional[List[str]] = None
     # Legacy tool settings (for backward compatibility)
     enabled_tools: Optional[List[str]] = None
     odoo_container: Optional[str] = None
@@ -288,7 +293,10 @@ class OdooShellConnectionConfig(BaseModel):
     ssh_host: str = Field(default="", description="SSH host for remote Odoo server")
     ssh_port: int = Field(default=22, ge=1, le=65535, description="SSH port")
     ssh_user: str = Field(default="", description="SSH username")
-    ssh_key_path: str = Field(default="", description="Path to SSH private key")
+    ssh_key_path: str = Field(default="", description="Path to SSH private key (legacy)")
+    ssh_key_content: str = Field(default="", description="SSH private key content (preferred)")
+    ssh_public_key: str = Field(default="", description="SSH public key (for reference/copying)")
+    ssh_key_passphrase: str = Field(default="", description="Passphrase for encrypted SSH key")
     ssh_password: str = Field(default="", description="SSH password (if not using key)")
     # Odoo-specific fields (used in both modes)
     database: str = Field(default="odoo", description="Odoo database name")
@@ -315,7 +323,10 @@ class SSHShellConnectionConfig(BaseModel):
     host: str = Field(description="SSH host")
     port: int = Field(default=22, ge=1, le=65535, description="SSH port")
     user: str = Field(description="SSH username")
-    key_path: Optional[str] = Field(default=None, description="Path to SSH private key")
+    key_path: Optional[str] = Field(default=None, description="Path to SSH private key (legacy)")
+    key_content: Optional[str] = Field(default=None, description="SSH private key content (preferred)")
+    public_key: Optional[str] = Field(default=None, description="SSH public key (for reference/copying)")
+    key_passphrase: Optional[str] = Field(default=None, description="Passphrase for encrypted SSH key")
     password: Optional[str] = Field(default=None, description="SSH password (if not using key)")
     command_prefix: str = Field(
         default="",
@@ -378,3 +389,125 @@ class ToolTestRequest(BaseModel):
     """Request to test a tool connection."""
     tool_type: ToolType = Field(description="Type of tool to test")
     connection_config: dict = Field(description="Connection configuration to test")
+
+
+# -----------------------------------------------------------------------------
+# Chat Conversation Models
+# -----------------------------------------------------------------------------
+
+class ToolCallRecord(BaseModel):
+    """Record of a tool call made during message generation."""
+    tool: str = Field(description="Name of the tool called")
+    input: Optional[dict] = Field(default=None, description="Tool input/query")
+    output: Optional[str] = Field(default=None, description="Tool output/result")
+
+
+class ContentEvent(BaseModel):
+    """Content chunk in chronological message events."""
+    type: str = Field(default="content", description="Event type")
+    content: str = Field(description="Text content")
+
+
+class ToolCallEvent(BaseModel):
+    """Tool call in chronological message events."""
+    type: str = Field(default="tool", description="Event type")
+    tool: str = Field(description="Name of the tool called")
+    input: Optional[dict] = Field(default=None, description="Tool input/query")
+    output: Optional[str] = Field(default=None, description="Tool output/result")
+
+
+class ChatMessage(BaseModel):
+    """A single message in a conversation."""
+    role: str = Field(description="Role: 'user', 'assistant', or 'system'")
+    content: str = Field(description="Message content")
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    tool_calls: Optional[List[ToolCallRecord]] = Field(default=None, description="Tool calls made during this message (deprecated, use events)")
+    events: Optional[List[dict]] = Field(default=None, description="Chronological events (content and tool calls interleaved)")
+
+
+class Conversation(BaseModel):
+    """A chat conversation with the RAG assistant."""
+    id: str
+    title: str = Field(default="New Chat")
+    model: str = Field(default="gpt-4-turbo")
+    messages: List[ChatMessage] = Field(default_factory=list)
+    total_tokens: int = Field(default=0)
+    active_task_id: Optional[str] = Field(default=None, description="ID of currently running background task")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ConversationResponse(BaseModel):
+    """Response for conversation data."""
+    id: str
+    title: str
+    model: str
+    messages: List[ChatMessage]
+    total_tokens: int
+    active_task_id: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CreateConversationRequest(BaseModel):
+    """Request to create a new conversation."""
+    title: Optional[str] = Field(default=None, description="Optional title for the conversation")
+    model: Optional[str] = Field(default=None, description="Optional model override")
+
+
+class SendMessageRequest(BaseModel):
+    """Request to send a message in a conversation."""
+    message: str = Field(description="The message content to send")
+    stream: bool = Field(default=False, description="Whether to stream the response")
+    background: bool = Field(default=False, description="Whether to run in background mode")
+
+
+# =============================================================================
+# Background Chat Task Models
+# =============================================================================
+
+class ChatTaskStatus(str, Enum):
+    """Status of a background chat task."""
+    pending = "pending"
+    running = "running"
+    completed = "completed"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
+class ChatTaskStreamingState(BaseModel):
+    """Streaming state for a background chat task."""
+    content: str = Field(default="", description="Accumulated response content")
+    events: List[dict] = Field(default_factory=list, description="Chronological events")
+    tool_calls: List[dict] = Field(default_factory=list, description="Tool calls made")
+    hit_max_iterations: bool = Field(default=False, description="Whether max iterations was reached")
+
+
+class ChatTask(BaseModel):
+    """A background chat task for async message processing."""
+    id: str
+    conversation_id: str
+    status: ChatTaskStatus = Field(default=ChatTaskStatus.pending)
+    user_message: str
+    streaming_state: Optional[ChatTaskStreamingState] = None
+    response_content: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    last_update_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ChatTaskResponse(BaseModel):
+    """Response for a chat task."""
+    id: str
+    conversation_id: str
+    status: ChatTaskStatus
+    user_message: str
+    streaming_state: Optional[ChatTaskStreamingState] = None
+    response_content: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    last_update_at: datetime

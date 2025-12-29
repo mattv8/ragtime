@@ -295,6 +295,13 @@ from ragtime.indexer.models import (
 )
 
 
+class SSHKeyPairResponse(BaseModel):
+    """Response containing generated SSH keypair."""
+    private_key: str
+    public_key: str
+    fingerprint: str
+
+
 class ToolTestResponse(BaseModel):
     """Response from a tool connection test."""
     success: bool
@@ -468,12 +475,16 @@ async def delete_tool_config(tool_id: str):
 @router.post("/tools/{tool_id}/toggle", tags=["Tools"])
 async def toggle_tool_config(tool_id: str, enabled: bool):
     """Toggle a tool's enabled status."""
+    from ragtime.core.app_settings import invalidate_settings_cache
+    from ragtime.rag import rag
+
     config = await repository.update_tool_config(tool_id, {"enabled": enabled})
     if config is None:
         raise HTTPException(status_code=404, detail="Tool configuration not found")
-    return {"enabled": config.enabled}
 
-
+    # Invalidate cache and reinitialize RAG agent to pick up the change
+    invalidate_settings_cache()
+    await rag.initialize()
 @router.post("/tools/test", response_model=ToolTestResponse, tags=["Tools"])
 async def test_tool_connection(request: ToolTestRequest):
     """
@@ -497,6 +508,76 @@ async def test_tool_connection(request: ToolTestRequest):
             success=False,
             message=f"Unknown tool type: {tool_type}"
         )
+
+
+@router.post("/tools/ssh/generate-keypair", response_model=SSHKeyPairResponse, tags=["Tools"])
+async def generate_ssh_keypair(comment: str = "ragtime", passphrase: str = ""):
+    """
+    Generate a new SSH keypair for use with remote connections.
+    Returns private key, public key, and fingerprint.
+    The private key should be stored in the tool's connection config.
+    The public key should be added to the remote server's authorized_keys.
+
+    Args:
+        comment: Comment for the key (appears in public key)
+        passphrase: Optional passphrase to encrypt the private key
+    """
+    import tempfile
+    import subprocess
+    import os
+
+    try:
+        # Create temp directory for key generation
+        with tempfile.TemporaryDirectory() as tmpdir:
+            key_path = os.path.join(tmpdir, "id_rsa")
+
+            # Generate RSA keypair using ssh-keygen
+            process = subprocess.run(
+                [
+                    "ssh-keygen",
+                    "-t", "rsa",
+                    "-b", "4096",
+                    "-f", key_path,
+                    "-N", passphrase,  # Passphrase (empty string = no passphrase)
+                    "-C", comment,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if process.returncode != 0:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to generate keypair: {process.stderr}"
+                )
+
+            # Read the generated keys
+            with open(key_path, "r") as f:
+                private_key = f.read()
+            with open(f"{key_path}.pub", "r") as f:
+                public_key = f.read().strip()
+
+            # Get fingerprint
+            fp_process = subprocess.run(
+                ["ssh-keygen", "-lf", key_path],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            fingerprint = fp_process.stdout.strip() if fp_process.returncode == 0 else "unknown"
+
+            return SSHKeyPairResponse(
+                private_key=private_key,
+                public_key=public_key,
+                fingerprint=fingerprint
+            )
+
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=500, detail="Key generation timed out")
+    except Exception as e:
+        logger.exception("Failed to generate SSH keypair")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/tools/{tool_id}/test", response_model=ToolTestResponse, tags=["Tools"])
@@ -592,22 +673,41 @@ async def _heartbeat_odoo(config: dict) -> ToolTestResponse:
     mode = config.get("mode", "docker")
 
     if mode == "ssh":
-        # SSH mode - check SSH connectivity
+        # SSH mode - use Paramiko for heartbeat
+        from ragtime.core.ssh import SSHConfig, test_ssh_connection
+
         ssh_host = config.get("ssh_host", "")
         ssh_port = config.get("ssh_port", 22)
         ssh_user = config.get("ssh_user", "")
         ssh_key_path = config.get("ssh_key_path", "")
+        ssh_key_content = config.get("ssh_key_content", "")
+        ssh_key_passphrase = config.get("ssh_key_passphrase", "")
+        ssh_password = config.get("ssh_password", "")
 
         if not ssh_host or not ssh_user:
             return ToolTestResponse(success=False, message="SSH not configured")
 
-        cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3"]
-        if ssh_port != 22:
-            cmd.extend(["-p", str(ssh_port)])
-        if ssh_key_path:
-            cmd.extend(["-i", ssh_key_path])
-        cmd.append(f"{ssh_user}@{ssh_host}")
-        cmd.append("echo OK")
+        ssh_config = SSHConfig(
+            host=ssh_host,
+            port=ssh_port,
+            user=ssh_user,
+            password=ssh_password if ssh_password else None,
+            key_path=ssh_key_path if ssh_key_path else None,
+            key_content=ssh_key_content if ssh_key_content else None,
+            key_passphrase=ssh_key_passphrase if ssh_key_passphrase else None,
+            timeout=5,
+        )
+
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, lambda: test_ssh_connection(ssh_config))
+
+            return ToolTestResponse(
+                success=result.success,
+                message="OK" if result.success else (result.stderr or result.stdout)[:100]
+            )
+        except Exception as e:
+            return ToolTestResponse(success=False, message=str(e)[:100])
     else:
         # Docker mode - check container is running
         container = config.get("container", "")
@@ -616,54 +716,56 @@ async def _heartbeat_odoo(config: dict) -> ToolTestResponse:
 
         cmd = ["docker", "exec", "-i", container, "echo", "OK"]
 
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-        stdout, stderr = await process.communicate()
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            stdout, stderr = await process.communicate()
 
-        return ToolTestResponse(
-            success=process.returncode == 0,
-            message="OK" if process.returncode == 0 else stderr.decode("utf-8", errors="replace").strip()[:100]
-        )
-    except Exception as e:
-        return ToolTestResponse(success=False, message=str(e)[:100])
+            return ToolTestResponse(
+                success=process.returncode == 0,
+                message="OK" if process.returncode == 0 else stderr.decode("utf-8", errors="replace").strip()[:100]
+            )
+        except Exception as e:
+            return ToolTestResponse(success=False, message=str(e)[:100])
 
 
 async def _heartbeat_ssh(config: dict) -> ToolTestResponse:
-    """Quick SSH heartbeat check."""
+    """Quick SSH heartbeat check using Paramiko."""
     import asyncio
-    import subprocess
+    from ragtime.core.ssh import SSHConfig, test_ssh_connection
 
     host = config.get("host", "")
     port = config.get("port", 22)
     user = config.get("user", "")
     key_path = config.get("key_path", "")
+    key_content = config.get("key_content", "")
+    key_passphrase = config.get("key_passphrase", "")
+    password = config.get("password", "")
 
     if not host or not user:
         return ToolTestResponse(success=False, message="SSH not configured")
 
-    cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3"]
-    if port != 22:
-        cmd.extend(["-p", str(port)])
-    if key_path:
-        cmd.extend(["-i", key_path])
-    cmd.append(f"{user}@{host}")
-    cmd.append("echo OK")
+    ssh_config = SSHConfig(
+        host=host,
+        port=port,
+        user=user,
+        password=password if password else None,
+        key_path=key_path if key_path else None,
+        key_content=key_content if key_content else None,
+        key_passphrase=key_passphrase if key_passphrase else None,
+        timeout=5,
+    )
 
     try:
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-        stdout, stderr = await process.communicate()
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, lambda: test_ssh_connection(ssh_config))
 
         return ToolTestResponse(
-            success=process.returncode == 0,
-            message="OK" if process.returncode == 0 else stderr.decode("utf-8", errors="replace").strip()[:100]
+            success=result.success,
+            message="OK" if result.success else (result.stderr or result.stdout)[:100]
         )
     except Exception as e:
         return ToolTestResponse(success=False, message=str(e)[:100])
@@ -762,14 +864,17 @@ async def _test_odoo_connection(config: dict) -> ToolTestResponse:
 
 
 async def _test_odoo_ssh_connection(config: dict) -> ToolTestResponse:
-    """Test Odoo shell connection via SSH."""
+    """Test Odoo shell connection via SSH using Paramiko."""
     import asyncio
-    import subprocess
+    from ragtime.core.ssh import SSHConfig, execute_ssh_command, test_ssh_connection
 
     ssh_host = config.get("ssh_host", "")
     ssh_port = config.get("ssh_port", 22)
     ssh_user = config.get("ssh_user", "")
     ssh_key_path = config.get("ssh_key_path", "")
+    ssh_key_content = config.get("ssh_key_content", "")
+    ssh_key_passphrase = config.get("ssh_key_passphrase", "")
+    ssh_password = config.get("ssh_password", "")
     database = config.get("database", "odoo")
     config_path = config.get("config_path", "")
     odoo_bin_path = config.get("odoo_bin_path", "odoo-bin")
@@ -782,31 +887,27 @@ async def _test_odoo_ssh_connection(config: dict) -> ToolTestResponse:
             message="SSH host and user are required"
         )
 
+    # Build SSH config
+    ssh_config = SSHConfig(
+        host=ssh_host,
+        port=ssh_port,
+        user=ssh_user,
+        password=ssh_password if ssh_password else None,
+        key_path=ssh_key_path if ssh_key_path else None,
+        key_content=ssh_key_content if ssh_key_content else None,
+        key_passphrase=ssh_key_passphrase if ssh_key_passphrase else None,
+        timeout=30,
+    )
+
     try:
         # First test basic SSH connectivity
-        ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
-        if ssh_port != 22:
-            ssh_cmd.extend(["-p", str(ssh_port)])
-        if ssh_key_path:
-            ssh_cmd.extend(["-i", ssh_key_path])
-        ssh_cmd.append(f"{ssh_user}@{ssh_host}")
-        ssh_cmd.append("echo SSH_TEST_SUCCESS")
+        loop = asyncio.get_event_loop()
+        ssh_result = await loop.run_in_executor(None, lambda: test_ssh_connection(ssh_config))
 
-        process = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(
-                *ssh_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            ),
-            timeout=15.0
-        )
-        stdout, stderr = await process.communicate()
-
-        if process.returncode != 0:
-            error_msg = stderr.decode().strip()
+        if not ssh_result.success:
             return ToolTestResponse(
                 success=False,
-                message=f"SSH connection failed: {error_msg or 'Unknown error'}"
+                message=f"SSH connection failed: {ssh_result.stderr or ssh_result.stdout}"
             )
 
         # Build Odoo shell command
@@ -818,30 +919,16 @@ async def _test_odoo_ssh_connection(config: dict) -> ToolTestResponse:
         if working_directory:
             odoo_cmd = f"cd {working_directory} && {odoo_cmd}"
 
-        # Test Odoo shell
-        ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes"]
-        if ssh_port != 22:
-            ssh_cmd.extend(["-p", str(ssh_port)])
-        if ssh_key_path:
-            ssh_cmd.extend(["-i", ssh_key_path])
-        ssh_cmd.append(f"{ssh_user}@{ssh_host}")
-        ssh_cmd.append(odoo_cmd)
+        # Test Odoo shell with heredoc
+        test_input = "print('ODOO_TEST_SUCCESS')\nexit()\n"
+        full_command = f"{odoo_cmd} <<'ODOO_EOF'\n{test_input}ODOO_EOF"
 
-        process = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(
-                *ssh_cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT
-            ),
-            timeout=120.0
+        odoo_result = await loop.run_in_executor(
+            None,
+            lambda: execute_ssh_command(ssh_config, full_command)
         )
 
-        test_input = "print('ODOO_TEST_SUCCESS')\nexit()\n"
-        stdout, _ = await process.communicate(input=test_input.encode())
-        output = stdout.decode()
-
-        if "ODOO_TEST_SUCCESS" in output:
+        if "ODOO_TEST_SUCCESS" in odoo_result.output:
             return ToolTestResponse(
                 success=True,
                 message=f"Odoo shell accessible via SSH",
@@ -852,18 +939,13 @@ async def _test_odoo_ssh_connection(config: dict) -> ToolTestResponse:
                 }
             )
         else:
-            output_snippet = output[-500:] if len(output) > 500 else output
+            output_snippet = odoo_result.output[-500:] if len(odoo_result.output) > 500 else odoo_result.output
             return ToolTestResponse(
                 success=False,
                 message="Odoo shell test failed via SSH",
                 details={"output_tail": output_snippet}
             )
 
-    except asyncio.TimeoutError:
-        return ToolTestResponse(
-            success=False,
-            message="SSH connection timed out"
-        )
     except Exception as e:
         return ToolTestResponse(
             success=False,
@@ -1010,14 +1092,17 @@ async def _test_odoo_docker_connection(config: dict) -> ToolTestResponse:
 
 
 async def _test_ssh_connection(config: dict) -> ToolTestResponse:
-    """Test SSH shell connection."""
+    """Test SSH shell connection using Paramiko."""
     import asyncio
-    import subprocess
+    from ragtime.core.ssh import SSHConfig, test_ssh_connection
 
     host = config.get("host", "")
     port = config.get("port", 22)
     user = config.get("user", "")
     key_path = config.get("key_path")
+    key_content = config.get("key_content")
+    key_passphrase = config.get("key_passphrase")
+    password = config.get("password")
 
     if not host or not user:
         return ToolTestResponse(
@@ -1025,45 +1110,33 @@ async def _test_ssh_connection(config: dict) -> ToolTestResponse:
             message="Host and user are required"
         )
 
+    ssh_config = SSHConfig(
+        host=host,
+        port=port,
+        user=user,
+        password=password if password else None,
+        key_path=key_path if key_path else None,
+        key_content=key_content if key_content else None,
+        key_passphrase=key_passphrase if key_passphrase else None,
+        timeout=15,
+    )
+
     try:
-        cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
-        if key_path:
-            cmd.extend(["-i", key_path])
-        cmd.extend(["-p", str(port), f"{user}@{host}", "echo 'Connection successful'"])
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, lambda: test_ssh_connection(ssh_config))
 
-        process = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            ),
-            timeout=15.0
-        )
-        stdout, stderr = await process.communicate()
-
-        if process.returncode == 0:
+        if result.success:
             return ToolTestResponse(
                 success=True,
                 message="SSH connection successful",
                 details={"host": host, "user": user, "port": port}
             )
         else:
-            error = stderr.decode("utf-8", errors="replace").strip()
             return ToolTestResponse(
                 success=False,
-                message=f"SSH connection failed: {error}"
+                message=f"SSH connection failed: {result.stderr or result.stdout}"
             )
 
-    except asyncio.TimeoutError:
-        return ToolTestResponse(
-            success=False,
-            message="SSH connection timed out"
-        )
-    except FileNotFoundError:
-        return ToolTestResponse(
-            success=False,
-            message="SSH command not found"
-        )
     except Exception as e:
         return ToolTestResponse(
             success=False,
@@ -1446,6 +1519,21 @@ class LLMModelsResponse(BaseModel):
     default_model: Optional[str] = None
 
 
+class AvailableModel(BaseModel):
+    """A model available for chat."""
+    id: str
+    name: str
+    provider: str  # 'openai' or 'anthropic'
+
+
+class AvailableModelsResponse(BaseModel):
+    """Response with all available models from configured providers."""
+    models: List[AvailableModel] = []
+    default_model: Optional[str] = None
+    current_model: Optional[str] = None  # Currently selected model in settings
+    allowed_models: List[str] = []  # List of allowed model IDs (for settings UI)
+
+
 # Sensible default models for each provider
 OPENAI_DEFAULT_MODEL = "gpt-4o"
 ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-4-20250514"
@@ -1598,3 +1686,730 @@ async def _fetch_anthropic_models(api_key: str) -> LLMModelsResponse:
             success=False,
             message=f"Failed to fetch Anthropic models: {str(e)}"
         )
+
+
+# =============================================================================
+# Conversation/Chat Endpoints
+# =============================================================================
+
+from ragtime.indexer.models import (
+    Conversation,
+    ConversationResponse,
+    CreateConversationRequest,
+    SendMessageRequest,
+    ChatMessage,
+)
+
+
+@router.get("/chat/available-models", response_model=AvailableModelsResponse, tags=["Chat"])
+async def get_available_chat_models():
+    """
+    Get all available models from configured LLM providers.
+
+    Returns models from OpenAI and/or Anthropic based on which API keys are configured.
+    """
+    app_settings = await repository.get_settings()
+    if not app_settings:
+        return AvailableModelsResponse()
+
+    all_models: List[AvailableModel] = []
+    default_model = None
+
+    # Fetch OpenAI models if API key is configured
+    if app_settings.openai_api_key and len(app_settings.openai_api_key) > 10:
+        try:
+            result = await _fetch_openai_models(app_settings.openai_api_key)
+            if result.success:
+                for m in result.models:
+                    all_models.append(AvailableModel(
+                        id=m.id,
+                        name=m.name,
+                        provider="openai"
+                    ))
+                if not default_model and result.default_model:
+                    default_model = result.default_model
+        except Exception as e:
+            logger.warning(f"Failed to fetch OpenAI models: {e}")
+
+    # Fetch Anthropic models if API key is configured
+    if app_settings.anthropic_api_key and len(app_settings.anthropic_api_key) > 10:
+        try:
+            result = await _fetch_anthropic_models(app_settings.anthropic_api_key)
+            if result.success:
+                for m in result.models:
+                    all_models.append(AvailableModel(
+                        id=m.id,
+                        name=m.name,
+                        provider="anthropic"
+                    ))
+                if not default_model and result.default_model:
+                    default_model = result.default_model
+        except Exception as e:
+            logger.warning(f"Failed to fetch Anthropic models: {e}")
+
+    # Use current settings model as default if available
+    current_model = app_settings.llm_model
+    if current_model and any(m.id == current_model for m in all_models):
+        default_model = current_model
+
+    # Filter by allowed models if specified
+    allowed_models = app_settings.allowed_chat_models or []
+    if allowed_models:
+        all_models = [m for m in all_models if m.id in allowed_models]
+        # Ensure default model is in allowed list
+        if default_model and default_model not in allowed_models:
+            default_model = all_models[0].id if all_models else None
+
+    return AvailableModelsResponse(
+        models=all_models,
+        default_model=default_model,
+        current_model=current_model
+    )
+
+
+@router.get("/chat/all-models", response_model=AvailableModelsResponse, tags=["Chat"])
+async def get_all_chat_models():
+    """
+    Get ALL available models from configured LLM providers (unfiltered).
+
+    Used by the settings UI to show all models for selection.
+    """
+    app_settings = await repository.get_settings()
+    if not app_settings:
+        return AvailableModelsResponse()
+
+    all_models: List[AvailableModel] = []
+
+    # Fetch OpenAI models if API key is configured
+    if app_settings.openai_api_key and len(app_settings.openai_api_key) > 10:
+        try:
+            result = await _fetch_openai_models(app_settings.openai_api_key)
+            if result.success:
+                for m in result.models:
+                    all_models.append(AvailableModel(
+                        id=m.id,
+                        name=m.name,
+                        provider="openai"
+                    ))
+        except Exception as e:
+            logger.warning(f"Failed to fetch OpenAI models: {e}")
+
+    # Fetch Anthropic models if API key is configured
+    if app_settings.anthropic_api_key and len(app_settings.anthropic_api_key) > 10:
+        try:
+            result = await _fetch_anthropic_models(app_settings.anthropic_api_key)
+            if result.success:
+                for m in result.models:
+                    all_models.append(AvailableModel(
+                        id=m.id,
+                        name=m.name,
+                        provider="anthropic"
+                    ))
+        except Exception as e:
+            logger.warning(f"Failed to fetch Anthropic models: {e}")
+
+    # Get currently allowed models from settings
+    allowed_models = app_settings.allowed_chat_models or []
+
+    return AvailableModelsResponse(
+        models=all_models,
+        default_model=app_settings.llm_model,
+        current_model=app_settings.llm_model,
+        allowed_models=allowed_models
+    )
+
+
+@router.get("/conversations", response_model=List[ConversationResponse])
+async def list_conversations():
+    """List all chat conversations."""
+    convs = await repository.list_conversations()
+    return [
+        ConversationResponse(
+            id=c.id,
+            title=c.title,
+            model=c.model,
+            messages=c.messages,
+            total_tokens=c.total_tokens,
+            created_at=c.created_at,
+            updated_at=c.updated_at,
+        )
+        for c in convs
+    ]
+
+
+@router.post("/conversations", response_model=ConversationResponse)
+async def create_conversation(request: CreateConversationRequest = None):
+    """Create a new chat conversation."""
+    # Get default model from app settings if not provided
+    app_settings = await repository.get_settings()
+    default_model = app_settings.llm_model if app_settings else "gpt-4-turbo"
+
+    title = request.title if request and request.title else "New Chat"
+    model = request.model if request and request.model else default_model
+
+    conv = await repository.create_conversation(title=title, model=model)
+    return ConversationResponse(
+        id=conv.id,
+        title=conv.title,
+        model=conv.model,
+        messages=conv.messages,
+        total_tokens=conv.total_tokens,
+        created_at=conv.created_at,
+        updated_at=conv.updated_at,
+    )
+
+
+@router.get("/conversations/{conversation_id}", response_model=ConversationResponse)
+async def get_conversation(conversation_id: str):
+    """Get a specific conversation."""
+    conv = await repository.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    return ConversationResponse(
+        id=conv.id,
+        title=conv.title,
+        model=conv.model,
+        messages=conv.messages,
+        total_tokens=conv.total_tokens,
+        created_at=conv.created_at,
+        updated_at=conv.updated_at,
+    )
+
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str):
+    """Delete a conversation."""
+    success = await repository.delete_conversation(conversation_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {"message": "Conversation deleted"}
+
+
+@router.patch("/conversations/{conversation_id}/title", response_model=ConversationResponse)
+async def update_conversation_title(conversation_id: str, body: dict):
+    """Update a conversation's title."""
+    title = body.get("title", "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Title is required")
+
+    conv = await repository.update_conversation_title(conversation_id, title)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    return ConversationResponse(
+        id=conv.id,
+        title=conv.title,
+        model=conv.model,
+        messages=conv.messages,
+        total_tokens=conv.total_tokens,
+        created_at=conv.created_at,
+        updated_at=conv.updated_at,
+    )
+
+
+@router.patch("/conversations/{conversation_id}/model", response_model=ConversationResponse)
+async def update_conversation_model(conversation_id: str, body: dict):
+    """Update a conversation's model."""
+    model = body.get("model", "").strip()
+    if not model:
+        raise HTTPException(status_code=400, detail="Model is required")
+
+    conv = await repository.update_conversation_model(conversation_id, model)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    return ConversationResponse(
+        id=conv.id,
+        title=conv.title,
+        model=conv.model,
+        messages=conv.messages,
+        total_tokens=conv.total_tokens,
+        created_at=conv.created_at,
+        updated_at=conv.updated_at,
+    )
+
+
+@router.post("/conversations/{conversation_id}/clear", response_model=ConversationResponse)
+async def clear_conversation(conversation_id: str):
+    """Clear all messages in a conversation."""
+    conv = await repository.clear_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    return ConversationResponse(
+        id=conv.id,
+        title=conv.title,
+        model=conv.model,
+        messages=conv.messages,
+        total_tokens=conv.total_tokens,
+        created_at=conv.created_at,
+        updated_at=conv.updated_at,
+    )
+
+
+@router.post("/conversations/{conversation_id}/truncate", response_model=ConversationResponse)
+async def truncate_conversation(conversation_id: str, keep_count: int):
+    """
+    Truncate conversation messages to keep only the first N messages.
+    Used when editing/resending a message to remove subsequent messages.
+    """
+    conv = await repository.truncate_messages(conversation_id, keep_count)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    return ConversationResponse(
+        id=conv.id,
+        title=conv.title,
+        model=conv.model,
+        messages=conv.messages,
+        total_tokens=conv.total_tokens,
+        created_at=conv.created_at,
+        updated_at=conv.updated_at,
+    )
+
+
+@router.post("/conversations/{conversation_id}/messages")
+async def send_message(conversation_id: str, request: SendMessageRequest):
+    """
+    Send a message to a conversation and get a response.
+    Non-streaming version.
+    """
+    from ragtime.rag import rag
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    # Get conversation
+    conv = await repository.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    if not rag.is_ready:
+        raise HTTPException(status_code=503, detail="RAG service initializing, please retry")
+
+    user_message = request.message.strip()
+    if not user_message:
+        raise HTTPException(status_code=400, detail="Message is required")
+
+    # Add user message
+    conv = await repository.add_message(conversation_id, "user", user_message)
+
+    # Build chat history for RAG
+    chat_history = []
+    for msg in conv.messages[:-1]:  # Exclude the current message
+        if msg.role == "user":
+            chat_history.append(HumanMessage(content=msg.content))
+        elif msg.role == "assistant":
+            chat_history.append(AIMessage(content=msg.content))
+
+    # Generate response
+    try:
+        answer = await rag.process_query(user_message, chat_history)
+    except Exception as e:
+        logger.exception("Error processing message")
+        answer = f"Error: {str(e)}"
+
+    # Add assistant response
+    conv = await repository.add_message(conversation_id, "assistant", answer)
+
+    # Auto-generate title from first user message if still "New Chat"
+    if conv.title == "New Chat" and len(conv.messages) >= 2:
+        first_msg = conv.messages[0].content[:50]
+        new_title = first_msg + ("..." if len(conv.messages[0].content) > 50 else "")
+        conv = await repository.update_conversation_title(conversation_id, new_title)
+
+    return {
+        "message": ChatMessage(
+            role="assistant",
+            content=answer,
+            timestamp=conv.messages[-1].timestamp,
+        ),
+        "conversation": ConversationResponse(
+            id=conv.id,
+            title=conv.title,
+            model=conv.model,
+            messages=conv.messages,
+            total_tokens=conv.total_tokens,
+            created_at=conv.created_at,
+            updated_at=conv.updated_at,
+        ),
+    }
+
+
+@router.post("/conversations/{conversation_id}/messages/stream")
+async def send_message_stream(conversation_id: str, request: SendMessageRequest):
+    """
+    Send a message to a conversation and stream the response.
+    Returns SSE stream of tokens.
+    """
+    import json
+    import time
+    from fastapi.responses import StreamingResponse
+    from ragtime.rag import rag
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    # Get conversation
+    conv = await repository.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    if not rag.is_ready:
+        raise HTTPException(status_code=503, detail="RAG service initializing, please retry")
+
+    user_message = request.message.strip()
+    if not user_message:
+        raise HTTPException(status_code=400, detail="Message is required")
+
+    # Add user message
+    await repository.add_message(conversation_id, "user", user_message)
+
+    # Refresh conversation to get updated messages
+    conv = await repository.get_conversation(conversation_id)
+
+    # Build chat history for RAG
+    chat_history = []
+    for msg in conv.messages[:-1]:  # Exclude current message
+        if msg.role == "user":
+            chat_history.append(HumanMessage(content=msg.content))
+        elif msg.role == "assistant":
+            chat_history.append(AIMessage(content=msg.content))
+
+    async def stream_response():
+        """Generate streaming response tokens."""
+        chunk_id = f"chatcmpl-{int(time.time())}"
+        full_response = ""
+        tool_calls_collected = []  # Collect tool calls for storage (deprecated)
+        chronological_events = []  # Collect events in order (content and tools)
+        current_tool_call = None   # Track current tool call being built
+
+        try:
+            async for event in rag.process_query_stream(user_message, chat_history):
+                # Handle structured tool events
+                if isinstance(event, dict):
+                    event_type = event.get("type")
+                    if event_type == "tool_start":
+                        # Start tracking a new tool call
+                        current_tool_call = {
+                            "type": "tool",
+                            "tool": event.get("tool"),
+                            "input": event.get("input")
+                        }
+                        tool_chunk = {
+                            "id": chunk_id,
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": conv.model,
+                            "choices": [{
+                                "index": 0,
+                                "delta": {
+                                    "tool_call": {
+                                        "type": "start",
+                                        "tool": event.get("tool"),
+                                        "input": event.get("input")
+                                    }
+                                },
+                                "finish_reason": None
+                            }]
+                        }
+                        yield f"data: {json.dumps(tool_chunk)}\n\n"
+                    elif event_type == "tool_end":
+                        # Complete the current tool call and save it
+                        if current_tool_call:
+                            current_tool_call["output"] = event.get("output")
+                            chronological_events.append(current_tool_call)
+                            # Also keep deprecated tool_calls format for backward compatibility
+                            tool_calls_collected.append({
+                                "tool": current_tool_call["tool"],
+                                "input": current_tool_call.get("input"),
+                                "output": current_tool_call.get("output")
+                            })
+                            current_tool_call = None
+                        tool_chunk = {
+                            "id": chunk_id,
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": conv.model,
+                            "choices": [{
+                                "index": 0,
+                                "delta": {
+                                    "tool_call": {
+                                        "type": "end",
+                                        "tool": event.get("tool"),
+                                        "output": event.get("output")
+                                    }
+                                },
+                                "finish_reason": None
+                            }]
+                        }
+                        yield f"data: {json.dumps(tool_chunk)}\n\n"
+                else:
+                    # Handle regular text tokens
+                    token = event
+                    full_response += token
+                    # Add content events when we get text (batch them for efficiency)
+                    if chronological_events and chronological_events[-1].get("type") == "content":
+                        # Append to last content event
+                        chronological_events[-1]["content"] += token
+                    else:
+                        # Start new content event
+                        chronological_events.append({"type": "content", "content": token})
+
+                    chunk = {
+                        "id": chunk_id,
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": conv.model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"content": token},
+                            "finish_reason": None
+                        }]
+                    }
+                    yield f"data: {json.dumps(chunk)}\n\n"
+
+            # Save the full response with tool calls and chronological events
+            updated_conv = await repository.add_message(
+                conversation_id,
+                "assistant",
+                full_response,
+                tool_calls=tool_calls_collected if tool_calls_collected else None,
+                events=chronological_events if chronological_events else None
+            )
+
+            # Auto-generate title if needed
+            if updated_conv and updated_conv.title == "New Chat" and len(updated_conv.messages) >= 2:
+                first_msg = updated_conv.messages[0].content[:50]
+                new_title = first_msg + ("..." if len(updated_conv.messages[0].content) > 50 else "")
+                await repository.update_conversation_title(conversation_id, new_title)
+
+            # Final chunk
+            final_chunk = {
+                "id": chunk_id,
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": conv.model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": "stop"
+                }]
+            }
+            yield f"data: {json.dumps(final_chunk)}\n\n"
+            yield "data: [DONE]\n\n"
+
+        except Exception as e:
+            logger.exception("Error in streaming response")
+
+            raw_error = str(e)
+            friendly_error = "An error occurred while generating the response. Please try again."
+
+            max_iters = None
+            if rag and getattr(rag, "agent_executor", None):
+                max_iters = getattr(rag.agent_executor, "max_iterations", None)
+
+            if "iteration" in raw_error.lower() or "max iterations" in raw_error.lower():
+                limit_text = f" ({max_iters})" if max_iters else ""
+                friendly_error = f"Stopped after reaching the max_iterations limit{limit_text}. Please narrow the request or retry."
+
+            # Include any in-progress tool call that didn't complete
+            if current_tool_call:
+                current_tool_call["output"] = "(interrupted)"
+                chronological_events.append(current_tool_call)
+                # Also add to deprecated format
+                tool_calls_collected.append({
+                    "tool": current_tool_call["tool"],
+                    "input": current_tool_call.get("input"),
+                    "output": "(interrupted)"
+                })
+
+            # Persist whatever we have so far, including collected tool calls and events
+            combined_response = full_response.strip()
+            if friendly_error:
+                combined_response = f"{combined_response}\n\n{friendly_error}" if combined_response else friendly_error
+
+            try:
+                await repository.add_message(
+                    conversation_id,
+                    "assistant",
+                    combined_response,
+                    tool_calls=tool_calls_collected if tool_calls_collected else None,
+                    events=chronological_events if chronological_events else None
+                )
+            except Exception:
+                logger.exception("Failed to persist assistant message after error")
+
+            error_chunk = {
+                "id": chunk_id,
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": conv.model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": f"\n\n{friendly_error}"},
+                    "finish_reason": "error"
+                }]
+            }
+            yield f"data: {json.dumps(error_chunk)}\n\n"
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        stream_response(),
+        media_type="text/event-stream"
+    )
+
+
+# =============================================================================
+# Background Chat Task Endpoints
+# =============================================================================
+
+from ragtime.indexer.models import ChatTask, ChatTaskResponse, ChatTaskStatus
+
+
+@router.post("/conversations/{conversation_id}/messages/background", response_model=ChatTaskResponse)
+async def send_message_background(conversation_id: str, request: SendMessageRequest):
+    """
+    Send a message to a conversation and process it in the background.
+    Returns a task object that can be polled for status and results.
+    """
+    from ragtime.rag import rag
+    from ragtime.indexer.background_tasks import background_task_service
+
+    # Get conversation
+    conv = await repository.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    if not rag.is_ready:
+        raise HTTPException(status_code=503, detail="RAG service initializing, please retry")
+
+    user_message = request.message.strip()
+    if not user_message:
+        raise HTTPException(status_code=400, detail="Message is required")
+
+    # Check if there's already an active task
+    existing_task = await repository.get_active_task_for_conversation(conversation_id)
+    if existing_task:
+        # Return the existing task instead of creating a new one
+        return ChatTaskResponse(
+            id=existing_task.id,
+            conversation_id=existing_task.conversation_id,
+            status=existing_task.status,
+            user_message=existing_task.user_message,
+            streaming_state=existing_task.streaming_state,
+            response_content=existing_task.response_content,
+            error_message=existing_task.error_message,
+            created_at=existing_task.created_at,
+            started_at=existing_task.started_at,
+            completed_at=existing_task.completed_at,
+            last_update_at=existing_task.last_update_at,
+        )
+
+    # Add user message to conversation first
+    await repository.add_message(conversation_id, "user", user_message)
+
+    # Start background task
+    task_id = await background_task_service.start_task_async(conversation_id, user_message)
+
+    # Get the created task
+    task = await repository.get_chat_task(task_id)
+    if not task:
+        raise HTTPException(status_code=500, detail="Failed to create background task")
+
+    return ChatTaskResponse(
+        id=task.id,
+        conversation_id=task.conversation_id,
+        status=task.status,
+        user_message=task.user_message,
+        streaming_state=task.streaming_state,
+        response_content=task.response_content,
+        error_message=task.error_message,
+        created_at=task.created_at,
+        started_at=task.started_at,
+        completed_at=task.completed_at,
+        last_update_at=task.last_update_at,
+    )
+
+
+@router.get("/conversations/{conversation_id}/task", response_model=Optional[ChatTaskResponse])
+async def get_conversation_active_task(conversation_id: str):
+    """
+    Get the active (pending/running) task for a conversation, if any.
+    Returns null if no active task.
+    """
+    task = await repository.get_active_task_for_conversation(conversation_id)
+    if not task:
+        return None
+
+    return ChatTaskResponse(
+        id=task.id,
+        conversation_id=task.conversation_id,
+        status=task.status,
+        user_message=task.user_message,
+        streaming_state=task.streaming_state,
+        response_content=task.response_content,
+        error_message=task.error_message,
+        created_at=task.created_at,
+        started_at=task.started_at,
+        completed_at=task.completed_at,
+        last_update_at=task.last_update_at,
+    )
+
+
+@router.get("/tasks/{task_id}", response_model=ChatTaskResponse)
+async def get_chat_task(task_id: str):
+    """
+    Get a chat task by ID.
+    Use this to poll for task status and streaming state.
+    """
+    task = await repository.get_chat_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    return ChatTaskResponse(
+        id=task.id,
+        conversation_id=task.conversation_id,
+        status=task.status,
+        user_message=task.user_message,
+        streaming_state=task.streaming_state,
+        response_content=task.response_content,
+        error_message=task.error_message,
+        created_at=task.created_at,
+        started_at=task.started_at,
+        completed_at=task.completed_at,
+        last_update_at=task.last_update_at,
+    )
+
+
+@router.post("/tasks/{task_id}/cancel", response_model=ChatTaskResponse)
+async def cancel_chat_task(task_id: str):
+    """
+    Cancel a running chat task.
+    """
+    from ragtime.indexer.background_tasks import background_task_service
+
+    task = await repository.get_chat_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if task.status not in (ChatTaskStatus.pending, ChatTaskStatus.running):
+        raise HTTPException(status_code=400, detail="Task is not running")
+
+    # Cancel the task
+    background_task_service.cancel_task(task_id)
+    updated_task = await repository.cancel_chat_task(task_id)
+
+    if not updated_task:
+        raise HTTPException(status_code=500, detail="Failed to cancel task")
+
+    return ChatTaskResponse(
+        id=updated_task.id,
+        conversation_id=updated_task.conversation_id,
+        status=updated_task.status,
+        user_message=updated_task.user_message,
+        streaming_state=updated_task.streaming_state,
+        response_content=updated_task.response_content,
+        error_message=updated_task.error_message,
+        created_at=updated_task.created_at,
+        started_at=updated_task.started_at,
+        completed_at=updated_task.completed_at,
+        last_update_at=updated_task.last_update_at,
+    )

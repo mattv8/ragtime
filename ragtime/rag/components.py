@@ -2,6 +2,8 @@
 RAG Components - FAISS Vector Store and LangChain Agent setup.
 """
 
+import asyncio
+import os
 from pathlib import Path
 from typing import Any, Optional, List
 
@@ -15,51 +17,55 @@ from ragtime.config import settings
 from ragtime.core.logging import get_logger
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.tools import get_enabled_tools, get_all_tools
+from ragtime.tools.odoo_shell import filter_odoo_output
 
 logger = get_logger(__name__)
 
 # Base system prompt template - tool and index descriptions will be appended
-BASE_SYSTEM_PROMPT = """You are a helpful AI assistant with access to business data and code documentation.
-You help users understand their systems by combining code knowledge with live data queries.
+BASE_SYSTEM_PROMPT = """You are an intelligent AI assistant with access to indexed documentation and live system connections.
+Your role is to help users understand their systems by combining knowledge from documentation with real-time data.
 
-CAPABILITIES:
-1. **Code Knowledge**: Indexed documentation about codebases, modules, and business logic.
-2. **Live Data Access**: Query connected databases and systems in real-time.
+AVAILABLE TOOLS:
 
-HOW TO ANSWER QUESTIONS:
+1. **search_knowledge** - Search indexed documentation (code, configs, technical docs)
+   Returns relevant code snippets, schema definitions, and implementation details.
+   Useful for understanding how systems work, what fields exist, and how data flows.
 
-**For data/business questions** (counts, records, status, reports):
-- Use the appropriate query tool to get live data
-- Present results in a clear, readable format (tables, lists, summaries)
-- Do NOT show raw queries unless the user explicitly asks for them
+2. **Query tools** (database/system-specific) - Access live data in real-time
+   Execute queries against actual databases and systems to get current data.
+   Each tool connects to a specific system - read descriptions to understand which.
 
-**For code/technical questions** (how does X work, where is Y implemented):
-- Use the indexed knowledge sources to find relevant code and documentation
-- Explain the implementation in plain language
-- Include code snippets only when they help explain the answer
+WHEN TO USE EACH TOOL:
 
-**For questions requiring BOTH code and data** (why is X happening, debug Y):
-- First, consult the knowledge sources to understand the code logic
-- Then, query live data to see actual values and state
-- Correlate what the code does with what the data shows
-- This is often the most valuable analysis you can provide
+**search_knowledge** is best for:
+- Understanding schemas, models, or table structures before querying
+- Finding implementation details, business logic, or validation rules
+- Looking up field names, data types, or relationships
+- Exploring unfamiliar systems or codebases
 
-QUERY VALIDATION (internal process):
-When you need to query data:
-1. Draft a query based on your understanding of the schema
-2. Execute it using the appropriate tool
-3. If it fails (error, wrong table/column), analyze the error and fix it
-4. Repeat until successful - never guess at results
-5. Only then present findings to the user
+**Query tools** are best for:
+- Retrieving actual data values ("How many orders?" "Show me user X")
+- Checking current state or status of records
+- Running reports or aggregations on live data
+- Verifying what's actually in the database
 
-RESPONSE GUIDELINES:
-- Lead with insights and answers, not technical details
-- Use tables and formatting for data presentation
-- Only show queries/code if the user asks for them (e.g., "show me the SQL", "write a query")
-- When uncertain, explain what you found and what you're unsure about
-- Always include LIMIT clauses internally to prevent overwhelming results
+**Combine both** for investigative questions:
+- Use search_knowledge if you're unsure about the schema
+- Use query tools when you know what you're looking for
+- Iterate: search docs -> query data -> search more if needed
 
-NEVER say "I don't have access" when tools are available - use them."""
+GUIDELINES:
+- Choose the right tool based on what the question asks for
+- If you know the schema already, go straight to querying
+- If a query fails due to unknown columns/tables, search docs to find correct names
+- You can call search_knowledge multiple times with different queries
+- Always use LIMIT clauses in SQL queries
+
+RESPONSE FORMAT:
+- Lead with the answer, not implementation details
+- Present data in tables or lists when appropriate
+- Show queries/code only if explicitly requested
+- Be concise but thorough"""
 
 
 def build_index_system_prompt(index_metadata: List[dict]) -> str:
@@ -73,12 +79,19 @@ def build_index_system_prompt(index_metadata: List[dict]) -> str:
         System prompt section with index descriptions.
     """
     if not index_metadata:
-        return ""
+        return """
+
+NOTE: No knowledge indexes are currently loaded. You can only use live query tools.
+To answer questions about code structure or implementation details, index the relevant codebase first.
+"""
 
     # Filter to only enabled indexes
     enabled_indexes = [idx for idx in index_metadata if idx.get("enabled", True)]
     if not enabled_indexes:
-        return ""
+        return """
+
+NOTE: All knowledge indexes are disabled. Enable them in the Indexes tab to use documentation context.
+"""
 
     index_sections = []
     for idx in enabled_indexes:
@@ -95,11 +108,17 @@ def build_index_system_prompt(index_metadata: List[dict]) -> str:
 
     return f"""
 
-KNOWLEDGE SOURCES (indexed code and documentation):
+INDEXED KNOWLEDGE SOURCES:
 {chr(10).join(index_sections)}
 
-Use these to understand HOW things work (code logic, business rules, data models).
-Combine with live queries to understand WHAT is happening (current state, actual values).
+These indexes are AUTOMATICALLY searched for each query. The relevant documentation context is injected into your input.
+Use this context to:
+- Understand table/model schemas before writing queries
+- Learn business logic and validation rules
+- Find implementation details for debugging
+- Discover relationships between different parts of the system
+
+If the automatically retrieved context doesn't answer the question, you may need to query live data using the available tools.
 """
 
 
@@ -114,7 +133,11 @@ def build_tool_system_prompt(tool_configs: List[dict]) -> str:
         System prompt section with tool descriptions.
     """
     if not tool_configs:
-        return ""
+        return """
+
+NOTE: No query tools are configured. You can only answer from indexed documentation.
+To query live data, configure tools in the Tools tab.
+"""
 
     tool_sections = []
     for config in tool_configs:
@@ -124,28 +147,33 @@ def build_tool_system_prompt(tool_configs: List[dict]) -> str:
 
         # Build type-specific guidance
         if tool_type == "postgres":
-            type_hint = "PostgreSQL database - use SQL queries"
+            type_hint = "SQL database - execute SQL queries"
+            query_hint = "Use standard SQL syntax with LIMIT clauses"
         elif tool_type == "odoo_shell":
-            type_hint = "Odoo ORM - use Python ORM commands"
+            type_hint = "Odoo ORM - execute Python ORM code"
+            query_hint = "Use env['model.name'].search() and browse() methods"
         elif tool_type == "ssh_shell":
-            type_hint = "SSH shell - use shell commands"
+            type_hint = "SSH shell - execute shell commands"
+            query_hint = "Use standard shell commands"
         else:
             type_hint = "Query tool"
+            query_hint = ""
 
         section = f"- **{name}** ({type_hint})"
         if description:
-            section += f"\n  {description}"
+            section += f"\n  Target: {description}"
+        if query_hint:
+            section += f"\n  Usage: {query_hint}"
         tool_sections.append(section)
 
     return f"""
 
-AVAILABLE TOOLS:
+AVAILABLE QUERY TOOLS:
 {chr(10).join(tool_sections)}
 
-TOOL USAGE:
-- Use these tools to get live data when answering questions about current state, counts, or records
-- Combine tool results with knowledge sources for deeper analysis (e.g., "why is this happening?" requires understanding both code logic and current data)
-- If a query fails, fix it internally - don't burden the user with error details unless they're debugging
+CRITICAL: Read each tool's "Target" description to understand what system it connects to.
+Different tools connect to DIFFERENT systems - choose based on where the data lives.
+If the user's question refers to a specific system, use the tool that connects to that system.
 """
 
 
@@ -263,37 +291,54 @@ class RAGComponents:
             raise ValueError(f"Unknown embedding provider: {provider}")
 
     async def _load_faiss_indexes(self, embedding_model):
-        """Load FAISS indexes from configured paths."""
-        # Try multiple base directories
-        possible_bases = [
-            Path(__file__).resolve().parent.parent.parent,  # /app
-            Path("/app"),
-            Path.cwd(),
-        ]
+        """Load FAISS indexes from database metadata.
 
-        index_paths = [p.strip() for p in settings.faiss_index_paths.split(",") if p.strip()]
+        Uses the index_metadata table to discover available indexes and loads
+        only those that are enabled. The path is read directly from the database
+        metadata, which was saved by the indexer service.
+        """
+        # Try to load from database metadata (preferred)
+        if self._index_metadata:
+            enabled_indexes = [
+                idx for idx in self._index_metadata
+                if idx.get("enabled", True)
+            ]
 
-        for index_path in index_paths:
-            loaded = False
-            for base_dir in possible_bases:
-                full_path = base_dir / index_path
-                if full_path.exists():
-                    try:
-                        db = FAISS.load_local(
-                            str(full_path),
-                            embedding_model,
-                            allow_dangerous_deserialization=True
-                        )
-                        index_name = Path(index_path).name
-                        self.retrievers[index_name] = db.as_retriever(search_kwargs={"k": 5})
-                        logger.info(f"Loaded FAISS index: {index_name} from {full_path}")
-                        loaded = True
-                        break
-                    except Exception as e:
-                        logger.warning(f"Failed to load FAISS index {full_path}: {e}")
+            if enabled_indexes:
+                for idx in enabled_indexes:
+                    index_name = idx.get("name")
+                    if not index_name:
+                        continue
 
-            if not loaded:
-                logger.warning(f"FAISS index not found: {index_path}")
+                    # Use the path stored in the database by the indexer
+                    index_path_str = idx.get("path")
+                    if not index_path_str:
+                        logger.warning(f"Index {index_name} has no path in metadata, skipping")
+                        continue
+
+                    index_path = Path(index_path_str)
+                    if index_path.exists():
+                        try:
+                            db = FAISS.load_local(
+                                str(index_path),
+                                embedding_model,
+                                allow_dangerous_deserialization=True
+                            )
+                            self.retrievers[index_name] = db.as_retriever(search_kwargs={"k": 5})
+                            logger.info(f"Loaded FAISS index: {index_name} from {index_path}")
+                        except Exception as e:
+                            logger.warning(f"Failed to load FAISS index {index_name}: {e}")
+                    else:
+                        logger.warning(f"FAISS index path not found: {index_path}")
+
+                if self.retrievers:
+                    logger.info(f"Loaded {len(self.retrievers)} FAISS index(es) from database metadata")
+                else:
+                    logger.info("No enabled FAISS indexes found in database metadata")
+            else:
+                logger.info("No indexes found in database metadata")
+        else:
+            logger.info("No index metadata available (database not initialized)")
 
     async def _load_index_metadata(self) -> list[dict]:
         """Load index metadata from database for system prompt."""
@@ -304,6 +349,7 @@ class RAGComponents:
             return [
                 {
                     "name": m.name,
+                    "path": m.path,
                     "description": getattr(m, "description", ""),
                     "enabled": m.enabled,
                     "document_count": m.documentCount,
@@ -362,8 +408,6 @@ class RAGComponents:
                 handle_parsing_errors=True,
                 max_iterations=15,  # Allow enough iterations for query refinement
                 return_intermediate_steps=settings.debug_mode,
-                # Let the agent decide when it has a satisfactory answer
-                early_stopping_method="generate"
             )
         else:
             # No tools - agent_executor stays None
@@ -374,11 +418,16 @@ class RAGComponents:
         Build LangChain tools from ToolConfig entries.
 
         Creates dynamic tool wrappers for each configured tool instance.
+        Also adds a knowledge_search tool if FAISS retrievers are available.
         """
         from langchain_core.tools import StructuredTool
         from pydantic import BaseModel, Field
 
         tools = []
+
+        # Add knowledge search tool if we have FAISS retrievers
+        if self.retrievers:
+            tools.append(self._create_knowledge_search_tool())
 
         for config in self._tool_configs:
             tool_type = config.get("tool_type")
@@ -400,11 +449,66 @@ class RAGComponents:
 
         return tools
 
+    def _create_knowledge_search_tool(self):
+        """Create a tool for on-demand FAISS knowledge search.
+
+        This allows the agent to search the indexed documentation at any point
+        during its reasoning, not just at the beginning of the query.
+        """
+        from langchain_core.tools import StructuredTool
+        from pydantic import BaseModel, Field
+
+        class KnowledgeSearchInput(BaseModel):
+            query: str = Field(description="Search query to find relevant documentation, code, or technical information")
+            index_name: str = Field(
+                default="",
+                description="Optional: specific index to search (leave empty to search all indexes)"
+            )
+
+        def search_knowledge(query: str, index_name: str = "") -> str:
+            """Search indexed documentation for relevant information."""
+            results = []
+
+            # Determine which retrievers to search
+            if index_name and index_name in self.retrievers:
+                retrievers_to_search = {index_name: self.retrievers[index_name]}
+            else:
+                retrievers_to_search = self.retrievers
+
+            for name, retriever in retrievers_to_search.items():
+                try:
+                    docs = retriever.invoke(query)
+                    for doc in docs:
+                        source = doc.metadata.get("source", "unknown")
+                        content = doc.page_content[:500] + "..." if len(doc.page_content) > 500 else doc.page_content
+                        results.append(f"[{name}] {source}:\n{content}")
+                except Exception as e:
+                    logger.warning(f"Error searching {name}: {e}")
+
+            if results:
+                return f"Found {len(results)} relevant documents:\n\n" + "\n\n---\n\n".join(results)
+            return "No relevant documentation found for this query."
+
+        # Build description with available indexes
+        index_names = list(self.retrievers.keys())
+        description = (
+            "Search the indexed documentation and codebase for relevant information. "
+            "Use this to find code examples, schema definitions, configuration details, or technical documentation. "
+            f"Available indexes: {', '.join(index_names)}. "
+            "The query should describe what you're looking for (e.g., 'user authentication implementation', 'database schema for orders')."
+        )
+
+        return StructuredTool.from_function(
+            func=search_knowledge,
+            name="search_knowledge",
+            description=description,
+            args_schema=KnowledgeSearchInput
+        )
+
     async def _create_postgres_tool(self, config: dict, tool_name: str, tool_id: str):
         """Create a PostgreSQL query tool from config."""
         from langchain_core.tools import StructuredTool
         from pydantic import BaseModel, Field
-        import asyncio
         import subprocess
 
         conn_config = config.get("connection_config", {})
@@ -414,12 +518,18 @@ class RAGComponents:
         description = config.get("description", "")
 
         class PostgresInput(BaseModel):
-            query: str = Field(description="SQL query to execute. Must include LIMIT clause.")
-            reason: str = Field(description="Brief description of what this query retrieves")
+            query: str = Field(default="", description="SQL query to execute. Must include LIMIT clause.")
+            reason: str = Field(default="", description="Brief description of what this query retrieves")
 
         async def execute_query(query: str, reason: str) -> str:
             """Execute PostgreSQL query using this tool's configuration."""
             from ragtime.core.security import validate_sql_query, sanitize_output
+
+            # Validate required fields
+            if not query or not query.strip():
+                return "Error: 'query' parameter is required. Provide a SQL query to execute."
+            if not reason:
+                reason = "SQL query"
 
             logger.info(f"[{tool_name}] Query: {reason}")
 
@@ -468,10 +578,10 @@ class RAGComponents:
             except Exception as e:
                 return f"Error: {str(e)}"
 
-        tool_description = f"Execute SQL queries against {config.get('name', 'PostgreSQL')}."
+        tool_description = f"Query the {config.get('name', 'PostgreSQL')} database using SQL."
         if description:
-            tool_description += f" {description}"
-        tool_description += " Must include LIMIT clause. Only SELECT queries unless write operations are enabled."
+            tool_description += f" This database contains: {description}"
+        tool_description += " Include LIMIT clause to restrict results. SELECT queries only unless writes are enabled."
 
         return StructuredTool.from_function(
             coroutine=execute_query,
@@ -484,7 +594,6 @@ class RAGComponents:
         """Create an Odoo shell tool from config (Docker or SSH mode)."""
         from langchain_core.tools import StructuredTool
         from pydantic import BaseModel, Field
-        import asyncio
         import subprocess
         import re
 
@@ -495,8 +604,8 @@ class RAGComponents:
         mode = conn_config.get("mode", "docker")  # docker or ssh
 
         class OdooInput(BaseModel):
-            code: str = Field(description="Python code to execute in Odoo shell using ORM methods")
-            reason: str = Field(description="Brief description of what this code does")
+            code: str = Field(default="", description="Python code to execute in Odoo shell using ORM methods")
+            reason: str = Field(default="", description="Brief description of what this code does")
 
         def _build_docker_command(container: str, database: str, config_path: str) -> list:
             """Build Docker exec command for Odoo shell."""
@@ -508,113 +617,15 @@ class RAGComponents:
                 cmd.extend(["-c", config_path])
             return cmd
 
-        def _build_ssh_command(conn_config: dict, database: str) -> list:
-            """Build SSH command for remote Odoo shell."""
-            host = conn_config.get("ssh_host", "")
-            port = conn_config.get("ssh_port", 22)
-            user = conn_config.get("ssh_user", "")
-            key_path = conn_config.get("ssh_key_path", "")
-            password = conn_config.get("ssh_password", "")
-            config_path = conn_config.get("config_path", "")
-            odoo_bin_path = conn_config.get("odoo_bin_path", "odoo-bin")
-            working_directory = conn_config.get("working_directory", "")
-            run_as_user = conn_config.get("run_as_user", "")
-
-            # Build the remote Odoo shell command
-            odoo_cmd = f"{odoo_bin_path} shell --no-http -d {database}"
-            if config_path:
-                odoo_cmd = f"{odoo_cmd} -c {config_path}"
-
-            # Wrap with sudo if run_as_user specified
-            if run_as_user:
-                odoo_cmd = f"sudo -u {run_as_user} {odoo_cmd}"
-
-            # Wrap with cd if working directory specified
-            if working_directory:
-                odoo_cmd = f"cd {working_directory} && {odoo_cmd}"
-
-            # Build SSH command
-            ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes"]
-            if port != 22:
-                ssh_cmd.extend(["-p", str(port)])
-            if key_path:
-                ssh_cmd.extend(["-i", key_path])
-            ssh_cmd.append(f"{user}@{host}")
-            ssh_cmd.append(odoo_cmd)
-
-            return ssh_cmd
-
-        def _filter_odoo_output(output: str) -> str:
-            """Filter Odoo shell initialization noise from output."""
-            result_lines = []
-            command_started = False
-
-            # Patterns to skip during initialization
-            init_skip_patterns = [
-                r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} \d+ INFO',
-                r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} \d+ WARNING',
-                r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} \d+ DEBUG',
-                r'^/.*\.py:\d+: UserWarning:',
-                r'^\s*import pkg_resources',
-                r'^\s*The pkg_resources package',
-                r'^profiling:.*Cannot open',
-                r'^Python \d+\.\d+\.\d+',
-                r'^IPython.*--',
-                r'^Tip:',
-                r'^In \[\d+\]:',
-                r'^>>>',
-                r'^\.\.\.',
-                r'^odoo:',
-                r'^openerp:',
-                r'^werkzeug:',
-            ]
-
-            for line in output.split("\n"):
-                line_stripped = line.rstrip()
-
-                # Check for our error marker
-                if line_stripped.startswith("ODOO_ERROR:"):
-                    return f"Error: {line_stripped[11:].strip()}"
-
-                # Check for Python exceptions
-                if any(re.match(pattern, line_stripped) for pattern in [
-                    r'^Traceback \(most recent call last\):',
-                    r'^\w+Error:',
-                    r'^\w+Exception:',
-                ]):
-                    result_lines.append(line_stripped)
-                    command_started = True
-                    continue
-
-                # Skip initialization noise
-                if not command_started:
-                    if any(re.match(pattern, line_stripped) for pattern in init_skip_patterns):
-                        continue
-                    # Look for indicators that command output is starting
-                    if line_stripped and not line_stripped.startswith((' ', '\t')):
-                        if not any(skip in line_stripped.lower() for skip in [
-                            'loading', 'loaded', 'initializing', 'registering',
-                            'odoo.', 'werkzeug', 'modules.'
-                        ]):
-                            command_started = True
-                            result_lines.append(line_stripped)
-                else:
-                    # After command starts, capture everything except profiling noise
-                    if not re.match(r'^profiling:.*Cannot open', line_stripped):
-                        result_lines.append(line_stripped)
-
-            result = "\n".join(result_lines).strip()
-
-            # Clean up common shell artifacts
-            result = re.sub(r'^In \[\d+\]:\s*', '', result, flags=re.MULTILINE)
-            result = re.sub(r'^Out\[\d+\]:\s*', '', result, flags=re.MULTILINE)
-            result = re.sub(r'^\.\.\.:?\s*', '', result, flags=re.MULTILINE)
-
-            return result
-
         async def execute_odoo(code: str, reason: str) -> str:
             """Execute Odoo shell command using this tool's configuration."""
             from ragtime.core.security import validate_odoo_code, sanitize_output
+
+            # Validate required fields
+            if not code or not code.strip():
+                return "Error: 'code' parameter is required. Provide Python code to execute in the Odoo shell."
+            if not reason:
+                reason = "Odoo query"
 
             logger.info(f"[{tool_name}] Odoo ({mode}): {reason}")
 
@@ -625,18 +636,6 @@ class RAGComponents:
 
             database = conn_config.get("database", "odoo")
             config_path = conn_config.get("config_path", "")
-
-            # Build command based on mode
-            if mode == "ssh":
-                ssh_host = conn_config.get("ssh_host", "")
-                if not ssh_host:
-                    return "Error: No SSH host configured"
-                cmd = _build_ssh_command(conn_config, database)
-            else:  # docker mode
-                container = conn_config.get("container", "")
-                if not container:
-                    return "Error: No container configured"
-                cmd = _build_docker_command(container, database, config_path)
 
             # Wrap user code with env setup and error handling
             wrapped_code = f'''
@@ -649,36 +648,100 @@ except Exception as e:
             # Add exit command
             full_input = wrapped_code + "\nexit()\n"
 
-            try:
-                process = await asyncio.wait_for(
-                    asyncio.create_subprocess_exec(
-                        *cmd,
-                        stdin=subprocess.PIPE,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT  # Merge stderr into stdout
-                    ),
-                    timeout=timeout
+            async def _run_with_cmd(cmd: list) -> str:
+                """Execute command and return filtered output."""
+                try:
+                    process = await asyncio.wait_for(
+                        asyncio.create_subprocess_exec(
+                            *cmd,
+                            stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT  # Merge stderr into stdout
+                        ),
+                        timeout=timeout
+                    )
+                    stdout, _ = await process.communicate(input=full_input.encode())
+                    output = stdout.decode("utf-8", errors="replace")
+
+                    result = filter_odoo_output(output)
+                    return sanitize_output(result) if result else "Query executed successfully (no output)"
+
+                except asyncio.TimeoutError:
+                    return f"Error: Query timed out after {timeout}s"
+                except FileNotFoundError:
+                    cmd_name = "SSH" if mode == "ssh" else "Docker"
+                    return f"Error: {cmd_name} command not found"
+                except Exception as e:
+                    logger.exception(f"Odoo shell error: {e}")
+                    return f"Error: {str(e)}"
+
+            # Build command based on mode
+            if mode == "ssh":
+                ssh_host = conn_config.get("ssh_host", "")
+                if not ssh_host:
+                    return "Error: No SSH host configured"
+
+                # Use Paramiko for SSH connection
+                from ragtime.core.ssh import SSHConfig, execute_ssh_command
+
+                ssh_config = SSHConfig(
+                    host=ssh_host,
+                    port=conn_config.get("ssh_port", 22),
+                    user=conn_config.get("ssh_user", ""),
+                    password=conn_config.get("ssh_password"),
+                    key_path=conn_config.get("ssh_key_path"),
+                    key_content=conn_config.get("ssh_key_content"),
+                    key_passphrase=conn_config.get("ssh_key_passphrase"),
+                    timeout=timeout,
                 )
-                stdout, _ = await process.communicate(input=full_input.encode())
-                output = stdout.decode("utf-8", errors="replace")
 
-                result = _filter_odoo_output(output)
-                return sanitize_output(result) if result else "Query executed successfully (no output)"
+                # Build remote Odoo shell command
+                odoo_bin_path = conn_config.get("odoo_bin_path", "odoo-bin")
+                odoo_config_path = conn_config.get("config_path", "")
+                working_directory = conn_config.get("working_directory", "")
+                run_as_user = conn_config.get("run_as_user", "")
 
-            except asyncio.TimeoutError:
-                return f"Error: Query timed out after {timeout}s"
-            except FileNotFoundError:
-                cmd_name = "SSH" if mode == "ssh" else "Docker"
-                return f"Error: {cmd_name} command not found"
-            except Exception as e:
-                logger.exception(f"Odoo shell error: {e}")
-                return f"Error: {str(e)}"
+                odoo_cmd = f"{odoo_bin_path} shell --no-http -d {database}"
+                if odoo_config_path:
+                    odoo_cmd = f"{odoo_cmd} -c {odoo_config_path}"
+                if run_as_user:
+                    odoo_cmd = f"sudo -u {run_as_user} {odoo_cmd}"
+                if working_directory:
+                    odoo_cmd = f"cd {working_directory} && {odoo_cmd}"
+
+                # Use heredoc to pass code to shell
+                remote_command = f"{odoo_cmd} <<'ODOO_EOF'\n{full_input}ODOO_EOF"
+
+                try:
+                    loop = asyncio.get_event_loop()
+                    result = await loop.run_in_executor(
+                        None,
+                        lambda: execute_ssh_command(ssh_config, remote_command)
+                    )
+
+                    if not result.success and "ODOO_ERROR" not in result.output:
+                        return f"Error (exit {result.exit_code}): {result.stderr or result.stdout}"
+
+                    # For SSH, filter with ssh_mode=True to strip STDERR section
+                    filtered = filter_odoo_output(result.output, ssh_mode=True)
+                    return sanitize_output(filtered) if filtered else "Query executed successfully (no output)"
+
+                except Exception as e:
+                    logger.exception(f"Odoo SSH error: {e}")
+                    return f"Error: {str(e)}"
+
+            else:  # docker mode
+                container = conn_config.get("container", "")
+                if not container:
+                    return "Error: No container configured"
+                cmd = _build_docker_command(container, database, config_path)
+                return await _run_with_cmd(cmd)
 
         mode_label = "SSH" if mode == "ssh" else "Docker"
-        tool_description = f"Execute Python ORM code in {config.get('name', 'Odoo')} shell ({mode_label})."
+        tool_description = f"Query {config.get('name', 'Odoo')} ERP using Python ORM code ({mode_label} connection)."
         if description:
-            tool_description += f" {description}"
-        tool_description += " Use env['model'].search_read() for queries."
+            tool_description += f" This system contains: {description}"
+        tool_description += " Use env['model'].search_read(domain, fields, limit=N) for data retrieval."
 
         return StructuredTool.from_function(
             coroutine=execute_odoo,
@@ -691,20 +754,25 @@ except Exception as e:
         """Create an SSH shell tool from config."""
         from langchain_core.tools import StructuredTool
         from pydantic import BaseModel, Field
-        import asyncio
-        import subprocess
 
         conn_config = config.get("connection_config", {})
         timeout = config.get("timeout", 30)
         description = config.get("description", "")
 
         class SSHInput(BaseModel):
-            command: str = Field(description="Shell command to execute on the remote server")
-            reason: str = Field(description="Brief description of what this command does")
+            command: str = Field(default="", description="Shell command to execute on the remote server")
+            reason: str = Field(default="", description="Brief description of what this command does")
 
         async def execute_ssh(command: str, reason: str) -> str:
             """Execute SSH command using this tool's configuration."""
             from ragtime.core.security import sanitize_output
+            from ragtime.core.ssh import SSHConfig, execute_ssh_command
+
+            # Validate required fields
+            if not command or not command.strip():
+                return "Error: 'command' parameter is required. Provide a shell command to execute."
+            if not reason:
+                reason = "SSH command"
 
             logger.info(f"[{tool_name}] SSH: {reason}")
 
@@ -712,6 +780,9 @@ except Exception as e:
             port = conn_config.get("port", 22)
             user = conn_config.get("user", "")
             key_path = conn_config.get("key_path")
+            key_content = conn_config.get("key_content")
+            key_passphrase = conn_config.get("key_passphrase")
+            password = conn_config.get("password")
             command_prefix = conn_config.get("command_prefix", "")
 
             if not host or not user:
@@ -719,33 +790,38 @@ except Exception as e:
 
             full_command = f"{command_prefix}{command}"
 
-            cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
-            if key_path:
-                cmd.extend(["-i", key_path])
-            cmd.extend(["-p", str(port), f"{user}@{host}", full_command])
+            # Build SSH config
+            ssh_config = SSHConfig(
+                host=host,
+                port=port,
+                user=user,
+                password=password,
+                key_path=key_path,
+                key_content=key_content,
+                key_passphrase=key_passphrase,
+                timeout=timeout,
+            )
 
             try:
-                process = await asyncio.wait_for(
-                    asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE),
-                    timeout=timeout
+                # Run in thread pool to avoid blocking
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: execute_ssh_command(ssh_config, full_command)
                 )
-                stdout, stderr = await process.communicate()
 
-                if process.returncode != 0:
-                    error = stderr.decode('utf-8', errors='replace').strip()
-                    return f"Error (exit {process.returncode}): {error}"
+                if not result.success:
+                    return f"Error (exit {result.exit_code}): {result.stderr or result.stdout}"
 
-                output = stdout.decode("utf-8", errors="replace").strip()
+                output = result.stdout.strip()
                 return sanitize_output(output) if output else "Command executed successfully (no output)"
 
-            except asyncio.TimeoutError:
-                return f"Error: Command timed out after {timeout}s"
             except Exception as e:
                 return f"Error: {str(e)}"
 
         tool_description = f"Execute shell commands on {config.get('name', 'remote server')} via SSH."
         if description:
-            tool_description += f" {description}"
+            tool_description += f" This server provides access to: {description}"
 
         return StructuredTool.from_function(
             coroutine=execute_ssh,
@@ -754,7 +830,7 @@ except Exception as e:
             args_schema=SSHInput
         )
 
-    def get_context_from_retrievers(self, query: str, max_docs: int = 5) -> str:
+    def get_context_from_retrievers(self, query: str, max_docs: int = 5) -> tuple[str, list[dict]]:
         """
         Retrieve relevant context from all FAISS indexes.
 
@@ -763,30 +839,36 @@ except Exception as e:
             max_docs: Maximum documents per index.
 
         Returns:
-            Combined context string from all indexes.
+            Tuple of (combined context string, list of source metadata).
         """
         all_docs = []
+        sources = []
         for name, retriever in self.retrievers.items():
             try:
                 docs = retriever.invoke(query)
                 for doc in docs[:max_docs]:
                     source = doc.metadata.get("source", "unknown")
                     all_docs.append(f"[{name}:{source}]\n{doc.page_content}")
+                    sources.append({
+                        "index": name,
+                        "source": source,
+                        "preview": doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content
+                    })
             except Exception as e:
                 logger.warning(f"Error retrieving from {name}: {e}")
 
-        return "\n\n---\n\n".join(all_docs) if all_docs else ""
+        context = "\n\n---\n\n".join(all_docs) if all_docs else ""
+        return context, sources
 
     def _build_augmented_input(self, user_message: str) -> str:
-        """Build the augmented input with FAISS context."""
-        context = self.get_context_from_retrievers(user_message)
-        if context:
-            return f"""Question: {user_message}
+        """Build the input for the agent.
 
-Relevant documentation context:
-{context}
+        The agent has access to search_knowledge tool to search documentation
+        on-demand, so we just pass through the user message.
 
-Please answer the question using the context above and/or query tools if you need live data."""
+        Returns:
+            The user message (unmodified).
+        """
         return user_message
 
     async def process_query(
@@ -851,27 +933,98 @@ Please answer the question using the context above and/or query tools if you nee
         For direct LLM: streams tokens directly from the LLM.
 
         Yields:
-            str: Individual tokens/chunks from the LLM response.
+            dict or str: Structured events for tool calls, or text tokens for content.
+            - Tool start: {"type": "tool_start", "tool": "tool_name", "input": {...}}
+            - Tool end: {"type": "tool_end", "tool": "tool_name", "output": "..."}
+            - Content: str (individual tokens/chunks)
+            - Max iterations: {"type": "max_iterations_reached"}
         """
         if chat_history is None:
             chat_history = []
 
+        # Agent will use search_knowledge tool on-demand
         augmented_input = self._build_augmented_input(user_message)
 
         try:
             if self.agent_executor and settings.enable_tools:
                 # Agent with tools: use astream_events for true streaming
                 # This streams tool calls and final response tokens
+                # Track tool runs to avoid duplicates from nested events
+                active_tool_runs: set[str] = set()
+
                 async for event in self.agent_executor.astream_events(
                     {"input": augmented_input, "chat_history": chat_history},
                     version="v2"
                 ):
                     kind = event.get("event", "")
+                    run_id = event.get("run_id", "")
+
+                    # Emit tool start events - only for new tool runs
+                    if kind == "on_tool_start":
+                        # Skip if we've already seen this tool run
+                        if run_id in active_tool_runs:
+                            continue
+                        active_tool_runs.add(run_id)
+
+                        tool_name = event.get("name", "unknown")
+                        tool_input = event.get("data", {}).get("input", {})
+                        yield {
+                            "type": "tool_start",
+                            "tool": tool_name,
+                            "input": tool_input,
+                            "run_id": run_id  # Include run_id for matching with tool_end
+                        }
+
+                    # Emit tool end events - only for runs we started
+                    elif kind == "on_tool_end":
+                        # Skip if we didn't track this tool run starting
+                        if run_id not in active_tool_runs:
+                            continue
+                        active_tool_runs.discard(run_id)
+
+                        tool_name = event.get("name", "unknown")
+                        tool_output = event.get("data", {}).get("output", "")
+                        # Truncate very long outputs for display
+                        if isinstance(tool_output, str) and len(tool_output) > 2000:
+                            tool_output = tool_output[:2000] + "... (truncated)"
+                        yield {
+                            "type": "tool_end",
+                            "tool": tool_name,
+                            "output": tool_output,
+                            "run_id": run_id  # Include run_id for matching with tool_start
+                        }
+
                     # Stream tokens from the chat model
-                    if kind == "on_chat_model_stream":
+                    elif kind == "on_chat_model_stream":
                         chunk = event.get("data", {}).get("chunk")
                         if chunk and hasattr(chunk, "content") and chunk.content:
-                            yield chunk.content
+                            content = chunk.content
+                            # Handle Anthropic-style content blocks (list of dicts with 'text' key)
+                            if isinstance(content, list):
+                                content = "".join(
+                                    block.get("text", "") if isinstance(block, dict) else str(block)
+                                    for block in content
+                                )
+                            if content:
+                                yield content
+
+                    # Detect when agent executor finishes - check for max iterations
+                    elif kind == "on_chain_end":
+                        # Check if this is the AgentExecutor finishing
+                        output = event.get("data", {}).get("output", {})
+
+                        # AgentExecutor sets "Agent stopped due to iteration limit" in output
+                        if isinstance(output, dict):
+                            agent_output = output.get("output", "")
+                            if "iteration limit" in str(agent_output).lower() or \
+                               "max iterations" in str(agent_output).lower():
+                                yield {"type": "max_iterations_reached"}
+                            # Also check return_values for the same message
+                            return_values = output.get("return_values", {})
+                            if isinstance(return_values, dict):
+                                rv_output = return_values.get("output", "")
+                                if "iteration limit" in str(rv_output).lower():
+                                    yield {"type": "max_iterations_reached"}
             else:
                 # Direct LLM streaming without tools
                 if self.llm is None:
@@ -885,7 +1038,15 @@ Please answer the question using the context above and/or query tools if you nee
                 # Use astream for true token-by-token streaming
                 async for chunk in self.llm.astream(messages):
                     if hasattr(chunk, "content") and chunk.content:
-                        yield chunk.content
+                        content = chunk.content
+                        # Handle Anthropic-style content blocks (list of dicts with 'text' key)
+                        if isinstance(content, list):
+                            content = "".join(
+                                block.get("text", "") if isinstance(block, dict) else str(block)
+                                for block in content
+                            )
+                        if content:
+                            yield content
 
         except Exception as e:
             logger.exception("Error in streaming query")

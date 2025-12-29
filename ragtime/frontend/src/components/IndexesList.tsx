@@ -2,6 +2,13 @@ import { useState } from 'react';
 import { api } from '@/api';
 import type { IndexInfo } from '@/types';
 
+// Confirmation modal state
+interface ConfirmationState {
+  message: string;
+  onConfirm: () => void;
+  onCancel?: () => void;
+}
+
 interface IndexesListProps {
   indexes: IndexInfo[];
   loading: boolean;
@@ -77,16 +84,30 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
   const [toggling, setToggling] = useState<string | null>(null);
   const [editingIndex, setEditingIndex] = useState<IndexInfo | null>(null);
   const [savingDescription, setSavingDescription] = useState(false);
+  const [confirmation, setConfirmation] = useState<ConfirmationState | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [deleteConfirmName, setDeleteConfirmName] = useState<string | null>(null);
 
   const handleDelete = async (name: string) => {
-    if (!confirm(`Are you sure you want to delete "${name}"?`)) return;
+    // If already showing confirmation for this index, cancel it
+    if (deleteConfirmName === name) {
+      setDeleteConfirmName(null);
+      return;
+    }
 
+    // Show inline confirmation
+    setDeleteConfirmName(name);
+  };
+
+  const confirmDelete = async (name: string) => {
+    setDeleteConfirmName(null);
     setDeleting(name);
     try {
       await api.deleteIndex(name);
       onDelete();
     } catch (err) {
-      alert(`Error: ${err instanceof Error ? err.message : 'Delete failed'}`);
+      setErrorMessage(err instanceof Error ? err.message : 'Delete failed');
+      setTimeout(() => setErrorMessage(null), 5000);
     } finally {
       setDeleting(null);
     }
@@ -98,7 +119,8 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
       await api.toggleIndex(name, !currentEnabled);
       onToggle?.();
     } catch (err) {
-      alert(`Error: ${err instanceof Error ? err.message : 'Toggle failed'}`);
+      setErrorMessage(err instanceof Error ? err.message : 'Toggle failed');
+      setTimeout(() => setErrorMessage(null), 5000);
     } finally {
       setToggling(null);
     }
@@ -111,7 +133,8 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
       setEditingIndex(null);
       onDescriptionUpdate?.();
     } catch (err) {
-      alert(`Error: ${err instanceof Error ? err.message : 'Save failed'}`);
+      setErrorMessage(err instanceof Error ? err.message : 'Save failed');
+      setTimeout(() => setErrorMessage(null), 5000);
     } finally {
       setSavingDescription(false);
     }
@@ -127,6 +150,13 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
       <div className="section-header">
         <h2>Available Indexes</h2>
       </div>
+
+      {errorMessage && (
+        <div className="error-banner">
+          {errorMessage}
+          <button onClick={() => setErrorMessage(null)}>×</button>
+        </div>
+      )}
 
       {loading && indexes.length === 0 && (
         <div className="empty-state">Loading...</div>
@@ -171,13 +201,33 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
             >
               Edit
             </button>
-            <button
-              className="btn btn-sm btn-danger"
-              onClick={() => handleDelete(idx.name)}
-              disabled={deleting === idx.name}
-            >
-              {deleting === idx.name ? 'Deleting...' : 'Delete'}
-            </button>
+            {deleteConfirmName === idx.name ? (
+              <>
+                <button
+                  className="btn btn-sm btn-success"
+                  onClick={() => confirmDelete(idx.name)}
+                  title="Confirm delete"
+                  disabled={deleting === idx.name}
+                >
+                  Confirm
+                </button>
+                <button
+                  className="btn btn-sm btn-secondary"
+                  onClick={() => setDeleteConfirmName(null)}
+                  title="Cancel"
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button
+                className="btn btn-sm btn-danger"
+                onClick={() => handleDelete(idx.name)}
+                disabled={deleting === idx.name}
+              >
+                {deleting === idx.name ? 'Deleting...' : 'Delete'}
+              </button>
+            )}
           </div>
         </div>
       ))}

@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libmagic1 \
     ca-certificates \
     gnupg \
+    openssh-client \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     # Install Docker CLI (for container-to-container communication)

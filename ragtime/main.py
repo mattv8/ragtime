@@ -54,9 +54,17 @@ async def lifespan(app: FastAPI):
         if recovered > 0:
             logger.info(f"Recovered {recovered} interrupted indexing job(s)")
 
+        # Start background task service for chat
+        from ragtime.indexer.background_tasks import background_task_service
+        await background_task_service.start()
+
     yield
 
     # Cleanup
+    if settings.enable_indexer:
+        from ragtime.indexer.background_tasks import background_task_service
+        await background_task_service.stop()
+
     await disconnect_db()
     logger.info("Shutting down RAG API")
 

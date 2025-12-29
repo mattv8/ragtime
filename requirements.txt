@@ -26,6 +26,9 @@ prisma>=0.15.0,<1.0.0
 python-dotenv>=1.0.0,<2.0.0
 httpx>=0.26.0,<1.0.0
 
+# SSH connectivity
+paramiko>=3.4.0,<4.0.0
+
 # FAISS indexing dependencies
 langchain-text-splitters>=0.0.1,<1.0.0
 tiktoken>=0.5.0,<1.0.0

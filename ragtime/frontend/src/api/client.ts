@@ -2,7 +2,7 @@
  * API client for Ragtime Indexer
  */
 
-import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, LLMModelsRequest, LLMModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, HeartbeatResponse } from '@/types';
+import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, LLMModelsRequest, LLMModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse } from '@/types';
 
 const API_BASE = '/indexes';
 
@@ -299,6 +299,21 @@ export const api = {
   },
 
   /**
+   * Generate a new SSH keypair
+   */
+  async generateSSHKeypair(comment?: string, passphrase?: string): Promise<SSHKeyPairResponse> {
+    const params = new URLSearchParams();
+    if (comment) params.set('comment', comment);
+    if (passphrase) params.set('passphrase', passphrase);
+    const queryString = params.toString();
+    const url = queryString
+      ? `${API_BASE}/tools/ssh/generate-keypair?${queryString}`
+      : `${API_BASE}/tools/ssh/generate-keypair`;
+    const response = await fetch(url, { method: 'POST' });
+    return handleResponse<SSHKeyPairResponse>(response);
+  },
+
+  /**
    * Discover Docker networks and containers
    */
   async discoverDocker(): Promise<DockerDiscoveryResponse> {
@@ -324,6 +339,266 @@ export const api = {
       method: 'POST',
     });
     return handleResponse<{ success: boolean; message: string }>(response);
+  },
+
+  // =========================================================================
+  // Chat/Conversation API
+  // =========================================================================
+
+  /**
+   * Get available models from all configured LLM providers (filtered by allowed_chat_models)
+   */
+  async getAvailableModels(): Promise<AvailableModelsResponse> {
+    const response = await fetch(`${API_BASE}/chat/available-models`);
+    return handleResponse<AvailableModelsResponse>(response);
+  },
+
+  /**
+   * Get ALL models from all configured LLM providers (unfiltered, for settings UI)
+   */
+  async getAllModels(): Promise<AvailableModelsResponse> {
+    const response = await fetch(`${API_BASE}/chat/all-models`);
+    return handleResponse<AvailableModelsResponse>(response);
+  },
+
+  /**
+   * List all conversations
+   */
+  async listConversations(): Promise<Conversation[]> {
+    const response = await fetch(`${API_BASE}/conversations`);
+    return handleResponse<Conversation[]>(response);
+  },
+
+  /**
+   * Create a new conversation
+   */
+  async createConversation(request?: CreateConversationRequest): Promise<Conversation> {
+    const response = await fetch(`${API_BASE}/conversations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request || {}),
+    });
+    return handleResponse<Conversation>(response);
+  },
+
+  /**
+   * Get a specific conversation by ID
+   */
+  async getConversation(conversationId: string): Promise<Conversation> {
+    const response = await fetch(`${API_BASE}/conversations/${conversationId}`);
+    return handleResponse<Conversation>(response);
+  },
+
+  /**
+   * Delete a conversation
+   */
+  async deleteConversation(conversationId: string): Promise<void> {
+    const response = await fetch(`${API_BASE}/conversations/${conversationId}`, {
+      method: 'DELETE',
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new ApiError(
+        data.detail || 'Delete failed',
+        response.status,
+        data.detail
+      );
+    }
+  },
+
+  /**
+   * Update conversation title
+   */
+  async updateConversationTitle(conversationId: string, title: string): Promise<Conversation> {
+    const response = await fetch(`${API_BASE}/conversations/${conversationId}/title`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title }),
+    });
+    return handleResponse<Conversation>(response);
+  },
+
+  /**
+   * Update conversation model
+   */
+  async updateConversationModel(conversationId: string, model: string): Promise<Conversation> {
+    const response = await fetch(`${API_BASE}/conversations/${conversationId}/model`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model }),
+    });
+    return handleResponse<Conversation>(response);
+  },
+
+  /**
+   * Send a message to a conversation (non-streaming)
+   */
+  async sendMessage(conversationId: string, request: SendMessageRequest): Promise<{ message: ChatMessage; conversation: Conversation }> {
+    const response = await fetch(`${API_BASE}/conversations/${conversationId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<{ message: ChatMessage; conversation: Conversation }>(response);
+  },
+
+  /**
+   * Send a message with streaming response
+   * Returns an async generator that yields structured stream events
+   */
+  async *sendMessageStream(conversationId: string, message: string, signal?: AbortSignal): AsyncGenerator<import('@/types').StreamEvent, void, unknown> {
+    const response = await fetch(`${API_BASE}/conversations/${conversationId}/messages/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message }),
+      signal,
+    });
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new ApiError(
+        data.detail || `Request failed with status ${response.status}`,
+        response.status,
+        data.detail
+      );
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new ApiError('No response body', 500);
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          if (data === '[DONE]') {
+            return;
+          }
+          try {
+            const parsed = JSON.parse(data);
+            const delta = parsed.choices?.[0]?.delta;
+
+            // Check for tool call events
+            if (delta?.tool_call) {
+              const tc = delta.tool_call;
+              if (tc.type === 'start') {
+                yield {
+                  type: 'tool_start',
+                  toolCall: {
+                    tool: tc.tool,
+                    input: tc.input
+                  }
+                };
+              } else if (tc.type === 'end') {
+                yield {
+                  type: 'tool_end',
+                  toolCall: {
+                    tool: tc.tool,
+                    output: tc.output
+                  }
+                };
+              }
+            }
+            // Check for content tokens
+            else if (delta?.content) {
+              yield {
+                type: 'content',
+                content: delta.content
+              };
+            }
+            // Check for error finish_reason
+            else if (parsed.choices?.[0]?.finish_reason === 'error') {
+              yield {
+                type: 'error',
+                error: delta?.content || 'Unknown error occurred'
+              };
+            }
+          } catch {
+            // Skip invalid JSON
+          }
+        }
+      }
+    }
+  },
+
+  /**
+   * Clear all messages in a conversation
+   */
+  async clearConversation(conversationId: string): Promise<Conversation> {
+    const response = await fetch(`${API_BASE}/conversations/${conversationId}/clear`, {
+      method: 'POST',
+    });
+    return handleResponse<Conversation>(response);
+  },
+
+  /**
+   * Truncate conversation messages to keep only the first N messages.
+   * Used when editing/resending a message.
+   */
+  async truncateConversation(conversationId: string, keepCount: number): Promise<Conversation> {
+    const response = await fetch(`${API_BASE}/conversations/${conversationId}/truncate?keep_count=${keepCount}`, {
+      method: 'POST',
+    });
+    return handleResponse<Conversation>(response);
+  },
+
+  // ===========================================================================
+  // Background Task API
+  // ===========================================================================
+
+  /**
+   * Send a message to be processed in the background.
+   * Returns a task object that can be polled for status.
+   */
+  async sendMessageBackground(conversationId: string, message: string): Promise<import('@/types').ChatTask> {
+    const response = await fetch(`${API_BASE}/conversations/${conversationId}/messages/background`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message }),
+    });
+    return handleResponse<import('@/types').ChatTask>(response);
+  },
+
+  /**
+   * Get the active task for a conversation, if any.
+   */
+  async getConversationActiveTask(conversationId: string): Promise<import('@/types').ChatTask | null> {
+    const response = await fetch(`${API_BASE}/conversations/${conversationId}/task`);
+    if (response.status === 204 || response.status === 404) {
+      return null;
+    }
+    const data = await handleResponse<import('@/types').ChatTask | null>(response);
+    return data;
+  },
+
+  /**
+   * Get a chat task by ID.
+   * Use this to poll for task status and streaming state.
+   */
+  async getChatTask(taskId: string): Promise<import('@/types').ChatTask> {
+    const response = await fetch(`${API_BASE}/tasks/${taskId}`);
+    return handleResponse<import('@/types').ChatTask>(response);
+  },
+
+  /**
+   * Cancel a running chat task.
+   */
+  async cancelChatTask(taskId: string): Promise<import('@/types').ChatTask> {
+    const response = await fetch(`${API_BASE}/tasks/${taskId}/cancel`, {
+      method: 'POST',
+    });
+    return handleResponse<import('@/types').ChatTask>(response);
   },
 };
 

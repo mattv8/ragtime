@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '@/api';
-import type { AppSettings, UpdateSettingsRequest, OllamaModel, LLMModel } from '@/types';
+import type { AppSettings, UpdateSettingsRequest, OllamaModel, LLMModel, AvailableModel } from '@/types';
 
 export function SettingsPanel() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -20,6 +20,13 @@ export function SettingsPanel() {
   const [llmModelsError, setLlmModelsError] = useState<string | null>(null);
   const [llmModels, setLlmModels] = useState<LLMModel[]>([]);
   const [llmModelsLoaded, setLlmModelsLoaded] = useState(false);
+
+  // Model filter modal state
+  const [showModelFilterModal, setShowModelFilterModal] = useState(false);
+  const [allAvailableModels, setAllAvailableModels] = useState<AvailableModel[]>([]);
+  const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set());
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelFilterText, setModelFilterText] = useState('');
 
   // Form state
   const [formData, setFormData] = useState<UpdateSettingsRequest>({});
@@ -106,6 +113,66 @@ export function SettingsPanel() {
       setLlmModelsFetching(false);
     }
   }, [formData.llm_model]);
+
+  // Open model filter modal and load all available models
+  const openModelFilterModal = useCallback(async () => {
+    setModelsLoading(true);
+    setShowModelFilterModal(true);
+    setModelFilterText('');
+
+    try {
+      const response = await api.getAllModels();
+      setAllAvailableModels(response.models);
+
+      // Initialize selected models from current settings or all models
+      const allowedModels = response.allowed_models || [];
+      if (allowedModels.length > 0) {
+        setSelectedModels(new Set(allowedModels));
+      } else {
+        // Default to all models selected
+        setSelectedModels(new Set(response.models.map(m => m.id)));
+      }
+    } catch (err) {
+      console.error('Failed to load models:', err);
+    } finally {
+      setModelsLoading(false);
+    }
+  }, []);
+
+  const toggleModel = (modelId: string) => {
+    setSelectedModels(prev => {
+      const next = new Set(prev);
+      if (next.has(modelId)) {
+        next.delete(modelId);
+      } else {
+        next.add(modelId);
+      }
+      return next;
+    });
+  };
+
+  const selectAllModels = () => {
+    setSelectedModels(new Set(allAvailableModels.map(m => m.id)));
+  };
+
+  const deselectAllModels = () => {
+    setSelectedModels(new Set());
+  };
+
+  const saveModelFilter = async () => {
+    // If all models are selected, save empty array (means all allowed)
+    const allSelected = selectedModels.size === allAvailableModels.length;
+    const allowedModels = allSelected ? [] : Array.from(selectedModels);
+
+    try {
+      await api.updateSettings({ allowed_chat_models: allowedModels });
+      setShowModelFilterModal(false);
+      setSuccess('Model filter saved');
+      setTimeout(() => setSuccess(null), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save model filter');
+    }
+  };
 
   const loadSettings = useCallback(async () => {
     try {
@@ -536,6 +603,21 @@ export function SettingsPanel() {
               </p>
             </div>
           )}
+
+          {/* Chat Model Filter */}
+          <div className="form-group">
+            <label>Chat Model Filter</label>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={openModelFilterModal}
+            >
+              Configure Allowed Models
+            </button>
+            <p className="field-help">
+              Limit which models appear in the Chat view dropdown.
+            </p>
+          </div>
         </fieldset>
 
         <div className="form-actions">
@@ -552,6 +634,99 @@ export function SettingsPanel() {
         <p className="muted" style={{ marginTop: '1rem', fontSize: '0.85rem' }}>
           Last updated: {new Date(settings.updated_at).toLocaleString()}
         </p>
+      )}
+
+      {/* Model Filter Modal */}
+      {showModelFilterModal && (
+        <div className="modal-overlay" onClick={() => setShowModelFilterModal(false)}>
+          <div className="modal-content modal-medium" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Configure Allowed Chat Models</h3>
+              <button
+                className="modal-close"
+                onClick={() => setShowModelFilterModal(false)}
+              >
+                &times;
+              </button>
+            </div>
+            <div className="modal-body">
+              {modelsLoading ? (
+                <p className="muted">Loading available models...</p>
+              ) : allAvailableModels.length === 0 ? (
+                <p className="muted">
+                  No models available. Please configure API keys and save settings first.
+                </p>
+              ) : (
+                <>
+                  <div className="model-filter-search">
+                    <input
+                      type="text"
+                      placeholder="Filter models..."
+                      value={modelFilterText}
+                      onChange={(e) => setModelFilterText(e.target.value)}
+                      autoFocus
+                    />
+                  </div>
+                  <div className="model-filter-actions">
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={selectAllModels}
+                    >
+                      Select All
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-secondary"
+                      onClick={deselectAllModels}
+                    >
+                      Deselect All
+                    </button>
+                    <span className="muted" style={{ marginLeft: 'auto' }}>
+                      {selectedModels.size} of {allAvailableModels.length} selected
+                    </span>
+                  </div>
+                  <div className="model-filter-list">
+                    {allAvailableModels
+                      .filter((model) =>
+                        modelFilterText === '' ||
+                        model.name.toLowerCase().includes(modelFilterText.toLowerCase()) ||
+                        model.provider.toLowerCase().includes(modelFilterText.toLowerCase())
+                      )
+                      .map((model) => (
+                      <label key={model.id} className="model-filter-item">
+                        <input
+                          type="checkbox"
+                          checked={selectedModels.has(model.id)}
+                          onChange={() => toggleModel(model.id)}
+                        />
+                        <span className="model-filter-name">{model.name}</span>
+                        <span className="model-filter-provider">{model.provider}</span>
+                      </label>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setShowModelFilterModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={saveModelFilter}
+                disabled={modelsLoading || allAvailableModels.length === 0}
+              >
+                Save Filter
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

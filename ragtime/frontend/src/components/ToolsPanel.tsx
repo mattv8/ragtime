@@ -4,6 +4,13 @@ import type { ToolConfig, HeartbeatStatus } from '@/types';
 import { TOOL_TYPE_INFO } from '@/types';
 import { ToolWizard } from './ToolWizard';
 
+// Confirmation modal state
+interface ConfirmationState {
+  message: string;
+  onConfirm: () => void;
+  onCancel?: () => void;
+}
+
 // Heartbeat polling interval (15 seconds)
 const HEARTBEAT_INTERVAL = 15000;
 
@@ -95,15 +102,15 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
       </div>
 
       {/* Show heartbeat error if connection failed */}
-      {heartbeat && !heartbeat.alive && (
+      {heartbeat && !heartbeat.alive && tool.enabled && (
         <div className="tool-card-heartbeat-error">
           <span className="error-icon">✗</span>
           <span>{heartbeat.error || 'Connection failed'}</span>
         </div>
       )}
 
-      {/* Show traditional test result only if no heartbeat available */}
-      {!heartbeat && tool.last_test_at && (
+      {/* Show traditional test result only if no heartbeat available and tool is enabled */}
+      {!heartbeat && tool.enabled && tool.last_test_at && (
         <div className={`tool-card-test-result ${tool.last_test_result ? 'success' : 'error'}`}>
           <span className="test-icon">{tool.last_test_result ? '✓' : '✗'}</span>
           <span>
@@ -159,6 +166,7 @@ export function ToolsPanel() {
   const [testingToolId, setTestingToolId] = useState<string | null>(null);
   const [heartbeats, setHeartbeats] = useState<Record<string, HeartbeatStatus>>({});
   const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [confirmation, setConfirmation] = useState<ConfirmationState | null>(null);
 
   const loadTools = useCallback(async () => {
     try {
@@ -234,18 +242,21 @@ export function ToolsPanel() {
   };
 
   const handleDeleteTool = async (toolId: string) => {
-    if (!confirm('Are you sure you want to delete this tool configuration?')) {
-      return;
-    }
-
-    try {
-      await api.deleteToolConfig(toolId);
-      await loadTools();
-      setSuccess('Tool deleted successfully');
-      setTimeout(() => setSuccess(null), 3000);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete tool');
-    }
+    setConfirmation({
+      message: 'Are you sure you want to delete this tool configuration?',
+      onConfirm: async () => {
+        setConfirmation(null);
+        try {
+          await api.deleteToolConfig(toolId);
+          await loadTools();
+          setSuccess('Tool deleted successfully');
+          setTimeout(() => setSuccess(null), 3000);
+        } catch (err) {
+          setError(err instanceof Error ? err.message : 'Failed to delete tool');
+        }
+      },
+      onCancel: () => setConfirmation(null)
+    });
   };
 
   const handleToggleTool = async (toolId: string, enabled: boolean) => {
@@ -290,6 +301,29 @@ export function ToolsPanel() {
 
   return (
     <div className="tools-panel">
+      {/* Confirmation Modal */}
+      {confirmation && (
+        <div className="modal-overlay" onClick={() => confirmation.onCancel?.()}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Confirm Action</h3>
+              <button className="modal-close" onClick={() => confirmation.onCancel?.()}>×</button>
+            </div>
+            <div className="modal-body">
+              <p>{confirmation.message}</p>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => confirmation.onCancel?.()}>
+                Cancel
+              </button>
+              <button className="btn btn-danger" onClick={confirmation.onConfirm}>
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="card">
         <div className="card-header">
           <h2>Tool Connections</h2>
@@ -333,27 +367,29 @@ export function ToolsPanel() {
         )}
       </div>
 
-      <div className="card">
-        <h2>About Tools</h2>
-        <p className="fieldset-help">
-          Tools give the AI assistant the ability to query your systems directly during conversations.
-          When you ask a question, the AI can use these tools to fetch real-time data.
-        </p>
+      {tools.length === 0 && (
+        <div className="card">
+          <h2>About Tools</h2>
+          <p className="fieldset-help">
+            Tools give the AI assistant the ability to query your systems directly during conversations.
+            When you ask a question, the AI can use these tools to fetch real-time data.
+          </p>
 
-        <div className="tool-types-info">
-          {Object.entries(TOOL_TYPE_INFO).map(([type, info]) => (
-            <div key={type} className="tool-type-info">
-              <span className="tool-type-icon">
-                {info.icon === 'database' ? '🗄️' : info.icon === 'terminal' ? '💻' : '🖥️'}
-              </span>
-              <div>
-                <strong>{info.name}</strong>
-                <p>{info.description}</p>
+          <div className="tool-types-info">
+            {Object.entries(TOOL_TYPE_INFO).map(([type, info]) => (
+              <div key={type} className="tool-type-info">
+                <span className="tool-type-icon">
+                  {info.icon === 'database' ? '🗄️' : info.icon === 'terminal' ? '💻' : '🖥️'}
+                </span>
+                <div>
+                  <strong>{info.name}</strong>
+                  <p>{info.description}</p>
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
