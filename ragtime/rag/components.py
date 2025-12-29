@@ -8,7 +8,7 @@ from typing import Any, Optional, List
 from langchain_community.vectorstores import FAISS
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from langchain.agents import AgentExecutor, create_openai_tools_agent
+from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from ragtime.config import settings
@@ -20,24 +20,46 @@ logger = get_logger(__name__)
 
 # Base system prompt template - tool and index descriptions will be appended
 BASE_SYSTEM_PROMPT = """You are a helpful AI assistant with access to business data and code documentation.
-You help users query and understand their data using natural language.
+You help users understand their systems by combining code knowledge with live data queries.
 
 CAPABILITIES:
-1. **Code Knowledge**: You have access to indexed documentation about codebases and custom modules.
-2. **Live Data Queries**: You can query connected systems using the available tools.
+1. **Code Knowledge**: Indexed documentation about codebases, modules, and business logic.
+2. **Live Data Access**: Query connected databases and systems in real-time.
 
-CRITICAL GUIDELINES:
-- **ALWAYS use tools** when users ask about data, databases, counts, tables, or live system state
-- **ALWAYS use knowledge sources** when users ask about code structure, implementation, or how things work
-- When a question relates to both code AND data, use BOTH the knowledge sources AND the query tools
-- Explain what you're doing before executing queries
-- Format results in a clear, readable way (tables, lists, summaries)
-- If a query fails, explain the error and suggest alternatives
-- Always include appropriate LIMIT clauses to prevent large result sets
+HOW TO ANSWER QUESTIONS:
 
-IMPORTANT: Do not say "I don't have access" when tools are available. Check the tools list and USE THEM.
-When answering questions about code or documentation, use your knowledge from the indexed sources.
-When answering questions about live data, use the appropriate query tool."""
+**For data/business questions** (counts, records, status, reports):
+- Use the appropriate query tool to get live data
+- Present results in a clear, readable format (tables, lists, summaries)
+- Do NOT show raw queries unless the user explicitly asks for them
+
+**For code/technical questions** (how does X work, where is Y implemented):
+- Use the indexed knowledge sources to find relevant code and documentation
+- Explain the implementation in plain language
+- Include code snippets only when they help explain the answer
+
+**For questions requiring BOTH code and data** (why is X happening, debug Y):
+- First, consult the knowledge sources to understand the code logic
+- Then, query live data to see actual values and state
+- Correlate what the code does with what the data shows
+- This is often the most valuable analysis you can provide
+
+QUERY VALIDATION (internal process):
+When you need to query data:
+1. Draft a query based on your understanding of the schema
+2. Execute it using the appropriate tool
+3. If it fails (error, wrong table/column), analyze the error and fix it
+4. Repeat until successful - never guess at results
+5. Only then present findings to the user
+
+RESPONSE GUIDELINES:
+- Lead with insights and answers, not technical details
+- Use tables and formatting for data presentation
+- Only show queries/code if the user asks for them (e.g., "show me the SQL", "write a query")
+- When uncertain, explain what you found and what you're unsure about
+- Always include LIMIT clauses internally to prevent overwhelming results
+
+NEVER say "I don't have access" when tools are available - use them."""
 
 
 def build_index_system_prompt(index_metadata: List[dict]) -> str:
@@ -73,10 +95,11 @@ def build_index_system_prompt(index_metadata: List[dict]) -> str:
 
     return f"""
 
-KNOWLEDGE SOURCES:
+KNOWLEDGE SOURCES (indexed code and documentation):
 {chr(10).join(index_sections)}
 
-When users ask about code, documentation, or specific modules, the relevant information may be found in these knowledge sources.
+Use these to understand HOW things work (code logic, business rules, data models).
+Combine with live queries to understand WHAT is happening (current state, actual values).
 """
 
 
@@ -119,10 +142,10 @@ def build_tool_system_prompt(tool_configs: List[dict]) -> str:
 AVAILABLE TOOLS:
 {chr(10).join(tool_sections)}
 
-TOOL USAGE RULES:
-- When a user mentions any of these systems, databases, or applications by name, ALWAYS use the corresponding tool
-- Never say you don't have access to data - check if there's a tool that can query it
-- If unsure which tool to use, read the descriptions carefully - they explain what each tool connects to
+TOOL USAGE:
+- Use these tools to get live data when answering questions about current state, counts, or records
+- Combine tool results with knowledge sources for deeper analysis (e.g., "why is this happening?" requires understanding both code logic and current data)
+- If a query fails, fix it internally - don't burden the user with error details unless they're debugging
 """
 
 
@@ -330,14 +353,17 @@ class RAGComponents:
         ])
 
         if tools:
-            agent = create_openai_tools_agent(self.llm, tools, prompt)
+            # Use create_tool_calling_agent which works with both OpenAI and Anthropic
+            agent = create_tool_calling_agent(self.llm, tools, prompt)
             self.agent_executor = AgentExecutor(
                 agent=agent,
                 tools=tools,
                 verbose=settings.debug_mode,
                 handle_parsing_errors=True,
-                max_iterations=10,
-                return_intermediate_steps=settings.debug_mode
+                max_iterations=15,  # Allow enough iterations for query refinement
+                return_intermediate_steps=settings.debug_mode,
+                # Let the agent decide when it has a satisfactory answer
+                early_stopping_method="generate"
             )
         else:
             # No tools - agent_executor stays None
@@ -790,7 +816,14 @@ Please answer the question using the context above and/or query tools if you nee
                     "input": augmented_input,
                     "chat_history": chat_history
                 })
-                return result.get("output", "I couldn't generate a response.")
+                output = result.get("output", "I couldn't generate a response.")
+                # Handle Anthropic-style content blocks (list of dicts with 'text' key)
+                if isinstance(output, list):
+                    output = "".join(
+                        block.get("text", "") if isinstance(block, dict) else str(block)
+                        for block in output
+                    )
+                return output
             else:
                 # Direct LLM call without tools
                 if self.llm is None:
