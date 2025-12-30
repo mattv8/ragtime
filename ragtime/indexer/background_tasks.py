@@ -192,6 +192,7 @@ class BackgroundTaskService:
                 running_tool_indices: dict[str, int] = {}
                 hit_max_iterations = False  # Track if we hit the iteration limit
                 last_update = datetime.utcnow()
+                current_version = 0  # Version counter for efficient client polling
 
                 async for event in rag.process_query_stream(user_message, chat_history):
                     if self._shutdown:
@@ -217,9 +218,11 @@ class BackgroundTaskService:
                                 running_tool_indices[run_id] = len(events) - 1
 
                             # Force immediate update so the UI shows the running tool
-                            await repository.update_chat_task_streaming_state(
-                                task_id, full_response, events, tool_calls, hit_max_iterations
+                            result = await repository.update_chat_task_streaming_state(
+                                task_id, full_response, events, tool_calls, hit_max_iterations, current_version
                             )
+                            if result and result.streaming_state:
+                                current_version = result.streaming_state.version
                             last_update = datetime.utcnow()
 
                         elif event_type == "tool_end":
@@ -236,18 +239,22 @@ class BackgroundTaskService:
                                 })
 
                                 # Force immediate update so the UI shows the completed tool
-                                await repository.update_chat_task_streaming_state(
-                                    task_id, full_response, events, tool_calls, hit_max_iterations
+                                result = await repository.update_chat_task_streaming_state(
+                                    task_id, full_response, events, tool_calls, hit_max_iterations, current_version
                                 )
+                                if result and result.streaming_state:
+                                    current_version = result.streaming_state.version
                                 last_update = datetime.utcnow()
 
                         elif event_type == "max_iterations_reached":
                             hit_max_iterations = True
                             logger.info(f"Task {task_id} hit max iterations limit")
                             # Force immediate update
-                            await repository.update_chat_task_streaming_state(
-                                task_id, full_response, events, tool_calls, hit_max_iterations
+                            result = await repository.update_chat_task_streaming_state(
+                                task_id, full_response, events, tool_calls, hit_max_iterations, current_version
                             )
+                            if result and result.streaming_state:
+                                current_version = result.streaming_state.version
                             last_update = datetime.utcnow()
                     else:
                         # Text token
@@ -260,17 +267,20 @@ class BackgroundTaskService:
                         else:
                             events.append({"type": "content", "content": token})
 
-                    # Update streaming state frequently (every 200ms) for real-time display
+                    # Update streaming state less frequently (every 400ms) for text tokens
+                    # Tool events are still updated immediately above
                     now = datetime.utcnow()
-                    if (now - last_update).total_seconds() > 0.2:
-                        await repository.update_chat_task_streaming_state(
-                            task_id, full_response, events, tool_calls, hit_max_iterations
+                    if (now - last_update).total_seconds() > 0.4:
+                        result = await repository.update_chat_task_streaming_state(
+                            task_id, full_response, events, tool_calls, hit_max_iterations, current_version
                         )
+                        if result and result.streaming_state:
+                            current_version = result.streaming_state.version
                         last_update = now
 
                 # Task completed successfully - save final state
                 await repository.complete_chat_task(
-                    task_id, full_response, events, tool_calls, hit_max_iterations
+                    task_id, full_response, events, tool_calls, hit_max_iterations, current_version
                 )
 
                 # Add the assistant response to the conversation

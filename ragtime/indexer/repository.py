@@ -953,16 +953,22 @@ class IndexerRepository:
         content: str,
         events: List[dict],
         tool_calls: List[dict],
-        hit_max_iterations: bool = False
+        hit_max_iterations: bool = False,
+        current_version: int = 0
     ) -> Optional[ChatTask]:
-        """Update a chat task's streaming state."""
+        """Update a chat task's streaming state with version tracking."""
         db = await self._get_db()
+
+        # Increment version for change detection
+        new_version = current_version + 1
 
         streaming_state = {
             "content": content,
             "events": events,
             "tool_calls": tool_calls,
             "hit_max_iterations": hit_max_iterations,
+            "version": new_version,
+            "content_length": len(content),
         }
 
         try:
@@ -984,16 +990,22 @@ class IndexerRepository:
         response_content: str,
         final_events: List[dict],
         tool_calls: List[dict],
-        hit_max_iterations: bool = False
+        hit_max_iterations: bool = False,
+        current_version: int = 0
     ) -> Optional[ChatTask]:
         """Mark a chat task as completed with the final response."""
         db = await self._get_db()
+
+        # Final version increment to signal completion
+        final_version = current_version + 1
 
         streaming_state = {
             "content": response_content,
             "events": final_events,
             "tool_calls": tool_calls,
             "hit_max_iterations": hit_max_iterations,
+            "version": final_version,
+            "content_length": len(response_content),
         }
 
         try:
@@ -1094,6 +1106,9 @@ class IndexerRepository:
                 content=state_data.get("content", ""),
                 events=state_data.get("events", []),
                 tool_calls=state_data.get("tool_calls", []),
+                hit_max_iterations=state_data.get("hit_max_iterations", False),
+                version=state_data.get("version", 0),
+                content_length=state_data.get("content_length", 0),
             )
 
         return ChatTask(

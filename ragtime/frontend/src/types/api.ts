@@ -501,6 +501,8 @@ export interface ChatTaskStreamingState {
   events: MessageEvent[];
   tool_calls: ToolCallRecord[];
   hit_max_iterations?: boolean;
+  version: number;  // Increments on each update for efficient polling
+  content_length: number;  // Quick change detection
 }
 
 export interface ChatTask {

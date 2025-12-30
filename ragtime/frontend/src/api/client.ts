@@ -742,9 +742,15 @@ export const api = {
   /**
    * Get a chat task by ID.
    * Use this to poll for task status and streaming state.
+   * @param taskId The task ID to fetch
+   * @param sinceVersion Optional version to enable delta polling - if provided and
+   *                     version hasn't changed, streaming_state will be null to reduce data transfer
    */
-  async getChatTask(taskId: string): Promise<import('@/types').ChatTask> {
-    const response = await apiFetch(`${API_BASE}/tasks/${taskId}`);
+  async getChatTask(taskId: string, sinceVersion?: number): Promise<import('@/types').ChatTask> {
+    const url = sinceVersion !== undefined
+      ? `${API_BASE}/tasks/${taskId}?since_version=${sinceVersion}`
+      : `${API_BASE}/tasks/${taskId}`;
+    const response = await apiFetch(url);
     return handleResponse<import('@/types').ChatTask>(response);
   },
 

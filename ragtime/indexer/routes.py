@@ -2456,21 +2456,35 @@ async def get_conversation_active_task(conversation_id: str, user: User = Depend
 
 
 @router.get("/tasks/{task_id}", response_model=ChatTaskResponse)
-async def get_chat_task(task_id: str):
+async def get_chat_task(task_id: str, since_version: int = 0):
     """
     Get a chat task by ID.
     Use this to poll for task status and streaming state.
+
+    Query params:
+        since_version: If provided, returns null streaming_state when version hasn't changed.
+                      This reduces data transfer for polling clients.
     """
     task = await repository.get_chat_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+
+    # If client has current version and task is still running, omit streaming_state
+    # to reduce data transfer. Client should use its cached version.
+    streaming_state = task.streaming_state
+    if since_version > 0 and streaming_state:
+        current_version = streaming_state.version
+        # Only omit if version matches AND task is still running
+        # Always send full state when task completes so client gets final data
+        if current_version <= since_version and task.status in (ChatTaskStatus.pending, ChatTaskStatus.running):
+            streaming_state = None
 
     return ChatTaskResponse(
         id=task.id,
         conversation_id=task.conversation_id,
         status=task.status,
         user_message=task.user_message,
-        streaming_state=task.streaming_state,
+        streaming_state=streaming_state,
         response_content=task.response_content,
         error_message=task.error_message,
         created_at=task.created_at,

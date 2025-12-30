@@ -511,6 +511,8 @@ class ChatTaskStreamingState(BaseModel):
     events: List[dict] = Field(default_factory=list, description="Chronological events")
     tool_calls: List[dict] = Field(default_factory=list, description="Tool calls made")
     hit_max_iterations: bool = Field(default=False, description="Whether max iterations was reached")
+    version: int = Field(default=0, description="Increments on each update for efficient polling")
+    content_length: int = Field(default=0, description="Length of content for quick change detection")
 
 
 class ChatTask(BaseModel):

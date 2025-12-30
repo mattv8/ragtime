@@ -216,6 +216,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
   const [activeTask, setActiveTask] = useState<ChatTask | null>(null);
   const [isPollingTask, setIsPollingTask] = useState(false);
   const taskPollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastSeenVersionRef = useRef<number>(0);  // Track last seen version for delta polling
 
   // Available models state
   const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
@@ -376,15 +377,21 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
       taskPollIntervalRef.current = null;
     }
     setIsPollingTask(false);
+    lastSeenVersionRef.current = 0;  // Reset version tracking
   }, []);
 
   const pollTaskStatus = useCallback(async (taskId: string) => {
     try {
-      const task = await api.getChatTask(taskId);
+      // Use delta polling - pass last seen version to skip unchanged data
+      const task = await api.getChatTask(taskId, lastSeenVersionRef.current);
       setActiveTask(task);
 
       // Update streaming display from task state
+      // If streaming_state is null, server indicates no change since our version
       if (task.streaming_state) {
+        // Update our tracked version
+        lastSeenVersionRef.current = task.streaming_state.version;
+
         // Only update content if it actually changed (avoids React re-render)
         setStreamingContent(prev =>
           prev === task.streaming_state!.content ? prev : task.streaming_state!.content
@@ -466,12 +473,14 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
     stopTaskPolling();
     setIsPollingTask(true);
     setIsStreaming(true);
+    lastSeenVersionRef.current = 0;  // Start fresh
 
-    // Poll immediately, then every 200ms for more responsive updates
+    // Poll immediately, then every 300ms for responsive updates
+    // Backend writes at ~400ms intervals, so 300ms gives us good balance
     pollTaskStatus(taskId);
     taskPollIntervalRef.current = setInterval(() => {
       pollTaskStatus(taskId);
-    }, 200);
+    }, 300);
   }, [pollTaskStatus, stopTaskPolling]);
 
   // Check for active background task when conversation changes
@@ -825,9 +834,13 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
     }
   };
 
-  const contextUsagePercent = activeConversation
-    ? Math.round(calculateConversationTokens(activeConversation.messages) / getContextLimit(activeConversation.model) * 100)
-    : 0;
+  // Memoize context usage calculation to avoid recalculating on every render
+  const contextUsagePercent = useMemo(() => {
+    if (!activeConversation) return 0;
+    const tokens = calculateConversationTokens(activeConversation.messages);
+    const limit = getContextLimit(activeConversation.model);
+    return Math.round(tokens / limit * 100);
+  }, [activeConversation?.messages, activeConversation?.model]);
 
   const renderConversationItem = (conv: Conversation) => {
     const metaText = `${conv.messages.length} messages | ${formatRelativeTime(conv.updated_at)}`;
