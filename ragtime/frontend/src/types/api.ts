@@ -343,6 +343,20 @@ export interface ToolTestResponse {
   details?: Record<string, unknown>;
 }
 
+// PostgreSQL Database Discovery
+export interface PostgresDiscoverRequest {
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+}
+
+export interface PostgresDiscoverResponse {
+  success: boolean;
+  databases: string[];
+  error?: string;
+}
+
 // SSH Keypair Generation
 export interface SSHKeyPairResponse {
   private_key: string;
@@ -434,6 +448,9 @@ export interface Conversation {
   id: string;
   title: string;
   model: string;
+  user_id?: string;
+  username?: string;
+  display_name?: string;
   messages: ChatMessage[];
   total_tokens: number;
   active_task_id: string | null;  // ID of currently running background task

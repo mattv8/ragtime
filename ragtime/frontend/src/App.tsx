@@ -219,7 +219,7 @@ export function App() {
       <div className="container">
 
       {activeView === 'chat' ? (
-        <ChatPanel />
+        <ChatPanel currentUser={currentUser} />
       ) : activeView === 'settings' ? (
         <SettingsPanel />
       ) : activeView === 'tools' ? (

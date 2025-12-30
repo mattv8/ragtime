@@ -299,6 +299,8 @@ from ragtime.indexer.models import (
     CreateToolConfigRequest,
     UpdateToolConfigRequest,
     ToolTestRequest,
+    PostgresDiscoverRequest,
+    PostgresDiscoverResponse,
 )
 
 
@@ -514,6 +516,76 @@ async def test_tool_connection(request: ToolTestRequest, _user: User = Depends(r
         return ToolTestResponse(
             success=False,
             message=f"Unknown tool type: {tool_type}"
+        )
+
+
+@router.post("/tools/postgres/discover", response_model=PostgresDiscoverResponse, tags=["Tools"])
+async def discover_postgres_databases(request: PostgresDiscoverRequest, _user: User = Depends(require_admin)):
+    """
+    Discover available databases on a PostgreSQL server. Admin only.
+    Connects to the server and lists all accessible databases.
+    """
+    import asyncio
+    import subprocess
+
+    try:
+        # Connect to 'postgres' system database to list all databases
+        cmd = [
+            "psql",
+            "-h", request.host,
+            "-p", str(request.port),
+            "-U", request.user,
+            "-d", "postgres",  # Connect to system database
+            "-t",  # Tuples only (no headers/footers)
+            "-A",  # Unaligned output
+            "-c", "SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname;"
+        ]
+        env = {"PGPASSWORD": request.password}
+
+        process = await asyncio.wait_for(
+            asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env
+            ),
+            timeout=10.0
+        )
+        stdout, stderr = await process.communicate()
+
+        if process.returncode == 0:
+            # Parse database names from output
+            output = stdout.decode("utf-8", errors="replace").strip()
+            databases = [db.strip() for db in output.split("\n") if db.strip()]
+            return PostgresDiscoverResponse(
+                success=True,
+                databases=databases
+            )
+        else:
+            error = stderr.decode("utf-8", errors="replace").strip()
+            return PostgresDiscoverResponse(
+                success=False,
+                databases=[],
+                error=f"Connection failed: {error}"
+            )
+
+    except asyncio.TimeoutError:
+        return PostgresDiscoverResponse(
+            success=False,
+            databases=[],
+            error="Connection timed out after 10 seconds"
+        )
+    except FileNotFoundError:
+        return PostgresDiscoverResponse(
+            success=False,
+            databases=[],
+            error="psql command not found"
+        )
+    except Exception as e:
+        return PostgresDiscoverResponse(
+            success=False,
+            databases=[],
+            error=f"Discovery failed: {str(e)}"
         )
 
 
@@ -1826,6 +1898,22 @@ async def get_all_chat_models():
     )
 
 
+def _to_conversation_response(conv: Conversation) -> ConversationResponse:
+    return ConversationResponse(
+        id=conv.id,
+        title=conv.title,
+        model=conv.model,
+        user_id=conv.user_id,
+        username=conv.username,
+        display_name=conv.display_name,
+        messages=conv.messages,
+        total_tokens=conv.total_tokens,
+        active_task_id=conv.active_task_id,
+        created_at=conv.created_at,
+        updated_at=conv.updated_at,
+    )
+
+
 @router.get("/conversations", response_model=List[ConversationResponse])
 async def list_conversations(user: User = Depends(get_current_user)):
     """List chat conversations for the current user."""
@@ -1835,18 +1923,7 @@ async def list_conversations(user: User = Depends(get_current_user)):
         user_id=user.id,
         include_all=is_admin
     )
-    return [
-        ConversationResponse(
-            id=c.id,
-            title=c.title,
-            model=c.model,
-            messages=c.messages,
-            total_tokens=c.total_tokens,
-            created_at=c.created_at,
-            updated_at=c.updated_at,
-        )
-        for c in convs
-    ]
+    return [_to_conversation_response(c) for c in convs]
 
 
 @router.post("/conversations", response_model=ConversationResponse)
@@ -1863,15 +1940,7 @@ async def create_conversation(
     model = request.model if request and request.model else default_model
 
     conv = await repository.create_conversation(title=title, model=model, user_id=user.id)
-    return ConversationResponse(
-        id=conv.id,
-        title=conv.title,
-        model=conv.model,
-        messages=conv.messages,
-        total_tokens=conv.total_tokens,
-        created_at=conv.created_at,
-        updated_at=conv.updated_at,
-    )
+    return _to_conversation_response(conv)
 
 
 @router.get("/conversations/{conversation_id}", response_model=ConversationResponse)
@@ -1888,15 +1957,7 @@ async def get_conversation(conversation_id: str, user: User = Depends(get_curren
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    return ConversationResponse(
-        id=conv.id,
-        title=conv.title,
-        model=conv.model,
-        messages=conv.messages,
-        total_tokens=conv.total_tokens,
-        created_at=conv.created_at,
-        updated_at=conv.updated_at,
-    )
+    return _to_conversation_response(conv)
 
 
 @router.delete("/conversations/{conversation_id}")
@@ -1931,15 +1992,7 @@ async def update_conversation_title(conversation_id: str, body: dict, user: User
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    return ConversationResponse(
-        id=conv.id,
-        title=conv.title,
-        model=conv.model,
-        messages=conv.messages,
-        total_tokens=conv.total_tokens,
-        created_at=conv.created_at,
-        updated_at=conv.updated_at,
-    )
+    return _to_conversation_response(conv)
 
 
 @router.patch("/conversations/{conversation_id}/model", response_model=ConversationResponse)
@@ -1959,15 +2012,7 @@ async def update_conversation_model(conversation_id: str, body: dict, user: User
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    return ConversationResponse(
-        id=conv.id,
-        title=conv.title,
-        model=conv.model,
-        messages=conv.messages,
-        total_tokens=conv.total_tokens,
-        created_at=conv.created_at,
-        updated_at=conv.updated_at,
-    )
+    return _to_conversation_response(conv)
 
 
 @router.post("/conversations/{conversation_id}/clear", response_model=ConversationResponse)
@@ -1983,15 +2028,7 @@ async def clear_conversation(conversation_id: str, user: User = Depends(get_curr
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    return ConversationResponse(
-        id=conv.id,
-        title=conv.title,
-        model=conv.model,
-        messages=conv.messages,
-        total_tokens=conv.total_tokens,
-        created_at=conv.created_at,
-        updated_at=conv.updated_at,
-    )
+    return _to_conversation_response(conv)
 
 
 @router.post("/conversations/{conversation_id}/truncate", response_model=ConversationResponse)
@@ -2010,15 +2047,7 @@ async def truncate_conversation(conversation_id: str, keep_count: int, user: Use
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    return ConversationResponse(
-        id=conv.id,
-        title=conv.title,
-        model=conv.model,
-        messages=conv.messages,
-        total_tokens=conv.total_tokens,
-        created_at=conv.created_at,
-        updated_at=conv.updated_at,
-    )
+    return _to_conversation_response(conv)
 
 
 @router.post("/conversations/{conversation_id}/messages")
@@ -2082,15 +2111,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest, user: 
             content=answer,
             timestamp=conv.messages[-1].timestamp,
         ),
-        "conversation": ConversationResponse(
-            id=conv.id,
-            title=conv.title,
-            model=conv.model,
-            messages=conv.messages,
-            total_tokens=conv.total_tokens,
-            created_at=conv.created_at,
-            updated_at=conv.updated_at,
-        ),
+        "conversation": _to_conversation_response(conv),
     }
 
 

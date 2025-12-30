@@ -391,6 +391,21 @@ class ToolTestRequest(BaseModel):
     connection_config: dict = Field(description="Connection configuration to test")
 
 
+class PostgresDiscoverRequest(BaseModel):
+    """Request to discover databases on a PostgreSQL server."""
+    host: str = Field(description="PostgreSQL server hostname or IP")
+    port: int = Field(default=5432, description="PostgreSQL server port")
+    user: str = Field(description="PostgreSQL username")
+    password: str = Field(description="PostgreSQL password")
+
+
+class PostgresDiscoverResponse(BaseModel):
+    """Response from PostgreSQL database discovery."""
+    success: bool = Field(description="Whether discovery succeeded")
+    databases: List[str] = Field(default_factory=list, description="List of discovered database names")
+    error: Optional[str] = Field(default=None, description="Error message if discovery failed")
+
+
 # -----------------------------------------------------------------------------
 # Chat Conversation Models
 # -----------------------------------------------------------------------------
@@ -430,6 +445,9 @@ class Conversation(BaseModel):
     id: str
     title: str = Field(default="New Chat")
     model: str = Field(default="gpt-4-turbo")
+    user_id: Optional[str] = Field(default=None, description="ID of the conversation owner")
+    username: Optional[str] = Field(default=None, description="Username of the conversation owner")
+    display_name: Optional[str] = Field(default=None, description="Display name of the conversation owner")
     messages: List[ChatMessage] = Field(default_factory=list)
     total_tokens: int = Field(default=0)
     active_task_id: Optional[str] = Field(default=None, description="ID of currently running background task")
@@ -442,6 +460,9 @@ class ConversationResponse(BaseModel):
     id: str
     title: str
     model: str
+    user_id: Optional[str] = None
+    username: Optional[str] = None
+    display_name: Optional[str] = None
     messages: List[ChatMessage]
     total_tokens: int
     active_task_id: Optional[str] = None

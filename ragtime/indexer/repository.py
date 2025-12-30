@@ -567,7 +567,8 @@ class IndexerRepository:
                 "messages": Json([]),
                 "totalTokens": 0,
                 "userId": user_id,
-            }
+            },
+            include={"user": True}
         )
 
         return self._prisma_conversation_to_model(prisma_conv)
@@ -577,7 +578,8 @@ class IndexerRepository:
         db = await self._get_db()
 
         prisma_conv = await db.conversation.find_unique(
-            where={"id": conversation_id}
+            where={"id": conversation_id},
+            include={"user": True}
         )
 
         if prisma_conv is None:
@@ -605,7 +607,8 @@ class IndexerRepository:
 
         prisma_convs = await db.conversation.find_many(
             where=where_clause if where_clause else None,  # type: ignore[arg-type]
-            order={"updatedAt": "desc"}
+            order={"updatedAt": "desc"},
+            include={"user": True}
         )
 
         return [self._prisma_conversation_to_model(c) for c in prisma_convs]
@@ -656,7 +659,8 @@ class IndexerRepository:
                 "messages": Json(messages),
                 "totalTokens": total_tokens,
                 "updatedAt": datetime.utcnow(),
-            }
+            },
+            include={"user": True}
         )
 
         return self._prisma_conversation_to_model(updated)
@@ -672,7 +676,8 @@ class IndexerRepository:
         try:
             updated = await db.conversation.update(
                 where={"id": conversation_id},
-                data={"title": title, "updatedAt": datetime.utcnow()}
+                data={"title": title, "updatedAt": datetime.utcnow()},
+                include={"user": True}
             )
             return self._prisma_conversation_to_model(updated)
         except Exception as e:
@@ -690,7 +695,8 @@ class IndexerRepository:
         try:
             updated = await db.conversation.update(
                 where={"id": conversation_id},
-                data={"model": model, "updatedAt": datetime.utcnow()}
+                data={"model": model, "updatedAt": datetime.utcnow()},
+                include={"user": True}
             )
             return self._prisma_conversation_to_model(updated)
         except Exception as e:
@@ -708,7 +714,8 @@ class IndexerRepository:
                     "messages": Json([]),
                     "totalTokens": 0,
                     "updatedAt": datetime.utcnow(),
-                }
+                },
+                include={"user": True}
             )
             return self._prisma_conversation_to_model(updated)
         except Exception as e:
@@ -745,7 +752,8 @@ class IndexerRepository:
                     "messages": Json(truncated),
                     "totalTokens": total_tokens,
                     "updatedAt": datetime.utcnow(),
-                }
+                },
+                include={"user": True}
             )
             return self._prisma_conversation_to_model(updated)
         except Exception as e:
@@ -827,10 +835,15 @@ class IndexerRepository:
                 events=events,
             ))
 
+        user = getattr(prisma_conv, "user", None)
+
         return Conversation(
             id=prisma_conv.id,
             title=prisma_conv.title,
             model=prisma_conv.model,
+            user_id=getattr(prisma_conv, "userId", None),
+            username=getattr(user, "username", None) if user else None,
+            display_name=getattr(user, "displayName", None) if user else None,
             messages=messages,
             total_tokens=prisma_conv.totalTokens,
             created_at=prisma_conv.createdAt,

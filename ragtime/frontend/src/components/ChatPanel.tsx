@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { api } from '@/api';
-import type { Conversation, ChatMessage, AvailableModel, ChatTask } from '@/types';
+import type { Conversation, ChatMessage, AvailableModel, ChatTask, User } from '@/types';
 
 // Memoized markdown component to prevent re-parsing on every render
 // Only re-renders when content actually changes
@@ -179,7 +179,11 @@ function formatRelativeTime(dateStr: string): string {
   return date.toLocaleDateString();
 }
 
-export function ChatPanel() {
+interface ChatPanelProps {
+  currentUser: User;
+}
+
+export function ChatPanel({ currentUser }: ChatPanelProps) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [inputValue, setInputValue] = useState('');
@@ -199,6 +203,8 @@ export function ChatPanel() {
   });
   const [lastSentMessage, setLastSentMessage] = useState<string>('');
   const [isConnectionError, setIsConnectionError] = useState(false);
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const isAdmin = currentUser.role === 'admin';
 
   // Confirmation modal state
   const [confirmation, setConfirmation] = useState<ConfirmationState | null>(null);
@@ -218,6 +224,59 @@ export function ChatPanel() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  const getOwnerKey = useCallback((conv: Conversation) => conv.username || conv.user_id || 'unknown', []);
+
+  const getOwnerLabel = useCallback(
+    (conv: Conversation) => conv.display_name || conv.username || 'Unknown user',
+    [],
+  );
+
+  const groupedConversations = useMemo(() => {
+    if (!isAdmin) return [] as Array<{ key: string; label: string; conversations: Conversation[] }>;
+
+    const groups = conversations.reduce<Record<string, { label: string; conversations: Conversation[] }>>((acc, conv) => {
+      const key = getOwnerKey(conv);
+      const label = getOwnerLabel(conv);
+      const existing = acc[key];
+      acc[key] = existing
+        ? { label: existing.label || label, conversations: [...existing.conversations, conv] }
+        : { label, conversations: [conv] };
+      return acc;
+    }, {});
+
+    return Object.entries(groups)
+      .map(([key, value]) => ({ key, label: value.label, conversations: value.conversations }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [conversations, getOwnerKey, getOwnerLabel, isAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin) {
+      if (Object.keys(collapsedGroups).length > 0) {
+        setCollapsedGroups({});
+      }
+      return;
+    }
+
+    setCollapsedGroups(prev => {
+      const next = { ...prev };
+      let changed = false;
+
+      conversations.forEach(conv => {
+        const key = getOwnerKey(conv);
+        if (!(key in next)) {
+          next[key] = true; // collapsed by default
+          changed = true;
+        }
+      });
+
+      return changed ? next : prev;
+    });
+  }, [collapsedGroups, conversations, getOwnerKey, isAdmin]);
+
+  const toggleGroup = useCallback((key: string) => {
+    setCollapsedGroups(prev => ({ ...prev, [key]: !prev[key] }));
+  }, []);
 
   // Memoized consolidated segments for streaming - groups adjacent content events
   // This dramatically reduces re-renders by avoiding markdown parsing per-token
@@ -770,6 +829,89 @@ export function ChatPanel() {
     ? Math.round(calculateConversationTokens(activeConversation.messages) / getContextLimit(activeConversation.model) * 100)
     : 0;
 
+  const renderConversationItem = (conv: Conversation) => {
+    const metaText = `${conv.messages.length} messages | ${formatRelativeTime(conv.updated_at)}`;
+    const isActive = activeConversation?.id === conv.id;
+
+    return (
+      <div
+        key={conv.id}
+        className={`chat-conversation-item ${isActive ? 'active' : ''}`}
+        onClick={() => selectConversation(conv)}
+      >
+        {editingTitle === conv.id ? (
+          <input
+            type="text"
+            value={titleInput}
+            onChange={(e) => setTitleInput(e.target.value)}
+            onBlur={() => saveTitle(conv.id)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') saveTitle(conv.id);
+              if (e.key === 'Escape') setEditingTitle(null);
+            }}
+            onClick={(e) => e.stopPropagation()}
+            autoFocus
+            className="chat-title-input"
+          />
+        ) : (
+          <>
+            <div className="chat-conversation-title">
+              {conv.active_task_id && (
+                <span className="chat-task-indicator" title="Processing in background">
+                  ⏳
+                </span>
+              )}
+              {conv.title}
+            </div>
+            <div className="chat-conversation-meta">
+              {metaText}
+            </div>
+          </>
+        )}
+        <div className="chat-conversation-actions">
+          {deleteConfirmId === conv.id ? (
+            <>
+              <button
+                className="chat-action-btn confirm-delete"
+                onClick={(e) => confirmDeleteConversation(conv.id, e)}
+                title="Confirm delete"
+              >
+                ✓
+              </button>
+              <button
+                className="chat-action-btn cancel-delete"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setDeleteConfirmId(null);
+                }}
+                title="Cancel"
+              >
+                ✗
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className="chat-action-btn"
+                onClick={(e) => startEditingTitle(conv, e)}
+                title="Rename"
+              >
+                ✏️
+              </button>
+              <button
+                className="chat-action-btn"
+                onClick={(e) => deleteConversation(conv.id, e)}
+                title="Delete"
+              >
+                🗑️
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="chat-panel">
       {/* Confirmation Modal */}
@@ -821,84 +963,26 @@ export function ChatPanel() {
                 Start a conversation
               </button>
             </div>
-          ) : (
-            conversations.map(conv => (
-              <div
-                key={conv.id}
-                className={`chat-conversation-item ${activeConversation?.id === conv.id ? 'active' : ''}`}
-                onClick={() => selectConversation(conv)}
-              >
-                {editingTitle === conv.id ? (
-                  <input
-                    type="text"
-                    value={titleInput}
-                    onChange={(e) => setTitleInput(e.target.value)}
-                    onBlur={() => saveTitle(conv.id)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') saveTitle(conv.id);
-                      if (e.key === 'Escape') setEditingTitle(null);
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                    autoFocus
-                    className="chat-title-input"
-                  />
-                ) : (
-                  <>
-                    <div className="chat-conversation-title">
-                      {conv.active_task_id && (
-                        <span className="chat-task-indicator" title="Processing in background">
-                          ⏳
-                        </span>
-                      )}
-                      {conv.title}
+          ) : isAdmin ? (
+            groupedConversations.map(group => {
+              const isCollapsed = collapsedGroups[group.key] ?? true;
+              return (
+                <div key={group.key} className="chat-conversation-group">
+                  <button className="chat-group-header" onClick={() => toggleGroup(group.key)}>
+                    <span className="chat-group-name">{group.label}</span>
+                    <span className="chat-group-count">{group.conversations.length}</span>
+                    <span className="chat-group-toggle">{isCollapsed ? '▶' : '▼'}</span>
+                  </button>
+                  {!isCollapsed && (
+                    <div className="chat-group-list">
+                      {group.conversations.map(renderConversationItem)}
                     </div>
-                    <div className="chat-conversation-meta">
-                      {conv.messages.length} messages | {formatRelativeTime(conv.updated_at)}
-                    </div>
-                  </>
-                )}
-                <div className="chat-conversation-actions">
-                  {deleteConfirmId === conv.id ? (
-                    <>
-                      <button
-                        className="chat-action-btn confirm-delete"
-                        onClick={(e) => confirmDeleteConversation(conv.id, e)}
-                        title="Confirm delete"
-                      >
-                        ✓
-                      </button>
-                      <button
-                        className="chat-action-btn cancel-delete"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setDeleteConfirmId(null);
-                        }}
-                        title="Cancel"
-                      >
-                        ✗
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <button
-                        className="chat-action-btn"
-                        onClick={(e) => startEditingTitle(conv, e)}
-                        title="Rename"
-                      >
-                        ✏️
-                      </button>
-                      <button
-                        className="chat-action-btn"
-                        onClick={(e) => deleteConversation(conv.id, e)}
-                        title="Delete"
-                      >
-                        🗑️
-                      </button>
-                    </>
                   )}
                 </div>
-              </div>
-            ))
+              );
+            })
+          ) : (
+            conversations.map(renderConversationItem)
           )}
         </div>
       </div>

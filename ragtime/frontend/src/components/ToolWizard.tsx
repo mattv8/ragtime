@@ -514,6 +514,11 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
   const [loadingDocker, setLoadingDocker] = useState(false);
   const [connectingNetwork, setConnectingNetwork] = useState(false);
 
+  // PostgreSQL database discovery state
+  const [discoveredDatabases, setDiscoveredDatabases] = useState<string[]>([]);
+  const [discoveringDatabases, setDiscoveringDatabases] = useState(false);
+  const [databaseDiscoveryError, setDatabaseDiscoveryError] = useState<string | null>(null);
+
   const [sshConfig, setSshConfig] = useState<SSHShellConnectionConfig>(
     existingTool?.tool_type === 'ssh_shell'
       ? (existingTool.connection_config as SSHShellConnectionConfig)
@@ -610,6 +615,41 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
       console.error('Network connection failed:', err);
     } finally {
       setConnectingNetwork(false);
+    }
+  };
+
+  // PostgreSQL database discovery handler
+  const handleDiscoverDatabases = async () => {
+    if (!postgresConfig.host || !postgresConfig.user || !postgresConfig.password) {
+      setDatabaseDiscoveryError('Host, user, and password are required to discover databases');
+      return;
+    }
+
+    setDiscoveringDatabases(true);
+    setDatabaseDiscoveryError(null);
+    setDiscoveredDatabases([]);
+
+    try {
+      const result = await api.discoverPostgresDatabases({
+        host: postgresConfig.host,
+        port: postgresConfig.port || 5432,
+        user: postgresConfig.user,
+        password: postgresConfig.password,
+      });
+
+      if (result.success) {
+        setDiscoveredDatabases(result.databases);
+        // Auto-select first database if none selected
+        if (result.databases.length > 0 && !postgresConfig.database) {
+          setPostgresConfig({ ...postgresConfig, database: result.databases[0] });
+        }
+      } else {
+        setDatabaseDiscoveryError(result.error || 'Discovery failed');
+      }
+    } catch (err) {
+      setDatabaseDiscoveryError(err instanceof Error ? err.message : 'Discovery failed');
+    } finally {
+      setDiscoveringDatabases(false);
     }
   };
 
@@ -907,12 +947,46 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
             </div>
             <div className="form-group">
               <label>Database</label>
-              <input
-                type="text"
-                value={postgresConfig.database || ''}
-                onChange={(e) => setPostgresConfig({ ...postgresConfig, database: e.target.value })}
-                placeholder="mydb"
-              />
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                {discoveredDatabases.length > 0 ? (
+                  <select
+                    value={postgresConfig.database || ''}
+                    onChange={(e) => setPostgresConfig({ ...postgresConfig, database: e.target.value })}
+                    style={{ flex: 1 }}
+                  >
+                    <option value="">Select database...</option>
+                    {discoveredDatabases.map(db => (
+                      <option key={db} value={db}>{db}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={postgresConfig.database || ''}
+                    onChange={(e) => setPostgresConfig({ ...postgresConfig, database: e.target.value })}
+                    placeholder="mydb"
+                    style={{ flex: 1 }}
+                  />
+                )}
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={handleDiscoverDatabases}
+                  disabled={discoveringDatabases || !postgresConfig.host || !postgresConfig.user || !postgresConfig.password}
+                  title="Discover available databases"
+                >
+                  {discoveringDatabases ? 'Discovering...' : 'Discover'}
+                </button>
+              </div>
+              <p className="field-help">
+                {databaseDiscoveryError ? (
+                  <span style={{ color: '#dc3545' }}>{databaseDiscoveryError}</span>
+                ) : discoveredDatabases.length > 0 ? (
+                  `Found ${discoveredDatabases.length} database(s). Select one or type manually.`
+                ) : (
+                  'Enter host, user, and password, then click Discover to find available databases.'
+                )}
+              </p>
             </div>
           </div>
         ) : pgConnectionMode === 'container' ? (

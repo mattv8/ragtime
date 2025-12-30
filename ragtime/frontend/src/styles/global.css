@@ -2011,6 +2011,50 @@ textarea:focus {
   padding: 8px;
 }
 
+.chat-conversation-group {
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  margin-bottom: 8px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.chat-group-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: none;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.chat-group-header:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.chat-group-name {
+  font-weight: 600;
+}
+
+.chat-group-count {
+  font-size: 0.85rem;
+  color: var(--color-text-secondary);
+}
+
+.chat-group-toggle {
+  font-size: 0.85rem;
+  color: var(--color-text-secondary);
+}
+
+.chat-group-list {
+  padding: 6px 8px 10px;
+}
+
 .chat-conversation-item {
   padding: 12px;
   border-radius: 8px;
