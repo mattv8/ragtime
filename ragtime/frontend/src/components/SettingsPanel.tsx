@@ -248,6 +248,7 @@ export function SettingsPanel() {
         llm_model: data.llm_model,
         openai_api_key: data.openai_api_key,
         anthropic_api_key: data.anthropic_api_key,
+        max_iterations: data.max_iterations,
       });
       // Reset Ollama connection state
       setOllamaConnected(false);
@@ -444,6 +445,7 @@ export function SettingsPanel() {
         openai_api_key: formData.openai_api_key,
         anthropic_api_key: formData.anthropic_api_key,
         allowed_chat_models: formData.allowed_chat_models,
+        max_iterations: formData.max_iterations,
       };
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
@@ -829,6 +831,25 @@ export function SettingsPanel() {
             </button>
             <p className="field-help">
               Limit which models appear in the Chat view dropdown.
+            </p>
+          </div>
+
+          <div className="form-group">
+            <label>Max Tool Iterations</label>
+            <input
+              type="number"
+              min={1}
+              max={50}
+              value={formData.max_iterations ?? 15}
+              onChange={(e) =>
+                setFormData({
+                  ...formData,
+                  max_iterations: Math.max(1, Math.min(50, parseInt(e.target.value, 10) || 1)),
+                })
+              }
+            />
+            <p className="field-help">
+              Maximum number of agent tool-calling steps before stopping. Lower to keep runs short; higher to allow deeper reasoning.
             </p>
           </div>
 

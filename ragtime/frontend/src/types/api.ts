@@ -164,6 +164,7 @@ export interface AppSettings {
   openai_api_key: string;
   anthropic_api_key: string;
   allowed_chat_models: string[];
+  max_iterations: number;
   // Tool Configuration
   enabled_tools: string[];
   odoo_container: string;
@@ -193,6 +194,7 @@ export interface UpdateSettingsRequest {
   openai_api_key?: string;
   anthropic_api_key?: string;
   allowed_chat_models?: string[];
+  max_iterations?: number;
   // Tool settings
   enabled_tools?: string[];
   odoo_container?: string;

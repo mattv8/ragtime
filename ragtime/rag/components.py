@@ -405,6 +405,14 @@ class RAGComponents:
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
 
+        # Respect admin-configured iteration limit; fall back to 15 if invalid
+        try:
+            max_iterations = int(self._app_settings.get("max_iterations", 15))
+            if max_iterations < 1:
+                max_iterations = 1
+        except (TypeError, ValueError):
+            max_iterations = 15
+
         if tools:
             # Use create_tool_calling_agent which works with both OpenAI and Anthropic
             agent = create_tool_calling_agent(self.llm, tools, prompt)
@@ -413,7 +421,7 @@ class RAGComponents:
                 tools=tools,
                 verbose=settings.debug_mode,
                 handle_parsing_errors=True,
-                max_iterations=15,  # Allow enough iterations for query refinement
+                max_iterations=max_iterations,  # Allow enough iterations for query refinement
                 return_intermediate_steps=settings.debug_mode,
             )
         else:

@@ -340,6 +340,7 @@ class IndexerRepository:
             openai_api_key=prisma_settings.openaiApiKey,
             anthropic_api_key=prisma_settings.anthropicApiKey,
             allowed_chat_models=prisma_settings.allowedChatModels or [],
+            max_iterations=prisma_settings.maxIterations,
             # Tool settings
             enabled_tools=prisma_settings.enabledTools,
             odoo_container=prisma_settings.odooContainer,
@@ -374,6 +375,7 @@ class IndexerRepository:
             "openai_api_key": "openaiApiKey",
             "anthropic_api_key": "anthropicApiKey",
             "allowed_chat_models": "allowedChatModels",
+            "max_iterations": "maxIterations",
             # Tool settings
             "enabled_tools": "enabledTools",
             "odoo_container": "odooContainer",

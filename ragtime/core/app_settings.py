@@ -63,6 +63,7 @@ class SettingsCache:
                 "openai_api_key": prisma_settings.openaiApiKey,
                 "anthropic_api_key": prisma_settings.anthropicApiKey,
                 "allowed_chat_models": prisma_settings.allowedChatModels or [],
+                "max_iterations": prisma_settings.maxIterations,
                 # Embedding settings
                 "embedding_provider": prisma_settings.embeddingProvider,
                 "embedding_model": prisma_settings.embeddingModel,
@@ -90,6 +91,7 @@ class SettingsCache:
                 "openai_api_key": "",
                 "anthropic_api_key": "",
                 "allowed_chat_models": [],
+                "max_iterations": 15,
                 # Embedding settings
                 "embedding_provider": "ollama",
                 "embedding_model": "nomic-embed-text",

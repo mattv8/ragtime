@@ -137,6 +137,7 @@ model AppSettings {
   // Query Limits
   maxQueryResults   Int      @default(100) @map("max_query_results")
   queryTimeout      Int      @default(30) @map("query_timeout")
+  maxIterations     Int      @default(15) @map("max_iterations") // Agent iteration limit
 
   // Security
   enableWriteOps    Boolean  @default(false) @map("enable_write_ops")
