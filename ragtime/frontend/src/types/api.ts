@@ -480,6 +480,7 @@ export interface AvailableModel {
   id: string;
   name: string;
   provider: 'openai' | 'anthropic';
+  context_limit: number;  // Max context window tokens
 }
 
 // Response with all available models

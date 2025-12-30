@@ -7,6 +7,7 @@ replacing the previous JSON file-based storage.
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional, List, Any, cast
@@ -37,6 +38,58 @@ from ragtime.indexer.models import (
 )
 
 logger = get_logger(__name__)
+
+CHARS_PER_TOKEN = 4
+
+
+def _safe_serialize(value: Any) -> str:
+    try:
+        return json.dumps(value, default=str)
+    except Exception:
+        return str(value) if value is not None else ""
+
+
+def _estimate_text_tokens(text: str) -> int:
+    if not text:
+        return 0
+    return (len(text) + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN
+
+
+def _estimate_message_tokens(message: dict[str, Any]) -> int:
+    """Estimate tokens for a message.
+
+    If events exist, they contain the full picture (content + tool calls).
+    Otherwise fall back to content + legacy tool_calls to avoid double-counting.
+    """
+    events = message.get("events")
+    if isinstance(events, list) and events:
+        tokens = 0
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") == "content":
+                tokens += _estimate_text_tokens(str(event.get("content", "")))
+            elif event.get("type") == "tool":
+                tokens += _estimate_text_tokens(_safe_serialize(event.get("input")))
+                tokens += _estimate_text_tokens(str(event.get("output", "")))
+        return tokens
+
+    # Fallback: use content + legacy tool_calls
+    tokens = _estimate_text_tokens(str(message.get("content", "")))
+
+    tool_calls = message.get("tool_calls")
+    if isinstance(tool_calls, list):
+        for call in tool_calls:
+            if not isinstance(call, dict):
+                continue
+            tokens += _estimate_text_tokens(_safe_serialize(call.get("input")))
+            tokens += _estimate_text_tokens(str(call.get("output", "")))
+
+    return tokens
+
+
+def _estimate_conversation_tokens(messages: list[dict[str, Any]]) -> int:
+    return sum(_estimate_message_tokens(message) for message in messages)
 
 
 def _to_prisma_index_status(status: IndexStatus) -> PrismaIndexStatus:
@@ -651,8 +704,8 @@ class IndexerRepository:
             new_message["events"] = events
         messages.append(new_message)
 
-        # Estimate tokens (rough: 1 token ~= 4 chars)
-        total_tokens = sum(len(str(m.get("content", ""))) for m in messages) // 4
+        # Estimate tokens (rough: 1 token ~= 4 chars) including tool calls and events
+        total_tokens = _estimate_conversation_tokens(messages)
 
         # Update conversation
         updated = await db.conversation.update(
@@ -745,8 +798,8 @@ class IndexerRepository:
             )
             truncated = messages[:keep_count]
 
-            # Recalculate tokens
-            total_tokens = sum(len(str(m.get("content", ""))) for m in truncated) // 4
+            # Recalculate tokens, including tool calls and events
+            total_tokens = _estimate_conversation_tokens(truncated)
 
             updated = await db.conversation.update(
                 where={"id": conversation_id},

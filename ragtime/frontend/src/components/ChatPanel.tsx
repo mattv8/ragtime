@@ -118,49 +118,57 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
   return null;
 });
 
-// Get context limit for a model
-function getContextLimit(model: string): number {
-  const limits: Record<string, number> = {
-    'gpt-4-turbo': 128000,
-    'gpt-4': 8192,
-    'gpt-4-32k': 32768,
-    'gpt-3.5-turbo': 16385,
-    'gpt-3.5-turbo-16k': 16385,
-    'claude-3-opus-20240229': 200000,
-    'claude-3-sonnet-20240229': 200000,
-    'claude-3-haiku-20240307': 200000,
-    'claude-3-5-sonnet-20241022': 200000,
-    'llama2': 4096,
-    'llama3': 8192,
-    'llama3.1': 128000,
-    'mistral': 8192,
-    'mixtral': 32768,
-    'codellama': 16384,
-    'qwen2.5': 32768,
-  };
-
-  // Try exact match first
-  if (limits[model]) return limits[model];
-
-  // Try partial match
-  for (const [key, value] of Object.entries(limits)) {
-    if (model.toLowerCase().includes(key.toLowerCase())) {
-      return value;
-    }
-  }
-
-  // Default fallback
-  return 8192;
-}
+// Default context limit fallback when model not found in API response
+const DEFAULT_CONTEXT_LIMIT = 8192;
 
 // Estimate tokens from text
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
 
+// Estimate tokens from an object payload (e.g., tool inputs)
+function estimateTokensFromObject(value: unknown): number {
+  if (value === undefined || value === null) return 0;
+  try {
+    return estimateTokens(JSON.stringify(value));
+  } catch {
+    return estimateTokens(String(value));
+  }
+}
+
+// Calculate tokens for a single message, including tool calls and chronological events
+// If events exist, they contain the full picture (content + tools); otherwise fall back to content/tool_calls
+function calculateMessageTokens(msg: ChatMessage): number {
+  // If we have chronological events, use them (they contain content + tool calls)
+  if (msg.events?.length) {
+    let tokens = 0;
+    for (const ev of msg.events) {
+      if (ev.type === 'content') {
+        tokens += estimateTokens(ev.content || '');
+      } else if (ev.type === 'tool') {
+        tokens += estimateTokensFromObject(ev.input);
+        tokens += estimateTokens(ev.output || '');
+      }
+    }
+    return tokens;
+  }
+
+  // Fallback: use content + legacy tool_calls
+  let tokens = estimateTokens(msg.content || '');
+
+  if (msg.tool_calls?.length) {
+    for (const tc of msg.tool_calls) {
+      tokens += estimateTokensFromObject(tc.input);
+      tokens += estimateTokens(tc.output || '');
+    }
+  }
+
+  return tokens;
+}
+
 // Calculate total tokens for a conversation
 function calculateConversationTokens(messages: ChatMessage[]): number {
-  return messages.reduce((total, msg) => total + estimateTokens(msg.content), 0);
+  return messages.reduce((total, msg) => total + calculateMessageTokens(msg), 0);
 }
 
 // Format relative time
@@ -355,6 +363,12 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
       console.error('Failed to load conversations:', err);
     }
   };
+
+  // Get context limit for a model from API-provided data (uses LiteLLM's dataset)
+  const getContextLimit = useCallback((modelId: string): number => {
+    const model = availableModels.find(m => m.id === modelId);
+    return model?.context_limit ?? DEFAULT_CONTEXT_LIMIT;
+  }, [availableModels]);
 
   const createNewConversation = async () => {
     try {
@@ -840,7 +854,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
     const tokens = calculateConversationTokens(activeConversation.messages);
     const limit = getContextLimit(activeConversation.model);
     return Math.round(tokens / limit * 100);
-  }, [activeConversation?.messages, activeConversation?.model]);
+  }, [activeConversation?.messages, activeConversation?.model, getContextLimit]);
 
   const renderConversationItem = (conv: Conversation) => {
     const metaText = `${conv.messages.length} messages | ${formatRelativeTime(conv.updated_at)}`;

@@ -539,7 +539,7 @@ class RAGComponents:
             query: str = Field(default="", description="SQL query to execute. Must include LIMIT clause.")
             reason: str = Field(default="", description="Brief description of what this query retrieves")
 
-        async def execute_query(query: str, reason: str) -> str:
+        async def execute_query(query: str = "", reason: str = "", **_: Any) -> str:
             """Execute PostgreSQL query using this tool's configuration."""
             from ragtime.core.security import validate_sql_query, sanitize_output
 
@@ -635,7 +635,7 @@ class RAGComponents:
                 cmd.extend(["-c", config_path])
             return cmd
 
-        async def execute_odoo(code: str, reason: str) -> str:
+        async def execute_odoo(code: str = "", reason: str = "", **_: Any) -> str:
             """Execute Odoo shell command using this tool's configuration."""
             from ragtime.core.security import validate_odoo_code, sanitize_output
 
@@ -781,7 +781,7 @@ except Exception as e:
             command: str = Field(default="", description="Shell command to execute on the remote server")
             reason: str = Field(default="", description="Brief description of what this command does")
 
-        async def execute_ssh(command: str, reason: str) -> str:
+        async def execute_ssh(command: str = "", reason: str = "", **_: Any) -> str:
             """Execute SSH command using this tool's configuration."""
             from ragtime.core.security import sanitize_output
             from ragtime.core.ssh import SSHConfig, execute_ssh_command

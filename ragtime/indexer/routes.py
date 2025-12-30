@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel, Field
 
 from ragtime.core.logging import get_logger
+from ragtime.core.model_limits import get_context_limit
 from ragtime.core.security import get_current_user, require_admin
 from ragtime.indexer.models import (
     IndexConfig,
@@ -1603,6 +1604,7 @@ class AvailableModel(BaseModel):
     id: str
     name: str
     provider: str  # 'openai' or 'anthropic'
+    context_limit: int = 8192  # Max context window tokens
 
 
 class AvailableModelsResponse(BaseModel):
@@ -1803,7 +1805,8 @@ async def get_available_chat_models():
                     all_models.append(AvailableModel(
                         id=m.id,
                         name=m.name,
-                        provider="openai"
+                        provider="openai",
+                        context_limit=await get_context_limit(m.id)
                     ))
                 if not default_model and result.default_model:
                     default_model = result.default_model
@@ -1819,7 +1822,8 @@ async def get_available_chat_models():
                     all_models.append(AvailableModel(
                         id=m.id,
                         name=m.name,
-                        provider="anthropic"
+                        provider="anthropic",
+                        context_limit=await get_context_limit(m.id)
                     ))
                 if not default_model and result.default_model:
                     default_model = result.default_model
@@ -1868,7 +1872,8 @@ async def get_all_chat_models():
                     all_models.append(AvailableModel(
                         id=m.id,
                         name=m.name,
-                        provider="openai"
+                        provider="openai",
+                        context_limit=await get_context_limit(m.id)
                     ))
         except Exception as e:
             logger.warning(f"Failed to fetch OpenAI models: {e}")
@@ -1882,7 +1887,8 @@ async def get_all_chat_models():
                     all_models.append(AvailableModel(
                         id=m.id,
                         name=m.name,
-                        provider="anthropic"
+                        provider="anthropic",
+                        context_limit=await get_context_limit(m.id)
                     ))
         except Exception as e:
             logger.warning(f"Failed to fetch Anthropic models: {e}")
