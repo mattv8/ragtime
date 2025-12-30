@@ -49,27 +49,24 @@ async def lifespan(app: FastAPI):
     await rag.initialize()
 
     # Recover any interrupted indexing jobs (survives hot-reloads)
-    if settings.enable_indexer:
-        from ragtime.indexer.service import indexer
-        recovered = await indexer.recover_interrupted_jobs()
-        if recovered > 0:
-            logger.info(f"Recovered {recovered} interrupted indexing job(s)")
+    from ragtime.indexer.service import indexer
+    recovered = await indexer.recover_interrupted_jobs()
+    if recovered > 0:
+        logger.info(f"Recovered {recovered} interrupted indexing job(s)")
 
-        # Discover orphan indexes (FAISS files without database metadata)
-        discovered = await indexer.discover_orphan_indexes()
-        if discovered > 0:
-            logger.info(f"Discovered {discovered} orphan index(es) on disk")
+    # Discover orphan indexes (FAISS files without database metadata)
+    discovered = await indexer.discover_orphan_indexes()
+    if discovered > 0:
+        logger.info(f"Discovered {discovered} orphan index(es) on disk")
 
-        # Start background task service for chat
-        from ragtime.indexer.background_tasks import background_task_service
-        await background_task_service.start()
+    # Start background task service for chat
+    from ragtime.indexer.background_tasks import background_task_service
+    await background_task_service.start()
 
     yield
 
     # Cleanup
-    if settings.enable_indexer:
-        from ragtime.indexer.background_tasks import background_task_service
-        await background_task_service.stop()
+    await background_task_service.stop()
 
     await disconnect_db()
     logger.info("Shutting down RAG API")
@@ -102,13 +99,12 @@ app.include_router(router)
 # Include auth routes
 app.include_router(auth_router)
 
-# Include indexer routes if enabled
-if settings.enable_indexer:
-    app.include_router(indexer_router)
-    # Mount static files for indexer UI assets at root
-    if INDEXER_ASSETS_DIR.exists():
-        app.mount("/assets", StaticFiles(directory=INDEXER_ASSETS_DIR), name="indexer_ui_assets")
-    logger.info("Indexer API enabled at /indexes, UI served at root (/)")
+# Include indexer routes
+app.include_router(indexer_router)
+# Mount static files for indexer UI assets at root
+if INDEXER_ASSETS_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=INDEXER_ASSETS_DIR), name="indexer_ui_assets")
+logger.info("Indexer API enabled at /indexes, UI served at root (/)")
 
 
 # Root endpoint - serve Indexer UI or API info
@@ -121,7 +117,7 @@ async def root():
     dist_index = DIST_DIR / "index.html"
 
     # In production, serve the built React app
-    if dist_index.exists() and settings.enable_indexer:
+    if dist_index.exists():
         return FileResponse(dist_index, media_type="text/html")
 
     # Fallback to API info

@@ -38,6 +38,9 @@ export interface AuthStatus {
   authenticated: boolean;
   ldap_configured: boolean;
   local_admin_enabled: boolean;
+  debug_mode: boolean;
+  debug_username?: string;
+  debug_password?: string;
 }
 
 export interface LdapConfig {

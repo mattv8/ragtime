@@ -32,14 +32,17 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
     switch (tool.tool_type) {
       case 'postgres':
         if ('host' in config && config.host) {
-          return `${config.host}:${config.port || 5432}/${config.database || ''}`;
+          const port = 'port' in config ? config.port : 5432;
+          const database = 'database' in config ? config.database : '';
+          return `${config.host}:${port}/${database}`;
         }
-        return `Container: ${config.container || 'N/A'}`;
+        return `Container: ${'container' in config ? config.container : 'N/A'}`;
       case 'odoo_shell':
         return `Container: ${'container' in config ? config.container : 'N/A'}`;
       case 'ssh_shell':
         if ('host' in config && 'user' in config) {
-          return `${config.user}@${config.host}:${config.port || 22}`;
+          const port = 'port' in config ? config.port : 22;
+          return `${config.user}@${config.host}:${port}`;
         }
         return 'SSH connection';
       default:

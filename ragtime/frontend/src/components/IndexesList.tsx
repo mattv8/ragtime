@@ -84,7 +84,7 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
   const [toggling, setToggling] = useState<string | null>(null);
   const [editingIndex, setEditingIndex] = useState<IndexInfo | null>(null);
   const [savingDescription, setSavingDescription] = useState(false);
-  const [confirmation, setConfirmation] = useState<ConfirmationState | null>(null);
+  const [_confirmation, _setConfirmation] = useState<ConfirmationState | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [deleteConfirmName, setDeleteConfirmName] = useState<string | null>(null);
 

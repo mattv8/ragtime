@@ -133,6 +133,9 @@ class AuthStatusResponse(BaseModel):
     authenticated: bool
     ldap_configured: bool
     local_admin_enabled: bool
+    debug_mode: bool = False
+    debug_username: Optional[str] = None
+    debug_password: Optional[str] = None
 
 
 # =============================================================================
@@ -149,6 +152,9 @@ async def get_auth_status():
         authenticated=False,  # This endpoint is for unauthenticated users
         ldap_configured=bool(ldap_config.serverUrl),
         local_admin_enabled=bool(settings.local_admin_password),
+        debug_mode=settings.debug_mode,
+        debug_username=settings.local_admin_user if settings.debug_mode else None,
+        debug_password=settings.local_admin_password if settings.debug_mode else None,
     )
 
 

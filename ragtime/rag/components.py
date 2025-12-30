@@ -371,32 +371,32 @@ class RAGComponents:
             return
 
         tools = []
-        if settings.enable_tools:
-            # Always add search_knowledge tool if we have FAISS retrievers
-            if self.retrievers:
-                tools.append(self._create_knowledge_search_tool())
-                logger.info(f"Added search_knowledge tool for {len(self.retrievers)} index(es)")
 
-            # Get tools from the new ToolConfig system
-            if self._tool_configs:
-                config_tools = await self._build_tools_from_configs(skip_knowledge_tool=True)
-                tools.extend(config_tools)
-                logger.info(f"Built {len(config_tools)} tools from configurations")
-            else:
-                # Fallback to legacy enabled_tools system
-                app_settings = await get_app_settings()
-                enabled_list = app_settings["enabled_tools"]
-                if enabled_list:
-                    legacy_tools = get_enabled_tools(enabled_list)
-                    tools.extend(legacy_tools)
-                    logger.info(f"Using legacy tool configuration: {enabled_list}")
+        # Always add search_knowledge tool if we have FAISS retrievers
+        if self.retrievers:
+            tools.append(self._create_knowledge_search_tool())
+            logger.info(f"Added search_knowledge tool for {len(self.retrievers)} index(es)")
 
-            if not tools:
-                available = list(get_all_tools().keys())
-                logger.warning(
-                    f"No tools configured. Available tool types: {available}. "
-                    f"Configure via Tools tab at /indexes/ui?view=tools"
-                )
+        # Get tools from the new ToolConfig system
+        if self._tool_configs:
+            config_tools = await self._build_tools_from_configs(skip_knowledge_tool=True)
+            tools.extend(config_tools)
+            logger.info(f"Built {len(config_tools)} tools from configurations")
+        else:
+            # Fallback to legacy enabled_tools system
+            app_settings = await get_app_settings()
+            enabled_list = app_settings["enabled_tools"]
+            if enabled_list:
+                legacy_tools = get_enabled_tools(enabled_list)
+                tools.extend(legacy_tools)
+                logger.info(f"Using legacy tool configuration: {enabled_list}")
+
+        if not tools:
+            available = list(get_all_tools().keys())
+            logger.warning(
+                f"No tools configured. Available tool types: {available}. "
+                f"Configure via Tools tab at /indexes/ui?view=tools"
+            )
 
         prompt = ChatPromptTemplate.from_messages([
             ("system", self._system_prompt),
@@ -910,7 +910,7 @@ except Exception as e:
         augmented_input = self._build_augmented_input(user_message)
 
         try:
-            if self.agent_executor and settings.enable_tools:
+            if self.agent_executor:
                 # Use agent with tools
                 result = await self.agent_executor.ainvoke({
                     "input": augmented_input,
@@ -964,7 +964,7 @@ except Exception as e:
         augmented_input = self._build_augmented_input(user_message)
 
         try:
-            if self.agent_executor and settings.enable_tools:
+            if self.agent_executor:
                 # Agent with tools: use astream_events for true streaming
                 # This streams tool calls and final response tokens
                 # Track tool runs to avoid duplicates from nested events

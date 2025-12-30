@@ -51,7 +51,6 @@ async def health_check():
     return HealthResponse(
         status="healthy" if rag.is_ready else "initializing",
         version=__version__,
-        tools_enabled=settings.enable_tools,
         indexes_loaded=list(rag.retrievers.keys()),
         model=app_settings.get("llm_model", "gpt-4-turbo"),
         llm_provider=app_settings.get("llm_provider", "openai")

@@ -1,0 +1,132 @@
+name: 'Sync README with Source Files'
+description: 'Updates README.md collapsible sections with content from .env.example and docker-compose.yml'
+inputs:
+  fail-on-diff:
+    description: 'Whether to fail if README is out of sync (useful for PRs)'
+    required: false
+    default: 'false'
+outputs:
+  changed:
+    description: 'Whether the README was changed'
+    value: ${{ steps.sync.outputs.changed }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Sync README sections
+      id: sync
+      shell: bash
+      run: |
+        set -e
+
+        # Function to update a collapsible section in README
+        update_section() {
+          local readme_file="$1"
+          local start_marker="$2"
+          local source_file="$3"
+          local indent="$4"
+          local temp_file=$(mktemp)
+
+          echo "Updating section: $start_marker from $source_file"
+
+          # Read the source file content
+          if [[ ! -f "$source_file" ]]; then
+            echo "❌ Source file not found: $source_file"
+            exit 1
+          fi
+
+          # Process README line by line
+          local in_section=false
+          local in_code_block=false
+          local section_found=false
+
+          while IFS= read -r line || [[ -n "$line" ]]; do
+            if [[ "$line" == *"$start_marker"* ]]; then
+              in_section=true
+              section_found=true
+              echo "$line" >> "$temp_file"
+              continue
+            fi
+
+            if [[ "$in_section" == true ]]; then
+              if [[ "$in_code_block" == false && "$line" =~ ^[[:space:]]*\`\`\` ]]; then
+                # Found the opening ``` of the code block
+                in_code_block=true
+                echo "$line" >> "$temp_file"
+
+                # Insert the indented content from source file
+                while IFS= read -r src_line || [[ -n "$src_line" ]]; do
+                  if [[ -n "$src_line" ]]; then
+                    echo "${indent}${src_line}" >> "$temp_file"
+                  else
+                    echo "" >> "$temp_file"
+                  fi
+                done < "$source_file"
+                continue
+              elif [[ "$in_code_block" == true && "$line" =~ ^[[:space:]]*\`\`\`[[:space:]]*$ ]]; then
+                # Found the closing ```
+                echo "$line" >> "$temp_file"
+                in_code_block=false
+                in_section=false
+                continue
+              elif [[ "$in_code_block" == true ]]; then
+                # Skip old content inside code block
+                continue
+              fi
+            fi
+
+            echo "$line" >> "$temp_file"
+          done < "$readme_file"
+
+          if [[ "$section_found" == false ]]; then
+            echo "❌ Failed to find section with marker: $start_marker"
+            rm -f "$temp_file"
+            exit 1
+          fi
+
+          # Replace the original file
+          mv "$temp_file" "$readme_file"
+          echo "✓ Section updated successfully"
+        }
+
+        # Main execution
+        README_FILE="README.md"
+
+        if [[ ! -f "$README_FILE" ]]; then
+          echo "❌ README.md not found"
+          exit 1
+        fi
+
+        # Create backup
+        cp "$README_FILE" "${README_FILE}.backup"
+
+        # Update .env.example section
+        echo "Updating .env template in README..."
+        update_section "$README_FILE" \
+          "   <summary>Click to expand .env template</summary>" \
+          ".env.example" \
+          "   "
+
+        # Update docker-compose.yml section
+        echo "Updating docker-compose.yml in README..."
+        update_section "$README_FILE" \
+          "   <summary>Click to expand docker-compose.yml</summary>" \
+          "docker-compose.yml" \
+          "   "
+
+        # Check if changes were made
+        if diff -q "$README_FILE" "${README_FILE}.backup" > /dev/null 2>&1; then
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+          echo "✓ README.md already in sync"
+          rm -f "${README_FILE}.backup"
+        else
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "⚠ README.md has been updated"
+          rm -f "${README_FILE}.backup"
+
+          if [[ "${{ inputs.fail-on-diff }}" == "true" ]]; then
+            echo "❌ README is out of sync with source files!"
+            echo "The .env template or docker-compose.yml content in README.md doesn't match the actual files."
+            exit 1
+          fi
+        fi

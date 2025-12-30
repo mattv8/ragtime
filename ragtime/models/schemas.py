@@ -94,7 +94,6 @@ class HealthResponse(BaseModel):
     """Health check response."""
     status: str
     version: str
-    tools_enabled: bool
     indexes_loaded: List[str]
     model: str
     llm_provider: str

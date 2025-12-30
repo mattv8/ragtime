@@ -25,7 +25,7 @@ RUN npm run build
 # =============================================================================
 # Stage 2: Build Python dependencies
 # =============================================================================
-FROM python:3.12-slim as python-builder
+FROM python:3.12-slim AS python-builder
 
 # Build arguments
 ARG DEBIAN_FRONTEND=noninteractive
@@ -48,7 +48,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # =============================================================================
 # Stage 3: Production image
 # =============================================================================
-FROM python:3.12-slim as production
+FROM python:3.12-slim AS production
 
 # Labels
 LABEL maintainer="elastropy.com"
@@ -65,10 +65,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
-    postgresql-client \
+    gnupg \
     docker.io \
     libmagic1 \
     openssh-client \
+    nodejs \
+    npm \
+    # Add PostgreSQL APT repository for version 18 client
+    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgresql.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt $(. /etc/os-release && echo \"$VERSION_CODENAME\")-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-client-18 \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -81,8 +88,8 @@ COPY --from=python-builder /opt/venv /opt/venv
 # Create working directory
 WORKDIR /ragtime
 
-# Copy Prisma schema and generate client
-COPY prisma/schema.prisma /ragtime/prisma/schema.prisma
+# Copy Prisma schema and migrations, then generate client
+COPY prisma/ /ragtime/prisma/
 RUN cd /ragtime && python -m prisma generate
 
 # Copy application code (includes indexer module)
@@ -91,15 +98,18 @@ COPY ragtime/ /ragtime/ragtime/
 # Copy built frontend from the builder stage
 COPY --from=frontend-builder /frontend/dist /ragtime/ragtime/indexer/static/dist/
 
-# Copy entrypoint
+# Copy entrypoint and scripts
 COPY docker/entrypoint.sh /entrypoint.sh
+COPY docker/scripts/backup-restore.sh /docker-scripts/backup-restore.sh
 
 # Create data directory
 RUN mkdir -p /ragtime/data/faiss_index && \
     chown -R ragtime:ragtime /ragtime
 
-# Make entrypoint executable
-RUN chmod +x /entrypoint.sh
+# Make scripts executable and create convenience command wrappers
+RUN chmod +x /entrypoint.sh /docker-scripts/backup-restore.sh \
+    && ln -sf /docker-scripts/backup-restore.sh /usr/local/bin/backup \
+    && ln -sf /docker-scripts/backup-restore.sh /usr/local/bin/restore
 
 # Expose port
 EXPOSE 8000

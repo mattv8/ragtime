@@ -2,98 +2,91 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Docker: Start Stack",
       "type": "shell",
-      "command": "docker compose up",
-      "group": "build",
-      "isBackground": true,
-      "presentation": {
-        "echo": true,
-        "reveal": "always",
-        "focus": false,
-        "panel": "shared"
-      },
-      "problemMatcher": [
-        {
-          "pattern": [
-            {
-              "regexp": ".*",
-              "file": 1,
-              "location": 2,
-              "message": 3
-            }
-          ],
-          "background": {
-            "activeOnStart": true,
-            "beginsPattern": "^.*Building.*|^.*Pulling.*|^.*Creating.*|^.*Starting.*|^\\[\\+\\] Running [0-9]+/[0-9]+$",
-            "endsPattern": "^\\[\\+\\] Running [0-9]+/[0-9]+$|^Attaching to .*|^.*Uvicorn running.*|^.*Application startup complete.*"
-          }
-        }
-      ],
-      "detail": "Start Ragtime Docker development stack"
-    },
-    {
-      "label": "Docker: Stop Stack",
-      "type": "shell",
-      "command": "docker compose down",
-      "group": "build",
-      "presentation": {
-        "echo": true,
-        "reveal": "always",
-        "focus": false,
-        "panel": "shared",
-        "clear": true
-      },
-      "problemMatcher": [],
-      "detail": "Stop all Ragtime containers"
-    },
-    {
-      "label": "Docker: Rebuild and Restart",
-      "type": "shell",
-      "command": "docker compose up --build --force-recreate",
-      "group": "build",
-      "isBackground": true,
-      "presentation": {
-        "echo": true,
-        "reveal": "always",
-        "focus": false,
-        "panel": "shared"
-      },
-      "problemMatcher": [
-        {
-          "pattern": [
-            {
-              "regexp": ".*",
-              "file": 1,
-              "location": 2,
-              "message": 3
-            }
-          ],
-          "background": {
-            "activeOnStart": true,
-            "beginsPattern": "^.*Building.*|^.*Pulling.*|^.*Creating.*|^.*Starting.*|^\\[\\+\\] Running [0-9]+/[0-9]+$",
-            "endsPattern": "^\\[\\+\\] Running [0-9]+/[0-9]+$|^Attaching to .*|^.*Uvicorn running.*|^.*Application startup complete.*"
-          }
-        }
-      ],
-      "detail": "Rebuild and restart Ragtime Docker development stack"
-    },
-    {
-      "label": "Docker: Restart Ragtime",
-      "type": "shell",
-      "command": "docker restart ragtime-dev",
+      "label": "Start Development Stack",
+      "command": "if [ ! -f ${workspaceFolder}/.env ]; then echo 'Error: .env file not found. Copy .env.example to .env and configure it.'; exit 1; fi && docker compose -f ${workspaceFolder}/docker/docker-compose.dev.yml up --build",
       "group": {
         "kind": "build",
         "isDefault": true
       },
-      "presentation": {
-        "echo": true,
-        "reveal": "always",
-        "focus": false,
-        "panel": "shared"
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "docker-compose",
+        "pattern": {
+          "regexp": "^(Error|ERROR|error):\\s+(.*)$",
+          "severity": 1,
+          "message": 2
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^\\[\\+\\] (Building|Running)",
+          "endsPattern": "(Application startup complete|Uvicorn running|Container .* Started)"
+        }
       },
-      "problemMatcher": [],
-      "detail": "Restart the Ragtime container"
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": true
+      },
+      "detail": "Start Ragtime development stack with hot-reload"
+    },
+    {
+      "type": "shell",
+      "label": "Stop Development Stack",
+      "command": "docker compose -f ${workspaceFolder}/docker/docker-compose.dev.yml down",
+      "isBackground": false,
+      "problemMatcher": {
+        "owner": "docker-compose",
+        "pattern": {
+          "regexp": "^(Error|ERROR|error):\\s+(.*)$",
+          "severity": 1,
+          "message": 2
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^\\[\\+\\] Running",
+          "endsPattern": "(Network .* Removed|removed)"
+        }
+      },
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "detail": "Stop all Ragtime containers"
+    },
+    {
+      "type": "shell",
+      "label": "Rebuild Development Stack",
+      "command": "if [ ! -f ${workspaceFolder}/.env ]; then echo 'Error: .env file not found. Copy .env.example to .env and configure it.'; exit 1; fi && docker compose -f ${workspaceFolder}/docker/docker-compose.dev.yml down && docker compose -f ${workspaceFolder}/docker/docker-compose.dev.yml build --no-cache && docker compose -f ${workspaceFolder}/docker/docker-compose.dev.yml up",
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "docker-compose",
+        "pattern": {
+          "regexp": "^(Error|ERROR|error):\\s+(.*)$",
+          "severity": 1,
+          "message": 2
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^\\[\\+\\] (Building|Running)",
+          "endsPattern": "(Application startup complete|Uvicorn running)"
+        }
+      },
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": true
+      },
+      "detail": "Full rebuild with cache clear"
     }
   ]
 }

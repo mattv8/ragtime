@@ -206,7 +206,7 @@ function SSHAuthPanel({
   onGenerateKey,
   keyCopied,
   onCopyPublicKey,
-  toolName = 'ragtime',
+  toolName: _toolName = 'ragtime',
   showHostPort = false,
 }: SSHAuthPanelProps) {
   return (
@@ -464,7 +464,7 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
   const [currentStep, setCurrentStep] = useState<WizardStep>(isEditing ? 'connection' : 'type');
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string; details?: unknown } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Form state
@@ -480,7 +480,7 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
   const [name, setName] = useState(existingTool?.name || '');
   const [description, setDescription] = useState(existingTool?.description || '');
   const [maxResults, setMaxResults] = useState(existingTool?.max_results || 100);
-  const [timeout, setTimeout] = useState(existingTool?.timeout || 30);
+  const [timeoutValue, setTimeoutValue] = useState(existingTool?.timeout || 30);
   const [allowWrite, setAllowWrite] = useState(existingTool?.allow_write || false);
 
   // Connection config state
@@ -542,8 +542,7 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
     })()
   );
   const [generatingKey, setGeneratingKey] = useState(false);
-  const [generatedPublicKey, setGeneratedPublicKey] = useState<string | null>(null);
-  const [showPrivateKey, setShowPrivateKey] = useState(false);
+  const [_generatedPublicKey, setGeneratedPublicKey] = useState<string | null>(null);
   const [keyCopied, setKeyCopied] = useState(false);
 
   const getConnectionConfig = (): ConnectionConfig => {
@@ -755,7 +754,7 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
           description,
           connection_config: getConnectionConfig(),
           max_results: maxResults,
-          timeout,
+          timeout: timeoutValue,
           allow_write: allowWrite,
         });
       }
@@ -783,7 +782,7 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
           description,
           connection_config: getConnectionConfig(),
           max_results: maxResults,
-          timeout,
+          timeout: timeoutValue,
           allow_write: allowWrite,
         });
       } else {
@@ -793,7 +792,7 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
           description,
           connection_config: getConnectionConfig(),
           max_results: maxResults,
-          timeout,
+          timeout: timeoutValue,
           allow_write: allowWrite,
         };
         await api.createToolConfig(request);
@@ -1343,7 +1342,7 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
               <span className={`test-result ${testResult.success ? 'success' : 'error'}`}>
                 {testResult.message}
               </span>
-              {!testResult.success && testResult.details && (
+              {!testResult.success && testResult.details !== undefined && testResult.details !== null && (
                 <details className="test-error-details" style={{ marginTop: '0.5rem' }}>
                   <summary style={{ cursor: 'pointer', fontSize: '0.85rem', color: '#666' }}>
                     Show error details
@@ -1362,7 +1361,7 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
                   }}>
                     {typeof testResult.details === 'string'
                       ? testResult.details
-                      : JSON.stringify(testResult.details, null, 2)}
+                      : String(JSON.stringify(testResult.details, null, 2))}
                   </pre>
                 </details>
               )}
@@ -1434,8 +1433,8 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
           <label>Timeout (seconds)</label>
           <input
             type="number"
-            value={timeout}
-            onChange={(e) => setTimeout(parseInt(e.target.value) || 30)}
+            value={timeoutValue}
+            onChange={(e) => setTimeoutValue(parseInt(e.target.value) || 30)}
             min={1}
             max={300}
           />
@@ -1506,7 +1505,7 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
           <h4>Options</h4>
           <ul>
             <li>Max results: {maxResults}</li>
-            <li>Timeout: {timeout}s</li>
+            <li>Timeout: {timeoutValue}s</li>
             <li>Write operations: {allowWrite ? 'Enabled' : 'Disabled'}</li>
           </ul>
         </div>

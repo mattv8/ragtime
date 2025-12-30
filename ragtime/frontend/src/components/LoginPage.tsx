@@ -8,8 +8,8 @@ interface LoginPageProps {
 }
 
 export function LoginPage({ authStatus, onLoginSuccess }: LoginPageProps) {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
+  const [username, setUsername] = useState(authStatus.debug_username || '');
+  const [password, setPassword] = useState(authStatus.debug_password || '');
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 

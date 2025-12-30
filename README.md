@@ -2,6 +2,9 @@
 
 OpenAI-compatible RAG API with LangChain tool calling for business intelligence queries.
 
+**[Live Demo](https://ragtime.dev.visnovsky.us)**
+**[Contributing Guide](CONTRIBUTING.md)**
+
 ## Features
 
 - **OpenAI API Compatible**: Works with OpenWebUI, ChatGPT clients, and any OpenAI-compatible interface
@@ -12,136 +15,215 @@ OpenAI-compatible RAG API with LangChain tool calling for business intelligence 
 
 ## Quick Start
 
-### 1. Configure Environment
+### Prerequisites
+
+- Docker and Docker Compose
+- A `.env` file with your configuration
+
+### Setup
+
+1. **Create environment file:**
+
+   Create a file named `.env` with the following content:
+
+   <details>
+   <summary>Click to expand .env template</summary>
+
+   ```bash
+   # =============================================================================
+   # Ragtime RAG API - Environment Configuration
+   # =============================================================================
+   # Copy this file to .env and fill in your values
+
+   # -----------------------------------------------------------------------------
+   # Database Configuration
+   # -----------------------------------------------------------------------------
+   # PostgreSQL password (used by both database container and ragtime)
+   POSTGRES_PASSWORD=changeme
+
+   # -----------------------------------------------------------------------------
+   # Authentication Configuration
+   # -----------------------------------------------------------------------------
+   # Local admin account credentials
+   LOCAL_ADMIN_USER=admin
+   LOCAL_ADMIN_PASSWORD=changeme_admin
+
+   # JWT secret key for session tokens (auto-generated if not set)
+   # IMPORTANT: Set this in production to persist sessions across restarts
+   # JWT_SECRET_KEY=your-secret-key-here
+
+   # -----------------------------------------------------------------------------
+   # Server Configuration
+   # -----------------------------------------------------------------------------
+   # API port (default: 8000)
+   PORT=8000
+
+   # UI/Vite port (default: 8001)
+   API_PORT=8001
+
+   # API Key for external authentication (leave empty to disable)
+   # API_KEY=
+
+   # CORS allowed origins (comma-separated, or * for all)
+   ALLOWED_ORIGINS=*
+
+   # Set to true if running behind HTTPS reverse proxy
+   SESSION_COOKIE_SECURE=false
+
+   ############################################################
+   # Developer Only - Typically do not modify below this line #
+   ############################################################
+
+   # Debug mode (enables verbose logging and hot-reload)
+   DEBUG_MODE=false
+
+   # Database URL (auto-configured by docker-compose, override for external DB)
+   # DATABASE_URL=postgresql://ragtime:password@hostname:5432/ragtime
+   ```
+
+   </details>
+
+2. **Edit `.env`** and configure your specific values (see [Environment Variables](#environment-variables) section)
+
+3. **Create docker-compose.yml:**
+
+   Create a file named `docker-compose.yml` with the following content:
+
+   <details>
+   <summary>Click to expand docker-compose.yml</summary>
+
+   ```yaml
+   # =============================================================================
+   # Ragtime - Production Docker Compose
+   # =============================================================================
+   # For self-hosted deployment. See README.md for setup instructions.
+   #
+   # Usage:
+   #   1. Create .env file with your configuration
+   #   2. docker compose up -d
+   #   3. Access at http://localhost:8000
+
+   services:
+     # PostgreSQL database for Prisma persistence
+     ragtime-db:
+       image: postgres:latest
+       container_name: ragtime-db
+       restart: unless-stopped
+       environment:
+         POSTGRES_USER: ragtime
+         POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ragtime_prod}
+         POSTGRES_DB: ragtime
+       volumes:
+         - ragtime-db-data:/var/lib/postgresql/data
+       networks:
+         - ragtime-network
+       healthcheck:
+         test: ["CMD-SHELL", "pg_isready -U ragtime -d ragtime"]
+         interval: 10s
+         timeout: 5s
+         retries: 5
+
+     # Ragtime RAG API
+     ragtime:
+       image: hub.docker.visnovsky.us/library/ragtime:main
+       container_name: ragtime
+       restart: unless-stopped
+       ports:
+         - "${PORT:-8000}:8000"
+         - "${API_PORT:-8001}:${API_PORT:-8001}"
+       env_file:
+         - .env
+       environment:
+         # Database connection (uses container network)
+         DATABASE_URL: postgresql://ragtime:${POSTGRES_PASSWORD:-ragtime_prod}@ragtime-db:5432/ragtime
+         # Production settings
+         DEBUG_MODE: "false"
+         SESSION_COOKIE_SECURE: "${SESSION_COOKIE_SECURE:-false}"
+         API_PORT: "${API_PORT:-8001}"
+       volumes:
+         # FAISS index data persistence
+         - ./data:/app/data
+         # Docker socket for container exec (optional, for tool execution)
+         - /var/run/docker.sock:/var/run/docker.sock:ro
+       networks:
+         - ragtime-network
+       depends_on:
+         ragtime-db:
+           condition: service_healthy
+       healthcheck:
+         test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+         interval: 30s
+         timeout: 10s
+         retries: 3
+         start_period: 15s
+
+   networks:
+     ragtime-network:
+       driver: bridge
+
+   volumes:
+     ragtime-db-data:
+   ```
+
+   **Note:** All configuration variables are loaded from the `.env` file via `env_file`. The `environment` section only overrides `DATABASE_URL` to use the container network.
+
+   </details>
+
+4. **Start the application:**
+   ```bash
+   docker compose up -d
+   ```
+
+5. **Access the application:**
+   - Web UI: http://localhost:8000
+   - API docs: http://localhost:8000/docs
+
+   Default credentials: `admin` / (set via `LOCAL_ADMIN_PASSWORD` in `.env`)
+
+### Updating
+
+To update to the latest version:
 
 ```bash
-cp .env.example .env
-# Edit .env with your API keys and configuration
+docker compose pull
+docker compose up -d
 ```
 
-### 2. Run with Docker Compose (Development)
+## Environment Variables
 
-```bash
-docker compose up --build
-```
+### Database Configuration
+- `POSTGRES_PASSWORD` - PostgreSQL password (required, used by both containers)
 
-> **Tip**: In VS Code, use `Ctrl+Shift+B` to run Docker tasks (start, stop, rebuild) without the terminal.
+### Authentication
+- `LOCAL_ADMIN_USER` - Local admin username (default: `admin`)
+- `LOCAL_ADMIN_PASSWORD` - Local admin password (required for first setup)
+- `JWT_SECRET_KEY` - Secret key for JWT signing (auto-generated if not set, set in production)
 
-### 3. Access the Application
+### Server Configuration
+- `PORT` - API port (default: `8000`)
+- `API_PORT` - UI/Vite port (default: `8001`)
+- `API_KEY` - Optional API key for external authentication
+- `ALLOWED_ORIGINS` - CORS allowed origins (default: `*`)
+- `SESSION_COOKIE_SECURE` - Set to `true` if behind HTTPS reverse proxy
 
-| URL | Description |
-|-----|-------------|
-| http://localhost:8001 | **Indexer UI** (Vite dev server with hot-reload) |
-| http://localhost:8000 | API root (serves UI in production) |
-| http://localhost:8000/docs | Swagger API documentation |
-| http://localhost:8000/health | Health check endpoint |
+### Debug
+- `DEBUG_MODE` - Enable debug logging (default: `false`)
 
-### 4. Test the API
+## Connecting to OpenWebUI
 
-```bash
-# Health check
-curl http://localhost:8000/health
-
-# List models
-curl http://localhost:8000/v1/models
-
-# Chat completion
-curl -X POST http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "ragtime",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
-
-## Local Development Setup
-
-For local development without Docker, use the setup script:
-
-```bash
-bash scripts/setup.sh
-```
-
-This script:
-- Detects Python 3.12 (or falls back to available Python 3)
-- Creates a `.venv` virtual environment
-- Installs all dependencies from `requirements.txt`
-- Installs dev tools (pylint, black, isort)
-- Copies `.env.example` to `.env` if missing
-
-## Architecture
-
-Single container running both the RAG API and Indexer service:
-
-| Service | Port | Purpose |
-|---------|------|---------|
-| ragtime | 8000 | FastAPI backend (RAG API + Indexer API) |
-| ragtime (Vite) | 8001 | Indexer UI with hot-reload (dev only) |
-| ragtime-db | 5434 | PostgreSQL (Prisma ORM) |
-
-In development, Vite proxies API requests from port 8001 to port 8000 for seamless hot-reload.
-
-## Configuration
-
-### Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `OPENAI_API_KEY` | OpenAI API key | (required) |
-| `OPENAI_MODEL` | OpenAI model to use | `gpt-4-turbo` |
-| `LLM_PROVIDER` | LLM provider (`openai` or `anthropic`) | `openai` |
-| `FAISS_INDEX_PATHS` | Comma-separated FAISS index paths | `.data/codebase` |
-| `ENABLE_TOOLS` | Enable tool calling | `true` |
-| `ENABLED_TOOLS` | Comma-separated list of enabled tools | `odoo,postgres` |
-| `API_KEY` | API authentication key | (none) |
-| `DEBUG_MODE` | Enable debug logging | `false` |
-
-See [.env.example](.env.example) for full list.
-
-## Adding Custom Tools
-
-Tools are **auto-discovered** from `ragtime/tools/`. To add a new tool:
-
-### 1. Create a new file
-
-```bash
-cp ragtime/tools/_example_template.py ragtime/tools/my_tool.py
-```
-
-### 2. Implement your tool
-
-```python
-# ragtime/tools/my_tool.py
-from pydantic import BaseModel, Field
-from langchain_core.tools import StructuredTool
-
-class MyToolInput(BaseModel):
-    query: str = Field(description="What to search for")
-
-async def execute_my_tool(query: str) -> str:
-    # Your implementation here
-    return f"Result for: {query}"
-
-# Name must be: <filename>_tool
-my_tool_tool = StructuredTool.from_function(
-    coroutine=execute_my_tool,
-    name="my_tool",
-    description="Description for the LLM...",
-    args_schema=MyToolInput
-)
-```
-
-### 3. Enable the tool
-
-Enable via the Settings panel in the Indexer UI at http://localhost:8001
-
-That's it! The tool will be auto-discovered and available to the LLM.
+1. In OpenWebUI, go to **Settings** > **Connections** > **OpenAI API**
+2. Add a new connection:
+   - **API Base URL**: `http://ragtime:8000/v1` (or `http://localhost:8000/v1` if running locally)
+   - **API Key**: Your configured `API_KEY` (or any value if not set)
+3. Select "ragtime" as the model
 
 ## Creating FAISS Indexes
 
 The Indexer UI provides an easy way to create FAISS indexes from your codebases.
 
-**Open the Indexer UI:** http://localhost:8001
+1. **Open the Web UI:** http://localhost:8000
+2. Navigate to the **Indexes** tab
+3. Use the **Upload** or **Git** tabs to create indexes from your code
 
 The UI provides:
 - **Upload Tab**: Upload a zip file of your codebase to create an index
@@ -150,14 +232,10 @@ The UI provides:
 - **Job Status**: Monitor indexing progress in real-time
 - **Settings**: Configure LLM provider, embedding model, and enabled tools
 
-## Connecting to OpenWebUI
-
-1. In OpenWebUI, go to Settings → Connections → OpenAI API
-2. Add a new connection:
-   - API Base URL: `http://ragtime:8000/v1` (or `http://localhost:8000/v1` if running locally)
-   - API Key: Your configured API_KEY (or any value if not set)
-3. Select "ragtime" as the model
-
 ## License
 
 MIT
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, making changes, and CI/CD details.

@@ -32,18 +32,16 @@ class Settings(BaseSettings):
     api_key: str = Field(default="", alias="API_KEY")  # Optional API key for auth
     allowed_origins: str = Field(default="*", alias="ALLOWED_ORIGINS")
 
-    # Feature flags
-    enable_tools: bool = Field(default=True, alias="ENABLE_TOOLS")
+    # Debug mode
     debug_mode: bool = Field(default=False, alias="DEBUG_MODE")
 
     # Indexer settings
-    enable_indexer: bool = Field(default=True, alias="ENABLE_INDEXER")
     index_data_path: str = Field(default="/app/data", alias="INDEX_DATA_PATH")
 
     # Server
     host: str = Field(default="0.0.0.0", alias="HOST")
     port: int = Field(default=8000, alias="PORT")
-    indexer_port: int = Field(default=8001, alias="INDEXER_PORT")
+    api_port: int = Field(default=8001, alias="API_PORT")
 
     # -------------------------------------------------------------------------
     # Authentication Settings

@@ -222,7 +222,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
 
   // Background task state
   const [activeTask, setActiveTask] = useState<ChatTask | null>(null);
-  const [isPollingTask, setIsPollingTask] = useState(false);
+  const [_isPollingTask, setIsPollingTask] = useState(false);
   const taskPollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastSeenVersionRef = useRef<number>(0);  // Track last seen version for delta polling
 

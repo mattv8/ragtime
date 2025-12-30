@@ -1,0 +1,71 @@
+name: "Docker Image Cleanup"
+description: "Remove older images for specific repositories matching a tag pattern, keeping the newest N; prunes dangling layers."
+inputs:
+  repositories:
+    description: "Newline-separated list of docker image repositories to clean (e.g., hub.example.com/org/app)"
+    required: true
+  tagPattern:
+    description: "ERE regex for tags to be considered for deletion (e.g., '(prod|stage)-[a-f0-9]{40}$' or '^[0-9]+$'). Use '.' to match all tags."
+    required: false
+    default: "."
+  excludePattern:
+    description: "ERE regex for tags to exclude from deletion (e.g., '^latest$'). Leave empty to exclude nothing."
+    required: false
+    default: ""
+  keep:
+    description: "Number of newest matching tags to keep per repository"
+    required: false
+    default: "3"
+runs:
+  using: "composite"
+  steps:
+    - name: Cleanup old Docker images
+      shell: bash
+      env:
+        REPOS: ${{ inputs.repositories }}
+        PATTERN: ${{ inputs.tagPattern }}
+        EXCLUDE: ${{ inputs.excludePattern }}
+        KEEP: ${{ inputs.keep }}
+      run: |
+        set -euo pipefail
+        echo "Repositories to clean:\n$REPOS"
+        echo "Tag pattern: $PATTERN"
+        echo "Exclude pattern: $EXCLUDE"
+        echo "Keep newest: $KEEP"
+
+        # Iterate repositories
+        while IFS= read -r repo; do
+          [ -z "$repo" ] && continue
+          echo "\n--- Cleaning repository: $repo ---"
+
+          # List matching images for this repo, apply include pattern then exclude pattern
+          if [ -n "$EXCLUDE" ]; then
+            matches=$(docker images --filter "reference=$repo" --format "{{.Repository}}:{{.Tag}}" \
+              | grep -E "$PATTERN" \
+              | grep -v -E "$EXCLUDE" || true)
+          else
+            matches=$(docker images --filter "reference=$repo" --format "{{.Repository}}:{{.Tag}}" \
+              | grep -E "$PATTERN" || true)
+          fi
+          if [ -z "$matches" ]; then
+            echo "No matching images found for $repo"
+            continue
+          fi
+
+          echo "Matching tags (unsorted):"
+          printf '%s\n' "$matches"
+
+          # Sort in reverse and drop the newest $KEEP entries, delete the rest
+          to_delete=$(printf '%s\n' "$matches" | sort -r | tail -n +$((KEEP+1)) || true)
+          if [ -z "$to_delete" ]; then
+            echo "Nothing to delete for $repo (<= $KEEP images)."
+          else
+            echo "Deleting:\n$to_delete"
+            printf '%s\n' "$to_delete" | xargs -r docker rmi --force || true
+          fi
+        done <<< "$REPOS"
+
+        echo "\nPruning dangling images..."
+        docker image prune -f || true
+        echo "Force removing any remaining dangling image IDs..."
+        docker images --filter "dangling=true" -q | xargs -r docker rmi --force || true

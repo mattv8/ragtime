@@ -61,6 +61,7 @@ export function App() {
           authenticated: false,
           ldap_configured: false,
           local_admin_enabled: true,
+          debug_mode: false,
         });
       } finally {
         setAuthLoading(false);
@@ -166,7 +167,7 @@ export function App() {
   if (!currentUser) {
     return (
       <LoginPage
-        authStatus={authStatus || { authenticated: false, ldap_configured: false, local_admin_enabled: true }}
+        authStatus={authStatus || { authenticated: false, ldap_configured: false, local_admin_enabled: true, debug_mode: false }}
         onLoginSuccess={handleLoginSuccess}
       />
     );
