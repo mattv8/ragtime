@@ -194,6 +194,86 @@ model ToolConfig {
 }
 
 // -----------------------------------------------------------------------------
+// Authentication & Users
+// -----------------------------------------------------------------------------
+
+/// Authentication provider type
+enum AuthProvider {
+  ldap
+  local
+}
+
+/// User role for access control
+enum UserRole {
+  user
+  admin
+}
+
+/// User account (synced from LDAP or local admin)
+model User {
+  id            String       @id @default(uuid())
+  username      String       @unique // For LDAP: samAccountName/uid, for local: prefixed with "local:"
+  authProvider  AuthProvider @default(ldap) @map("auth_provider")
+  ldapDn        String?      @map("ldap_dn") // LDAP distinguished name (null for local users)
+  email         String?
+  displayName   String?      @map("display_name")
+  role          UserRole     @default(user)
+  lastLoginAt   DateTime?    @map("last_login_at")
+
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @default(now()) @updatedAt @map("updated_at")
+
+  // Relations
+  sessions      Session[]
+  conversations Conversation[]
+
+  @@map("users")
+}
+
+/// User session with JWT token
+model Session {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  tokenHash   String   @map("token_hash") // Hash of JWT for validation
+  expiresAt   DateTime @map("expires_at")
+  userAgent   String?  @map("user_agent")
+  ipAddress   String?  @map("ip_address")
+
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+/// LDAP configuration (stored in database for UI management)
+model LdapConfig {
+  id              String   @id @default("default")
+
+  // Connection
+  serverUrl       String   @default("") @map("server_url") // ldap://host:389 or ldaps://host:636
+  bindDn          String   @default("") @map("bind_dn") // Service account DN or samAccountName
+  bindPassword    String   @default("") @map("bind_password") // Encrypted
+
+  // Search configuration (auto-discovered or manually set)
+  baseDn          String   @default("") @map("base_dn") // e.g., dc=example,dc=com
+  userSearchBase  String   @default("") @map("user_search_base") // e.g., ou=Users,dc=example,dc=com
+  userSearchFilter String  @default("(|(sAMAccountName={username})(uid={username}))") @map("user_search_filter")
+
+  // Group-based ACL
+  adminGroupDn    String   @default("") @map("admin_group_dn") // Members get admin role
+  userGroupDn     String   @default("") @map("user_group_dn") // Members get user role (optional, all auth'd users if empty)
+
+  // Discovery cache (JSON array of discovered OUs/groups)
+  discoveredOus   Json     @default("[]") @map("discovered_ous")
+  discoveredGroups Json    @default("[]") @map("discovered_groups")
+
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("ldap_config")
+}
+
+// -----------------------------------------------------------------------------
 // Chat Conversations
 // -----------------------------------------------------------------------------
 
@@ -211,6 +291,10 @@ model Conversation {
   id        String    @id @default(uuid())
   title     String    @default("New Chat") // Auto-generated from first message or user-set
   model     String    @default("gpt-4-turbo") // Model used for this conversation
+
+  // Owner - null for legacy conversations before auth was added
+  userId    String?   @map("user_id")
+  user      User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   // Messages stored as JSON array
   // Each message: { role: 'user' | 'assistant' | 'system', content: string, timestamp: string }

@@ -35,12 +35,21 @@ my_tool_tool = StructuredTool.from_function(
 
 ## Prisma
 
-Schema: `prisma/schema.prisma`. Tables: `IndexJob`, `IndexConfig`, `IndexMetadata`, `AppSettings`, `ToolConfig`.
+Schema: `prisma/schema.prisma`. Tables: `User`, `Session`, `LdapConfig`, `Conversation`, `IndexJob`, `IndexConfig`, `IndexMetadata`, `AppSettings`, `ToolConfig`.
 
 ```bash
 python -m prisma generate  # After schema changes
 python -m prisma db push   # Dev only
 ```
+
+## Authentication
+
+- Auth module: `ragtime/core/auth.py` (LDAP + local admin)
+- Dependencies: `ragtime/core/security.py` → `get_current_user`, `require_admin`
+- Routes: `ragtime/api/auth.py`
+- Cookie: `ragtime_session` (httpOnly JWT)
+- Local admin usernames stored with `local:` prefix in DB to avoid LDAP collision
+- LDAP config stored in `ldap_configs` table, managed via Settings UI
 
 ## Tool Configs
 
@@ -59,8 +68,10 @@ Tools are dynamically built at runtime from configs in `ragtime/rag/components.p
 |------|---------|
 | `ragtime/rag/components.py` | RAG agent setup, dynamic tool building |
 | `ragtime/config/settings.py` | Pydantic settings from env |
+| `ragtime/core/auth.py` | LDAP/local auth, JWT, session management |
+| `ragtime/core/security.py` | Auth dependencies, query validation |
 | `ragtime/core/database.py` | Prisma connection lifecycle |
-| `ragtime/core/security.py` | Query validation (read-only default) |
+| `ragtime/api/auth.py` | Auth API routes |
 | `ragtime/indexer/repository.py` | Prisma CRUD for jobs/metadata/settings |
 | `ragtime/indexer/service.py` | FAISS index creation logic |
 

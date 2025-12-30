@@ -26,7 +26,7 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       // Proxy all API calls to Python backend
-      '^/(indexes|health|docs|redoc|openapi.json|v1)': {
+      '^/(indexes|auth|health|docs|redoc|openapi.json|v1)': {
         target: `http://127.0.0.1:${apiPort}`,
         changeOrigin: true,
       },

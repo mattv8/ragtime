@@ -27,7 +27,7 @@ from ragtime.indexer.repository import repository
 logger = get_logger(__name__)
 
 # Persistent storage for uploaded files (survives restarts)
-UPLOAD_STAGING_DIR = Path(settings.index_data_path) / "staging"
+UPLOAD_TMP_DIR = Path(settings.index_data_path) / "tmp"
 
 
 async def generate_index_description(
@@ -110,8 +110,8 @@ class IndexerService:
     def __init__(self, index_base_path: str = "/app/data/faiss_index"):
         self.index_base_path = Path(index_base_path)
         self.index_base_path.mkdir(parents=True, exist_ok=True)
-        # Ensure staging directory exists for upload persistence
-        UPLOAD_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+        # Ensure tmp directory exists for upload persistence
+        UPLOAD_TMP_DIR.mkdir(parents=True, exist_ok=True)
         # In-memory cache for active jobs (transient state during processing)
         self._active_jobs: Dict[str, IndexJob] = {}
 
@@ -148,23 +148,23 @@ class IndexerService:
                 job.completed_at = datetime.utcnow()
                 await repository.update_job(job)
 
-        # Clean up orphaned staging directories (from deleted jobs)
-        await self._cleanup_orphaned_staging()
+        # Clean up orphaned tmp directories (from deleted jobs)
+        await self._cleanup_orphaned_tmp_dirs()
 
         return recovered
 
-    async def _cleanup_orphaned_staging(self) -> None:
-        """Remove staging directories for jobs that no longer exist."""
-        if not UPLOAD_STAGING_DIR.exists():
+    async def _cleanup_orphaned_tmp_dirs(self) -> None:
+        """Remove tmp directories for jobs that no longer exist."""
+        if not UPLOAD_TMP_DIR.exists():
             return
 
         jobs = await repository.list_jobs()
         active_job_ids = {j.id for j in jobs if j.status in (IndexStatus.PENDING, IndexStatus.PROCESSING)}
 
-        for staging_path in UPLOAD_STAGING_DIR.iterdir():
-            if staging_path.is_dir() and staging_path.name not in active_job_ids:
-                logger.info(f"Cleaning orphaned staging directory: {staging_path.name}")
-                shutil.rmtree(staging_path, ignore_errors=True)
+        for tmp_path in UPLOAD_TMP_DIR.iterdir():
+            if tmp_path.is_dir() and tmp_path.name not in active_job_ids:
+                logger.info(f"Cleaning orphaned tmp directory: {tmp_path.name}")
+                shutil.rmtree(tmp_path, ignore_errors=True)
 
     async def _resume_job(self, job: IndexJob) -> None:
         """Resume an interrupted job based on its source type."""
@@ -184,24 +184,24 @@ class IndexerService:
             # Git jobs can be re-cloned
             asyncio.create_task(self._process_git(job))
         elif job.source_type == "upload":
-            # Check if staged file still exists
-            staged_path = UPLOAD_STAGING_DIR / job.id
-            if staged_path.exists():
+            # Check if tmp file still exists
+            tmp_path = UPLOAD_TMP_DIR / job.id
+            if tmp_path.exists():
                 # Find the archive file (not directories like 'extracted')
-                archive_files = [f for f in staged_path.iterdir() if f.is_file()]
+                archive_files = [f for f in tmp_path.iterdir() if f.is_file()]
                 if archive_files:
                     archive_path = archive_files[0]
 
                     # Clean any previous extraction attempt
-                    extracted_dir = staged_path / "extracted"
+                    extracted_dir = tmp_path / "extracted"
                     if extracted_dir.exists():
                         shutil.rmtree(extracted_dir, ignore_errors=True)
 
-                    temp_dir = staged_path  # Use staging as temp dir
+                    temp_dir = tmp_path  # Use tmp dir for extraction
                     asyncio.create_task(self._process_upload(job, archive_path, temp_dir))
                     return
 
-            # No staged file - mark as failed
+            # No tmp file - mark as failed
             job.status = IndexStatus.FAILED
             job.error_message = "Upload file lost during restart - please re-upload"
             job.completed_at = datetime.utcnow()
@@ -336,7 +336,7 @@ class IndexerService:
     ) -> IndexJob:
         """Create an index from an uploaded archive file.
 
-        The uploaded file is stored in a persistent staging directory so it
+        The uploaded file is stored in a persistent tmp directory so it
         survives server restarts and can be resumed if interrupted.
         """
         job_id = str(uuid.uuid4())[:8]
@@ -355,26 +355,26 @@ class IndexerService:
         # Cache for active processing
         self._active_jobs[job_id] = job
 
-        # Save uploaded file to PERSISTENT staging location (survives restarts)
-        staging_dir = UPLOAD_STAGING_DIR / job_id
-        staging_dir.mkdir(parents=True, exist_ok=True)
-        archive_path = staging_dir / filename
+        # Save uploaded file to PERSISTENT tmp location (survives restarts)
+        tmp_dir = UPLOAD_TMP_DIR / job_id
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = tmp_dir / filename
 
         try:
             with open(archive_path, "wb") as f:
                 shutil.copyfileobj(file, f)
 
-            logger.info(f"Staged upload for job {job_id}: {archive_path}")
+            logger.info(f"Saved upload to tmp directory for job {job_id}: {archive_path}")
 
             # Start processing in background
-            asyncio.create_task(self._process_upload(job, archive_path, staging_dir))
+            asyncio.create_task(self._process_upload(job, archive_path, tmp_dir))
 
         except Exception as e:
             job.status = IndexStatus.FAILED
             job.error_message = str(e)
             await repository.update_job(job)
             self._active_jobs.pop(job_id, None)
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            shutil.rmtree(tmp_dir, ignore_errors=True)
             raise
 
         return job

@@ -23,6 +23,7 @@ from ragtime.config import settings
 from ragtime.core.logging import setup_logging, get_logger
 from ragtime.core.database import connect_db, disconnect_db
 from ragtime.api import router
+from ragtime.api.auth import router as auth_router
 from ragtime.rag import rag
 
 # Import indexer routes (always available now that it's part of ragtime)
@@ -92,6 +93,9 @@ app.add_middleware(
 
 # Include API routes
 app.include_router(router)
+
+# Include auth routes
+app.include_router(auth_router)
 
 # Include indexer routes if enabled
 if settings.enable_indexer:

@@ -5,12 +5,129 @@ Note: Write operations can be enabled via the Settings UI.
 The enable_write_ops parameter should be passed from the database settings.
 """
 
-import re
-from typing import Tuple
+from __future__ import annotations
 
+import re
+from typing import TYPE_CHECKING, Optional, Tuple
+
+from fastapi import Cookie, Depends, HTTPException, Request, status
+
+from ragtime.core.auth import TokenData, validate_session
+from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 
+if TYPE_CHECKING:
+    from prisma.models import User
+
 logger = get_logger(__name__)
+
+
+# =============================================================================
+# AUTHENTICATION DEPENDENCIES
+# =============================================================================
+
+
+async def get_session_token(
+    request: Request,
+    session_cookie: Optional[str] = Cookie(None, alias="ragtime_session"),
+) -> Optional[str]:
+    """
+    Extract session token from cookie or Authorization header.
+
+    Prefers cookie (httpOnly), falls back to Bearer token header.
+    """
+    # Try cookie first
+    if session_cookie:
+        return session_cookie
+
+    # Fall back to Authorization header
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        return auth_header[7:]
+
+    return None
+
+
+async def get_current_user(
+    token: Optional[str] = Depends(get_session_token),
+) -> User:
+    """
+    Validate session and return current user.
+
+    Raises 401 if not authenticated.
+    """
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    token_data = await validate_session(token)
+    if not token_data:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired session",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Fetch user from database
+    db = await get_db()
+    user = await db.user.find_unique(where={"id": token_data.user_id})
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return user
+
+
+async def get_current_user_optional(
+    token: Optional[str] = Depends(get_session_token),
+) -> Optional[User]:
+    """
+    Get current user if authenticated, None otherwise.
+
+    Use for routes that work with or without auth.
+    """
+    if not token:
+        return None
+
+    token_data = await validate_session(token)
+    if not token_data:
+        return None
+
+    db = await get_db()
+    return await db.user.find_unique(where={"id": token_data.user_id})
+
+
+async def require_admin(
+    user: User = Depends(get_current_user),
+) -> User:
+    """
+    Require admin role.
+
+    Raises 403 if user is not an admin.
+    """
+    if user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
+    return user
+
+
+async def get_token_data(
+    token: Optional[str] = Depends(get_session_token),
+) -> Optional[TokenData]:
+    """Get token data without fetching user from database."""
+    if not token:
+        return None
+    return await validate_session(token)
+
 
 # =============================================================================
 # SQL SECURITY PATTERNS
@@ -110,7 +227,7 @@ def validate_sql_query(query: str, enable_write: bool = False) -> Tuple[bool, st
         for pattern in DANGEROUS_SQL_PATTERNS:
             if re.search(pattern, query_upper, re.IGNORECASE):
                 logger.warning(f"Dangerous SQL pattern detected: {pattern}")
-                return False, f"Query contains forbidden pattern"
+                return False, "Query contains forbidden pattern"
     else:
         # Even with write enabled, block system-level operations
         system_patterns = [
@@ -154,7 +271,7 @@ def validate_odoo_code(code: str, enable_write_ops: bool = False) -> Tuple[bool,
                 logger.warning(f"Write operation detected but allowed: {pattern}")
             else:
                 logger.warning(f"Dangerous Odoo pattern detected: {pattern}")
-                return False, f"Code contains forbidden pattern"
+                return False, "Code contains forbidden pattern"
 
     # Must contain at least one safe pattern
     has_safe_pattern = any(

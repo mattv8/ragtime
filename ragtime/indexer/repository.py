@@ -512,7 +512,8 @@ class IndexerRepository:
     async def create_conversation(
         self,
         title: str = "New Chat",
-        model: str = "gpt-4-turbo"
+        model: str = "gpt-4-turbo",
+        user_id: Optional[str] = None
     ) -> "Conversation":
         """Create a new conversation."""
         from ragtime.indexer.models import Conversation
@@ -527,6 +528,7 @@ class IndexerRepository:
                 "model": model,
                 "messages": Json([]),
                 "totalTokens": 0,
+                "userId": user_id,
             }
         )
 
@@ -545,11 +547,26 @@ class IndexerRepository:
 
         return self._prisma_conversation_to_model(prisma_conv)
 
-    async def list_conversations(self) -> list["Conversation"]:
-        """List all conversations, newest first."""
+    async def list_conversations(
+        self,
+        user_id: Optional[str] = None,
+        include_all: bool = False
+    ) -> list["Conversation"]:
+        """
+        List conversations, newest first.
+
+        Args:
+            user_id: Filter by user ID (required unless include_all=True)
+            include_all: If True, return all conversations (admin only)
+        """
         db = await self._get_db()
 
+        where_clause = {}
+        if not include_all and user_id:
+            where_clause = {"userId": user_id}
+
         prisma_convs = await db.conversation.find_many(
+            where=where_clause if where_clause else None,
             order={"updatedAt": "desc"}
         )
 
@@ -692,6 +709,38 @@ class IndexerRepository:
         except Exception as e:
             logger.warning(f"Failed to truncate conversation: {e}")
             return None
+
+    async def check_conversation_access(
+        self,
+        conversation_id: str,
+        user_id: Optional[str],
+        is_admin: bool = False
+    ) -> bool:
+        """
+        Check if user has access to a conversation.
+
+        Args:
+            conversation_id: The conversation ID to check
+            user_id: The user's ID (None if not authenticated)
+            is_admin: Whether the user is an admin (admins can access all)
+
+        Returns:
+            True if user has access, False otherwise
+        """
+        if is_admin:
+            return True
+
+        if not user_id:
+            return False
+
+        db = await self._get_db()
+        conv = await db.conversation.find_unique(where={"id": conversation_id})
+
+        if not conv:
+            return False
+
+        # Allow access if conversation has no owner (legacy) or matches user
+        return conv.userId is None or conv.userId == user_id
 
     async def delete_conversation(self, conversation_id: str) -> bool:
         """Delete a conversation."""

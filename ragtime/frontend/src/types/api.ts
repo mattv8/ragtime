@@ -3,6 +3,73 @@
  * These types mirror the Python Pydantic models in app/indexer/models.py
  */
 
+// =============================================================================
+// Authentication Types
+// =============================================================================
+
+export type UserRole = 'user' | 'admin';
+export type AuthProvider = 'ldap' | 'local';
+
+export interface User {
+  id: string;
+  username: string;
+  display_name: string | null;
+  email: string | null;
+  role: UserRole;
+  auth_provider: AuthProvider;
+}
+
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface LoginResponse {
+  success: boolean;
+  user_id?: string;
+  username?: string;
+  display_name?: string;
+  email?: string;
+  role: UserRole;
+  error?: string;
+}
+
+export interface AuthStatus {
+  authenticated: boolean;
+  ldap_configured: boolean;
+  local_admin_enabled: boolean;
+}
+
+export interface LdapConfig {
+  server_url: string;
+  bind_dn: string;
+  base_dn: string;
+  user_search_base: string;
+  user_search_filter: string;
+  admin_group_dn: string;
+  user_group_dn: string;
+  discovered_ous: string[];
+  discovered_groups: { dn: string; name: string }[];
+}
+
+export interface LdapDiscoverRequest {
+  server_url: string;
+  bind_dn: string;
+  bind_password: string;
+}
+
+export interface LdapDiscoverResponse {
+  success: boolean;
+  base_dn?: string;
+  user_ous: string[];
+  groups: { dn: string; name: string }[];
+  error?: string;
+}
+
+// =============================================================================
+// Index Types
+// =============================================================================
+
 export type IndexStatus = 'pending' | 'processing' | 'completed' | 'failed';
 
 export interface IndexConfig {

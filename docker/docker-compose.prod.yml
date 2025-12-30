@@ -20,9 +20,11 @@ services:
       # Production overrides (security hardening)
       - DEBUG_MODE=false
       - ENABLE_WRITE_OPERATIONS=false
+      # Authentication - ensure secure cookies in production
+      - SESSION_COOKIE_SECURE=true
     volumes:
-      # Mount FAISS indexes (read-only)
-      - ${FAISS_DATA_PATH:-./data/faiss_index}:/app/data/faiss_index:ro
+      # Mount data directory (read-only in production)
+      - ./.data:/app/data:ro
       # Mount Docker socket for container exec (if needed)
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:

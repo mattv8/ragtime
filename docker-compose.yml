@@ -42,6 +42,12 @@ services:
       - ENABLE_INDEXER=true
       - INDEX_DATA_PATH=/ragtime/data
       - INDEXER_PORT=${INDEXER_PORT:-8001}
+      # Authentication settings
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-}
+      - JWT_EXPIRE_HOURS=${JWT_EXPIRE_HOURS:-24}
+      - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-false}
+      - LOCAL_ADMIN_USER=${LOCAL_ADMIN_USER:-admin}
+      - LOCAL_ADMIN_PASSWORD=${LOCAL_ADMIN_PASSWORD:-}
     volumes:
       # Mount source code for hot reload (indexer is now inside ragtime/)
       - ./ragtime:/ragtime/ragtime

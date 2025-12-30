@@ -2,9 +2,10 @@
  * API client for Ragtime Indexer
  */
 
-import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, LLMModelsRequest, LLMModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse } from '@/types';
+import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, LLMModelsRequest, LLMModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse } from '@/types';
 
 const API_BASE = '/indexes';
+const AUTH_BASE = '/auth';
 
 class ApiError extends Error {
   constructor(
@@ -15,6 +16,30 @@ class ApiError extends Error {
     super(message);
     this.name = 'ApiError';
   }
+
+  /**
+   * Check if this is an authentication error (401)
+   */
+  isAuthError(): boolean {
+    return this.status === 401;
+  }
+
+  /**
+   * Check if this is a permission error (403)
+   */
+  isPermissionError(): boolean {
+    return this.status === 403;
+  }
+}
+
+/**
+ * Wrapper for fetch that includes credentials and handles common options
+ */
+async function apiFetch(url: string, options: RequestInit = {}): Promise<Response> {
+  return fetch(url, {
+    ...options,
+    credentials: 'include',
+  });
 }
 
 async function handleResponse<T>(response: Response): Promise<T> {
@@ -30,11 +55,106 @@ async function handleResponse<T>(response: Response): Promise<T> {
 }
 
 export const api = {
+  // ===========================================================================
+  // Authentication
+  // ===========================================================================
+
+  /**
+   * Get authentication status
+   */
+  async getAuthStatus(): Promise<AuthStatus> {
+    const response = await apiFetch(`${AUTH_BASE}/status`);
+    return handleResponse<AuthStatus>(response);
+  },
+
+  /**
+   * Login with username and password
+   */
+  async login(request: LoginRequest): Promise<LoginResponse> {
+    const response = await apiFetch(`${AUTH_BASE}/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+       // Include cookies
+    });
+    return handleResponse<LoginResponse>(response);
+  },
+
+  /**
+   * Logout current session
+   */
+  async logout(): Promise<void> {
+    await fetch(`${AUTH_BASE}/logout`, {
+      method: 'POST',
+
+    });
+  },
+
+  /**
+   * Get current user info
+   */
+  async getCurrentUser(): Promise<User> {
+    const response = await apiFetch(`${AUTH_BASE}/me`, {
+
+    });
+    return handleResponse<User>(response);
+  },
+
+  /**
+   * Get LDAP configuration (admin only)
+   */
+  async getLdapConfig(): Promise<LdapConfig> {
+    const response = await apiFetch(`${AUTH_BASE}/ldap/config`, {
+
+    });
+    return handleResponse<LdapConfig>(response);
+  },
+
+  /**
+   * Discover LDAP structure (admin only)
+   */
+  async discoverLdap(request: LdapDiscoverRequest): Promise<LdapDiscoverResponse> {
+    const response = await apiFetch(`${AUTH_BASE}/ldap/discover`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+
+    });
+    return handleResponse<LdapDiscoverResponse>(response);
+  },
+
+  /**
+   * Update LDAP configuration (admin only)
+   */
+  async updateLdapConfig(config: Partial<LdapConfig> & { bind_password?: string }): Promise<LdapConfig> {
+    const response = await apiFetch(`${AUTH_BASE}/ldap/config`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+
+    });
+    return handleResponse<LdapConfig>(response);
+  },
+
+  /**
+   * List all users (admin only)
+   */
+  async listUsers(): Promise<User[]> {
+    const response = await apiFetch(`${AUTH_BASE}/users`, {
+
+    });
+    return handleResponse<User[]>(response);
+  },
+
+  // ===========================================================================
+  // Indexes
+  // ===========================================================================
+
   /**
    * List all available indexes
    */
   async listIndexes(): Promise<IndexInfo[]> {
-    const response = await fetch(API_BASE);
+    const response = await apiFetch(API_BASE, {  });
     return handleResponse<IndexInfo[]>(response);
   },
 
@@ -42,7 +162,7 @@ export const api = {
    * List all indexing jobs
    */
   async listJobs(): Promise<IndexJob[]> {
-    const response = await fetch(`${API_BASE}/jobs`);
+    const response = await apiFetch(`${API_BASE}/jobs`, {  });
     return handleResponse<IndexJob[]>(response);
   },
 
@@ -50,7 +170,7 @@ export const api = {
    * Get a specific job by ID
    */
   async getJob(jobId: string): Promise<IndexJob> {
-    const response = await fetch(`${API_BASE}/jobs/${jobId}`);
+    const response = await apiFetch(`${API_BASE}/jobs/${jobId}`, {  });
     return handleResponse<IndexJob>(response);
   },
 
@@ -58,8 +178,9 @@ export const api = {
    * Cancel a pending or processing job
    */
   async cancelJob(jobId: string): Promise<void> {
-    const response = await fetch(`${API_BASE}/jobs/${jobId}/cancel`, {
+    const response = await apiFetch(`${API_BASE}/jobs/${jobId}/cancel`, {
       method: 'POST',
+
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
@@ -75,8 +196,9 @@ export const api = {
    * Delete a job record
    */
   async deleteJob(jobId: string): Promise<void> {
-    const response = await fetch(`${API_BASE}/jobs/${jobId}`, {
+    const response = await apiFetch(`${API_BASE}/jobs/${jobId}`, {
       method: 'DELETE',
+
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
@@ -92,9 +214,10 @@ export const api = {
    * Upload an archive and create an index
    */
   async uploadAndIndex(formData: FormData): Promise<IndexJob> {
-    const response = await fetch(`${API_BASE}/upload`, {
+    const response = await apiFetch(`${API_BASE}/upload`, {
       method: 'POST',
       body: formData,
+
     });
     return handleResponse<IndexJob>(response);
   },
@@ -103,7 +226,7 @@ export const api = {
    * Create an index from a git repository
    */
   async indexFromGit(request: CreateIndexRequest): Promise<IndexJob> {
-    const response = await fetch(`${API_BASE}/git`, {
+    const response = await apiFetch(`${API_BASE}/git`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
@@ -115,7 +238,7 @@ export const api = {
    * Delete an index by name
    */
   async deleteIndex(name: string): Promise<void> {
-    const response = await fetch(`${API_BASE}/${encodeURIComponent(name)}`, {
+    const response = await apiFetch(`${API_BASE}/${encodeURIComponent(name)}`, {
       method: 'DELETE',
     });
     if (!response.ok) {
@@ -132,7 +255,7 @@ export const api = {
    * Toggle an index's enabled status for RAG context
    */
   async toggleIndex(name: string, enabled: boolean): Promise<{ enabled: boolean }> {
-    const response = await fetch(`${API_BASE}/${encodeURIComponent(name)}/toggle`, {
+    const response = await apiFetch(`${API_BASE}/${encodeURIComponent(name)}/toggle`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled }),
@@ -144,7 +267,7 @@ export const api = {
    * Update an index's description for AI context
    */
   async updateIndexDescription(name: string, description: string): Promise<{ description: string }> {
-    const response = await fetch(`${API_BASE}/${encodeURIComponent(name)}/description`, {
+    const response = await apiFetch(`${API_BASE}/${encodeURIComponent(name)}/description`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ description }),
@@ -156,7 +279,7 @@ export const api = {
    * Get application settings
    */
   async getSettings(): Promise<AppSettings> {
-    const response = await fetch(`${API_BASE}/settings`);
+    const response = await apiFetch(`${API_BASE}/settings`);
     return handleResponse<AppSettings>(response);
   },
 
@@ -164,7 +287,7 @@ export const api = {
    * Update application settings
    */
   async updateSettings(settings: UpdateSettingsRequest): Promise<AppSettings> {
-    const response = await fetch(`${API_BASE}/settings`, {
+    const response = await apiFetch(`${API_BASE}/settings`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(settings),
@@ -176,7 +299,7 @@ export const api = {
    * Test Ollama server connection and get available models
    */
   async testOllamaConnection(request: OllamaTestRequest): Promise<OllamaTestResponse> {
-    const response = await fetch(`${API_BASE}/ollama/test`, {
+    const response = await apiFetch(`${API_BASE}/ollama/test`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
@@ -188,7 +311,7 @@ export const api = {
    * Fetch available models from an LLM provider
    */
   async fetchLLMModels(request: LLMModelsRequest): Promise<LLMModelsResponse> {
-    const response = await fetch(`${API_BASE}/llm/models`, {
+    const response = await apiFetch(`${API_BASE}/llm/models`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
@@ -205,7 +328,7 @@ export const api = {
    */
   async listToolConfigs(enabledOnly: boolean = false): Promise<ToolConfig[]> {
     const params = enabledOnly ? '?enabled_only=true' : '';
-    const response = await fetch(`${API_BASE}/tools${params}`);
+    const response = await apiFetch(`${API_BASE}/tools${params}`);
     return handleResponse<ToolConfig[]>(response);
   },
 
@@ -213,7 +336,7 @@ export const api = {
    * Create a new tool configuration
    */
   async createToolConfig(config: CreateToolConfigRequest): Promise<ToolConfig> {
-    const response = await fetch(`${API_BASE}/tools`, {
+    const response = await apiFetch(`${API_BASE}/tools`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(config),
@@ -225,7 +348,7 @@ export const api = {
    * Get a specific tool configuration
    */
   async getToolConfig(toolId: string): Promise<ToolConfig> {
-    const response = await fetch(`${API_BASE}/tools/${toolId}`);
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}`);
     return handleResponse<ToolConfig>(response);
   },
 
@@ -233,7 +356,7 @@ export const api = {
    * Update a tool configuration
    */
   async updateToolConfig(toolId: string, updates: UpdateToolConfigRequest): Promise<ToolConfig> {
-    const response = await fetch(`${API_BASE}/tools/${toolId}`, {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updates),
@@ -245,7 +368,7 @@ export const api = {
    * Delete a tool configuration
    */
   async deleteToolConfig(toolId: string): Promise<void> {
-    const response = await fetch(`${API_BASE}/tools/${toolId}`, {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}`, {
       method: 'DELETE',
     });
     if (!response.ok) {
@@ -262,7 +385,7 @@ export const api = {
    * Toggle a tool's enabled status
    */
   async toggleToolConfig(toolId: string, enabled: boolean): Promise<{ enabled: boolean }> {
-    const response = await fetch(`${API_BASE}/tools/${toolId}/toggle?enabled=${enabled}`, {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/toggle?enabled=${enabled}`, {
       method: 'POST',
     });
     return handleResponse<{ enabled: boolean }>(response);
@@ -272,7 +395,7 @@ export const api = {
    * Test a tool connection (without saving)
    */
   async testToolConnection(request: ToolTestRequest): Promise<ToolTestResponse> {
-    const response = await fetch(`${API_BASE}/tools/test`, {
+    const response = await apiFetch(`${API_BASE}/tools/test`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
@@ -284,7 +407,7 @@ export const api = {
    * Test a saved tool's connection
    */
   async testSavedToolConnection(toolId: string): Promise<ToolTestResponse> {
-    const response = await fetch(`${API_BASE}/tools/${toolId}/test`, {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/test`, {
       method: 'POST',
     });
     return handleResponse<ToolTestResponse>(response);
@@ -294,7 +417,7 @@ export const api = {
    * Get heartbeat status for all enabled tools
    */
   async getToolHeartbeats(): Promise<HeartbeatResponse> {
-    const response = await fetch(`${API_BASE}/tools/heartbeat`);
+    const response = await apiFetch(`${API_BASE}/tools/heartbeat`);
     return handleResponse<HeartbeatResponse>(response);
   },
 
@@ -309,7 +432,7 @@ export const api = {
     const url = queryString
       ? `${API_BASE}/tools/ssh/generate-keypair?${queryString}`
       : `${API_BASE}/tools/ssh/generate-keypair`;
-    const response = await fetch(url, { method: 'POST' });
+    const response = await apiFetch(url, { method: 'POST' });
     return handleResponse<SSHKeyPairResponse>(response);
   },
 
@@ -317,7 +440,7 @@ export const api = {
    * Discover Docker networks and containers
    */
   async discoverDocker(): Promise<DockerDiscoveryResponse> {
-    const response = await fetch(`${API_BASE}/docker/discover`);
+    const response = await apiFetch(`${API_BASE}/docker/discover`);
     return handleResponse<DockerDiscoveryResponse>(response);
   },
 
@@ -325,7 +448,7 @@ export const api = {
    * Connect ragtime container to a Docker network
    */
   async connectToNetwork(networkName: string): Promise<{ success: boolean; message: string }> {
-    const response = await fetch(`${API_BASE}/docker/connect-network?network_name=${encodeURIComponent(networkName)}`, {
+    const response = await apiFetch(`${API_BASE}/docker/connect-network?network_name=${encodeURIComponent(networkName)}`, {
       method: 'POST',
     });
     return handleResponse<{ success: boolean; message: string }>(response);
@@ -335,7 +458,7 @@ export const api = {
    * Disconnect ragtime container from a Docker network
    */
   async disconnectFromNetwork(networkName: string): Promise<{ success: boolean; message: string }> {
-    const response = await fetch(`${API_BASE}/docker/disconnect-network?network_name=${encodeURIComponent(networkName)}`, {
+    const response = await apiFetch(`${API_BASE}/docker/disconnect-network?network_name=${encodeURIComponent(networkName)}`, {
       method: 'POST',
     });
     return handleResponse<{ success: boolean; message: string }>(response);
@@ -349,7 +472,7 @@ export const api = {
    * Get available models from all configured LLM providers (filtered by allowed_chat_models)
    */
   async getAvailableModels(): Promise<AvailableModelsResponse> {
-    const response = await fetch(`${API_BASE}/chat/available-models`);
+    const response = await apiFetch(`${API_BASE}/chat/available-models`);
     return handleResponse<AvailableModelsResponse>(response);
   },
 
@@ -357,7 +480,7 @@ export const api = {
    * Get ALL models from all configured LLM providers (unfiltered, for settings UI)
    */
   async getAllModels(): Promise<AvailableModelsResponse> {
-    const response = await fetch(`${API_BASE}/chat/all-models`);
+    const response = await apiFetch(`${API_BASE}/chat/all-models`);
     return handleResponse<AvailableModelsResponse>(response);
   },
 
@@ -365,7 +488,7 @@ export const api = {
    * List all conversations
    */
   async listConversations(): Promise<Conversation[]> {
-    const response = await fetch(`${API_BASE}/conversations`);
+    const response = await apiFetch(`${API_BASE}/conversations`);
     return handleResponse<Conversation[]>(response);
   },
 
@@ -373,7 +496,7 @@ export const api = {
    * Create a new conversation
    */
   async createConversation(request?: CreateConversationRequest): Promise<Conversation> {
-    const response = await fetch(`${API_BASE}/conversations`, {
+    const response = await apiFetch(`${API_BASE}/conversations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request || {}),
@@ -385,7 +508,7 @@ export const api = {
    * Get a specific conversation by ID
    */
   async getConversation(conversationId: string): Promise<Conversation> {
-    const response = await fetch(`${API_BASE}/conversations/${conversationId}`);
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}`);
     return handleResponse<Conversation>(response);
   },
 
@@ -393,7 +516,7 @@ export const api = {
    * Delete a conversation
    */
   async deleteConversation(conversationId: string): Promise<void> {
-    const response = await fetch(`${API_BASE}/conversations/${conversationId}`, {
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}`, {
       method: 'DELETE',
     });
     if (!response.ok) {
@@ -410,7 +533,7 @@ export const api = {
    * Update conversation title
    */
   async updateConversationTitle(conversationId: string, title: string): Promise<Conversation> {
-    const response = await fetch(`${API_BASE}/conversations/${conversationId}/title`, {
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/title`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title }),
@@ -422,7 +545,7 @@ export const api = {
    * Update conversation model
    */
   async updateConversationModel(conversationId: string, model: string): Promise<Conversation> {
-    const response = await fetch(`${API_BASE}/conversations/${conversationId}/model`, {
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/model`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model }),
@@ -434,7 +557,7 @@ export const api = {
    * Send a message to a conversation (non-streaming)
    */
   async sendMessage(conversationId: string, request: SendMessageRequest): Promise<{ message: ChatMessage; conversation: Conversation }> {
-    const response = await fetch(`${API_BASE}/conversations/${conversationId}/messages`, {
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
@@ -447,7 +570,7 @@ export const api = {
    * Returns an async generator that yields structured stream events
    */
   async *sendMessageStream(conversationId: string, message: string, signal?: AbortSignal): AsyncGenerator<import('@/types').StreamEvent, void, unknown> {
-    const response = await fetch(`${API_BASE}/conversations/${conversationId}/messages/stream`, {
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/messages/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message }),
@@ -536,7 +659,7 @@ export const api = {
    * Clear all messages in a conversation
    */
   async clearConversation(conversationId: string): Promise<Conversation> {
-    const response = await fetch(`${API_BASE}/conversations/${conversationId}/clear`, {
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/clear`, {
       method: 'POST',
     });
     return handleResponse<Conversation>(response);
@@ -547,7 +670,7 @@ export const api = {
    * Used when editing/resending a message.
    */
   async truncateConversation(conversationId: string, keepCount: number): Promise<Conversation> {
-    const response = await fetch(`${API_BASE}/conversations/${conversationId}/truncate?keep_count=${keepCount}`, {
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/truncate?keep_count=${keepCount}`, {
       method: 'POST',
     });
     return handleResponse<Conversation>(response);
@@ -562,7 +685,7 @@ export const api = {
    * Returns a task object that can be polled for status.
    */
   async sendMessageBackground(conversationId: string, message: string): Promise<import('@/types').ChatTask> {
-    const response = await fetch(`${API_BASE}/conversations/${conversationId}/messages/background`, {
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/messages/background`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message }),
@@ -574,7 +697,7 @@ export const api = {
    * Get the active task for a conversation, if any.
    */
   async getConversationActiveTask(conversationId: string): Promise<import('@/types').ChatTask | null> {
-    const response = await fetch(`${API_BASE}/conversations/${conversationId}/task`);
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/task`);
     if (response.status === 204 || response.status === 404) {
       return null;
     }
@@ -587,7 +710,7 @@ export const api = {
    * Use this to poll for task status and streaming state.
    */
   async getChatTask(taskId: string): Promise<import('@/types').ChatTask> {
-    const response = await fetch(`${API_BASE}/tasks/${taskId}`);
+    const response = await apiFetch(`${API_BASE}/tasks/${taskId}`);
     return handleResponse<import('@/types').ChatTask>(response);
   },
 
@@ -595,7 +718,7 @@ export const api = {
    * Cancel a running chat task.
    */
   async cancelChatTask(taskId: string): Promise<import('@/types').ChatTask> {
-    const response = await fetch(`${API_BASE}/tasks/${taskId}/cancel`, {
+    const response = await apiFetch(`${API_BASE}/tasks/${taskId}/cancel`, {
       method: 'POST',
     });
     return handleResponse<import('@/types').ChatTask>(response);

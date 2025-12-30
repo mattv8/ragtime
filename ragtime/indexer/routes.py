@@ -2,16 +2,19 @@
 Indexer API routes.
 """
 
+from __future__ import annotations
+
 import os
 from pathlib import Path
-from typing import List, Optional
+from typing import TYPE_CHECKING, Any, List, Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel, Field
 
 from ragtime.core.logging import get_logger
+from ragtime.core.security import get_current_user, require_admin
 from ragtime.indexer.models import (
     IndexConfig,
     IndexInfo,
@@ -23,6 +26,9 @@ from ragtime.indexer.models import (
 )
 from ragtime.indexer.service import indexer
 from ragtime.indexer.repository import repository
+
+if TYPE_CHECKING:
+    from prisma.models import User
 
 logger = get_logger(__name__)
 
@@ -38,14 +44,14 @@ DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 
 
 @router.get("", response_model=List[IndexInfo])
-async def list_indexes():
-    """List all available FAISS indexes."""
+async def list_indexes(_user: User = Depends(require_admin)):
+    """List all available FAISS indexes. Admin only."""
     return await indexer.list_indexes()
 
 
 @router.get("/jobs", response_model=List[IndexJobResponse])
-async def list_jobs():
-    """List all indexing jobs."""
+async def list_jobs(_user: User = Depends(require_admin)):
+    """List all indexing jobs. Admin only."""
     jobs = await indexer.list_jobs()
     return [
         IndexJobResponse(
@@ -67,8 +73,8 @@ async def list_jobs():
 
 
 @router.get("/jobs/{job_id}", response_model=IndexJobResponse)
-async def get_job(job_id: str):
-    """Get status of an indexing job."""
+async def get_job(job_id: str, _user: User = Depends(require_admin)):
+    """Get status of an indexing job. Admin only."""
     job = await indexer.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -90,8 +96,8 @@ async def get_job(job_id: str):
 
 
 @router.post("/jobs/{job_id}/cancel")
-async def cancel_job(job_id: str):
-    """Cancel a pending or processing job."""
+async def cancel_job(job_id: str, _user: User = Depends(require_admin)):
+    """Cancel a pending or processing job. Admin only."""
     job = await indexer.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -107,8 +113,8 @@ async def cancel_job(job_id: str):
 
 
 @router.delete("/jobs/{job_id}")
-async def delete_job(job_id: str):
-    """Delete a job record (must be completed, failed, or cancelled)."""
+async def delete_job(job_id: str, _user: User = Depends(require_admin)):
+    """Delete a job record (must be completed, failed, or cancelled). Admin only."""
     job = await indexer.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -145,9 +151,10 @@ async def upload_and_index(
     ),
     chunk_size: int = Form(default=1000, ge=100, le=4000),
     chunk_overlap: int = Form(default=200, ge=0, le=1000),
+    _user: User = Depends(require_admin),
 ):
     """
-    Upload an archive file and create a FAISS index from it.
+    Upload an archive file and create a FAISS index from it. Admin only.
 
     Supported formats: .zip, .tar, .tar.gz, .tar.bz2
     The archive should contain source code files. Large codebases are supported.
@@ -191,9 +198,9 @@ async def upload_and_index(
 
 
 @router.post("/git", response_model=IndexJobResponse)
-async def index_from_git(request: CreateIndexRequest):
+async def index_from_git(request: CreateIndexRequest, _user: User = Depends(require_admin)):
     """
-    Create a FAISS index from a git repository.
+    Create a FAISS index from a git repository. Admin only.
 
     Clones the repository and indexes the source files.
     Processing happens in the background - check /jobs/{id} for status.
@@ -230,8 +237,8 @@ async def index_from_git(request: CreateIndexRequest):
 
 
 @router.delete("/{name}")
-async def delete_index(name: str):
-    """Delete an index by name."""
+async def delete_index(name: str, _user: User = Depends(require_admin)):
+    """Delete an index by name. Admin only."""
     if await indexer.delete_index(name):
         return {"message": f"Index '{name}' deleted successfully"}
     raise HTTPException(status_code=404, detail="Index not found")
@@ -248,8 +255,8 @@ class UpdateIndexDescriptionRequest(BaseModel):
 
 
 @router.patch("/{name}/toggle")
-async def toggle_index(name: str, request: ToggleIndexRequest):
-    """Toggle an index's enabled status for RAG context."""
+async def toggle_index(name: str, request: ToggleIndexRequest, _user: User = Depends(require_admin)):
+    """Toggle an index's enabled status for RAG context. Admin only."""
     success = await repository.set_index_enabled(name, request.enabled)
     if not success:
         raise HTTPException(status_code=404, detail="Index not found")
@@ -257,8 +264,8 @@ async def toggle_index(name: str, request: ToggleIndexRequest):
 
 
 @router.patch("/{name}/description")
-async def update_index_description(name: str, request: UpdateIndexDescriptionRequest):
-    """Update an index's description for AI context."""
+async def update_index_description(name: str, request: UpdateIndexDescriptionRequest, _user: User = Depends(require_admin)):
+    """Update an index's description for AI context. Admin only."""
     success = await repository.update_index_description(name, request.description)
     if not success:
         raise HTTPException(status_code=404, detail="Index not found")
@@ -266,24 +273,24 @@ async def update_index_description(name: str, request: UpdateIndexDescriptionReq
 
 
 # -----------------------------------------------------------------------------
-# Settings Endpoints
+# Settings Endpoints (Admin only)
 # -----------------------------------------------------------------------------
 
 @router.get("/settings", response_model=AppSettings, tags=["Settings"])
-async def get_settings():
-    """Get current application settings."""
+async def get_settings(_user: User = Depends(require_admin)):
+    """Get current application settings. Admin only."""
     return await repository.get_settings()
 
 
 @router.put("/settings", response_model=AppSettings, tags=["Settings"])
-async def update_settings(request: UpdateSettingsRequest):
-    """Update application settings."""
+async def update_settings(request: UpdateSettingsRequest, _user: User = Depends(require_admin)):
+    """Update application settings. Admin only."""
     updates = request.model_dump(exclude_unset=True)
     return await repository.update_settings(updates)
 
 
 # -----------------------------------------------------------------------------
-# Tool Configuration Endpoints
+# Tool Configuration Endpoints (Admin only)
 # -----------------------------------------------------------------------------
 
 from ragtime.indexer.models import (
@@ -310,14 +317,14 @@ class ToolTestResponse(BaseModel):
 
 
 @router.get("/tools", response_model=List[ToolConfig], tags=["Tools"])
-async def list_tool_configs(enabled_only: bool = False):
-    """List all tool configurations."""
+async def list_tool_configs(enabled_only: bool = False, _user: User = Depends(require_admin)):
+    """List all tool configurations. Admin only."""
     return await repository.list_tool_configs(enabled_only=enabled_only)
 
 
 @router.post("/tools", response_model=ToolConfig, tags=["Tools"])
-async def create_tool_config(request: CreateToolConfigRequest):
-    """Create a new tool configuration."""
+async def create_tool_config(request: CreateToolConfigRequest, _user: User = Depends(require_admin)):
+    """Create a new tool configuration. Admin only."""
     config = ToolConfig(
         name=request.name,
         tool_type=request.tool_type,
@@ -346,9 +353,9 @@ class HeartbeatResponse(BaseModel):
 
 
 @router.get("/tools/heartbeat", response_model=HeartbeatResponse, tags=["Tools"])
-async def check_tool_heartbeats():
+async def check_tool_heartbeats(_user: User = Depends(require_admin)):
     """
-    Check connection heartbeat for all enabled tools.
+    Check connection heartbeat for all enabled tools. Admin only.
     Returns quick connectivity status without updating database test results.
     Designed for frequent polling (every 10-30 seconds).
     """
@@ -409,8 +416,8 @@ async def check_tool_heartbeats():
 
 
 @router.get("/tools/{tool_id}", response_model=ToolConfig, tags=["Tools"])
-async def get_tool_config(tool_id: str):
-    """Get a specific tool configuration."""
+async def get_tool_config(tool_id: str, _user: User = Depends(require_admin)):
+    """Get a specific tool configuration. Admin only."""
     config = await repository.get_tool_config(tool_id)
     if config is None:
         raise HTTPException(status_code=404, detail="Tool configuration not found")
@@ -418,8 +425,8 @@ async def get_tool_config(tool_id: str):
 
 
 @router.put("/tools/{tool_id}", response_model=ToolConfig, tags=["Tools"])
-async def update_tool_config(tool_id: str, request: UpdateToolConfigRequest):
-    """Update an existing tool configuration."""
+async def update_tool_config(tool_id: str, request: UpdateToolConfigRequest, _user: User = Depends(require_admin)):
+    """Update an existing tool configuration. Admin only."""
     updates = request.model_dump(exclude_unset=True)
     config = await repository.update_tool_config(tool_id, updates)
     if config is None:
@@ -428,9 +435,9 @@ async def update_tool_config(tool_id: str, request: UpdateToolConfigRequest):
 
 
 @router.delete("/tools/{tool_id}", tags=["Tools"])
-async def delete_tool_config(tool_id: str):
+async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin)):
     """
-    Delete a tool configuration.
+    Delete a tool configuration. Admin only.
 
     For Odoo tools, also disconnects from the Docker network if no other
     tools are using it.
@@ -473,8 +480,8 @@ async def delete_tool_config(tool_id: str):
 
 
 @router.post("/tools/{tool_id}/toggle", tags=["Tools"])
-async def toggle_tool_config(tool_id: str, enabled: bool):
-    """Toggle a tool's enabled status."""
+async def toggle_tool_config(tool_id: str, enabled: bool, _user: User = Depends(require_admin)):
+    """Toggle a tool's enabled status. Admin only."""
     from ragtime.core.app_settings import invalidate_settings_cache
     from ragtime.rag import rag
 
@@ -486,9 +493,9 @@ async def toggle_tool_config(tool_id: str, enabled: bool):
     invalidate_settings_cache()
     await rag.initialize()
 @router.post("/tools/test", response_model=ToolTestResponse, tags=["Tools"])
-async def test_tool_connection(request: ToolTestRequest):
+async def test_tool_connection(request: ToolTestRequest, _user: User = Depends(require_admin)):
     """
-    Test a tool connection without saving.
+    Test a tool connection without saving. Admin only.
     Used during the wizard to validate connection settings.
     """
     import asyncio
@@ -511,9 +518,9 @@ async def test_tool_connection(request: ToolTestRequest):
 
 
 @router.post("/tools/ssh/generate-keypair", response_model=SSHKeyPairResponse, tags=["Tools"])
-async def generate_ssh_keypair(comment: str = "ragtime", passphrase: str = ""):
+async def generate_ssh_keypair(comment: str = "ragtime", passphrase: str = "", _user: User = Depends(require_admin)):
     """
-    Generate a new SSH keypair for use with remote connections.
+    Generate a new SSH keypair for use with remote connections. Admin only.
     Returns private key, public key, and fingerprint.
     The private key should be stored in the tool's connection config.
     The public key should be added to the remote server's authorized_keys.
@@ -1820,9 +1827,14 @@ async def get_all_chat_models():
 
 
 @router.get("/conversations", response_model=List[ConversationResponse])
-async def list_conversations():
-    """List all chat conversations."""
-    convs = await repository.list_conversations()
+async def list_conversations(user: User = Depends(get_current_user)):
+    """List chat conversations for the current user."""
+    # Admins can see all, regular users only see their own
+    is_admin = user.role == "admin"
+    convs = await repository.list_conversations(
+        user_id=user.id,
+        include_all=is_admin
+    )
     return [
         ConversationResponse(
             id=c.id,
@@ -1838,8 +1850,11 @@ async def list_conversations():
 
 
 @router.post("/conversations", response_model=ConversationResponse)
-async def create_conversation(request: CreateConversationRequest = None):
-    """Create a new chat conversation."""
+async def create_conversation(
+    request: CreateConversationRequest = None,
+    user: User = Depends(get_current_user)
+):
+    """Create a new chat conversation for the current user."""
     # Get default model from app settings if not provided
     app_settings = await repository.get_settings()
     default_model = app_settings.llm_model if app_settings else "gpt-4-turbo"
@@ -1847,7 +1862,7 @@ async def create_conversation(request: CreateConversationRequest = None):
     title = request.title if request and request.title else "New Chat"
     model = request.model if request and request.model else default_model
 
-    conv = await repository.create_conversation(title=title, model=model)
+    conv = await repository.create_conversation(title=title, model=model, user_id=user.id)
     return ConversationResponse(
         id=conv.id,
         title=conv.title,
@@ -1860,8 +1875,15 @@ async def create_conversation(request: CreateConversationRequest = None):
 
 
 @router.get("/conversations/{conversation_id}", response_model=ConversationResponse)
-async def get_conversation(conversation_id: str):
-    """Get a specific conversation."""
+async def get_conversation(conversation_id: str, user: User = Depends(get_current_user)):
+    """Get a specific conversation. Users can only access their own conversations."""
+    # Check access
+    has_access = await repository.check_conversation_access(
+        conversation_id, user.id, is_admin=(user.role == "admin")
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
     conv = await repository.get_conversation(conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -1878,8 +1900,14 @@ async def get_conversation(conversation_id: str):
 
 
 @router.delete("/conversations/{conversation_id}")
-async def delete_conversation(conversation_id: str):
-    """Delete a conversation."""
+async def delete_conversation(conversation_id: str, user: User = Depends(get_current_user)):
+    """Delete a conversation. Users can only delete their own conversations."""
+    has_access = await repository.check_conversation_access(
+        conversation_id, user.id, is_admin=(user.role == "admin")
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
     success = await repository.delete_conversation(conversation_id)
     if not success:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -1887,8 +1915,14 @@ async def delete_conversation(conversation_id: str):
 
 
 @router.patch("/conversations/{conversation_id}/title", response_model=ConversationResponse)
-async def update_conversation_title(conversation_id: str, body: dict):
-    """Update a conversation's title."""
+async def update_conversation_title(conversation_id: str, body: dict, user: User = Depends(get_current_user)):
+    """Update a conversation's title. Users can only update their own conversations."""
+    has_access = await repository.check_conversation_access(
+        conversation_id, user.id, is_admin=(user.role == "admin")
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
     title = body.get("title", "").strip()
     if not title:
         raise HTTPException(status_code=400, detail="Title is required")
@@ -1909,8 +1943,14 @@ async def update_conversation_title(conversation_id: str, body: dict):
 
 
 @router.patch("/conversations/{conversation_id}/model", response_model=ConversationResponse)
-async def update_conversation_model(conversation_id: str, body: dict):
-    """Update a conversation's model."""
+async def update_conversation_model(conversation_id: str, body: dict, user: User = Depends(get_current_user)):
+    """Update a conversation's model. Users can only update their own conversations."""
+    has_access = await repository.check_conversation_access(
+        conversation_id, user.id, is_admin=(user.role == "admin")
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
     model = body.get("model", "").strip()
     if not model:
         raise HTTPException(status_code=400, detail="Model is required")
@@ -1931,8 +1971,14 @@ async def update_conversation_model(conversation_id: str, body: dict):
 
 
 @router.post("/conversations/{conversation_id}/clear", response_model=ConversationResponse)
-async def clear_conversation(conversation_id: str):
-    """Clear all messages in a conversation."""
+async def clear_conversation(conversation_id: str, user: User = Depends(get_current_user)):
+    """Clear all messages in a conversation. Users can only clear their own conversations."""
+    has_access = await repository.check_conversation_access(
+        conversation_id, user.id, is_admin=(user.role == "admin")
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
     conv = await repository.clear_conversation(conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -1949,11 +1995,17 @@ async def clear_conversation(conversation_id: str):
 
 
 @router.post("/conversations/{conversation_id}/truncate", response_model=ConversationResponse)
-async def truncate_conversation(conversation_id: str, keep_count: int):
+async def truncate_conversation(conversation_id: str, keep_count: int, user: User = Depends(get_current_user)):
     """
     Truncate conversation messages to keep only the first N messages.
     Used when editing/resending a message to remove subsequent messages.
     """
+    has_access = await repository.check_conversation_access(
+        conversation_id, user.id, is_admin=(user.role == "admin")
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
     conv = await repository.truncate_messages(conversation_id, keep_count)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -1970,13 +2022,20 @@ async def truncate_conversation(conversation_id: str, keep_count: int):
 
 
 @router.post("/conversations/{conversation_id}/messages")
-async def send_message(conversation_id: str, request: SendMessageRequest):
+async def send_message(conversation_id: str, request: SendMessageRequest, user: User = Depends(get_current_user)):
     """
     Send a message to a conversation and get a response.
     Non-streaming version.
     """
     from ragtime.rag import rag
     from langchain_core.messages import HumanMessage, AIMessage
+
+    # Check access
+    has_access = await repository.check_conversation_access(
+        conversation_id, user.id, is_admin=(user.role == "admin")
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
 
     # Get conversation
     conv = await repository.get_conversation(conversation_id)
@@ -2036,7 +2095,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
 
 
 @router.post("/conversations/{conversation_id}/messages/stream")
-async def send_message_stream(conversation_id: str, request: SendMessageRequest):
+async def send_message_stream(conversation_id: str, request: SendMessageRequest, user: User = Depends(get_current_user)):
     """
     Send a message to a conversation and stream the response.
     Returns SSE stream of tokens.
@@ -2046,6 +2105,13 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
     from fastapi.responses import StreamingResponse
     from ragtime.rag import rag
     from langchain_core.messages import HumanMessage, AIMessage
+
+    # Check access
+    has_access = await repository.check_conversation_access(
+        conversation_id, user.id, is_admin=(user.role == "admin")
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
 
     # Get conversation
     conv = await repository.get_conversation(conversation_id)
@@ -2265,13 +2331,20 @@ from ragtime.indexer.models import ChatTask, ChatTaskResponse, ChatTaskStatus
 
 
 @router.post("/conversations/{conversation_id}/messages/background", response_model=ChatTaskResponse)
-async def send_message_background(conversation_id: str, request: SendMessageRequest):
+async def send_message_background(conversation_id: str, request: SendMessageRequest, user: User = Depends(get_current_user)):
     """
     Send a message to a conversation and process it in the background.
     Returns a task object that can be polled for status and results.
     """
     from ragtime.rag import rag
     from ragtime.indexer.background_tasks import background_task_service
+
+    # Check access
+    has_access = await repository.check_conversation_access(
+        conversation_id, user.id, is_admin=(user.role == "admin")
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
 
     # Get conversation
     conv = await repository.get_conversation(conversation_id)
@@ -2330,11 +2403,18 @@ async def send_message_background(conversation_id: str, request: SendMessageRequ
 
 
 @router.get("/conversations/{conversation_id}/task", response_model=Optional[ChatTaskResponse])
-async def get_conversation_active_task(conversation_id: str):
+async def get_conversation_active_task(conversation_id: str, user: User = Depends(get_current_user)):
     """
     Get the active (pending/running) task for a conversation, if any.
     Returns null if no active task.
     """
+    # Check access
+    has_access = await repository.check_conversation_access(
+        conversation_id, user.id, is_admin=(user.role == "admin")
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
     task = await repository.get_active_task_for_conversation(conversation_id)
     if not task:
         return None
