@@ -16,7 +16,7 @@ import tempfile
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, BinaryIO
+from typing import Any, Dict, List, Optional, BinaryIO
 import uuid
 
 from ragtime.config import settings
@@ -26,8 +26,8 @@ from ragtime.indexer.repository import repository
 
 logger = get_logger(__name__)
 
-# Persistent storage for uploaded files (survives restarts)
-UPLOAD_TMP_DIR = Path(settings.index_data_path) / "tmp"
+# Persistent storage for uploaded files
+UPLOAD_TMP_DIR = Path(settings.index_data_path) / "_tmp"
 
 
 async def generate_index_description(
@@ -86,12 +86,12 @@ Description:"""
         llm = ChatOpenAI(
             model="gpt-4o-mini",  # Use cheaper model for descriptions
             temperature=0.3,
-            openai_api_key=api_key,
-            max_tokens=150,
+            api_key=api_key,
         )
 
         response = await llm.ainvoke(prompt)
-        description = response.content.strip()
+        content = response.content
+        description = content.strip() if isinstance(content, str) else str(content)
         logger.info(f"Auto-generated description for {index_name}: {description[:100]}...")
         return description
 
@@ -166,6 +166,95 @@ class IndexerService:
                 logger.info(f"Cleaning orphaned tmp directory: {tmp_path.name}")
                 shutil.rmtree(tmp_path, ignore_errors=True)
 
+    async def discover_orphan_indexes(self) -> int:
+        """
+        Discover FAISS indexes on disk that have no database metadata.
+
+        Reads the index.pkl file to extract document count and creates
+        database metadata entries for discovered indexes.
+
+        Called during application startup.
+
+        Returns:
+            Number of indexes discovered and registered
+        """
+        import pickle
+
+        # Get existing metadata from database
+        db_metadata = await repository.list_index_metadata()
+        known_names = {m.name for m in db_metadata}
+
+        discovered = 0
+
+        for path in self.index_base_path.iterdir():
+            if path.is_dir() and not path.name.startswith("."):
+                # Skip if already known
+                if path.name in known_names:
+                    continue
+
+                # Check if it's a valid FAISS index
+                faiss_file = path / "index.faiss"
+                pkl_file = path / "index.pkl"
+
+                if not (faiss_file.exists() and pkl_file.exists()):
+                    continue
+
+                logger.info(f"Discovered orphan index: {path.name}")
+
+                # Try to extract document count from pickle file
+                doc_count = 0
+                chunk_count = 0
+                try:
+                    with open(pkl_file, "rb") as pkl_f:
+                        data = pickle.load(pkl_f)
+
+                    # FAISS pickle format: (InMemoryDocstore, index_to_docstore_id_dict)
+                    if isinstance(data, tuple) and len(data) >= 2:
+                        docstore, idx_to_id = data[0], data[1]
+                        if hasattr(docstore, "_dict"):
+                            doc_count = len(docstore._dict)  # noqa: SLF001  # type: ignore[union-attr]
+                            chunk_count = doc_count  # chunks == documents for FAISS
+                        elif isinstance(idx_to_id, dict):
+                            doc_count = len(idx_to_id)
+                            chunk_count = doc_count
+
+                    logger.info(f"  Extracted {doc_count} documents from {path.name}")
+                except Exception as e:
+                    logger.warning(f"  Could not extract doc count from {path.name}: {e}")
+
+                # Calculate size
+                size_bytes = sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
+
+                # Check for legacy metadata file
+                legacy_meta: dict[str, Any] = {}
+                meta_file = path / ".metadata.json"
+                if meta_file.exists():
+                    try:
+                        with open(meta_file, encoding="utf-8") as meta_f:
+                            legacy_meta = json.load(meta_f)
+                    except Exception:
+                        pass
+
+                # Create database metadata
+                await repository.upsert_index_metadata(
+                    name=path.name,
+                    path=str(path),
+                    document_count=doc_count,
+                    chunk_count=chunk_count,
+                    size_bytes=size_bytes,
+                    source_type=legacy_meta.get("source_type", "unknown"),
+                    source=legacy_meta.get("source"),
+                    config_snapshot=legacy_meta.get("config"),
+                    description=legacy_meta.get("description", ""),
+                )
+
+                discovered += 1
+
+        if discovered > 0:
+            logger.info(f"Registered {discovered} orphan index(es) in database")
+
+        return discovered
+
     async def _resume_job(self, job: IndexJob) -> None:
         """Resume an interrupted job based on its source type."""
         logger.info(f"Resuming job {job.id} ({job.source_type}): {job.name}")
@@ -214,7 +303,7 @@ class IndexerService:
         model = app_settings.embedding_model
 
         if provider == "ollama":
-            from langchain_ollama import OllamaEmbeddings
+            from langchain_ollama import OllamaEmbeddings  # type: ignore[import-not-found]
             return OllamaEmbeddings(
                 model=model,
                 base_url=app_settings.ollama_base_url,
@@ -225,7 +314,7 @@ class IndexerService:
                 raise ValueError("OpenAI embeddings selected but no API key configured in Settings")
             return OpenAIEmbeddings(
                 model=model,
-                openai_api_key=app_settings.openai_api_key,
+                api_key=app_settings.openai_api_key,  # type: ignore[arg-type]
             )
         else:
             raise ValueError(f"Unknown embedding provider: {provider}. Use 'ollama' or 'openai'.")
@@ -291,10 +380,10 @@ class IndexerService:
                         meta_file = path / ".metadata.json"
                         if meta_file.exists():
                             try:
-                                with open(meta_file) as f:
-                                    meta = json.load(f)
-                                    doc_count = meta.get("document_count", 0)
-                                    created_at_str = meta.get("created_at")
+                                with open(meta_file, encoding="utf-8") as mf:
+                                    legacy_meta = json.load(mf)
+                                    doc_count = legacy_meta.get("document_count", 0)
+                                    created_at_str = legacy_meta.get("created_at")
                                     if created_at_str:
                                         created_at = datetime.fromisoformat(created_at_str)
                             except Exception:
@@ -455,19 +544,22 @@ class IndexerService:
             clone_dir = temp_dir / "repo"
             logger.info(f"Cloning {job.git_url} branch {job.git_branch}")
 
+            if not job.git_url:
+                raise ValueError("Git URL is required for git source type")
+
             process = await asyncio.create_subprocess_exec(
                 "git", "clone",
                 "--depth", "1",
-                "--branch", job.git_branch,
+                "--branch", job.git_branch or "main",
                 job.git_url,
                 str(clone_dir),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE
             )
-            stdout, stderr = await process.communicate()
+            _, stderr = await process.communicate()
 
             if process.returncode != 0:
-                raise Exception(f"Git clone failed: {stderr.decode()}")
+                raise RuntimeError(f"Git clone failed: {stderr.decode()}")
 
             # Create the index
             await self._create_faiss_index(job, clone_dir)
@@ -533,7 +625,6 @@ class IndexerService:
         from langchain_community.document_loaders import TextLoader
         from langchain_text_splitters import RecursiveCharacterTextSplitter
         from langchain_community.vectorstores import FAISS
-        from langchain_core.documents import Document
 
         config = job.config
 
@@ -571,9 +662,9 @@ class IndexerService:
                 docs = loader.load()
 
                 # Add source metadata
-                rel_path = str(file_path.relative_to(source_dir))
+                rel_path_str = str(file_path.relative_to(source_dir))
                 for doc in docs:
-                    doc.metadata["source"] = rel_path
+                    doc.metadata["source"] = rel_path_str
                     doc.metadata["index_name"] = job.name
 
                 documents.extend(docs)
@@ -588,7 +679,7 @@ class IndexerService:
                 logger.warning(f"Failed to load {file_path}: {e}")
 
         if not documents:
-            raise Exception("No documents were loaded")
+            raise ValueError("No documents were loaded")
 
         logger.info(f"Loaded {len(documents)} documents, splitting into chunks...")
 
@@ -628,6 +719,9 @@ class IndexerService:
             job.processed_chunks = min(i + batch_size, len(chunks))
             await repository.update_job(job)
             logger.info(f"Embedded {job.processed_chunks}/{len(chunks)} chunks")
+
+        if db is None:
+            raise ValueError("No documents were embedded - FAISS index creation failed")
 
         # Save the index
         index_path = self.index_base_path / job.name

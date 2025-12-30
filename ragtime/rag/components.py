@@ -372,16 +372,23 @@ class RAGComponents:
 
         tools = []
         if settings.enable_tools:
+            # Always add search_knowledge tool if we have FAISS retrievers
+            if self.retrievers:
+                tools.append(self._create_knowledge_search_tool())
+                logger.info(f"Added search_knowledge tool for {len(self.retrievers)} index(es)")
+
             # Get tools from the new ToolConfig system
             if self._tool_configs:
-                tools = await self._build_tools_from_configs()
-                logger.info(f"Built {len(tools)} tools from configurations")
+                config_tools = await self._build_tools_from_configs(skip_knowledge_tool=True)
+                tools.extend(config_tools)
+                logger.info(f"Built {len(config_tools)} tools from configurations")
             else:
                 # Fallback to legacy enabled_tools system
                 app_settings = await get_app_settings()
                 enabled_list = app_settings["enabled_tools"]
                 if enabled_list:
-                    tools = get_enabled_tools(enabled_list)
+                    legacy_tools = get_enabled_tools(enabled_list)
+                    tools.extend(legacy_tools)
                     logger.info(f"Using legacy tool configuration: {enabled_list}")
 
             if not tools:
@@ -413,20 +420,23 @@ class RAGComponents:
             # No tools - agent_executor stays None
             self.agent_executor = None
 
-    async def _build_tools_from_configs(self) -> List[Any]:
+    async def _build_tools_from_configs(self, skip_knowledge_tool: bool = False) -> List[Any]:
         """
         Build LangChain tools from ToolConfig entries.
 
         Creates dynamic tool wrappers for each configured tool instance.
-        Also adds a knowledge_search tool if FAISS retrievers are available.
+
+        Args:
+            skip_knowledge_tool: If True, don't add the search_knowledge tool
+                (used when caller has already added it)
         """
         from langchain_core.tools import StructuredTool
         from pydantic import BaseModel, Field
 
         tools = []
 
-        # Add knowledge search tool if we have FAISS retrievers
-        if self.retrievers:
+        # Add knowledge search tool if we have FAISS retrievers (unless skipped)
+        if self.retrievers and not skip_knowledge_tool:
             tools.append(self._create_knowledge_search_tool())
 
         for config in self._tool_configs:

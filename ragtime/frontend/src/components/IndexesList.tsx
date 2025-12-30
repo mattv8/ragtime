@@ -148,7 +148,7 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
   return (
     <div className="card">
       <div className="section-header">
-        <h2>Available Indexes</h2>
+        <h2>Available FAISS Indexes</h2>
       </div>
 
       {errorMessage && (

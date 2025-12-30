@@ -5,18 +5,53 @@ Provides Prisma-backed persistence for IndexJob and IndexMetadata,
 replacing the previous JSON file-based storage.
 """
 
-import json
+from __future__ import annotations
+
+import uuid
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import Optional, List, Any, cast
 
 from prisma import Prisma, Json
 from prisma.models import IndexJob as PrismaIndexJob, IndexMetadata as PrismaIndexMetadata
+from prisma.enums import (
+    IndexStatus as PrismaIndexStatus,
+    ToolType as PrismaToolType,
+    ChatTaskStatus as PrismaChatTaskStatus,
+)
 
 from ragtime.core.logging import get_logger
 from ragtime.core.database import get_db
-from ragtime.indexer.models import IndexJob, IndexStatus, IndexConfig, AppSettings
+from ragtime.indexer.models import (
+    IndexJob,
+    IndexStatus,
+    IndexConfig,
+    AppSettings,
+    ToolConfig,
+    ToolType,
+    Conversation,
+    ChatMessage,
+    ChatTask,
+    ChatTaskStatus,
+    ChatTaskStreamingState,
+    ToolCallRecord,
+)
 
 logger = get_logger(__name__)
+
+
+def _to_prisma_index_status(status: IndexStatus) -> PrismaIndexStatus:
+    """Convert model IndexStatus to Prisma IndexStatus."""
+    return PrismaIndexStatus(status.value)
+
+
+def _to_prisma_tool_type(tool_type: ToolType) -> PrismaToolType:
+    """Convert model ToolType to Prisma ToolType."""
+    return PrismaToolType(tool_type.value)
+
+
+def _to_prisma_task_status(status: ChatTaskStatus) -> PrismaChatTaskStatus:
+    """Convert model ChatTaskStatus to Prisma ChatTaskStatus."""
+    return PrismaChatTaskStatus(status.value)
 
 
 class IndexerRepository:
@@ -46,10 +81,10 @@ class IndexerRepository:
 
         # Create job with nested config
         await db.indexjob.create(
-            data={
+            data={  # type: ignore[arg-type]
                 "id": job.id,
                 "name": job.name,
-                "status": job.status.value,
+                "status": _to_prisma_index_status(job.status),
                 "sourceType": job.source_type,
                 "sourcePath": job.source_path,
                 "gitUrl": job.git_url,
@@ -103,8 +138,8 @@ class IndexerRepository:
 
         await db.indexjob.update(
             where={"id": job.id},
-            data={
-                "status": job.status.value,
+            data={  # type: ignore[arg-type]
+                "status": _to_prisma_index_status(job.status),
                 "totalFiles": job.total_files,
                 "processedFiles": job.processed_files,
                 "totalChunks": job.total_chunks,
@@ -132,6 +167,9 @@ class IndexerRepository:
 
     def _prisma_job_to_model(self, prisma_job: PrismaIndexJob) -> IndexJob:
         """Convert Prisma job to Pydantic model."""
+        if prisma_job.config is None:
+            raise ValueError(f"Job {prisma_job.id} has no config")
+
         config = IndexConfig(
             name=prisma_job.config.name,
             file_patterns=prisma_job.config.filePatterns,
@@ -179,33 +217,40 @@ class IndexerRepository:
         """Create or update index metadata."""
         db = await self._get_db()
 
+        # Build create/update data - only include configSnapshot if it has a value
+        create_data: dict = {
+            "name": name,
+            "description": description,
+            "path": path,
+            "documentCount": document_count,
+            "chunkCount": chunk_count,
+            "sizeBytes": size_bytes,
+            "sourceType": source_type,
+            "source": source,
+            "createdAt": datetime.utcnow(),
+            "lastModified": datetime.utcnow(),
+        }
+        update_data: dict = {
+            "description": description,
+            "path": path,
+            "documentCount": document_count,
+            "chunkCount": chunk_count,
+            "sizeBytes": size_bytes,
+            "sourceType": source_type,
+            "source": source,
+            "lastModified": datetime.utcnow(),
+        }
+
+        # Only include configSnapshot if we have actual data
+        if config_snapshot is not None:
+            create_data["configSnapshot"] = Json(config_snapshot)
+            update_data["configSnapshot"] = Json(config_snapshot)
+
         await db.indexmetadata.upsert(
             where={"name": name},
-            data={
-                "create": {
-                    "name": name,
-                    "description": description,
-                    "path": path,
-                    "documentCount": document_count,
-                    "chunkCount": chunk_count,
-                    "sizeBytes": size_bytes,
-                    "sourceType": source_type,
-                    "source": source,
-                    "configSnapshot": Json(config_snapshot) if config_snapshot else None,
-                    "createdAt": datetime.utcnow(),
-                    "lastModified": datetime.utcnow(),
-                },
-                "update": {
-                    "description": description,
-                    "path": path,
-                    "documentCount": document_count,
-                    "chunkCount": chunk_count,
-                    "sizeBytes": size_bytes,
-                    "sourceType": source_type,
-                    "source": source,
-                    "configSnapshot": Json(config_snapshot) if config_snapshot else None,
-                    "lastModified": datetime.utcnow(),
-                }
+            data={  # type: ignore[arg-type]
+                "create": create_data,
+                "update": update_data,
             }
         )
 
@@ -357,7 +402,7 @@ class IndexerRepository:
 
         await db.appsettings.update(
             where={"id": "default"},
-            data=update_data
+            data=update_data  # type: ignore[arg-type]
         )
 
         logger.info(f"Updated settings: {list(update_data.keys())}")
@@ -367,16 +412,14 @@ class IndexerRepository:
     # Tool Configuration Operations
     # -------------------------------------------------------------------------
 
-    async def create_tool_config(self, config: "ToolConfig") -> "ToolConfig":
+    async def create_tool_config(self, config: ToolConfig) -> ToolConfig:
         """Create a new tool configuration."""
-        from ragtime.indexer.models import ToolConfig as ToolConfigModel
-
         db = await self._get_db()
 
         prisma_config = await db.toolconfig.create(
-            data={
+            data={  # type: ignore[arg-type]
                 "name": config.name,
-                "toolType": config.tool_type.value,
+                "toolType": _to_prisma_tool_type(config.tool_type),
                 "enabled": config.enabled,
                 "description": config.description,
                 "connectionConfig": Json(config.connection_config),
@@ -389,7 +432,7 @@ class IndexerRepository:
         logger.info(f"Created tool config: {config.name} ({config.tool_type.value})")
         return self._prisma_tool_config_to_model(prisma_config)
 
-    async def get_tool_config(self, config_id: str) -> Optional["ToolConfig"]:
+    async def get_tool_config(self, config_id: str) -> Optional[ToolConfig]:
         """Get a tool configuration by ID."""
         db = await self._get_db()
 
@@ -399,19 +442,19 @@ class IndexerRepository:
 
         return self._prisma_tool_config_to_model(prisma_config)
 
-    async def list_tool_configs(self, enabled_only: bool = False) -> list["ToolConfig"]:
+    async def list_tool_configs(self, enabled_only: bool = False) -> list[ToolConfig]:
         """List all tool configurations."""
         db = await self._get_db()
 
         where = {"enabled": True} if enabled_only else {}
         prisma_configs = await db.toolconfig.find_many(
-            where=where,
+            where=where,  # type: ignore[arg-type]
             order={"createdAt": "desc"}
         )
 
         return [self._prisma_tool_config_to_model(c) for c in prisma_configs]
 
-    async def update_tool_config(self, config_id: str, updates: dict) -> Optional["ToolConfig"]:
+    async def update_tool_config(self, config_id: str, updates: dict[str, Any]) -> Optional[ToolConfig]:
         """Update a tool configuration."""
         db = await self._get_db()
 
@@ -443,7 +486,7 @@ class IndexerRepository:
         try:
             await db.toolconfig.update(
                 where={"id": config_id},
-                data=update_data
+                data=update_data  # type: ignore[arg-type]
             )
             logger.info(f"Updated tool config {config_id}: {list(update_data.keys())}")
             return await self.get_tool_config(config_id)
@@ -484,11 +527,9 @@ class IndexerRepository:
         except Exception as e:
             logger.warning(f"Failed to update test result for {config_id}: {e}")
 
-    def _prisma_tool_config_to_model(self, prisma_config) -> "ToolConfig":
+    def _prisma_tool_config_to_model(self, prisma_config: Any) -> ToolConfig:
         """Convert Prisma ToolConfig to Pydantic model."""
-        from ragtime.indexer.models import ToolConfig as ToolConfigModel, ToolType
-
-        return ToolConfigModel(
+        return ToolConfig(
             id=prisma_config.id,
             name=prisma_config.name,
             tool_type=ToolType(prisma_config.toolType),
@@ -514,11 +555,8 @@ class IndexerRepository:
         title: str = "New Chat",
         model: str = "gpt-4-turbo",
         user_id: Optional[str] = None
-    ) -> "Conversation":
+    ) -> Conversation:
         """Create a new conversation."""
-        from ragtime.indexer.models import Conversation
-        import uuid
-
         db = await self._get_db()
 
         prisma_conv = await db.conversation.create(
@@ -534,7 +572,7 @@ class IndexerRepository:
 
         return self._prisma_conversation_to_model(prisma_conv)
 
-    async def get_conversation(self, conversation_id: str) -> Optional["Conversation"]:
+    async def get_conversation(self, conversation_id: str) -> Optional[Conversation]:
         """Get a conversation by ID."""
         db = await self._get_db()
 
@@ -551,7 +589,7 @@ class IndexerRepository:
         self,
         user_id: Optional[str] = None,
         include_all: bool = False
-    ) -> list["Conversation"]:
+    ) -> list[Conversation]:
         """
         List conversations, newest first.
 
@@ -566,7 +604,7 @@ class IndexerRepository:
             where_clause = {"userId": user_id}
 
         prisma_convs = await db.conversation.find_many(
-            where=where_clause if where_clause else None,
+            where=where_clause if where_clause else None,  # type: ignore[arg-type]
             order={"updatedAt": "desc"}
         )
 
@@ -579,10 +617,8 @@ class IndexerRepository:
         content: str,
         tool_calls: Optional[List[dict]] = None,
         events: Optional[List[dict]] = None
-    ) -> Optional["Conversation"]:
+    ) -> Optional[Conversation]:
         """Add a message to a conversation."""
-        from ragtime.indexer.models import ChatMessage
-
         db = await self._get_db()
 
         # Get current conversation
@@ -593,8 +629,11 @@ class IndexerRepository:
             return None
 
         # Add new message
-        messages = list(prisma_conv.messages) if prisma_conv.messages else []
-        new_message = {
+        messages: List[dict[str, Any]] = cast(
+            List[dict[str, Any]],
+            list(prisma_conv.messages) if prisma_conv.messages else []
+        )
+        new_message: dict[str, Any] = {
             "role": role,
             "content": content,
             "timestamp": datetime.utcnow().isoformat(),
@@ -608,7 +647,7 @@ class IndexerRepository:
         messages.append(new_message)
 
         # Estimate tokens (rough: 1 token ~= 4 chars)
-        total_tokens = sum(len(m.get("content", "")) for m in messages) // 4
+        total_tokens = sum(len(str(m.get("content", ""))) for m in messages) // 4
 
         # Update conversation
         updated = await db.conversation.update(
@@ -626,7 +665,7 @@ class IndexerRepository:
         self,
         conversation_id: str,
         title: str
-    ) -> Optional["Conversation"]:
+    ) -> Optional[Conversation]:
         """Update a conversation's title."""
         db = await self._get_db()
 
@@ -644,7 +683,7 @@ class IndexerRepository:
         self,
         conversation_id: str,
         model: str
-    ) -> Optional["Conversation"]:
+    ) -> Optional[Conversation]:
         """Update a conversation's model."""
         db = await self._get_db()
 
@@ -658,7 +697,7 @@ class IndexerRepository:
             logger.warning(f"Failed to update conversation model: {e}")
             return None
 
-    async def clear_conversation(self, conversation_id: str) -> Optional["Conversation"]:
+    async def clear_conversation(self, conversation_id: str) -> Optional[Conversation]:
         """Clear all messages in a conversation."""
         db = await self._get_db()
 
@@ -680,7 +719,7 @@ class IndexerRepository:
         self,
         conversation_id: str,
         keep_count: int
-    ) -> Optional["Conversation"]:
+    ) -> Optional[Conversation]:
         """Truncate messages to keep only the first N messages."""
         db = await self._get_db()
 
@@ -691,11 +730,14 @@ class IndexerRepository:
             if not prisma_conv:
                 return None
 
-            messages = list(prisma_conv.messages) if prisma_conv.messages else []
+            messages: List[dict[str, Any]] = cast(
+                List[dict[str, Any]],
+                list(prisma_conv.messages) if prisma_conv.messages else []
+            )
             truncated = messages[:keep_count]
 
             # Recalculate tokens
-            total_tokens = sum(len(m.get("content", "")) for m in truncated) // 4
+            total_tokens = sum(len(str(m.get("content", ""))) for m in truncated) // 4
 
             updated = await db.conversation.update(
                 where={"id": conversation_id},
@@ -754,13 +796,11 @@ class IndexerRepository:
             logger.warning(f"Failed to delete conversation {conversation_id}: {e}")
             return False
 
-    def _prisma_conversation_to_model(self, prisma_conv) -> "Conversation":
+    def _prisma_conversation_to_model(self, prisma_conv: Any) -> Conversation:
         """Convert Prisma Conversation to Pydantic model."""
-        from ragtime.indexer.models import Conversation, ChatMessage, ToolCallRecord
-
         # Parse messages from JSON
         messages_data = prisma_conv.messages if prisma_conv.messages else []
-        messages = []
+        messages: List[ChatMessage] = []
         for m in messages_data:
             # Parse tool_calls if present (deprecated)
             tool_calls = None
@@ -806,18 +846,15 @@ class IndexerRepository:
         self,
         conversation_id: str,
         user_message: str
-    ) -> "ChatTask":
+    ) -> ChatTask:
         """Create a new background chat task."""
-        from ragtime.indexer.models import ChatTask, ChatTaskStatus
-        import uuid
-
         db = await self._get_db()
 
         prisma_task = await db.chattask.create(
-            data={
+            data={  # type: ignore[arg-type]
                 "id": str(uuid.uuid4()),
                 "conversation": {"connect": {"id": conversation_id}},
-                "status": ChatTaskStatus.pending.value,
+                "status": _to_prisma_task_status(ChatTaskStatus.pending),
                 "userMessage": user_message,
             }
         )
@@ -830,7 +867,7 @@ class IndexerRepository:
 
         return self._prisma_task_to_model(prisma_task)
 
-    async def get_chat_task(self, task_id: str) -> Optional["ChatTask"]:
+    async def get_chat_task(self, task_id: str) -> Optional[ChatTask]:
         """Get a chat task by ID."""
         db = await self._get_db()
 
@@ -846,12 +883,12 @@ class IndexerRepository:
     async def get_active_task_for_conversation(
         self,
         conversation_id: str
-    ) -> Optional["ChatTask"]:
+    ) -> Optional[ChatTask]:
         """Get the active (pending/running) task for a conversation."""
         db = await self._get_db()
 
         prisma_task = await db.chattask.find_first(
-            where={
+            where={  # type: ignore[arg-type]
                 "conversationId": conversation_id,
                 "status": {"in": ["pending", "running"]}
             },
@@ -866,16 +903,14 @@ class IndexerRepository:
     async def update_chat_task_status(
         self,
         task_id: str,
-        status: "ChatTaskStatus",
+        status: ChatTaskStatus,
         error_message: Optional[str] = None
-    ) -> Optional["ChatTask"]:
+    ) -> Optional[ChatTask]:
         """Update a chat task's status."""
-        from ragtime.indexer.models import ChatTaskStatus
-
         db = await self._get_db()
 
-        update_data = {
-            "status": status.value,
+        update_data: dict[str, Any] = {
+            "status": _to_prisma_task_status(status),
             "lastUpdateAt": datetime.utcnow(),
         }
 
@@ -890,7 +925,7 @@ class IndexerRepository:
         try:
             prisma_task = await db.chattask.update(
                 where={"id": task_id},
-                data=update_data
+                data=update_data  # type: ignore[arg-type]
             )
             return self._prisma_task_to_model(prisma_task)
         except Exception as e:
@@ -904,7 +939,7 @@ class IndexerRepository:
         events: List[dict],
         tool_calls: List[dict],
         hit_max_iterations: bool = False
-    ) -> Optional["ChatTask"]:
+    ) -> Optional[ChatTask]:
         """Update a chat task's streaming state."""
         db = await self._get_db()
 
@@ -935,10 +970,8 @@ class IndexerRepository:
         final_events: List[dict],
         tool_calls: List[dict],
         hit_max_iterations: bool = False
-    ) -> Optional["ChatTask"]:
+    ) -> Optional[ChatTask]:
         """Mark a chat task as completed with the final response."""
-        from ragtime.indexer.models import ChatTaskStatus
-
         db = await self._get_db()
 
         streaming_state = {
@@ -951,8 +984,8 @@ class IndexerRepository:
         try:
             prisma_task = await db.chattask.update(
                 where={"id": task_id},
-                data={
-                    "status": ChatTaskStatus.completed.value,
+                data={  # type: ignore[arg-type]
+                    "status": _to_prisma_task_status(ChatTaskStatus.completed),
                     "responseContent": response_content,
                     "streamingState": Json(streaming_state),
                     "completedAt": datetime.utcnow(),
@@ -961,54 +994,52 @@ class IndexerRepository:
             )
 
             # Clear active task from conversation
-            await db.conversation.update(
-                where={"id": prisma_task.conversationId},
-                data={"activeTaskId": None}
-            )
+            if prisma_task and prisma_task.conversationId:
+                await db.conversation.update(
+                    where={"id": prisma_task.conversationId},
+                    data={"activeTaskId": None}
+                )
 
-            return self._prisma_task_to_model(prisma_task)
+            return self._prisma_task_to_model(prisma_task) if prisma_task else None
         except Exception as e:
             logger.warning(f"Failed to complete chat task: {e}")
             return None
 
-    async def cancel_chat_task(self, task_id: str) -> Optional["ChatTask"]:
+    async def cancel_chat_task(self, task_id: str) -> Optional[ChatTask]:
         """Cancel a chat task."""
-        from ragtime.indexer.models import ChatTaskStatus
-
         db = await self._get_db()
 
         try:
             prisma_task = await db.chattask.update(
                 where={"id": task_id},
-                data={
-                    "status": ChatTaskStatus.cancelled.value,
+                data={  # type: ignore[arg-type]
+                    "status": _to_prisma_task_status(ChatTaskStatus.cancelled),
                     "completedAt": datetime.utcnow(),
                     "lastUpdateAt": datetime.utcnow(),
                 }
             )
 
             # Clear active task from conversation
-            await db.conversation.update(
-                where={"id": prisma_task.conversationId},
-                data={"activeTaskId": None}
-            )
+            if prisma_task and prisma_task.conversationId:
+                await db.conversation.update(
+                    where={"id": prisma_task.conversationId},
+                    data={"activeTaskId": None}
+                )
 
-            return self._prisma_task_to_model(prisma_task)
+            return self._prisma_task_to_model(prisma_task) if prisma_task else None
         except Exception as e:
             logger.warning(f"Failed to cancel chat task: {e}")
             return None
 
     async def cleanup_stale_tasks(self, max_age_seconds: int = 3600) -> int:
         """Clean up stale tasks that have been running for too long."""
-        from ragtime.indexer.models import ChatTaskStatus
-
         db = await self._get_db()
         cutoff = datetime.utcnow() - timedelta(seconds=max_age_seconds)
 
         try:
             # Find stale running tasks
             stale_tasks = await db.chattask.find_many(
-                where={
+                where={  # type: ignore[arg-type]
                     "status": {"in": ["pending", "running"]},
                     "lastUpdateAt": {"lt": cutoff}
                 }
@@ -1018,17 +1049,18 @@ class IndexerRepository:
             for task in stale_tasks:
                 await db.chattask.update(
                     where={"id": task.id},
-                    data={
-                        "status": ChatTaskStatus.failed.value,
+                    data={  # type: ignore[arg-type]
+                        "status": _to_prisma_task_status(ChatTaskStatus.failed),
                         "errorMessage": "Task timed out",
                         "completedAt": datetime.utcnow(),
                     }
                 )
                 # Clear from conversation
-                await db.conversation.update(
-                    where={"id": task.conversationId},
-                    data={"activeTaskId": None}
-                )
+                if task.conversationId:
+                    await db.conversation.update(
+                        where={"id": task.conversationId},
+                        data={"activeTaskId": None}
+                    )
                 count += 1
 
             if count > 0:
@@ -1038,10 +1070,8 @@ class IndexerRepository:
             logger.warning(f"Failed to cleanup stale tasks: {e}")
             return 0
 
-    def _prisma_task_to_model(self, prisma_task) -> "ChatTask":
+    def _prisma_task_to_model(self, prisma_task: Any) -> ChatTask:
         """Convert Prisma ChatTask to Pydantic model."""
-        from ragtime.indexer.models import ChatTask, ChatTaskStatus, ChatTaskStreamingState
-
         streaming_state = None
         if prisma_task.streamingState:
             state_data = prisma_task.streamingState

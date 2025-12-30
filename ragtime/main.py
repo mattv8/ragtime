@@ -55,6 +55,11 @@ async def lifespan(app: FastAPI):
         if recovered > 0:
             logger.info(f"Recovered {recovered} interrupted indexing job(s)")
 
+        # Discover orphan indexes (FAISS files without database metadata)
+        discovered = await indexer.discover_orphan_indexes()
+        if discovered > 0:
+            logger.info(f"Discovered {discovered} orphan index(es) on disk")
+
         # Start background task service for chat
         from ragtime.indexer.background_tasks import background_task_service
         await background_task_service.start()

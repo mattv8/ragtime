@@ -271,9 +271,9 @@ export function SettingsPanel() {
       {success && <div className="success-banner">{success}</div>}
 
       <form onSubmit={handleSubmit}>
-        {/* Embedding Configuration */}
+        {/* FAISS Embedding Configuration */}
         <fieldset>
-          <legend>Embedding Configuration</legend>
+          <legend>FAISS Embedding Configuration</legend>
           <p className="fieldset-help">
             Configure how document embeddings are generated for FAISS indexes.
           </p>
