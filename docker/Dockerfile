@@ -29,6 +29,8 @@ FROM python:3.12-slim AS python-builder
 
 # Build arguments
 ARG DEBIAN_FRONTEND=noninteractive
+# Set LEGACY_CPU=1 to build NumPy from source for older CPUs without X86_V2 support
+ARG LEGACY_CPU=0
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -41,8 +43,13 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Install Python dependencies
+# For legacy CPU support, build NumPy from source without optimizations
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip && \
+    if [ "$LEGACY_CPU" = "1" ]; then \
+        echo "Building NumPy from source for legacy CPU compatibility..." && \
+        NPY_DISABLE_SVML=1 pip install --no-cache-dir numpy --no-binary numpy; \
+    fi && \
     pip install --no-cache-dir -r /tmp/requirements.txt
 
 # =============================================================================

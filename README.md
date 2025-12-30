@@ -2,8 +2,8 @@
 
 OpenAI-compatible RAG API with LangChain tool calling for business intelligence queries.
 
-**[Live Demo](https://ragtime.dev.visnovsky.us)**
-**[Contributing Guide](CONTRIBUTING.md)**
+🚀 **[Live Demo](https://ragtime.dev.visnovsky.us)**
+📄 **[Contributing Guide](CONTRIBUTING.md)**
 
 ## Features
 
@@ -126,6 +126,8 @@ OpenAI-compatible RAG API with LangChain tool calling for business intelligence 
      # Ragtime RAG API
      ragtime:
        image: hub.docker.visnovsky.us/library/ragtime:main
+       # For older CPUs without X86_V2 support, use the legacy image:
+       # image: hub.docker.visnovsky.us/library/ragtime:legacy
        container_name: ragtime
        restart: unless-stopped
        ports:
@@ -235,6 +237,23 @@ The UI provides:
 ## License
 
 MIT
+
+## Troubleshooting
+
+### NumPy CPU Compatibility Error
+
+If you see an error like:
+```
+RuntimeError: NumPy was built with baseline optimizations (X86_V2) but your machine doesn't support (X86_V2)
+```
+
+Your CPU lacks the X86_V2 instruction set required by modern NumPy binaries. Use the legacy image instead:
+
+```yaml
+image: hub.docker.visnovsky.us/library/ragtime:legacy
+```
+
+This image builds NumPy from source without CPU-specific optimizations.
 
 ## Contributing
 
