@@ -1,13 +1,49 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '@/api';
-import type { AppSettings, UpdateSettingsRequest, OllamaModel, LLMModel, AvailableModel } from '@/types';
+import type { AppSettings, UpdateSettingsRequest, OllamaModel, LLMModel, AvailableModel, LdapConfig } from '@/types';
+
+/**
+ * Format a DN for display like Active Directory tree view.
+ * E.g., "OU=Users,OU=NYC,DC=example,DC=com" -> "NYC / Users"
+ */
+function formatDnForDisplay(dn: string, baseDn: string): string {
+  // Parse DN components
+  const parts = dn.split(',').map(p => p.trim());
+
+  // Find the relative path from base DN
+  const baseParts = baseDn.split(',').map(p => p.trim());
+  const baseLength = baseParts.length;
+
+  // If this is the base DN itself, show it specially
+  if (dn === baseDn) {
+    // Extract domain from DC components: DC=example,DC=com -> example.com
+    const dcParts = baseParts.filter(p => p.toUpperCase().startsWith('DC='));
+    const domain = dcParts.map(p => p.substring(3)).join('.');
+    return `[Root] ${domain}`;
+  }
+
+  // Get the relative path (parts before the base DN)
+  const relativeParts = parts.slice(0, parts.length - baseLength);
+
+  // Build display string: show OU/CN names in reverse order (top to bottom)
+  const names = relativeParts.map(part => {
+    const [_type, ...valueParts] = part.split('=');
+    return valueParts.join('='); // Handle values with = in them
+  }).reverse();
+
+  // Show path from parent to child
+  return names.join(' / ');
+}
 
 export function SettingsPanel() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+
+  // Section-specific saving states
+  const [embeddingSaving, setEmbeddingSaving] = useState(false);
+  const [llmSaving, setLlmSaving] = useState(false);
 
   // Ollama connection state
   const [ollamaConnecting, setOllamaConnecting] = useState(false);
@@ -28,6 +64,26 @@ export function SettingsPanel() {
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelFilterText, setModelFilterText] = useState('');
 
+  // LDAP configuration state
+  const [ldapConfig, setLdapConfig] = useState<LdapConfig | null>(null);
+  const [ldapFormData, setLdapFormData] = useState({
+    ldap_protocol: 'ldaps' as 'ldap' | 'ldaps',
+    ldap_host: '',
+    ldap_port: 636,
+    allow_self_signed: false,
+    bind_dn: '',
+    bind_password: '',
+    user_search_base: '',
+    user_search_filter: '(|(sAMAccountName={username})(uid={username}))',
+    admin_group_dn: '',
+    user_group_dn: '',
+  });
+  const [ldapTesting, setLdapTesting] = useState(false);
+  const [ldapTestResult, setLdapTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [ldapSaving, setLdapSaving] = useState(false);
+  const [ldapDiscoveredOus, setLdapDiscoveredOus] = useState<string[]>([]);
+  const [ldapDiscoveredGroups, setLdapDiscoveredGroups] = useState<{ dn: string; name: string }[]>([]);
+
   // Form state
   const [formData, setFormData] = useState<UpdateSettingsRequest>({});
 
@@ -36,7 +92,7 @@ export function SettingsPanel() {
 
   // Test Ollama connection
   const testOllamaConnection = useCallback(async (
-    protocol: string,
+    protocol: 'http' | 'https',
     host: string,
     port: number
   ) => {
@@ -212,6 +268,55 @@ export function SettingsPanel() {
           data.ollama_port || 11434
         );
       }
+
+      // Load LDAP configuration
+      try {
+        const ldapData = await api.getLdapConfig();
+        setLdapConfig(ldapData);
+
+        // Parse server_url into components
+        let protocol: 'ldap' | 'ldaps' = 'ldaps';
+        let host = '';
+        let port = 636;
+        if (ldapData.server_url) {
+          const match = ldapData.server_url.match(/^(ldaps?):\/\/([^:]+)(?::(\d+))?$/);
+          if (match) {
+            protocol = match[1] as 'ldap' | 'ldaps';
+            host = match[2];
+            port = match[3] ? parseInt(match[3], 10) : (protocol === 'ldaps' ? 636 : 389);
+          }
+        }
+
+        setLdapFormData({
+          ldap_protocol: protocol,
+          ldap_host: host,
+          ldap_port: port,
+          allow_self_signed: ldapData.allow_self_signed || false,
+          bind_dn: ldapData.bind_dn || '',
+          bind_password: '', // Never returned from server
+          user_search_base: ldapData.user_search_base || '',
+          user_search_filter: ldapData.user_search_filter || '(|(sAMAccountName={username})(uid={username}))',
+          admin_group_dn: ldapData.admin_group_dn || '',
+          user_group_dn: ldapData.user_group_dn || '',
+        });
+
+        // Auto-discover LDAP structure using stored credentials
+        if (ldapData.server_url && ldapData.bind_dn) {
+          try {
+            const discovery = await api.discoverLdapWithStoredCredentials();
+            if (discovery.success) {
+              setLdapDiscoveredOus(discovery.user_ous);
+              setLdapDiscoveredGroups(discovery.groups);
+              setLdapTestResult({ success: true, message: `Connected. Found ${discovery.user_ous.length} OUs and ${discovery.groups.length} groups.` });
+            }
+          } catch {
+            // Silent fail - user can still test connection manually
+          }
+        }
+      } catch {
+        // LDAP config may not exist yet, that's OK
+        setLdapConfig(null);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load settings');
     } finally {
@@ -231,26 +336,123 @@ export function SettingsPanel() {
     );
   };
 
+  // Helper to build server URL from components
+  const buildServerUrl = () => {
+    const { ldap_protocol, ldap_host, ldap_port } = ldapFormData;
+    if (!ldap_host) return '';
+    return `${ldap_protocol}://${ldap_host}:${ldap_port}`;
+  };
+
+  // LDAP connection test and discovery
+  const handleTestLdapConnection = async () => {
+    const serverUrl = buildServerUrl();
+    if (!serverUrl || !ldapFormData.bind_dn || !ldapFormData.bind_password) {
+      setLdapTestResult({ success: false, message: 'Server, Bind DN, and Bind Password are required' });
+      return;
+    }
+
+    setLdapTesting(true);
+    setLdapTestResult(null);
+
+    try {
+      const response = await api.discoverLdap({
+        server_url: serverUrl,
+        bind_dn: ldapFormData.bind_dn,
+        bind_password: ldapFormData.bind_password,
+        allow_self_signed: ldapFormData.allow_self_signed,
+      });
+
+      setLdapDiscoveredOus(response.user_ous);
+      setLdapDiscoveredGroups(response.groups);
+      setLdapTestResult({ success: true, message: `Connected. Found ${response.user_ous.length} OUs and ${response.groups.length} groups.` });
+    } catch (err) {
+      setLdapTestResult({ success: false, message: err instanceof Error ? err.message : 'Connection failed' });
+      setLdapDiscoveredOus([]);
+      setLdapDiscoveredGroups([]);
+    } finally {
+      setLdapTesting(false);
+    }
+  };
+
+  // Save LDAP configuration
+  const handleSaveLdapConfig = async () => {
+    setLdapSaving(true);
+    setError(null);
+
+    try {
+      const serverUrl = buildServerUrl();
+      const updated = await api.updateLdapConfig({
+        server_url: serverUrl || undefined,
+        allow_self_signed: ldapFormData.allow_self_signed,
+        bind_dn: ldapFormData.bind_dn || undefined,
+        bind_password: ldapFormData.bind_password || undefined,
+        user_search_base: ldapFormData.user_search_base || undefined,
+        user_search_filter: ldapFormData.user_search_filter || undefined,
+        admin_group_dn: ldapFormData.admin_group_dn || undefined,
+        user_group_dn: ldapFormData.user_group_dn || undefined,
+      });
+      setLdapConfig(updated);
+      setSuccess('LDAP configuration saved successfully');
+      setTimeout(() => setSuccess(null), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save LDAP configuration');
+    } finally {
+      setLdapSaving(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSaving(true);
+  };
+
+  // Save Embedding Configuration
+  const handleSaveEmbedding = async () => {
+    setEmbeddingSaving(true);
     setSuccess(null);
     setError(null);
 
     try {
-      // Compute ollama_base_url from separate fields
       const dataToSave = {
-        ...formData,
+        embedding_provider: formData.embedding_provider,
+        embedding_model: formData.embedding_model,
+        ollama_protocol: formData.ollama_protocol,
+        ollama_host: formData.ollama_host,
+        ollama_port: formData.ollama_port,
         ollama_base_url: `${formData.ollama_protocol || 'http'}://${formData.ollama_host || 'localhost'}:${formData.ollama_port || 11434}`,
       };
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
-      setSuccess('Settings saved successfully');
+      setSuccess('Embedding configuration saved');
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save settings');
+      setError(err instanceof Error ? err.message : 'Failed to save embedding settings');
     } finally {
-      setSaving(false);
+      setEmbeddingSaving(false);
+    }
+  };
+
+  // Save LLM Configuration
+  const handleSaveLlm = async () => {
+    setLlmSaving(true);
+    setSuccess(null);
+    setError(null);
+
+    try {
+      const dataToSave = {
+        llm_provider: formData.llm_provider,
+        llm_model: formData.llm_model,
+        openai_api_key: formData.openai_api_key,
+        anthropic_api_key: formData.anthropic_api_key,
+        allowed_chat_models: formData.allowed_chat_models,
+      };
+      const updated = await api.updateSettings(dataToSave);
+      setSettings(updated);
+      setSuccess('LLM configuration saved');
+      setTimeout(() => setSuccess(null), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save LLM settings');
+    } finally {
+      setLlmSaving(false);
     }
   };
 
@@ -450,6 +652,17 @@ export function SettingsPanel() {
               </p>
             </>
           )}
+
+          <div className="form-group" style={{ marginTop: '1rem' }}>
+            <button
+              type="button"
+              className="btn"
+              onClick={handleSaveEmbedding}
+              disabled={embeddingSaving}
+            >
+              {embeddingSaving ? 'Saving...' : 'Save Embedding Configuration'}
+            </button>
+          </div>
         </fieldset>
 
         {/* LLM Configuration */}
@@ -618,16 +831,237 @@ export function SettingsPanel() {
               Limit which models appear in the Chat view dropdown.
             </p>
           </div>
+
+          <div className="form-group" style={{ marginTop: '1rem' }}>
+            <button
+              type="button"
+              className="btn"
+              onClick={handleSaveLlm}
+              disabled={llmSaving}
+            >
+              {llmSaving ? 'Saving...' : 'Save LLM Configuration'}
+            </button>
+          </div>
         </fieldset>
 
-        <div className="form-actions">
-          <button type="submit" disabled={saving}>
-            {saving ? 'Saving...' : 'Save Settings'}
-          </button>
-          <button type="button" onClick={loadSettings} disabled={saving}>
-            Reset
-          </button>
-        </div>
+        {/* LDAP Authentication Configuration */}
+        <fieldset>
+          <legend>LDAP Authentication</legend>
+          <p className="fieldset-help">
+            Configure LDAP/Active Directory authentication. Leave host empty to disable LDAP and use local admin only.
+          </p>
+
+          {/* Server Connection */}
+          <div style={{ display: 'grid', gridTemplateColumns: '100px 1fr 70px', gap: '12px', marginBottom: '16px' }}>
+            <div className="form-group">
+              <label>Protocol</label>
+              <select
+                value={ldapFormData.ldap_protocol}
+                onChange={(e) => {
+                  const protocol = e.target.value as 'ldap' | 'ldaps';
+                  const defaultPort = protocol === 'ldaps' ? 636 : 389;
+                  setLdapFormData({ ...ldapFormData, ldap_protocol: protocol, ldap_port: defaultPort });
+                }}
+              >
+                <option value="ldaps">ldaps://</option>
+                <option value="ldap">ldap://</option>
+              </select>
+            </div>
+            <div className="form-group">
+              <label>Host</label>
+              <input
+                type="text"
+                value={ldapFormData.ldap_host}
+                onChange={(e) =>
+                  setLdapFormData({ ...ldapFormData, ldap_host: e.target.value })
+                }
+                placeholder="ldap.example.com"
+              />
+            </div>
+            <div className="form-group">
+              <label>Port</label>
+              <input
+                type="number"
+                value={ldapFormData.ldap_port}
+                onChange={(e) =>
+                  setLdapFormData({ ...ldapFormData, ldap_port: parseInt(e.target.value, 10) || 636 })
+                }
+              />
+            </div>
+          </div>
+
+          {/* Self-signed certificate option - only show for ldaps */}
+          {ldapFormData.ldap_protocol === 'ldaps' && (
+            <div className="form-row">
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={ldapFormData.allow_self_signed}
+                  onChange={(e) =>
+                    setLdapFormData({ ...ldapFormData, allow_self_signed: e.target.checked })
+                  }
+                />
+                Allow self-signed certificates
+              </label>
+              <p className="field-help" style={{ marginTop: '0.25rem' }}>
+                Skip SSL certificate validation. Use only for testing or with internal CAs.
+              </p>
+            </div>
+          )}
+
+          {/* Bind Account */}
+          <div className="form-row">
+            <div className="form-group" style={{ flex: 2 }}>
+              <label>Bind DN / Username</label>
+              <input
+                type="text"
+                value={ldapFormData.bind_dn}
+                onChange={(e) =>
+                  setLdapFormData({ ...ldapFormData, bind_dn: e.target.value })
+                }
+                placeholder="user@domain.com or CN=admin,DC=example,DC=com"
+              />
+              <p className="field-help">
+                AD: user@domain.com or DOMAIN\user. OpenLDAP: full DN like cn=admin,dc=example,dc=com
+              </p>
+            </div>
+            <div className="form-group" style={{ flex: 1 }}>
+              <label>Bind Password</label>
+              <input
+                type="password"
+                value={ldapFormData.bind_password}
+                onChange={(e) =>
+                  setLdapFormData({ ...ldapFormData, bind_password: e.target.value })
+                }
+                placeholder={ldapConfig?.bind_dn ? '(password saved)' : 'Enter password'}
+              />
+            </div>
+          </div>
+
+          <div className="form-group">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={handleTestLdapConnection}
+              disabled={ldapTesting || !ldapFormData.ldap_host || !ldapFormData.bind_dn || !ldapFormData.bind_password}
+            >
+              {ldapTesting ? 'Testing...' : 'Test Connection & Discover'}
+            </button>
+            {ldapTestResult && (
+              <span className={ldapTestResult.success ? 'success-text' : 'error-text'} style={{ marginLeft: '1rem' }}>
+                {ldapTestResult.message}
+              </span>
+            )}
+          </div>
+
+          {/* Show search config when we have discovered OUs (from test or auto-load) */}
+          {ldapDiscoveredOus.length > 0 && (
+            <>
+              <div className="form-row">
+                <div className="form-group" style={{ flex: 2 }}>
+                  <label>User Search Base</label>
+                  <select
+                    value={ldapFormData.user_search_base}
+                    onChange={(e) =>
+                      setLdapFormData({ ...ldapFormData, user_search_base: e.target.value })
+                    }
+                  >
+                    <option value="">Select a search base...</option>
+                    {ldapDiscoveredOus.map((ou) => (
+                      <option key={ou} value={ou}>
+                        {formatDnForDisplay(ou, ldapDiscoveredOus[0] || ou)}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="field-help">
+                    Where to search for users. Select the root domain to search all users, or a specific OU to limit scope.
+                  </p>
+                  {ldapFormData.user_search_base && (
+                    <p className="field-help" style={{ fontFamily: 'monospace', fontSize: '0.75rem', marginTop: '0.25rem' }}>
+                      DN: {ldapFormData.user_search_base}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="form-row">
+                <div className="form-group" style={{ flex: 2 }}>
+                  <label>User Search Filter</label>
+                  <input
+                    type="text"
+                    value={ldapFormData.user_search_filter}
+                    onChange={(e) =>
+                      setLdapFormData({ ...ldapFormData, user_search_filter: e.target.value })
+                    }
+                    placeholder="(|(sAMAccountName={username})(uid={username}))"
+                  />
+                  <p className="field-help">
+                    LDAP filter to find users. Use {'{username}'} as placeholder.
+                  </p>
+                </div>
+              </div>
+
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Admin Group DN</label>
+                  <select
+                    value={ldapFormData.admin_group_dn}
+                    onChange={(e) =>
+                      setLdapFormData({ ...ldapFormData, admin_group_dn: e.target.value })
+                    }
+                  >
+                    <option value="">No admin group (all users are standard)</option>
+                    {ldapDiscoveredGroups.map((g) => (
+                      <option key={g.dn} value={g.dn}>{g.name}</option>
+                    ))}
+                  </select>
+                  <p className="field-help">
+                    Members of this group get admin privileges
+                  </p>
+                </div>
+                <div className="form-group">
+                  <label>User Group DN (optional)</label>
+                  <select
+                    value={ldapFormData.user_group_dn}
+                    onChange={(e) =>
+                      setLdapFormData({ ...ldapFormData, user_group_dn: e.target.value })
+                    }
+                  >
+                    <option value="">Any user can login</option>
+                    {ldapDiscoveredGroups.map((g) => (
+                      <option key={g.dn} value={g.dn}>{g.name}</option>
+                    ))}
+                  </select>
+                  <p className="field-help">
+                    If set, users must be members of this group to login
+                  </p>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Show current config if loaded but not testing */}
+          {ldapConfig?.server_url && !ldapTestResult?.success && (
+            <div className="form-group">
+              <p className="field-help">
+                Current configuration: {ldapConfig.server_url}
+                {ldapConfig.user_search_base && ` | Base: ${ldapConfig.user_search_base}`}
+                {ldapConfig.admin_group_dn && ` | Admin Group: ${ldapConfig.admin_group_dn}`}
+              </p>
+            </div>
+          )}
+
+          <div className="form-group">
+            <button
+              type="button"
+              className="btn"
+              onClick={handleSaveLdapConfig}
+              disabled={ldapSaving}
+            >
+              {ldapSaving ? 'Saving...' : 'Save LDAP Configuration'}
+            </button>
+          </div>
+        </fieldset>
       </form>
 
       {settings?.updated_at && (

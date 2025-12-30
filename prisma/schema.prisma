@@ -254,6 +254,7 @@ model LdapConfig {
   serverUrl       String   @default("") @map("server_url") // ldap://host:389 or ldaps://host:636
   bindDn          String   @default("") @map("bind_dn") // Service account DN or samAccountName
   bindPassword    String   @default("") @map("bind_password") // Encrypted
+  allowSelfSigned Boolean  @default(false) @map("allow_self_signed") // Skip SSL cert validation
 
   // Search configuration (auto-discovered or manually set)
   baseDn          String   @default("") @map("base_dn") // e.g., dc=example,dc=com

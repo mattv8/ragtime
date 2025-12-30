@@ -64,7 +64,7 @@ export function LoginPage({ authStatus, onLoginSuccess }: LoginPageProps) {
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               className="form-input"
-              placeholder={authStatus.ldap_configured ? 'LDAP username or local admin' : 'Username'}
+              placeholder={authStatus.ldap_configured ? 'Username' : 'Local admin'}
               required
               autoFocus
               autoComplete="username"

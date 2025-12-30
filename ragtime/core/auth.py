@@ -10,6 +10,7 @@ Supports:
 """
 
 import hashlib
+import ssl
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -17,6 +18,7 @@ from jose import JWTError, jwt  # type: ignore[import-untyped]
 from ldap3 import (  # type: ignore[import-untyped]
     Connection,
     Server,
+    Tls,
     ALL,
     SUBTREE,
     AUTO_BIND_NO_TLS,
@@ -121,12 +123,28 @@ async def get_ldap_config():
     return config
 
 
-def _get_ldap_connection(server_url: str, bind_dn: str, bind_password: str) -> Optional[Connection]:
+def _get_ldap_connection(
+    server_url: str,
+    bind_dn: str,
+    bind_password: str,
+    allow_self_signed: bool = False,
+) -> Optional[Connection]:
     """Create an LDAP connection."""
     try:
         # Parse server URL
         use_ssl = server_url.startswith("ldaps://")
-        server = Server(server_url, get_info=ALL, use_ssl=use_ssl)
+
+        # Configure TLS for self-signed certificates if needed
+        tls_config = None
+        if use_ssl and allow_self_signed:
+            tls_config = Tls(validate=ssl.CERT_NONE)
+
+        server = Server(
+            server_url,
+            get_info=ALL,
+            use_ssl=use_ssl,
+            tls=tls_config,
+        )
 
         auto_bind = AUTO_BIND_TLS_BEFORE_BIND if use_ssl else AUTO_BIND_NO_TLS
         conn = Connection(
@@ -146,6 +164,7 @@ async def discover_ldap_structure(
     server_url: str,
     bind_dn: str,
     bind_password: str,
+    allow_self_signed: bool = False,
 ) -> LdapDiscoveryResult:
     """
     Discover LDAP structure: base DN, user OUs, and groups.
@@ -153,7 +172,7 @@ async def discover_ldap_structure(
     This auto-discovers the LDAP structure so users don't need to manually
     configure search bases and filters.
     """
-    conn = _get_ldap_connection(server_url, bind_dn, bind_password)
+    conn = _get_ldap_connection(server_url, bind_dn, bind_password, allow_self_signed)
     if not conn:
         return LdapDiscoveryResult(success=False, error="Failed to connect to LDAP server")
 
@@ -172,8 +191,10 @@ async def discover_ldap_structure(
         if not base_dn:
             return LdapDiscoveryResult(success=False, error="Could not determine base DN")
 
-        # Discover user OUs
-        user_ous: list[str] = []
+        # Discover user OUs and containers
+        ous_and_containers: list[str] = []
+
+        # Search for organizational units
         conn.search(
             search_base=base_dn,
             search_filter="(objectClass=organizationalUnit)",
@@ -181,12 +202,7 @@ async def discover_ldap_structure(
             attributes=["distinguishedName", "ou"],
         )
         for entry in conn.entries:
-            dn = str(entry.entry_dn)
-            # Prioritize OUs that look like user containers
-            if any(kw in dn.lower() for kw in ["user", "people", "account"]):
-                user_ous.insert(0, dn)
-            else:
-                user_ous.append(dn)
+            ous_and_containers.append(str(entry.entry_dn))
 
         # Also check for CN=Users container (common in AD)
         conn.search(
@@ -196,7 +212,23 @@ async def discover_ldap_structure(
             attributes=["distinguishedName"],
         )
         for entry in conn.entries:
-            user_ous.insert(0, str(entry.entry_dn))
+            dn = str(entry.entry_dn)
+            if dn not in ous_and_containers:
+                ous_and_containers.append(dn)
+
+        # Sort by DN depth (fewer components = higher in hierarchy)
+        # This creates a tree-like order: DC=..., then OU=...,DC=..., etc.
+        def dn_depth(dn: str) -> tuple[int, str]:
+            """Return (depth, dn) for sorting - fewer commas = higher level."""
+            return (dn.count(","), dn.lower())
+
+        ous_and_containers.sort(key=dn_depth)
+
+        # Always include the base DN as the first/top-level option
+        user_ous: list[str] = [base_dn]
+        for dn in ous_and_containers:
+            if dn != base_dn and dn not in user_ous:
+                user_ous.append(dn)
 
         # Discover groups
         groups = []
@@ -216,8 +248,8 @@ async def discover_ldap_structure(
         return LdapDiscoveryResult(
             success=True,
             base_dn=base_dn,
-            user_ous=user_ous[:50],  # Limit to 50
-            groups=groups[:100],  # Limit to 100
+            user_ous=user_ous[:100],  # Limit to 100 for larger directories
+            groups=groups[:200],  # Limit to 200
         )
 
     except LDAPException as e:
@@ -226,6 +258,107 @@ async def discover_ldap_structure(
     finally:
         if conn.bound:
             conn.unbind()
+
+
+class BindDnLookupResult(BaseModel):
+    """Result of bind DN lookup."""
+    success: bool
+    bind_dn: Optional[str] = None
+    display_name: Optional[str] = None
+    error: Optional[str] = None
+
+
+async def lookup_bind_dn(
+    server_url: str,
+    username: str,
+    password: str,
+) -> BindDnLookupResult:
+    """
+    Look up the full DN for a user given their username (sAMAccountName or uid).
+
+    This attempts to bind with the username directly (works for AD with
+    sAMAccountName@domain or domain\\username format), or if that fails,
+    tries anonymous/unauthenticated search to find the DN.
+    """
+    try:
+        # Parse server URL
+        use_ssl = server_url.startswith("ldaps://")
+        server = Server(server_url, get_info=ALL, use_ssl=use_ssl)
+
+        # First, try direct bind with username (AD supports this)
+        # Try formats: username@domain, domain\username, or just username
+        auto_bind = AUTO_BIND_TLS_BEFORE_BIND if use_ssl else AUTO_BIND_NO_TLS
+
+        # Attempt 1: Direct bind (works if username is already a DN or AD-style)
+        try:
+            conn = Connection(
+                server,
+                user=username,
+                password=password,
+                auto_bind=auto_bind,
+                raise_exceptions=True,
+            )
+            # If we get here, bind succeeded - now find the actual DN
+            if conn.extend.standard.who_am_i():
+                who = conn.extend.standard.who_am_i()
+                # Response is like "u:DOMAIN\username" or "dn:CN=..."
+                if who and who.startswith("dn:"):
+                    bind_dn = who[3:]
+                    conn.unbind()
+                    return BindDnLookupResult(success=True, bind_dn=bind_dn)
+
+            # Search for our own entry
+            conn.search(
+                search_base="",
+                search_filter=f"(|(sAMAccountName={username})(uid={username})(userPrincipalName={username}))",
+                search_scope=SUBTREE,
+                attributes=["distinguishedName", "displayName"],
+            )
+            if conn.entries:
+                entry = conn.entries[0]
+                bind_dn = str(entry.entry_dn)
+                display_name = str(entry.displayName) if hasattr(entry, "displayName") and entry.displayName else None
+                conn.unbind()
+                return BindDnLookupResult(success=True, bind_dn=bind_dn, display_name=display_name)
+
+            conn.unbind()
+        except LDAPBindError:
+            pass  # Direct bind failed, will try other methods
+        except LDAPException as e:
+            logger.debug(f"Direct bind attempt failed: {e}")
+
+        # Attempt 2: Try with rootDSE to get base DN, then search
+        try:
+            # Connect without binding to get server info
+            conn = Connection(server, auto_bind=auto_bind)
+            base_dn = ""
+            if conn.server.info and conn.server.info.naming_contexts:
+                base_dn = str(conn.server.info.naming_contexts[0])
+
+            if base_dn:
+                # Now try to bind with username and search
+                conn.rebind(user=username, password=password)
+                conn.search(
+                    search_base=base_dn,
+                    search_filter=f"(|(sAMAccountName={username.split('@')[0]})(uid={username.split('@')[0]}))",
+                    search_scope=SUBTREE,
+                    attributes=["distinguishedName", "displayName"],
+                )
+                if conn.entries:
+                    entry = conn.entries[0]
+                    bind_dn = str(entry.entry_dn)
+                    display_name = str(entry.displayName) if hasattr(entry, "displayName") and entry.displayName else None
+                    conn.unbind()
+                    return BindDnLookupResult(success=True, bind_dn=bind_dn, display_name=display_name)
+            conn.unbind()
+        except LDAPException as e:
+            logger.debug(f"Base DN search attempt failed: {e}")
+
+        return BindDnLookupResult(success=False, error="Could not discover bind DN. Please enter the full DN manually.")
+
+    except LDAPException as e:
+        logger.error(f"Bind DN lookup error: {e}")
+        return BindDnLookupResult(success=False, error=str(e))
 
 
 async def authenticate_ldap(username: str, password: str) -> AuthResult:
@@ -249,6 +382,7 @@ async def authenticate_ldap(username: str, password: str) -> AuthResult:
         ldap_config.serverUrl,
         ldap_config.bindDn,
         ldap_config.bindPassword,
+        ldap_config.allowSelfSigned,
     )
     if not conn:
         return AuthResult(success=False, error="Failed to connect to LDAP server")
@@ -286,7 +420,7 @@ async def authenticate_ldap(username: str, password: str) -> AuthResult:
         conn.unbind()
 
         # Verify user's password by binding as the user
-        user_conn = _get_ldap_connection(ldap_config.serverUrl, user_dn, password)
+        user_conn = _get_ldap_connection(ldap_config.serverUrl, user_dn, password, ldap_config.allowSelfSigned)
         if not user_conn:
             return AuthResult(success=False, error="Invalid credentials")
         user_conn.unbind()

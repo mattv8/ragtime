@@ -2,7 +2,7 @@
  * API client for Ragtime Indexer
  */
 
-import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, LLMModelsRequest, LLMModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse } from '@/types';
+import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, LLMModelsRequest, LLMModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse } from '@/types';
 
 const API_BASE = '/indexes';
 const AUTH_BASE = '/auth';
@@ -121,6 +121,28 @@ export const api = {
 
     });
     return handleResponse<LdapDiscoverResponse>(response);
+  },
+
+  /**
+   * Discover LDAP structure using stored credentials (admin only)
+   */
+  async discoverLdapWithStoredCredentials(): Promise<LdapDiscoverResponse> {
+    const response = await apiFetch(`${AUTH_BASE}/ldap/discover`, {
+      method: 'GET',
+    });
+    return handleResponse<LdapDiscoverResponse>(response);
+  },
+
+  /**
+   * Look up bind DN from username (admin only)
+   */
+  async lookupBindDn(request: LdapBindDnLookupRequest): Promise<LdapBindDnLookupResponse> {
+    const response = await apiFetch(`${AUTH_BASE}/ldap/lookup-bind-dn`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<LdapBindDnLookupResponse>(response);
   },
 
   /**

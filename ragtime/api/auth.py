@@ -20,6 +20,7 @@ from ragtime.core.auth import (
     discover_ldap_structure,
     get_ldap_config,
     invalidate_session,
+    lookup_bind_dn,
 )
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
@@ -68,12 +69,13 @@ class UserResponse(BaseModel):
 
 class LdapConfigRequest(BaseModel):
     """LDAP configuration update request."""
-    server_url: str = Field(..., description="LDAP server URL (ldap://host:389 or ldaps://host:636)")
-    bind_dn: str = Field(..., description="Bind DN or sAMAccountName for service account")
-    bind_password: str = Field(..., description="Bind password")
+    server_url: Optional[str] = Field(None, description="LDAP server URL (ldap://host:389 or ldaps://host:636)")
+    bind_dn: Optional[str] = Field(None, description="Bind DN or sAMAccountName for service account")
+    bind_password: Optional[str] = Field(None, description="Bind password (leave empty to keep existing)")
+    allow_self_signed: Optional[bool] = Field(None, description="Allow self-signed SSL certificates")
     user_search_base: Optional[str] = Field(None, description="User search base DN (auto-discovered if empty)")
-    user_search_filter: str = Field(
-        "(|(sAMAccountName={username})(uid={username}))",
+    user_search_filter: Optional[str] = Field(
+        None,
         description="User search filter (use {username} placeholder)"
     )
     admin_group_dn: Optional[str] = Field(None, description="Admin group DN")
@@ -84,6 +86,7 @@ class LdapConfigResponse(BaseModel):
     """LDAP configuration response."""
     server_url: str
     bind_dn: str
+    allow_self_signed: bool
     base_dn: str
     user_search_base: str
     user_search_filter: str
@@ -98,6 +101,7 @@ class LdapDiscoverRequest(BaseModel):
     server_url: str = Field(..., description="LDAP server URL")
     bind_dn: str = Field(..., description="Bind DN or sAMAccountName")
     bind_password: str = Field(..., description="Bind password")
+    allow_self_signed: bool = Field(False, description="Allow self-signed SSL certificates")
 
 
 class LdapDiscoverResponse(BaseModel):
@@ -106,6 +110,21 @@ class LdapDiscoverResponse(BaseModel):
     base_dn: Optional[str] = None
     user_ous: list[str] = []
     groups: list[dict] = []
+    error: Optional[str] = None
+
+
+class LdapBindDnLookupRequest(BaseModel):
+    """Request to look up bind DN from username."""
+    server_url: str = Field(..., description="LDAP server URL (ldap:// or ldaps://)")
+    username: str = Field(..., description="Username (sAMAccountName, uid, or UPN)")
+    password: str = Field(..., description="Password")
+
+
+class LdapBindDnLookupResponse(BaseModel):
+    """Bind DN lookup result."""
+    success: bool
+    bind_dn: Optional[str] = None
+    display_name: Optional[str] = None
     error: Optional[str] = None
 
 
@@ -251,6 +270,7 @@ async def discover_ldap(
         server_url=body.server_url,
         bind_dn=body.bind_dn,
         bind_password=body.bind_password,
+        allow_self_signed=body.allow_self_signed,
     )
 
     return LdapDiscoverResponse(
@@ -258,6 +278,65 @@ async def discover_ldap(
         base_dn=result.base_dn,
         user_ous=result.user_ous,
         groups=result.groups,
+        error=result.error,
+    )
+
+
+@router.get("/ldap/discover", response_model=LdapDiscoverResponse)
+async def discover_ldap_with_stored_credentials(
+    _user: User = Depends(require_admin),
+):
+    """
+    Discover LDAP structure using stored credentials from database.
+
+    Useful for auto-populating dropdowns on settings page load without
+    requiring the user to re-enter their bind password.
+    """
+    config = await get_ldap_config()
+
+    if not config.serverUrl or not config.bindDn or not config.bindPassword:
+        return LdapDiscoverResponse(
+            success=False,
+            error="LDAP not fully configured. Please provide server URL, bind DN, and password.",
+        )
+
+    result = await discover_ldap_structure(
+        server_url=config.serverUrl,
+        bind_dn=config.bindDn,
+        bind_password=config.bindPassword,
+        allow_self_signed=config.allowSelfSigned,
+    )
+
+    return LdapDiscoverResponse(
+        success=result.success,
+        base_dn=result.base_dn,
+        user_ous=result.user_ous,
+        groups=result.groups,
+        error=result.error,
+    )
+
+
+@router.post("/ldap/lookup-bind-dn", response_model=LdapBindDnLookupResponse)
+async def lookup_ldap_bind_dn(
+    body: LdapBindDnLookupRequest,
+    _user: User = Depends(require_admin),
+):
+    """
+    Look up the full DN for a bind account given just the username.
+
+    Attempts to authenticate with the provided credentials and discover
+    the full distinguished name. Useful for simplifying LDAP setup.
+    """
+    result = await lookup_bind_dn(
+        server_url=body.server_url,
+        username=body.username,
+        password=body.password,
+    )
+
+    return LdapBindDnLookupResponse(
+        success=result.success,
+        bind_dn=result.bind_dn,
+        display_name=result.display_name,
         error=result.error,
     )
 
@@ -270,6 +349,7 @@ async def get_ldap_configuration(_user: User = Depends(require_admin)):
     return LdapConfigResponse(
         server_url=config.serverUrl,
         bind_dn=config.bindDn,
+        allow_self_signed=config.allowSelfSigned,
         base_dn=config.baseDn,
         user_search_base=config.userSearchBase,
         user_search_filter=config.userSearchFilter,
@@ -288,53 +368,67 @@ async def update_ldap_configuration(
     """Update LDAP configuration."""
     db = await get_db()
 
-    # Discover structure if not provided
-    discovery = None
-    if not body.user_search_base:
-        discovery = await discover_ldap_structure(
-            server_url=body.server_url,
-            bind_dn=body.bind_dn,
-            bind_password=body.bind_password,
-        )
-        if not discovery.success:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"LDAP discovery failed: {discovery.error}",
-            )
+    # Get existing config
+    existing = await get_ldap_config()
 
-    # Prepare values with proper types
-    base_dn = (discovery.base_dn or "") if discovery else ""
-    user_search_base = body.user_search_base or (discovery.user_ous[0] if discovery and discovery.user_ous else "")
-    discovered_ous = Json(discovery.user_ous) if discovery else Json([])
-    discovered_groups = Json(discovery.groups) if discovery else Json([])
+    # Merge with existing values for optional fields
+    server_url = body.server_url if body.server_url is not None else existing.serverUrl
+    bind_dn = body.bind_dn if body.bind_dn is not None else existing.bindDn
+    bind_password = body.bind_password if body.bind_password else existing.bindPassword
+    allow_self_signed = body.allow_self_signed if body.allow_self_signed is not None else existing.allowSelfSigned
+    user_search_filter = body.user_search_filter if body.user_search_filter is not None else existing.userSearchFilter
+    admin_group_dn = body.admin_group_dn if body.admin_group_dn is not None else existing.adminGroupDn
+    user_group_dn = body.user_group_dn if body.user_group_dn is not None else existing.userGroupDn
+
+    # Discover structure if user_search_base not provided and we have connection details
+    discovery = None
+    base_dn = existing.baseDn or ""
+    user_search_base = body.user_search_base if body.user_search_base is not None else existing.userSearchBase
+    discovered_ous = existing.discoveredOus if isinstance(existing.discoveredOus, list) else []
+    discovered_groups = existing.discoveredGroups if isinstance(existing.discoveredGroups, list) else []
+
+    if server_url and bind_dn and bind_password and not user_search_base:
+        discovery = await discover_ldap_structure(
+            server_url=server_url,
+            bind_dn=bind_dn,
+            bind_password=bind_password,
+            allow_self_signed=allow_self_signed,
+        )
+        if discovery.success:
+            base_dn = discovery.base_dn or ""
+            user_search_base = discovery.user_ous[0] if discovery.user_ous else ""
+            discovered_ous = discovery.user_ous
+            discovered_groups = discovery.groups
 
     config = await db.ldapconfig.upsert(
         where={"id": "default"},
         data={
             "create": {
                 "id": "default",
-                "serverUrl": body.server_url,
-                "bindDn": body.bind_dn,
-                "bindPassword": body.bind_password,
+                "serverUrl": server_url or "",
+                "bindDn": bind_dn or "",
+                "bindPassword": bind_password or "",
+                "allowSelfSigned": allow_self_signed,
                 "baseDn": base_dn,
-                "userSearchBase": user_search_base,
-                "userSearchFilter": body.user_search_filter,
-                "adminGroupDn": body.admin_group_dn or "",
-                "userGroupDn": body.user_group_dn or "",
-                "discoveredOus": discovered_ous,
-                "discoveredGroups": discovered_groups,
+                "userSearchBase": user_search_base or "",
+                "userSearchFilter": user_search_filter or "(|(sAMAccountName={username})(uid={username}))",
+                "adminGroupDn": admin_group_dn or "",
+                "userGroupDn": user_group_dn or "",
+                "discoveredOus": Json(discovered_ous),
+                "discoveredGroups": Json(discovered_groups),
             },
             "update": {
-                "serverUrl": body.server_url,
-                "bindDn": body.bind_dn,
-                "bindPassword": body.bind_password,
+                "serverUrl": server_url or "",
+                "bindDn": bind_dn or "",
+                "bindPassword": bind_password or "",
+                "allowSelfSigned": allow_self_signed,
                 "baseDn": base_dn,
-                "userSearchBase": user_search_base,
-                "userSearchFilter": body.user_search_filter,
-                "adminGroupDn": body.admin_group_dn or "",
-                "userGroupDn": body.user_group_dn or "",
-                "discoveredOus": discovered_ous,
-                "discoveredGroups": discovered_groups,
+                "userSearchBase": user_search_base or "",
+                "userSearchFilter": user_search_filter or "(|(sAMAccountName={username})(uid={username}))",
+                "adminGroupDn": admin_group_dn or "",
+                "userGroupDn": user_group_dn or "",
+                "discoveredOus": Json(discovered_ous),
+                "discoveredGroups": Json(discovered_groups),
             },
         },
     )
@@ -344,6 +438,7 @@ async def update_ldap_configuration(
     return LdapConfigResponse(
         server_url=config.serverUrl,
         bind_dn=config.bindDn,
+        allow_self_signed=config.allowSelfSigned,
         base_dn=config.baseDn,
         user_search_base=config.userSearchBase,
         user_search_filter=config.userSearchFilter,
@@ -364,6 +459,7 @@ async def test_ldap_connection(
         server_url=body.server_url,
         bind_dn=body.bind_dn,
         bind_password=body.bind_password,
+        allow_self_signed=body.allow_self_signed,
     )
 
     if result.success:

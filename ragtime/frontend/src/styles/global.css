@@ -211,6 +211,18 @@ select:focus {
   border-color: var(--color-accent-purple);
 }
 
+select option {
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  padding: 8px;
+}
+
+select option:hover,
+select option:checked {
+  background: var(--color-accent-purple);
+  color: #fff;
+}
+
 .row {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -785,6 +797,16 @@ input[type="password"]:focus {
   color: #fbbf24;
   font-size: 0.9rem;
   margin-top: 8px;
+}
+
+.success-text {
+  color: var(--color-success);
+  font-size: 0.9rem;
+}
+
+.error-text {
+  color: var(--color-error);
+  font-size: 0.9rem;
 }
 
 /* Ollama Connection UI */
@@ -2282,7 +2304,8 @@ textarea:focus {
 .chat-message-text {
   color: var(--color-text-primary);
   line-height: 1.5;
-  white-space: pre-wrap;
+  /* Use normal whitespace so markdown paragraph spacing is controlled by margins */
+  white-space: normal;
   word-break: break-word;
 }
 
@@ -2759,12 +2782,28 @@ textarea:focus {
 
 .markdown-content ul,
 .markdown-content ol {
-  margin: 0;
+  margin: 0.25em 0;
   padding-left: 1.5em;
 }
 
 .markdown-content li {
-  margin: 0;
+  margin: 0.1em 0;
+}
+
+/* Remove extra margin from paragraphs inside list items */
+.markdown-content li p {
+  margin: 0 !important;
+  margin-bottom: 0.15em !important;
+}
+
+.markdown-content li p:last-child {
+  margin-bottom: 0 !important;
+}
+
+/* Nested lists should have tighter spacing */
+.markdown-content li ul,
+.markdown-content li ol {
+  margin: 0.1em 0 0.1em 0;
 }
 
 .markdown-content blockquote {

@@ -43,6 +43,7 @@ export interface AuthStatus {
 export interface LdapConfig {
   server_url: string;
   bind_dn: string;
+  allow_self_signed: boolean;
   base_dn: string;
   user_search_base: string;
   user_search_filter: string;
@@ -56,6 +57,7 @@ export interface LdapDiscoverRequest {
   server_url: string;
   bind_dn: string;
   bind_password: string;
+  allow_self_signed?: boolean;
 }
 
 export interface LdapDiscoverResponse {
@@ -63,6 +65,19 @@ export interface LdapDiscoverResponse {
   base_dn?: string;
   user_ous: string[];
   groups: { dn: string; name: string }[];
+  error?: string;
+}
+
+export interface LdapBindDnLookupRequest {
+  server_url: string;
+  username: string;
+  password: string;
+}
+
+export interface LdapBindDnLookupResponse {
+  success: boolean;
+  bind_dn?: string;
+  display_name?: string;
   error?: string;
 }
 
