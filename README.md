@@ -58,10 +58,7 @@ OpenAI-compatible RAG API with LangChain tool calling for business intelligence 
    # API port (default: 8000)
    PORT=8000
 
-   # UI/Vite port (default: 8001)
-   API_PORT=8001
-
-   # API Key for external authentication (leave empty to disable)
+   # API Key for OpenAI-compatible endpoint authentication (leave empty to disable)
    # API_KEY=
 
    # CORS allowed origins (comma-separated, or * for all)
@@ -132,7 +129,6 @@ OpenAI-compatible RAG API with LangChain tool calling for business intelligence 
        restart: unless-stopped
        ports:
          - "${PORT:-8000}:8000"
-         - "${API_PORT:-8001}:${API_PORT:-8001}"
        env_file:
          - .env
        environment:
@@ -141,7 +137,6 @@ OpenAI-compatible RAG API with LangChain tool calling for business intelligence 
          # Production settings
          DEBUG_MODE: "false"
          SESSION_COOKIE_SECURE: "${SESSION_COOKIE_SECURE:-false}"
-         API_PORT: "${API_PORT:-8001}"
        volumes:
          # FAISS index data persistence
          - ./data:/app/data
