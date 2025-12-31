@@ -1,10 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '@/api';
-import { UploadForm, GitForm, JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, LoginPage } from '@/components';
+import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, LoginPage } from '@/components';
 import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, ToolConfig } from '@/types';
 import '@/styles/global.css';
 
-type SourceType = 'upload' | 'git';
 type ViewType = 'chat' | 'indexer' | 'tools' | 'settings';
 
 function getInitialView(): ViewType {
@@ -16,12 +15,6 @@ function getInitialView(): ViewType {
   return 'chat';
 }
 
-function getInitialSource(): SourceType {
-  const params = new URLSearchParams(window.location.search);
-  const source = params.get('source');
-  return source === 'git' ? 'git' : 'upload';
-}
-
 export function App() {
   // Auth state
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
@@ -30,7 +23,6 @@ export function App() {
 
   // App state
   const [activeView, setActiveView] = useState<ViewType>(getInitialView);
-  const [activeSource, setActiveSource] = useState<SourceType>(getInitialSource);
   const [jobs, setJobs] = useState<IndexJob[]>([]);
   const [indexes, setIndexes] = useState<IndexInfo[]>([]);
   const [jobsLoading, setJobsLoading] = useState(true);
@@ -96,12 +88,9 @@ export function App() {
   useEffect(() => {
     const params = new URLSearchParams();
     params.set('view', activeView);
-    if (activeView === 'indexer') {
-      params.set('source', activeSource);
-    }
     const newUrl = `${window.location.pathname}?${params.toString()}`;
     window.history.replaceState({}, '', newUrl);
-  }, [activeView, activeSource]);
+  }, [activeView]);
 
   const loadJobs = useCallback(async () => {
     try {
@@ -293,26 +282,11 @@ export function App() {
             onDelete={loadIndexes}
             onToggle={loadIndexes}
             onDescriptionUpdate={loadIndexes}
+            onJobCreated={handleJobCreated}
           />
 
           {/* Filesystem Indexes (pgvector) */}
           <FilesystemIndexPanel onJobsChanged={loadFilesystemJobs} />
-
-          {/* Create Document Index Card */}
-          <div className="card">
-            <div className="card-header">
-              <h2>Create Document Index</h2>
-              <button
-                className="link-btn"
-                onClick={() => setActiveSource(activeSource === 'upload' ? 'git' : 'upload')}
-              >
-                {activeSource === 'upload' ? 'Use Git Repository' : 'Upload Archive'}
-              </button>
-            </div>
-
-            {activeSource === 'upload' && <UploadForm onJobCreated={handleJobCreated} />}
-            {activeSource === 'git' && <GitForm onJobCreated={handleJobCreated} />}
-          </div>
 
           {/* Jobs Table */}
           <JobsTable

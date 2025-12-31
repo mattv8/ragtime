@@ -1028,6 +1028,36 @@ input[type="password"]:focus {
   margin-top: 8px;
 }
 
+/* API Info Box */
+.api-info-box {
+  background: var(--color-info-bg);
+  border: 1px solid var(--color-info-border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 20px;
+}
+
+.api-info-box strong {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--color-info);
+}
+
+.api-info-box p {
+  margin: 4px 0;
+  color: var(--color-text-primary);
+  font-size: 0.9rem;
+}
+
+.api-info-box code {
+  background: rgba(0, 0, 0, 0.3);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-family: 'Monaco', 'Consolas', monospace;
+  font-size: 0.85rem;
+  color: var(--color-accent-cyan);
+}
+
 .success-text {
   color: var(--color-success);
   font-size: 0.9rem;
@@ -3901,4 +3931,63 @@ textarea:focus {
 .logout-btn:hover {
   color: var(--color-error) !important;
   background: var(--color-error-bg) !important;
+}
+
+/* =============================================================================
+   Create Document Index Wizard
+   ============================================================================= */
+
+.create-wizard {
+  margin-top: 20px;
+  margin-bottom: 20px;
+  padding: 20px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+}
+
+.wizard-header {
+  margin-bottom: 20px;
+}
+
+.wizard-tabs {
+  display: inline-flex;
+  gap: 0;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+}
+
+.wizard-tab {
+  padding: 8px 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border: none;
+  color: var(--color-text-secondary);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: inherit;
+}
+
+.wizard-tab:not(:last-child) {
+  border-right: 1px solid var(--color-border);
+}
+
+.wizard-tab:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--color-text-primary);
+}
+
+.wizard-tab.active {
+  background: rgba(124, 58, 237, 0.2);
+  color: var(--color-text-primary);
+}
+
+.wizard-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--color-border);
 }
