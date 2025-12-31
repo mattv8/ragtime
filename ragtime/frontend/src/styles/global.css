@@ -768,6 +768,10 @@ select option:checked {
   margin-top: 4px;
 }
 
+.index-meta-pills + .index-meta-pills {
+  margin-top: 6px;
+}
+
 .meta-pill {
   display: inline-flex;
   align-items: center;
@@ -785,7 +789,7 @@ select option:checked {
   background: rgba(99, 102, 241, 0.15);
   border-color: rgba(99, 102, 241, 0.3);
   color: #a5b4fc;
-  max-width: 280px;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -795,6 +799,18 @@ select option:checked {
   background: rgba(34, 197, 94, 0.15);
   border-color: rgba(34, 197, 94, 0.3);
   color: #86efac;
+}
+
+.meta-pill.documents {
+  background: rgba(34, 197, 94, 0.15);
+  border-color: rgba(34, 197, 94, 0.3);
+  color: #86efac;
+}
+
+.meta-pill.size {
+  background: rgba(251, 191, 36, 0.15);
+  border-color: rgba(251, 191, 36, 0.3);
+  color: #fcd34d;
 }
 
 .meta-pill.embeddings {
@@ -2020,7 +2036,7 @@ input[type="password"]:focus {
 
 .wizard-card {
   max-width: 900px;
-  margin: 0 auto;
+  margin: 0 auto 24px auto;
 }
 
 .wizard-header {

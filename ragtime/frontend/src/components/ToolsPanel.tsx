@@ -112,19 +112,6 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
         </div>
       )}
 
-      {/* Show traditional test result only if no heartbeat available and tool is enabled */}
-      {!heartbeat && tool.enabled && tool.last_test_at && (
-        <div className={`tool-card-test-result ${tool.last_test_result ? 'success' : 'error'}`}>
-          <span className="test-icon">{tool.last_test_result ? '✓' : '✗'}</span>
-          <span>
-            {tool.last_test_result ? 'Connection OK' : tool.last_test_error || 'Connection failed'}
-          </span>
-          <span className="test-time">
-            {new Date(tool.last_test_at).toLocaleString()}
-          </span>
-        </div>
-      )}
-
       <div className="tool-card-meta">
         <span>Timeout: {tool.timeout}s</span>
         <span>Max results: {tool.max_results}</span>

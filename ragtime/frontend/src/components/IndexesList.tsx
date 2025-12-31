@@ -192,10 +192,15 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
           </div>
           <div className="index-info">
             <h3>{idx.name}</h3>
-            <div className="index-meta">
-              {idx.document_count} documents • {idx.size_mb} MB
-              {idx.last_modified && ` • Updated ${formatDate(idx.last_modified)}`}
-              {!idx.enabled && <span className="index-status-disabled"> • Excluded from RAG</span>}
+            <div className="index-meta-pills">
+              <span className="meta-pill documents">{idx.document_count} documents</span>
+              <span className="meta-pill size">{idx.size_mb} MB</span>
+              {idx.last_modified && (
+                <span className="meta-pill date" title={`Last updated: ${new Date(idx.last_modified).toLocaleString()}`}>
+                  {`Updated ${new Date(idx.last_modified).toLocaleString()}`}
+                </span>
+              )}
+              {!idx.enabled && <span className="meta-pill disabled">Excluded from RAG</span>}
             </div>
           </div>
           <div style={{ display: 'flex', gap: '8px' }}>

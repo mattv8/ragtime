@@ -70,23 +70,18 @@ function FilesystemIndexCard({
             <>
               <span className="meta-pill files">{stats.file_count} files</span>
               <span className="meta-pill embeddings">{stats.embedding_count} embeddings</span>
-              {stats.last_indexed && (
-                <span className="meta-pill date" title={`Last indexed: ${new Date(stats.last_indexed).toLocaleString()}`}>
-                  {new Date(stats.last_indexed).toLocaleDateString()}
-                </span>
-              )}
             </>
+          )}
+          {stats?.last_indexed && (
+            <span className="meta-pill date" title={`Last indexed: ${new Date(stats.last_indexed).toLocaleString()}`}>
+              {`Updated ${new Date(stats.last_indexed).toLocaleString()}`}
+            </span>
           )}
           {isActive && (
             <span className="meta-pill active">Indexing...</span>
           )}
           {!tool.enabled && <span className="meta-pill disabled">Excluded from RAG</span>}
         </div>
-
-        {/* Description */}
-        {tool.description && (
-          <p className="index-description">{tool.description}</p>
-        )}
       </div>
 
       <div className="index-actions">
