@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '@/api';
-import type { AppSettings, UpdateSettingsRequest, OllamaModel, LLMModel, AvailableModel, LdapConfig } from '@/types';
+import type { AppSettings, UpdateSettingsRequest, OllamaModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig } from '@/types';
 
 /**
  * Format a DN for display like Active Directory tree view.
@@ -56,6 +56,12 @@ export function SettingsPanel() {
   const [llmModelsError, setLlmModelsError] = useState<string | null>(null);
   const [llmModels, setLlmModels] = useState<LLMModel[]>([]);
   const [llmModelsLoaded, setLlmModelsLoaded] = useState(false);
+
+  // OpenAI embedding model fetching state
+  const [embeddingModelsFetching, setEmbeddingModelsFetching] = useState(false);
+  const [embeddingModelsError, setEmbeddingModelsError] = useState<string | null>(null);
+  const [embeddingModels, setEmbeddingModels] = useState<EmbeddingModel[]>([]);
+  const [embeddingModelsLoaded, setEmbeddingModelsLoaded] = useState(false);
 
   // Model filter modal state
   const [showModelFilterModal, setShowModelFilterModal] = useState(false);
@@ -170,6 +176,48 @@ export function SettingsPanel() {
     }
   }, [formData.llm_model]);
 
+  // Fetch embedding models from OpenAI API
+  const fetchEmbeddingModels = useCallback(async (apiKey: string) => {
+    if (!apiKey || apiKey.length < 10) {
+      setEmbeddingModelsError('Please enter a valid OpenAI API key first');
+      return;
+    }
+
+    setEmbeddingModelsFetching(true);
+    setEmbeddingModelsError(null);
+    setEmbeddingModels([]);
+    setEmbeddingModelsLoaded(false);
+
+    try {
+      const response = await api.fetchEmbeddingModels({
+        provider: 'openai',
+        api_key: apiKey,
+      });
+
+      if (response.success) {
+        setEmbeddingModels(response.models);
+        setEmbeddingModelsLoaded(true);
+        // Auto-select the default model if none is currently set or the current one isn't in the list
+        if (response.default_model) {
+          const currentModel = formData.embedding_model;
+          const modelExists = response.models.some((m) => m.id === currentModel);
+          if (!currentModel || !modelExists) {
+            setFormData((prev) => ({
+              ...prev,
+              embedding_model: response.default_model,
+            }));
+          }
+        }
+      } else {
+        setEmbeddingModelsError(response.message);
+      }
+    } catch (err) {
+      setEmbeddingModelsError(err instanceof Error ? err.message : 'Failed to fetch embedding models');
+    } finally {
+      setEmbeddingModelsFetching(false);
+    }
+  }, [formData.embedding_model]);
+
   // Open model filter modal and load all available models
   const openModelFilterModal = useCallback(async () => {
     setModelsLoading(true);
@@ -239,6 +287,7 @@ export function SettingsPanel() {
         // Embedding settings
         embedding_provider: data.embedding_provider,
         embedding_model: data.embedding_model,
+        embedding_dimensions: data.embedding_dimensions,
         ollama_protocol: data.ollama_protocol,
         ollama_host: data.ollama_host,
         ollama_port: data.ollama_port,
@@ -413,9 +462,10 @@ export function SettingsPanel() {
     setError(null);
 
     try {
-      const dataToSave = {
+      const dataToSave: UpdateSettingsRequest = {
         embedding_provider: formData.embedding_provider,
         embedding_model: formData.embedding_model,
+        embedding_dimensions: formData.embedding_dimensions ?? null,
         ollama_protocol: formData.ollama_protocol,
         ollama_host: formData.ollama_host,
         ollama_port: formData.ollama_port,
@@ -475,9 +525,215 @@ export function SettingsPanel() {
       {success && <div className="success-banner">{success}</div>}
 
       <form onSubmit={handleSubmit}>
-        {/* FAISS Embedding Configuration */}
+        {/* LLM Configuration */}
         <fieldset>
-          <legend>FAISS Embedding Configuration</legend>
+          <legend>LLM Configuration (Chat/RAG)</legend>
+          <p className="fieldset-help">
+            Configure the language model used for answering questions and tool calls.
+          </p>
+
+          <div className="form-group">
+            <label>Provider</label>
+            <select
+              value={formData.llm_provider || 'openai'}
+              onChange={(e) => {
+                const newProvider = e.target.value as 'openai' | 'anthropic';
+                setFormData({
+                  ...formData,
+                  llm_provider: newProvider,
+                  llm_model:
+                    newProvider === 'anthropic'
+                      ? 'claude-sonnet-4-20250514'
+                      : 'gpt-4o',
+                });
+                // Reset LLM models when switching providers
+                setLlmModels([]);
+                setLlmModelsError(null);
+                setLlmModelsLoaded(false);
+              }}
+            >
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic (Claude)</option>
+            </select>
+          </div>
+
+          {/* API Key - show appropriate one based on provider */}
+          {formData.llm_provider === 'openai' || !formData.llm_provider ? (
+            <div className="form-group">
+              <label>OpenAI API Key</label>
+              <div className="input-with-button">
+                <input
+                  type="password"
+                  value={formData.openai_api_key || ''}
+                  onChange={(e) => {
+                    setFormData({ ...formData, openai_api_key: e.target.value });
+                    // Reset models when API key changes
+                    setLlmModels([]);
+                    setLlmModelsError(null);
+                    setLlmModelsLoaded(false);
+                    // Also reset embedding models since they use the same key
+                    setEmbeddingModels([]);
+                    setEmbeddingModelsError(null);
+                    setEmbeddingModelsLoaded(false);
+                  }}
+                  placeholder="sk-..."
+                />
+                <button
+                  type="button"
+                  className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'openai' ? 'btn-connected' : ''}`}
+                  onClick={() => fetchLlmModels('openai', formData.openai_api_key || '')}
+                  disabled={llmModelsFetching || !formData.openai_api_key}
+                >
+                  {llmModelsFetching ? 'Fetching...' : llmModelsLoaded && formData.llm_provider === 'openai' ? 'Loaded' : 'Fetch Models'}
+                </button>
+              </div>
+              {llmModelsError && formData.llm_provider === 'openai' && (
+                <p className="field-error">{llmModelsError}</p>
+              )}
+              <p className="field-help">
+                Required for OpenAI LLM and optionally for OpenAI embeddings.
+              </p>
+            </div>
+          ) : (
+            <div className="form-group">
+              <label>Anthropic API Key</label>
+              <div className="input-with-button">
+                <input
+                  type="password"
+                  value={formData.anthropic_api_key || ''}
+                  onChange={(e) => {
+                    setFormData({ ...formData, anthropic_api_key: e.target.value });
+                    // Reset models when API key changes
+                    setLlmModels([]);
+                    setLlmModelsError(null);
+                    setLlmModelsLoaded(false);
+                  }}
+                  placeholder="sk-ant-..."
+                />
+                <button
+                  type="button"
+                  className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'anthropic' ? 'btn-connected' : ''}`}
+                  onClick={() => fetchLlmModels('anthropic', formData.anthropic_api_key || '')}
+                  disabled={llmModelsFetching || !formData.anthropic_api_key}
+                >
+                  {llmModelsFetching ? 'Fetching...' : llmModelsLoaded && formData.llm_provider === 'anthropic' ? 'Loaded' : 'Fetch Models'}
+                </button>
+              </div>
+              {llmModelsError && formData.llm_provider === 'anthropic' && (
+                <p className="field-error">{llmModelsError}</p>
+              )}
+            </div>
+          )}
+
+          {/* Model Selection */}
+          <div className="form-group">
+            <label>Model</label>
+            {llmModelsLoaded && llmModels.length > 0 ? (
+              <select
+                value={formData.llm_model || ''}
+                onChange={(e) =>
+                  setFormData({ ...formData, llm_model: e.target.value })
+                }
+              >
+                <option value="">Select a model...</option>
+                {llmModels.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={formData.llm_model || ''}
+                onChange={(e) =>
+                  setFormData({ ...formData, llm_model: e.target.value })
+                }
+                placeholder={
+                  formData.llm_provider === 'anthropic'
+                    ? 'claude-sonnet-4-20250514'
+                    : 'gpt-4o'
+                }
+              />
+            )}
+            <p className="field-help">
+              {llmModelsLoaded
+                ? 'Select the model that will be used for chat completions and RAG responses.'
+                : 'This model ID is sent to the provider API for all chat/RAG requests. Click "Fetch Models" to see available options.'}
+            </p>
+          </div>
+
+          {/* Show OpenAI key field for embeddings if using Anthropic for LLM */}
+          {formData.llm_provider === 'anthropic' && formData.embedding_provider === 'openai' && (
+            <div className="form-group">
+              <label>OpenAI API Key (for embeddings)</label>
+              <input
+                type="password"
+                value={formData.openai_api_key || ''}
+                onChange={(e) => {
+                  setFormData({ ...formData, openai_api_key: e.target.value });
+                  // Reset embedding models when key changes
+                  setEmbeddingModels([]);
+                  setEmbeddingModelsError(null);
+                  setEmbeddingModelsLoaded(false);
+                }}
+                placeholder="sk-..."
+              />
+              <p className="field-help">
+                Required for OpenAI embeddings when using Anthropic for LLM.
+              </p>
+            </div>
+          )}
+
+          {/* Chat Model Filter */}
+          <div className="form-group">
+            <label>Chat Model Filter</label>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={openModelFilterModal}
+            >
+              Configure Allowed Models
+            </button>
+            <p className="field-help">
+              Limit which models appear in the Chat view dropdown.
+            </p>
+          </div>
+
+          <div className="form-group">
+            <label>Max Tool Iterations</label>
+            <input
+              type="number"
+              min={1}
+              max={50}
+              value={formData.max_iterations ?? 15}
+              onChange={(e) =>
+                setFormData({
+                  ...formData,
+                  max_iterations: Math.max(1, Math.min(50, parseInt(e.target.value, 10) || 1)),
+                })
+              }
+            />
+            <p className="field-help">
+              Maximum number of agent tool-calling steps before stopping. Lower to keep runs short; higher to allow deeper reasoning.
+            </p>
+          </div>
+
+          <div className="form-group" style={{ marginTop: '1rem' }}>
+            <button
+              type="button"
+              className="btn"
+              onClick={handleSaveLlm}
+              disabled={llmSaving}
+            >
+              {llmSaving ? 'Saving...' : 'Save LLM Configuration'}
+            </button>
+          </div>
+        </fieldset>
+
+        {/* Embedding Configuration */}
+        <fieldset>
+          <legend>Embedding Configuration</legend>
           <p className="fieldset-help">
             Configure how document embeddings are generated for FAISS indexes.
           </p>
@@ -504,11 +760,20 @@ export function SettingsPanel() {
                     setOllamaError(null);
                     setOllamaModels([]);
                   }
+                  // Reset embedding models when switching away from OpenAI
+                  if (newProvider !== 'openai') {
+                    setEmbeddingModels([]);
+                    setEmbeddingModelsError(null);
+                    setEmbeddingModelsLoaded(false);
+                  }
                 }}
               >
                 <option value="ollama">Ollama</option>
                 <option value="openai">OpenAI</option>
               </select>
+              <p className="field-help">
+                Note: Anthropic does not offer embedding models. Use Ollama or OpenAI for document embeddings.
+              </p>
             </div>
           </div>
 
@@ -640,18 +905,73 @@ export function SettingsPanel() {
             <>
               <div className="form-group">
                 <label>Embedding Model</label>
-                <input
-                  type="text"
-                  value={formData.embedding_model || ''}
-                  onChange={(e) =>
-                    setFormData({ ...formData, embedding_model: e.target.value })
-                  }
-                  placeholder="text-embedding-3-small"
-                />
+                <div className="input-with-button">
+                  {embeddingModelsLoaded && embeddingModels.length > 0 ? (
+                    <select
+                      value={formData.embedding_model || ''}
+                      onChange={(e) =>
+                        setFormData({ ...formData, embedding_model: e.target.value })
+                      }
+                    >
+                      <option value="">Select a model...</option>
+                      {embeddingModels.map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      value={formData.embedding_model || ''}
+                      onChange={(e) =>
+                        setFormData({ ...formData, embedding_model: e.target.value })
+                      }
+                      placeholder="text-embedding-3-small"
+                    />
+                  )}
+                  <button
+                    type="button"
+                    className={`btn btn-test ${embeddingModelsLoaded ? 'btn-connected' : ''}`}
+                    onClick={() => fetchEmbeddingModels(formData.openai_api_key || '')}
+                    disabled={embeddingModelsFetching || !formData.openai_api_key}
+                  >
+                    {embeddingModelsFetching ? 'Fetching...' : embeddingModelsLoaded ? 'Loaded' : 'Fetch Models'}
+                  </button>
+                </div>
+                {embeddingModelsError && (
+                  <p className="field-error">{embeddingModelsError}</p>
+                )}
+                <p className="field-help">
+                  {embeddingModelsLoaded
+                    ? 'Select an embedding model from OpenAI (embedding models only).'
+                    : 'Requires OpenAI API key (configured above). Click "Fetch Models" to see available embedding models.'}
+                </p>
               </div>
-              <p className="field-help">
-                Requires OpenAI API key (configured below in LLM settings).
-              </p>
+
+              {/* Embedding Dimensions (only for text-embedding-3-* models) */}
+              {formData.embedding_model?.startsWith('text-embedding-3') && (
+                <div className="form-group">
+                  <label>Embedding Dimensions</label>
+                  <input
+                    type="number"
+                    min="256"
+                    max="3072"
+                    step="1"
+                    value={formData.embedding_dimensions ?? ''}
+                    onChange={(e) => {
+                      const val = e.target.value ? parseInt(e.target.value, 10) : null;
+                      setFormData({ ...formData, embedding_dimensions: val });
+                    }}
+                    placeholder="Default (model max)"
+                  />
+                  <p className="field-help">
+                    Controls the output size of embeddings. Lower values = faster search and less storage,
+                    but slightly reduced accuracy. <strong>Recommended: 1536</strong> for best balance.
+                    Values over 2000 disable fast indexed search (pgvector limit). Changing this requires a full re-index of all filesystem indexes.
+                  </p>
+                </div>
+              )}
             </>
           )}
 
@@ -663,204 +983,6 @@ export function SettingsPanel() {
               disabled={embeddingSaving}
             >
               {embeddingSaving ? 'Saving...' : 'Save Embedding Configuration'}
-            </button>
-          </div>
-        </fieldset>
-
-        {/* LLM Configuration */}
-        <fieldset>
-          <legend>LLM Configuration (Chat/RAG)</legend>
-          <p className="fieldset-help">
-            Configure the language model used for answering questions and tool calls.
-          </p>
-
-          <div className="form-group">
-            <label>Provider</label>
-            <select
-              value={formData.llm_provider || 'openai'}
-              onChange={(e) => {
-                const newProvider = e.target.value as 'openai' | 'anthropic';
-                setFormData({
-                  ...formData,
-                  llm_provider: newProvider,
-                  llm_model:
-                    newProvider === 'anthropic'
-                      ? 'claude-sonnet-4-20250514'
-                      : 'gpt-4o',
-                });
-                // Reset LLM models when switching providers
-                setLlmModels([]);
-                setLlmModelsError(null);
-                setLlmModelsLoaded(false);
-              }}
-            >
-              <option value="openai">OpenAI</option>
-              <option value="anthropic">Anthropic (Claude)</option>
-            </select>
-          </div>
-
-          {/* API Key - show appropriate one based on provider */}
-          {formData.llm_provider === 'openai' || !formData.llm_provider ? (
-            <div className="form-group">
-              <label>OpenAI API Key</label>
-              <div className="input-with-button">
-                <input
-                  type="password"
-                  value={formData.openai_api_key || ''}
-                  onChange={(e) => {
-                    setFormData({ ...formData, openai_api_key: e.target.value });
-                    // Reset models when API key changes
-                    setLlmModels([]);
-                    setLlmModelsError(null);
-                    setLlmModelsLoaded(false);
-                  }}
-                  placeholder="sk-..."
-                />
-                <button
-                  type="button"
-                  className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'openai' ? 'btn-connected' : ''}`}
-                  onClick={() => fetchLlmModels('openai', formData.openai_api_key || '')}
-                  disabled={llmModelsFetching || !formData.openai_api_key}
-                >
-                  {llmModelsFetching ? 'Fetching...' : llmModelsLoaded && formData.llm_provider === 'openai' ? 'Loaded' : 'Fetch Models'}
-                </button>
-              </div>
-              {llmModelsError && formData.llm_provider === 'openai' && (
-                <p className="field-error">{llmModelsError}</p>
-              )}
-              <p className="field-help">
-                Required for OpenAI LLM and optionally for OpenAI embeddings.
-              </p>
-            </div>
-          ) : (
-            <div className="form-group">
-              <label>Anthropic API Key</label>
-              <div className="input-with-button">
-                <input
-                  type="password"
-                  value={formData.anthropic_api_key || ''}
-                  onChange={(e) => {
-                    setFormData({ ...formData, anthropic_api_key: e.target.value });
-                    // Reset models when API key changes
-                    setLlmModels([]);
-                    setLlmModelsError(null);
-                    setLlmModelsLoaded(false);
-                  }}
-                  placeholder="sk-ant-..."
-                />
-                <button
-                  type="button"
-                  className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'anthropic' ? 'btn-connected' : ''}`}
-                  onClick={() => fetchLlmModels('anthropic', formData.anthropic_api_key || '')}
-                  disabled={llmModelsFetching || !formData.anthropic_api_key}
-                >
-                  {llmModelsFetching ? 'Fetching...' : llmModelsLoaded && formData.llm_provider === 'anthropic' ? 'Loaded' : 'Fetch Models'}
-                </button>
-              </div>
-              {llmModelsError && formData.llm_provider === 'anthropic' && (
-                <p className="field-error">{llmModelsError}</p>
-              )}
-            </div>
-          )}
-
-          {/* Model Selection */}
-          <div className="form-group">
-            <label>Model</label>
-            {llmModelsLoaded && llmModels.length > 0 ? (
-              <select
-                value={formData.llm_model || ''}
-                onChange={(e) =>
-                  setFormData({ ...formData, llm_model: e.target.value })
-                }
-              >
-                <option value="">Select a model...</option>
-                {llmModels.map((model) => (
-                  <option key={model.id} value={model.id}>
-                    {model.name}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                type="text"
-                value={formData.llm_model || ''}
-                onChange={(e) =>
-                  setFormData({ ...formData, llm_model: e.target.value })
-                }
-                placeholder={
-                  formData.llm_provider === 'anthropic'
-                    ? 'claude-sonnet-4-20250514'
-                    : 'gpt-4o'
-                }
-              />
-            )}
-            <p className="field-help">
-              {llmModelsLoaded
-                ? 'Select a model from your provider.'
-                : 'Click "Fetch Models" above to see available models, or enter manually.'}
-            </p>
-          </div>
-
-          {/* Show OpenAI key field for embeddings if using Anthropic for LLM */}
-          {formData.llm_provider === 'anthropic' && formData.embedding_provider === 'openai' && (
-            <div className="form-group">
-              <label>OpenAI API Key (for embeddings)</label>
-              <input
-                type="password"
-                value={formData.openai_api_key || ''}
-                onChange={(e) =>
-                  setFormData({ ...formData, openai_api_key: e.target.value })
-                }
-                placeholder="sk-..."
-              />
-              <p className="field-help">
-                Required for OpenAI embeddings when using Anthropic for LLM.
-              </p>
-            </div>
-          )}
-
-          {/* Chat Model Filter */}
-          <div className="form-group">
-            <label>Chat Model Filter</label>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={openModelFilterModal}
-            >
-              Configure Allowed Models
-            </button>
-            <p className="field-help">
-              Limit which models appear in the Chat view dropdown.
-            </p>
-          </div>
-
-          <div className="form-group">
-            <label>Max Tool Iterations</label>
-            <input
-              type="number"
-              min={1}
-              max={50}
-              value={formData.max_iterations ?? 15}
-              onChange={(e) =>
-                setFormData({
-                  ...formData,
-                  max_iterations: Math.max(1, Math.min(50, parseInt(e.target.value, 10) || 1)),
-                })
-              }
-            />
-            <p className="field-help">
-              Maximum number of agent tool-calling steps before stopping. Lower to keep runs short; higher to allow deeper reasoning.
-            </p>
-          </div>
-
-          <div className="form-group" style={{ marginTop: '1rem' }}>
-            <button
-              type="button"
-              className="btn"
-              onClick={handleSaveLlm}
-              disabled={llmSaving}
-            >
-              {llmSaving ? 'Saving...' : 'Save LLM Configuration'}
             </button>
           </div>
         </fieldset>

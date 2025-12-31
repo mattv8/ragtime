@@ -35,12 +35,37 @@ my_tool_tool = StructuredTool.from_function(
 
 ## Prisma
 
-Schema: `prisma/schema.prisma`. Tables: `User`, `Session`, `LdapConfig`, `Conversation`, `IndexJob`, `IndexConfig`, `IndexMetadata`, `AppSettings`, `ToolConfig`.
+Schema: `prisma/schema.prisma`.
 
 ```bash
 python -m prisma generate  # After schema changes
-python -m prisma db push   # Dev only
+python -m prisma db push   # Dev only - applies schema directly
 ```
+
+### Migrations
+
+Schema changes require migrations for production deployment:
+
+1. **Before creating a new migration**, check for uncommitted migrations:
+   ```bash
+   git status prisma/migrations/
+   ```
+   If an uncommitted migration exists, add your changes to that migration's SQL file instead of creating a new one.
+
+2. **Creating migrations** (dev stack must be running):
+   ```bash
+   docker exec ragtime-dev python -m prisma migrate dev --name descriptive_name
+   ```
+
+3. **Manual migration** (when prisma migrate dev fails or for complex DDL):
+   - Create folder: `prisma/migrations/YYYYMMDDHHMMSS_name/`
+   - Add `migration.sql` with the required DDL statements
+   - Test by running: `docker exec ragtime-dev python -m prisma migrate deploy`
+
+4. **Production deployment**:
+   ```bash
+   docker exec ragtime python -m prisma migrate deploy
+   ```
 
 ## Authentication
 

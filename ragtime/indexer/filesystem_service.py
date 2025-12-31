@@ -38,6 +38,40 @@ class FilesystemIndexerService:
         self._cancellation_flags: Dict[str, bool] = {}  # job_id -> should_cancel
         self._pgvector_validated = False
 
+    async def cleanup_orphaned_jobs(self) -> int:
+        """
+        Clean up any jobs left in pending/indexing state from a previous run.
+
+        This handles cases where the server was restarted while indexing was
+        in progress. Those jobs will never complete, so mark them as failed.
+
+        Returns the number of orphaned jobs cleaned up.
+        """
+        try:
+            db = await get_db()
+
+            # Find all jobs stuck in pending or indexing state
+            result = await db.execute_raw(
+                """
+                UPDATE filesystem_index_jobs
+                SET status = 'failed',
+                    error_message = 'Job interrupted by server restart',
+                    completed_at = NOW()
+                WHERE status IN ('pending', 'indexing')
+                RETURNING id
+                """
+            )
+
+            # result is the count of updated rows
+            count = result if isinstance(result, int) else 0
+            if count > 0:
+                logger.info(f"Cleaned up {count} orphaned filesystem indexing job(s)")
+            return count
+
+        except Exception as e:
+            logger.warning(f"Failed to clean up orphaned jobs: {e}")
+            return 0
+
     async def ensure_pgvector_extension(self) -> bool:
         """
         Ensure pgvector extension is installed in the database.
@@ -80,38 +114,93 @@ class FilesystemIndexerService:
 
     async def ensure_embedding_column(self, embedding_dim: int = 1536) -> bool:
         """
-        Ensure the embedding column exists with correct dimensions.
+        Ensure the embedding column exists with the expected dimension.
 
-        pgvector columns need to be added via raw SQL since Prisma
-        doesn't support the vector type natively.
+        If the column exists but the dimension changed (e.g., provider/model swap),
+        alter the column and rebuild the index to match the new size.
+
+        Note: pgvector has a 2000-dimension limit for both IVFFlat and HNSW indexes.
+        For embeddings > 2000 dimensions, we skip index creation and use exact search.
         """
         try:
             db = await get_db()
 
-            # Check if embedding column exists
+            # Inspect existing column and its dimension (atttypmod = dims + 4 for vector)
             result = await db.query_raw("""
-                SELECT column_name, udt_name
-                FROM information_schema.columns
-                WHERE table_name = 'filesystem_embeddings'
-                AND column_name = 'embedding'
+                SELECT a.atttypmod AS typmod
+                FROM pg_attribute a
+                JOIN pg_class c ON a.attrelid = c.oid
+                JOIN pg_namespace n ON c.relnamespace = n.oid
+                WHERE c.relname = 'filesystem_embeddings'
+                  AND n.nspname = 'public'
+                  AND a.attname = 'embedding'
+                  AND a.attnum > 0
+                  AND NOT a.attisdropped
             """)
 
+            current_dim: Optional[int] = None
+            if result:
+                typmod = result[0].get("typmod")
+                if isinstance(typmod, int) and typmod > 4:
+                    current_dim = typmod - 4
+
+            dimension_changed = current_dim is not None and current_dim != embedding_dim
+
             if not result:
-                # Add embedding column
                 logger.info(f"Adding embedding column (vector({embedding_dim}))")
                 await db.execute_raw(f"""
                     ALTER TABLE filesystem_embeddings
                     ADD COLUMN IF NOT EXISTS embedding vector({embedding_dim})
                 """)
+            elif dimension_changed:
+                logger.info(
+                    f"Updating embedding column dimension {current_dim} -> {embedding_dim}"
+                )
+                # Drop old index before altering column
+                await db.execute_raw(
+                    "DROP INDEX IF EXISTS filesystem_embeddings_embedding_idx"
+                )
+                await db.execute_raw(
+                    f"ALTER TABLE filesystem_embeddings "
+                    f"ALTER COLUMN embedding TYPE vector({embedding_dim})"
+                )
 
-                # Create index for similarity search
+            # pgvector max dimension for ANN indexes is 2000
+            # For higher dimensions, skip indexing and use exact (sequential) search
+            if embedding_dim > 2000:
+                logger.warning(
+                    f"Embedding dimension {embedding_dim} exceeds pgvector's 2000-dim index limit. "
+                    "Using exact (non-indexed) search which may be slower for large datasets. "
+                    "To enable fast indexed search, set 'Embedding Dimensions' to 1536 or less "
+                    "in Settings (OpenAI text-embedding-3-* models support dimension reduction)."
+                )
+                # Drop any existing index since it's incompatible
+                await db.execute_raw(
+                    "DROP INDEX IF EXISTS filesystem_embeddings_embedding_idx"
+                )
+                return True
+
+            # Check if index exists
+            index_info = await db.query_raw("""
+                SELECT am.amname AS index_type
+                FROM pg_index i
+                JOIN pg_class c ON i.indexrelid = c.oid
+                JOIN pg_am am ON c.relam = am.oid
+                WHERE c.relname = 'filesystem_embeddings_embedding_idx'
+            """)
+
+            # Recreate index if dimension changed or no index exists
+            if dimension_changed or not index_info:
+                await db.execute_raw(
+                    "DROP INDEX IF EXISTS filesystem_embeddings_embedding_idx"
+                )
+                logger.info(f"Creating IVFFlat index for {embedding_dim}-dim embeddings")
                 await db.execute_raw("""
-                    CREATE INDEX IF NOT EXISTS filesystem_embeddings_embedding_idx
+                    CREATE INDEX filesystem_embeddings_embedding_idx
                     ON filesystem_embeddings
                     USING ivfflat (embedding vector_cosine_ops)
                     WITH (lists = 100)
                 """)
-                logger.info("Embedding column and index created successfully")
 
             return True
 
@@ -507,7 +596,11 @@ class FilesystemIndexerService:
         # Ensure embedding column exists with correct dimensions
         if embeddings:
             embedding_dim = len(embeddings[0])
-            await self.ensure_embedding_column(embedding_dim)
+            success = await self.ensure_embedding_column(embedding_dim)
+            if not success:
+                raise RuntimeError(
+                    f"Failed to ensure embedding column with dimension {embedding_dim}"
+                )
 
         # Serialize metadata to JSON string
         metadata_json = json.dumps(metadata).replace("'", "''")
@@ -551,6 +644,37 @@ class FilesystemIndexerService:
             # Get app settings for embeddings
             from ragtime.core.app_settings import get_app_settings
             app_settings = await get_app_settings()
+
+            # Check for embedding configuration mismatch
+            from ragtime.indexer.repository import IndexerRepository
+            repo = IndexerRepository()
+            settings = await repo.get_settings()
+
+            current_config_hash = settings.get_embedding_config_hash()
+            tracking_needs_update = (
+                settings.embedding_dimension is None
+                or settings.embedding_config_hash is None
+            )
+
+            if settings.embedding_config_hash is not None:
+                if settings.embedding_config_hash != current_config_hash:
+                    # Mismatch detected - require full reindex
+                    if not full_reindex:
+                        job.status = FilesystemIndexStatus.FAILED
+                        job.completed_at = datetime.utcnow()
+                        job.error_message = (
+                            f"Embedding configuration mismatch: indexes were created with "
+                            f"'{settings.embedding_config_hash}' but current config is "
+                            f"'{current_config_hash}'. A full re-index is required. "
+                            "Use the 'Full Re-index' button to rebuild all embeddings."
+                        )
+                        await self._update_job(job)
+                        logger.error(job.error_message)
+                        return
+                    logger.warning(
+                        f"Full re-index with config change: {settings.embedding_config_hash} -> {current_config_hash}"
+                    )
+                    tracking_needs_update = True
 
             # Initialize embeddings
             embeddings = await self._get_embeddings(app_settings)
@@ -598,7 +722,8 @@ class FilesystemIndexerService:
                     if not full_reindex and existing_meta and existing_meta.file_hash == current_hash:
                         # File unchanged, skip
                         job.skipped_files += 1
-                        if job.skipped_files % 100 == 0:
+                        # Update progress every 10 skipped files (they're fast)
+                        if job.skipped_files % 10 == 0:
                             await self._update_job(job)
                             await asyncio.sleep(0)  # Yield on skip updates too
                         continue
@@ -608,6 +733,7 @@ class FilesystemIndexerService:
                     if not chunks:
                         # No content extracted - count as skipped (empty/unparseable file)
                         job.skipped_files += 1
+                        await self._update_job(job)
                         await asyncio.sleep(0)
                         continue
 
@@ -619,17 +745,52 @@ class FilesystemIndexerService:
                         embeddings.embed_documents, chunks
                     )
 
+                    # Validate embedding dimension against stored tracking
+                    if chunk_embeddings:
+                        current_dim = len(chunk_embeddings[0])
+                        if (
+                            settings.embedding_dimension is not None
+                            and settings.embedding_dimension != current_dim
+                        ):
+                            if not full_reindex:
+                                job.status = FilesystemIndexStatus.FAILED
+                                job.error_message = (
+                                    "Embedding dimension changed. A full re-index is required to "
+                                    "rebuild embeddings with the new provider/model."
+                                )
+                                job.completed_at = datetime.utcnow()
+                                await self._update_job(job)
+                                logger.error(job.error_message)
+                                return
+                            logger.warning(
+                                f"Embedding dimension changed {settings.embedding_dimension} -> {current_dim}; "
+                                "continuing full re-index"
+                            )
+                            settings.embedding_dimension = current_dim
+                            settings.embedding_config_hash = current_config_hash
+                            tracking_needs_update = True
+
                     # Yield to event loop to keep server responsive
                     await asyncio.sleep(0)
 
                     # Insert new embeddings
-                    await self._insert_embeddings(
+                    inserted = await self._insert_embeddings(
                         index_name=config.index_name,
                         file_path=rel_path,
                         chunks=chunks,
                         embeddings=chunk_embeddings,
                         metadata={"source": rel_path},
                     )
+
+                    # After first successful insert, record embedding dimension and config hash
+                    if inserted > 0 and chunk_embeddings and tracking_needs_update:
+                        await repo.update_embedding_tracking(
+                            dimension=len(chunk_embeddings[0]),
+                            config_hash=current_config_hash,
+                        )
+                        tracking_needs_update = False
+                        settings.embedding_dimension = len(chunk_embeddings[0])
+                        settings.embedding_config_hash = current_config_hash
 
                     # Update file metadata
                     file_stat = file_path.stat()
@@ -647,11 +808,13 @@ class FilesystemIndexerService:
                     job.processed_chunks += len(chunks)
                     job.total_chunks += len(chunks)
 
+                    # Update job progress in database after each file
+                    await self._update_job(job)
+
                     # Yield to event loop after each file to keep server responsive
                     await asyncio.sleep(0)
 
                     if job.processed_files % 10 == 0:
-                        await self._update_job(job)
                         logger.info(
                             f"Processed {job.processed_files}/{job.total_files} files, "
                             f"skipped {job.skipped_files} unchanged"
@@ -688,14 +851,20 @@ class FilesystemIndexerService:
     async def _update_tool_config_last_indexed(self, tool_config_id: str) -> None:
         """Update the tool config with last indexed timestamp."""
         try:
+            import json
+            from prisma import Json
             db = await get_db()
             tool_config = await db.toolconfig.find_unique(where={"id": tool_config_id})
             if tool_config:
-                connection_config = dict(tool_config.connectionConfig)  # type: ignore
+                # connectionConfig is stored as JSON string, parse it
+                if isinstance(tool_config.connectionConfig, str):
+                    connection_config = json.loads(tool_config.connectionConfig)
+                else:
+                    connection_config = dict(tool_config.connectionConfig)  # type: ignore
                 connection_config["last_indexed_at"] = datetime.utcnow().isoformat()
                 await db.toolconfig.update(
                     where={"id": tool_config_id},
-                    data={"connectionConfig": connection_config}
+                    data={"connectionConfig": Json(connection_config)}
                 )
         except Exception as e:
             logger.warning(f"Failed to update last_indexed_at: {e}")
@@ -704,6 +873,7 @@ class FilesystemIndexerService:
         """Get the configured embedding model based on app settings."""
         provider = app_settings.get("embedding_provider", "ollama").lower()
         model = app_settings.get("embedding_model", "nomic-embed-text")
+        dimensions = app_settings.get("embedding_dimensions")
 
         if provider == "ollama":
             from langchain_ollama import OllamaEmbeddings
@@ -718,7 +888,12 @@ class FilesystemIndexerService:
                 raise ValueError(
                     "OpenAI embeddings selected but no API key configured in Settings"
                 )
-            return OpenAIEmbeddings(model=model, api_key=api_key)
+            # Pass dimensions for text-embedding-3-* models (supports MRL)
+            kwargs = {"model": model, "api_key": api_key}
+            if dimensions and model.startswith("text-embedding-3"):
+                kwargs["dimensions"] = dimensions
+                logger.info(f"Using OpenAI embeddings with {dimensions} dimensions")
+            return OpenAIEmbeddings(**kwargs)
         else:
             raise ValueError(f"Unknown embedding provider: {provider}")
 

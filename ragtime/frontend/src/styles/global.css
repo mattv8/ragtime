@@ -499,6 +499,8 @@ select option:checked {
   justify-content: space-between;
   align-items: center;
   font-size: 0.75rem;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 
 .progress-phase {
@@ -508,6 +510,7 @@ select option:checked {
 
 .progress-stats {
   color: var(--color-text-secondary);
+  white-space: nowrap;
 }
 
 .progress-complete {

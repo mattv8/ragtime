@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends, Body
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel, Field
 
@@ -283,20 +283,89 @@ async def get_settings(_user: User = Depends(require_admin)):
     return await repository.get_settings()
 
 
-@router.put("/settings", response_model=AppSettings, tags=["Settings"])
+class UpdateSettingsResponse(BaseModel):
+    """Response from settings update including embedding warnings."""
+    settings: AppSettings
+    embedding_warning: Optional[str] = None
+
+
+@router.put("/settings", response_model=UpdateSettingsResponse, tags=["Settings"])
 async def update_settings(request: UpdateSettingsRequest, _user: User = Depends(require_admin)):
-    """Update application settings. Admin only."""
+    """Update application settings. Admin only.
+
+    Returns a warning if the embedding provider or model was changed and
+    existing filesystem indexes will need a full re-index.
+    """
     from ragtime.core.app_settings import invalidate_settings_cache
     from ragtime.rag import rag
 
     updates = request.model_dump(exclude_unset=True)
+
+    # Check if embedding config is changing
+    current_settings = await repository.get_settings()
+    old_config_hash = current_settings.get_embedding_config_hash()
+
     result = await repository.update_settings(updates)
+
+    # Check if embedding config changed
+    new_config_hash = result.get_embedding_config_hash()
+    embedding_warning = None
+
+    if old_config_hash != new_config_hash and result.embedding_config_hash is not None:
+        # Config changed and there are existing embeddings
+        if result.embedding_config_hash != new_config_hash:
+            embedding_warning = (
+                f"Embedding configuration changed from '{result.embedding_config_hash}' "
+                f"to '{new_config_hash}'. Existing filesystem indexes are incompatible "
+                "with the new configuration. You must perform a full re-index of all "
+                "filesystem indexes for search to work correctly."
+            )
+            logger.warning(embedding_warning)
 
     # Invalidate cache and reinitialize RAG agent to pick up LLM/embedding changes
     invalidate_settings_cache()
     await rag.initialize()
 
-    return result
+    return UpdateSettingsResponse(settings=result, embedding_warning=embedding_warning)
+
+
+from ragtime.indexer.models import EmbeddingStatus
+
+
+@router.get("/settings/embedding-status", response_model=EmbeddingStatus, tags=["Settings"])
+async def get_embedding_status(_user: User = Depends(require_admin)):
+    """
+    Get embedding configuration status.
+
+    Returns information about the current embedding provider/model and whether
+    it's compatible with existing filesystem indexes.
+    """
+    settings = await repository.get_settings()
+
+    current_hash = settings.get_embedding_config_hash()
+    has_mismatch = settings.has_embedding_config_changed()
+    requires_reindex = has_mismatch and settings.embedding_config_hash is not None
+
+    if requires_reindex:
+        message = (
+            f"Embedding configuration mismatch: indexes use '{settings.embedding_config_hash}' "
+            f"but current config is '{current_hash}'. Full re-index required."
+        )
+    elif settings.embedding_config_hash is None:
+        message = "No filesystem indexes exist yet. First index will set the embedding configuration."
+    else:
+        message = f"Embedding configuration matches existing indexes ({current_hash})."
+
+    return EmbeddingStatus(
+        current_provider=settings.embedding_provider,
+        current_model=settings.embedding_model,
+        current_config_hash=current_hash,
+        stored_config_hash=settings.embedding_config_hash,
+        stored_dimension=settings.embedding_dimension,
+        has_mismatch=has_mismatch,
+        requires_reindex=requires_reindex,
+        message=message,
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -1804,7 +1873,7 @@ class FilesystemIndexStatsResponse(BaseModel):
 @router.post("/tools/{tool_id}/filesystem/index", response_model=FilesystemIndexJobResponse, tags=["Filesystem Indexer"])
 async def trigger_filesystem_index(
     tool_id: str,
-    request: TriggerFilesystemIndexRequest = TriggerFilesystemIndexRequest(),
+    request: TriggerFilesystemIndexRequest = Body(default=TriggerFilesystemIndexRequest()),
     _user: User = Depends(require_admin)
 ):
     """
@@ -1813,6 +1882,8 @@ async def trigger_filesystem_index(
     Starts a background job to index files from the configured path.
     Uses incremental indexing by default (skips unchanged files).
     """
+    logger.info(f"trigger_filesystem_index: full_reindex={request.full_reindex}")
+
     # Get the tool config
     tool_config = await repository.get_tool_config(tool_id)
     if not tool_config:
@@ -2086,6 +2157,139 @@ async def test_ollama_connection(request: OllamaTestRequest):
             success=False,
             message=f"Connection failed: {str(e)}",
             base_url=base_url
+        )
+
+
+# -----------------------------------------------------------------------------
+# Embedding Model Fetching
+# -----------------------------------------------------------------------------
+
+class EmbeddingModelsRequest(BaseModel):
+    """Request to fetch available embedding models from a provider."""
+    provider: str = Field(..., description="Embedding provider: 'openai'")
+    api_key: str = Field(..., description="API key for the provider")
+
+
+class EmbeddingModel(BaseModel):
+    """Information about an available embedding model."""
+    id: str
+    name: str
+    dimensions: Optional[int] = None
+
+
+class EmbeddingModelsResponse(BaseModel):
+    """Response from embedding models fetch."""
+    success: bool
+    message: str
+    models: List[EmbeddingModel] = []
+    default_model: Optional[str] = None
+
+
+# OpenAI embedding models - prioritized list (from LiteLLM community data)
+# These are the recommended models for most use cases
+from ragtime.core.embedding_models import (
+    get_embedding_models,
+    OPENAI_EMBEDDING_PRIORITY,
+)
+
+OPENAI_DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
+
+
+@router.post("/embedding/models", response_model=EmbeddingModelsResponse, tags=["Settings"])
+async def fetch_embedding_models(request: EmbeddingModelsRequest):
+    """
+    Fetch available embedding models from a provider given a valid API key.
+
+    Uses LiteLLM's community-maintained model database to identify embedding models.
+    Currently only supports OpenAI. Anthropic does not provide embedding models.
+    """
+    if request.provider == "openai":
+        return await _fetch_openai_embedding_models(request.api_key)
+    else:
+        return EmbeddingModelsResponse(
+            success=False,
+            message=f"Unknown or unsupported embedding provider: {request.provider}. Supported: 'openai'"
+        )
+
+
+async def _fetch_openai_embedding_models(api_key: str) -> EmbeddingModelsResponse:
+    """
+    Fetch available embedding models from OpenAI API.
+
+    Uses LiteLLM's community-maintained database to identify which models are
+    embedding models and to get metadata like output dimensions.
+    """
+    try:
+        # Get embedding model metadata from LiteLLM (cached)
+        litellm_embedding_models = await get_embedding_models()
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(
+                "https://api.openai.com/v1/models",
+                headers={"Authorization": f"Bearer {api_key}"}
+            )
+            response.raise_for_status()
+
+            data = response.json()
+            models = []
+
+            # Filter for embedding models using LiteLLM data
+            for model in data.get("data", []):
+                model_id = model.get("id", "")
+
+                # Check if LiteLLM knows this is an embedding model
+                litellm_info = litellm_embedding_models.get(model_id)
+                if litellm_info and litellm_info.provider == "openai":
+                    models.append(EmbeddingModel(
+                        id=model_id,
+                        name=model_id,
+                        dimensions=litellm_info.output_vector_size
+                    ))
+                # Fallback: also include models with "embedding" in the name
+                # (covers new models not yet in LiteLLM)
+                elif "embedding" in model_id.lower() and model_id not in [m.id for m in models]:
+                    models.append(EmbeddingModel(
+                        id=model_id,
+                        name=model_id,
+                        dimensions=None
+                    ))
+
+            # Sort: priority models first, then alphabetically
+            def sort_key(m: EmbeddingModel) -> tuple:
+                try:
+                    priority_idx = OPENAI_EMBEDDING_PRIORITY.index(m.id)
+                except ValueError:
+                    priority_idx = 999
+                return (priority_idx, m.id)
+
+            models.sort(key=sort_key)
+
+            return EmbeddingModelsResponse(
+                success=True,
+                message=f"Found {len(models)} embedding model(s) (validated against LiteLLM database).",
+                models=models,
+                default_model=OPENAI_DEFAULT_EMBEDDING_MODEL if any(m.id == OPENAI_DEFAULT_EMBEDDING_MODEL for m in models) else (models[0].id if models else None)
+            )
+
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 401:
+            return EmbeddingModelsResponse(
+                success=False,
+                message="Invalid API key. Please check your OpenAI API key."
+            )
+        return EmbeddingModelsResponse(
+            success=False,
+            message=f"OpenAI API error: {e.response.status_code}"
+        )
+    except httpx.TimeoutException:
+        return EmbeddingModelsResponse(
+            success=False,
+            message="Request to OpenAI timed out."
+        )
+    except Exception as e:
+        return EmbeddingModelsResponse(
+            success=False,
+            message=f"Failed to fetch OpenAI embedding models: {str(e)}"
         )
 
 

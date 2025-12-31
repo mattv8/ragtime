@@ -89,6 +89,7 @@ async def _get_query_embedding(query: str, app_settings: dict) -> Optional[list]
     try:
         provider = app_settings.get("embedding_provider", "ollama")
         model = app_settings.get("embedding_model", "nomic-embed-text")
+        dimensions = app_settings.get("embedding_dimensions")
 
         if provider == "ollama":
             from langchain_ollama import OllamaEmbeddings
@@ -100,7 +101,11 @@ async def _get_query_embedding(query: str, app_settings: dict) -> Optional[list]
             if not api_key:
                 logger.error("OpenAI API key not configured for embeddings")
                 return None
-            embeddings = OpenAIEmbeddings(model=model, api_key=api_key)
+            # Pass dimensions for text-embedding-3-* models (supports MRL)
+            kwargs = {"model": model, "api_key": api_key}
+            if dimensions and model.startswith("text-embedding-3"):
+                kwargs["dimensions"] = dimensions
+            embeddings = OpenAIEmbeddings(**kwargs)
         else:
             logger.error(f"Unknown embedding provider: {provider}")
             return None

@@ -157,6 +157,7 @@ export interface AppSettings {
   // Embedding Configuration (for FAISS indexing)
   embedding_provider: 'ollama' | 'openai';
   embedding_model: string;
+  embedding_dimensions?: number | null;
   // Ollama connection settings (separate fields)
   ollama_protocol: 'http' | 'https';
   ollama_host: string;
@@ -188,6 +189,7 @@ export interface UpdateSettingsRequest {
   // Embedding settings
   embedding_provider?: 'ollama' | 'openai';
   embedding_model?: string;
+  embedding_dimensions?: number | null;
   ollama_protocol?: 'http' | 'https';
   ollama_host?: string;
   ollama_port?: number;
@@ -249,6 +251,25 @@ export interface LLMModelsResponse {
   success: boolean;
   message: string;
   models: LLMModel[];
+  default_model?: string;
+}
+
+// Embedding Provider Model Fetching
+export interface EmbeddingModelsRequest {
+  provider: 'openai';
+  api_key: string;
+}
+
+export interface EmbeddingModel {
+  id: string;
+  name: string;
+  dimensions?: number;
+}
+
+export interface EmbeddingModelsResponse {
+  success: boolean;
+  message: string;
+  models: EmbeddingModel[];
   default_model?: string;
 }
 

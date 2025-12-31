@@ -301,6 +301,7 @@ class IndexerService:
         """Get the configured embedding model based on app settings."""
         provider = app_settings.embedding_provider.lower()
         model = app_settings.embedding_model
+        dimensions = getattr(app_settings, "embedding_dimensions", None)
 
         if provider == "ollama":
             from langchain_ollama import OllamaEmbeddings  # type: ignore[import-not-found]
@@ -312,10 +313,14 @@ class IndexerService:
             from langchain_openai import OpenAIEmbeddings
             if not app_settings.openai_api_key:
                 raise ValueError("OpenAI embeddings selected but no API key configured in Settings")
-            return OpenAIEmbeddings(
-                model=model,
-                api_key=app_settings.openai_api_key,  # type: ignore[arg-type]
-            )
+            # Pass dimensions for text-embedding-3-* models (supports MRL)
+            kwargs: dict = {
+                "model": model,
+                "api_key": app_settings.openai_api_key,  # type: ignore[arg-type]
+            }
+            if dimensions and model.startswith("text-embedding-3"):
+                kwargs["dimensions"] = dimensions
+            return OpenAIEmbeddings(**kwargs)
         else:
             raise ValueError(f"Unknown embedding provider: {provider}. Use 'ollama' or 'openai'.")
 

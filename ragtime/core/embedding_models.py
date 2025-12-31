@@ -1,0 +1,124 @@
+"""
+Embedding model data fetched from LiteLLM's community-maintained dataset.
+
+Filters models by "mode": "embedding" from the LiteLLM dataset.
+
+Source: https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+"""
+
+import asyncio
+from dataclasses import dataclass
+from typing import Optional
+import httpx
+
+from ragtime.core.logging import get_logger
+
+logger = get_logger(__name__)
+
+# LiteLLM's community-maintained model data (updated frequently)
+LITELLM_MODEL_DATA_URL = (
+    "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
+)
+
+# Cache for embedding models (populated on first request)
+_embedding_models_cache: dict[str, "EmbeddingModelInfo"] = {}
+_cache_lock = asyncio.Lock()
+_cache_loaded = False
+
+
+@dataclass
+class EmbeddingModelInfo:
+    """Information about an embedding model from LiteLLM."""
+    id: str
+    provider: str
+    max_input_tokens: Optional[int] = None
+    output_vector_size: Optional[int] = None
+
+
+# OpenAI embedding models - prioritized list for display order
+OPENAI_EMBEDDING_PRIORITY = [
+    "text-embedding-3-small",
+    "text-embedding-3-large",
+    "text-embedding-ada-002",
+]
+
+
+async def _fetch_litellm_embedding_models() -> dict[str, EmbeddingModelInfo]:
+    """Fetch embedding models from LiteLLM's dataset."""
+    models: dict[str, EmbeddingModelInfo] = {}
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(LITELLM_MODEL_DATA_URL)
+            response.raise_for_status()
+            data = response.json()
+
+            for model_id, model_info in data.items():
+                if isinstance(model_info, dict):
+                    # Filter for embedding models only
+                    if model_info.get("mode") == "embedding":
+                        provider = model_info.get("litellm_provider", "unknown")
+                        models[model_id] = EmbeddingModelInfo(
+                            id=model_id,
+                            provider=provider,
+                            max_input_tokens=model_info.get("max_input_tokens") or model_info.get("max_tokens"),
+                            output_vector_size=model_info.get("output_vector_size"),
+                        )
+
+            logger.info(f"Loaded {len(models)} embedding models from LiteLLM")
+            return models
+
+    except Exception as e:
+        logger.warning(f"Failed to fetch LiteLLM embedding model data: {e}")
+        return {}
+
+
+async def get_embedding_models() -> dict[str, EmbeddingModelInfo]:
+    """Get cached embedding models, fetching from LiteLLM if needed."""
+    global _cache_loaded, _embedding_models_cache
+
+    async with _cache_lock:
+        if not _cache_loaded:
+            _embedding_models_cache = await _fetch_litellm_embedding_models()
+            _cache_loaded = True
+
+    return _embedding_models_cache
+
+
+def get_openai_embedding_models_sync(all_models: dict[str, EmbeddingModelInfo]) -> list[EmbeddingModelInfo]:
+    """
+    Filter and sort OpenAI embedding models from the full model list.
+
+    Returns models sorted by priority (recommended first, then alphabetically).
+    """
+    openai_models = [
+        m for m in all_models.values()
+        if m.provider == "openai" and "embedding" in m.id.lower()
+    ]
+
+    def sort_key(m: EmbeddingModelInfo) -> tuple:
+        try:
+            priority_idx = OPENAI_EMBEDDING_PRIORITY.index(m.id)
+        except ValueError:
+            priority_idx = 999
+        return (priority_idx, m.id)
+
+    openai_models.sort(key=sort_key)
+    return openai_models
+
+
+async def get_openai_embedding_models() -> list[EmbeddingModelInfo]:
+    """Get OpenAI embedding models from LiteLLM data (cached)."""
+    all_models = await get_embedding_models()
+    return get_openai_embedding_models_sync(all_models)
+
+
+def is_embedding_model(model_id: str, all_models: dict[str, EmbeddingModelInfo]) -> bool:
+    """Check if a model ID is an embedding model according to LiteLLM."""
+    return model_id in all_models
+
+
+async def validate_embedding_model(model_id: str) -> bool:
+    """Check if a model ID is a valid embedding model."""
+    all_models = await get_embedding_models()
+    return is_embedding_model(model_id, all_models)

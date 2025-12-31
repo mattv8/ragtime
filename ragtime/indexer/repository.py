@@ -383,6 +383,7 @@ class IndexerRepository:
             # Embedding settings
             embedding_provider=prisma_settings.embeddingProvider,
             embedding_model=prisma_settings.embeddingModel,
+            embedding_dimensions=prisma_settings.embeddingDimensions,
             ollama_protocol=prisma_settings.ollamaProtocol,
             ollama_host=prisma_settings.ollamaHost,
             ollama_port=prisma_settings.ollamaPort,
@@ -406,6 +407,9 @@ class IndexerRepository:
             max_query_results=prisma_settings.maxQueryResults,
             query_timeout=prisma_settings.queryTimeout,
             enable_write_ops=prisma_settings.enableWriteOps,
+            # Embedding dimension tracking
+            embedding_dimension=prisma_settings.embeddingDimension,
+            embedding_config_hash=prisma_settings.embeddingConfigHash,
             updated_at=prisma_settings.updatedAt,
         )
 
@@ -418,6 +422,7 @@ class IndexerRepository:
             # Embedding settings
             "embedding_provider": "embeddingProvider",
             "embedding_model": "embeddingModel",
+            "embedding_dimensions": "embeddingDimensions",
             "ollama_protocol": "ollamaProtocol",
             "ollama_host": "ollamaHost",
             "ollama_port": "ollamaPort",
@@ -441,6 +446,9 @@ class IndexerRepository:
             "max_query_results": "maxQueryResults",
             "query_timeout": "queryTimeout",
             "enable_write_ops": "enableWriteOps",
+            # Embedding dimension tracking (internal use)
+            "embedding_dimension": "embeddingDimension",
+            "embedding_config_hash": "embeddingConfigHash",
         }
 
         # Build update data with only provided fields
@@ -461,6 +469,46 @@ class IndexerRepository:
         )
 
         logger.info(f"Updated settings: {list(update_data.keys())}")
+        return await self.get_settings()
+
+    async def update_embedding_tracking(
+        self, dimension: int, config_hash: str
+    ) -> AppSettings:
+        """
+        Update embedding dimension and config hash after successful indexing.
+        Called by filesystem_service after first batch of embeddings is inserted.
+        """
+        db = await self._get_db()
+        await self.get_settings()  # Ensure exists
+
+        await db.appsettings.update(
+            where={"id": "default"},
+            data={
+                "embeddingDimension": dimension,
+                "embeddingConfigHash": config_hash,
+            }
+        )
+        logger.info(
+            f"Updated embedding tracking: dimension={dimension}, hash={config_hash}"
+        )
+        return await self.get_settings()
+
+    async def clear_embedding_tracking(self) -> AppSettings:
+        """
+        Clear embedding tracking when all filesystem indexes are deleted.
+        This allows a fresh start with a new embedding provider.
+        """
+        db = await self._get_db()
+        await self.get_settings()  # Ensure exists
+
+        await db.appsettings.update(
+            where={"id": "default"},
+            data={
+                "embeddingDimension": None,
+                "embeddingConfigHash": None,
+            }
+        )
+        logger.info("Cleared embedding tracking")
         return await self.get_settings()
 
     # -------------------------------------------------------------------------

@@ -63,6 +63,8 @@ services:
       - ~/.ssh:/root/.ssh:ro
       # Mount scripts for backup/restore
       - ./scripts:/docker-scripts:ro
+      # Filesystem indexer test mount (read-only)
+      - /mnt/c/Users/matt/OneDrive/Documents:/mnt/documents:ro
     networks:
       - default
     depends_on:

@@ -67,6 +67,7 @@ class SettingsCache:
                 # Embedding settings
                 "embedding_provider": prisma_settings.embeddingProvider,
                 "embedding_model": prisma_settings.embeddingModel,
+                "embedding_dimensions": prisma_settings.embeddingDimensions,
                 "ollama_base_url": prisma_settings.ollamaBaseUrl,
             }
             return self._settings

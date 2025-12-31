@@ -281,15 +281,18 @@ export function JobsTable({ jobs, filesystemJobs = [], loading, error, onJobsCha
                           <div className="progress-details">
                             <span className="progress-phase">{job.phase}</span>
                             <span className="progress-stats">
-                              {job.totalChunks > 0 ? (
+                              {job.type === 'filesystem' ? (
+                                // Filesystem jobs: show file progress (total is known upfront)
+                                <>{job.processedFiles}/{job.totalFiles} files
+                                  {job.totalChunks > 0 && ` (${job.totalChunks} chunks)`}
+                                  {job.skippedFiles > 0 && ` (${job.skippedFiles} unchanged)`}
+                                </>
+                              ) : job.totalChunks > 0 ? (
+                                // Document jobs: show chunk progress
                                 <>{job.processedChunks}/{job.totalChunks} chunks</>
                               ) : (
                                 <>{job.processedFiles}/{job.totalFiles} files
-                                  {job.skippedFiles > 0 && (
-                                    job.type === 'filesystem'
-                                      ? ` (${job.skippedFiles} unchanged)`
-                                      : ` (${job.skippedFiles} skipped)`
-                                  )}
+                                  {job.skippedFiles > 0 && ` (${job.skippedFiles} skipped)`}
                                 </>
                               )}
                             </span>

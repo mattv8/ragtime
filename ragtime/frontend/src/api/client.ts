@@ -2,7 +2,7 @@
  * API client for Ragtime Indexer
  */
 
-import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, LLMModelsRequest, LLMModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, PostgresDiscoverRequest, PostgresDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse } from '@/types';
+import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, PostgresDiscoverRequest, PostgresDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse } from '@/types';
 
 const API_BASE = '/indexes';
 const AUTH_BASE = '/auth';
@@ -341,6 +341,18 @@ export const api = {
     return handleResponse<LLMModelsResponse>(response);
   },
 
+  /**
+   * Fetch available embedding models from a provider (OpenAI only)
+   */
+  async fetchEmbeddingModels(request: EmbeddingModelsRequest): Promise<EmbeddingModelsResponse> {
+    const response = await apiFetch(`${API_BASE}/embedding/models`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<EmbeddingModelsResponse>(response);
+  },
+
   // =========================================================================
   // Tool Configuration API
   // =========================================================================
@@ -494,9 +506,10 @@ export const api = {
    * Trigger filesystem indexing for a tool
    */
   async triggerFilesystemIndex(toolId: string, fullReindex?: boolean): Promise<import('@/types').FilesystemIndexJob> {
-    const params = fullReindex ? '?full_reindex=true' : '';
-    const response = await apiFetch(`${API_BASE}/tools/${toolId}/filesystem/index${params}`, {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/filesystem/index`, {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ full_reindex: fullReindex ?? false }),
     });
     return handleResponse<import('@/types').FilesystemIndexJob>(response);
   },

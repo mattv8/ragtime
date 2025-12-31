@@ -118,12 +118,6 @@ function FilesystemBrowser({ currentPath, onSelectPath }: FilesystemBrowserProps
     return fullPath.slice(mountPath.length).replace(/^\//, '');
   };
 
-  // Helper to build full path from relative
-  const buildFullPath = (relativePath: string, mountPath: string): string => {
-    if (!relativePath) return mountPath;
-    return `${mountPath.replace(/\/$/, '')}/${relativePath.replace(/^\//, '')}`;
-  };
-
   const handleExpandMount = (mountPath: string) => {
     if (expandedMount === mountPath) {
       setExpandedMount(null); // Collapse if clicking same mount

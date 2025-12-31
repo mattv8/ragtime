@@ -109,8 +109,9 @@ model AppSettings {
   id    String @id @default("default")
 
   // Embedding Configuration (for FAISS indexing)
-  embeddingProvider String   @default("ollama") @map("embedding_provider") // "ollama" or "openai"
-  embeddingModel    String   @default("nomic-embed-text") @map("embedding_model")
+  embeddingProvider   String   @default("ollama") @map("embedding_provider") // "ollama" or "openai"
+  embeddingModel      String   @default("nomic-embed-text") @map("embedding_model")
+  embeddingDimensions Int?     @map("embedding_dimensions") // Target dims for OpenAI text-embedding-3-* (MRL)
   // Ollama connection settings (separate fields for UI)
   ollamaProtocol    String   @default("http") @map("ollama_protocol") // "http" or "https"
   ollamaHost        String   @default("localhost") @map("ollama_host")
@@ -141,6 +142,13 @@ model AppSettings {
 
   // Security
   enableWriteOps    Boolean  @default(false) @map("enable_write_ops")
+
+  // Embedding dimension tracking (for detecting provider/model changes)
+  // Stored dimension of embeddings in filesystem_embeddings table
+  // null = not yet determined (first index will set it)
+  embeddingDimension     Int?    @map("embedding_dimension")
+  // Hash of provider+model to detect changes (e.g., "ollama:qwen3-embedding:latest")
+  embeddingConfigHash    String? @map("embedding_config_hash")
 
   // Timestamps
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")

@@ -119,6 +119,12 @@ class AppSettings(BaseModel):
         default="nomic-embed-text",
         description="Embedding model name (e.g., 'nomic-embed-text' for Ollama, 'text-embedding-3-small' for OpenAI)"
     )
+    embedding_dimensions: Optional[int] = Field(
+        default=None,
+        ge=256,
+        le=3072,
+        description="Target embedding dimensions for OpenAI text-embedding-3-* models (256-3072). Leave empty for model default. Use <=2000 for pgvector indexed search."
+    )
     # Ollama connection settings (separate fields for UI)
     ollama_protocol: str = Field(
         default="http",
@@ -227,7 +233,40 @@ class AppSettings(BaseModel):
         description="Allow write operations (INSERT/UPDATE/DELETE)"
     )
 
+    # Embedding dimension tracking
+    embedding_dimension: Optional[int] = Field(
+        default=None,
+        description="Dimension of embeddings in filesystem_embeddings table (set on first index)"
+    )
+    embedding_config_hash: Optional[str] = Field(
+        default=None,
+        description="Hash of embedding provider+model to detect configuration changes"
+    )
+
     updated_at: Optional[datetime] = None
+
+    def get_embedding_config_hash(self) -> str:
+        """Generate a hash for current embedding provider+model+dimensions configuration."""
+        dims = self.embedding_dimensions or "default"
+        return f"{self.embedding_provider}:{self.embedding_model}:{dims}"
+
+    def has_embedding_config_changed(self) -> bool:
+        """Check if the embedding configuration has changed from what was indexed."""
+        if self.embedding_config_hash is None:
+            return False  # No previous config, nothing has changed
+        return self.get_embedding_config_hash() != self.embedding_config_hash
+
+
+class EmbeddingStatus(BaseModel):
+    """Status of embedding configuration compatibility."""
+    current_provider: str
+    current_model: str
+    current_config_hash: str
+    stored_config_hash: Optional[str] = None
+    stored_dimension: Optional[int] = None
+    has_mismatch: bool = False
+    requires_reindex: bool = False
+    message: str = ""
 
 
 class UpdateSettingsRequest(BaseModel):
@@ -235,6 +274,7 @@ class UpdateSettingsRequest(BaseModel):
     # Embedding settings
     embedding_provider: Optional[str] = None
     embedding_model: Optional[str] = None
+    embedding_dimensions: Optional[int] = Field(default=None, ge=256, le=3072)
     ollama_protocol: Optional[str] = None
     ollama_host: Optional[str] = None
     ollama_port: Optional[int] = Field(default=None, ge=1, le=65535)

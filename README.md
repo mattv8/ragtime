@@ -106,15 +106,15 @@ OpenAI-compatible RAG API with LangChain tool calling for business intelligence 
    services:
      # PostgreSQL database for Prisma persistence
      ragtime-db:
-       image: postgres:latest
+       image: pgvector/pgvector:pg17
        container_name: ragtime-db
        restart: unless-stopped
        environment:
          POSTGRES_USER: ragtime
-         POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ragtime_prod}
+         POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
          POSTGRES_DB: ragtime
        volumes:
-         - ragtime-db-data:/var/lib/postgresql/data
+         - ragtime-db-data:/var/lib/postgresql
        networks:
          - ragtime-network
        healthcheck:
@@ -137,7 +137,7 @@ OpenAI-compatible RAG API with LangChain tool calling for business intelligence 
          - .env
        environment:
          # Database connection (uses container network)
-         DATABASE_URL: postgresql://ragtime:${POSTGRES_PASSWORD:-ragtime_prod}@ragtime-db:5432/ragtime
+         DATABASE_URL: postgresql://ragtime:${POSTGRES_PASSWORD}@ragtime-db:5432/ragtime
          # Production settings
          DEBUG_MODE: "false"
          SESSION_COOKIE_SECURE: "${SESSION_COOKIE_SECURE:-false}"

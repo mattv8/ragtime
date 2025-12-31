@@ -39,7 +39,7 @@ export function App() {
   const [indexesError, setIndexesError] = useState<string | null>(null);
 
   // Filesystem indexer state
-  const [filesystemTools, setFilesystemTools] = useState<ToolConfig[]>([]);
+  const [_filesystemTools, setFilesystemTools] = useState<ToolConfig[]>([]);
   const [filesystemJobs, setFilesystemJobs] = useState<FilesystemIndexJob[]>([]);
   const filesystemPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 

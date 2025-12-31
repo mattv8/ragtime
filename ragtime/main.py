@@ -54,6 +54,10 @@ async def lifespan(app: FastAPI):
     if recovered > 0:
         logger.info(f"Recovered {recovered} interrupted indexing job(s)")
 
+    # Clean up any orphaned filesystem indexing jobs from previous runs
+    from ragtime.indexer.filesystem_service import filesystem_indexer
+    await filesystem_indexer.cleanup_orphaned_jobs()
+
     # Discover orphan indexes (FAISS files without database metadata)
     discovered = await indexer.discover_orphan_indexes()
     if discovered > 0:
