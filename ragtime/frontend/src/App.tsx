@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '@/api';
-import { UploadForm, GitForm, JobsTable, IndexesList, SettingsPanel, ToolsPanel, ChatPanel, LoginPage } from '@/components';
-import type { IndexJob, IndexInfo, User, AuthStatus } from '@/types';
+import { UploadForm, GitForm, JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, LoginPage } from '@/components';
+import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, ToolConfig } from '@/types';
 import '@/styles/global.css';
 
 type SourceType = 'upload' | 'git';
@@ -37,6 +37,11 @@ export function App() {
   const [indexesLoading, setIndexesLoading] = useState(true);
   const [jobsError, setJobsError] = useState<string | null>(null);
   const [indexesError, setIndexesError] = useState<string | null>(null);
+
+  // Filesystem indexer state
+  const [filesystemTools, setFilesystemTools] = useState<ToolConfig[]>([]);
+  const [filesystemJobs, setFilesystemJobs] = useState<FilesystemIndexJob[]>([]);
+  const filesystemPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Check authentication status on mount
   useEffect(() => {
@@ -126,13 +131,66 @@ export function App() {
     loadJobs();
   }, [loadJobs]);
 
+  // Load filesystem tools and their jobs
+  const loadFilesystemJobs = useCallback(async () => {
+    try {
+      const allTools = await api.listToolConfigs();
+      const fsTools = allTools.filter(t => t.tool_type === 'filesystem_indexer');
+      setFilesystemTools(fsTools);
+
+      // Fetch jobs for all filesystem tools
+      const allJobs: FilesystemIndexJob[] = [];
+      await Promise.all(fsTools.map(async (tool) => {
+        try {
+          const jobs = await api.getFilesystemJobs(tool.id);
+          allJobs.push(...jobs);
+        } catch (err) {
+          console.warn(`Failed to fetch jobs for ${tool.id}:`, err);
+        }
+      }));
+      setFilesystemJobs(allJobs);
+    } catch (err) {
+      console.warn('Failed to load filesystem tools:', err);
+    }
+  }, []);
+
+  const handleCancelFilesystemJob = useCallback(async (toolId: string, jobId: string) => {
+    await api.cancelFilesystemJob(toolId, jobId);
+    await loadFilesystemJobs();
+  }, [loadFilesystemJobs]);
+
   // Initial load (only when authenticated and admin for indexer data)
   useEffect(() => {
     if (currentUser && isAdmin) {
       loadJobs();
       loadIndexes();
+      loadFilesystemJobs();
     }
-  }, [currentUser, isAdmin, loadJobs, loadIndexes]);
+  }, [currentUser, isAdmin, loadJobs, loadIndexes, loadFilesystemJobs]);
+
+  // Fast polling for active filesystem jobs
+  useEffect(() => {
+    if (!currentUser || !isAdmin) return;
+
+    const hasActiveFilesystemJob = filesystemJobs.some(
+      j => j.status === 'pending' || j.status === 'indexing'
+    );
+
+    if (hasActiveFilesystemJob) {
+      filesystemPollRef.current = setInterval(loadFilesystemJobs, 2000);
+    } else {
+      if (filesystemPollRef.current) {
+        clearInterval(filesystemPollRef.current);
+        filesystemPollRef.current = null;
+      }
+    }
+
+    return () => {
+      if (filesystemPollRef.current) {
+        clearInterval(filesystemPollRef.current);
+      }
+    };
+  }, [currentUser, isAdmin, filesystemJobs, loadFilesystemJobs]);
 
   // Auto-refresh: fast polling when jobs are active, slow background refresh otherwise
   useEffect(() => {
@@ -227,19 +285,23 @@ export function App() {
         <ToolsPanel />
       ) : (
         <>
-          {/* Indexes List */}
+          {/* Document Indexes (FAISS) */}
           <IndexesList
             indexes={indexes}
             loading={indexesLoading}
             error={indexesError}
             onDelete={loadIndexes}
             onToggle={loadIndexes}
+            onDescriptionUpdate={loadIndexes}
           />
 
-          {/* Create Index Card */}
+          {/* Filesystem Indexes (pgvector) */}
+          <FilesystemIndexPanel onJobsChanged={loadFilesystemJobs} />
+
+          {/* Create Document Index Card */}
           <div className="card">
             <div className="card-header">
-              <h2>Create New Index</h2>
+              <h2>Create Document Index</h2>
               <button
                 className="link-btn"
                 onClick={() => setActiveSource(activeSource === 'upload' ? 'git' : 'upload')}
@@ -255,9 +317,12 @@ export function App() {
           {/* Jobs Table */}
           <JobsTable
             jobs={jobs}
+            filesystemJobs={filesystemJobs}
             loading={jobsLoading}
             error={jobsError}
             onJobsChanged={loadJobs}
+            onFilesystemJobsChanged={loadFilesystemJobs}
+            onCancelFilesystemJob={handleCancelFilesystemJob}
           />
         </>
       )}

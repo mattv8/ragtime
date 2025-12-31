@@ -286,8 +286,17 @@ async def get_settings(_user: User = Depends(require_admin)):
 @router.put("/settings", response_model=AppSettings, tags=["Settings"])
 async def update_settings(request: UpdateSettingsRequest, _user: User = Depends(require_admin)):
     """Update application settings. Admin only."""
+    from ragtime.core.app_settings import invalidate_settings_cache
+    from ragtime.rag import rag
+
     updates = request.model_dump(exclude_unset=True)
-    return await repository.update_settings(updates)
+    result = await repository.update_settings(updates)
+
+    # Invalidate cache and reinitialize RAG agent to pick up LLM/embedding changes
+    invalidate_settings_cache()
+    await rag.initialize()
+
+    return result
 
 
 # -----------------------------------------------------------------------------
@@ -513,10 +522,39 @@ async def test_tool_connection(request: ToolTestRequest, _user: User = Depends(r
         return await _test_odoo_connection(config)
     elif tool_type == ToolType.SSH_SHELL:
         return await _test_ssh_connection(config)
+    elif tool_type == ToolType.FILESYSTEM_INDEXER:
+        return await _test_filesystem_connection(config)
     else:
         return ToolTestResponse(
             success=False,
             message=f"Unknown tool type: {tool_type}"
+        )
+
+
+async def _test_filesystem_connection(config: dict) -> ToolTestResponse:
+    """Test filesystem path accessibility."""
+    try:
+        fs_config = FilesystemConnectionConfig(**config)
+        result = await filesystem_indexer.validate_path_access(fs_config)
+
+        if result["success"]:
+            return ToolTestResponse(
+                success=True,
+                message=result["message"],
+                details={
+                    "file_count": result.get("file_count", 0),
+                    "sample_files": result.get("sample_files", []),
+                }
+            )
+        else:
+            return ToolTestResponse(
+                success=False,
+                message=result["message"]
+            )
+    except Exception as e:
+        return ToolTestResponse(
+            success=False,
+            message=f"Configuration error: {str(e)}"
         )
 
 
@@ -660,6 +698,41 @@ async def generate_ssh_keypair(comment: str = "ragtime", passphrase: str = "", _
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# =============================================================================
+# Filesystem Indexer Routes (must be before {tool_id} routes)
+# =============================================================================
+from ragtime.indexer.models import FilesystemConnectionConfig
+from ragtime.indexer.filesystem_service import filesystem_indexer
+
+
+class FilesystemTestResponse(BaseModel):
+    """Response from filesystem path test."""
+    success: bool
+    message: str
+    file_count: Optional[int] = None
+    sample_files: Optional[List[str]] = None
+
+
+@router.post("/tools/filesystem/test", response_model=FilesystemTestResponse, tags=["Filesystem Indexer"])
+async def test_filesystem_path(
+    config: FilesystemConnectionConfig,
+    _user: User = Depends(require_admin)
+):
+    """
+    Test filesystem path accessibility. Admin only.
+
+    Validates that the configured path is accessible and counts matching files.
+    Used during the wizard to validate configuration.
+    """
+    result = await filesystem_indexer.validate_path_access(config)
+    return FilesystemTestResponse(
+        success=result["success"],
+        message=result["message"],
+        file_count=result.get("file_count"),
+        sample_files=result.get("sample_files"),
+    )
+
+
 @router.post("/tools/{tool_id}/test", response_model=ToolTestResponse, tags=["Tools"])
 async def test_saved_tool_connection(tool_id: str):
     """Test the connection for a saved tool configuration."""
@@ -685,7 +758,7 @@ async def test_saved_tool_connection(tool_id: str):
     return result
 
 
-async def _heartbeat_check(tool_type: str, config: dict) -> ToolTestResponse:
+async def _heartbeat_check(tool_type, config: dict) -> ToolTestResponse:
     """
     Quick heartbeat check for a tool connection.
     Uses minimal queries/commands to verify connectivity.
@@ -693,14 +766,22 @@ async def _heartbeat_check(tool_type: str, config: dict) -> ToolTestResponse:
     import asyncio
     import subprocess
 
-    if tool_type == "postgres":
-        return await _heartbeat_postgres(config)
-    elif tool_type == "odoo_shell":
-        return await _heartbeat_odoo(config)
-    elif tool_type == "ssh_shell":
-        return await _heartbeat_ssh(config)
+    # Normalize tool_type to string value (handle enum or string)
+    if hasattr(tool_type, 'value'):
+        tool_type_str = tool_type.value
     else:
-        return ToolTestResponse(success=False, message=f"Unknown tool type: {tool_type}")
+        tool_type_str = str(tool_type)
+
+    if tool_type_str == "postgres":
+        return await _heartbeat_postgres(config)
+    elif tool_type_str == "odoo_shell":
+        return await _heartbeat_odoo(config)
+    elif tool_type_str == "ssh_shell":
+        return await _heartbeat_ssh(config)
+    elif tool_type_str == "filesystem_indexer":
+        return await _heartbeat_filesystem(config)
+    else:
+        return ToolTestResponse(success=False, message=f"Unknown tool type: {tool_type_str}")
 
 
 async def _heartbeat_postgres(config: dict) -> ToolTestResponse:
@@ -847,6 +928,34 @@ async def _heartbeat_ssh(config: dict) -> ToolTestResponse:
             success=result.success,
             message="OK" if result.success else (result.stderr or result.stdout)[:100]
         )
+    except Exception as e:
+        return ToolTestResponse(success=False, message=str(e)[:100])
+
+
+async def _heartbeat_filesystem(config: dict) -> ToolTestResponse:
+    """Quick filesystem indexer heartbeat check - verify base path is accessible."""
+    from pathlib import Path
+
+    base_path = config.get("base_path", "")
+
+    if not base_path:
+        return ToolTestResponse(success=False, message="Filesystem path not configured")
+
+    path = Path(base_path)
+    if not path.exists():
+        return ToolTestResponse(success=False, message=f"Path does not exist: {base_path}")
+    if not path.is_dir():
+        return ToolTestResponse(success=False, message=f"Path is not a directory: {base_path}")
+
+    try:
+        # Quick check - list first few entries to verify read access
+        entries = list(path.iterdir())[:5]
+        return ToolTestResponse(
+            success=True,
+            message=f"OK - {len(entries)} entries accessible"
+        )
+    except PermissionError:
+        return ToolTestResponse(success=False, message=f"Permission denied: {base_path}")
     except Exception as e:
         return ToolTestResponse(success=False, message=str(e)[:100])
 
@@ -1487,6 +1596,412 @@ async def disconnect_from_network(network_name: str):
         return {"success": False, "message": "Network disconnection timed out"}
     except Exception as e:
         return {"success": False, "message": str(e)}
+
+
+# -----------------------------------------------------------------------------
+# Host Filesystem Browser (for volume mount discovery)
+# -----------------------------------------------------------------------------
+
+class MountInfo(BaseModel):
+    """Information about a mounted volume."""
+    container_path: str
+    host_path: str
+    read_only: bool
+    mount_type: str  # bind, volume, or tmpfs
+
+
+class DirectoryEntry(BaseModel):
+    """Entry in a directory listing."""
+    name: str
+    path: str
+    is_dir: bool
+    size: Optional[int] = None
+
+
+class BrowseResponse(BaseModel):
+    """Response from directory browsing."""
+    path: str
+    entries: List[DirectoryEntry]
+    error: Optional[str] = None
+
+
+class MountDiscoveryResponse(BaseModel):
+    """Response from mount discovery."""
+    mounts: List[MountInfo]
+    suggested_paths: List[str]
+    docker_compose_example: str
+
+
+@router.get("/filesystem/mounts", response_model=MountDiscoveryResponse, tags=["Filesystem Indexer"])
+async def discover_mounts(_: User = Depends(require_admin)):
+    """
+    Discover current volume mounts in the container.
+
+    Returns mounted paths and example docker-compose configuration for adding new mounts.
+    """
+    import os
+    import subprocess
+    import asyncio
+
+    mounts = []
+    hostname = os.environ.get("HOSTNAME", "")
+
+    try:
+        # Get mount information from Docker inspect
+        if hostname:
+            cmd = ["docker", "inspect", "-f", "{{json .Mounts}}", hostname]
+            process = await asyncio.create_subprocess_exec(
+                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            stdout, _ = await process.communicate()
+
+            if process.returncode == 0:
+                import json
+                mount_data = json.loads(stdout.decode().strip())
+                for m in mount_data:
+                    mounts.append(MountInfo(
+                        container_path=m.get("Destination", ""),
+                        host_path=m.get("Source", ""),
+                        read_only=m.get("RW", True) is False,
+                        mount_type=m.get("Type", "bind"),
+                    ))
+    except Exception as e:
+        logger.warning(f"Failed to inspect mounts: {e}")
+
+    # Also check /proc/mounts as fallback
+    if not mounts:
+        try:
+            with open("/proc/mounts", "r") as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 4 and parts[1].startswith("/mnt"):
+                        mounts.append(MountInfo(
+                            container_path=parts[1],
+                            host_path=parts[0],
+                            read_only="ro" in parts[3],
+                            mount_type="bind" if parts[0].startswith("/") else "unknown",
+                        ))
+        except Exception:
+            pass
+
+    # Suggested paths to mount (common document locations)
+    suggested_paths = [
+        "/mnt/documents",
+        "/mnt/data",
+        "/mnt/files",
+        "/mnt/shared",
+    ]
+
+    # Docker-compose example
+    docker_compose_example = """# Add this to your docker-compose.yml under the ragtime service volumes:
+volumes:
+  # Example: Mount your Documents folder
+  - /path/to/your/documents:/mnt/documents:ro
+
+  # Windows example (WSL path)
+  - /mnt/c/Users/YourName/Documents:/mnt/documents:ro
+
+  # Linux/Mac example
+  - ~/Documents:/mnt/documents:ro
+
+# Then restart the container:
+# docker compose -f docker/docker-compose.dev.yml restart ragtime"""
+
+    return MountDiscoveryResponse(
+        mounts=mounts,
+        suggested_paths=suggested_paths,
+        docker_compose_example=docker_compose_example,
+    )
+
+
+@router.get("/filesystem/browse", response_model=BrowseResponse, tags=["Filesystem Indexer"])
+async def browse_filesystem(
+    path: str = "/mnt",
+    _: User = Depends(require_admin)
+):
+    """
+    Browse a directory path in the container.
+
+    Used to explore mounted volumes and select paths for indexing.
+    Only allows browsing under /mnt or other mounted paths for security.
+    """
+    from pathlib import Path
+
+    # Security: only allow browsing under /mnt or specific safe prefixes
+    allowed_prefixes = ["/mnt", "/data", "/shared"]
+    path_obj = Path(path).resolve()
+
+    if not any(str(path_obj).startswith(prefix) for prefix in allowed_prefixes):
+        return BrowseResponse(
+            path=path,
+            entries=[],
+            error=f"Access denied. Only paths under {', '.join(allowed_prefixes)} are browsable.",
+        )
+
+    if not path_obj.exists():
+        return BrowseResponse(
+            path=path,
+            entries=[],
+            error=f"Path does not exist: {path}",
+        )
+
+    if not path_obj.is_dir():
+        return BrowseResponse(
+            path=path,
+            entries=[],
+            error=f"Not a directory: {path}",
+        )
+
+    try:
+        entries = []
+        for entry in sorted(path_obj.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())):
+            try:
+                entries.append(DirectoryEntry(
+                    name=entry.name,
+                    path=str(entry),
+                    is_dir=entry.is_dir(),
+                    size=entry.stat().st_size if entry.is_file() else None,
+                ))
+            except (PermissionError, OSError):
+                # Skip entries we can't access
+                continue
+
+        return BrowseResponse(path=str(path_obj), entries=entries)
+
+    except PermissionError:
+        return BrowseResponse(
+            path=path,
+            entries=[],
+            error=f"Permission denied: {path}",
+        )
+    except Exception as e:
+        return BrowseResponse(
+            path=path,
+            entries=[],
+            error=str(e),
+        )
+
+
+# -----------------------------------------------------------------------------
+# Filesystem Indexer Endpoints (Admin only)
+# -----------------------------------------------------------------------------
+
+from ragtime.indexer.models import (
+    FilesystemIndexJobResponse,
+    FilesystemIndexStatus,
+    TriggerFilesystemIndexRequest,
+)
+
+
+class FilesystemIndexStatsResponse(BaseModel):
+    """Statistics for a filesystem index."""
+    index_name: str
+    embedding_count: int
+    file_count: int
+    last_indexed: Optional[str] = None
+
+
+@router.post("/tools/{tool_id}/filesystem/index", response_model=FilesystemIndexJobResponse, tags=["Filesystem Indexer"])
+async def trigger_filesystem_index(
+    tool_id: str,
+    request: TriggerFilesystemIndexRequest = TriggerFilesystemIndexRequest(),
+    _user: User = Depends(require_admin)
+):
+    """
+    Trigger filesystem indexing for a tool. Admin only.
+
+    Starts a background job to index files from the configured path.
+    Uses incremental indexing by default (skips unchanged files).
+    """
+    # Get the tool config
+    tool_config = await repository.get_tool_config(tool_id)
+    if not tool_config:
+        raise HTTPException(status_code=404, detail="Tool configuration not found")
+
+    if tool_config.tool_type != ToolType.FILESYSTEM_INDEXER:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Tool type must be 'filesystem_indexer', got '{tool_config.tool_type.value}'"
+        )
+
+    # Parse connection config
+    try:
+        fs_config = FilesystemConnectionConfig(**tool_config.connection_config)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid filesystem configuration: {str(e)}"
+        ) from e
+
+    # Validate pgvector is available
+    if not await filesystem_indexer.ensure_pgvector_extension():
+        raise HTTPException(
+            status_code=503,
+            detail="pgvector extension not available. Please install it: CREATE EXTENSION IF NOT EXISTS vector;"
+        )
+
+    # Start indexing
+    job = await filesystem_indexer.trigger_index(
+        tool_config_id=tool_id,
+        config=fs_config,
+        full_reindex=request.full_reindex,
+    )
+
+    return FilesystemIndexJobResponse(
+        id=job.id,
+        tool_config_id=job.tool_config_id,
+        status=job.status,
+        index_name=job.index_name,
+        progress_percent=job.progress_percent,
+        total_files=job.total_files,
+        processed_files=job.processed_files,
+        skipped_files=job.skipped_files,
+        total_chunks=job.total_chunks,
+        processed_chunks=job.processed_chunks,
+        error_message=job.error_message,
+        created_at=job.created_at,
+        started_at=job.started_at,
+        completed_at=job.completed_at,
+    )
+
+
+@router.get("/tools/{tool_id}/filesystem/jobs", response_model=List[FilesystemIndexJobResponse], tags=["Filesystem Indexer"])
+async def list_filesystem_index_jobs(
+    tool_id: str,
+    _user: User = Depends(require_admin)
+):
+    """List filesystem indexing jobs for a tool. Admin only."""
+    jobs = await filesystem_indexer.list_jobs(tool_config_id=tool_id)
+    return [
+        FilesystemIndexJobResponse(
+            id=job.id,
+            tool_config_id=job.tool_config_id,
+            status=job.status,
+            index_name=job.index_name,
+            progress_percent=job.progress_percent,
+            total_files=job.total_files,
+            processed_files=job.processed_files,
+            skipped_files=job.skipped_files,
+            total_chunks=job.total_chunks,
+            processed_chunks=job.processed_chunks,
+            error_message=job.error_message,
+            created_at=job.created_at,
+            started_at=job.started_at,
+            completed_at=job.completed_at,
+        )
+        for job in jobs
+    ]
+
+
+@router.post("/tools/{tool_id}/filesystem/jobs/{job_id}/cancel", tags=["Filesystem Indexer"])
+async def cancel_filesystem_index_job(
+    tool_id: str,
+    job_id: str,
+    _user: User = Depends(require_admin)
+):
+    """
+    Cancel an active filesystem indexing job. Admin only.
+
+    The job will be marked as cancelled and stop processing after the current file.
+    """
+    # Verify tool exists
+    tool_config = await repository.get_tool_config(tool_id)
+    if not tool_config:
+        raise HTTPException(status_code=404, detail="Tool configuration not found")
+
+    if tool_config.tool_type != ToolType.FILESYSTEM_INDEXER:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Tool type must be 'filesystem_indexer', got '{tool_config.tool_type.value}'"
+        )
+
+    # Request cancellation
+    cancelled = await filesystem_indexer.cancel_job(job_id)
+    if not cancelled:
+        raise HTTPException(
+            status_code=400,
+            detail="Job not found or already completed"
+        )
+
+    return {"success": True, "message": "Cancellation requested"}
+
+
+@router.get("/tools/{tool_id}/filesystem/stats", response_model=FilesystemIndexStatsResponse, tags=["Filesystem Indexer"])
+async def get_filesystem_index_stats(
+    tool_id: str,
+    _user: User = Depends(require_admin)
+):
+    """Get statistics for a filesystem index. Admin only."""
+    # Get the tool config
+    tool_config = await repository.get_tool_config(tool_id)
+    if not tool_config:
+        raise HTTPException(status_code=404, detail="Tool configuration not found")
+
+    if tool_config.tool_type != ToolType.FILESYSTEM_INDEXER:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Tool type must be 'filesystem_indexer', got '{tool_config.tool_type.value}'"
+        )
+
+    # Parse connection config for index name
+    try:
+        fs_config = FilesystemConnectionConfig(**tool_config.connection_config)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid filesystem configuration: {str(e)}"
+        ) from e
+
+    stats = await filesystem_indexer.get_index_stats(fs_config.index_name)
+    return FilesystemIndexStatsResponse(
+        index_name=stats["index_name"],
+        embedding_count=stats["embedding_count"],
+        file_count=stats["file_count"],
+        last_indexed=stats["last_indexed"].isoformat() if stats["last_indexed"] else None,
+    )
+
+
+@router.delete("/tools/{tool_id}/filesystem/index", tags=["Filesystem Indexer"])
+async def delete_filesystem_index(
+    tool_id: str,
+    _user: User = Depends(require_admin)
+):
+    """Delete all embeddings for a filesystem index. Admin only."""
+    # Get the tool config
+    tool_config = await repository.get_tool_config(tool_id)
+    if not tool_config:
+        raise HTTPException(status_code=404, detail="Tool configuration not found")
+
+    if tool_config.tool_type != ToolType.FILESYSTEM_INDEXER:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Tool type must be 'filesystem_indexer', got '{tool_config.tool_type.value}'"
+        )
+
+    # Parse connection config for index name
+    try:
+        fs_config = FilesystemConnectionConfig(**tool_config.connection_config)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid filesystem configuration: {str(e)}"
+        ) from e
+
+    deleted_count = await filesystem_indexer.delete_index(fs_config.index_name)
+    return {
+        "success": True,
+        "message": f"Deleted {deleted_count} embeddings from index '{fs_config.index_name}'"
+    }
+
+
+@router.get("/filesystem/pgvector-status", tags=["Filesystem Indexer"])
+async def check_pgvector_status(_user: User = Depends(require_admin)):
+    """Check if pgvector extension is installed. Admin only."""
+    is_available = await filesystem_indexer.ensure_pgvector_extension()
+    return {
+        "available": is_available,
+        "message": "pgvector extension is installed" if is_available else "pgvector extension not available"
+    }
 
 
 # -----------------------------------------------------------------------------

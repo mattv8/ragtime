@@ -3,17 +3,19 @@ Background task service for async chat message processing.
 
 Handles running chat tasks in the background so they persist across
 client disconnections, page switches, and server restarts.
+
+Also handles scheduled filesystem re-indexing tasks.
 """
 
 import asyncio
-from datetime import datetime
-from typing import Optional, Dict, Set
+from datetime import datetime, timedelta
+from typing import Optional, Dict
 
 from langchain_core.messages import HumanMessage, AIMessage
 
 from ragtime.core.logging import get_logger
 from ragtime.indexer.repository import repository
-from ragtime.indexer.models import ChatTaskStatus
+from ragtime.indexer.models import ChatTaskStatus, FilesystemConnectionConfig
 
 logger = get_logger(__name__)
 
@@ -24,6 +26,7 @@ class BackgroundTaskService:
     def __init__(self):
         self._running_tasks: Dict[str, asyncio.Task] = {}
         self._shutdown = False
+        self._filesystem_scheduler_task: Optional[asyncio.Task] = None
 
     async def start(self):
         """Start the background task service."""
@@ -33,11 +36,23 @@ class BackgroundTaskService:
         await self._resume_stale_tasks()
         # Start cleanup task
         asyncio.create_task(self._cleanup_loop())
+        # Start filesystem re-indexing scheduler
+        self._filesystem_scheduler_task = asyncio.create_task(
+            self._filesystem_reindex_scheduler()
+        )
 
     async def stop(self):
         """Stop the background task service."""
         logger.info("Background task service stopping")
         self._shutdown = True
+
+        # Cancel filesystem scheduler
+        if self._filesystem_scheduler_task and not self._filesystem_scheduler_task.done():
+            self._filesystem_scheduler_task.cancel()
+            try:
+                await self._filesystem_scheduler_task
+            except asyncio.CancelledError:
+                pass
 
         # Cancel all running tasks
         for task_id, task in list(self._running_tasks.items()):
@@ -90,6 +105,83 @@ class BackgroundTaskService:
                 break
             except Exception as e:
                 logger.error(f"Error in cleanup loop: {e}")
+
+    async def _filesystem_reindex_scheduler(self):
+        """
+        Periodically check filesystem indexer tools and trigger re-indexing.
+
+        Runs every hour and checks each filesystem_indexer tool config to see
+        if it's due for re-indexing based on its configured interval.
+        """
+        # Initial delay to let the system stabilize
+        await asyncio.sleep(60)
+
+        while not self._shutdown:
+            try:
+                await self._check_and_trigger_filesystem_reindex()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in filesystem reindex scheduler: {e}")
+
+            # Check every hour
+            await asyncio.sleep(3600)
+
+    async def _check_and_trigger_filesystem_reindex(self):
+        """Check filesystem indexer tools and trigger re-indexing if due."""
+        from ragtime.indexer.filesystem_service import filesystem_indexer
+
+        try:
+            db = await repository._get_db()
+
+            # Get all enabled filesystem_indexer tool configs
+            tool_configs = await db.toolconfig.find_many(
+                where={
+                    "toolType": "filesystem_indexer",
+                    "enabled": True,
+                }
+            )
+
+            for config in tool_configs:
+                try:
+                    connection_config = config.connectionConfig
+                    if not isinstance(connection_config, dict):
+                        continue
+
+                    # Parse the connection config
+                    fs_config = FilesystemConnectionConfig(**connection_config)
+
+                    # Skip if manual-only (interval = 0)
+                    if fs_config.reindex_interval_hours <= 0:
+                        continue
+
+                    # Check if re-indexing is due
+                    last_indexed = fs_config.last_indexed_at
+                    if last_indexed:
+                        next_reindex = last_indexed + timedelta(
+                            hours=fs_config.reindex_interval_hours
+                        )
+                        if datetime.utcnow() < next_reindex:
+                            continue  # Not due yet
+
+                    # Trigger re-indexing
+                    logger.info(
+                        f"Triggering scheduled re-index for '{config.name}' "
+                        f"(last indexed: {last_indexed or 'never'})"
+                    )
+                    await filesystem_indexer.trigger_index(
+                        tool_config_id=config.id,
+                        config=fs_config,
+                        full_reindex=False,  # Incremental
+                    )
+
+                except Exception as e:
+                    logger.warning(
+                        f"Error checking filesystem tool '{config.name}': {e}"
+                    )
+
+        except Exception as e:
+            logger.error(f"Error in filesystem reindex check: {e}")
 
     def start_task(
         self,

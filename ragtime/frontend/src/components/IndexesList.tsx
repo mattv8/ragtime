@@ -148,8 +148,13 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
   return (
     <div className="card">
       <div className="section-header">
-        <h2>Available FAISS Indexes</h2>
+        <h2>Document Indexes</h2>
       </div>
+
+      <p className="section-description">
+        FAISS-based indexes created from uploaded archives or Git repositories.
+        Used for document search and RAG context retrieval.
+      </p>
 
       {errorMessage && (
         <div className="error-banner">

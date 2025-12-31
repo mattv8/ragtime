@@ -1,13 +1,35 @@
 import { useState } from 'react';
 import { api } from '@/api';
-import type { IndexJob } from '@/types';
+import type { IndexJob, FilesystemIndexJob } from '@/types';
 
 interface JobsTableProps {
   jobs: IndexJob[];
+  filesystemJobs?: FilesystemIndexJob[];
   loading: boolean;
   error: string | null;
   onJobsChanged?: () => void;
+  onFilesystemJobsChanged?: () => void;
+  onCancelFilesystemJob?: (toolId: string, jobId: string) => void;
 }
+
+// Unified job type for display
+type UnifiedJob = {
+  id: string;
+  name: string;
+  type: 'document' | 'filesystem';
+  status: string;
+  progress: number;
+  totalFiles: number;
+  processedFiles: number;
+  skippedFiles: number;
+  totalChunks: number;
+  processedChunks: number;
+  errorMessage: string | null;
+  createdAt: string;
+  phase: string;
+  // For filesystem jobs
+  toolConfigId?: string;
+};
 
 const RECENT_LIMIT = 5;
 
@@ -33,7 +55,7 @@ function getProcessingPhase(job: IndexJob): string {
 }
 
 /**
- * Calculate overall progress percentage for a job
+ * Calculate overall progress percentage for a document job
  */
 function calculateProgress(job: IndexJob): number {
   if (job.status === 'completed') return 100;
@@ -52,9 +74,57 @@ function calculateProgress(job: IndexJob): number {
   return Math.min(fileProgress + chunkProgress, 99); // Cap at 99 until completed
 }
 
-export function JobsTable({ jobs, loading, error, onJobsChanged }: JobsTableProps) {
+/**
+ * Convert IndexJob to unified job format
+ */
+function toUnifiedJob(job: IndexJob): UnifiedJob {
+  return {
+    id: job.id,
+    name: job.name,
+    type: 'document',
+    status: job.status,
+    progress: calculateProgress(job),
+    totalFiles: job.total_files,
+    processedFiles: job.processed_files,
+    skippedFiles: 0,
+    totalChunks: job.total_chunks,
+    processedChunks: job.processed_chunks,
+    errorMessage: job.error_message,
+    createdAt: job.created_at,
+    phase: getProcessingPhase(job),
+  };
+}
+
+/**
+ * Convert FilesystemIndexJob to unified job format
+ */
+function toUnifiedFilesystemJob(job: FilesystemIndexJob): UnifiedJob {
+  const progress = job.status === 'completed' ? 100
+    : job.status === 'pending' ? 0
+    : job.status === 'failed' || job.status === 'cancelled' ? 0
+    : job.total_files > 0 ? Math.round((job.processed_files / job.total_files) * 100) : 0;
+
+  return {
+    id: job.id,
+    name: job.index_name,
+    type: 'filesystem',
+    status: job.status,
+    progress,
+    totalFiles: job.total_files,
+    processedFiles: job.processed_files,
+    skippedFiles: job.skipped_files,
+    totalChunks: job.total_chunks,
+    processedChunks: job.processed_chunks,
+    errorMessage: job.error_message,
+    createdAt: job.created_at,
+    phase: job.status === 'indexing' ? 'Indexing' : '',
+    toolConfigId: job.tool_config_id,
+  };
+}
+
+export function JobsTable({ jobs, filesystemJobs = [], loading, error, onJobsChanged, onFilesystemJobsChanged, onCancelFilesystemJob }: JobsTableProps) {
   const [showAll, setShowAll] = useState(false);
-  const [selectedJob, setSelectedJob] = useState<IndexJob | null>(null);
+  const [selectedJob, setSelectedJob] = useState<UnifiedJob | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [cancelConfirmId, setCancelConfirmId] = useState<string | null>(null);
@@ -73,12 +143,17 @@ export function JobsTable({ jobs, loading, error, onJobsChanged }: JobsTableProp
     setCancelConfirmId(jobId);
   };
 
-  const confirmCancel = async (jobId: string) => {
+  const confirmCancel = async (jobId: string, jobType: 'document' | 'filesystem', toolConfigId?: string) => {
     setCancelConfirmId(null);
     setActionLoading(jobId);
     try {
-      await api.cancelJob(jobId);
-      onJobsChanged?.();
+      if (jobType === 'filesystem' && toolConfigId) {
+        await onCancelFilesystemJob?.(toolConfigId, jobId);
+        onFilesystemJobsChanged?.();
+      } else {
+        await api.cancelJob(jobId);
+        onJobsChanged?.();
+      }
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : 'Failed to cancel job');
       setTimeout(() => setErrorMessage(null), 5000);
@@ -110,9 +185,17 @@ export function JobsTable({ jobs, loading, error, onJobsChanged }: JobsTableProp
     }
   };
 
-  const displayedJobs = showAll ? jobs : jobs.slice(0, RECENT_LIMIT);
-  const hasMore = jobs.length > RECENT_LIMIT;
-  const hasActiveJobs = jobs.some((j) => j.status === 'pending' || j.status === 'processing');
+  // Combine and sort all jobs by creation date
+  const allJobs: UnifiedJob[] = [
+    ...jobs.map(toUnifiedJob),
+    ...filesystemJobs.map(toUnifiedFilesystemJob),
+  ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  const displayedJobs = showAll ? allJobs : allJobs.slice(0, RECENT_LIMIT);
+  const hasMore = allJobs.length > RECENT_LIMIT;
+  const hasActiveJobs = allJobs.some((j) =>
+    j.status === 'pending' || j.status === 'processing' || j.status === 'indexing'
+  );
 
   return (
     <div className="card">
@@ -130,7 +213,7 @@ export function JobsTable({ jobs, loading, error, onJobsChanged }: JobsTableProp
         </div>
       )}
 
-      {loading && jobs.length === 0 && (
+      {loading && allJobs.length === 0 && (
         <div className="empty-state">Loading...</div>
       )}
 
@@ -140,17 +223,18 @@ export function JobsTable({ jobs, loading, error, onJobsChanged }: JobsTableProp
         </div>
       )}
 
-      {!loading && !error && jobs.length === 0 && (
+      {!loading && !error && allJobs.length === 0 && (
         <div className="empty-state">No indexing jobs yet</div>
       )}
 
-      {jobs.length > 0 && (
+      {allJobs.length > 0 && (
         <>
           <table className="jobs-table">
             <thead>
               <tr>
                 <th>ID</th>
                 <th>Name</th>
+                <th>Type</th>
                 <th>Status</th>
                 <th>Progress</th>
                 <th>Created</th>
@@ -159,17 +243,21 @@ export function JobsTable({ jobs, loading, error, onJobsChanged }: JobsTableProp
             </thead>
             <tbody>
               {displayedJobs.map((job) => {
-                const progress = calculateProgress(job);
-                const phase = getProcessingPhase(job);
+                const isActive = job.status === 'pending' || job.status === 'processing' || job.status === 'indexing';
 
                 return (
-                  <tr key={job.id}>
+                  <tr key={`${job.type}-${job.id}`}>
                     <td>
-                      <code>{job.id}</code>
+                      <code>{job.id.slice(0, 8)}</code>
                     </td>
                     <td>{job.name}</td>
                     <td>
-                      {job.status === 'failed' && job.error_message ? (
+                      <span className={`badge type-${job.type}`}>
+                        {job.type === 'document' ? 'Document' : 'Filesystem'}
+                      </span>
+                    </td>
+                    <td>
+                      {job.status === 'failed' && job.errorMessage ? (
                         <button
                           className="badge failed clickable"
                           onClick={() => setSelectedJob(job)}
@@ -182,24 +270,26 @@ export function JobsTable({ jobs, loading, error, onJobsChanged }: JobsTableProp
                       )}
                     </td>
                     <td className="progress-cell">
-                      {job.status === 'processing' ? (
+                      {(job.status === 'processing' || job.status === 'indexing') ? (
                         <div className="progress-container">
                           <div className="progress-bar">
                             <div
                               className="progress-fill"
-                              style={{ width: `${progress}%` }}
+                              style={{ width: `${job.progress}%` }}
                             />
                           </div>
                           <div className="progress-details">
-                            <span className="progress-phase">{phase}</span>
+                            <span className="progress-phase">{job.phase}</span>
                             <span className="progress-stats">
-                              {job.total_chunks > 0 ? (
-                                <>
-                                  {job.processed_chunks}/{job.total_chunks} chunks
-                                </>
+                              {job.totalChunks > 0 ? (
+                                <>{job.processedChunks}/{job.totalChunks} chunks</>
                               ) : (
-                                <>
-                                  {job.processed_files}/{job.total_files} files
+                                <>{job.processedFiles}/{job.totalFiles} files
+                                  {job.skippedFiles > 0 && (
+                                    job.type === 'filesystem'
+                                      ? ` (${job.skippedFiles} unchanged)`
+                                      : ` (${job.skippedFiles} skipped)`
+                                  )}
                                 </>
                               )}
                             </span>
@@ -207,26 +297,46 @@ export function JobsTable({ jobs, loading, error, onJobsChanged }: JobsTableProp
                         </div>
                       ) : job.status === 'completed' ? (
                         <span className="progress-complete">
-                          {job.total_files} files, {job.total_chunks} chunks
+                          {job.type === 'filesystem' ? (
+                            <>
+                              {job.processedFiles > 0 ? (
+                                <>
+                                  {job.processedFiles} indexed, {job.totalChunks} chunks
+                                  {job.skippedFiles > 0 && ` (${job.skippedFiles} unchanged)`}
+                                </>
+                              ) : job.skippedFiles > 0 ? (
+                                <>All {job.skippedFiles} files unchanged</>
+                              ) : (
+                                <>No files to index</>
+                              )}
+                            </>
+                          ) : (
+                            <>
+                              {job.totalFiles} files, {job.totalChunks} chunks
+                              {job.skippedFiles > 0 && ` (${job.skippedFiles} skipped)`}
+                            </>
+                          )}
                         </span>
                       ) : job.status === 'pending' ? (
                         <span className="progress-pending">Waiting...</span>
+                      ) : job.status === 'cancelled' ? (
+                        <span className="progress-cancelled">Cancelled</span>
                       ) : (
                         <span className="progress-failed">--</span>
                       )}
                     </td>
-                    <td>{formatDate(job.created_at)}</td>
+                    <td>{formatDate(job.createdAt)}</td>
                     <td className="actions-cell">
                       {actionLoading === job.id ? (
                         <span className="action-loading">...</span>
                       ) : (
                         <>
-                          {(job.status === 'pending' || job.status === 'processing') && (
+                          {isActive && (
                             cancelConfirmId === job.id ? (
                               <div style={{ display: 'flex', gap: '4px' }}>
                                 <button
                                   className="action-btn action-btn-confirm"
-                                  onClick={() => confirmCancel(job.id)}
+                                  onClick={() => confirmCancel(job.id, job.type, job.toolConfigId)}
                                   title="Confirm cancel"
                                 >
                                   Confirm
@@ -249,7 +359,7 @@ export function JobsTable({ jobs, loading, error, onJobsChanged }: JobsTableProp
                               </button>
                             )
                           )}
-                          {(job.status === 'completed' || job.status === 'failed') && (
+                          {job.type === 'document' && (job.status === 'completed' || job.status === 'failed') && (
                             deleteConfirmId === job.id ? (
                               <div style={{ display: 'flex', gap: '4px' }}>
                                 <button
@@ -292,7 +402,7 @@ export function JobsTable({ jobs, loading, error, onJobsChanged }: JobsTableProp
                 className="link-btn"
                 onClick={() => setShowAll(!showAll)}
               >
-                {showAll ? `Show Recent (${RECENT_LIMIT})` : `Show All (${jobs.length})`}
+                {showAll ? `Show Recent (${RECENT_LIMIT})` : `Show All (${allJobs.length})`}
               </button>
             </div>
           )}
@@ -315,10 +425,11 @@ export function JobsTable({ jobs, loading, error, onJobsChanged }: JobsTableProp
             <div className="modal-body">
               <p><strong>Job ID:</strong> <code>{selectedJob.id}</code></p>
               <p><strong>Name:</strong> {selectedJob.name}</p>
+              <p><strong>Type:</strong> <span className={`badge type-${selectedJob.type}`}>{selectedJob.type}</span></p>
               <p><strong>Status:</strong> <span className={`badge ${selectedJob.status}`}>{selectedJob.status}</span></p>
               <div className="error-details">
                 <strong>Error Message:</strong>
-                <pre>{selectedJob.error_message}</pre>
+                <pre>{selectedJob.errorMessage}</pre>
               </div>
             </div>
           </div>

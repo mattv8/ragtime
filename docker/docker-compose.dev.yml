@@ -5,9 +5,9 @@
 # Run from repository root: docker compose -f docker/docker-compose.dev.yml up --build
 
 services:
-  # PostgreSQL database for Prisma persistence
+  # PostgreSQL database for Prisma persistence (with pgvector)
   ragtime-db:
-    image: postgres:latest
+    image: pgvector/pgvector:pg17
     container_name: ragtime-db-dev
     ports:
       - "5434:5432"

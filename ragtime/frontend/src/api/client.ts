@@ -470,6 +470,73 @@ export const api = {
     return handleResponse<SSHKeyPairResponse>(response);
   },
 
+  // =========================================================================
+  // Filesystem Indexer API
+  // =========================================================================
+
+  /**
+   * Get filesystem indexing jobs for a tool
+   */
+  async getFilesystemJobs(toolId: string): Promise<import('@/types').FilesystemIndexJob[]> {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/filesystem/jobs`);
+    return handleResponse<import('@/types').FilesystemIndexJob[]>(response);
+  },
+
+  /**
+   * Get filesystem index stats for a tool
+   */
+  async getFilesystemStats(toolId: string): Promise<import('@/types').FilesystemIndexStats> {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/filesystem/stats`);
+    return handleResponse<import('@/types').FilesystemIndexStats>(response);
+  },
+
+  /**
+   * Trigger filesystem indexing for a tool
+   */
+  async triggerFilesystemIndex(toolId: string, fullReindex?: boolean): Promise<import('@/types').FilesystemIndexJob> {
+    const params = fullReindex ? '?full_reindex=true' : '';
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/filesystem/index${params}`, {
+      method: 'POST',
+    });
+    return handleResponse<import('@/types').FilesystemIndexJob>(response);
+  },
+
+  /**
+   * Cancel an active filesystem indexing job
+   */
+  async cancelFilesystemJob(toolId: string, jobId: string): Promise<{ success: boolean; message: string }> {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/filesystem/jobs/${jobId}/cancel`, {
+      method: 'POST',
+    });
+    return handleResponse<{ success: boolean; message: string }>(response);
+  },
+
+  /**
+   * Delete filesystem index for a tool
+   */
+  async deleteFilesystemIndex(toolId: string): Promise<{ success: boolean; deleted_count: number }> {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/filesystem/index`, {
+      method: 'DELETE',
+    });
+    return handleResponse<{ success: boolean; deleted_count: number }>(response);
+  },
+
+  /**
+   * Discover current volume mounts in the container
+   */
+  async discoverMounts(): Promise<import('@/types').MountDiscoveryResponse> {
+    const response = await apiFetch(`${API_BASE}/filesystem/mounts`);
+    return handleResponse<import('@/types').MountDiscoveryResponse>(response);
+  },
+
+  /**
+   * Browse a directory in the container filesystem
+   */
+  async browseFilesystem(path: string): Promise<import('@/types').BrowseResponse> {
+    const response = await apiFetch(`${API_BASE}/filesystem/browse?path=${encodeURIComponent(path)}`);
+    return handleResponse<import('@/types').BrowseResponse>(response);
+  },
+
   /**
    * Discover Docker networks and containers
    */

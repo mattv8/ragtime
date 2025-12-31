@@ -157,6 +157,15 @@ enum ToolType {
   postgres
   odoo_shell
   ssh_shell
+  filesystem_indexer
+}
+
+/// Mount type for filesystem indexer
+enum FilesystemMountType {
+  docker_volume  // Preferred - fastest, requires container config
+  smb            // SMB/CIFS network share
+  nfs            // NFS network mount
+  local          // Direct local path (container must have access)
 }
 
 /// Configuration for a tool instance
@@ -191,7 +200,84 @@ model ToolConfig {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
+  // Relation to filesystem index jobs
+  filesystemIndexJobs FilesystemIndexJob[]
+
   @@map("tool_configs")
+}
+
+// -----------------------------------------------------------------------------
+// Filesystem Indexer (pgvector-based)
+// -----------------------------------------------------------------------------
+
+/// Filesystem indexing job status
+enum FilesystemIndexStatus {
+  pending
+  indexing
+  completed
+  failed
+  cancelled
+}
+
+/// Filesystem indexing job
+model FilesystemIndexJob {
+  id           String                @id @default(uuid())
+  toolConfigId String                @map("tool_config_id")
+  toolConfig   ToolConfig            @relation(fields: [toolConfigId], references: [id], onDelete: Cascade)
+
+  status       FilesystemIndexStatus @default(pending)
+  indexName    String                @map("index_name")
+
+  // Progress tracking
+  totalFiles       Int      @default(0) @map("total_files")
+  processedFiles   Int      @default(0) @map("processed_files")
+  skippedFiles     Int      @default(0) @map("skipped_files")  // Unchanged files
+  totalChunks      Int      @default(0) @map("total_chunks")
+  processedChunks  Int      @default(0) @map("processed_chunks")
+  errorMessage     String?  @map("error_message")
+
+  // Timing
+  createdAt   DateTime  @default(now()) @map("created_at")
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+
+  @@map("filesystem_index_jobs")
+}
+
+/// Tracks file metadata for incremental indexing
+model FilesystemFileMetadata {
+  id           String   @id @default(uuid())
+  indexName    String   @map("index_name")
+  filePath     String   @map("file_path")  // Relative path within the mount
+  fileHash     String   @map("file_hash")  // SHA-256 for change detection
+  fileSize     BigInt   @map("file_size")
+  mimeType     String?  @map("mime_type")
+  chunkCount   Int      @default(0) @map("chunk_count")
+  lastIndexed  DateTime @default(now()) @map("last_indexed")
+
+  @@unique([indexName, filePath])
+  @@index([indexName])
+  @@map("filesystem_file_metadata")
+}
+
+/// Vector embeddings stored in pgvector
+/// NOTE: Requires pgvector extension: CREATE EXTENSION IF NOT EXISTS vector;
+/// The embedding column uses raw SQL for vector type, managed via migration
+model FilesystemEmbedding {
+  id           String   @id @default(uuid())
+  indexName    String   @map("index_name")
+  filePath     String   @map("file_path")
+  chunkIndex   Int      @map("chunk_index")
+  content      String   // The text content of this chunk
+  // embedding field is added via raw SQL migration (vector type)
+
+  // Metadata for search context
+  metadata     Json     @default("{}")  // Additional context (line numbers, headings, etc.)
+
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([indexName])
+  @@map("filesystem_embeddings")
 }
 
 // -----------------------------------------------------------------------------

@@ -47,6 +47,12 @@ export function LoginPage({ authStatus, onLoginSuccess }: LoginPageProps) {
           <p className="login-subtitle">Sign in to continue</p>
         </div>
 
+        {authStatus.cookie_warning && (
+          <div className="login-warning">
+            <strong>Warning:</strong> {authStatus.cookie_warning}
+          </div>
+        )}
+
         <form onSubmit={handleSubmit} className="login-form">
           {error && (
             <div className="login-error">

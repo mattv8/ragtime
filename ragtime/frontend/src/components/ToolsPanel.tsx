@@ -175,7 +175,9 @@ export function ToolsPanel() {
     try {
       setLoading(true);
       const data = await api.listToolConfigs();
-      setTools(data);
+      // Filter out filesystem_indexer tools - they're shown in the Indexer tab
+      const connectionTools = data.filter(t => t.tool_type !== 'filesystem_indexer');
+      setTools(connectionTools);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load tools');

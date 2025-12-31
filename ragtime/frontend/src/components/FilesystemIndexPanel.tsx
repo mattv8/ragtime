@@ -1,0 +1,442 @@
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { api } from '@/api';
+import type { ToolConfig, FilesystemIndexJob, FilesystemIndexStats } from '@/types';
+import { ToolWizard } from './ToolWizard';
+
+// Polling interval for active jobs (2 seconds)
+const ACTIVE_JOB_POLL_INTERVAL = 2000;
+
+interface FilesystemIndexPanelProps {
+  onToolsChanged?: () => void;
+  onJobsChanged?: () => void;
+}
+
+interface FilesystemIndexCardProps {
+  tool: ToolConfig;
+  activeJob: FilesystemIndexJob | null;
+  stats: FilesystemIndexStats | null;
+  onStartIndex: (toolId: string, fullReindex: boolean) => void;
+  onDeleteIndex: (toolId: string) => void;
+  onEdit: (tool: ToolConfig) => void;
+  onDelete: (toolId: string) => void;
+  onToggle: (toolId: string, enabled: boolean) => void;
+  indexing: boolean;
+}
+
+function FilesystemIndexCard({
+  tool,
+  activeJob,
+  stats,
+  onStartIndex,
+  onDeleteIndex,
+  onEdit,
+  onDelete,
+  onToggle,
+  indexing,
+}: FilesystemIndexCardProps) {
+  const config = tool.connection_config as { base_path?: string; index_name?: string };
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
+
+  const isActive = activeJob && (activeJob.status === 'pending' || activeJob.status === 'indexing');
+
+  const handleDelete = () => {
+    if (deleteConfirm) {
+      onDelete(tool.id);
+      setDeleteConfirm(false);
+    } else {
+      setDeleteConfirm(true);
+    }
+  };
+
+  return (
+    <div className={`index-item filesystem-index-item ${!tool.enabled ? 'index-disabled' : ''}`}>
+      <div className="index-toggle">
+        <label className="toggle-switch" title={tool.enabled ? 'Enabled for RAG' : 'Disabled from RAG'}>
+          <input
+            type="checkbox"
+            checked={tool.enabled}
+            onChange={(e) => onToggle(tool.id, e.target.checked)}
+          />
+          <span className="toggle-slider"></span>
+        </label>
+      </div>
+      <div className="index-info">
+        <h3>{tool.name}</h3>
+        <div className="index-meta-pills">
+          <span className="meta-pill path" title={config.base_path}>
+            {config.base_path || 'Path not configured'}
+          </span>
+          {stats && stats.embedding_count > 0 && (
+            <>
+              <span className="meta-pill files">{stats.file_count} files</span>
+              <span className="meta-pill embeddings">{stats.embedding_count} embeddings</span>
+              {stats.last_indexed && (
+                <span className="meta-pill date" title={`Last indexed: ${new Date(stats.last_indexed).toLocaleString()}`}>
+                  {new Date(stats.last_indexed).toLocaleDateString()}
+                </span>
+              )}
+            </>
+          )}
+          {isActive && (
+            <span className="meta-pill active">Indexing...</span>
+          )}
+          {!tool.enabled && <span className="meta-pill disabled">Excluded from RAG</span>}
+        </div>
+
+        {/* Description */}
+        {tool.description && (
+          <p className="index-description">{tool.description}</p>
+        )}
+      </div>
+
+      <div className="index-actions">
+        {/* Indexing controls */}
+        <button
+          type="button"
+          className="btn btn-sm btn-primary"
+          onClick={() => onStartIndex(tool.id, false)}
+          disabled={indexing || isActive || !tool.enabled}
+          title="Start incremental indexing (skip unchanged files)"
+        >
+          {indexing ? 'Starting...' : 'Index'}
+        </button>
+        <button
+          type="button"
+          className="btn btn-sm"
+          onClick={() => onStartIndex(tool.id, true)}
+          disabled={indexing || isActive || !tool.enabled}
+          title="Re-index all files from scratch"
+        >
+          Full
+        </button>
+
+        {/* Management controls */}
+        <button
+          type="button"
+          className="btn btn-sm btn-secondary"
+          onClick={() => onEdit(tool)}
+          title="Edit configuration"
+        >
+          Edit
+        </button>
+
+        {stats && stats.embedding_count > 0 && !isActive && (
+          <button
+            type="button"
+            className="btn btn-sm btn-warning"
+            onClick={() => onDeleteIndex(tool.id)}
+            title="Delete all indexed embeddings"
+          >
+            Clear
+          </button>
+        )}
+
+        {deleteConfirm ? (
+          <>
+            <button
+              type="button"
+              className="btn btn-sm btn-success"
+              onClick={handleDelete}
+              title="Confirm delete"
+            >
+              Confirm
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm btn-secondary"
+              onClick={() => setDeleteConfirm(false)}
+              title="Cancel"
+            >
+              Cancel
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-sm btn-danger"
+            onClick={handleDelete}
+            title="Delete this filesystem index configuration"
+          >
+            Delete
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged }: FilesystemIndexPanelProps) {
+  const [tools, setTools] = useState<ToolConfig[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  // Wizard state
+  const [showWizard, setShowWizard] = useState(false);
+  const [editingTool, setEditingTool] = useState<ToolConfig | null>(null);
+
+  // Job state
+  const [filesystemJobs, setFilesystemJobs] = useState<Record<string, FilesystemIndexJob | null>>({});
+  const [filesystemStats, setFilesystemStats] = useState<Record<string, FilesystemIndexStats | null>>({});
+  const [indexingToolId, setIndexingToolId] = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Confirmation state
+  const [confirmation, setConfirmation] = useState<{
+    message: string;
+    onConfirm: () => void;
+  } | null>(null);
+
+  // Load filesystem indexer tools
+  const loadTools = useCallback(async () => {
+    try {
+      setLoading(true);
+      const allTools = await api.listToolConfigs();
+      // Filter to only filesystem indexers
+      const fsTools = allTools.filter(t => t.tool_type === 'filesystem_indexer');
+      setTools(fsTools);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load filesystem indexes');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // Fetch job status and stats for all filesystem tools
+  const fetchStatus = useCallback(async () => {
+    if (tools.length === 0) return;
+
+    const jobUpdates: Record<string, FilesystemIndexJob | null> = {};
+    const statsUpdates: Record<string, FilesystemIndexStats | null> = {};
+
+    await Promise.all(tools.map(async (tool) => {
+      try {
+        const [jobs, stats] = await Promise.all([
+          api.getFilesystemJobs(tool.id),
+          api.getFilesystemStats(tool.id).catch(() => null),
+        ]);
+        // Get the most recent active job, or most recent completed job
+        const activeJob = jobs.find(j => j.status === 'pending' || j.status === 'indexing');
+        const recentJob = activeJob || jobs[0] || null;
+        jobUpdates[tool.id] = recentJob;
+        statsUpdates[tool.id] = stats;
+      } catch (err) {
+        console.warn(`Failed to fetch status for ${tool.id}:`, err);
+      }
+    }));
+
+    setFilesystemJobs(prev => ({ ...prev, ...jobUpdates }));
+    setFilesystemStats(prev => ({ ...prev, ...statsUpdates }));
+  }, [tools]);
+
+  // Initial load
+  useEffect(() => {
+    loadTools();
+  }, [loadTools]);
+
+  // Fetch status when tools change
+  useEffect(() => {
+    if (tools.length > 0) {
+      fetchStatus();
+    }
+  }, [tools, fetchStatus]);
+
+  // Fast polling when jobs are active
+  useEffect(() => {
+    const hasActiveJob = Object.values(filesystemJobs).some(
+      job => job && (job.status === 'pending' || job.status === 'indexing')
+    );
+
+    if (hasActiveJob) {
+      pollRef.current = setInterval(fetchStatus, ACTIVE_JOB_POLL_INTERVAL);
+    } else {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    }
+
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+      }
+    };
+  }, [filesystemJobs, fetchStatus]);
+
+  // Handlers
+  const handleStartIndex = async (toolId: string, fullReindex: boolean) => {
+    try {
+      setIndexingToolId(toolId);
+      await api.triggerFilesystemIndex(toolId, fullReindex);
+      setSuccess(fullReindex ? 'Full reindex started' : 'Indexing started');
+      setTimeout(() => setSuccess(null), 3000);
+      await fetchStatus();
+      onJobsChanged?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start indexing');
+    } finally {
+      setIndexingToolId(null);
+    }
+  };
+
+  const handleDeleteIndex = async (toolId: string) => {
+    setConfirmation({
+      message: 'Are you sure you want to delete all indexed embeddings? This cannot be undone.',
+      onConfirm: async () => {
+        setConfirmation(null);
+        try {
+          const result = await api.deleteFilesystemIndex(toolId);
+          setSuccess(`Deleted ${result.deleted_count} embeddings`);
+          setTimeout(() => setSuccess(null), 3000);
+          await fetchStatus();
+        } catch (err) {
+          setError(err instanceof Error ? err.message : 'Failed to delete index');
+        }
+      },
+    });
+  };
+
+  const handleDeleteTool = async (toolId: string) => {
+    setConfirmation({
+      message: 'Are you sure you want to delete this filesystem index configuration?',
+      onConfirm: async () => {
+        setConfirmation(null);
+        try {
+          await api.deleteToolConfig(toolId);
+          await loadTools();
+          onToolsChanged?.();
+          setSuccess('Filesystem index deleted');
+          setTimeout(() => setSuccess(null), 3000);
+        } catch (err) {
+          setError(err instanceof Error ? err.message : 'Failed to delete');
+        }
+      },
+    });
+  };
+
+  const handleToggleTool = async (toolId: string, enabled: boolean) => {
+    try {
+      await api.toggleToolConfig(toolId, enabled);
+      await loadTools();
+      onToolsChanged?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to toggle');
+    }
+  };
+
+  const handleEdit = (tool: ToolConfig) => {
+    setEditingTool(tool);
+    setShowWizard(true);
+  };
+
+  const handleAddNew = () => {
+    setEditingTool(null);
+    setShowWizard(true);
+  };
+
+  const handleWizardClose = () => {
+    setShowWizard(false);
+    setEditingTool(null);
+  };
+
+  const handleWizardSave = async () => {
+    setShowWizard(false);
+    setEditingTool(null);
+    await loadTools();
+    onToolsChanged?.();
+    setSuccess('Filesystem index configuration saved');
+    setTimeout(() => setSuccess(null), 3000);
+  };
+
+  if (showWizard) {
+    return (
+      <ToolWizard
+        existingTool={editingTool}
+        onClose={handleWizardClose}
+        onSave={handleWizardSave}
+        defaultToolType="filesystem_indexer"
+      />
+    );
+  }
+
+  return (
+    <div className="card filesystem-index-panel">
+      {/* Confirmation Modal */}
+      {confirmation && (
+        <div className="modal-overlay" onClick={() => setConfirmation(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Confirm Action</h3>
+              <button className="modal-close" onClick={() => setConfirmation(null)}>x</button>
+            </div>
+            <div className="modal-body">
+              <p>{confirmation.message}</p>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setConfirmation(null)}>
+                Cancel
+              </button>
+              <button className="btn btn-danger" onClick={confirmation.onConfirm}>
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="section-header">
+        <h2>Filesystem Indexes</h2>
+        <button type="button" className="btn" onClick={handleAddNew}>
+          Add Filesystem Index
+        </button>
+      </div>
+
+      <p className="section-description">
+        Index files from mounted volumes (Docker mounts, SMB shares, NFS) for RAG queries.
+        Uses pgvector for efficient similarity search.
+      </p>
+
+      {error && (
+        <div className="error-banner">
+          {error}
+          <button onClick={() => setError(null)}>x</button>
+        </div>
+      )}
+
+      {success && (
+        <div className="success-banner">
+          {success}
+        </div>
+      )}
+
+      {loading && tools.length === 0 && (
+        <div className="empty-state">Loading...</div>
+      )}
+
+      {!loading && tools.length === 0 && (
+        <div className="empty-state">
+          <p>No filesystem indexes configured yet.</p>
+          <p className="muted">
+            Click "Add Filesystem Index" to set up indexing for files in mounted volumes.
+          </p>
+        </div>
+      )}
+
+      {tools.map((tool) => (
+        <FilesystemIndexCard
+          key={tool.id}
+          tool={tool}
+          activeJob={filesystemJobs[tool.id] || null}
+          stats={filesystemStats[tool.id] || null}
+          onStartIndex={handleStartIndex}
+          onDeleteIndex={handleDeleteIndex}
+          onEdit={handleEdit}
+          onDelete={handleDeleteTool}
+          onToggle={handleToggleTool}
+          indexing={indexingToolId === tool.id}
+        />
+      ))}
+    </div>
+  );
+}

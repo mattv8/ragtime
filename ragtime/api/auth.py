@@ -136,6 +136,7 @@ class AuthStatusResponse(BaseModel):
     debug_mode: bool = False
     debug_username: Optional[str] = None
     debug_password: Optional[str] = None
+    cookie_warning: Optional[str] = None  # Warning about cookie/protocol mismatch
 
 
 # =============================================================================
@@ -143,10 +144,35 @@ class AuthStatusResponse(BaseModel):
 # =============================================================================
 
 
+def _detect_cookie_mismatch(request: Request) -> Optional[str]:
+    """Detect cookie secure flag vs protocol mismatch."""
+    # Check if request came over HTTPS (directly or via proxy)
+    is_https = (
+        request.url.scheme == "https" or
+        request.headers.get("x-forwarded-proto", "").lower() == "https"
+    )
+
+    if settings.session_cookie_secure and not is_https:
+        return (
+            "Security misconfiguration: SESSION_COOKIE_SECURE=true but you are "
+            "connecting over HTTP. Cookies will not be sent, causing auth to fail silently. "
+            "Either set SESSION_COOKIE_SECURE=false or access via HTTPS."
+        )
+
+    if not settings.session_cookie_secure and is_https:
+        return (
+            "Security notice: You are connecting over HTTPS but SESSION_COOKIE_SECURE=false. "
+            "Consider setting SESSION_COOKIE_SECURE=true for better security."
+        )
+
+    return None
+
+
 @router.get("/status", response_model=AuthStatusResponse)
-async def get_auth_status():
+async def get_auth_status(request: Request):
     """Get authentication system status."""
     ldap_config = await get_ldap_config()
+    cookie_warning = _detect_cookie_mismatch(request)
 
     return AuthStatusResponse(
         authenticated=False,  # This endpoint is for unauthenticated users
@@ -155,6 +181,7 @@ async def get_auth_status():
         debug_mode=settings.debug_mode,
         debug_username=settings.local_admin_user if settings.debug_mode else None,
         debug_password=settings.local_admin_password if settings.debug_mode else None,
+        cookie_warning=cookie_warning,
     )
 
 

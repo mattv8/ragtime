@@ -269,6 +269,15 @@ class ToolType(str, Enum):
     POSTGRES = "postgres"
     ODOO_SHELL = "odoo_shell"
     SSH_SHELL = "ssh_shell"
+    FILESYSTEM_INDEXER = "filesystem_indexer"
+
+
+class FilesystemMountType(str, Enum):
+    """Mount type for filesystem indexer."""
+    DOCKER_VOLUME = "docker_volume"  # Preferred - fastest, requires container config
+    SMB = "smb"                       # SMB/CIFS network share
+    NFS = "nfs"                       # NFS network mount
+    LOCAL = "local"                   # Direct local path
 
 
 class PostgresConnectionConfig(BaseModel):
@@ -340,6 +349,154 @@ class SSHShellConnectionConfig(BaseModel):
     command_prefix: str = Field(
         default="",
         description="Command prefix (e.g., 'cd /app && ' or 'source venv/bin/activate && ')"
+    )
+
+
+class FilesystemConnectionConfig(BaseModel):
+    """Connection configuration for filesystem indexer tool."""
+    # Mount configuration
+    mount_type: FilesystemMountType = Field(
+        default=FilesystemMountType.DOCKER_VOLUME,
+        description="How to access the filesystem (docker_volume recommended)"
+    )
+    base_path: str = Field(
+        description="Base path to index (e.g., /mnt/data for docker volume, //server/share for SMB)"
+    )
+
+    # Docker volume settings (when mount_type is docker_volume)
+    volume_name: str = Field(
+        default="",
+        description="Docker volume name (for display purposes - actual mount handled in docker-compose)"
+    )
+
+    # SMB settings (when mount_type is smb)
+    smb_host: str = Field(default="", description="SMB server hostname/IP")
+    smb_share: str = Field(default="", description="SMB share name")
+    smb_user: str = Field(default="", description="SMB username")
+    smb_password: str = Field(default="", description="SMB password")
+    smb_domain: str = Field(default="", description="SMB domain (optional)")
+
+    # NFS settings (when mount_type is nfs)
+    nfs_host: str = Field(default="", description="NFS server hostname/IP")
+    nfs_export: str = Field(default="", description="NFS export path")
+    nfs_options: str = Field(default="ro,noatime", description="NFS mount options")
+
+    # Indexing configuration
+    index_name: str = Field(description="Name for this index (used in embeddings table)")
+    file_patterns: List[str] = Field(
+        default=["**/*.txt", "**/*.md", "**/*.pdf", "**/*.docx", "**/*.py", "**/*.json"],
+        description="Glob patterns for files to include"
+    )
+    exclude_patterns: List[str] = Field(
+        default=["**/node_modules/**", "**/__pycache__/**", "**/venv/**", "**/.git/**", "**/.*"],
+        description="Glob patterns for files/dirs to exclude"
+    )
+    recursive: bool = Field(default=True, description="Recursively index subdirectories")
+    chunk_size: int = Field(default=1000, ge=100, le=4000, description="Chunk size for text splitting")
+    chunk_overlap: int = Field(default=200, ge=0, le=1000, description="Overlap between chunks")
+
+    # Safety limits
+    max_file_size_mb: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Maximum file size to index (MB)"
+    )
+    max_total_files: int = Field(
+        default=10000,
+        ge=1,
+        le=100000,
+        description="Maximum total files to index"
+    )
+    allowed_extensions: List[str] = Field(
+        default=[".txt", ".md", ".pdf", ".docx", ".doc", ".py", ".js", ".ts", ".json", ".xml", ".html", ".csv", ".rst"],
+        description="Allowed file extensions (security filter)"
+    )
+
+    # Re-indexing schedule
+    reindex_interval_hours: int = Field(
+        default=24,
+        ge=0,
+        le=8760,  # Max 1 year
+        description="Hours between automatic re-indexing (0 = manual only)"
+    )
+    last_indexed_at: Optional[datetime] = Field(
+        default=None,
+        description="Timestamp of last completed index"
+    )
+
+
+class FilesystemIndexStatus(str, Enum):
+    """Status of a filesystem indexing job."""
+    PENDING = "pending"
+    INDEXING = "indexing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class FilesystemIndexJob(BaseModel):
+    """A filesystem indexing job."""
+    id: str
+    tool_config_id: str
+    status: FilesystemIndexStatus = FilesystemIndexStatus.PENDING
+    index_name: str
+
+    # Progress tracking
+    total_files: int = 0
+    processed_files: int = 0
+    skipped_files: int = 0  # Unchanged files (incremental)
+    total_chunks: int = 0
+    processed_chunks: int = 0
+    error_message: Optional[str] = None
+
+    # Timing
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+    @property
+    def progress_percent(self) -> float:
+        if self.total_files == 0:
+            return 0.0
+        return ((self.processed_files + self.skipped_files) / self.total_files) * 100
+
+
+class FilesystemFileMetadata(BaseModel):
+    """Metadata for a file in the filesystem index."""
+    id: Optional[str] = None
+    index_name: str
+    file_path: str  # Relative path within the mount
+    file_hash: str  # SHA-256 for change detection
+    file_size: int
+    mime_type: Optional[str] = None
+    chunk_count: int = 0
+    last_indexed: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FilesystemIndexJobResponse(BaseModel):
+    """Response for filesystem index job status."""
+    id: str
+    tool_config_id: str
+    status: FilesystemIndexStatus
+    index_name: str
+    progress_percent: float
+    total_files: int
+    processed_files: int
+    skipped_files: int
+    total_chunks: int
+    processed_chunks: int
+    error_message: Optional[str] = None
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+
+class TriggerFilesystemIndexRequest(BaseModel):
+    """Request to trigger filesystem indexing for a tool config."""
+    full_reindex: bool = Field(
+        default=False,
+        description="If true, re-index all files regardless of change detection"
     )
 
 

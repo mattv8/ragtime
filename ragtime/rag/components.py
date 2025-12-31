@@ -458,6 +458,8 @@ class RAGComponents:
                 tool = await self._create_odoo_tool(config, tool_name, tool_id)
             elif tool_type == "ssh_shell":
                 tool = await self._create_ssh_tool(config, tool_name, tool_id)
+            elif tool_type == "filesystem_indexer":
+                tool = await self._create_filesystem_tool(config, tool_name, tool_id)
             else:
                 logger.warning(f"Unknown tool type: {tool_type}")
                 continue
@@ -846,6 +848,52 @@ except Exception as e:
             name=f"ssh_{tool_name}",
             description=tool_description,
             args_schema=SSHInput
+        )
+
+    async def _create_filesystem_tool(self, config: dict, tool_name: str, tool_id: str):
+        """Create a filesystem search tool from config."""
+        from langchain_core.tools import StructuredTool
+        from pydantic import BaseModel, Field
+        from ragtime.tools.filesystem_indexer import search_filesystem_index
+
+        conn_config = config.get("connection_config", {})
+        description = config.get("description", "")
+        index_name = conn_config.get("index_name", "")
+
+        # Store tool_id for potential future use in logging/tracking
+        _tool_id = tool_id  # noqa: F841
+
+        class FilesystemSearchInput(BaseModel):
+            query: str = Field(
+                description="Natural language search query to find relevant documents/files"
+            )
+            max_results: int = Field(
+                default=10,
+                ge=1,
+                le=50,
+                description="Maximum number of results to return"
+            )
+
+        async def search_filesystem(query: str, max_results: int = 10, **_: Any) -> str:
+            """Search the filesystem index."""
+            logger.info(f"[{tool_name}] Filesystem search: {query[:100]}...")
+            return await search_filesystem_index(
+                query=query,
+                index_name=index_name,
+                max_results=max_results,
+            )
+
+        tool_description = f"Search indexed documents from {config.get('name', 'filesystem')}."
+        if description:
+            tool_description += f" {description}"
+        if index_name:
+            tool_description += f" (Index: {index_name})"
+
+        return StructuredTool.from_function(
+            coroutine=search_filesystem,
+            name=f"search_{tool_name}",
+            description=tool_description,
+            args_schema=FilesystemSearchInput
         )
 
     def get_context_from_retrievers(self, query: str, max_docs: int = 5) -> tuple[str, list[dict]]:

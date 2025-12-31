@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { api } from '@/api';
 import type { DockerContainer, DockerNetwork } from '@/api';
 import type {
@@ -8,11 +8,395 @@ import type {
   PostgresConnectionConfig,
   OdooShellConnectionConfig,
   SSHShellConnectionConfig,
+  FilesystemConnectionConfig,
+  FilesystemMountType,
   ConnectionConfig,
+  MountInfo,
+  DirectoryEntry,
 } from '@/types';
-import { TOOL_TYPE_INFO } from '@/types';
+import { TOOL_TYPE_INFO, MOUNT_TYPE_INFO } from '@/types';
 
+// System mounts to filter out from the "Available Mounts" display
+// These are internal container mounts not useful for user filesystem indexing
+const SYSTEM_MOUNT_PATTERNS = [
+  '/root/.ssh',
+  '/docker-scripts',
+  '/docker-entrypoint',
+  '/ragtime/ragtime',
+  '/ragtime/requirements.txt',
+  '/ragtime/prisma',
+  '/ragtime/data',
+  '/var/run/docker.sock',
+  '/etc/localtime',
+  '/etc/timezone',
+  '/app/node_modules',
+];
+
+function isSystemMount(containerPath: string): boolean {
+  return SYSTEM_MOUNT_PATTERNS.some(pattern =>
+    containerPath === pattern || containerPath.startsWith(pattern + '/')
+  );
+}
+
+// =============================================================================
+// Filesystem Browser Component
+// =============================================================================
+
+interface FilesystemBrowserProps {
+  currentPath: string;
+  onSelectPath: (path: string) => void;
+}
+
+function FilesystemBrowser({ currentPath, onSelectPath }: FilesystemBrowserProps) {
+  const [mounts, setMounts] = useState<MountInfo[]>([]);
+  const [entries, setEntries] = useState<DirectoryEntry[]>([]);
+  const [browsePath, setBrowsePath] = useState<string>('');
+  const [pathInput, setPathInput] = useState<string>(''); // User-typed path for filtering
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [dockerExample, setDockerExample] = useState<string>('');
+  const [showMountGuide, setShowMountGuide] = useState(false);
+  const [expandedMount, setExpandedMount] = useState<string | null>(null); // Which mount is being browsed
+  const initializedRef = useRef(false);
+  const pathInputRef = useRef<HTMLInputElement>(null);
+
+  // Load mounts on first render
+  useEffect(() => {
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+
+    const loadMounts = async () => {
+      try {
+        const result = await api.discoverMounts();
+        const userMounts = result.mounts.filter(m => !isSystemMount(m.container_path));
+        setMounts(userMounts);
+        setDockerExample(result.docker_compose_example);
+        // If editing with existing path, expand that mount
+        if (currentPath) {
+          const matchingMount = userMounts.find(m => currentPath.startsWith(m.container_path));
+          if (matchingMount) {
+            setExpandedMount(matchingMount.container_path);
+            setBrowsePath(currentPath);
+            setPathInput(''); // Filter starts empty
+          }
+        }
+      } catch (err) {
+        console.error('Failed to discover mounts:', err);
+      }
+    };
+    loadMounts();
+  }, [currentPath]);
+
+  // Browse current path when expanded
+  const browseCurrent = useCallback(async () => {
+    if (!browsePath || !expandedMount) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await api.browseFilesystem(browsePath);
+      if (result.error) {
+        setError(result.error);
+        setEntries([]);
+      } else {
+        const filteredEntries = result.entries.filter(e => !isSystemMount(e.path));
+        setEntries(filteredEntries);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Browse failed');
+    } finally {
+      setLoading(false);
+    }
+  }, [browsePath, expandedMount]);
+
+  useEffect(() => {
+    browseCurrent();
+  }, [browseCurrent]);
+
+  // Helper to get relative path from mount
+  const getRelativePath = (fullPath: string, mountPath: string): string => {
+    if (fullPath === mountPath) return '';
+    return fullPath.slice(mountPath.length).replace(/^\//, '');
+  };
+
+  // Helper to build full path from relative
+  const buildFullPath = (relativePath: string, mountPath: string): string => {
+    if (!relativePath) return mountPath;
+    return `${mountPath.replace(/\/$/, '')}/${relativePath.replace(/^\//, '')}`;
+  };
+
+  const handleExpandMount = (mountPath: string) => {
+    if (expandedMount === mountPath) {
+      setExpandedMount(null); // Collapse if clicking same mount
+    } else {
+      setExpandedMount(mountPath);
+      setBrowsePath(mountPath);
+      setPathInput(''); // Start with empty relative path
+    }
+  };
+
+  const handleNavigate = (path: string) => {
+    setBrowsePath(path);
+    setPathInput(''); // Clear filter when navigating
+  };
+
+  // Handle filter input changes - navigate when "/" is typed after a matching dir
+  const handleFilterChange = async (value: string) => {
+    // Check if user typed a "/" which means they want to navigate into a dir
+    if (value.endsWith('/')) {
+      const dirName = value.slice(0, -1); // Remove trailing slash
+      const matchingDir = entries.find(
+        e => e.is_dir && e.name.toLowerCase() === dirName.toLowerCase()
+      );
+      if (matchingDir) {
+        // Navigate into the directory
+        setBrowsePath(matchingDir.path);
+        setPathInput(''); // Clear filter for new directory
+        return;
+      }
+    }
+
+    // Check for path segments - if there's a "/" in the middle, navigate through
+    if (value.includes('/')) {
+      const segments = value.split('/');
+      const firstSegment = segments[0];
+      const restOfPath = segments.slice(1).join('/');
+
+      const matchingDir = entries.find(
+        e => e.is_dir && e.name.toLowerCase() === firstSegment.toLowerCase()
+      );
+      if (matchingDir) {
+        // Navigate into first segment and set remaining as filter
+        setBrowsePath(matchingDir.path);
+        setPathInput(restOfPath);
+        return;
+      }
+    }
+
+    setPathInput(value);
+  };
+
+  // Filter entries based on current input (only the part before any "/")
+  const filterText = pathInput.split('/')[0];
+  const filteredEntries = entries.filter(e => {
+    if (!filterText) return true;
+    return e.name.toLowerCase().startsWith(filterText.toLowerCase());
+  });
+
+  // Handle Enter key to navigate to first matching directory
+  const handlePathInputKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const firstDir = filteredEntries.find(e => e.is_dir);
+      if (firstDir) {
+        handleNavigate(firstDir.path);
+      }
+    }
+  };
+
+  const handleGoUp = () => {
+    const parts = browsePath.split('/').filter(Boolean);
+    if (parts.length > 1) {
+      parts.pop();
+      const newPath = '/' + parts.join('/');
+      // Don't go above the mount point
+      if (expandedMount && newPath.startsWith(expandedMount.replace(/\/$/, '').split('/').slice(0, -1).join('/') || '/')) {
+        setBrowsePath(newPath);
+        setPathInput(''); // Clear filter when navigating
+      }
+    }
+  };
+
+  const handleSelect = (path: string) => {
+    onSelectPath(path);
+    setExpandedMount(null); // Collapse after selection
+  };
+
+  // If we have a selection, show compact view
+  if (currentPath && !expandedMount && !showMountGuide) {
+    return (
+      <div className="filesystem-browser">
+        <div className="selected-path-display">
+          <span className="selected-label">Path:</span>
+          <span className="selected-value">{currentPath}</span>
+          <button
+            type="button"
+            className="btn btn-sm btn-secondary"
+            onClick={() => {
+              const matchingMount = mounts.find(m => currentPath.startsWith(m.container_path));
+              if (matchingMount) {
+                setExpandedMount(matchingMount.container_path);
+                setBrowsePath(currentPath);
+              } else if (mounts.length > 0) {
+                setExpandedMount(mounts[0].container_path);
+                setBrowsePath(mounts[0].container_path);
+              }
+            }}
+          >
+            Change
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="filesystem-browser">
+      {/* Header with guide link */}
+      <div className="mounts-header">
+        <span className="mounts-title">Select a Docker Mount:</span>
+        <button
+          type="button"
+          className="btn-link"
+          onClick={() => setShowMountGuide(!showMountGuide)}
+        >
+          {showMountGuide ? 'Back to Mounts' : 'How to Add a Mount'}
+        </button>
+      </div>
+
+      {/* Mount Guide */}
+      {showMountGuide && (
+        <div className="mount-guide">
+          <h4>How to Add a Volume Mount</h4>
+          <pre className="code-block">{dockerExample}</pre>
+          <p className="field-help">
+            After modifying docker-compose.yml, restart the container with:
+            <code>docker compose -f docker/docker-compose.dev.yml restart ragtime</code>
+          </p>
+        </div>
+      )}
+
+      {/* Mount list with expandable browser */}
+      {!showMountGuide && mounts.length > 0 && (
+        <div className="mounts-accordion">
+          {mounts.map((mount, i) => (
+            <div key={i} className={`mount-item ${expandedMount === mount.container_path ? 'expanded' : ''}`}>
+              <button
+                type="button"
+                className="mount-header"
+                onClick={() => handleExpandMount(mount.container_path)}
+              >
+                <span className="mount-icon">{expandedMount === mount.container_path ? '▼' : '▶'}</span>
+                <span className="mount-path">{mount.container_path}</span>
+                {mount.read_only && <span className="ro-badge">Read Only</span>}
+                {currentPath?.startsWith(mount.container_path) && (
+                  <span className="current-badge">Current</span>
+                )}
+              </button>
+
+              {/* Expanded browser for this mount */}
+              {expandedMount === mount.container_path && (
+                <div className="mount-browser">
+                  <div className="browser-header">
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={handleGoUp}
+                      disabled={browsePath === mount.container_path || loading}
+                    >
+                      ..
+                    </button>
+                    <div className="browser-path-wrapper">
+                      {browsePath !== mount.container_path && (() => {
+                        const relativePath = getRelativePath(browsePath, mount.container_path);
+                        const segments = relativePath.split('/').filter(Boolean);
+                        return (
+                          <span className="browser-path-breadcrumbs">
+                            {segments.map((segment, idx) => {
+                              // Build the path up to this segment
+                              const pathToSegment = mount.container_path + '/' + segments.slice(0, idx + 1).join('/');
+                              return (
+                                <span key={idx} className="breadcrumb-segment">
+                                  <button
+                                    type="button"
+                                    className="breadcrumb-btn"
+                                    onClick={() => handleNavigate(pathToSegment)}
+                                  >
+                                    {segment}
+                                  </button>
+                                  <span className="breadcrumb-sep">/</span>
+                                </span>
+                              );
+                            })}
+                          </span>
+                        );
+                      })()}
+                      <input
+                        ref={pathInputRef}
+                        type="text"
+                        className="browser-path-input"
+                        value={pathInput}
+                        onChange={(e) => handleFilterChange(e.target.value)}
+                        onKeyDown={handlePathInputKeyDown}
+                        placeholder="Filter..."
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary"
+                      onClick={() => handleSelect(browsePath)}
+                    >
+                      Select
+                    </button>
+                  </div>
+
+                  {error && <div className="browser-error">{error}</div>}
+
+                  {loading ? (
+                    <div className="browser-loading">Loading...</div>
+                  ) : (
+                    <div className="browser-entries">
+                      {filteredEntries.filter(e => e.is_dir).map((entry) => (
+                        <button
+                          key={entry.path}
+                          type="button"
+                          className="browser-entry"
+                          onClick={() => handleNavigate(entry.path)}
+                        >
+                          <span className="entry-icon">📁</span>
+                          <span className="entry-name">{entry.name}</span>
+                        </button>
+                      ))}
+                      {filteredEntries.filter(e => !e.is_dir).slice(0, 3).map((entry) => (
+                        <div key={entry.path} className="browser-entry file">
+                          <span className="entry-icon">📄</span>
+                          <span className="entry-name">{entry.name}</span>
+                        </div>
+                      ))}
+                      {filteredEntries.filter(e => !e.is_dir).length > 3 && (
+                        <div className="browser-more">
+                          +{filteredEntries.filter(e => !e.is_dir).length - 3} more files
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* No mounts warning */}
+      {!showMountGuide && mounts.length === 0 && (
+        <div className="no-mounts-warning">
+          <p>No Docker volumes found. Add a volume mount to your docker-compose.yml to index files.</p>
+          <button
+            type="button"
+            className="btn btn-sm btn-secondary"
+            onClick={() => setShowMountGuide(true)}
+          >
+            Show Mount Guide
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// =============================================================================
 // Shared Docker connection panel props
+// =============================================================================
+
 interface DockerConnectionPanelProps {
   // State
   dockerContainers: DockerContainer[];
@@ -435,6 +819,7 @@ interface ToolWizardProps {
   existingTool: ToolConfig | null;
   onClose: () => void;
   onSave: () => void;
+  defaultToolType?: ToolType;
 }
 
 type WizardStep = 'type' | 'connection' | 'description' | 'options' | 'review';
@@ -456,19 +841,22 @@ function getStepTitle(step: WizardStep): string {
   }
 }
 
-export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
+export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: ToolWizardProps) {
   const isEditing = existingTool !== null;
   const progressRef = useRef<HTMLDivElement>(null);
 
-  // Wizard state
-  const [currentStep, setCurrentStep] = useState<WizardStep>(isEditing ? 'connection' : 'type');
+  // Wizard state - skip type selection if defaultToolType is provided
+  const skipTypeStep = !isEditing && defaultToolType !== undefined;
+  const [currentStep, setCurrentStep] = useState<WizardStep>(
+    isEditing ? 'connection' : (skipTypeStep ? 'connection' : 'type')
+  );
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string; details?: unknown } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Form state
-  const [toolType, setToolType] = useState<ToolType>(existingTool?.tool_type || 'postgres');
+  // Form state - use defaultToolType if provided
+  const [toolType, setToolType] = useState<ToolType>(existingTool?.tool_type || defaultToolType || 'postgres');
 
   // Auto-scroll active step into view
   useEffect(() => {
@@ -525,6 +913,36 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
       : { host: '', port: 22, user: '', key_path: '', key_content: '', public_key: '', key_passphrase: '', password: '', command_prefix: '' }
   );
 
+  // Filesystem Indexer config state
+  const [filesystemConfig, setFilesystemConfig] = useState<FilesystemConnectionConfig>(
+    existingTool?.tool_type === 'filesystem_indexer'
+      ? (existingTool.connection_config as FilesystemConnectionConfig)
+      : {
+          mount_type: 'docker_volume',
+          base_path: '',
+          volume_name: '',
+          smb_host: '',
+          smb_share: '',
+          smb_user: '',
+          smb_password: '',
+          smb_domain: '',
+          nfs_host: '',
+          nfs_export: '',
+          nfs_options: 'ro,noatime',
+          index_name: '',
+          file_patterns: ['**/*.txt', '**/*.md', '**/*.pdf', '**/*.docx', '**/*.xlsx', '**/*.pptx', '**/*.py', '**/*.json'],
+          exclude_patterns: ['**/node_modules/**', '**/__pycache__/**', '**/venv/**', '**/.git/**', '**/.*', '**/*.cloud', '**/*.icloud'],
+          recursive: true,
+          chunk_size: 1000,
+          chunk_overlap: 200,
+          max_file_size_mb: 10,
+          max_total_files: 10000,
+          allowed_extensions: ['.txt', '.md', '.pdf', '.docx', '.doc', '.xlsx', '.xls', '.pptx', '.odt', '.ods', '.odp', '.py', '.js', '.ts', '.json', '.xml', '.html', '.csv', '.rst'],
+          reindex_interval_hours: 24,
+          last_indexed_at: null,
+        }
+  );
+
   // SSH Key management state
   const [sshKeyMode, setSshKeyMode] = useState<'generate' | 'upload' | 'path' | 'password'>(
     (() => {
@@ -553,6 +971,8 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
         return { ...odooConfig, mode: odooConnectionMode };
       case 'ssh_shell':
         return sshConfig;
+      case 'filesystem_indexer':
+        return filesystemConfig;
     }
   };
 
@@ -842,6 +1262,9 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
           sshConfig.password
         );
         return Boolean(sshConfig.host && sshConfig.user && hasSshAuth);
+      case 'filesystem_indexer':
+        // Need base_path and index_name
+        return Boolean(filesystemConfig.base_path && filesystemConfig.index_name);
     }
   };
 
@@ -860,7 +1283,7 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
               onClick={() => setToolType(type)}
             >
               <span className="tool-type-option-icon">
-                {info.icon === 'database' ? '🗄️' : info.icon === 'terminal' ? '💻' : '🖥️'}
+                {info.icon === 'database' ? '🗄️' : info.icon === 'terminal' ? '💻' : info.icon === 'folder' ? '📁' : '🖥️'}
               </span>
               <span className="tool-type-option-name">{info.name}</span>
               <span className="tool-type-option-desc">{info.description}</span>
@@ -1313,6 +1736,285 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
     </div>
   );
 
+  const renderFilesystemConnection = () => (
+    <div className="connection-panel">
+      {/* Mount Type Selection */}
+      <div className="form-group">
+        <label>Mount Type</label>
+        <div className="mount-type-tabs">
+          {(Object.keys(MOUNT_TYPE_INFO) as FilesystemMountType[]).map((type) => (
+            <button
+              key={type}
+              type="button"
+              className={`mount-type-tab ${filesystemConfig.mount_type === type ? 'active' : ''}`}
+              onClick={() => setFilesystemConfig({ ...filesystemConfig, mount_type: type })}
+            >
+              {MOUNT_TYPE_INFO[type].name}
+              {MOUNT_TYPE_INFO[type].recommended && <span className="recommended-badge">Recommended</span>}
+            </button>
+          ))}
+        </div>
+        <p className="field-help">{MOUNT_TYPE_INFO[filesystemConfig.mount_type].description}</p>
+      </div>
+
+      {/* Docker Volume Settings */}
+      {filesystemConfig.mount_type === 'docker_volume' && (
+        <FilesystemBrowser
+          currentPath={filesystemConfig.base_path}
+          onSelectPath={(path) => setFilesystemConfig({ ...filesystemConfig, base_path: path })}
+        />
+      )}
+
+      {/* SMB Settings */}
+      {filesystemConfig.mount_type === 'smb' && (
+        <>
+          <div className="form-row">
+            <div className="form-group" style={{ flex: 2 }}>
+              <label>SMB Host</label>
+              <input
+                type="text"
+                value={filesystemConfig.smb_host || ''}
+                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, smb_host: e.target.value })}
+                placeholder="fileserver.local"
+              />
+            </div>
+            <div className="form-group" style={{ flex: 2 }}>
+              <label>Share Name</label>
+              <input
+                type="text"
+                value={filesystemConfig.smb_share || ''}
+                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, smb_share: e.target.value })}
+                placeholder="documents"
+              />
+            </div>
+          </div>
+          <div className="form-row">
+            <div className="form-group">
+              <label>Username</label>
+              <input
+                type="text"
+                value={filesystemConfig.smb_user || ''}
+                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, smb_user: e.target.value })}
+                placeholder="user"
+              />
+            </div>
+            <div className="form-group">
+              <label>Password</label>
+              <input
+                type="password"
+                value={filesystemConfig.smb_password || ''}
+                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, smb_password: e.target.value })}
+              />
+            </div>
+            <div className="form-group">
+              <label>Domain (optional)</label>
+              <input
+                type="text"
+                value={filesystemConfig.smb_domain || ''}
+                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, smb_domain: e.target.value })}
+                placeholder="WORKGROUP"
+              />
+            </div>
+          </div>
+          <div className="form-group">
+            <label>Mount Path</label>
+            <input
+              type="text"
+              value={filesystemConfig.base_path}
+              onChange={(e) => setFilesystemConfig({ ...filesystemConfig, base_path: e.target.value })}
+              placeholder="/mnt/smb"
+            />
+            <p className="field-help">Path where the SMB share will be mounted.</p>
+          </div>
+        </>
+      )}
+
+      {/* NFS Settings */}
+      {filesystemConfig.mount_type === 'nfs' && (
+        <>
+          <div className="form-row">
+            <div className="form-group" style={{ flex: 2 }}>
+              <label>NFS Host</label>
+              <input
+                type="text"
+                value={filesystemConfig.nfs_host || ''}
+                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, nfs_host: e.target.value })}
+                placeholder="nfs-server.local"
+              />
+            </div>
+            <div className="form-group" style={{ flex: 2 }}>
+              <label>Export Path</label>
+              <input
+                type="text"
+                value={filesystemConfig.nfs_export || ''}
+                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, nfs_export: e.target.value })}
+                placeholder="/exports/data"
+              />
+            </div>
+          </div>
+          <div className="form-group">
+            <label>Mount Options</label>
+            <input
+              type="text"
+              value={filesystemConfig.nfs_options || 'ro,noatime'}
+              onChange={(e) => setFilesystemConfig({ ...filesystemConfig, nfs_options: e.target.value })}
+              placeholder="ro,noatime"
+            />
+            <p className="field-help">NFS mount options (ro = read-only recommended).</p>
+          </div>
+          <div className="form-group">
+            <label>Mount Path</label>
+            <input
+              type="text"
+              value={filesystemConfig.base_path}
+              onChange={(e) => setFilesystemConfig({ ...filesystemConfig, base_path: e.target.value })}
+              placeholder="/mnt/nfs"
+            />
+            <p className="field-help">Path where the NFS export will be mounted.</p>
+          </div>
+        </>
+      )}
+
+      {/* Index Configuration */}
+      <h4 style={{ marginBottom: '1rem' }}>Indexing Configuration</h4>
+
+      <div className="form-group">
+        <label>Index Name</label>
+        <input
+          type="text"
+          value={filesystemConfig.index_name}
+          onChange={(e) => setFilesystemConfig({ ...filesystemConfig, index_name: e.target.value })}
+          placeholder="my-documents"
+        />
+        <p className="field-help">
+          Unique name for this index (used in semantic search).
+        </p>
+      </div>
+
+      <div className="form-row">
+        <div className="form-group" style={{ flex: 1 }}>
+          <label>File Patterns</label>
+          <input
+            type="text"
+            value={(filesystemConfig.file_patterns || []).join(', ')}
+            onChange={(e) => setFilesystemConfig({
+              ...filesystemConfig,
+              file_patterns: e.target.value.split(',').map(p => p.trim()).filter(Boolean)
+            })}
+            placeholder="**/*.txt, **/*.md, **/*.pdf"
+          />
+          <p className="field-help">Glob patterns for files to include.</p>
+        </div>
+        <div className="form-group" style={{ flex: 1 }}>
+          <label>Exclude Patterns</label>
+          <input
+            type="text"
+            value={(filesystemConfig.exclude_patterns || []).join(', ')}
+            onChange={(e) => setFilesystemConfig({
+              ...filesystemConfig,
+              exclude_patterns: e.target.value.split(',').map(p => p.trim()).filter(Boolean)
+            })}
+            placeholder="**/node_modules/**, **/.git/**"
+          />
+          <p className="field-help">Glob patterns to exclude.</p>
+        </div>
+      </div>
+
+      <div className="form-row">
+        <div className="form-group" style={{ flex: 1 }}>
+          <label>Chunk Size</label>
+          <input
+            type="number"
+            value={filesystemConfig.chunk_size || 1000}
+            onChange={(e) => setFilesystemConfig({ ...filesystemConfig, chunk_size: parseInt(e.target.value) || 1000 })}
+            min={100}
+            max={4000}
+          />
+        </div>
+        <div className="form-group" style={{ flex: 1 }}>
+          <label>Chunk Overlap</label>
+          <input
+            type="number"
+            value={filesystemConfig.chunk_overlap || 200}
+            onChange={(e) => setFilesystemConfig({ ...filesystemConfig, chunk_overlap: parseInt(e.target.value) || 200 })}
+            min={0}
+            max={1000}
+          />
+        </div>
+        <div className="form-group" style={{ flex: 1 }}>
+          <label>
+            <input
+              type="checkbox"
+              checked={filesystemConfig.recursive !== false}
+              onChange={(e) => setFilesystemConfig({ ...filesystemConfig, recursive: e.target.checked })}
+              style={{ marginRight: '0.5rem' }}
+            />
+            Recursive
+          </label>
+        </div>
+      </div>
+
+      {/* Safety Limits */}
+      <h4 style={{ marginBottom: '1rem' }}>Safety Limits</h4>
+
+      <div className="cloud-sync-warning">
+        <strong>Note:</strong> Indexing cloud-synced folders (OneDrive, Dropbox, Google Drive)
+        may trigger downloads of "online-only" files. Consider indexing local copies or
+        specific subfolders to avoid unwanted downloads.
+      </div>
+
+      <div className="form-row">
+        <div className="form-group" style={{ flex: 1 }}>
+          <label>Max File Size (MB)</label>
+          <input
+            type="number"
+            value={filesystemConfig.max_file_size_mb || 10}
+            onChange={(e) => setFilesystemConfig({ ...filesystemConfig, max_file_size_mb: parseInt(e.target.value) || 10 })}
+            min={1}
+            max={100}
+          />
+        </div>
+        <div className="form-group" style={{ flex: 1 }}>
+          <label>Max Total Files</label>
+          <input
+            type="number"
+            value={filesystemConfig.max_total_files || 10000}
+            onChange={(e) => setFilesystemConfig({ ...filesystemConfig, max_total_files: parseInt(e.target.value) || 10000 })}
+            min={1}
+            max={100000}
+          />
+        </div>
+        <div className="form-group" style={{ flex: 1 }}>
+          <label>Re-index Interval (hours)</label>
+          <input
+            type="number"
+            value={filesystemConfig.reindex_interval_hours || 24}
+            onChange={(e) => setFilesystemConfig({ ...filesystemConfig, reindex_interval_hours: parseInt(e.target.value) || 24 })}
+            min={0}
+            max={8760}
+          />
+          <p className="field-help">0 = manual only</p>
+        </div>
+      </div>
+
+      <div className="form-group">
+        <label>Allowed Extensions</label>
+        <input
+          type="text"
+          value={(filesystemConfig.allowed_extensions || []).join(', ')}
+          onChange={(e) => setFilesystemConfig({
+            ...filesystemConfig,
+            allowed_extensions: e.target.value.split(',').map(p => p.trim()).filter(Boolean)
+          })}
+          placeholder=".txt, .md, .pdf, .docx, .py, .json"
+        />
+        <p className="field-help">
+          Security filter: only files with these extensions will be indexed.
+        </p>
+      </div>
+    </div>
+  );
+
   const renderConnectionConfig = () => {
     const content = (() => {
       switch (toolType) {
@@ -1322,52 +2024,57 @@ export function ToolWizard({ existingTool, onClose, onSave }: ToolWizardProps) {
           return renderOdooConnection();
         case 'ssh_shell':
           return renderSSHConnection();
+        case 'filesystem_indexer':
+          return renderFilesystemConnection();
       }
     })();
 
     return (
       <>
         {content}
-        <div className="wizard-test-section">
-          <button
-            type="button"
-            className={`btn ${testResult?.success ? 'btn-connected' : ''}`}
-            onClick={handleTestConnection}
-            disabled={testing || !validateConnection()}
-          >
-            {testing ? 'Testing...' : testResult?.success ? 'Connected' : 'Test Connection'}
-          </button>
-          {testResult && (
-            <div className={`test-result-container ${testResult.success ? 'success' : 'error'}`}>
-              <span className={`test-result ${testResult.success ? 'success' : 'error'}`}>
-                {testResult.message}
-              </span>
-              {!testResult.success && testResult.details !== undefined && testResult.details !== null && (
-                <details className="test-error-details" style={{ marginTop: '0.5rem' }}>
-                  <summary style={{ cursor: 'pointer', fontSize: '0.85rem', color: '#666' }}>
-                    Show error details
-                  </summary>
-                  <pre style={{
-                    marginTop: '0.5rem',
-                    padding: '0.75rem',
-                    backgroundColor: '#1e1e1e',
-                    color: '#f8f8f2',
-                    borderRadius: '4px',
-                    fontSize: '0.75rem',
-                    overflow: 'auto',
-                    maxHeight: '200px',
-                    whiteSpace: 'pre-wrap',
-                    wordBreak: 'break-word'
-                  }}>
-                    {typeof testResult.details === 'string'
-                      ? testResult.details
-                      : String(JSON.stringify(testResult.details, null, 2))}
-                  </pre>
-                </details>
-              )}
-            </div>
-          )}
-        </div>
+        {/* Only show test button for tools that need connection testing (not filesystem) */}
+        {toolType !== 'filesystem_indexer' && (
+          <div className="wizard-test-section">
+            <button
+              type="button"
+              className={`btn ${testResult?.success ? 'btn-connected' : ''}`}
+              onClick={handleTestConnection}
+              disabled={testing || !validateConnection()}
+            >
+              {testing ? 'Testing...' : testResult?.success ? 'Connected' : 'Test Connection'}
+            </button>
+            {testResult && (
+              <div className={`test-result-container ${testResult.success ? 'success' : 'error'}`}>
+                <span className={`test-result ${testResult.success ? 'success' : 'error'}`}>
+                  {testResult.message}
+                </span>
+                {!testResult.success && testResult.details !== undefined && testResult.details !== null && (
+                  <details className="test-error-details" style={{ marginTop: '0.5rem' }}>
+                    <summary style={{ cursor: 'pointer', fontSize: '0.85rem', color: '#666' }}>
+                      Show error details
+                    </summary>
+                    <pre style={{
+                      marginTop: '0.5rem',
+                      padding: '0.75rem',
+                      backgroundColor: '#1e1e1e',
+                      color: '#f8f8f2',
+                      borderRadius: '4px',
+                      fontSize: '0.75rem',
+                      overflow: 'auto',
+                      maxHeight: '200px',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word'
+                    }}>
+                      {typeof testResult.details === 'string'
+                        ? testResult.details
+                        : String(JSON.stringify(testResult.details, null, 2))}
+                    </pre>
+                  </details>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </>
     );
   };

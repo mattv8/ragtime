@@ -41,6 +41,7 @@ export interface AuthStatus {
   debug_mode: boolean;
   debug_username?: string;
   debug_password?: string;
+  cookie_warning?: string;
 }
 
 export interface LdapConfig {
@@ -252,7 +253,10 @@ export interface LLMModelsResponse {
 }
 
 // Tool Configuration Types
-export type ToolType = 'postgres' | 'odoo_shell' | 'ssh_shell';
+export type ToolType = 'postgres' | 'odoo_shell' | 'ssh_shell' | 'filesystem_indexer';
+
+// Mount type for filesystem indexer
+export type FilesystemMountType = 'docker_volume' | 'smb' | 'nfs' | 'local';
 
 export interface PostgresConnectionConfig {
   host?: string;
@@ -298,7 +302,45 @@ export interface SSHShellConnectionConfig {
   command_prefix?: string;
 }
 
-export type ConnectionConfig = PostgresConnectionConfig | OdooShellConnectionConfig | SSHShellConnectionConfig;
+export interface FilesystemConnectionConfig {
+  // Mount configuration
+  mount_type: FilesystemMountType;
+  base_path: string;
+
+  // Docker volume settings
+  volume_name?: string;
+
+  // SMB settings
+  smb_host?: string;
+  smb_share?: string;
+  smb_user?: string;
+  smb_password?: string;
+  smb_domain?: string;
+
+  // NFS settings
+  nfs_host?: string;
+  nfs_export?: string;
+  nfs_options?: string;
+
+  // Indexing configuration
+  index_name: string;
+  file_patterns?: string[];
+  exclude_patterns?: string[];
+  recursive?: boolean;
+  chunk_size?: number;
+  chunk_overlap?: number;
+
+  // Safety limits
+  max_file_size_mb?: number;
+  max_total_files?: number;
+  allowed_extensions?: string[];
+
+  // Re-indexing schedule
+  reindex_interval_hours?: number;
+  last_indexed_at?: string | null;
+}
+
+export type ConnectionConfig = PostgresConnectionConfig | OdooShellConnectionConfig | SSHShellConnectionConfig | FilesystemConnectionConfig;
 
 export interface ToolConfig {
   id: string;
@@ -383,7 +425,7 @@ export interface HeartbeatResponse {
 }
 
 // Tool type metadata for the wizard UI
-export const TOOL_TYPE_INFO: Record<ToolType, { name: string; description: string; icon: string }> = {
+export const TOOL_TYPE_INFO: Record<ToolType, { name: string; description: string; icon: string; recommended?: boolean }> = {
   postgres: {
     name: 'PostgreSQL Database',
     description: 'Connect to a PostgreSQL database to execute SQL queries',
@@ -399,7 +441,94 @@ export const TOOL_TYPE_INFO: Record<ToolType, { name: string; description: strin
     description: 'Connect to a remote server via SSH to run shell commands',
     icon: 'server',
   },
+  filesystem_indexer: {
+    name: 'Filesystem Indexer',
+    description: 'Index files from a filesystem path (Docker volume, SMB, NFS, or local) for semantic search',
+    icon: 'folder',
+  },
 };
+
+// Filesystem mount type metadata for the wizard UI
+// Note: 'local' type exists in backend but hidden from UI since Docker Volume handles it
+export const MOUNT_TYPE_INFO: Record<string, { name: string; description: string; recommended?: boolean }> = {
+  docker_volume: {
+    name: 'Docker Volume',
+    description: 'Browse files from mounted Docker volumes',
+  },
+  smb: {
+    name: 'SMB/CIFS Share',
+    description: 'Windows network share (requires credentials)',
+  },
+  nfs: {
+    name: 'NFS Mount',
+    description: 'Unix/Linux network filesystem mount',
+  },
+};
+
+// Filesystem indexer types
+export type FilesystemIndexStatus = 'pending' | 'indexing' | 'completed' | 'failed' | 'cancelled';
+
+export interface FilesystemIndexJob {
+  id: string;
+  tool_config_id: string;
+  status: FilesystemIndexStatus;
+  index_name: string;
+  progress_percent: number;
+  total_files: number;
+  processed_files: number;
+  skipped_files: number;
+  total_chunks: number;
+  processed_chunks: number;
+  error_message: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface FilesystemTestResponse {
+  success: boolean;
+  message: string;
+  file_count?: number;
+  sample_files?: string[];
+}
+
+export interface FilesystemIndexStats {
+  index_name: string;
+  embedding_count: number;
+  file_count: number;
+  last_indexed: string | null;
+}
+
+export interface TriggerFilesystemIndexRequest {
+  full_reindex?: boolean;
+}
+
+// Mount discovery types
+export interface MountInfo {
+  container_path: string;
+  host_path: string;
+  read_only: boolean;
+  mount_type: string;
+}
+
+export interface DirectoryEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  size?: number;
+}
+
+export interface BrowseResponse {
+  path: string;
+  entries: DirectoryEntry[];
+  error?: string;
+}
+
+export interface MountDiscoveryResponse {
+  mounts: MountInfo[];
+  suggested_paths: string[];
+  docker_compose_example: string;
+}
 
 // =============================================================================
 // Chat Types
