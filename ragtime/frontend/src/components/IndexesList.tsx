@@ -140,11 +140,6 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
     }
   };
 
-  const formatDate = (dateStr: string | null) => {
-    if (!dateStr) return null;
-    return new Date(dateStr).toLocaleDateString();
-  };
-
   return (
     <div className="card">
       <div className="section-header">

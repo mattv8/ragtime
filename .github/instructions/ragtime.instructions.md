@@ -67,38 +67,35 @@ Schema changes require migrations for production deployment:
    docker exec ragtime python -m prisma migrate deploy
    ```
 
+5. **Keep migrations idempotent** - PostgreSQL with pgvector. Use `IF NOT EXISTS`, `ADD VALUE IF NOT EXISTS`, and `DO $$ ... EXCEPTION WHEN duplicate_object` blocks for enums/constraints.
+
 ## Authentication
 
-- Auth module: `ragtime/core/auth.py` (LDAP + local admin)
-- Dependencies: `ragtime/core/security.py` → `get_current_user`, `require_admin`
-- Routes: `ragtime/api/auth.py`
 - Cookie: `ragtime_session` (httpOnly JWT)
 - Local admin usernames stored with `local:` prefix in DB to avoid LDAP collision
-- LDAP config stored in `ldap_configs` table, managed via Settings UI
+- LDAP config stored in `ldap_config` table (singleton, id="default")
 
 ## Tool Configs
 
-Tools are configured dynamically via `tool_configs` table (UI: Tools tab). Each tool config includes:
-- `tool_type`: postgres, odoo_shell, ssh_shell
-- `connection_config`: JSON with type-specific connection params
-- `description`: Presented to LLM for context ("Here's what this tool connects to")
-- `enabled`: Toggle tool availability for RAG agent
-- Connection test results stored in `last_test_at`, `last_test_result`, `last_test_error`
+Dynamic tool instances via `tool_configs` table:
+- `tool_type`: postgres, odoo_shell, ssh_shell, filesystem_indexer
+- `connection_config`: JSON with type-specific params
+- `description`: Presented to LLM for tool selection context
+- Tools built at runtime in `ragtime/rag/components.py`
 
-Tools are dynamically built at runtime from configs in `ragtime/rag/components.py`.
+## Embedding Provider Changes
 
-## Key Files
+Filesystem indexes use pgvector with fixed dimensions. Changing embedding provider/model/dimensions:
+- `embedding_config_hash` tracks `"{provider}:{model}:{dimensions}"` (e.g., `ollama:nomic-embed-text:default`)
+- First index sets `embedding_dimension` and `embedding_config_hash` in `app_settings`
+- Subsequent indexes check for mismatch - if changed, **full re-index required** (existing embeddings incompatible)
+- Deleting all filesystem indexes clears tracking, allowing fresh start with new provider
 
-| Path | Purpose |
-|------|---------|
-| `ragtime/rag/components.py` | RAG agent setup, dynamic tool building |
-| `ragtime/config/settings.py` | Pydantic settings from env |
-| `ragtime/core/auth.py` | LDAP/local auth, JWT, session management |
-| `ragtime/core/security.py` | Auth dependencies, query validation |
-| `ragtime/core/database.py` | Prisma connection lifecycle |
-| `ragtime/api/auth.py` | Auth API routes |
-| `ragtime/indexer/repository.py` | Prisma CRUD for jobs/metadata/settings |
-| `ragtime/indexer/service.py` | FAISS index creation logic |
+## Security Validation
+
+- **SQL queries require LIMIT clause** - `core/security.py:validate_sql_query` rejects SELECT without LIMIT
+- **Odoo code validation** - blocks `.write()`, `.create()`, `.unlink()` unless `allow_write=True`
+- Filesystem indexer skips zero-byte files and symlinks (cloud placeholder detection)
 
 ## Conventions
 

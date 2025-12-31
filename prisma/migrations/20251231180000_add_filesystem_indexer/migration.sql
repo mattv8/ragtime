@@ -7,14 +7,22 @@ CREATE EXTENSION IF NOT EXISTS vector;
 -- Add new ToolType enum value for filesystem_indexer
 ALTER TYPE "ToolType" ADD VALUE IF NOT EXISTS 'filesystem_indexer';
 
--- Filesystem mount type enum
-CREATE TYPE "FilesystemMountType" AS ENUM ('docker_volume', 'smb', 'nfs', 'local');
+-- Filesystem mount type enum (idempotent)
+DO $$ BEGIN
+    CREATE TYPE "FilesystemMountType" AS ENUM ('docker_volume', 'smb', 'nfs', 'local');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
--- Filesystem index status enum
-CREATE TYPE "FilesystemIndexStatus" AS ENUM ('pending', 'indexing', 'completed', 'failed', 'cancelled');
+-- Filesystem index status enum (idempotent)
+DO $$ BEGIN
+    CREATE TYPE "FilesystemIndexStatus" AS ENUM ('pending', 'indexing', 'completed', 'failed', 'cancelled');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
 -- Filesystem indexing jobs table
-CREATE TABLE "filesystem_index_jobs" (
+CREATE TABLE IF NOT EXISTS "filesystem_index_jobs" (
     "id" TEXT NOT NULL,
     "tool_config_id" TEXT NOT NULL,
     "status" "FilesystemIndexStatus" NOT NULL DEFAULT 'pending',
@@ -33,7 +41,7 @@ CREATE TABLE "filesystem_index_jobs" (
 );
 
 -- Filesystem file metadata for incremental indexing
-CREATE TABLE "filesystem_file_metadata" (
+CREATE TABLE IF NOT EXISTS "filesystem_file_metadata" (
     "id" TEXT NOT NULL,
     "index_name" TEXT NOT NULL,
     "file_path" TEXT NOT NULL,
@@ -49,7 +57,7 @@ CREATE TABLE "filesystem_file_metadata" (
 -- Filesystem embeddings with pgvector
 -- Note: embedding column dimension set to 1536 (OpenAI text-embedding-3-small default)
 -- Can be altered if using different embedding model
-CREATE TABLE "filesystem_embeddings" (
+CREATE TABLE IF NOT EXISTS "filesystem_embeddings" (
     "id" TEXT NOT NULL,
     "index_name" TEXT NOT NULL,
     "file_path" TEXT NOT NULL,
@@ -62,26 +70,30 @@ CREATE TABLE "filesystem_embeddings" (
     CONSTRAINT "filesystem_embeddings_pkey" PRIMARY KEY ("id")
 );
 
--- Foreign key constraint for filesystem_index_jobs -> tool_configs
-ALTER TABLE "filesystem_index_jobs" ADD CONSTRAINT "filesystem_index_jobs_tool_config_id_fkey"
-    FOREIGN KEY ("tool_config_id") REFERENCES "tool_configs"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- Foreign key constraint for filesystem_index_jobs -> tool_configs (idempotent)
+DO $$ BEGIN
+    ALTER TABLE "filesystem_index_jobs" ADD CONSTRAINT "filesystem_index_jobs_tool_config_id_fkey"
+        FOREIGN KEY ("tool_config_id") REFERENCES "tool_configs"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
 -- Unique constraint for file metadata (one entry per file per index)
-CREATE UNIQUE INDEX "filesystem_file_metadata_index_name_file_path_key"
+CREATE UNIQUE INDEX IF NOT EXISTS "filesystem_file_metadata_index_name_file_path_key"
     ON "filesystem_file_metadata"("index_name", "file_path");
 
 -- Index for fast file metadata lookups by index name
-CREATE INDEX "filesystem_file_metadata_index_name_idx"
+CREATE INDEX IF NOT EXISTS "filesystem_file_metadata_index_name_idx"
     ON "filesystem_file_metadata"("index_name");
 
 -- Index for fast embedding lookups by index name
-CREATE INDEX "filesystem_embeddings_index_name_idx"
+CREATE INDEX IF NOT EXISTS "filesystem_embeddings_index_name_idx"
     ON "filesystem_embeddings"("index_name");
 
 -- HNSW index for fast approximate nearest neighbor search
 -- Using cosine distance (suitable for normalized embeddings)
 -- Note: HNSW indexes have a 2000-dimension limit in pgvector
-CREATE INDEX "filesystem_embeddings_embedding_idx"
+CREATE INDEX IF NOT EXISTS "filesystem_embeddings_embedding_idx"
     ON "filesystem_embeddings"
     USING hnsw ("embedding" vector_cosine_ops)
     WITH (m = 16, ef_construction = 64);
