@@ -125,6 +125,8 @@ OpenAI-compatible RAG API with LangChain tool calling for business intelligence 
 
      # Ragtime RAG API
      ragtime:
+       # For older CPUs without X86_V2 support, use the legacy image:
+       # image: hub.docker.visnovsky.us/library/ragtime:main
        image: hub.docker.visnovsky.us/library/ragtime:main
        container_name: ragtime
        restart: unless-stopped
