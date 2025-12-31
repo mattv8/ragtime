@@ -43,14 +43,16 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Install Python dependencies
-# For legacy CPU support, build NumPy from source without optimizations
+# For legacy CPU support, use NumPy 1.x which has better compatibility with older CPUs
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip && \
     if [ "$LEGACY_CPU" = "1" ]; then \
-        echo "Building NumPy from source for legacy CPU compatibility..." && \
-        NPY_DISABLE_SVML=1 pip install --no-cache-dir numpy --no-binary numpy; \
-    fi && \
-    pip install --no-cache-dir -r /tmp/requirements.txt
+        echo "Installing NumPy 1.x for legacy CPU compatibility..." && \
+        pip install --no-cache-dir "numpy<2.0.0" && \
+        pip install --no-cache-dir -r /tmp/requirements.txt; \
+    else \
+        pip install --no-cache-dir -r /tmp/requirements.txt; \
+    fi
 
 # =============================================================================
 # Stage 3: Production image
