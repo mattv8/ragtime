@@ -134,13 +134,13 @@ async def _stream_response_tokens(user_msg: str, chat_history: list, model: str)
     Generate true streaming response by yielding tokens from the LLM.
 
     Streams tokens as they're generated, supporting <think> tags and other
-    structured output without filtering. Tool calls are executed first,
-    then the response is streamed.
+    structured output without filtering. Tool calls are formatted as readable
+    text for OpenAI API compatibility with external clients.
     """
     chunk_id = f"chatcmpl-{int(time.time())}"
 
-    # Stream tokens directly from the LLM/agent
-    async for token in rag.process_query_stream(user_msg, chat_history):
+    def make_chunk(content: str, finish_reason: str | None = None) -> str:
+        """Create an SSE chunk with the given content."""
         chunk = {
             "id": chunk_id,
             "object": "chat.completion.chunk",
@@ -148,23 +148,62 @@ async def _stream_response_tokens(user_msg: str, chat_history: list, model: str)
             "model": model,
             "choices": [{
                 "index": 0,
-                "delta": {"content": token},
-                "finish_reason": None
+                "delta": {"content": content} if content else {},
+                "finish_reason": finish_reason
             }]
         }
-        yield f"data: {json.dumps(chunk)}\n\n"
+        return f"data: {json.dumps(chunk)}\n\n"
+
+    # Track active tool for formatting
+    current_tool: str | None = None
+
+    # Stream tokens from the RAG agent
+    async for event in rag.process_query_stream(user_msg, chat_history):
+        # Handle structured events (tool calls)
+        if isinstance(event, dict):
+            event_type = event.get("type")
+
+            if event_type == "tool_start":
+                tool_name = event.get("tool", "unknown")
+                tool_input = event.get("input", {})
+                current_tool = tool_name
+
+                # Format tool start as readable text
+                # Use a clean format that renders well in markdown
+                input_display = ""
+                if tool_input:
+                    # Extract the most relevant input field
+                    for field in ["query", "sql", "code", "command", "python_code"]:
+                        if field in tool_input and tool_input[field]:
+                            input_display = str(tool_input[field])
+                            break
+                    if not input_display:
+                        input_display = json.dumps(tool_input, indent=2)
+
+                header = f"\n\n**Using {tool_name}**\n```\n{input_display}\n```\n"
+                yield make_chunk(header)
+
+            elif event_type == "tool_end":
+                tool_name = event.get("tool", current_tool or "unknown")
+                tool_output = event.get("output", "")
+                current_tool = None
+
+                # Format tool output - truncate if very long
+                if len(str(tool_output)) > 500:
+                    output_display = str(tool_output)[:500] + "...(truncated)"
+                else:
+                    output_display = str(tool_output)
+
+                footer = f"\n**Result:**\n```\n{output_display}\n```\n\n"
+                yield make_chunk(footer)
+
+            elif event_type == "max_iterations_reached":
+                yield make_chunk("\n\n*[Reached maximum tool iterations]*\n")
+
+        else:
+            # Plain string content - stream directly
+            yield make_chunk(str(event))
 
     # Final chunk with finish_reason
-    final_chunk = {
-        "id": chunk_id,
-        "object": "chat.completion.chunk",
-        "created": int(time.time()),
-        "model": model,
-        "choices": [{
-            "index": 0,
-            "delta": {},
-            "finish_reason": "stop"
-        }]
-    }
-    yield f"data: {json.dumps(final_chunk)}\n\n"
+    yield make_chunk("", finish_reason="stop")
     yield "data: [DONE]\n\n"
