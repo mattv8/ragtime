@@ -70,13 +70,6 @@ async def list_models():
                 root="ragtime",
                 parent=None
             ),
-            ModelInfo(
-                id="ragtime-tools",
-                created=now,
-                owned_by="ragtime",
-                root="ragtime-tools",
-                parent=None
-            ),
         ]
     )
 

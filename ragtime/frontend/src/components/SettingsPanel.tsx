@@ -521,6 +521,18 @@ export function SettingsPanel() {
     <div className="card">
       <h2>Settings</h2>
 
+      {/* API Endpoint Info */}
+      <div className="api-info-box">
+        <strong>OpenAI-Compatible API</strong>
+        <p>
+          Connect external clients (e.g., Open WebUI) using:
+        </p>
+        <code>{`${window.location.protocol}//${window.location.hostname}:8000/v1`}</code>
+        <p className="field-help" style={{ marginTop: '0.5rem' }}>
+          Model: <code>ragtime</code>. The <code>/v1</code> path is required for OpenAI API compatibility.
+        </p>
+      </div>
+
       {error && <div className="error-banner">{error}</div>}
       {success && <div className="success-banner">{success}</div>}
 
