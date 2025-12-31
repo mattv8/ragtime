@@ -93,6 +93,7 @@ CREATE TABLE "app_settings" (
     "postgres_db" TEXT NOT NULL DEFAULT '',
     "max_query_results" INTEGER NOT NULL DEFAULT 100,
     "query_timeout" INTEGER NOT NULL DEFAULT 30,
+    "max_iterations" INTEGER NOT NULL DEFAULT 15,
     "enable_write_ops" BOOLEAN NOT NULL DEFAULT false,
     "updated_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -154,6 +155,7 @@ CREATE TABLE "ldap_config" (
     "server_url" TEXT NOT NULL DEFAULT '',
     "bind_dn" TEXT NOT NULL DEFAULT '',
     "bind_password" TEXT NOT NULL DEFAULT '',
+    "allow_self_signed" BOOLEAN NOT NULL DEFAULT false,
     "base_dn" TEXT NOT NULL DEFAULT '',
     "user_search_base" TEXT NOT NULL DEFAULT '',
     "user_search_filter" TEXT NOT NULL DEFAULT '(|(sAMAccountName={username})(uid={username}))',
