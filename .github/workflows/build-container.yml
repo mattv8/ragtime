@@ -88,12 +88,13 @@ jobs:
   build-legacy:
     name: Build Legacy CPU Image
     runs-on: self-hosted
-    needs: [build-and-push]
     # Only build legacy on main branch
     if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
       packages: write
+    outputs:
+      digest: ${{ steps.build-legacy.outputs.digest }}
 
     steps:
       - name: Checkout code
@@ -110,6 +111,7 @@ jobs:
           password: ${{ secrets.HARBOR_PASSWORD }}
 
       - name: Build and push legacy Docker image
+        id: build-legacy
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -122,9 +124,11 @@ jobs:
           no-cache: true
 
   sign:
-    name: Sign Container Image
+    name: Sign Container Images
     runs-on: self-hosted
-    needs: [build-and-push]
+    needs: [build-and-push, build-legacy]
+    # Run even if legacy is skipped (non-main branches)
+    if: always() && needs.build-and-push.result == 'success'
     permissions:
       contents: read
       id-token: write
@@ -142,7 +146,7 @@ jobs:
           username: ${{ secrets.HARBOR_USERNAME }}
           password: ${{ secrets.HARBOR_PASSWORD }}
 
-      - name: Sign the container image with Cosign
+      - name: Sign the main container image with Cosign
         env:
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
@@ -151,6 +155,20 @@ jobs:
           IMAGE_DIGEST="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.digest }}"
 
           echo "Signing image: ${IMAGE_DIGEST}"
+
+          # Sign using the full digest reference (registry/repo@sha256:...)
+          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${IMAGE_DIGEST}"
+
+      - name: Sign the legacy container image with Cosign
+        if: needs.build-legacy.result == 'success'
+        env:
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+        run: |
+          # Construct the full image reference from build outputs
+          IMAGE_DIGEST="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-legacy.outputs.digest }}"
+
+          echo "Signing legacy image: ${IMAGE_DIGEST}"
 
           # Sign using the full digest reference (registry/repo@sha256:...)
           cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${IMAGE_DIGEST}"
