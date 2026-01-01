@@ -9,24 +9,24 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends, Body
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit
 from ragtime.core.security import get_current_user, require_admin
 from ragtime.indexer.models import (
+    AppSettings,
+    CreateIndexRequest,
     IndexConfig,
     IndexInfo,
     IndexJobResponse,
     IndexStatus,
-    CreateIndexRequest,
-    AppSettings,
     UpdateSettingsRequest,
 )
-from ragtime.indexer.service import indexer
 from ragtime.indexer.repository import repository
+from ragtime.indexer.service import indexer
 
 if TYPE_CHECKING:
     from prisma.models import User
@@ -106,7 +106,7 @@ async def cancel_job(job_id: str, _user: User = Depends(require_admin)):
     if job.status not in [IndexStatus.PENDING, IndexStatus.PROCESSING]:
         raise HTTPException(
             status_code=400,
-            detail=f"Cannot cancel job with status '{job.status.value}'"
+            detail=f"Cannot cancel job with status '{job.status.value}'",
         )
 
     await indexer.cancel_job(job_id)
@@ -122,8 +122,7 @@ async def delete_job(job_id: str, _user: User = Depends(require_admin)):
 
     if job.status in [IndexStatus.PENDING, IndexStatus.PROCESSING]:
         raise HTTPException(
-            status_code=400,
-            detail=f"Cannot delete active job. Cancel it first."
+            status_code=400, detail=f"Cannot delete active job. Cancel it first."
         )
 
     await repository.delete_job(job_id)
@@ -136,19 +135,22 @@ SUPPORTED_ARCHIVE_EXTENSIONS = (".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", "
 
 @router.post("/upload", response_model=IndexJobResponse)
 async def upload_and_index(
-    file: UploadFile = File(..., description="Archive file containing source code (.zip, .tar, .tar.gz, .tar.bz2)"),
+    file: UploadFile = File(
+        ...,
+        description="Archive file containing source code (.zip, .tar, .tar.gz, .tar.bz2)",
+    ),
     name: str = Form(..., description="Name for the index"),
     description: str = Form(
         default="",
-        description="Description for AI context - helps the model understand what this index contains"
+        description="Description for AI context - helps the model understand what this index contains",
     ),
     file_patterns: str = Form(
         default="**/*.py,**/*.md,**/*.rst,**/*.txt,**/*.xml",
-        description="Comma-separated glob patterns for files to include"
+        description="Comma-separated glob patterns for files to include",
     ),
     exclude_patterns: str = Form(
         default="**/node_modules/**,**/__pycache__/**,**/venv/**,**/.git/**",
-        description="Comma-separated glob patterns to exclude"
+        description="Comma-separated glob patterns to exclude",
     ),
     chunk_size: int = Form(default=1000, ge=100, le=4000),
     chunk_overlap: int = Form(default=200, ge=0, le=1000),
@@ -165,7 +167,7 @@ async def upload_and_index(
     if not any(filename_lower.endswith(ext) for ext in SUPPORTED_ARCHIVE_EXTENSIONS):
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file format. Supported formats: {', '.join(SUPPORTED_ARCHIVE_EXTENSIONS)}"
+            detail=f"Unsupported file format. Supported formats: {', '.join(SUPPORTED_ARCHIVE_EXTENSIONS)}",
         )
 
     config = IndexConfig(
@@ -199,7 +201,9 @@ async def upload_and_index(
 
 
 @router.post("/git", response_model=IndexJobResponse)
-async def index_from_git(request: CreateIndexRequest, _user: User = Depends(require_admin)):
+async def index_from_git(
+    request: CreateIndexRequest, _user: User = Depends(require_admin)
+):
     """
     Create a FAISS index from a git repository. Admin only.
 
@@ -214,9 +218,7 @@ async def index_from_git(request: CreateIndexRequest, _user: User = Depends(requ
 
     try:
         job = await indexer.create_index_from_git(
-            git_url=request.git_url,
-            branch=request.git_branch,
-            config=config
+            git_url=request.git_url, branch=request.git_branch, config=config
         )
 
         return IndexJobResponse(
@@ -247,35 +249,50 @@ async def delete_index(name: str, _user: User = Depends(require_admin)):
 
 class ToggleIndexRequest(BaseModel):
     """Request to toggle index enabled status."""
+
     enabled: bool = Field(description="Whether the index is enabled for RAG context")
 
 
 class UpdateIndexDescriptionRequest(BaseModel):
     """Request to update index description."""
+
     description: str = Field(description="Description for AI context")
 
 
 @router.patch("/{name}/toggle")
-async def toggle_index(name: str, request: ToggleIndexRequest, _user: User = Depends(require_admin)):
+async def toggle_index(
+    name: str, request: ToggleIndexRequest, _user: User = Depends(require_admin)
+):
     """Toggle an index's enabled status for RAG context. Admin only."""
     success = await repository.set_index_enabled(name, request.enabled)
     if not success:
         raise HTTPException(status_code=404, detail="Index not found")
-    return {"message": f"Index '{name}' {'enabled' if request.enabled else 'disabled'}", "enabled": request.enabled}
+    return {
+        "message": f"Index '{name}' {'enabled' if request.enabled else 'disabled'}",
+        "enabled": request.enabled,
+    }
 
 
 @router.patch("/{name}/description")
-async def update_index_description(name: str, request: UpdateIndexDescriptionRequest, _user: User = Depends(require_admin)):
+async def update_index_description(
+    name: str,
+    request: UpdateIndexDescriptionRequest,
+    _user: User = Depends(require_admin),
+):
     """Update an index's description for AI context. Admin only."""
     success = await repository.update_index_description(name, request.description)
     if not success:
         raise HTTPException(status_code=404, detail="Index not found")
-    return {"message": f"Description updated for '{name}'", "description": request.description}
+    return {
+        "message": f"Description updated for '{name}'",
+        "description": request.description,
+    }
 
 
 # -----------------------------------------------------------------------------
 # Settings Endpoints (Admin only)
 # -----------------------------------------------------------------------------
+
 
 @router.get("/settings", response_model=AppSettings, tags=["Settings"])
 async def get_settings(_user: User = Depends(require_admin)):
@@ -285,12 +302,15 @@ async def get_settings(_user: User = Depends(require_admin)):
 
 class UpdateSettingsResponse(BaseModel):
     """Response from settings update including embedding warnings."""
+
     settings: AppSettings
     embedding_warning: Optional[str] = None
 
 
 @router.put("/settings", response_model=UpdateSettingsResponse, tags=["Settings"])
-async def update_settings(request: UpdateSettingsRequest, _user: User = Depends(require_admin)):
+async def update_settings(
+    request: UpdateSettingsRequest, _user: User = Depends(require_admin)
+):
     """Update application settings. Admin only.
 
     Returns a warning if the embedding provider or model was changed and
@@ -332,7 +352,9 @@ async def update_settings(request: UpdateSettingsRequest, _user: User = Depends(
 from ragtime.indexer.models import EmbeddingStatus
 
 
-@router.get("/settings/embedding-status", response_model=EmbeddingStatus, tags=["Settings"])
+@router.get(
+    "/settings/embedding-status", response_model=EmbeddingStatus, tags=["Settings"]
+)
 async def get_embedding_status(_user: User = Depends(require_admin)):
     """
     Get embedding configuration status.
@@ -373,18 +395,19 @@ async def get_embedding_status(_user: User = Depends(require_admin)):
 # -----------------------------------------------------------------------------
 
 from ragtime.indexer.models import (
-    ToolConfig,
-    ToolType,
     CreateToolConfigRequest,
-    UpdateToolConfigRequest,
-    ToolTestRequest,
     PostgresDiscoverRequest,
     PostgresDiscoverResponse,
+    ToolConfig,
+    ToolTestRequest,
+    ToolType,
+    UpdateToolConfigRequest,
 )
 
 
 class SSHKeyPairResponse(BaseModel):
     """Response containing generated SSH keypair."""
+
     private_key: str
     public_key: str
     fingerprint: str
@@ -392,19 +415,24 @@ class SSHKeyPairResponse(BaseModel):
 
 class ToolTestResponse(BaseModel):
     """Response from a tool connection test."""
+
     success: bool
     message: str
     details: Optional[dict] = None
 
 
 @router.get("/tools", response_model=List[ToolConfig], tags=["Tools"])
-async def list_tool_configs(enabled_only: bool = False, _user: User = Depends(require_admin)):
+async def list_tool_configs(
+    enabled_only: bool = False, _user: User = Depends(require_admin)
+):
     """List all tool configurations. Admin only."""
     return await repository.list_tool_configs(enabled_only=enabled_only)
 
 
 @router.post("/tools", response_model=ToolConfig, tags=["Tools"])
-async def create_tool_config(request: CreateToolConfigRequest, _user: User = Depends(require_admin)):
+async def create_tool_config(
+    request: CreateToolConfigRequest, _user: User = Depends(require_admin)
+):
     """Create a new tool configuration. Admin only."""
     config = ToolConfig(
         name=request.name,
@@ -421,6 +449,7 @@ async def create_tool_config(request: CreateToolConfigRequest, _user: User = Dep
 # Heartbeat models - must be defined before the route
 class HeartbeatStatus(BaseModel):
     """Heartbeat status for a single tool."""
+
     tool_id: str
     alive: bool
     latency_ms: float | None = None
@@ -430,6 +459,7 @@ class HeartbeatStatus(BaseModel):
 
 class HeartbeatResponse(BaseModel):
     """Response from batch heartbeat check."""
+
     statuses: dict[str, HeartbeatStatus]
 
 
@@ -455,7 +485,7 @@ async def check_tool_heartbeats(_user: User = Depends(require_admin)):
             # Quick ping-style check with short timeout
             result = await asyncio.wait_for(
                 _heartbeat_check(tool.tool_type, tool.connection_config),
-                timeout=5.0  # Short timeout for heartbeat
+                timeout=5.0,  # Short timeout for heartbeat
             )
             latency = (asyncio.get_event_loop().time() - start_time) * 1000
 
@@ -464,7 +494,7 @@ async def check_tool_heartbeats(_user: User = Depends(require_admin)):
                 alive=result.success,
                 latency_ms=round(latency, 1) if result.success else None,
                 error=result.message if not result.success else None,
-                checked_at=checked_at
+                checked_at=checked_at,
             )
         except asyncio.TimeoutError:
             return HeartbeatStatus(
@@ -472,7 +502,7 @@ async def check_tool_heartbeats(_user: User = Depends(require_admin)):
                 alive=False,
                 latency_ms=None,
                 error="Heartbeat timeout (5s)",
-                checked_at=checked_at
+                checked_at=checked_at,
             )
         except Exception as e:
             return HeartbeatStatus(
@@ -480,13 +510,12 @@ async def check_tool_heartbeats(_user: User = Depends(require_admin)):
                 alive=False,
                 latency_ms=None,
                 error=str(e),
-                checked_at=checked_at
+                checked_at=checked_at,
             )
 
     # Check all tools concurrently
     results = await asyncio.gather(
-        *[check_single_tool(tool) for tool in tools],
-        return_exceptions=True
+        *[check_single_tool(tool) for tool in tools], return_exceptions=True
     )
 
     for result in results:
@@ -506,7 +535,9 @@ async def get_tool_config(tool_id: str, _user: User = Depends(require_admin)):
 
 
 @router.put("/tools/{tool_id}", response_model=ToolConfig, tags=["Tools"])
-async def update_tool_config(tool_id: str, request: UpdateToolConfigRequest, _user: User = Depends(require_admin)):
+async def update_tool_config(
+    tool_id: str, request: UpdateToolConfigRequest, _user: User = Depends(require_admin)
+):
     """Update an existing tool configuration. Admin only."""
     updates = request.model_dump(exclude_unset=True)
     config = await repository.update_tool_config(tool_id, updates)
@@ -543,9 +574,9 @@ async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin))
         # Check if any other odoo_shell tools use this network
         all_tools = await repository.list_tool_configs()
         network_still_needed = any(
-            t.tool_type == "odoo_shell" and
-            t.connection_config.get("docker_network") == docker_network and
-            t.id != tool_id
+            t.tool_type == "odoo_shell"
+            and t.connection_config.get("docker_network") == docker_network
+            and t.id != tool_id
             for t in all_tools
         )
 
@@ -553,15 +584,21 @@ async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin))
             # Disconnect from the network
             try:
                 await disconnect_from_network(docker_network)
-                logger.info(f"Disconnected from network '{docker_network}' after tool deletion")
+                logger.info(
+                    f"Disconnected from network '{docker_network}' after tool deletion"
+                )
             except Exception as e:
-                logger.warning(f"Failed to disconnect from network '{docker_network}': {e}")
+                logger.warning(
+                    f"Failed to disconnect from network '{docker_network}': {e}"
+                )
 
     return {"message": "Tool configuration deleted"}
 
 
 @router.post("/tools/{tool_id}/toggle", tags=["Tools"])
-async def toggle_tool_config(tool_id: str, enabled: bool, _user: User = Depends(require_admin)):
+async def toggle_tool_config(
+    tool_id: str, enabled: bool, _user: User = Depends(require_admin)
+):
     """Toggle a tool's enabled status. Admin only."""
     from ragtime.core.app_settings import invalidate_settings_cache
     from ragtime.rag import rag
@@ -573,8 +610,12 @@ async def toggle_tool_config(tool_id: str, enabled: bool, _user: User = Depends(
     # Invalidate cache and reinitialize RAG agent to pick up the change
     invalidate_settings_cache()
     await rag.initialize()
+
+
 @router.post("/tools/test", response_model=ToolTestResponse, tags=["Tools"])
-async def test_tool_connection(request: ToolTestRequest, _user: User = Depends(require_admin)):
+async def test_tool_connection(
+    request: ToolTestRequest, _user: User = Depends(require_admin)
+):
     """
     Test a tool connection without saving. Admin only.
     Used during the wizard to validate connection settings.
@@ -595,8 +636,7 @@ async def test_tool_connection(request: ToolTestRequest, _user: User = Depends(r
         return await _test_filesystem_connection(config)
     else:
         return ToolTestResponse(
-            success=False,
-            message=f"Unknown tool type: {tool_type}"
+            success=False, message=f"Unknown tool type: {tool_type}"
         )
 
 
@@ -613,22 +653,20 @@ async def _test_filesystem_connection(config: dict) -> ToolTestResponse:
                 details={
                     "file_count": result.get("file_count", 0),
                     "sample_files": result.get("sample_files", []),
-                }
+                },
             )
         else:
-            return ToolTestResponse(
-                success=False,
-                message=result["message"]
-            )
+            return ToolTestResponse(success=False, message=result["message"])
     except Exception as e:
-        return ToolTestResponse(
-            success=False,
-            message=f"Configuration error: {str(e)}"
-        )
+        return ToolTestResponse(success=False, message=f"Configuration error: {str(e)}")
 
 
-@router.post("/tools/postgres/discover", response_model=PostgresDiscoverResponse, tags=["Tools"])
-async def discover_postgres_databases(request: PostgresDiscoverRequest, _user: User = Depends(require_admin)):
+@router.post(
+    "/tools/postgres/discover", response_model=PostgresDiscoverResponse, tags=["Tools"]
+)
+async def discover_postgres_databases(
+    request: PostgresDiscoverRequest, _user: User = Depends(require_admin)
+):
     """
     Discover available databases on a PostgreSQL server. Admin only.
     Connects to the server and lists all accessible databases.
@@ -640,24 +678,26 @@ async def discover_postgres_databases(request: PostgresDiscoverRequest, _user: U
         # Connect to 'postgres' system database to list all databases
         cmd = [
             "psql",
-            "-h", request.host,
-            "-p", str(request.port),
-            "-U", request.user,
-            "-d", "postgres",  # Connect to system database
+            "-h",
+            request.host,
+            "-p",
+            str(request.port),
+            "-U",
+            request.user,
+            "-d",
+            "postgres",  # Connect to system database
             "-t",  # Tuples only (no headers/footers)
             "-A",  # Unaligned output
-            "-c", "SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname;"
+            "-c",
+            "SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname;",
         ]
         env = {"PGPASSWORD": request.password}
 
         process = await asyncio.wait_for(
             asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=env
+                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
             ),
-            timeout=10.0
+            timeout=10.0,
         )
         stdout, stderr = await process.communicate()
 
@@ -665,40 +705,33 @@ async def discover_postgres_databases(request: PostgresDiscoverRequest, _user: U
             # Parse database names from output
             output = stdout.decode("utf-8", errors="replace").strip()
             databases = [db.strip() for db in output.split("\n") if db.strip()]
-            return PostgresDiscoverResponse(
-                success=True,
-                databases=databases
-            )
+            return PostgresDiscoverResponse(success=True, databases=databases)
         else:
             error = stderr.decode("utf-8", errors="replace").strip()
             return PostgresDiscoverResponse(
-                success=False,
-                databases=[],
-                error=f"Connection failed: {error}"
+                success=False, databases=[], error=f"Connection failed: {error}"
             )
 
     except asyncio.TimeoutError:
         return PostgresDiscoverResponse(
-            success=False,
-            databases=[],
-            error="Connection timed out after 10 seconds"
+            success=False, databases=[], error="Connection timed out after 10 seconds"
         )
     except FileNotFoundError:
         return PostgresDiscoverResponse(
-            success=False,
-            databases=[],
-            error="psql command not found"
+            success=False, databases=[], error="psql command not found"
         )
     except Exception as e:
         return PostgresDiscoverResponse(
-            success=False,
-            databases=[],
-            error=f"Discovery failed: {str(e)}"
+            success=False, databases=[], error=f"Discovery failed: {str(e)}"
         )
 
 
-@router.post("/tools/ssh/generate-keypair", response_model=SSHKeyPairResponse, tags=["Tools"])
-async def generate_ssh_keypair(comment: str = "ragtime", passphrase: str = "", _user: User = Depends(require_admin)):
+@router.post(
+    "/tools/ssh/generate-keypair", response_model=SSHKeyPairResponse, tags=["Tools"]
+)
+async def generate_ssh_keypair(
+    comment: str = "ragtime", passphrase: str = "", _user: User = Depends(require_admin)
+):
     """
     Generate a new SSH keypair for use with remote connections. Admin only.
     Returns private key, public key, and fingerprint.
@@ -709,9 +742,9 @@ async def generate_ssh_keypair(comment: str = "ragtime", passphrase: str = "", _
         comment: Comment for the key (appears in public key)
         passphrase: Optional passphrase to encrypt the private key
     """
-    import tempfile
-    import subprocess
     import os
+    import subprocess
+    import tempfile
 
     try:
         # Create temp directory for key generation
@@ -722,21 +755,26 @@ async def generate_ssh_keypair(comment: str = "ragtime", passphrase: str = "", _
             process = subprocess.run(
                 [
                     "ssh-keygen",
-                    "-t", "rsa",
-                    "-b", "4096",
-                    "-f", key_path,
-                    "-N", passphrase,  # Passphrase (empty string = no passphrase)
-                    "-C", comment,
+                    "-t",
+                    "rsa",
+                    "-b",
+                    "4096",
+                    "-f",
+                    key_path,
+                    "-N",
+                    passphrase,  # Passphrase (empty string = no passphrase)
+                    "-C",
+                    comment,
                 ],
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=30,
             )
 
             if process.returncode != 0:
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Failed to generate keypair: {process.stderr}"
+                    detail=f"Failed to generate keypair: {process.stderr}",
                 )
 
             # Read the generated keys
@@ -750,14 +788,14 @@ async def generate_ssh_keypair(comment: str = "ragtime", passphrase: str = "", _
                 ["ssh-keygen", "-lf", key_path],
                 capture_output=True,
                 text=True,
-                timeout=10
+                timeout=10,
             )
-            fingerprint = fp_process.stdout.strip() if fp_process.returncode == 0 else "unknown"
+            fingerprint = (
+                fp_process.stdout.strip() if fp_process.returncode == 0 else "unknown"
+            )
 
             return SSHKeyPairResponse(
-                private_key=private_key,
-                public_key=public_key,
-                fingerprint=fingerprint
+                private_key=private_key, public_key=public_key, fingerprint=fingerprint
             )
 
     except subprocess.TimeoutExpired:
@@ -767,25 +805,30 @@ async def generate_ssh_keypair(comment: str = "ragtime", passphrase: str = "", _
         raise HTTPException(status_code=500, detail=str(e))
 
 
+from ragtime.indexer.filesystem_service import filesystem_indexer
+
 # =============================================================================
 # Filesystem Indexer Routes (must be before {tool_id} routes)
 # =============================================================================
 from ragtime.indexer.models import FilesystemConnectionConfig
-from ragtime.indexer.filesystem_service import filesystem_indexer
 
 
 class FilesystemTestResponse(BaseModel):
     """Response from filesystem path test."""
+
     success: bool
     message: str
     file_count: Optional[int] = None
     sample_files: Optional[List[str]] = None
 
 
-@router.post("/tools/filesystem/test", response_model=FilesystemTestResponse, tags=["Filesystem Indexer"])
+@router.post(
+    "/tools/filesystem/test",
+    response_model=FilesystemTestResponse,
+    tags=["Filesystem Indexer"],
+)
 async def test_filesystem_path(
-    config: FilesystemConnectionConfig,
-    _user: User = Depends(require_admin)
+    config: FilesystemConnectionConfig, _user: User = Depends(require_admin)
 ):
     """
     Test filesystem path accessibility. Admin only.
@@ -812,8 +855,7 @@ async def test_saved_tool_connection(tool_id: str):
     # Test the connection
     result = await test_tool_connection(
         ToolTestRequest(
-            tool_type=config.tool_type,
-            connection_config=config.connection_config
+            tool_type=config.tool_type, connection_config=config.connection_config
         )
     )
 
@@ -821,7 +863,7 @@ async def test_saved_tool_connection(tool_id: str):
     await repository.update_tool_test_result(
         tool_id,
         success=result.success,
-        error=result.message if not result.success else None
+        error=result.message if not result.success else None,
     )
 
     return result
@@ -836,7 +878,7 @@ async def _heartbeat_check(tool_type, config: dict) -> ToolTestResponse:
     import subprocess
 
     # Normalize tool_type to string value (handle enum or string)
-    if hasattr(tool_type, 'value'):
+    if hasattr(tool_type, "value"):
         tool_type_str = tool_type.value
     else:
         tool_type_str = str(tool_type)
@@ -850,7 +892,9 @@ async def _heartbeat_check(tool_type, config: dict) -> ToolTestResponse:
     elif tool_type_str == "filesystem_indexer":
         return await _heartbeat_filesystem(config)
     else:
-        return ToolTestResponse(success=False, message=f"Unknown tool type: {tool_type_str}")
+        return ToolTestResponse(
+            success=False, message=f"Unknown tool type: {tool_type_str}"
+        )
 
 
 async def _heartbeat_postgres(config: dict) -> ToolTestResponse:
@@ -867,29 +911,46 @@ async def _heartbeat_postgres(config: dict) -> ToolTestResponse:
 
     try:
         if host:
-            cmd = ["psql", "-h", host, "-p", str(port), "-U", user, "-d", database, "-c", "SELECT 1;"]
+            cmd = [
+                "psql",
+                "-h",
+                host,
+                "-p",
+                str(port),
+                "-U",
+                user,
+                "-d",
+                database,
+                "-c",
+                "SELECT 1;",
+            ]
             env = {"PGPASSWORD": password}
         elif container:
             cmd = [
-                "docker", "exec", "-i", container,
-                "bash", "-c",
-                'PGPASSWORD="${POSTGRES_PASSWORD}" psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -c "SELECT 1;"'
+                "docker",
+                "exec",
+                "-i",
+                container,
+                "bash",
+                "-c",
+                'PGPASSWORD="${POSTGRES_PASSWORD}" psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -c "SELECT 1;"',
             ]
             env = None
         else:
             return ToolTestResponse(success=False, message="No connection configured")
 
         process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env
+            *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
         )
         stdout, stderr = await process.communicate()
 
         return ToolTestResponse(
             success=process.returncode == 0,
-            message="OK" if process.returncode == 0 else stderr.decode("utf-8", errors="replace").strip()[:100]
+            message=(
+                "OK"
+                if process.returncode == 0
+                else stderr.decode("utf-8", errors="replace").strip()[:100]
+            ),
         )
     except Exception as e:
         return ToolTestResponse(success=False, message=str(e)[:100])
@@ -903,40 +964,38 @@ async def _heartbeat_odoo(config: dict) -> ToolTestResponse:
     mode = config.get("mode", "docker")
 
     if mode == "ssh":
-        # SSH mode - use Paramiko for heartbeat
-        from ragtime.core.ssh import SSHConfig, test_ssh_connection
-
+        # SSH mode - use socket-level check (non-blocking, avoids paramiko thread issues)
         ssh_host = config.get("ssh_host", "")
         ssh_port = config.get("ssh_port", 22)
         ssh_user = config.get("ssh_user", "")
-        ssh_key_path = config.get("ssh_key_path", "")
-        ssh_key_content = config.get("ssh_key_content", "")
-        ssh_key_passphrase = config.get("ssh_key_passphrase", "")
-        ssh_password = config.get("ssh_password", "")
 
         if not ssh_host or not ssh_user:
             return ToolTestResponse(success=False, message="SSH not configured")
 
-        ssh_config = SSHConfig(
-            host=ssh_host,
-            port=ssh_port,
-            user=ssh_user,
-            password=ssh_password if ssh_password else None,
-            key_path=ssh_key_path if ssh_key_path else None,
-            key_content=ssh_key_content if ssh_key_content else None,
-            key_passphrase=ssh_key_passphrase if ssh_key_passphrase else None,
-            timeout=5,
-        )
-
         try:
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, lambda: test_ssh_connection(ssh_config))
-
-            return ToolTestResponse(
-                success=result.success,
-                message="OK" if result.success else (result.stderr or result.stdout)[:100]
+            # Use asyncio socket to check if SSH port is reachable
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(ssh_host, ssh_port), timeout=3.0
             )
-        except Exception as e:
+
+            # Read SSH banner to verify it's actually an SSH server
+            banner = await asyncio.wait_for(reader.readline(), timeout=2.0)
+            writer.close()
+            await writer.wait_closed()
+
+            if banner and b"SSH" in banner:
+                return ToolTestResponse(success=True, message="OK")
+            else:
+                return ToolTestResponse(
+                    success=False,
+                    message=f"Not an SSH server: {banner.decode('utf-8', errors='replace')[:50]}",
+                )
+
+        except asyncio.TimeoutError:
+            return ToolTestResponse(success=False, message="Connection timeout")
+        except ConnectionRefusedError:
+            return ToolTestResponse(success=False, message="Connection refused")
+        except OSError as e:
             return ToolTestResponse(success=False, message=str(e)[:100])
     else:
         # Docker mode - check container is running
@@ -948,56 +1007,64 @@ async def _heartbeat_odoo(config: dict) -> ToolTestResponse:
 
         try:
             process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
             )
             stdout, stderr = await process.communicate()
 
             return ToolTestResponse(
                 success=process.returncode == 0,
-                message="OK" if process.returncode == 0 else stderr.decode("utf-8", errors="replace").strip()[:100]
+                message=(
+                    "OK"
+                    if process.returncode == 0
+                    else stderr.decode("utf-8", errors="replace").strip()[:100]
+                ),
             )
         except Exception as e:
             return ToolTestResponse(success=False, message=str(e)[:100])
 
 
 async def _heartbeat_ssh(config: dict) -> ToolTestResponse:
-    """Quick SSH heartbeat check using Paramiko."""
+    """
+    Quick SSH heartbeat check using socket-level port check.
+
+    Uses asyncio sockets instead of paramiko to avoid blocking threads.
+    This only verifies the SSH port is reachable, not full authentication.
+    Full connection tests are done via the 'Test' button.
+    """
     import asyncio
-    from ragtime.core.ssh import SSHConfig, test_ssh_connection
 
     host = config.get("host", "")
     port = config.get("port", 22)
     user = config.get("user", "")
-    key_path = config.get("key_path", "")
-    key_content = config.get("key_content", "")
-    key_passphrase = config.get("key_passphrase", "")
-    password = config.get("password", "")
 
     if not host or not user:
         return ToolTestResponse(success=False, message="SSH not configured")
 
-    ssh_config = SSHConfig(
-        host=host,
-        port=port,
-        user=user,
-        password=password if password else None,
-        key_path=key_path if key_path else None,
-        key_content=key_content if key_content else None,
-        key_passphrase=key_passphrase if key_passphrase else None,
-        timeout=5,
-    )
-
     try:
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, lambda: test_ssh_connection(ssh_config))
-
-        return ToolTestResponse(
-            success=result.success,
-            message="OK" if result.success else (result.stderr or result.stdout)[:100]
+        # Use asyncio socket to check if SSH port is reachable
+        # This is non-blocking and respects asyncio timeout
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port), timeout=3.0
         )
-    except Exception as e:
+
+        # Read SSH banner to verify it's actually an SSH server
+        banner = await asyncio.wait_for(reader.readline(), timeout=2.0)
+        writer.close()
+        await writer.wait_closed()
+
+        if banner and b"SSH" in banner:
+            return ToolTestResponse(success=True, message="OK")
+        else:
+            return ToolTestResponse(
+                success=False,
+                message=f"Not an SSH server: {banner.decode('utf-8', errors='replace')[:50]}",
+            )
+
+    except asyncio.TimeoutError:
+        return ToolTestResponse(success=False, message="Connection timeout")
+    except ConnectionRefusedError:
+        return ToolTestResponse(success=False, message="Connection refused")
+    except OSError as e:
         return ToolTestResponse(success=False, message=str(e)[:100])
 
 
@@ -1012,19 +1079,24 @@ async def _heartbeat_filesystem(config: dict) -> ToolTestResponse:
 
     path = Path(base_path)
     if not path.exists():
-        return ToolTestResponse(success=False, message=f"Path does not exist: {base_path}")
+        return ToolTestResponse(
+            success=False, message=f"Path does not exist: {base_path}"
+        )
     if not path.is_dir():
-        return ToolTestResponse(success=False, message=f"Path is not a directory: {base_path}")
+        return ToolTestResponse(
+            success=False, message=f"Path is not a directory: {base_path}"
+        )
 
     try:
         # Quick check - list first few entries to verify read access
         entries = list(path.iterdir())[:5]
         return ToolTestResponse(
-            success=True,
-            message=f"OK - {len(entries)} entries accessible"
+            success=True, message=f"OK - {len(entries)} entries accessible"
         )
     except PermissionError:
-        return ToolTestResponse(success=False, message=f"Permission denied: {base_path}")
+        return ToolTestResponse(
+            success=False, message=f"Permission denied: {base_path}"
+        )
     except Exception as e:
         return ToolTestResponse(success=False, message=str(e)[:100])
 
@@ -1046,35 +1118,40 @@ async def _test_postgres_connection(config: dict) -> ToolTestResponse:
             # Direct connection test
             cmd = [
                 "psql",
-                "-h", host,
-                "-p", str(port),
-                "-U", user,
-                "-d", database,
-                "-c", "SELECT 1;"
+                "-h",
+                host,
+                "-p",
+                str(port),
+                "-U",
+                user,
+                "-d",
+                database,
+                "-c",
+                "SELECT 1;",
             ]
             env = {"PGPASSWORD": password}
         elif container:
             # Docker container test
             cmd = [
-                "docker", "exec", "-i", container,
-                "bash", "-c",
-                'PGPASSWORD="${POSTGRES_PASSWORD}" psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -c "SELECT 1;"'
+                "docker",
+                "exec",
+                "-i",
+                container,
+                "bash",
+                "-c",
+                'PGPASSWORD="${POSTGRES_PASSWORD}" psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -c "SELECT 1;"',
             ]
             env = None
         else:
             return ToolTestResponse(
-                success=False,
-                message="Either host or container must be specified"
+                success=False, message="Either host or container must be specified"
             )
 
         process = await asyncio.wait_for(
             asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=env
+                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
             ),
-            timeout=10.0
+            timeout=10.0,
         )
         stdout, stderr = await process.communicate()
 
@@ -1082,29 +1159,25 @@ async def _test_postgres_connection(config: dict) -> ToolTestResponse:
             return ToolTestResponse(
                 success=True,
                 message="PostgreSQL connection successful",
-                details={"host": host or container, "database": database}
+                details={"host": host or container, "database": database},
             )
         else:
             error = stderr.decode("utf-8", errors="replace").strip()
             return ToolTestResponse(
-                success=False,
-                message=f"Connection failed: {error}"
+                success=False, message=f"Connection failed: {error}"
             )
 
     except asyncio.TimeoutError:
         return ToolTestResponse(
-            success=False,
-            message="Connection timed out after 10 seconds"
+            success=False, message="Connection timed out after 10 seconds"
         )
     except FileNotFoundError:
         return ToolTestResponse(
-            success=False,
-            message="Required command (psql or docker) not found"
+            success=False, message="Required command (psql or docker) not found"
         )
     except Exception as e:
         return ToolTestResponse(
-            success=False,
-            message=f"Connection test failed: {str(e)}"
+            success=False, message=f"Connection test failed: {str(e)}"
         )
 
 
@@ -1124,6 +1197,7 @@ async def _test_odoo_connection(config: dict) -> ToolTestResponse:
 async def _test_odoo_ssh_connection(config: dict) -> ToolTestResponse:
     """Test Odoo shell connection via SSH using Paramiko."""
     import asyncio
+
     from ragtime.core.ssh import SSHConfig, execute_ssh_command, test_ssh_connection
 
     ssh_host = config.get("ssh_host", "")
@@ -1140,10 +1214,7 @@ async def _test_odoo_ssh_connection(config: dict) -> ToolTestResponse:
     run_as_user = config.get("run_as_user", "")
 
     if not ssh_host or not ssh_user:
-        return ToolTestResponse(
-            success=False,
-            message="SSH host and user are required"
-        )
+        return ToolTestResponse(success=False, message="SSH host and user are required")
 
     # Build SSH config
     ssh_config = SSHConfig(
@@ -1160,12 +1231,14 @@ async def _test_odoo_ssh_connection(config: dict) -> ToolTestResponse:
     try:
         # First test basic SSH connectivity
         loop = asyncio.get_event_loop()
-        ssh_result = await loop.run_in_executor(None, lambda: test_ssh_connection(ssh_config))
+        ssh_result = await loop.run_in_executor(
+            None, lambda: test_ssh_connection(ssh_config)
+        )
 
         if not ssh_result.success:
             return ToolTestResponse(
                 success=False,
-                message=f"SSH connection failed: {ssh_result.stderr or ssh_result.stdout}"
+                message=f"SSH connection failed: {ssh_result.stderr or ssh_result.stdout}",
             )
 
         # Build Odoo shell command
@@ -1182,33 +1255,29 @@ async def _test_odoo_ssh_connection(config: dict) -> ToolTestResponse:
         full_command = f"{odoo_cmd} <<'ODOO_EOF'\n{test_input}ODOO_EOF"
 
         odoo_result = await loop.run_in_executor(
-            None,
-            lambda: execute_ssh_command(ssh_config, full_command)
+            None, lambda: execute_ssh_command(ssh_config, full_command)
         )
 
         if "ODOO_TEST_SUCCESS" in odoo_result.output:
             return ToolTestResponse(
                 success=True,
                 message=f"Odoo shell accessible via SSH",
-                details={
-                    "host": ssh_host,
-                    "database": database,
-                    "mode": "ssh"
-                }
+                details={"host": ssh_host, "database": database, "mode": "ssh"},
             )
         else:
-            output_snippet = odoo_result.output[-500:] if len(odoo_result.output) > 500 else odoo_result.output
+            output_snippet = (
+                odoo_result.output[-500:]
+                if len(odoo_result.output) > 500
+                else odoo_result.output
+            )
             return ToolTestResponse(
                 success=False,
                 message="Odoo shell test failed via SSH",
-                details={"output_tail": output_snippet}
+                details={"output_tail": output_snippet},
             )
 
     except Exception as e:
-        return ToolTestResponse(
-            success=False,
-            message=f"SSH test failed: {str(e)}"
-        )
+        return ToolTestResponse(success=False, message=f"SSH test failed: {str(e)}")
 
 
 async def _test_odoo_docker_connection(config: dict) -> ToolTestResponse:
@@ -1222,35 +1291,29 @@ async def _test_odoo_docker_connection(config: dict) -> ToolTestResponse:
     docker_network = config.get("docker_network", "")
 
     if not container:
-        return ToolTestResponse(
-            success=False,
-            message="Container name is required"
-        )
+        return ToolTestResponse(success=False, message="Container name is required")
 
     try:
         # Test if container is running
         cmd = ["docker", "inspect", "-f", "{{.State.Running}}", container]
         process = await asyncio.wait_for(
             asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
             ),
-            timeout=10.0
+            timeout=10.0,
         )
         stdout, stderr = await process.communicate()
 
         if process.returncode != 0:
             return ToolTestResponse(
                 success=False,
-                message=f"Container '{container}' not found or not accessible"
+                message=f"Container '{container}' not found or not accessible",
             )
 
         is_running = stdout.decode().strip().lower() == "true"
         if not is_running:
             return ToolTestResponse(
-                success=False,
-                message=f"Container '{container}' is not running"
+                success=False, message=f"Container '{container}' is not running"
             )
 
         # Get Odoo version - try multiple approaches
@@ -1259,8 +1322,10 @@ async def _test_odoo_docker_connection(config: dict) -> ToolTestResponse:
         # Try direct odoo --version (works for standard Odoo)
         cmd = ["docker", "exec", "-i", container, "odoo", "--version"]
         process = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE),
-            timeout=10.0
+            asyncio.create_subprocess_exec(
+                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            ),
+            timeout=10.0,
         )
         stdout, stderr = await process.communicate()
 
@@ -1270,23 +1335,31 @@ async def _test_odoo_docker_connection(config: dict) -> ToolTestResponse:
             # Try alternative: check if odoo shell command exists
             cmd = ["docker", "exec", "-i", container, "which", "odoo"]
             process = await asyncio.wait_for(
-                asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE),
-                timeout=5.0
+                asyncio.create_subprocess_exec(
+                    *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                ),
+                timeout=5.0,
             )
             stdout, _ = await process.communicate()
 
             if process.returncode != 0:
                 return ToolTestResponse(
-                    success=False,
-                    message="Odoo command not found in container"
+                    success=False, message="Odoo command not found in container"
                 )
             # odoo exists, but --version not supported (custom wrapper)
             version = "detected (custom wrapper)"
 
         # Test shell execution with stdin pipe (standard approach)
         cmd = [
-            "docker", "exec", "-i", container,
-            "odoo", "shell", "--no-http", "-d", database
+            "docker",
+            "exec",
+            "-i",
+            container,
+            "odoo",
+            "shell",
+            "--no-http",
+            "-d",
+            database,
         ]
         if config_path:
             cmd.extend(["-c", config_path])
@@ -1296,9 +1369,9 @@ async def _test_odoo_docker_connection(config: dict) -> ToolTestResponse:
                 *cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT
+                stderr=subprocess.STDOUT,
             ),
-            timeout=120.0  # Shell initialization can take 10-60+ seconds
+            timeout=120.0,  # Shell initialization can take 10-60+ seconds
         )
 
         test_input = "print('ODOO_TEST_SUCCESS')\nexit()\n"
@@ -1314,44 +1387,41 @@ async def _test_odoo_docker_connection(config: dict) -> ToolTestResponse:
                     "database": database,
                     "version": version,
                     "docker_network": docker_network,
-                    "mode": "docker"
-                }
+                    "mode": "docker",
+                },
             )
         else:
             # Check for common errors in output
             if "database" in output.lower() and "not exist" in output.lower():
                 return ToolTestResponse(
                     success=False,
-                    message=f"Database '{database}' does not exist in container"
+                    message=f"Database '{database}' does not exist in container",
                 )
             # Include some output context for debugging
             output_snippet = output[-500:] if len(output) > 500 else output
             return ToolTestResponse(
                 success=False,
                 message="Odoo shell test failed - could not verify shell access",
-                details={"output_tail": output_snippet}
+                details={"output_tail": output_snippet},
             )
 
     except asyncio.TimeoutError:
         return ToolTestResponse(
             success=False,
-            message="Connection timed out (shell initialization may need >2 minutes)"
+            message="Connection timed out (shell initialization may need >2 minutes)",
         )
     except FileNotFoundError:
-        return ToolTestResponse(
-            success=False,
-            message="Docker command not found"
-        )
+        return ToolTestResponse(success=False, message="Docker command not found")
     except Exception as e:
         return ToolTestResponse(
-            success=False,
-            message=f"Connection test failed: {str(e)}"
+            success=False, message=f"Connection test failed: {str(e)}"
         )
 
 
 async def _test_ssh_connection(config: dict) -> ToolTestResponse:
     """Test SSH shell connection using Paramiko."""
     import asyncio
+
     from ragtime.core.ssh import SSHConfig, test_ssh_connection
 
     host = config.get("host", "")
@@ -1363,10 +1433,7 @@ async def _test_ssh_connection(config: dict) -> ToolTestResponse:
     password = config.get("password")
 
     if not host or not user:
-        return ToolTestResponse(
-            success=False,
-            message="Host and user are required"
-        )
+        return ToolTestResponse(success=False, message="Host and user are required")
 
     ssh_config = SSHConfig(
         host=host,
@@ -1381,33 +1448,34 @@ async def _test_ssh_connection(config: dict) -> ToolTestResponse:
 
     try:
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, lambda: test_ssh_connection(ssh_config))
+        result = await loop.run_in_executor(
+            None, lambda: test_ssh_connection(ssh_config)
+        )
 
         if result.success:
             return ToolTestResponse(
                 success=True,
                 message="SSH connection successful",
-                details={"host": host, "user": user, "port": port}
+                details={"host": host, "user": user, "port": port},
             )
         else:
             return ToolTestResponse(
                 success=False,
-                message=f"SSH connection failed: {result.stderr or result.stdout}"
+                message=f"SSH connection failed: {result.stderr or result.stdout}",
             )
 
     except Exception as e:
-        return ToolTestResponse(
-            success=False,
-            message=f"SSH test failed: {str(e)}"
-        )
+        return ToolTestResponse(success=False, message=f"SSH test failed: {str(e)}")
 
 
 # -----------------------------------------------------------------------------
 # Docker Discovery (Networks and Containers)
 # -----------------------------------------------------------------------------
 
+
 class DockerNetwork(BaseModel):
     """Information about a Docker network."""
+
     name: str
     driver: str
     scope: str
@@ -1416,6 +1484,7 @@ class DockerNetwork(BaseModel):
 
 class DockerContainer(BaseModel):
     """Information about a Docker container."""
+
     name: str
     image: str
     status: str
@@ -1425,6 +1494,7 @@ class DockerContainer(BaseModel):
 
 class DockerDiscoveryResponse(BaseModel):
     """Response from Docker discovery."""
+
     success: bool
     message: str
     networks: List[DockerNetwork] = []
@@ -1442,8 +1512,8 @@ async def discover_docker_resources():
     Also detects the current ragtime container's network.
     """
     import asyncio
-    import subprocess
     import json
+    import subprocess
 
     networks = []
     containers = []
@@ -1453,6 +1523,7 @@ async def discover_docker_resources():
     try:
         # Get our own container name by querying Docker
         import os
+
         hostname = os.environ.get("HOSTNAME", "")
         if hostname:
             # The hostname in Docker is typically the container ID
@@ -1469,8 +1540,10 @@ async def discover_docker_resources():
         # Get networks
         cmd = ["docker", "network", "ls", "--format", "{{json .}}"]
         process = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE),
-            timeout=10.0
+            asyncio.create_subprocess_exec(
+                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            ),
+            timeout=10.0,
         )
         stdout, _ = await process.communicate()
 
@@ -1481,19 +1554,23 @@ async def discover_docker_resources():
                         net = json.loads(line)
                         # Skip default networks
                         if net.get("Name") not in ["bridge", "host", "none"]:
-                            networks.append(DockerNetwork(
-                                name=net.get("Name", ""),
-                                driver=net.get("Driver", ""),
-                                scope=net.get("Scope", "")
-                            ))
+                            networks.append(
+                                DockerNetwork(
+                                    name=net.get("Name", ""),
+                                    driver=net.get("Driver", ""),
+                                    scope=net.get("Scope", ""),
+                                )
+                            )
                     except json.JSONDecodeError:
                         continue
 
         # Get running containers
         cmd = ["docker", "ps", "--format", "{{json .}}"]
         process = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE),
-            timeout=10.0
+            asyncio.create_subprocess_exec(
+                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            ),
+            timeout=10.0,
         )
         stdout, _ = await process.communicate()
 
@@ -1505,46 +1582,74 @@ async def discover_docker_resources():
                         container_name = cont.get("Names", "")
 
                         # Get networks for this container
-                        net_cmd = ["docker", "inspect", "-f", "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}", container_name]
+                        net_cmd = [
+                            "docker",
+                            "inspect",
+                            "-f",
+                            "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}",
+                            container_name,
+                        ]
                         net_process = await asyncio.create_subprocess_exec(
                             *net_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
                         )
                         net_stdout, _ = await net_process.communicate()
-                        container_networks = net_stdout.decode().strip().split() if net_process.returncode == 0 else []
+                        container_networks = (
+                            net_stdout.decode().strip().split()
+                            if net_process.returncode == 0
+                            else []
+                        )
 
                         # Check if this is the ragtime container
                         if current_container and container_name == current_container:
-                            current_network = container_networks[0] if container_networks else None
+                            current_network = (
+                                container_networks[0] if container_networks else None
+                            )
 
                         # Check if container has Odoo (simple version check)
                         has_odoo = False
-                        if "odoo" in cont.get("Image", "").lower() or "odoo" in container_name.lower():
+                        if (
+                            "odoo" in cont.get("Image", "").lower()
+                            or "odoo" in container_name.lower()
+                        ):
                             try:
-                                ver_cmd = ["docker", "exec", "-i", container_name, "odoo", "--version"]
+                                ver_cmd = [
+                                    "docker",
+                                    "exec",
+                                    "-i",
+                                    container_name,
+                                    "odoo",
+                                    "--version",
+                                ]
                                 ver_process = await asyncio.wait_for(
                                     asyncio.create_subprocess_exec(
-                                        *ver_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                                        *ver_cmd,
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE,
                                     ),
-                                    timeout=5.0
+                                    timeout=5.0,
                                 )
                                 await ver_process.communicate()
                                 has_odoo = ver_process.returncode == 0
                             except Exception:
                                 has_odoo = True  # Assume it's Odoo based on name
 
-                        containers.append(DockerContainer(
-                            name=container_name,
-                            image=cont.get("Image", ""),
-                            status=cont.get("Status", ""),
-                            networks=container_networks,
-                            has_odoo=has_odoo
-                        ))
+                        containers.append(
+                            DockerContainer(
+                                name=container_name,
+                                image=cont.get("Image", ""),
+                                status=cont.get("Status", ""),
+                                networks=container_networks,
+                                has_odoo=has_odoo,
+                            )
+                        )
                     except json.JSONDecodeError:
                         continue
 
         # Add container names to networks
         for network in networks:
-            network.containers = [c.name for c in containers if network.name in c.networks]
+            network.containers = [
+                c.name for c in containers if network.name in c.networks
+            ]
 
         return DockerDiscoveryResponse(
             success=True,
@@ -1552,23 +1657,20 @@ async def discover_docker_resources():
             networks=networks,
             containers=containers,
             current_network=current_network,
-            current_container=current_container
+            current_container=current_container,
         )
 
     except asyncio.TimeoutError:
         return DockerDiscoveryResponse(
-            success=False,
-            message="Docker discovery timed out"
+            success=False, message="Docker discovery timed out"
         )
     except FileNotFoundError:
         return DockerDiscoveryResponse(
-            success=False,
-            message="Docker command not found"
+            success=False, message="Docker command not found"
         )
     except Exception as e:
         return DockerDiscoveryResponse(
-            success=False,
-            message=f"Docker discovery failed: {str(e)}"
+            success=False, message=f"Docker discovery failed: {str(e)}"
         )
 
 
@@ -1580,33 +1682,51 @@ async def connect_to_network(network_name: str):
     This enables container-to-container communication with services on that network.
     """
     import asyncio
-    import subprocess
     import os
+    import subprocess
 
     # Get current container name
     container_name = os.environ.get("HOSTNAME", "ragtime-dev")
 
     try:
         # Check if already connected
-        cmd = ["docker", "inspect", "-f", "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}", container_name]
-        process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        cmd = [
+            "docker",
+            "inspect",
+            "-f",
+            "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}",
+            container_name,
+        ]
+        process = await asyncio.create_subprocess_exec(
+            *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
         stdout, _ = await process.communicate()
 
-        current_networks = stdout.decode().strip().split() if process.returncode == 0 else []
+        current_networks = (
+            stdout.decode().strip().split() if process.returncode == 0 else []
+        )
 
         if network_name in current_networks:
-            return {"success": True, "message": f"Already connected to network '{network_name}'"}
+            return {
+                "success": True,
+                "message": f"Already connected to network '{network_name}'",
+            }
 
         # Connect to the network
         cmd = ["docker", "network", "connect", network_name, container_name]
         process = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE),
-            timeout=10.0
+            asyncio.create_subprocess_exec(
+                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            ),
+            timeout=10.0,
         )
         _, stderr = await process.communicate()
 
         if process.returncode == 0:
-            return {"success": True, "message": f"Connected to network '{network_name}'"}
+            return {
+                "success": True,
+                "message": f"Connected to network '{network_name}'",
+            }
         else:
             error = stderr.decode().strip()
             return {"success": False, "message": f"Failed to connect: {error}"}
@@ -1625,8 +1745,8 @@ async def disconnect_from_network(network_name: str):
     Used for cleanup when removing tools that required network access.
     """
     import asyncio
-    import subprocess
     import os
+    import subprocess
 
     # Get current container name
     container_name = os.environ.get("HOSTNAME", "ragtime-dev")
@@ -1634,29 +1754,50 @@ async def disconnect_from_network(network_name: str):
     # Don't disconnect from default networks
     protected_networks = ["ragtime_default", "bridge", "host", "none"]
     if network_name in protected_networks:
-        return {"success": True, "message": f"Network '{network_name}' is protected, skipping disconnect"}
+        return {
+            "success": True,
+            "message": f"Network '{network_name}' is protected, skipping disconnect",
+        }
 
     try:
         # Check if connected
-        cmd = ["docker", "inspect", "-f", "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}", container_name]
-        process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        cmd = [
+            "docker",
+            "inspect",
+            "-f",
+            "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}",
+            container_name,
+        ]
+        process = await asyncio.create_subprocess_exec(
+            *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
         stdout, _ = await process.communicate()
 
-        current_networks = stdout.decode().strip().split() if process.returncode == 0 else []
+        current_networks = (
+            stdout.decode().strip().split() if process.returncode == 0 else []
+        )
 
         if network_name not in current_networks:
-            return {"success": True, "message": f"Not connected to network '{network_name}'"}
+            return {
+                "success": True,
+                "message": f"Not connected to network '{network_name}'",
+            }
 
         # Disconnect from the network
         cmd = ["docker", "network", "disconnect", network_name, container_name]
         process = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE),
-            timeout=10.0
+            asyncio.create_subprocess_exec(
+                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            ),
+            timeout=10.0,
         )
         _, stderr = await process.communicate()
 
         if process.returncode == 0:
-            return {"success": True, "message": f"Disconnected from network '{network_name}'"}
+            return {
+                "success": True,
+                "message": f"Disconnected from network '{network_name}'",
+            }
         else:
             error = stderr.decode().strip()
             return {"success": False, "message": f"Failed to disconnect: {error}"}
@@ -1671,8 +1812,10 @@ async def disconnect_from_network(network_name: str):
 # Host Filesystem Browser (for volume mount discovery)
 # -----------------------------------------------------------------------------
 
+
 class MountInfo(BaseModel):
     """Information about a mounted volume."""
+
     container_path: str
     host_path: str
     read_only: bool
@@ -1681,6 +1824,7 @@ class MountInfo(BaseModel):
 
 class DirectoryEntry(BaseModel):
     """Entry in a directory listing."""
+
     name: str
     path: str
     is_dir: bool
@@ -1689,6 +1833,7 @@ class DirectoryEntry(BaseModel):
 
 class BrowseResponse(BaseModel):
     """Response from directory browsing."""
+
     path: str
     entries: List[DirectoryEntry]
     error: Optional[str] = None
@@ -1696,21 +1841,26 @@ class BrowseResponse(BaseModel):
 
 class MountDiscoveryResponse(BaseModel):
     """Response from mount discovery."""
+
     mounts: List[MountInfo]
     suggested_paths: List[str]
     docker_compose_example: str
 
 
-@router.get("/filesystem/mounts", response_model=MountDiscoveryResponse, tags=["Filesystem Indexer"])
+@router.get(
+    "/filesystem/mounts",
+    response_model=MountDiscoveryResponse,
+    tags=["Filesystem Indexer"],
+)
 async def discover_mounts(_: User = Depends(require_admin)):
     """
     Discover current volume mounts in the container.
 
     Returns mounted paths and example docker-compose configuration for adding new mounts.
     """
+    import asyncio
     import os
     import subprocess
-    import asyncio
 
     mounts = []
     hostname = os.environ.get("HOSTNAME", "")
@@ -1726,14 +1876,17 @@ async def discover_mounts(_: User = Depends(require_admin)):
 
             if process.returncode == 0:
                 import json
+
                 mount_data = json.loads(stdout.decode().strip())
                 for m in mount_data:
-                    mounts.append(MountInfo(
-                        container_path=m.get("Destination", ""),
-                        host_path=m.get("Source", ""),
-                        read_only=m.get("RW", True) is False,
-                        mount_type=m.get("Type", "bind"),
-                    ))
+                    mounts.append(
+                        MountInfo(
+                            container_path=m.get("Destination", ""),
+                            host_path=m.get("Source", ""),
+                            read_only=m.get("RW", True) is False,
+                            mount_type=m.get("Type", "bind"),
+                        )
+                    )
     except Exception as e:
         logger.warning(f"Failed to inspect mounts: {e}")
 
@@ -1744,12 +1897,16 @@ async def discover_mounts(_: User = Depends(require_admin)):
                 for line in f:
                     parts = line.split()
                     if len(parts) >= 4 and parts[1].startswith("/mnt"):
-                        mounts.append(MountInfo(
-                            container_path=parts[1],
-                            host_path=parts[0],
-                            read_only="ro" in parts[3],
-                            mount_type="bind" if parts[0].startswith("/") else "unknown",
-                        ))
+                        mounts.append(
+                            MountInfo(
+                                container_path=parts[1],
+                                host_path=parts[0],
+                                read_only="ro" in parts[3],
+                                mount_type=(
+                                    "bind" if parts[0].startswith("/") else "unknown"
+                                ),
+                            )
+                        )
         except Exception:
             pass
 
@@ -1783,11 +1940,10 @@ volumes:
     )
 
 
-@router.get("/filesystem/browse", response_model=BrowseResponse, tags=["Filesystem Indexer"])
-async def browse_filesystem(
-    path: str = "/mnt",
-    _: User = Depends(require_admin)
-):
+@router.get(
+    "/filesystem/browse", response_model=BrowseResponse, tags=["Filesystem Indexer"]
+)
+async def browse_filesystem(path: str = "/mnt", _: User = Depends(require_admin)):
     """
     Browse a directory path in the container.
 
@@ -1823,14 +1979,18 @@ async def browse_filesystem(
 
     try:
         entries = []
-        for entry in sorted(path_obj.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())):
+        for entry in sorted(
+            path_obj.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())
+        ):
             try:
-                entries.append(DirectoryEntry(
-                    name=entry.name,
-                    path=str(entry),
-                    is_dir=entry.is_dir(),
-                    size=entry.stat().st_size if entry.is_file() else None,
-                ))
+                entries.append(
+                    DirectoryEntry(
+                        name=entry.name,
+                        path=str(entry),
+                        is_dir=entry.is_dir(),
+                        size=entry.stat().st_size if entry.is_file() else None,
+                    )
+                )
             except (PermissionError, OSError):
                 # Skip entries we can't access
                 continue
@@ -1864,17 +2024,24 @@ from ragtime.indexer.models import (
 
 class FilesystemIndexStatsResponse(BaseModel):
     """Statistics for a filesystem index."""
+
     index_name: str
     embedding_count: int
     file_count: int
     last_indexed: Optional[str] = None
 
 
-@router.post("/tools/{tool_id}/filesystem/index", response_model=FilesystemIndexJobResponse, tags=["Filesystem Indexer"])
+@router.post(
+    "/tools/{tool_id}/filesystem/index",
+    response_model=FilesystemIndexJobResponse,
+    tags=["Filesystem Indexer"],
+)
 async def trigger_filesystem_index(
     tool_id: str,
-    request: TriggerFilesystemIndexRequest = Body(default=TriggerFilesystemIndexRequest()),
-    _user: User = Depends(require_admin)
+    request: TriggerFilesystemIndexRequest = Body(
+        default=TriggerFilesystemIndexRequest()
+    ),
+    _user: User = Depends(require_admin),
 ):
     """
     Trigger filesystem indexing for a tool. Admin only.
@@ -1892,7 +2059,7 @@ async def trigger_filesystem_index(
     if tool_config.tool_type != ToolType.FILESYSTEM_INDEXER:
         raise HTTPException(
             status_code=400,
-            detail=f"Tool type must be 'filesystem_indexer', got '{tool_config.tool_type.value}'"
+            detail=f"Tool type must be 'filesystem_indexer', got '{tool_config.tool_type.value}'",
         )
 
     # Parse connection config
@@ -1900,15 +2067,14 @@ async def trigger_filesystem_index(
         fs_config = FilesystemConnectionConfig(**tool_config.connection_config)
     except Exception as e:
         raise HTTPException(
-            status_code=400,
-            detail=f"Invalid filesystem configuration: {str(e)}"
+            status_code=400, detail=f"Invalid filesystem configuration: {str(e)}"
         ) from e
 
     # Validate pgvector is available
     if not await filesystem_indexer.ensure_pgvector_extension():
         raise HTTPException(
             status_code=503,
-            detail="pgvector extension not available. Please install it: CREATE EXTENSION IF NOT EXISTS vector;"
+            detail="pgvector extension not available. Please install it: CREATE EXTENSION IF NOT EXISTS vector;",
         )
 
     # Start indexing
@@ -1936,10 +2102,13 @@ async def trigger_filesystem_index(
     )
 
 
-@router.get("/tools/{tool_id}/filesystem/jobs", response_model=List[FilesystemIndexJobResponse], tags=["Filesystem Indexer"])
+@router.get(
+    "/tools/{tool_id}/filesystem/jobs",
+    response_model=List[FilesystemIndexJobResponse],
+    tags=["Filesystem Indexer"],
+)
 async def list_filesystem_index_jobs(
-    tool_id: str,
-    _user: User = Depends(require_admin)
+    tool_id: str, _user: User = Depends(require_admin)
 ):
     """List filesystem indexing jobs for a tool. Admin only."""
     jobs = await filesystem_indexer.list_jobs(tool_config_id=tool_id)
@@ -1964,11 +2133,11 @@ async def list_filesystem_index_jobs(
     ]
 
 
-@router.post("/tools/{tool_id}/filesystem/jobs/{job_id}/cancel", tags=["Filesystem Indexer"])
+@router.post(
+    "/tools/{tool_id}/filesystem/jobs/{job_id}/cancel", tags=["Filesystem Indexer"]
+)
 async def cancel_filesystem_index_job(
-    tool_id: str,
-    job_id: str,
-    _user: User = Depends(require_admin)
+    tool_id: str, job_id: str, _user: User = Depends(require_admin)
 ):
     """
     Cancel an active filesystem indexing job. Admin only.
@@ -1983,24 +2152,26 @@ async def cancel_filesystem_index_job(
     if tool_config.tool_type != ToolType.FILESYSTEM_INDEXER:
         raise HTTPException(
             status_code=400,
-            detail=f"Tool type must be 'filesystem_indexer', got '{tool_config.tool_type.value}'"
+            detail=f"Tool type must be 'filesystem_indexer', got '{tool_config.tool_type.value}'",
         )
 
     # Request cancellation
     cancelled = await filesystem_indexer.cancel_job(job_id)
     if not cancelled:
         raise HTTPException(
-            status_code=400,
-            detail="Job not found or already completed"
+            status_code=400, detail="Job not found or already completed"
         )
 
     return {"success": True, "message": "Cancellation requested"}
 
 
-@router.get("/tools/{tool_id}/filesystem/stats", response_model=FilesystemIndexStatsResponse, tags=["Filesystem Indexer"])
+@router.get(
+    "/tools/{tool_id}/filesystem/stats",
+    response_model=FilesystemIndexStatsResponse,
+    tags=["Filesystem Indexer"],
+)
 async def get_filesystem_index_stats(
-    tool_id: str,
-    _user: User = Depends(require_admin)
+    tool_id: str, _user: User = Depends(require_admin)
 ):
     """Get statistics for a filesystem index. Admin only."""
     # Get the tool config
@@ -2011,7 +2182,7 @@ async def get_filesystem_index_stats(
     if tool_config.tool_type != ToolType.FILESYSTEM_INDEXER:
         raise HTTPException(
             status_code=400,
-            detail=f"Tool type must be 'filesystem_indexer', got '{tool_config.tool_type.value}'"
+            detail=f"Tool type must be 'filesystem_indexer', got '{tool_config.tool_type.value}'",
         )
 
     # Parse connection config for index name
@@ -2019,8 +2190,7 @@ async def get_filesystem_index_stats(
         fs_config = FilesystemConnectionConfig(**tool_config.connection_config)
     except Exception as e:
         raise HTTPException(
-            status_code=400,
-            detail=f"Invalid filesystem configuration: {str(e)}"
+            status_code=400, detail=f"Invalid filesystem configuration: {str(e)}"
         ) from e
 
     stats = await filesystem_indexer.get_index_stats(fs_config.index_name)
@@ -2028,15 +2198,14 @@ async def get_filesystem_index_stats(
         index_name=stats["index_name"],
         embedding_count=stats["embedding_count"],
         file_count=stats["file_count"],
-        last_indexed=stats["last_indexed"].isoformat() if stats["last_indexed"] else None,
+        last_indexed=(
+            stats["last_indexed"].isoformat() if stats["last_indexed"] else None
+        ),
     )
 
 
 @router.delete("/tools/{tool_id}/filesystem/index", tags=["Filesystem Indexer"])
-async def delete_filesystem_index(
-    tool_id: str,
-    _user: User = Depends(require_admin)
-):
+async def delete_filesystem_index(tool_id: str, _user: User = Depends(require_admin)):
     """Delete all embeddings for a filesystem index. Admin only."""
     # Get the tool config
     tool_config = await repository.get_tool_config(tool_id)
@@ -2046,7 +2215,7 @@ async def delete_filesystem_index(
     if tool_config.tool_type != ToolType.FILESYSTEM_INDEXER:
         raise HTTPException(
             status_code=400,
-            detail=f"Tool type must be 'filesystem_indexer', got '{tool_config.tool_type.value}'"
+            detail=f"Tool type must be 'filesystem_indexer', got '{tool_config.tool_type.value}'",
         )
 
     # Parse connection config for index name
@@ -2054,14 +2223,13 @@ async def delete_filesystem_index(
         fs_config = FilesystemConnectionConfig(**tool_config.connection_config)
     except Exception as e:
         raise HTTPException(
-            status_code=400,
-            detail=f"Invalid filesystem configuration: {str(e)}"
+            status_code=400, detail=f"Invalid filesystem configuration: {str(e)}"
         ) from e
 
     deleted_count = await filesystem_indexer.delete_index(fs_config.index_name)
     return {
         "success": True,
-        "message": f"Deleted {deleted_count} embeddings from index '{fs_config.index_name}'"
+        "message": f"Deleted {deleted_count} embeddings from index '{fs_config.index_name}'",
     }
 
 
@@ -2071,7 +2239,11 @@ async def check_pgvector_status(_user: User = Depends(require_admin)):
     is_available = await filesystem_indexer.ensure_pgvector_extension()
     return {
         "available": is_available,
-        "message": "pgvector extension is installed" if is_available else "pgvector extension not available"
+        "message": (
+            "pgvector extension is installed"
+            if is_available
+            else "pgvector extension not available"
+        ),
     }
 
 
@@ -2079,8 +2251,10 @@ async def check_pgvector_status(_user: User = Depends(require_admin)):
 # Ollama Connection Testing
 # -----------------------------------------------------------------------------
 
+
 class OllamaTestRequest(BaseModel):
     """Request to test Ollama connection."""
+
     protocol: str = Field(default="http", description="Protocol: 'http' or 'https'")
     host: str = Field(default="localhost", description="Ollama server hostname or IP")
     port: int = Field(default=11434, ge=1, le=65535, description="Ollama server port")
@@ -2088,6 +2262,7 @@ class OllamaTestRequest(BaseModel):
 
 class OllamaModel(BaseModel):
     """Information about an available Ollama model."""
+
     name: str
     modified_at: Optional[str] = None
     size: Optional[int] = None
@@ -2095,6 +2270,7 @@ class OllamaModel(BaseModel):
 
 class OllamaTestResponse(BaseModel):
     """Response from Ollama connection test."""
+
     success: bool
     message: str
     models: List[OllamaModel] = []
@@ -2121,42 +2297,42 @@ async def test_ollama_connection(request: OllamaTestRequest):
 
             # Parse the models list from Ollama API response
             for model in data.get("models", []):
-                models.append(OllamaModel(
-                    name=model.get("name", ""),
-                    modified_at=model.get("modified_at"),
-                    size=model.get("size")
-                ))
+                models.append(
+                    OllamaModel(
+                        name=model.get("name", ""),
+                        modified_at=model.get("modified_at"),
+                        size=model.get("size"),
+                    )
+                )
 
             return OllamaTestResponse(
                 success=True,
                 message=f"Connected successfully. Found {len(models)} model(s).",
                 models=models,
-                base_url=base_url
+                base_url=base_url,
             )
 
     except httpx.ConnectError:
         return OllamaTestResponse(
             success=False,
             message=f"Cannot connect to Ollama server at {base_url}. Is Ollama running?",
-            base_url=base_url
+            base_url=base_url,
         )
     except httpx.TimeoutException:
         return OllamaTestResponse(
             success=False,
             message=f"Connection to {base_url} timed out.",
-            base_url=base_url
+            base_url=base_url,
         )
     except httpx.HTTPStatusError as e:
         return OllamaTestResponse(
             success=False,
             message=f"HTTP error: {e.response.status_code}",
-            base_url=base_url
+            base_url=base_url,
         )
     except Exception as e:
         return OllamaTestResponse(
-            success=False,
-            message=f"Connection failed: {str(e)}",
-            base_url=base_url
+            success=False, message=f"Connection failed: {str(e)}", base_url=base_url
         )
 
 
@@ -2164,14 +2340,17 @@ async def test_ollama_connection(request: OllamaTestRequest):
 # Embedding Model Fetching
 # -----------------------------------------------------------------------------
 
+
 class EmbeddingModelsRequest(BaseModel):
     """Request to fetch available embedding models from a provider."""
+
     provider: str = Field(..., description="Embedding provider: 'openai'")
     api_key: str = Field(..., description="API key for the provider")
 
 
 class EmbeddingModel(BaseModel):
     """Information about an available embedding model."""
+
     id: str
     name: str
     dimensions: Optional[int] = None
@@ -2179,6 +2358,7 @@ class EmbeddingModel(BaseModel):
 
 class EmbeddingModelsResponse(BaseModel):
     """Response from embedding models fetch."""
+
     success: bool
     message: str
     models: List[EmbeddingModel] = []
@@ -2188,14 +2368,16 @@ class EmbeddingModelsResponse(BaseModel):
 # OpenAI embedding models - prioritized list (from LiteLLM community data)
 # These are the recommended models for most use cases
 from ragtime.core.embedding_models import (
-    get_embedding_models,
     OPENAI_EMBEDDING_PRIORITY,
+    get_embedding_models,
 )
 
 OPENAI_DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
 
-@router.post("/embedding/models", response_model=EmbeddingModelsResponse, tags=["Settings"])
+@router.post(
+    "/embedding/models", response_model=EmbeddingModelsResponse, tags=["Settings"]
+)
 async def fetch_embedding_models(request: EmbeddingModelsRequest):
     """
     Fetch available embedding models from a provider given a valid API key.
@@ -2208,7 +2390,7 @@ async def fetch_embedding_models(request: EmbeddingModelsRequest):
     else:
         return EmbeddingModelsResponse(
             success=False,
-            message=f"Unknown or unsupported embedding provider: {request.provider}. Supported: 'openai'"
+            message=f"Unknown or unsupported embedding provider: {request.provider}. Supported: 'openai'",
         )
 
 
@@ -2226,7 +2408,7 @@ async def _fetch_openai_embedding_models(api_key: str) -> EmbeddingModelsRespons
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.get(
                 "https://api.openai.com/v1/models",
-                headers={"Authorization": f"Bearer {api_key}"}
+                headers={"Authorization": f"Bearer {api_key}"},
             )
             response.raise_for_status()
 
@@ -2240,19 +2422,21 @@ async def _fetch_openai_embedding_models(api_key: str) -> EmbeddingModelsRespons
                 # Check if LiteLLM knows this is an embedding model
                 litellm_info = litellm_embedding_models.get(model_id)
                 if litellm_info and litellm_info.provider == "openai":
-                    models.append(EmbeddingModel(
-                        id=model_id,
-                        name=model_id,
-                        dimensions=litellm_info.output_vector_size
-                    ))
+                    models.append(
+                        EmbeddingModel(
+                            id=model_id,
+                            name=model_id,
+                            dimensions=litellm_info.output_vector_size,
+                        )
+                    )
                 # Fallback: also include models with "embedding" in the name
                 # (covers new models not yet in LiteLLM)
-                elif "embedding" in model_id.lower() and model_id not in [m.id for m in models]:
-                    models.append(EmbeddingModel(
-                        id=model_id,
-                        name=model_id,
-                        dimensions=None
-                    ))
+                elif "embedding" in model_id.lower() and model_id not in [
+                    m.id for m in models
+                ]:
+                    models.append(
+                        EmbeddingModel(id=model_id, name=model_id, dimensions=None)
+                    )
 
             # Sort: priority models first, then alphabetically
             def sort_key(m: EmbeddingModel) -> tuple:
@@ -2268,28 +2452,29 @@ async def _fetch_openai_embedding_models(api_key: str) -> EmbeddingModelsRespons
                 success=True,
                 message=f"Found {len(models)} embedding model(s) (validated against LiteLLM database).",
                 models=models,
-                default_model=OPENAI_DEFAULT_EMBEDDING_MODEL if any(m.id == OPENAI_DEFAULT_EMBEDDING_MODEL for m in models) else (models[0].id if models else None)
+                default_model=(
+                    OPENAI_DEFAULT_EMBEDDING_MODEL
+                    if any(m.id == OPENAI_DEFAULT_EMBEDDING_MODEL for m in models)
+                    else (models[0].id if models else None)
+                ),
             )
 
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 401:
             return EmbeddingModelsResponse(
                 success=False,
-                message="Invalid API key. Please check your OpenAI API key."
+                message="Invalid API key. Please check your OpenAI API key.",
             )
         return EmbeddingModelsResponse(
-            success=False,
-            message=f"OpenAI API error: {e.response.status_code}"
+            success=False, message=f"OpenAI API error: {e.response.status_code}"
         )
     except httpx.TimeoutException:
         return EmbeddingModelsResponse(
-            success=False,
-            message="Request to OpenAI timed out."
+            success=False, message="Request to OpenAI timed out."
         )
     except Exception as e:
         return EmbeddingModelsResponse(
-            success=False,
-            message=f"Failed to fetch OpenAI embedding models: {str(e)}"
+            success=False, message=f"Failed to fetch OpenAI embedding models: {str(e)}"
         )
 
 
@@ -2297,14 +2482,17 @@ async def _fetch_openai_embedding_models(api_key: str) -> EmbeddingModelsRespons
 # LLM Provider Model Fetching
 # -----------------------------------------------------------------------------
 
+
 class LLMModelsRequest(BaseModel):
     """Request to fetch available models from an LLM provider."""
+
     provider: str = Field(..., description="LLM provider: 'openai' or 'anthropic'")
     api_key: str = Field(..., description="API key for the provider")
 
 
 class LLMModel(BaseModel):
     """Information about an available LLM model."""
+
     id: str
     name: str
     created: Optional[int] = None
@@ -2312,6 +2500,7 @@ class LLMModel(BaseModel):
 
 class LLMModelsResponse(BaseModel):
     """Response from LLM models fetch."""
+
     success: bool
     message: str
     models: List[LLMModel] = []
@@ -2320,6 +2509,7 @@ class LLMModelsResponse(BaseModel):
 
 class AvailableModel(BaseModel):
     """A model available for chat."""
+
     id: str
     name: str
     provider: str  # 'openai' or 'anthropic'
@@ -2328,6 +2518,7 @@ class AvailableModel(BaseModel):
 
 class AvailableModelsResponse(BaseModel):
     """Response with all available models from configured providers."""
+
     models: List[AvailableModel] = []
     default_model: Optional[str] = None
     current_model: Optional[str] = None  # Currently selected model in settings
@@ -2339,8 +2530,21 @@ OPENAI_DEFAULT_MODEL = "gpt-4o"
 ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-4-20250514"
 
 # Models to prioritize in the list (shown first)
-OPENAI_PRIORITY_MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"]
-ANTHROPIC_PRIORITY_MODELS = ["claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-opus-20240229", "claude-3-sonnet-20240229", "claude-3-haiku-20240307"]
+OPENAI_PRIORITY_MODELS = [
+    "gpt-4o",
+    "gpt-4o-mini",
+    "gpt-4-turbo",
+    "gpt-4",
+    "gpt-3.5-turbo",
+]
+ANTHROPIC_PRIORITY_MODELS = [
+    "claude-sonnet-4-20250514",
+    "claude-opus-4-20250514",
+    "claude-3-5-sonnet-20241022",
+    "claude-3-opus-20240229",
+    "claude-3-sonnet-20240229",
+    "claude-3-haiku-20240307",
+]
 
 
 @router.post("/llm/models", response_model=LLMModelsResponse, tags=["Settings"])
@@ -2357,7 +2561,7 @@ async def fetch_llm_models(request: LLMModelsRequest):
     else:
         return LLMModelsResponse(
             success=False,
-            message=f"Unknown provider: {request.provider}. Supported: 'openai', 'anthropic'"
+            message=f"Unknown provider: {request.provider}. Supported: 'openai', 'anthropic'",
         )
 
 
@@ -2367,7 +2571,7 @@ async def _fetch_openai_models(api_key: str) -> LLMModelsResponse:
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.get(
                 "https://api.openai.com/v1/models",
-                headers={"Authorization": f"Bearer {api_key}"}
+                headers={"Authorization": f"Bearer {api_key}"},
             )
             response.raise_for_status()
 
@@ -2378,12 +2582,14 @@ async def _fetch_openai_models(api_key: str) -> LLMModelsResponse:
             for model in data.get("data", []):
                 model_id = model.get("id", "")
                 # Include GPT models suitable for chat (exclude embeddings, whisper, tts, dall-e, etc.)
-                if model_id.startswith("gpt-") and not any(x in model_id for x in ["instruct", "vision", "realtime", "audio"]):
-                    models.append(LLMModel(
-                        id=model_id,
-                        name=model_id,
-                        created=model.get("created")
-                    ))
+                if model_id.startswith("gpt-") and not any(
+                    x in model_id for x in ["instruct", "vision", "realtime", "audio"]
+                ):
+                    models.append(
+                        LLMModel(
+                            id=model_id, name=model_id, created=model.get("created")
+                        )
+                    )
 
             # Sort: priority models first, then alphabetically
             def sort_key(m: LLMModel) -> tuple:
@@ -2399,28 +2605,27 @@ async def _fetch_openai_models(api_key: str) -> LLMModelsResponse:
                 success=True,
                 message=f"Found {len(models)} chat model(s).",
                 models=models,
-                default_model=OPENAI_DEFAULT_MODEL if any(m.id == OPENAI_DEFAULT_MODEL for m in models) else (models[0].id if models else None)
+                default_model=(
+                    OPENAI_DEFAULT_MODEL
+                    if any(m.id == OPENAI_DEFAULT_MODEL for m in models)
+                    else (models[0].id if models else None)
+                ),
             )
 
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 401:
             return LLMModelsResponse(
                 success=False,
-                message="Invalid API key. Please check your OpenAI API key."
+                message="Invalid API key. Please check your OpenAI API key.",
             )
         return LLMModelsResponse(
-            success=False,
-            message=f"OpenAI API error: {e.response.status_code}"
+            success=False, message=f"OpenAI API error: {e.response.status_code}"
         )
     except httpx.TimeoutException:
-        return LLMModelsResponse(
-            success=False,
-            message="Request to OpenAI timed out."
-        )
+        return LLMModelsResponse(success=False, message="Request to OpenAI timed out.")
     except Exception as e:
         return LLMModelsResponse(
-            success=False,
-            message=f"Failed to fetch OpenAI models: {str(e)}"
+            success=False, message=f"Failed to fetch OpenAI models: {str(e)}"
         )
 
 
@@ -2430,10 +2635,7 @@ async def _fetch_anthropic_models(api_key: str) -> LLMModelsResponse:
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.get(
                 "https://api.anthropic.com/v1/models",
-                headers={
-                    "x-api-key": api_key,
-                    "anthropic-version": "2023-06-01"
-                }
+                headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
             )
             response.raise_for_status()
 
@@ -2443,11 +2645,7 @@ async def _fetch_anthropic_models(api_key: str) -> LLMModelsResponse:
             for model in data.get("data", []):
                 model_id = model.get("id", "")
                 display_name = model.get("display_name", model_id)
-                models.append(LLMModel(
-                    id=model_id,
-                    name=display_name,
-                    created=None
-                ))
+                models.append(LLMModel(id=model_id, name=display_name, created=None))
 
             # Sort: priority models first, then alphabetically
             def sort_key(m: LLMModel) -> tuple:
@@ -2463,28 +2661,29 @@ async def _fetch_anthropic_models(api_key: str) -> LLMModelsResponse:
                 success=True,
                 message=f"Found {len(models)} model(s).",
                 models=models,
-                default_model=ANTHROPIC_DEFAULT_MODEL if any(m.id == ANTHROPIC_DEFAULT_MODEL for m in models) else (models[0].id if models else None)
+                default_model=(
+                    ANTHROPIC_DEFAULT_MODEL
+                    if any(m.id == ANTHROPIC_DEFAULT_MODEL for m in models)
+                    else (models[0].id if models else None)
+                ),
             )
 
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 401:
             return LLMModelsResponse(
                 success=False,
-                message="Invalid API key. Please check your Anthropic API key."
+                message="Invalid API key. Please check your Anthropic API key.",
             )
         return LLMModelsResponse(
-            success=False,
-            message=f"Anthropic API error: {e.response.status_code}"
+            success=False, message=f"Anthropic API error: {e.response.status_code}"
         )
     except httpx.TimeoutException:
         return LLMModelsResponse(
-            success=False,
-            message="Request to Anthropic timed out."
+            success=False, message="Request to Anthropic timed out."
         )
     except Exception as e:
         return LLMModelsResponse(
-            success=False,
-            message=f"Failed to fetch Anthropic models: {str(e)}"
+            success=False, message=f"Failed to fetch Anthropic models: {str(e)}"
         )
 
 
@@ -2493,15 +2692,17 @@ async def _fetch_anthropic_models(api_key: str) -> LLMModelsResponse:
 # =============================================================================
 
 from ragtime.indexer.models import (
+    ChatMessage,
     Conversation,
     ConversationResponse,
     CreateConversationRequest,
     SendMessageRequest,
-    ChatMessage,
 )
 
 
-@router.get("/chat/available-models", response_model=AvailableModelsResponse, tags=["Chat"])
+@router.get(
+    "/chat/available-models", response_model=AvailableModelsResponse, tags=["Chat"]
+)
 async def get_available_chat_models():
     """
     Get all available models from configured LLM providers.
@@ -2521,12 +2722,14 @@ async def get_available_chat_models():
             result = await _fetch_openai_models(app_settings.openai_api_key)
             if result.success:
                 for m in result.models:
-                    all_models.append(AvailableModel(
-                        id=m.id,
-                        name=m.name,
-                        provider="openai",
-                        context_limit=await get_context_limit(m.id)
-                    ))
+                    all_models.append(
+                        AvailableModel(
+                            id=m.id,
+                            name=m.name,
+                            provider="openai",
+                            context_limit=await get_context_limit(m.id),
+                        )
+                    )
                 if not default_model and result.default_model:
                     default_model = result.default_model
         except Exception as e:
@@ -2538,12 +2741,14 @@ async def get_available_chat_models():
             result = await _fetch_anthropic_models(app_settings.anthropic_api_key)
             if result.success:
                 for m in result.models:
-                    all_models.append(AvailableModel(
-                        id=m.id,
-                        name=m.name,
-                        provider="anthropic",
-                        context_limit=await get_context_limit(m.id)
-                    ))
+                    all_models.append(
+                        AvailableModel(
+                            id=m.id,
+                            name=m.name,
+                            provider="anthropic",
+                            context_limit=await get_context_limit(m.id),
+                        )
+                    )
                 if not default_model and result.default_model:
                     default_model = result.default_model
         except Exception as e:
@@ -2563,9 +2768,7 @@ async def get_available_chat_models():
             default_model = all_models[0].id if all_models else None
 
     return AvailableModelsResponse(
-        models=all_models,
-        default_model=default_model,
-        current_model=current_model
+        models=all_models, default_model=default_model, current_model=current_model
     )
 
 
@@ -2588,12 +2791,14 @@ async def get_all_chat_models():
             result = await _fetch_openai_models(app_settings.openai_api_key)
             if result.success:
                 for m in result.models:
-                    all_models.append(AvailableModel(
-                        id=m.id,
-                        name=m.name,
-                        provider="openai",
-                        context_limit=await get_context_limit(m.id)
-                    ))
+                    all_models.append(
+                        AvailableModel(
+                            id=m.id,
+                            name=m.name,
+                            provider="openai",
+                            context_limit=await get_context_limit(m.id),
+                        )
+                    )
         except Exception as e:
             logger.warning(f"Failed to fetch OpenAI models: {e}")
 
@@ -2603,12 +2808,14 @@ async def get_all_chat_models():
             result = await _fetch_anthropic_models(app_settings.anthropic_api_key)
             if result.success:
                 for m in result.models:
-                    all_models.append(AvailableModel(
-                        id=m.id,
-                        name=m.name,
-                        provider="anthropic",
-                        context_limit=await get_context_limit(m.id)
-                    ))
+                    all_models.append(
+                        AvailableModel(
+                            id=m.id,
+                            name=m.name,
+                            provider="anthropic",
+                            context_limit=await get_context_limit(m.id),
+                        )
+                    )
         except Exception as e:
             logger.warning(f"Failed to fetch Anthropic models: {e}")
 
@@ -2619,7 +2826,7 @@ async def get_all_chat_models():
         models=all_models,
         default_model=app_settings.llm_model,
         current_model=app_settings.llm_model,
-        allowed_models=allowed_models
+        allowed_models=allowed_models,
     )
 
 
@@ -2644,17 +2851,13 @@ async def list_conversations(user: User = Depends(get_current_user)):
     """List chat conversations for the current user."""
     # Admins can see all, regular users only see their own
     is_admin = user.role == "admin"
-    convs = await repository.list_conversations(
-        user_id=user.id,
-        include_all=is_admin
-    )
+    convs = await repository.list_conversations(user_id=user.id, include_all=is_admin)
     return [_to_conversation_response(c) for c in convs]
 
 
 @router.post("/conversations", response_model=ConversationResponse)
 async def create_conversation(
-    request: CreateConversationRequest = None,
-    user: User = Depends(get_current_user)
+    request: CreateConversationRequest = None, user: User = Depends(get_current_user)
 ):
     """Create a new chat conversation for the current user."""
     # Get default model from app settings if not provided
@@ -2664,12 +2867,16 @@ async def create_conversation(
     title = request.title if request and request.title else "New Chat"
     model = request.model if request and request.model else default_model
 
-    conv = await repository.create_conversation(title=title, model=model, user_id=user.id)
+    conv = await repository.create_conversation(
+        title=title, model=model, user_id=user.id
+    )
     return _to_conversation_response(conv)
 
 
 @router.get("/conversations/{conversation_id}", response_model=ConversationResponse)
-async def get_conversation(conversation_id: str, user: User = Depends(get_current_user)):
+async def get_conversation(
+    conversation_id: str, user: User = Depends(get_current_user)
+):
     """Get a specific conversation. Users can only access their own conversations."""
     # Check access
     has_access = await repository.check_conversation_access(
@@ -2686,7 +2893,9 @@ async def get_conversation(conversation_id: str, user: User = Depends(get_curren
 
 
 @router.delete("/conversations/{conversation_id}")
-async def delete_conversation(conversation_id: str, user: User = Depends(get_current_user)):
+async def delete_conversation(
+    conversation_id: str, user: User = Depends(get_current_user)
+):
     """Delete a conversation. Users can only delete their own conversations."""
     has_access = await repository.check_conversation_access(
         conversation_id, user.id, is_admin=(user.role == "admin")
@@ -2700,8 +2909,12 @@ async def delete_conversation(conversation_id: str, user: User = Depends(get_cur
     return {"message": "Conversation deleted"}
 
 
-@router.patch("/conversations/{conversation_id}/title", response_model=ConversationResponse)
-async def update_conversation_title(conversation_id: str, body: dict, user: User = Depends(get_current_user)):
+@router.patch(
+    "/conversations/{conversation_id}/title", response_model=ConversationResponse
+)
+async def update_conversation_title(
+    conversation_id: str, body: dict, user: User = Depends(get_current_user)
+):
     """Update a conversation's title. Users can only update their own conversations."""
     has_access = await repository.check_conversation_access(
         conversation_id, user.id, is_admin=(user.role == "admin")
@@ -2720,8 +2933,12 @@ async def update_conversation_title(conversation_id: str, body: dict, user: User
     return _to_conversation_response(conv)
 
 
-@router.patch("/conversations/{conversation_id}/model", response_model=ConversationResponse)
-async def update_conversation_model(conversation_id: str, body: dict, user: User = Depends(get_current_user)):
+@router.patch(
+    "/conversations/{conversation_id}/model", response_model=ConversationResponse
+)
+async def update_conversation_model(
+    conversation_id: str, body: dict, user: User = Depends(get_current_user)
+):
     """Update a conversation's model. Users can only update their own conversations."""
     has_access = await repository.check_conversation_access(
         conversation_id, user.id, is_admin=(user.role == "admin")
@@ -2740,8 +2957,12 @@ async def update_conversation_model(conversation_id: str, body: dict, user: User
     return _to_conversation_response(conv)
 
 
-@router.post("/conversations/{conversation_id}/clear", response_model=ConversationResponse)
-async def clear_conversation(conversation_id: str, user: User = Depends(get_current_user)):
+@router.post(
+    "/conversations/{conversation_id}/clear", response_model=ConversationResponse
+)
+async def clear_conversation(
+    conversation_id: str, user: User = Depends(get_current_user)
+):
     """Clear all messages in a conversation. Users can only clear their own conversations."""
     has_access = await repository.check_conversation_access(
         conversation_id, user.id, is_admin=(user.role == "admin")
@@ -2756,8 +2977,12 @@ async def clear_conversation(conversation_id: str, user: User = Depends(get_curr
     return _to_conversation_response(conv)
 
 
-@router.post("/conversations/{conversation_id}/truncate", response_model=ConversationResponse)
-async def truncate_conversation(conversation_id: str, keep_count: int, user: User = Depends(get_current_user)):
+@router.post(
+    "/conversations/{conversation_id}/truncate", response_model=ConversationResponse
+)
+async def truncate_conversation(
+    conversation_id: str, keep_count: int, user: User = Depends(get_current_user)
+):
     """
     Truncate conversation messages to keep only the first N messages.
     Used when editing/resending a message to remove subsequent messages.
@@ -2776,13 +3001,18 @@ async def truncate_conversation(conversation_id: str, keep_count: int, user: Use
 
 
 @router.post("/conversations/{conversation_id}/messages")
-async def send_message(conversation_id: str, request: SendMessageRequest, user: User = Depends(get_current_user)):
+async def send_message(
+    conversation_id: str,
+    request: SendMessageRequest,
+    user: User = Depends(get_current_user),
+):
     """
     Send a message to a conversation and get a response.
     Non-streaming version.
     """
+    from langchain_core.messages import AIMessage, HumanMessage
+
     from ragtime.rag import rag
-    from langchain_core.messages import HumanMessage, AIMessage
 
     # Check access
     has_access = await repository.check_conversation_access(
@@ -2797,7 +3027,9 @@ async def send_message(conversation_id: str, request: SendMessageRequest, user: 
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     if not rag.is_ready:
-        raise HTTPException(status_code=503, detail="RAG service initializing, please retry")
+        raise HTTPException(
+            status_code=503, detail="RAG service initializing, please retry"
+        )
 
     user_message = request.message.strip()
     if not user_message:
@@ -2841,16 +3073,22 @@ async def send_message(conversation_id: str, request: SendMessageRequest, user: 
 
 
 @router.post("/conversations/{conversation_id}/messages/stream")
-async def send_message_stream(conversation_id: str, request: SendMessageRequest, user: User = Depends(get_current_user)):
+async def send_message_stream(
+    conversation_id: str,
+    request: SendMessageRequest,
+    user: User = Depends(get_current_user),
+):
     """
     Send a message to a conversation and stream the response.
     Returns SSE stream of tokens.
     """
     import json
     import time
+
     from fastapi.responses import StreamingResponse
+    from langchain_core.messages import AIMessage, HumanMessage
+
     from ragtime.rag import rag
-    from langchain_core.messages import HumanMessage, AIMessage
 
     # Check access
     has_access = await repository.check_conversation_access(
@@ -2865,7 +3103,9 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest,
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     if not rag.is_ready:
-        raise HTTPException(status_code=503, detail="RAG service initializing, please retry")
+        raise HTTPException(
+            status_code=503, detail="RAG service initializing, please retry"
+        )
 
     user_message = request.message.strip()
     if not user_message:
@@ -2891,7 +3131,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest,
         full_response = ""
         tool_calls_collected = []  # Collect tool calls for storage (deprecated)
         chronological_events = []  # Collect events in order (content and tools)
-        current_tool_call = None   # Track current tool call being built
+        current_tool_call = None  # Track current tool call being built
 
         try:
             async for event in rag.process_query_stream(user_message, chat_history):
@@ -2903,24 +3143,26 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest,
                         current_tool_call = {
                             "type": "tool",
                             "tool": event.get("tool"),
-                            "input": event.get("input")
+                            "input": event.get("input"),
                         }
                         tool_chunk = {
                             "id": chunk_id,
                             "object": "chat.completion.chunk",
                             "created": int(time.time()),
                             "model": conv.model,
-                            "choices": [{
-                                "index": 0,
-                                "delta": {
-                                    "tool_call": {
-                                        "type": "start",
-                                        "tool": event.get("tool"),
-                                        "input": event.get("input")
-                                    }
-                                },
-                                "finish_reason": None
-                            }]
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {
+                                        "tool_call": {
+                                            "type": "start",
+                                            "tool": event.get("tool"),
+                                            "input": event.get("input"),
+                                        }
+                                    },
+                                    "finish_reason": None,
+                                }
+                            ],
                         }
                         yield f"data: {json.dumps(tool_chunk)}\n\n"
                     elif event_type == "tool_end":
@@ -2929,28 +3171,32 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest,
                             current_tool_call["output"] = event.get("output")
                             chronological_events.append(current_tool_call)
                             # Also keep deprecated tool_calls format for backward compatibility
-                            tool_calls_collected.append({
-                                "tool": current_tool_call["tool"],
-                                "input": current_tool_call.get("input"),
-                                "output": current_tool_call.get("output")
-                            })
+                            tool_calls_collected.append(
+                                {
+                                    "tool": current_tool_call["tool"],
+                                    "input": current_tool_call.get("input"),
+                                    "output": current_tool_call.get("output"),
+                                }
+                            )
                             current_tool_call = None
                         tool_chunk = {
                             "id": chunk_id,
                             "object": "chat.completion.chunk",
                             "created": int(time.time()),
                             "model": conv.model,
-                            "choices": [{
-                                "index": 0,
-                                "delta": {
-                                    "tool_call": {
-                                        "type": "end",
-                                        "tool": event.get("tool"),
-                                        "output": event.get("output")
-                                    }
-                                },
-                                "finish_reason": None
-                            }]
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {
+                                        "tool_call": {
+                                            "type": "end",
+                                            "tool": event.get("tool"),
+                                            "output": event.get("output"),
+                                        }
+                                    },
+                                    "finish_reason": None,
+                                }
+                            ],
                         }
                         yield f"data: {json.dumps(tool_chunk)}\n\n"
                 else:
@@ -2958,23 +3204,30 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest,
                     token = event
                     full_response += token
                     # Add content events when we get text (batch them for efficiency)
-                    if chronological_events and chronological_events[-1].get("type") == "content":
+                    if (
+                        chronological_events
+                        and chronological_events[-1].get("type") == "content"
+                    ):
                         # Append to last content event
                         chronological_events[-1]["content"] += token
                     else:
                         # Start new content event
-                        chronological_events.append({"type": "content", "content": token})
+                        chronological_events.append(
+                            {"type": "content", "content": token}
+                        )
 
                     chunk = {
                         "id": chunk_id,
                         "object": "chat.completion.chunk",
                         "created": int(time.time()),
                         "model": conv.model,
-                        "choices": [{
-                            "index": 0,
-                            "delta": {"content": token},
-                            "finish_reason": None
-                        }]
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": token},
+                                "finish_reason": None,
+                            }
+                        ],
                     }
                     yield f"data: {json.dumps(chunk)}\n\n"
 
@@ -2984,13 +3237,19 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest,
                 "assistant",
                 full_response,
                 tool_calls=tool_calls_collected if tool_calls_collected else None,
-                events=chronological_events if chronological_events else None
+                events=chronological_events if chronological_events else None,
             )
 
             # Auto-generate title if needed
-            if updated_conv and updated_conv.title == "New Chat" and len(updated_conv.messages) >= 2:
+            if (
+                updated_conv
+                and updated_conv.title == "New Chat"
+                and len(updated_conv.messages) >= 2
+            ):
                 first_msg = updated_conv.messages[0].content[:50]
-                new_title = first_msg + ("..." if len(updated_conv.messages[0].content) > 50 else "")
+                new_title = first_msg + (
+                    "..." if len(updated_conv.messages[0].content) > 50 else ""
+                )
                 await repository.update_conversation_title(conversation_id, new_title)
 
             # Final chunk
@@ -2999,11 +3258,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest,
                 "object": "chat.completion.chunk",
                 "created": int(time.time()),
                 "model": conv.model,
-                "choices": [{
-                    "index": 0,
-                    "delta": {},
-                    "finish_reason": "stop"
-                }]
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
             }
             yield f"data: {json.dumps(final_chunk)}\n\n"
             yield "data: [DONE]\n\n"
@@ -3012,13 +3267,18 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest,
             logger.exception("Error in streaming response")
 
             raw_error = str(e)
-            friendly_error = "An error occurred while generating the response. Please try again."
+            friendly_error = (
+                "An error occurred while generating the response. Please try again."
+            )
 
             max_iters = None
             if rag and getattr(rag, "agent_executor", None):
                 max_iters = getattr(rag.agent_executor, "max_iterations", None)
 
-            if "iteration" in raw_error.lower() or "max iterations" in raw_error.lower():
+            if (
+                "iteration" in raw_error.lower()
+                or "max iterations" in raw_error.lower()
+            ):
                 limit_text = f" ({max_iters})" if max_iters else ""
                 friendly_error = f"Stopped after reaching the max_iterations limit{limit_text}. Please narrow the request or retry."
 
@@ -3027,16 +3287,22 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest,
                 current_tool_call["output"] = "(interrupted)"
                 chronological_events.append(current_tool_call)
                 # Also add to deprecated format
-                tool_calls_collected.append({
-                    "tool": current_tool_call["tool"],
-                    "input": current_tool_call.get("input"),
-                    "output": "(interrupted)"
-                })
+                tool_calls_collected.append(
+                    {
+                        "tool": current_tool_call["tool"],
+                        "input": current_tool_call.get("input"),
+                        "output": "(interrupted)",
+                    }
+                )
 
             # Persist whatever we have so far, including collected tool calls and events
             combined_response = full_response.strip()
             if friendly_error:
-                combined_response = f"{combined_response}\n\n{friendly_error}" if combined_response else friendly_error
+                combined_response = (
+                    f"{combined_response}\n\n{friendly_error}"
+                    if combined_response
+                    else friendly_error
+                )
 
             try:
                 await repository.add_message(
@@ -3044,7 +3310,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest,
                     "assistant",
                     combined_response,
                     tool_calls=tool_calls_collected if tool_calls_collected else None,
-                    events=chronological_events if chronological_events else None
+                    events=chronological_events if chronological_events else None,
                 )
             except Exception:
                 logger.exception("Failed to persist assistant message after error")
@@ -3054,19 +3320,18 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest,
                 "object": "chat.completion.chunk",
                 "created": int(time.time()),
                 "model": conv.model,
-                "choices": [{
-                    "index": 0,
-                    "delta": {"content": f"\n\n{friendly_error}"},
-                    "finish_reason": "error"
-                }]
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": f"\n\n{friendly_error}"},
+                        "finish_reason": "error",
+                    }
+                ],
             }
             yield f"data: {json.dumps(error_chunk)}\n\n"
             yield "data: [DONE]\n\n"
 
-    return StreamingResponse(
-        stream_response(),
-        media_type="text/event-stream"
-    )
+    return StreamingResponse(stream_response(), media_type="text/event-stream")
 
 
 # =============================================================================
@@ -3076,14 +3341,21 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest,
 from ragtime.indexer.models import ChatTask, ChatTaskResponse, ChatTaskStatus
 
 
-@router.post("/conversations/{conversation_id}/messages/background", response_model=ChatTaskResponse)
-async def send_message_background(conversation_id: str, request: SendMessageRequest, user: User = Depends(get_current_user)):
+@router.post(
+    "/conversations/{conversation_id}/messages/background",
+    response_model=ChatTaskResponse,
+)
+async def send_message_background(
+    conversation_id: str,
+    request: SendMessageRequest,
+    user: User = Depends(get_current_user),
+):
     """
     Send a message to a conversation and process it in the background.
     Returns a task object that can be polled for status and results.
     """
-    from ragtime.rag import rag
     from ragtime.indexer.background_tasks import background_task_service
+    from ragtime.rag import rag
 
     # Check access
     has_access = await repository.check_conversation_access(
@@ -3098,7 +3370,9 @@ async def send_message_background(conversation_id: str, request: SendMessageRequ
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     if not rag.is_ready:
-        raise HTTPException(status_code=503, detail="RAG service initializing, please retry")
+        raise HTTPException(
+            status_code=503, detail="RAG service initializing, please retry"
+        )
 
     user_message = request.message.strip()
     if not user_message:
@@ -3126,7 +3400,9 @@ async def send_message_background(conversation_id: str, request: SendMessageRequ
     await repository.add_message(conversation_id, "user", user_message)
 
     # Start background task
-    task_id = await background_task_service.start_task_async(conversation_id, user_message)
+    task_id = await background_task_service.start_task_async(
+        conversation_id, user_message
+    )
 
     # Get the created task
     task = await repository.get_chat_task(task_id)
@@ -3148,8 +3424,12 @@ async def send_message_background(conversation_id: str, request: SendMessageRequ
     )
 
 
-@router.get("/conversations/{conversation_id}/task", response_model=Optional[ChatTaskResponse])
-async def get_conversation_active_task(conversation_id: str, user: User = Depends(get_current_user)):
+@router.get(
+    "/conversations/{conversation_id}/task", response_model=Optional[ChatTaskResponse]
+)
+async def get_conversation_active_task(
+    conversation_id: str, user: User = Depends(get_current_user)
+):
     """
     Get the active (pending/running) task for a conversation, if any.
     Returns null if no active task.
@@ -3201,7 +3481,10 @@ async def get_chat_task(task_id: str, since_version: int = 0):
         current_version = streaming_state.version
         # Only omit if version matches AND task is still running
         # Always send full state when task completes so client gets final data
-        if current_version <= since_version and task.status in (ChatTaskStatus.pending, ChatTaskStatus.running):
+        if current_version <= since_version and task.status in (
+            ChatTaskStatus.pending,
+            ChatTaskStatus.running,
+        ):
             streaming_state = None
 
     return ChatTaskResponse(

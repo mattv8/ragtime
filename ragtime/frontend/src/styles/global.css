@@ -760,7 +760,8 @@ select option:checked {
 }
 
 /* Meta pills for filesystem index info */
-.index-meta-pills {
+.index-meta-pills,
+.meta-pills {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -768,7 +769,8 @@ select option:checked {
   margin-top: 4px;
 }
 
-.index-meta-pills + .index-meta-pills {
+.index-meta-pills + .index-meta-pills,
+.meta-pills + .meta-pills {
   margin-top: 6px;
 }
 
@@ -782,6 +784,18 @@ select option:checked {
   background: rgba(255, 255, 255, 0.08);
   color: var(--color-text-secondary);
   border: 1px solid rgba(255, 255, 255, 0.1);
+  gap: 4px;
+}
+
+.meta-pill-label {
+  color: var(--color-text-secondary);
+  opacity: 0.7;
+}
+
+.meta-pill-value {
+  color: var(--color-text);
+  font-family: monospace;
+  font-size: 0.7rem;
 }
 
 .meta-pill.path {

@@ -323,7 +323,7 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
         );
       }
 
-      // Load LDAP configuration
+      // Load LDAP configuration (non-blocking - don't await discovery)
       try {
         const ldapData = await api.getLdapConfig();
         setLdapConfig(ldapData);
@@ -354,18 +354,20 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
           user_group_dn: ldapData.user_group_dn || '',
         });
 
-        // Auto-discover LDAP structure using stored credentials
+        // Auto-discover LDAP structure in background (non-blocking)
         if (ldapData.server_url && ldapData.bind_dn) {
-          try {
-            const discovery = await api.discoverLdapWithStoredCredentials();
-            if (discovery.success) {
-              setLdapDiscoveredOus(discovery.user_ous);
-              setLdapDiscoveredGroups(discovery.groups);
-              setLdapTestResult({ success: true, message: `Connected. Found ${discovery.user_ous.length} OUs and ${discovery.groups.length} groups.` });
-            }
-          } catch {
-            // Silent fail - user can still test connection manually
-          }
+          // Don't await - let it run async
+          api.discoverLdapWithStoredCredentials()
+            .then((discovery) => {
+              if (discovery.success) {
+                setLdapDiscoveredOus(discovery.user_ous);
+                setLdapDiscoveredGroups(discovery.groups);
+                setLdapTestResult({ success: true, message: `Connected. Found ${discovery.user_ous.length} OUs and ${discovery.groups.length} groups.` });
+              }
+            })
+            .catch(() => {
+              // Silent fail - user can still test connection manually
+            });
         }
       } catch {
         // LDAP config may not exist yet, that's OK
@@ -1153,19 +1155,24 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
           </div>
 
           <div className="form-group">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={handleTestLdapConnection}
-              disabled={ldapTesting || !ldapFormData.ldap_host || !ldapFormData.bind_dn || !ldapFormData.bind_password}
-            >
-              {ldapTesting ? 'Testing...' : 'Test Connection & Discover'}
-            </button>
-            {ldapTestResult && (
-              <span className={ldapTestResult.success ? 'success-text' : 'error-text'} style={{ marginLeft: '1rem' }}>
-                {ldapTestResult.message}
-              </span>
-            )}
+            <div className="connection-test-row">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={handleTestLdapConnection}
+                disabled={ldapTesting || !ldapFormData.ldap_host || !ldapFormData.bind_dn || !ldapFormData.bind_password}
+              >
+                {ldapTesting ? 'Testing...' : 'Test Connection & Discover'}
+              </button>
+              {ldapTestResult?.success && (
+                <span className="connection-status success">
+                  {ldapTestResult.message}
+                </span>
+              )}
+              {ldapTestResult && !ldapTestResult.success && (
+                <span className="connection-status error">{ldapTestResult.message}</span>
+              )}
+            </div>
           </div>
 
           {/* Show search config when we have discovered OUs (from test or auto-load) */}
@@ -1257,11 +1264,24 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
           {/* Show current config if loaded but not testing */}
           {ldapConfig?.server_url && !ldapTestResult?.success && (
             <div className="form-group">
-              <p className="field-help">
-                Current configuration: {ldapConfig.server_url}
-                {ldapConfig.user_search_base && ` | Base: ${ldapConfig.user_search_base}`}
-                {ldapConfig.admin_group_dn && ` | Admin Group: ${ldapConfig.admin_group_dn}`}
-              </p>
+              <div className="meta-pills">
+                <span className="meta-pill">
+                  <span className="meta-pill-label">Server</span>
+                  <span className="meta-pill-value">{ldapConfig.server_url}</span>
+                </span>
+                {ldapConfig.user_search_base && (
+                  <span className="meta-pill">
+                    <span className="meta-pill-label">Base</span>
+                    <span className="meta-pill-value">{ldapConfig.user_search_base}</span>
+                  </span>
+                )}
+                {ldapConfig.admin_group_dn && (
+                  <span className="meta-pill">
+                    <span className="meta-pill-label">Admin Group</span>
+                    <span className="meta-pill-value">{ldapConfig.admin_group_dn}</span>
+                  </span>
+                )}
+              </div>
             </div>
           )}
 

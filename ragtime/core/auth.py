@@ -15,16 +15,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-from ldap3 import (  # type: ignore[import-untyped]
-    Connection,
-    Server,
-    Tls,
-    ALL,
-    SUBTREE,
-    AUTO_BIND_NO_TLS,
-    AUTO_BIND_TLS_BEFORE_BIND,
+from ldap3 import AUTO_BIND_NO_TLS  # type: ignore[import-untyped]
+from ldap3 import ALL, AUTO_BIND_TLS_BEFORE_BIND, SUBTREE, Connection, Server, Tls
+from ldap3.core.exceptions import (  # type: ignore[import-untyped]
+    LDAPBindError,
+    LDAPException,
 )
-from ldap3.core.exceptions import LDAPException, LDAPBindError  # type: ignore[import-untyped]
 from prisma.enums import AuthProvider, UserRole
 from pydantic import BaseModel
 
@@ -41,6 +37,7 @@ logger = get_logger(__name__)
 
 class TokenData(BaseModel):
     """JWT token payload data."""
+
     user_id: str
     username: str
     role: str
@@ -49,6 +46,7 @@ class TokenData(BaseModel):
 
 class AuthResult(BaseModel):
     """Result of authentication attempt."""
+
     success: bool
     user_id: Optional[str] = None
     username: Optional[str] = None
@@ -60,6 +58,7 @@ class AuthResult(BaseModel):
 
 class LdapDiscoveryResult(BaseModel):
     """Result of LDAP discovery."""
+
     success: bool
     base_dn: Optional[str] = None
     user_ous: list[str] = []
@@ -81,16 +80,16 @@ def create_access_token(user_id: str, username: str, role: str) -> str:
         "role": role,
         "exp": expire,
     }
-    return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+    return jwt.encode(
+        payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm
+    )
 
 
 def decode_access_token(token: str) -> Optional[TokenData]:
     """Decode and validate a JWT access token."""
     try:
         payload = jwt.decode(
-            token,
-            settings.jwt_secret_key,
-            algorithms=[settings.jwt_algorithm]
+            token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm]
         )
         return TokenData(
             user_id=payload["sub"],
@@ -128,53 +127,68 @@ def _get_ldap_connection(
     bind_dn: str,
     bind_password: str,
     allow_self_signed: bool = False,
+    connect_timeout: int = 5,
+    max_retries: int = 2,
 ) -> Optional[Connection]:
-    """Create an LDAP connection."""
-    try:
-        # Parse server URL
-        use_ssl = server_url.startswith("ldaps://")
+    """Create an LDAP connection with timeout and retry logic."""
+    last_error = None
 
-        # Configure TLS for self-signed certificates if needed
-        tls_config = None
-        if use_ssl and allow_self_signed:
-            tls_config = Tls(validate=ssl.CERT_NONE)
+    for attempt in range(max_retries):
+        try:
+            # Parse server URL
+            use_ssl = server_url.startswith("ldaps://")
 
-        server = Server(
-            server_url,
-            get_info=ALL,
-            use_ssl=use_ssl,
-            tls=tls_config,
-        )
+            # Configure TLS for self-signed certificates if needed
+            tls_config = None
+            if use_ssl and allow_self_signed:
+                tls_config = Tls(validate=ssl.CERT_NONE)
 
-        auto_bind = AUTO_BIND_TLS_BEFORE_BIND if use_ssl else AUTO_BIND_NO_TLS
-        conn = Connection(
-            server,
-            user=bind_dn,
-            password=bind_password,
-            auto_bind=auto_bind,
-            raise_exceptions=True,
-        )
-        return conn
-    except LDAPException as e:
-        logger.error(f"LDAP connection error: {e}")
-        return None
+            server = Server(
+                server_url,
+                get_info=ALL,
+                use_ssl=use_ssl,
+                tls=tls_config,
+                connect_timeout=connect_timeout,
+            )
+
+            auto_bind = AUTO_BIND_TLS_BEFORE_BIND if use_ssl else AUTO_BIND_NO_TLS
+            conn = Connection(
+                server,
+                user=bind_dn,
+                password=bind_password,
+                auto_bind=auto_bind,
+                raise_exceptions=True,
+                receive_timeout=connect_timeout,
+            )
+            return conn
+        except LDAPException as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                logger.warning(
+                    f"LDAP connection attempt {attempt + 1} failed: {e}, retrying..."
+                )
+            continue
+
+    logger.error(f"LDAP connection failed after {max_retries} attempts: {last_error}")
+    return None
 
 
-async def discover_ldap_structure(
+def _discover_ldap_structure_sync(
     server_url: str,
     bind_dn: str,
     bind_password: str,
     allow_self_signed: bool = False,
 ) -> LdapDiscoveryResult:
     """
-    Discover LDAP structure: base DN, user OUs, and groups.
+    Synchronous LDAP discovery - runs in executor.
 
-    This auto-discovers the LDAP structure so users don't need to manually
-    configure search bases and filters.
+    This is the blocking part that must run in a thread pool.
     """
     conn = _get_ldap_connection(server_url, bind_dn, bind_password, allow_self_signed)
     if not conn:
-        return LdapDiscoveryResult(success=False, error="Failed to connect to LDAP server")
+        return LdapDiscoveryResult(
+            success=False, error="Failed to connect to LDAP server"
+        )
 
     try:
         # Get base DN from server info
@@ -189,7 +203,9 @@ async def discover_ldap_structure(
                 base_dn = str(root_nc[0])
 
         if not base_dn:
-            return LdapDiscoveryResult(success=False, error="Could not determine base DN")
+            return LdapDiscoveryResult(
+                success=False, error="Could not determine base DN"
+            )
 
         # Discover user OUs and containers
         ous_and_containers: list[str] = []
@@ -240,7 +256,11 @@ async def discover_ldap_structure(
         )
         for entry in conn.entries:
             dn = str(entry.entry_dn)
-            cn = str(entry.cn) if hasattr(entry, "cn") else dn.split(",")[0].replace("CN=", "")
+            cn = (
+                str(entry.cn)
+                if hasattr(entry, "cn")
+                else dn.split(",")[0].replace("CN=", "")
+            )
             groups.append({"dn": dn, "name": cn})
 
         conn.unbind()
@@ -260,8 +280,74 @@ async def discover_ldap_structure(
             conn.unbind()
 
 
+async def discover_ldap_structure(
+    server_url: str,
+    bind_dn: str,
+    bind_password: str,
+    allow_self_signed: bool = False,
+) -> LdapDiscoveryResult:
+    """
+    Discover LDAP structure: base DN, user OUs, and groups.
+
+    This auto-discovers the LDAP structure so users don't need to manually
+    configure search bases and filters.
+
+    Uses asyncio executor with timeout to prevent blocking the event loop.
+    """
+    import asyncio
+    import re
+
+    # Parse host and port from server URL for pre-check
+    match = re.match(r"ldaps?://([^:]+)(?::(\d+))?", server_url)
+    if not match:
+        return LdapDiscoveryResult(success=False, error="Invalid LDAP server URL")
+
+    host = match.group(1)
+    default_port = 636 if server_url.startswith("ldaps://") else 389
+    port = int(match.group(2)) if match.group(2) else default_port
+
+    # Quick socket check to fail fast if server is unreachable
+    try:
+        _reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port), timeout=5.0
+        )
+        writer.close()
+        await writer.wait_closed()
+    except asyncio.TimeoutError:
+        return LdapDiscoveryResult(
+            success=False, error=f"Connection timeout to {host}:{port}"
+        )
+    except ConnectionRefusedError:
+        return LdapDiscoveryResult(
+            success=False, error=f"Connection refused: {host}:{port}"
+        )
+    except OSError as e:
+        return LdapDiscoveryResult(
+            success=False, error=f"Cannot reach {host}:{port}: {e}"
+        )
+
+    # Run blocking LDAP discovery in executor with timeout
+    try:
+        loop = asyncio.get_event_loop()
+        result = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda: _discover_ldap_structure_sync(
+                    server_url, bind_dn, bind_password, allow_self_signed
+                ),
+            ),
+            timeout=15.0,  # 15 second timeout for full discovery
+        )
+        return result
+    except asyncio.TimeoutError:
+        return LdapDiscoveryResult(
+            success=False, error="LDAP discovery timed out (15s)"
+        )
+
+
 class BindDnLookupResult(BaseModel):
     """Result of bind DN lookup."""
+
     success: bool
     bind_dn: Optional[str] = None
     display_name: Optional[str] = None
@@ -317,9 +403,15 @@ async def lookup_bind_dn(
             if conn.entries:
                 entry = conn.entries[0]
                 bind_dn = str(entry.entry_dn)
-                display_name = str(entry.displayName) if hasattr(entry, "displayName") and entry.displayName else None
+                display_name = (
+                    str(entry.displayName)
+                    if hasattr(entry, "displayName") and entry.displayName
+                    else None
+                )
                 conn.unbind()
-                return BindDnLookupResult(success=True, bind_dn=bind_dn, display_name=display_name)
+                return BindDnLookupResult(
+                    success=True, bind_dn=bind_dn, display_name=display_name
+                )
 
             conn.unbind()
         except LDAPBindError:
@@ -347,14 +439,23 @@ async def lookup_bind_dn(
                 if conn.entries:
                     entry = conn.entries[0]
                     bind_dn = str(entry.entry_dn)
-                    display_name = str(entry.displayName) if hasattr(entry, "displayName") and entry.displayName else None
+                    display_name = (
+                        str(entry.displayName)
+                        if hasattr(entry, "displayName") and entry.displayName
+                        else None
+                    )
                     conn.unbind()
-                    return BindDnLookupResult(success=True, bind_dn=bind_dn, display_name=display_name)
+                    return BindDnLookupResult(
+                        success=True, bind_dn=bind_dn, display_name=display_name
+                    )
             conn.unbind()
         except LDAPException as e:
             logger.debug(f"Base DN search attempt failed: {e}")
 
-        return BindDnLookupResult(success=False, error="Could not discover bind DN. Please enter the full DN manually.")
+        return BindDnLookupResult(
+            success=False,
+            error="Could not discover bind DN. Please enter the full DN manually.",
+        )
 
     except LDAPException as e:
         logger.error(f"Bind DN lookup error: {e}")
@@ -399,7 +500,14 @@ async def authenticate_ldap(username: str, password: str) -> AuthResult:
             search_base=search_base,
             search_filter=search_filter,
             search_scope=SUBTREE,
-            attributes=["distinguishedName", "sAMAccountName", "uid", "mail", "displayName", "memberOf"],
+            attributes=[
+                "distinguishedName",
+                "sAMAccountName",
+                "uid",
+                "mail",
+                "displayName",
+                "memberOf",
+            ],
         )
 
         if not conn.entries:
@@ -407,8 +515,16 @@ async def authenticate_ldap(username: str, password: str) -> AuthResult:
 
         user_entry = conn.entries[0]
         user_dn = str(user_entry.entry_dn)
-        user_mail = str(user_entry.mail) if hasattr(user_entry, "mail") and user_entry.mail else None
-        user_display = str(user_entry.displayName) if hasattr(user_entry, "displayName") and user_entry.displayName else username
+        user_mail = (
+            str(user_entry.mail)
+            if hasattr(user_entry, "mail") and user_entry.mail
+            else None
+        )
+        user_display = (
+            str(user_entry.displayName)
+            if hasattr(user_entry, "displayName") and user_entry.displayName
+            else username
+        )
 
         # Get username from LDAP (prefer sAMAccountName, fall back to uid)
         ldap_username = username
@@ -420,7 +536,9 @@ async def authenticate_ldap(username: str, password: str) -> AuthResult:
         conn.unbind()
 
         # Verify user's password by binding as the user
-        user_conn = _get_ldap_connection(ldap_config.serverUrl, user_dn, password, ldap_config.allowSelfSigned)
+        user_conn = _get_ldap_connection(
+            ldap_config.serverUrl, user_dn, password, ldap_config.allowSelfSigned
+        )
         if not user_conn:
             return AuthResult(success=False, error="Invalid credentials")
         user_conn.unbind()
@@ -507,7 +625,10 @@ async def authenticate_local(username: str, password: str) -> AuthResult:
         return AuthResult(success=False, error="Local admin not configured")
 
     # Verify credentials
-    if username != settings.local_admin_user or password != settings.local_admin_password:
+    if (
+        username != settings.local_admin_user
+        or password != settings.local_admin_password
+    ):
         return AuthResult(success=False, error="Invalid credentials")
 
     # Internal username has "local:" prefix
@@ -589,7 +710,12 @@ async def authenticate(username: str, password: str) -> AuthResult:
 # =============================================================================
 
 
-async def create_session(user_id: str, token: str, user_agent: Optional[str] = None, ip_address: Optional[str] = None):
+async def create_session(
+    user_id: str,
+    token: str,
+    user_agent: Optional[str] = None,
+    ip_address: Optional[str] = None,
+):
     """Create a session record in the database."""
     db = await get_db()
     expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.jwt_expire_hours)
