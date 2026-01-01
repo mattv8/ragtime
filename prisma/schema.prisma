@@ -108,6 +108,9 @@ model IndexMetadata {
 model AppSettings {
   id    String @id @default("default")
 
+  // Server Identity
+  serverName    String   @default("Ragtime") @map("server_name") // Customizable server/model name
+
   // Embedding Configuration (for FAISS indexing)
   embeddingProvider   String   @default("ollama") @map("embedding_provider") // "ollama" or "openai"
   embeddingModel      String   @default("nomic-embed-text") @map("embedding_model")

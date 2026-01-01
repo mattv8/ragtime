@@ -5,10 +5,10 @@ This module provides async access to AppSettings stored in the database,
 replacing environment-based configuration for tool settings.
 """
 
-from typing import Optional, List
+from typing import List, Optional
 
-from ragtime.core.logging import get_logger
 from ragtime.core.database import get_db
+from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -46,6 +46,7 @@ class SettingsCache:
                 logger.info("Created default application settings")
 
             self._settings = {
+                "server_name": prisma_settings.serverName,
                 "enabled_tools": prisma_settings.enabledTools,
                 "odoo_container": prisma_settings.odooContainer,
                 "postgres_container": prisma_settings.postgresContainer,
@@ -73,8 +74,11 @@ class SettingsCache:
             return self._settings
 
         except Exception as e:
-            logger.warning(f"Failed to load settings from database: {e}. Using defaults.")
+            logger.warning(
+                f"Failed to load settings from database: {e}. Using defaults."
+            )
             return {
+                "server_name": "Ragtime",
                 "enabled_tools": [],
                 "odoo_container": "odoo-server",
                 "postgres_container": "odoo-postgres",
@@ -107,8 +111,7 @@ class SettingsCache:
         try:
             db = await get_db()
             prisma_configs = await db.toolconfig.find_many(
-                where={"enabled": True},
-                order={"createdAt": "desc"}
+                where={"enabled": True}, order={"createdAt": "desc"}
             )
 
             self._tool_configs = [

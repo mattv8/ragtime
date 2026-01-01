@@ -35,7 +35,11 @@ function formatDnForDisplay(dn: string, baseDn: string): string {
   return names.join(' / ');
 }
 
-export function SettingsPanel() {
+interface SettingsPanelProps {
+  onServerNameChange?: (name: string) => void;
+}
+
+export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -455,6 +459,32 @@ export function SettingsPanel() {
     e.preventDefault();
   };
 
+  // Save Server Branding
+  const [brandingSaving, setBrandingSaving] = useState(false);
+  const handleSaveBranding = async () => {
+    setBrandingSaving(true);
+    setSuccess(null);
+    setError(null);
+
+    try {
+      const dataToSave = {
+        server_name: formData.server_name,
+      };
+      const updated = await api.updateSettings(dataToSave);
+      setSettings(updated);
+      // Notify parent component of name change
+      if (onServerNameChange && updated.server_name) {
+        onServerNameChange(updated.server_name);
+      }
+      setSuccess('Server branding saved');
+      setTimeout(() => setSuccess(null), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save branding settings');
+    } finally {
+      setBrandingSaving(false);
+    }
+  };
+
   // Save Embedding Configuration
   const handleSaveEmbedding = async () => {
     setEmbeddingSaving(true);
@@ -529,7 +559,7 @@ export function SettingsPanel() {
         </p>
         <code>{`${window.location.protocol}//${window.location.hostname}:8000/v1`}</code>
         <p className="field-help" style={{ marginTop: '0.5rem' }}>
-          Model: <code>ragtime</code>. The <code>/v1</code> path is required for OpenAI API compatibility.
+          Model: <code>{(formData.server_name || settings?.server_name || 'Ragtime').toLowerCase().replace(/\s+/g, '-')}</code>. The <code>/v1</code> path is required for OpenAI API compatibility.
         </p>
       </div>
 
@@ -537,6 +567,35 @@ export function SettingsPanel() {
       {success && <div className="success-banner">{success}</div>}
 
       <form onSubmit={handleSubmit}>
+        {/* Server Branding */}
+        <fieldset>
+          <legend>Server Branding</legend>
+          <p className="fieldset-help">
+            Customize the server name displayed in the UI, API model name, and MCP server identity.
+          </p>
+
+          <div className="form-group">
+            <label>Server Name</label>
+            <input
+              type="text"
+              value={formData.server_name ?? settings?.server_name ?? 'Ragtime'}
+              onChange={(e) => setFormData({ ...formData, server_name: e.target.value })}
+              placeholder="Ragtime"
+            />
+          </div>
+
+          <div className="form-actions">
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={handleSaveBranding}
+              disabled={brandingSaving}
+            >
+              {brandingSaving ? 'Saving...' : 'Save Branding'}
+            </button>
+          </div>
+        </fieldset>
+
         {/* LLM Configuration */}
         <fieldset>
           <legend>LLM Configuration (Chat/RAG)</legend>

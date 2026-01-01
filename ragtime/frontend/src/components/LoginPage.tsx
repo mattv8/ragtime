@@ -5,9 +5,10 @@ import type { User, AuthStatus } from '@/types';
 interface LoginPageProps {
   authStatus: AuthStatus;
   onLoginSuccess: (user: User) => void;
+  serverName?: string;
 }
 
-export function LoginPage({ authStatus, onLoginSuccess }: LoginPageProps) {
+export function LoginPage({ authStatus, onLoginSuccess, serverName = 'Ragtime' }: LoginPageProps) {
   const [username, setUsername] = useState(authStatus.debug_username || '');
   const [password, setPassword] = useState(authStatus.debug_password || '');
   const [error, setError] = useState<string | null>(null);
@@ -43,7 +44,7 @@ export function LoginPage({ authStatus, onLoginSuccess }: LoginPageProps) {
     <div className="login-container">
       <div className="login-card">
         <div className="login-header">
-          <h1 className="login-title">Ragtime</h1>
+          <h1 className="login-title">{serverName}</h1>
           <p className="login-subtitle">Sign in to continue</p>
         </div>
 

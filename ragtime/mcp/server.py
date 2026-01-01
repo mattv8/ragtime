@@ -17,69 +17,89 @@ from typing import Any
 from mcp.server import Server
 from mcp.types import TextContent, Tool
 
+from ragtime.core.app_settings import get_app_settings
 from ragtime.core.logging import get_logger
 from ragtime.mcp.tools import mcp_tool_adapter
 
 logger = get_logger(__name__)
 
-# Create MCP server instance
-mcp_server = Server("ragtime")
+# MCP server instance - created lazily with dynamic name
+_mcp_server: Server | None = None
 
 
-@mcp_server.list_tools()
-async def list_tools() -> list[Tool]:
-    """
-    List all available tools.
+async def get_mcp_server() -> Server:
+    """Get or create MCP server with dynamic name from settings."""
+    global _mcp_server
+    if _mcp_server is None:
+        app_settings = await get_app_settings()
+        server_name = app_settings.get("server_name", "Ragtime")
+        _mcp_server = Server(server_name.lower().replace(" ", "-"))
+        _register_handlers(_mcp_server)
+        logger.info(f"Created MCP server with name: {server_name}")
+    return _mcp_server
 
-    Tools are dynamically discovered from the ToolConfig database.
-    Only healthy tools (passing heartbeat check) are exposed.
-    """
-    tools: list[Tool] = []
 
-    try:
-        tool_definitions = await mcp_tool_adapter.get_available_tools()
+def _register_handlers(server: Server) -> None:
+    """Register MCP protocol handlers on the server instance."""
 
-        for tool_def in tool_definitions:
-            tools.append(
-                Tool(
-                    name=tool_def.name,
-                    description=tool_def.description,
-                    inputSchema=tool_def.input_schema,
+    @server.list_tools()
+    async def list_tools() -> list[Tool]:
+        """
+        List all available tools.
+
+        Tools are dynamically discovered from the ToolConfig database.
+        Only healthy tools (passing heartbeat check) are exposed.
+        """
+        tools: list[Tool] = []
+
+        try:
+            tool_definitions = await mcp_tool_adapter.get_available_tools()
+
+            for tool_def in tool_definitions:
+                tools.append(
+                    Tool(
+                        name=tool_def.name,
+                        description=tool_def.description,
+                        inputSchema=tool_def.input_schema,
+                    )
                 )
-            )
 
-        logger.debug(f"MCP list_tools: exposing {len(tools)} tools")
+            logger.debug(f"MCP list_tools: exposing {len(tools)} tools")
 
-    except Exception as e:
-        logger.exception(f"Error listing MCP tools: {e}")
-        # Return empty list on error - better than crashing
+        except Exception as e:
+            logger.exception(f"Error listing MCP tools: {e}")
+            # Return empty list on error - better than crashing
 
-    return tools
+        return tools
+
+    @server.call_tool()
+    async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+        """
+        Execute a tool and return the result.
+
+        Args:
+            name: Tool name (e.g., "query_production_db")
+            arguments: Tool arguments from MCP client
+
+        Returns:
+            List containing a single TextContent with the result
+        """
+        logger.info(f"MCP call_tool: {name}")
+        logger.debug(f"MCP call_tool arguments: {arguments}")
+
+        try:
+            result = await mcp_tool_adapter.execute_tool(name, arguments)
+
+            return [TextContent(type="text", text=result)]
+
+        except Exception as e:
+            logger.exception(f"MCP tool execution error: {e}")
+            return [TextContent(type="text", text=f"Error: {str(e)}")]
 
 
-@mcp_server.call_tool()
-async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
-    """
-    Execute a tool and return the result.
-
-    Args:
-        name: Tool name (e.g., "query_production_db")
-        arguments: Tool arguments from MCP client
-
-    Returns:
-        List containing a single TextContent with the result
-    """
-    logger.info(f"MCP call_tool: {name}")
-    logger.debug(f"MCP call_tool arguments: {arguments}")
-
-    try:
-        result = await mcp_tool_adapter.execute_tool(name, arguments)
-
-        return [TextContent(type="text", text=result)]
-
-    except Exception as e:
-        logger.exception(f"MCP tool execution error: {e}")
-        return [TextContent(type="text", text=f"Error: {str(e)}")]
+# For backward compatibility - create a default instance with handlers
+mcp_server = Server("ragtime")
+_register_handlers(mcp_server)
 
 
 async def run_mcp_server(transport: str = "stdio") -> None:

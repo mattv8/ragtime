@@ -6,24 +6,23 @@ import json
 import time
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Header, Depends
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
-
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from ragtime import __version__
 from ragtime.config import settings
-from ragtime.core.logging import get_logger
 from ragtime.core.app_settings import get_app_settings
+from ragtime.core.logging import get_logger
 from ragtime.models import (
-    Message,
+    ChatChoice,
     ChatCompletionRequest,
     ChatCompletionResponse,
-    ChatChoice,
-    Usage,
+    HealthResponse,
+    Message,
     ModelInfo,
     ModelsResponse,
-    HealthResponse,
+    Usage,
 )
 from ragtime.rag import rag
 
@@ -53,7 +52,7 @@ async def health_check():
         version=__version__,
         indexes_loaded=list(rag.retrievers.keys()),
         model=app_settings.get("llm_model", "gpt-4-turbo"),
-        llm_provider=app_settings.get("llm_provider", "openai")
+        llm_provider=app_settings.get("llm_provider", "openai"),
     )
 
 
@@ -61,14 +60,14 @@ async def health_check():
 async def list_models():
     """List available models (OpenAI-compatible)."""
     now = int(time.time())
+    app_settings = await get_app_settings()
+    server_name = app_settings.get("server_name", "Ragtime")
+    # Use lowercase for API model ID
+    model_id = server_name.lower().replace(" ", "-")
     return ModelsResponse(
         data=[
             ModelInfo(
-                id="ragtime",
-                created=now,
-                owned_by="ragtime",
-                root="ragtime",
-                parent=None
+                id=model_id, created=now, owned_by=model_id, root=model_id, parent=None
             ),
         ]
     )
@@ -81,12 +80,13 @@ async def chat_completions(request: ChatCompletionRequest):
     OpenAI API compatible for use with OpenWebUI and similar tools.
     """
     if not rag.is_ready:
-        raise HTTPException(status_code=503, detail="Service initializing, please retry")
+        raise HTTPException(
+            status_code=503, detail="Service initializing, please retry"
+        )
 
     # Extract the latest user message
     user_msg = next(
-        (m.content for m in reversed(request.messages) if m.role == "user"),
-        None
+        (m.content for m in reversed(request.messages) if m.role == "user"), None
     )
 
     if not user_msg:
@@ -106,7 +106,7 @@ async def chat_completions(request: ChatCompletionRequest):
     if request.stream:
         return StreamingResponse(
             _stream_response_tokens(user_msg, chat_history, request.model),
-            media_type="text/event-stream"
+            media_type="text/event-stream",
         )
 
     # Non-streaming: process the query normally
@@ -123,9 +123,9 @@ async def chat_completions(request: ChatCompletionRequest):
             ChatChoice(
                 index=0,
                 message=Message(role="assistant", content=answer),
-                finish_reason="stop"
+                finish_reason="stop",
             )
-        ]
+        ],
     )
 
 
@@ -146,11 +146,13 @@ async def _stream_response_tokens(user_msg: str, chat_history: list, model: str)
             "object": "chat.completion.chunk",
             "created": int(time.time()),
             "model": model,
-            "choices": [{
-                "index": 0,
-                "delta": {"content": content} if content else {},
-                "finish_reason": finish_reason
-            }]
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": content} if content else {},
+                    "finish_reason": finish_reason,
+                }
+            ],
         }
         return f"data: {json.dumps(chunk)}\n\n"
 

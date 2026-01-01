@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '@/api';
 import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, LoginPage } from '@/components';
-import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, ToolConfig } from '@/types';
+import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, ToolConfig, AppSettings } from '@/types';
 import '@/styles/global.css';
 
 type ViewType = 'chat' | 'indexer' | 'tools' | 'settings';
@@ -23,6 +23,7 @@ export function App() {
 
   // App state
   const [activeView, setActiveView] = useState<ViewType>(getInitialView);
+  const [serverName, setServerName] = useState<string>('Ragtime');
   const [jobs, setJobs] = useState<IndexJob[]>([]);
   const [indexes, setIndexes] = useState<IndexInfo[]>([]);
   const [jobsLoading, setJobsLoading] = useState(true);
@@ -34,6 +35,28 @@ export function App() {
   const [_filesystemTools, setFilesystemTools] = useState<ToolConfig[]>([]);
   const [filesystemJobs, setFilesystemJobs] = useState<FilesystemIndexJob[]>([]);
   const filesystemPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Load server name from settings
+  useEffect(() => {
+    const loadServerName = async () => {
+      try {
+        const settings: AppSettings = await api.getSettings();
+        if (settings.server_name) {
+          setServerName(settings.server_name);
+          document.title = settings.server_name;
+        }
+      } catch {
+        // Ignore errors, use default name
+      }
+    };
+    loadServerName();
+  }, []);
+
+  // Callback to update server name from SettingsPanel
+  const handleServerNameChange = useCallback((name: string) => {
+    setServerName(name);
+    document.title = name;
+  }, []);
 
   // Check authentication status on mount
   useEffect(() => {
@@ -216,6 +239,7 @@ export function App() {
       <LoginPage
         authStatus={authStatus || { authenticated: false, ldap_configured: false, local_admin_enabled: true, debug_mode: false }}
         onLoginSuccess={handleLoginSuccess}
+        serverName={serverName}
       />
     );
   }
@@ -223,7 +247,7 @@ export function App() {
   return (
     <>
       <nav className="topnav">
-        <span className="topnav-brand">Ragtime</span>
+        <span className="topnav-brand">{serverName}</span>
         <div className="topnav-links">
           <button
             className={`topnav-link ${activeView === 'chat' ? 'active' : ''}`}
@@ -269,7 +293,7 @@ export function App() {
       {activeView === 'chat' ? (
         <ChatPanel currentUser={currentUser} />
       ) : activeView === 'settings' ? (
-        <SettingsPanel />
+        <SettingsPanel onServerNameChange={handleServerNameChange} />
       ) : activeView === 'tools' ? (
         <ToolsPanel />
       ) : (

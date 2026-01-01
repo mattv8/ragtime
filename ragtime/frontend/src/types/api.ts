@@ -154,6 +154,8 @@ export interface GitFormData {
 // Application Settings
 export interface AppSettings {
   id: string;
+  // Server branding
+  server_name: string;
   // Embedding Configuration (for FAISS indexing)
   embedding_provider: 'ollama' | 'openai';
   embedding_model: string;
@@ -186,6 +188,8 @@ export interface AppSettings {
 }
 
 export interface UpdateSettingsRequest {
+  // Server branding
+  server_name?: string;
   // Embedding settings
   embedding_provider?: 'ollama' | 'openai';
   embedding_model?: string;
