@@ -12,12 +12,9 @@ DEBUG_MODE=${DEBUG_MODE:-false}
 echo "Ragtime API"
 echo ""
 
-# Development mode: install dependencies
 if [ "$DEBUG_MODE" = "true" ]; then
     echo "Running in DEBUG mode"
     echo ""
-    pip install --no-cache-dir --upgrade pip -q
-    pip install --no-cache-dir -r /ragtime/requirements.txt -q
 fi
 
 # Generate Prisma client and run migrations
@@ -43,9 +40,6 @@ if [ "$DEBUG_MODE" = "true" ]; then
     # Development mode with hot-reload
     # Start uvicorn (Python backend) on PORT (8000)
     # Start Vite (UI) on API_PORT (8001)
-    cd /ragtime/ragtime/frontend
-    npm ci --loglevel=error > /dev/null 2>&1
-
     cd /ragtime
     uvicorn ragtime.main:app --host 0.0.0.0 --port $PORT --reload --reload-dir /ragtime/ragtime &
     sleep 2
