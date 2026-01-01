@@ -17,18 +17,22 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from ragtime import __version__
-from ragtime.config import settings
-from ragtime.core.logging import setup_logging, get_logger
-from ragtime.core.database import connect_db, disconnect_db
 from ragtime.api import router
 from ragtime.api.auth import router as auth_router
-from ragtime.rag import rag
+from ragtime.config import settings
+from ragtime.core.database import connect_db, disconnect_db
+from ragtime.core.logging import get_logger, setup_logging
 
 # Import indexer routes (always available now that it's part of ragtime)
-from ragtime.indexer.routes import router as indexer_router, ASSETS_DIR as INDEXER_ASSETS_DIR
-from fastapi.staticfiles import StaticFiles
+from ragtime.indexer.routes import ASSETS_DIR as INDEXER_ASSETS_DIR
+from ragtime.indexer.routes import router as indexer_router
+
+# Import MCP routes for HTTP API access
+from ragtime.mcp.routes import router as mcp_router
+from ragtime.rag import rag
 
 # Load environment variables
 load_dotenv()
@@ -50,12 +54,14 @@ async def lifespan(app: FastAPI):
 
     # Recover any interrupted indexing jobs (survives hot-reloads)
     from ragtime.indexer.service import indexer
+
     recovered = await indexer.recover_interrupted_jobs()
     if recovered > 0:
         logger.info(f"Recovered {recovered} interrupted indexing job(s)")
 
     # Clean up any orphaned filesystem indexing jobs from previous runs
     from ragtime.indexer.filesystem_service import filesystem_indexer
+
     await filesystem_indexer.cleanup_orphaned_jobs()
 
     # Discover orphan indexes (FAISS files without database metadata)
@@ -65,6 +71,7 @@ async def lifespan(app: FastAPI):
 
     # Start background task service for chat
     from ragtime.indexer.background_tasks import background_task_service
+
     await background_task_service.start()
 
     yield
@@ -84,11 +91,13 @@ app = FastAPI(
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
-    openapi_url="/openapi.json"
+    openapi_url="/openapi.json",
 )
 
 # CORS middleware
-origins = settings.allowed_origins.split(",") if settings.allowed_origins != "*" else ["*"]
+origins = (
+    settings.allowed_origins.split(",") if settings.allowed_origins != "*" else ["*"]
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -107,16 +116,26 @@ app.include_router(auth_router)
 app.include_router(indexer_router)
 # Mount static files for indexer UI assets at root
 if INDEXER_ASSETS_DIR.exists():
-    app.mount("/assets", StaticFiles(directory=INDEXER_ASSETS_DIR), name="indexer_ui_assets")
+    app.mount(
+        "/assets", StaticFiles(directory=INDEXER_ASSETS_DIR), name="indexer_ui_assets"
+    )
 logger.info("Indexer API enabled at /indexes, UI served at root (/)")
+
+# Include MCP routes (HTTP convenience API)
+if settings.mcp_enabled:
+    app.include_router(mcp_router)
+    logger.info(
+        "MCP HTTP API enabled at /mcp (for stdio transport: python -m ragtime.mcp)"
+    )
 
 
 # Root endpoint - serve Indexer UI or API info
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def root():
     """Serve the Indexer UI at root, or return API info if UI not available."""
-    from ragtime.indexer.routes import DIST_DIR
     from fastapi.responses import FileResponse, JSONResponse
+
+    from ragtime.indexer.routes import DIST_DIR
 
     dist_index = DIST_DIR / "index.html"
 
@@ -125,19 +144,22 @@ async def root():
         return FileResponse(dist_index, media_type="text/html")
 
     # Fallback to API info
-    return JSONResponse({
-        "name": "Ragtime RAG API",
-        "version": __version__,
-        "docs": "/docs",
-        "health": "/health"
-    })
+    return JSONResponse(
+        {
+            "name": "Ragtime RAG API",
+            "version": __version__,
+            "docs": "/docs",
+            "health": "/health",
+        }
+    )
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(
         "app.main:app",
         host=settings.host,
         port=settings.port,
-        reload=settings.debug_mode
+        reload=settings.debug_mode,
     )
