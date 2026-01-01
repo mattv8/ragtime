@@ -70,6 +70,13 @@ CREATE TABLE IF NOT EXISTS "filesystem_embeddings" (
     CONSTRAINT "filesystem_embeddings_pkey" PRIMARY KEY ("id")
 );
 
+-- Add embedding column if table existed without it (e.g., restored from older backup)
+DO $$ BEGIN
+    ALTER TABLE "filesystem_embeddings" ADD COLUMN "embedding" vector(1536);
+EXCEPTION
+    WHEN duplicate_column THEN null;
+END $$;
+
 -- Foreign key constraint for filesystem_index_jobs -> tool_configs (idempotent)
 DO $$ BEGIN
     ALTER TABLE "filesystem_index_jobs" ADD CONSTRAINT "filesystem_index_jobs_tool_config_id_fkey"
