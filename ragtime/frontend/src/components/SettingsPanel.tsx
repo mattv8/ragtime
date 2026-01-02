@@ -935,6 +935,10 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
                     <span className="connection-status error">{ollamaError}</span>
                   )}
                 </div>
+                <p className="field-help" style={{ marginTop: '0.5rem' }}>
+                  <strong>Important:</strong> This URL must be accessible from the server for FAISS index searches to work.
+                  When running in Docker, use <code>host.docker.internal</code> instead of <code>localhost</code> to reach Ollama on your host machine.
+                </p>
               </div>
 
               {/* Model Selection */}

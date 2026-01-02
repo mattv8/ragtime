@@ -442,6 +442,13 @@ class MCPToolAdapter:
         async def search_knowledge(query: str, index_name: str = "", **_: Any) -> str:
             """Execute knowledge search."""
             results = []
+            errors = []
+
+            # Log the search attempt for debugging
+            logger.debug(
+                f"MCP search_knowledge called with query='{query[:50] if query else ''}...', index_name='{index_name}'"
+            )
+            logger.debug(f"Available retrievers: {list(rag.retrievers.keys())}")
 
             # Determine which retrievers to search
             if index_name and index_name in rag.retrievers:
@@ -449,9 +456,17 @@ class MCPToolAdapter:
             else:
                 retrievers_to_search = rag.retrievers
 
+            if not retrievers_to_search:
+                logger.warning("No retrievers available for MCP search_knowledge")
+                return "No knowledge indexes are currently loaded. Please index some documents first."
+
             for name, retriever in retrievers_to_search.items():
                 try:
+                    logger.debug(
+                        f"MCP searching index '{name}' with query: {query[:50] if query else ''}..."
+                    )
                     docs = retriever.invoke(query)
+                    logger.debug(f"MCP index '{name}' returned {len(docs)} documents")
                     for doc in docs:
                         source = doc.metadata.get("source", "unknown")
                         content = (
@@ -461,13 +476,34 @@ class MCPToolAdapter:
                         )
                         results.append(f"[{name}] {source}:\n{content}")
                 except Exception as e:
-                    logger.warning(f"Error searching {name}: {e}")
+                    error_msg = str(e)
+                    logger.warning(f"Error searching {name}: {e}", exc_info=True)
+                    # Detect Ollama connectivity issues
+                    if (
+                        "ollama" in error_msg.lower()
+                        or "failed to connect" in error_msg.lower()
+                    ):
+                        errors.append(
+                            f"[{name}] Embedding service unavailable - Cannot connect to Ollama. "
+                            "Check that Ollama is running and the URL in Settings is accessible from the server "
+                            "(use 'host.docker.internal' instead of 'localhost' when running in Docker)."
+                        )
+                    else:
+                        errors.append(f"[{name}] Search error: {error_msg}")
 
             if results:
+                logger.debug(f"MCP search_knowledge found {len(results)} results")
                 return (
                     f"Found {len(results)} relevant documents:\n\n"
                     + "\n\n---\n\n".join(results)
                 )
+
+            # Return errors if we had any, otherwise generic no results message
+            if errors:
+                logger.warning(f"MCP search_knowledge failed with errors: {errors}")
+                return "Search failed:\n" + "\n".join(errors)
+
+            logger.debug("MCP search_knowledge found no results")
             return "No relevant documentation found for this query."
 
         return MCPToolDefinition(

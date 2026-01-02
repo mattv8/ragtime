@@ -5,18 +5,18 @@ RAG Components - FAISS Vector Store and LangChain Agent setup.
 import asyncio
 import os
 from pathlib import Path
-from typing import Any, Optional, List
+from typing import Any, List, Optional
 
-from langchain_community.vectorstores import FAISS
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain_community.vectorstores import FAISS
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_openai import ChatOpenAI
 
 from ragtime.config import settings
-from ragtime.core.logging import get_logger
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
-from ragtime.tools import get_enabled_tools, get_all_tools
+from ragtime.core.logging import get_logger
+from ragtime.tools import get_all_tools, get_enabled_tools
 from ragtime.tools.odoo_shell import filter_odoo_output
 
 logger = get_logger(__name__)
@@ -488,6 +488,11 @@ class RAGComponents:
         def search_knowledge(query: str, index_name: str = "") -> str:
             """Search indexed documentation for relevant information."""
             results = []
+            errors = []
+
+            # Log the search attempt for debugging
+            logger.debug(f"search_knowledge called with query='{query[:50]}...', index_name='{index_name}'")
+            logger.debug(f"Available retrievers: {list(self.retrievers.keys())}")
 
             # Determine which retrievers to search
             if index_name and index_name in self.retrievers:
@@ -495,19 +500,42 @@ class RAGComponents:
             else:
                 retrievers_to_search = self.retrievers
 
+            if not retrievers_to_search:
+                logger.warning("No retrievers available for search_knowledge")
+                return "No knowledge indexes are currently loaded. Please index some documents first."
+
             for name, retriever in retrievers_to_search.items():
                 try:
+                    logger.debug(f"Searching index '{name}' with query: {query[:50]}...")
                     docs = retriever.invoke(query)
+                    logger.debug(f"Index '{name}' returned {len(docs)} documents")
                     for doc in docs:
                         source = doc.metadata.get("source", "unknown")
                         content = doc.page_content[:500] + "..." if len(doc.page_content) > 500 else doc.page_content
                         results.append(f"[{name}] {source}:\n{content}")
                 except Exception as e:
-                    logger.warning(f"Error searching {name}: {e}")
+                    error_msg = str(e)
+                    logger.warning(f"Error searching {name}: {e}", exc_info=True)
+                    # Detect Ollama connectivity issues
+                    if "ollama" in error_msg.lower() or "failed to connect" in error_msg.lower():
+                        errors.append(
+                            f"[{name}] Embedding service unavailable - Cannot connect to Ollama. "
+                            "Check that Ollama is running and the URL in Settings is accessible from the server "
+                            "(use 'host.docker.internal' instead of 'localhost' when running in Docker)."
+                        )
+                    else:
+                        errors.append(f"[{name}] Search error: {error_msg}")
 
             if results:
+                logger.debug(f"search_knowledge found {len(results)} results")
                 return f"Found {len(results)} relevant documents:\n\n" + "\n\n---\n\n".join(results)
-            return "No relevant documentation found for this query."
+
+            # Return errors if we had any, otherwise generic no results message
+            if errors:
+                logger.warning(f"search_knowledge failed with errors: {errors}")
+                return "Search failed:\n" + "\n".join(errors)
+
+            logger.debug("search_knowledge found no results")
 
         # Build description with available indexes
         index_names = list(self.retrievers.keys())
@@ -527,9 +555,10 @@ class RAGComponents:
 
     async def _create_postgres_tool(self, config: dict, tool_name: str, tool_id: str):
         """Create a PostgreSQL query tool from config."""
+        import subprocess
+
         from langchain_core.tools import StructuredTool
         from pydantic import BaseModel, Field
-        import subprocess
 
         conn_config = config.get("connection_config", {})
         max_results = config.get("max_results", 100)
@@ -543,7 +572,8 @@ class RAGComponents:
 
         async def execute_query(query: str = "", reason: str = "", **_: Any) -> str:
             """Execute PostgreSQL query using this tool's configuration."""
-            from ragtime.core.security import validate_sql_query, sanitize_output
+            from ragtime.core.security import (sanitize_output,
+                                               validate_sql_query)
 
             # Validate required fields
             if not query or not query.strip():
@@ -612,10 +642,11 @@ class RAGComponents:
 
     async def _create_odoo_tool(self, config: dict, tool_name: str, tool_id: str):
         """Create an Odoo shell tool from config (Docker or SSH mode)."""
+        import re
+        import subprocess
+
         from langchain_core.tools import StructuredTool
         from pydantic import BaseModel, Field
-        import subprocess
-        import re
 
         conn_config = config.get("connection_config", {})
         timeout = config.get("timeout", 60)  # Odoo shell needs more time to initialize
@@ -639,7 +670,8 @@ class RAGComponents:
 
         async def execute_odoo(code: str = "", reason: str = "", **_: Any) -> str:
             """Execute Odoo shell command using this tool's configuration."""
-            from ragtime.core.security import validate_odoo_code, sanitize_output
+            from ragtime.core.security import (sanitize_output,
+                                               validate_odoo_code)
 
             # Validate required fields
             if not code or not code.strip():
@@ -854,6 +886,7 @@ except Exception as e:
         """Create a filesystem search tool from config."""
         from langchain_core.tools import StructuredTool
         from pydantic import BaseModel, Field
+
         from ragtime.tools.filesystem_indexer import search_filesystem_index
 
         conn_config = config.get("connection_config", {})
@@ -1116,6 +1149,11 @@ except Exception as e:
 
         except Exception as e:
             logger.exception("Error in streaming query")
+            yield f"I encountered an error processing your request: {str(e)}"
+
+
+# Global RAG components instance
+rag = RAGComponents()
             yield f"I encountered an error processing your request: {str(e)}"
 
 

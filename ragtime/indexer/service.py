@@ -9,19 +9,26 @@ If the server restarts mid-job (e.g., hot-reload), jobs in 'pending' or
 import asyncio
 import fnmatch
 import json
+import os
 import shutil
 import subprocess
 import tarfile
 import tempfile
+import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, BinaryIO
-import uuid
+from typing import Any, BinaryIO, Dict, List, Optional
 
 from ragtime.config import settings
 from ragtime.core.logging import get_logger
-from ragtime.indexer.models import IndexJob, IndexStatus, IndexConfig, IndexInfo, AppSettings
+from ragtime.indexer.models import (
+    AppSettings,
+    IndexConfig,
+    IndexInfo,
+    IndexJob,
+    IndexStatus,
+)
 from ragtime.indexer.repository import repository
 
 logger = get_logger(__name__)
@@ -43,8 +50,9 @@ async def generate_index_description(
     that helps the AI understand what knowledge is available.
     """
     try:
-        from ragtime.core.app_settings import get_app_settings
         from langchain_openai import ChatOpenAI
+
+        from ragtime.core.app_settings import get_app_settings
 
         app_settings = await get_app_settings()
         api_key = app_settings.get("openai_api_key", "")
@@ -54,15 +62,12 @@ async def generate_index_description(
             return ""
 
         # Sample file paths for context (unique paths only)
-        file_paths = list(set(
-            doc.metadata.get("source", "unknown")
-            for doc in documents[:100]
-        ))[:20]
+        file_paths = list(
+            set(doc.metadata.get("source", "unknown") for doc in documents[:100])
+        )[:20]
 
         # Sample some content snippets
-        content_samples = [
-            doc.page_content[:500] for doc in documents[:5]
-        ]
+        content_samples = [doc.page_content[:500] for doc in documents[:5]]
 
         prompt = f"""Analyze this indexed codebase and write a brief description (1-2 sentences) for an AI assistant to understand what knowledge is available.
 
@@ -92,7 +97,9 @@ Description:"""
         response = await llm.ainvoke(prompt)
         content = response.content
         description = content.strip() if isinstance(content, str) else str(content)
-        logger.info(f"Auto-generated description for {index_name}: {description[:100]}...")
+        logger.info(
+            f"Auto-generated description for {index_name}: {description[:100]}..."
+        )
         return description
 
     except Exception as e:
@@ -127,8 +134,7 @@ class IndexerService:
         """
         jobs = await repository.list_jobs()
         interrupted = [
-            j for j in jobs
-            if j.status in (IndexStatus.PENDING, IndexStatus.PROCESSING)
+            j for j in jobs if j.status in (IndexStatus.PENDING, IndexStatus.PROCESSING)
         ]
 
         if not interrupted:
@@ -159,7 +165,11 @@ class IndexerService:
             return
 
         jobs = await repository.list_jobs()
-        active_job_ids = {j.id for j in jobs if j.status in (IndexStatus.PENDING, IndexStatus.PROCESSING)}
+        active_job_ids = {
+            j.id
+            for j in jobs
+            if j.status in (IndexStatus.PENDING, IndexStatus.PROCESSING)
+        }
 
         for tmp_path in UPLOAD_TMP_DIR.iterdir():
             if tmp_path.is_dir() and tmp_path.name not in active_job_ids:
@@ -212,7 +222,9 @@ class IndexerService:
                     if isinstance(data, tuple) and len(data) >= 2:
                         docstore, idx_to_id = data[0], data[1]
                         if hasattr(docstore, "_dict"):
-                            doc_count = len(docstore._dict)  # noqa: SLF001  # type: ignore[union-attr]
+                            doc_count = len(
+                                docstore._dict
+                            )  # noqa: SLF001  # type: ignore[union-attr]
                             chunk_count = doc_count  # chunks == documents for FAISS
                         elif isinstance(idx_to_id, dict):
                             doc_count = len(idx_to_id)
@@ -220,10 +232,14 @@ class IndexerService:
 
                     logger.info(f"  Extracted {doc_count} documents from {path.name}")
                 except Exception as e:
-                    logger.warning(f"  Could not extract doc count from {path.name}: {e}")
+                    logger.warning(
+                        f"  Could not extract doc count from {path.name}: {e}"
+                    )
 
                 # Calculate size
-                size_bytes = sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
+                size_bytes = sum(
+                    p.stat().st_size for p in path.rglob("*") if p.is_file()
+                )
 
                 # Check for legacy metadata file
                 legacy_meta: dict[str, Any] = {}
@@ -287,7 +303,9 @@ class IndexerService:
                         shutil.rmtree(extracted_dir, ignore_errors=True)
 
                     temp_dir = tmp_path  # Use tmp dir for extraction
-                    asyncio.create_task(self._process_upload(job, archive_path, temp_dir))
+                    asyncio.create_task(
+                        self._process_upload(job, archive_path, temp_dir)
+                    )
                     return
 
             # No tmp file - mark as failed
@@ -304,15 +322,21 @@ class IndexerService:
         dimensions = getattr(app_settings, "embedding_dimensions", None)
 
         if provider == "ollama":
-            from langchain_ollama import OllamaEmbeddings  # type: ignore[import-not-found]
+            from langchain_ollama import (
+                OllamaEmbeddings,
+            )  # type: ignore[import-not-found]
+
             return OllamaEmbeddings(
                 model=model,
                 base_url=app_settings.ollama_base_url,
             )
         elif provider == "openai":
             from langchain_openai import OpenAIEmbeddings
+
             if not app_settings.openai_api_key:
-                raise ValueError("OpenAI embeddings selected but no API key configured in Settings")
+                raise ValueError(
+                    "OpenAI embeddings selected but no API key configured in Settings"
+                )
             # Pass dimensions for text-embedding-3-* models (supports MRL)
             kwargs: dict = {
                 "model": model,
@@ -322,7 +346,9 @@ class IndexerService:
                 kwargs["dimensions"] = dimensions
             return OpenAIEmbeddings(**kwargs)
         else:
-            raise ValueError(f"Unknown embedding provider: {provider}. Use 'ollama' or 'openai'.")
+            raise ValueError(
+                f"Unknown embedding provider: {provider}. Use 'ollama' or 'openai'."
+            )
 
     async def get_job(self, job_id: str) -> Optional[IndexJob]:
         """Get a job by ID (checks cache first, then database)."""
@@ -366,7 +392,9 @@ class IndexerService:
             if path.is_dir() and not path.name.startswith("."):
                 # Check if it's a valid FAISS index
                 if (path / "index.faiss").exists() or (path / "index.pkl").exists():
-                    size_bytes = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+                    size_bytes = sum(
+                        f.stat().st_size for f in path.rglob("*") if f.is_file()
+                    )
 
                     # Try to get document count from database metadata first
                     doc_count = 0
@@ -390,20 +418,24 @@ class IndexerService:
                                     doc_count = legacy_meta.get("document_count", 0)
                                     created_at_str = legacy_meta.get("created_at")
                                     if created_at_str:
-                                        created_at = datetime.fromisoformat(created_at_str)
+                                        created_at = datetime.fromisoformat(
+                                            created_at_str
+                                        )
                             except Exception:
                                 pass
 
-                    indexes.append(IndexInfo(
-                        name=path.name,
-                        path=str(path),
-                        size_mb=round(size_bytes / (1024 * 1024), 2),
-                        document_count=doc_count,
-                        description=description,
-                        enabled=enabled,
-                        created_at=created_at,
-                        last_modified=datetime.fromtimestamp(path.stat().st_mtime)
-                    ))
+                    indexes.append(
+                        IndexInfo(
+                            name=path.name,
+                            path=str(path),
+                            size_mb=round(size_bytes / (1024 * 1024), 2),
+                            document_count=doc_count,
+                            description=description,
+                            enabled=enabled,
+                            created_at=created_at,
+                            last_modified=datetime.fromtimestamp(path.stat().st_mtime),
+                        )
+                    )
 
         return indexes
 
@@ -418,15 +450,15 @@ class IndexerService:
             deleted_files = True
 
         # Also delete metadata from database
-        await repository.delete_index_metadata(name)
+        metadata_deleted = await repository.delete_index_metadata(name)
 
-        return deleted_files
+        if metadata_deleted and not deleted_files:
+            logger.info(f"Deleted index metadata without files present: {name}")
+
+        return deleted_files or metadata_deleted
 
     async def create_index_from_upload(
-        self,
-        file: BinaryIO,
-        filename: str,
-        config: IndexConfig
+        self, file: BinaryIO, filename: str, config: IndexConfig
     ) -> IndexJob:
         """Create an index from an uploaded archive file.
 
@@ -440,7 +472,7 @@ class IndexerService:
             name=config.name,
             config=config,
             source_type="upload",
-            source_path=filename
+            source_path=filename,
         )
 
         # Persist to database FIRST (before any processing)
@@ -449,16 +481,22 @@ class IndexerService:
         # Cache for active processing
         self._active_jobs[job_id] = job
 
-        # Save uploaded file to PERSISTENT tmp location (survives restarts)
-        tmp_dir = UPLOAD_TMP_DIR / job_id
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-        archive_path = tmp_dir / filename
-
         try:
+            # Save uploaded file to PERSISTENT tmp location (survives restarts)
+            tmp_dir = UPLOAD_TMP_DIR / job_id
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+
+            if not os.access(tmp_dir, os.W_OK):
+                raise PermissionError(f"Upload tmp directory not writable: {tmp_dir}")
+
+            archive_path = tmp_dir / filename
+
             with open(archive_path, "wb") as f:
                 shutil.copyfileobj(file, f)
 
-            logger.info(f"Saved upload to tmp directory for job {job_id}: {archive_path}")
+            logger.info(
+                f"Saved upload to tmp directory for job {job_id}: {archive_path}"
+            )
 
             # Start processing in background
             asyncio.create_task(self._process_upload(job, archive_path, tmp_dir))
@@ -468,16 +506,14 @@ class IndexerService:
             job.error_message = str(e)
             await repository.update_job(job)
             self._active_jobs.pop(job_id, None)
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            if "tmp_dir" in locals():
+                shutil.rmtree(tmp_dir, ignore_errors=True)
             raise
 
         return job
 
     async def create_index_from_git(
-        self,
-        git_url: str,
-        branch: str,
-        config: IndexConfig
+        self, git_url: str, branch: str, config: IndexConfig
     ) -> IndexJob:
         """Create an index from a git repository."""
         job_id = str(uuid.uuid4())[:8]
@@ -488,7 +524,7 @@ class IndexerService:
             config=config,
             source_type="git",
             git_url=git_url,
-            git_branch=branch
+            git_branch=branch,
         )
 
         # Persist to database
@@ -553,13 +589,16 @@ class IndexerService:
                 raise ValueError("Git URL is required for git source type")
 
             process = await asyncio.create_subprocess_exec(
-                "git", "clone",
-                "--depth", "1",
-                "--branch", job.git_branch or "main",
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                "--branch",
+                job.git_branch or "main",
                 job.git_url,
                 str(clone_dir),
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stderr=subprocess.PIPE,
             )
             _, stderr = await process.communicate()
 
@@ -587,17 +626,17 @@ class IndexerService:
         filename_lower = archive_path.name.lower()
 
         if filename_lower.endswith(".zip"):
-            with zipfile.ZipFile(archive_path, 'r') as zf:
+            with zipfile.ZipFile(archive_path, "r") as zf:
                 zf.extractall(extract_dir)
         elif filename_lower.endswith((".tar.gz", ".tgz")):
-            with tarfile.open(archive_path, 'r:gz') as tf:
-                tf.extractall(extract_dir, filter='data')
+            with tarfile.open(archive_path, "r:gz") as tf:
+                tf.extractall(extract_dir, filter="data")
         elif filename_lower.endswith((".tar.bz2", ".tbz2")):
-            with tarfile.open(archive_path, 'r:bz2') as tf:
-                tf.extractall(extract_dir, filter='data')
+            with tarfile.open(archive_path, "r:bz2") as tf:
+                tf.extractall(extract_dir, filter="data")
         elif filename_lower.endswith(".tar"):
-            with tarfile.open(archive_path, 'r:') as tf:
-                tf.extractall(extract_dir, filter='data')
+            with tarfile.open(archive_path, "r:") as tf:
+                tf.extractall(extract_dir, filter="data")
         else:
             raise ValueError(f"Unsupported archive format: {archive_path.name}")
 
@@ -628,8 +667,8 @@ class IndexerService:
     async def _create_faiss_index(self, job: IndexJob, source_dir: Path):
         """Create FAISS index from source directory."""
         from langchain_community.document_loaders import TextLoader
-        from langchain_text_splitters import RecursiveCharacterTextSplitter
         from langchain_community.vectorstores import FAISS
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
 
         config = job.config
 
@@ -693,7 +732,7 @@ class IndexerService:
             chunk_size=config.chunk_size,
             chunk_overlap=config.chunk_overlap,
             length_function=len,
-            separators=["\n\n", "\n", " ", ""]
+            separators=["\n\n", "\n", " ", ""],
         )
         chunks = splitter.split_documents(documents)
         job.total_chunks = len(chunks)
@@ -705,19 +744,23 @@ class IndexerService:
         app_settings = await repository.get_settings()
         embeddings = await self._get_embeddings(app_settings)
 
-        logger.info(f"Using {app_settings.embedding_provider} embeddings with model: {app_settings.embedding_model}")
+        logger.info(
+            f"Using {app_settings.embedding_provider} embeddings with model: {app_settings.embedding_model}"
+        )
 
         # Process in batches to show progress
         batch_size = 100
         db = None
 
         for i in range(0, len(chunks), batch_size):
-            batch = chunks[i:i + batch_size]
+            batch = chunks[i : i + batch_size]
 
             if db is None:
                 db = await asyncio.to_thread(FAISS.from_documents, batch, embeddings)
             else:
-                batch_db = await asyncio.to_thread(FAISS.from_documents, batch, embeddings)
+                batch_db = await asyncio.to_thread(
+                    FAISS.from_documents, batch, embeddings
+                )
                 db.merge_from(batch_db)
 
             # Update processed chunks progress
@@ -763,6 +806,9 @@ class IndexerService:
 
         logger.info(f"Index {job.name} created successfully!")
 
+
+# Global indexer instance - uses configured path
+indexer = IndexerService(index_base_path=settings.index_data_path)
 
 # Global indexer instance - uses configured path
 indexer = IndexerService(index_base_path=settings.index_data_path)
