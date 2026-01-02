@@ -39,6 +39,161 @@ function isSystemMount(containerPath: string): boolean {
 }
 
 // =============================================================================
+// Reusable Directory Browser (with path filtering and breadcrumbs)
+// =============================================================================
+
+interface DirectoryBrowserProps {
+  currentPath: string; // relative path from root ('' is root)
+  entries: DirectoryEntry[];
+  loading: boolean;
+  error?: string | null;
+  onNavigate: (path: string) => void; // path relative to root
+  onGoUp: () => void;
+  onSelect: (path: string) => void;
+}
+
+function DirectoryBrowser({ currentPath, entries, loading, error, onNavigate, onGoUp, onSelect }: DirectoryBrowserProps) {
+  const [pathInput, setPathInput] = useState('');
+
+  // Filter entries based on current input (only the segment before any "/")
+  const filterText = pathInput.split('/')[0];
+  const filteredEntries = entries.filter(e => {
+    if (!filterText) return true;
+    return e.name.toLowerCase().startsWith(filterText.toLowerCase());
+  });
+
+  // Handle filter changes and implicit navigation when typing "dir/"
+  const handleFilterChange = (value: string) => {
+    if (value.endsWith('/')) {
+      const dirName = value.slice(0, -1);
+      const matchingDir = entries.find(e => e.is_dir && e.name.toLowerCase() === dirName.toLowerCase());
+      if (matchingDir) {
+        onNavigate(matchingDir.path);
+        setPathInput('');
+        return;
+      }
+    }
+
+    if (value.includes('/')) {
+      const segments = value.split('/');
+      const first = segments[0];
+      const rest = segments.slice(1).join('/');
+      const matchingDir = entries.find(e => e.is_dir && e.name.toLowerCase() === first.toLowerCase());
+      if (matchingDir) {
+        onNavigate(matchingDir.path);
+        setPathInput(rest);
+        return;
+      }
+    }
+
+    setPathInput(value);
+  };
+
+  const handlePathInputKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const firstDir = filteredEntries.find(e => e.is_dir);
+      if (firstDir) {
+        onNavigate(firstDir.path);
+      }
+    }
+  };
+
+  // Breadcrumb navigation
+  const segments = currentPath.split('/').filter(Boolean);
+
+  return (
+    <div className="mount-browser">
+      <div className="browser-header">
+        <button
+          type="button"
+          className="btn btn-sm"
+          onClick={onGoUp}
+          disabled={!currentPath || loading}
+        >
+          ..
+        </button>
+        <div className="browser-path-wrapper">
+          <span className="browser-path-breadcrumbs">
+            <span className="breadcrumb-segment">
+              <button type="button" className="breadcrumb-btn" onClick={() => onNavigate('')}>
+                /
+              </button>
+            </span>
+            {segments.map((segment, idx) => {
+              const pathToSegment = segments.slice(0, idx + 1).join('/');
+              const isLast = idx === segments.length - 1;
+              return (
+                <span key={idx} className="breadcrumb-segment">
+                  <button
+                    type="button"
+                    className="breadcrumb-btn"
+                    onClick={() => onNavigate(pathToSegment)}
+                  >
+                    {segment}
+                  </button>
+                  {!isLast && <span className="breadcrumb-sep">/</span>}
+                </span>
+              );
+            })}
+          </span>
+          <input
+            type="text"
+            className="browser-path-input"
+            value={pathInput}
+            onChange={(e) => handleFilterChange(e.target.value)}
+            onKeyDown={handlePathInputKeyDown}
+            placeholder="Filter or type dir/"
+          />
+        </div>
+        <button
+          type="button"
+          className="btn btn-sm btn-primary"
+          onClick={() => onSelect(currentPath)}
+          disabled={loading}
+        >
+          Select
+        </button>
+      </div>
+
+      {error && <div className="browser-error">{error}</div>}
+
+      {loading ? (
+        <div className="browser-loading">Loading...</div>
+      ) : (
+        <div className="browser-entries">
+          {filteredEntries.filter(e => e.is_dir).map((entry) => (
+            <button
+              key={entry.path}
+              type="button"
+              className="browser-entry"
+              onClick={() => onNavigate(entry.path)}
+            >
+              <span className="entry-icon">📁</span>
+              <span className="entry-name">{entry.name}</span>
+            </button>
+          ))}
+          {filteredEntries.filter(e => !e.is_dir).slice(0, 3).map((entry) => (
+            <div key={entry.path} className="browser-entry file">
+              <span className="entry-icon">📄</span>
+              <span className="entry-name">{entry.name}</span>
+            </div>
+          ))}
+          {filteredEntries.filter(e => !e.is_dir).length > 3 && (
+            <div className="browser-more">
+              +{filteredEntries.filter(e => !e.is_dir).length - 3} more files
+            </div>
+          )}
+          {filteredEntries.length === 0 && !loading && (
+            <div className="browser-empty">Empty directory</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// =============================================================================
 // Filesystem Browser Component
 // =============================================================================
 
@@ -386,6 +541,439 @@ function FilesystemBrowser({ currentPath, onSelectPath }: FilesystemBrowserProps
     </div>
   );
 }
+
+
+// =============================================================================
+// NFS Browser Component
+// =============================================================================
+
+interface NFSBrowserProps {
+  host: string;
+  selectedExport: string;
+  selectedPath: string;
+  onHostChange: (host: string) => void;
+  onSelectPath: (exportPath: string, relativePath: string) => void;
+}
+
+function NFSBrowser({ host, selectedExport, selectedPath, onHostChange, onSelectPath }: NFSBrowserProps) {
+  const [exports, setExports] = useState<import('@/types').NFSExport[]>([]);
+  const [entries, setEntries] = useState<DirectoryEntry[]>([]);
+  const [discovering, setDiscovering] = useState(false);
+  const [browsing, setBrowsing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [browseError, setBrowseError] = useState<string | null>(null);
+  const [expandedExport, setExpandedExport] = useState<string | null>(null);
+  const [browsePath, setBrowsePath] = useState<string>('');
+  const [manualPath, setManualPath] = useState<string>('');
+  const [hostInput, setHostInput] = useState(host || '');
+
+  // Discover exports when host changes
+  const handleDiscover = async () => {
+    if (!hostInput.trim()) return;
+    setDiscovering(true);
+    setError(null);
+    setExports([]);
+
+    try {
+      const result = await api.discoverNfsExports(hostInput.trim());
+      if (result.success) {
+        setExports(result.exports);
+        onHostChange(hostInput.trim());
+        if (result.exports.length === 0) {
+          setError('No exports found on this server');
+        }
+      } else {
+        setError(result.error || 'Discovery failed');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Discovery failed');
+    } finally {
+      setDiscovering(false);
+    }
+  };
+
+  // Browse export contents
+  const browseExport = useCallback(async (exportPath: string, path: string = '') => {
+    if (!host) return;
+    setBrowsing(true);
+    setBrowseError(null);
+
+    try {
+      const result = await api.browseNfsExport(host, exportPath, path);
+      if (result.error) {
+        // Allow manual path entry on any browse error
+        setBrowseError(result.error);
+        setEntries([]);
+      } else {
+        setEntries(result.entries);
+        setBrowseError(null);
+      }
+    } catch (err) {
+      setBrowseError(err instanceof Error ? err.message : 'Browse failed');
+    } finally {
+      setBrowsing(false);
+    }
+  }, [host]);
+
+  const handleExpandExport = (exportPath: string) => {
+    if (expandedExport === exportPath) {
+      setExpandedExport(null);
+    } else {
+      setExpandedExport(exportPath);
+      setBrowsePath('');
+      browseExport(exportPath, '');
+    }
+  };
+
+  const handleNavigate = (path: string) => {
+    setBrowsePath(path);
+    if (expandedExport) {
+      browseExport(expandedExport, path);
+    }
+  };
+
+  const handleGoUp = () => {
+    const parts = browsePath.split('/').filter(Boolean);
+    if (parts.length > 0) {
+      parts.pop();
+      const newPath = parts.join('/');
+      handleNavigate(newPath);
+    }
+  };
+
+  const handleSelect = () => {
+    if (expandedExport) {
+      onSelectPath(expandedExport, browsePath);
+    }
+  };
+
+  // Show compact view if already selected
+  if (selectedExport && !expandedExport) {
+    return (
+      <div className="filesystem-browser">
+        <div className="selected-path-display">
+          <span className="selected-label">NFS:</span>
+          <span className="selected-value">{host}:{selectedExport}{selectedPath ? `/${selectedPath}` : ''}</span>
+          <button
+            type="button"
+            className="btn btn-sm btn-secondary"
+            onClick={() => {
+              setExpandedExport(selectedExport);
+              setBrowsePath(selectedPath);
+              browseExport(selectedExport, selectedPath);
+            }}
+          >
+            Change
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="filesystem-browser">
+      {/* Host input */}
+      <div className="connection-test-row" style={{ marginBottom: '1rem' }}>
+        <input
+          type="text"
+          value={hostInput}
+          onChange={(e) => setHostInput(e.target.value)}
+          placeholder="nfs-server.local"
+          onKeyDown={(e) => e.key === 'Enter' && handleDiscover()}
+          style={{ flex: 1 }}
+        />
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={handleDiscover}
+          disabled={discovering || !hostInput.trim()}
+        >
+          {discovering ? 'Discovering...' : 'Discover Exports'}
+        </button>
+      </div>
+
+      {error && <div className="browser-error">{error}</div>}
+
+      {/* Export list */}
+      {exports.length > 0 && (
+        <div className="mounts-accordion">
+          {exports.map((exp, i) => (
+            <div key={i} className={`mount-item ${expandedExport === exp.export_path ? 'expanded' : ''}`}>
+              <button
+                type="button"
+                className="mount-header"
+                onClick={() => handleExpandExport(exp.export_path)}
+              >
+                <span className="mount-icon">{expandedExport === exp.export_path ? '▼' : '▶'}</span>
+                <span className="mount-path">{exp.export_path}</span>
+                <span className="export-hosts">{exp.allowed_hosts}</span>
+              </button>
+
+              {expandedExport === exp.export_path && (
+                <div className="mount-browser">
+                  {browseError ? (
+                    <div className="manual-path-entry">
+                      <div className="browser-warning" style={{ marginBottom: '0.75rem' }}>
+                        {browseError}
+                      </div>
+                      <div className="connection-test-row">
+                        <input
+                          type="text"
+                          value={manualPath}
+                          onChange={(e) => setManualPath(e.target.value)}
+                          placeholder="/ or /subdir/path"
+                          style={{ flex: 1 }}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-primary"
+                          onClick={() => onSelectPath(exp.export_path, manualPath.replace(/^\/+/, ''))}
+                        >
+                          Select Path
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <DirectoryBrowser
+                      currentPath={browsePath}
+                      entries={entries}
+                      loading={browsing}
+                      error={browseError}
+                      onNavigate={handleNavigate}
+                      onGoUp={handleGoUp}
+                      onSelect={handleSelect}
+                    />
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// =============================================================================
+// SMB Browser Component
+// =============================================================================
+
+interface SMBBrowserProps {
+  host: string;
+  user: string;
+  password: string;
+  domain: string;
+  selectedShare: string;
+  selectedPath: string;
+  onHostChange: (host: string) => void;
+  onCredentialsChange: (user: string, password: string, domain: string) => void;
+  onSelectPath: (share: string, relativePath: string) => void;
+}
+
+function SMBBrowser({
+  host, user, password, domain,
+  selectedShare, selectedPath,
+  onHostChange, onCredentialsChange, onSelectPath
+}: SMBBrowserProps) {
+  const [shares, setShares] = useState<import('@/types').SMBShare[]>([]);
+  const [entries, setEntries] = useState<DirectoryEntry[]>([]);
+  const [discovering, setDiscovering] = useState(false);
+  const [browsing, setBrowsing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [expandedShare, setExpandedShare] = useState<string | null>(null);
+  const [browsePath, setBrowsePath] = useState<string>('');
+
+  const [hostInput, setHostInput] = useState(host || '');
+  const [userInput, setUserInput] = useState(user || '');
+  const [passwordInput, setPasswordInput] = useState(password || '');
+  const [domainInput, setDomainInput] = useState(domain || '');
+
+  // Discover shares
+  const handleDiscover = async () => {
+    if (!hostInput.trim()) return;
+    setDiscovering(true);
+    setError(null);
+    setShares([]);
+
+    try {
+      const result = await api.discoverSmbShares(hostInput.trim(), userInput, passwordInput, domainInput);
+      if (result.success) {
+        setShares(result.shares);
+        onHostChange(hostInput.trim());
+        onCredentialsChange(userInput, passwordInput, domainInput);
+        if (result.shares.length === 0) {
+          setError('No shares found (or no access with provided credentials)');
+        }
+      } else {
+        setError(result.error || 'Discovery failed');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Discovery failed');
+    } finally {
+      setDiscovering(false);
+    }
+  };
+
+  // Browse share contents
+  const browseShare = useCallback(async (shareName: string, path: string = '') => {
+    if (!host) return;
+    setBrowsing(true);
+    setError(null);
+
+    try {
+      const result = await api.browseSmbShare(host, shareName, path, user, password, domain);
+      if (result.error) {
+        setError(result.error);
+        setEntries([]);
+      } else {
+        setEntries(result.entries);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Browse failed');
+    } finally {
+      setBrowsing(false);
+    }
+  }, [host, user, password, domain]);
+
+  const handleExpandShare = (shareName: string) => {
+    if (expandedShare === shareName) {
+      setExpandedShare(null);
+    } else {
+      setExpandedShare(shareName);
+      setBrowsePath('');
+      browseShare(shareName, '');
+    }
+  };
+
+  const handleNavigate = (path: string) => {
+    setBrowsePath(path);
+    if (expandedShare) {
+      browseShare(expandedShare, path);
+    }
+  };
+
+  const handleGoUp = () => {
+    const parts = browsePath.split('/').filter(Boolean);
+    if (parts.length > 0) {
+      parts.pop();
+      const newPath = parts.join('/');
+      handleNavigate(newPath);
+    }
+  };
+
+  const handleSelect = (path: string) => {
+    if (expandedShare) {
+      onSelectPath(expandedShare, path);
+    }
+  };
+
+  // Compact view if already selected
+  if (selectedShare && !expandedShare) {
+    return (
+      <div className="filesystem-browser">
+        <div className="selected-path-display">
+          <span className="selected-label">SMB:</span>
+          <span className="selected-value">//{host}/{selectedShare}{selectedPath ? `/${selectedPath}` : ''}</span>
+          <button
+            type="button"
+            className="btn btn-sm btn-secondary"
+            onClick={() => {
+              setExpandedShare(selectedShare);
+              setBrowsePath(selectedPath);
+              browseShare(selectedShare, selectedPath);
+            }}
+          >
+            Change
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="filesystem-browser">
+      {/* Connection inputs */}
+      <div className="form-row" style={{ marginBottom: '0.5rem' }}>
+        <div className="form-group" style={{ flex: 2, marginBottom: 0 }}>
+          <input
+            type="text"
+            value={hostInput}
+            onChange={(e) => setHostInput(e.target.value)}
+            placeholder="fileserver.local"
+          />
+        </div>
+        <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
+          <input
+            type="text"
+            value={userInput}
+            onChange={(e) => setUserInput(e.target.value)}
+            placeholder="Username"
+          />
+        </div>
+        <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
+          <input
+            type="password"
+            value={passwordInput}
+            onChange={(e) => setPasswordInput(e.target.value)}
+            placeholder="Password"
+          />
+        </div>
+      </div>
+      <div className="connection-test-row" style={{ marginBottom: '1rem' }}>
+        <input
+          type="text"
+          value={domainInput}
+          onChange={(e) => setDomainInput(e.target.value)}
+          placeholder="Domain (optional)"
+          style={{ flex: 1 }}
+        />
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={handleDiscover}
+          disabled={discovering || !hostInput.trim()}
+        >
+          {discovering ? 'Discovering...' : 'Discover Shares'}
+        </button>
+      </div>
+
+      {error && <div className="browser-error">{error}</div>}
+
+      {/* Share list */}
+      {shares.length > 0 && (
+        <div className="mounts-accordion">
+          {shares.map((share, i) => (
+            <div key={i} className={`mount-item ${expandedShare === share.name ? 'expanded' : ''}`}>
+              <button
+                type="button"
+                className="mount-header"
+                onClick={() => handleExpandShare(share.name)}
+              >
+                <span className="mount-icon">{expandedShare === share.name ? '▼' : '▶'}</span>
+                <span className="mount-path">{share.name}</span>
+                {share.comment && <span className="share-comment">{share.comment}</span>}
+              </button>
+
+              {expandedShare === share.name && (
+                <DirectoryBrowser
+                  currentPath={browsePath}
+                  entries={entries}
+                  loading={browsing}
+                  error={error}
+                  onNavigate={handleNavigate}
+                  onGoUp={handleGoUp}
+                  onSelect={handleSelect}
+                />
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 // =============================================================================
 // Shared Docker connection panel props
@@ -1762,63 +2350,31 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
       {/* SMB Settings */}
       {filesystemConfig.mount_type === 'smb' && (
         <>
-          <div className="form-row">
-            <div className="form-group" style={{ flex: 2 }}>
-              <label>SMB Host</label>
-              <input
-                type="text"
-                value={filesystemConfig.smb_host || ''}
-                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, smb_host: e.target.value })}
-                placeholder="fileserver.local"
-              />
-            </div>
-            <div className="form-group" style={{ flex: 2 }}>
-              <label>Share Name</label>
-              <input
-                type="text"
-                value={filesystemConfig.smb_share || ''}
-                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, smb_share: e.target.value })}
-                placeholder="documents"
-              />
-            </div>
-          </div>
-          <div className="form-row">
-            <div className="form-group">
-              <label>Username</label>
-              <input
-                type="text"
-                value={filesystemConfig.smb_user || ''}
-                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, smb_user: e.target.value })}
-                placeholder="user"
-              />
-            </div>
-            <div className="form-group">
-              <label>Password</label>
-              <input
-                type="password"
-                value={filesystemConfig.smb_password || ''}
-                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, smb_password: e.target.value })}
-              />
-            </div>
-            <div className="form-group">
-              <label>Domain (optional)</label>
-              <input
-                type="text"
-                value={filesystemConfig.smb_domain || ''}
-                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, smb_domain: e.target.value })}
-                placeholder="WORKGROUP"
-              />
-            </div>
-          </div>
           <div className="form-group">
-            <label>Mount Path</label>
-            <input
-              type="text"
-              value={filesystemConfig.base_path}
-              onChange={(e) => setFilesystemConfig({ ...filesystemConfig, base_path: e.target.value })}
-              placeholder="/mnt/smb"
+            <label>SMB Share</label>
+            <p className="field-help" style={{ marginBottom: '0.5rem' }}>
+              Enter server hostname and credentials, then click Discover to browse available shares.
+            </p>
+            <SMBBrowser
+              host={filesystemConfig.smb_host || ''}
+              user={filesystemConfig.smb_user || ''}
+              password={filesystemConfig.smb_password || ''}
+              domain={filesystemConfig.smb_domain || ''}
+              selectedShare={filesystemConfig.smb_share || ''}
+              selectedPath={filesystemConfig.base_path?.replace(/^\/mnt\/smb\/?/, '') || ''}
+              onHostChange={(host) => setFilesystemConfig({ ...filesystemConfig, smb_host: host })}
+              onCredentialsChange={(user, password, domain) => setFilesystemConfig({
+                ...filesystemConfig,
+                smb_user: user,
+                smb_password: password,
+                smb_domain: domain
+              })}
+              onSelectPath={(share, path) => setFilesystemConfig({
+                ...filesystemConfig,
+                smb_share: share,
+                base_path: path ? `/${path}` : '/'
+              })}
             />
-            <p className="field-help">Path where the SMB share will be mounted.</p>
           </div>
         </>
       )}
@@ -1826,25 +2382,22 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
       {/* NFS Settings */}
       {filesystemConfig.mount_type === 'nfs' && (
         <>
-          <div className="form-row">
-            <div className="form-group" style={{ flex: 2 }}>
-              <label>NFS Host</label>
-              <input
-                type="text"
-                value={filesystemConfig.nfs_host || ''}
-                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, nfs_host: e.target.value })}
-                placeholder="nfs-server.local"
-              />
-            </div>
-            <div className="form-group" style={{ flex: 2 }}>
-              <label>Export Path</label>
-              <input
-                type="text"
-                value={filesystemConfig.nfs_export || ''}
-                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, nfs_export: e.target.value })}
-                placeholder="/exports/data"
-              />
-            </div>
+          <div className="form-group">
+            <label>NFS Export</label>
+            <p className="field-help" style={{ marginBottom: '0.5rem' }}>
+              Enter NFS server hostname, then click Discover to browse available exports.
+            </p>
+            <NFSBrowser
+              host={filesystemConfig.nfs_host || ''}
+              selectedExport={filesystemConfig.nfs_export || ''}
+              selectedPath={filesystemConfig.base_path?.replace(/^\/mnt\/nfs\/?/, '') || ''}
+              onHostChange={(host) => setFilesystemConfig({ ...filesystemConfig, nfs_host: host })}
+              onSelectPath={(exportPath, path) => setFilesystemConfig({
+                ...filesystemConfig,
+                nfs_export: exportPath,
+                base_path: path ? `/${path}` : '/'
+              })}
+            />
           </div>
           <div className="form-group">
             <label>Mount Options</label>
@@ -1855,16 +2408,6 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
               placeholder="ro,noatime"
             />
             <p className="field-help">NFS mount options (ro = read-only recommended).</p>
-          </div>
-          <div className="form-group">
-            <label>Mount Path</label>
-            <input
-              type="text"
-              value={filesystemConfig.base_path}
-              onChange={(e) => setFilesystemConfig({ ...filesystemConfig, base_path: e.target.value })}
-              placeholder="/mnt/nfs"
-            />
-            <p className="field-help">Path where the NFS export will be mounted.</p>
           </div>
         </>
       )}

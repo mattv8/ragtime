@@ -551,6 +551,49 @@ export const api = {
   },
 
   /**
+   * Discover NFS exports from a server
+   */
+  async discoverNfsExports(host: string): Promise<import('@/types').NFSDiscoveryResponse> {
+    const response = await apiFetch(`${API_BASE}/filesystem/nfs/discover?host=${encodeURIComponent(host)}`);
+    return handleResponse<import('@/types').NFSDiscoveryResponse>(response);
+  },
+
+  /**
+   * Browse an NFS export
+   */
+  async browseNfsExport(host: string, exportPath: string, path: string = ''): Promise<import('@/types').BrowseResponse> {
+    const params = new URLSearchParams({ host, export_path: exportPath });
+    if (path) params.set('path', path);
+    const response = await apiFetch(`${API_BASE}/filesystem/nfs/browse?${params}`);
+    return handleResponse<import('@/types').BrowseResponse>(response);
+  },
+
+  /**
+   * Discover SMB shares from a server
+   */
+  async discoverSmbShares(host: string, user?: string, password?: string, domain?: string): Promise<import('@/types').SMBDiscoveryResponse> {
+    const params = new URLSearchParams({ host });
+    if (user) params.set('user', user);
+    if (password) params.set('password', password);
+    if (domain) params.set('domain', domain);
+    const response = await apiFetch(`${API_BASE}/filesystem/smb/discover?${params}`);
+    return handleResponse<import('@/types').SMBDiscoveryResponse>(response);
+  },
+
+  /**
+   * Browse an SMB share
+   */
+  async browseSmbShare(host: string, share: string, path: string = '', user?: string, password?: string, domain?: string): Promise<import('@/types').BrowseResponse> {
+    const params = new URLSearchParams({ host, share });
+    if (path) params.set('path', path);
+    if (user) params.set('user', user);
+    if (password) params.set('password', password);
+    if (domain) params.set('domain', domain);
+    const response = await apiFetch(`${API_BASE}/filesystem/smb/browse?${params}`);
+    return handleResponse<import('@/types').BrowseResponse>(response);
+  },
+
+  /**
    * Discover Docker networks and containers
    */
   async discoverDocker(): Promise<DockerDiscoveryResponse> {

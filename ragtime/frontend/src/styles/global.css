@@ -1721,6 +1721,43 @@ input[type="password"]:focus {
   flex: 1;
 }
 
+.export-hosts {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  font-family: monospace;
+  margin-left: auto;
+  opacity: 0.7;
+}
+
+.share-comment {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  margin-left: auto;
+  font-style: italic;
+  opacity: 0.7;
+}
+
+.selected-path-display {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: 8px;
+}
+
+.selected-path-display .selected-label {
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.selected-path-display .selected-value {
+  flex: 1;
+  font-family: monospace;
+  color: var(--color-text-primary);
+}
+
 .current-badge {
   padding: 2px 8px;
   background: rgba(99, 102, 241, 0.2);
@@ -1926,6 +1963,19 @@ input[type="password"]:focus {
   padding: 12px;
   color: var(--color-error);
   font-size: 0.85rem;
+}
+
+.browser-warning {
+  padding: 10px 12px;
+  background: rgba(234, 179, 8, 0.1);
+  border: 1px solid rgba(234, 179, 8, 0.3);
+  border-radius: 6px;
+  color: #fbbf24;
+  font-size: 0.85rem;
+}
+
+.manual-path-entry {
+  padding: 12px;
 }
 
 .browser-loading {

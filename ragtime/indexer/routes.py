@@ -2012,6 +2012,436 @@ async def browse_filesystem(path: str = "/mnt", _: User = Depends(require_admin)
 
 
 # -----------------------------------------------------------------------------
+# NFS/SMB Discovery Endpoints (Admin only)
+# -----------------------------------------------------------------------------
+
+
+class NFSExport(BaseModel):
+    """NFS export entry."""
+
+    export_path: str
+    allowed_hosts: str = ""
+
+
+class NFSDiscoveryResponse(BaseModel):
+    """Response from NFS export discovery."""
+
+    success: bool
+    exports: list[NFSExport] = []
+    error: str | None = None
+
+
+class SMBShare(BaseModel):
+    """SMB share entry."""
+
+    name: str
+    share_type: str = "Disk"
+    comment: str = ""
+
+
+class SMBDiscoveryResponse(BaseModel):
+    """Response from SMB share discovery."""
+
+    success: bool
+    shares: list[SMBShare] = []
+    error: str | None = None
+
+
+@router.get(
+    "/filesystem/nfs/discover",
+    response_model=NFSDiscoveryResponse,
+    tags=["Filesystem Indexer"],
+)
+async def discover_nfs_exports(
+    host: str,
+    _: User = Depends(require_admin),
+):
+    """
+    Discover NFS exports from a remote server.
+
+    Uses showmount to list available exports on the target NFS server.
+    """
+    import asyncio
+    import subprocess
+
+    if not host:
+        return NFSDiscoveryResponse(success=False, error="Host is required")
+
+    try:
+        # Use showmount to list exports
+        cmd = ["showmount", "-e", host, "--no-headers"]
+        process = await asyncio.wait_for(
+            asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            ),
+            timeout=10.0,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=10.0)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.communicate()
+            return NFSDiscoveryResponse(
+                success=False, error=f"Connection timeout to {host}"
+            )
+
+        if process.returncode != 0:
+            error_msg = stderr.decode("utf-8", errors="replace").strip()
+            if "command not found" in error_msg.lower():
+                return NFSDiscoveryResponse(
+                    success=False,
+                    error="NFS tools not installed. Install nfs-common package.",
+                )
+            return NFSDiscoveryResponse(
+                success=False, error=error_msg or "Failed to connect"
+            )
+
+        exports = []
+        for line in stdout.decode("utf-8").strip().split("\n"):
+            if not line.strip():
+                continue
+            parts = line.split()
+            if parts:
+                export_path = parts[0]
+                allowed_hosts = " ".join(parts[1:]) if len(parts) > 1 else "*"
+                exports.append(
+                    NFSExport(export_path=export_path, allowed_hosts=allowed_hosts)
+                )
+
+        return NFSDiscoveryResponse(success=True, exports=exports)
+
+    except asyncio.TimeoutError:
+        return NFSDiscoveryResponse(
+            success=False, error=f"Connection timeout to {host}"
+        )
+    except Exception as e:
+        return NFSDiscoveryResponse(success=False, error=str(e))
+
+
+@router.get(
+    "/filesystem/smb/discover",
+    response_model=SMBDiscoveryResponse,
+    tags=["Filesystem Indexer"],
+)
+async def discover_smb_shares(
+    host: str,
+    user: str = "",
+    password: str = "",
+    domain: str = "",
+    _: User = Depends(require_admin),
+):
+    """
+    Discover SMB/CIFS shares from a remote server using pysmb.
+    """
+    import asyncio
+    import socket
+
+    if not host:
+        return SMBDiscoveryResponse(success=False, error="Host is required")
+
+    def _discover_smb() -> SMBDiscoveryResponse:
+        try:
+            from smb.SMBConnection import SMBConnection
+
+            # Resolve hostname to IP
+            try:
+                server_ip = socket.gethostbyname(host)
+            except socket.gaierror:
+                return SMBDiscoveryResponse(
+                    success=False, error=f"Cannot resolve hostname: {host}"
+                )
+
+            # Create SMB connection
+            conn = SMBConnection(
+                user or "guest",
+                password or "",
+                "ragtime",  # client machine name
+                host,  # server name
+                domain=domain or "",
+                use_ntlm_v2=True,
+                is_direct_tcp=True,
+            )
+
+            try:
+                connected = conn.connect(server_ip, 445, timeout=10)
+                if not connected:
+                    return SMBDiscoveryResponse(
+                        success=False, error="Failed to connect to SMB server"
+                    )
+            except Exception as e:
+                return SMBDiscoveryResponse(
+                    success=False, error=f"Connection failed: {e}"
+                )
+
+            try:
+                share_list = conn.listShares()
+                shares = []
+                for s in share_list:
+                    # Skip system shares (ending with $)
+                    if s.name.endswith("$"):
+                        continue
+                    shares.append(
+                        SMBShare(
+                            name=s.name,
+                            share_type="Disk" if s.type == 0 else "Other",
+                            comment=s.comments or "",
+                        )
+                    )
+                return SMBDiscoveryResponse(success=True, shares=shares)
+            except Exception as e:
+                return SMBDiscoveryResponse(success=False, error=str(e))
+            finally:
+                conn.close()
+
+        except ImportError:
+            return SMBDiscoveryResponse(success=False, error="pysmb not installed")
+        except Exception as e:
+            return SMBDiscoveryResponse(success=False, error=str(e))
+
+    try:
+        loop = asyncio.get_event_loop()
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, _discover_smb),
+            timeout=15.0,
+        )
+    except asyncio.TimeoutError:
+        return SMBDiscoveryResponse(
+            success=False, error=f"Connection timeout to {host}"
+        )
+
+
+@router.get(
+    "/filesystem/nfs/browse",
+    response_model=BrowseResponse,
+    tags=["Filesystem Indexer"],
+)
+async def browse_nfs_export(
+    host: str,
+    export_path: str,
+    path: str = "",
+    _: User = Depends(require_admin),
+):
+    """
+    Browse an NFS export using nfs-ls (userspace, no mount required).
+    """
+    import asyncio
+    import subprocess
+
+    if not host or not export_path:
+        return BrowseResponse(
+            path=path, entries=[], error="Host and export path are required"
+        )
+
+    try:
+        # Build NFS URL: nfs://host/export/path
+        browse_path = path.lstrip("/") if path else ""
+        nfs_url = f"nfs://{host}{export_path}"
+        if browse_path:
+            nfs_url = f"{nfs_url}/{browse_path}"
+
+        # Use userspace nfs-ls (libnfs-utils); -l is not supported, so rely on trailing slash for dirs
+        cmd = ["nfs-ls", nfs_url]
+
+        process = await asyncio.wait_for(
+            asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            ),
+            timeout=15.0,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=15.0)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.communicate()
+            return BrowseResponse(
+                path=path, entries=[], error=f"Timeout connecting to {host}"
+            )
+
+        if process.returncode != 0:
+            error_msg = stderr.decode("utf-8", errors="replace").strip()
+            if "command not found" in error_msg.lower():
+                return BrowseResponse(
+                    path=path,
+                    entries=[],
+                    error="nfs-ls not installed. Install libnfs-utils package.",
+                )
+            if "usage:" in error_msg.lower():
+                return BrowseResponse(
+                    path=path,
+                    entries=[],
+                    error="Browse failed: nfs-ls usage error (ensure export/path exists)",
+                )
+            if (
+                "mnt3err_acces" in error_msg.lower()
+                or "permission denied" in error_msg.lower()
+            ):
+                return BrowseResponse(
+                    path=path,
+                    entries=[],
+                    error="Access denied to NFS export. Allow this client in the export or adjust permissions.",
+                )
+            if "no such file" in error_msg.lower():
+                return BrowseResponse(
+                    path=path,
+                    entries=[],
+                    error="Export or path not found on NFS server.",
+                )
+            return BrowseResponse(
+                path=path, entries=[], error=error_msg or "Browse failed"
+            )
+
+        entries = []
+        for line in stdout.decode("utf-8", errors="replace").split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split()
+            name = parts[-1] if parts else line
+            if name in (".", ".."):
+                continue
+
+            # Detect directory from permission bits (first column like ls -l)
+            is_dir = (
+                parts[0].startswith("d") if parts and parts[0] else name.endswith("/")
+            )
+            clean_name = name.rstrip("/")
+            entry_path = f"{path}/{clean_name}".lstrip("/") if path else clean_name
+            entries.append(
+                DirectoryEntry(
+                    name=clean_name,
+                    path=entry_path,
+                    is_dir=is_dir,
+                    size=None,
+                )
+            )
+
+        entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
+        return BrowseResponse(path=path or "/", entries=entries)
+
+    except asyncio.TimeoutError:
+        return BrowseResponse(
+            path=path, entries=[], error=f"Timeout connecting to {host}"
+        )
+    except Exception as e:
+        return BrowseResponse(path=path, entries=[], error=str(e))
+
+
+@router.get(
+    "/filesystem/smb/browse",
+    response_model=BrowseResponse,
+    tags=["Filesystem Indexer"],
+)
+async def browse_smb_share(
+    host: str,
+    share: str,
+    path: str = "",
+    user: str = "",
+    password: str = "",
+    domain: str = "",
+    _: User = Depends(require_admin),
+):
+    """
+    Browse an SMB share using pysmb (userspace, no mount required).
+    """
+    import asyncio
+    import socket
+
+    if not host or not share:
+        return BrowseResponse(
+            path=path, entries=[], error="Host and share are required"
+        )
+
+    def _browse_smb() -> BrowseResponse:
+        try:
+            from smb.SMBConnection import SMBConnection
+
+            # Resolve hostname to IP for SMB
+            try:
+                server_ip = socket.gethostbyname(host)
+            except socket.gaierror:
+                return BrowseResponse(
+                    path=path, entries=[], error=f"Cannot resolve hostname: {host}"
+                )
+
+            # Create SMB connection
+            conn = SMBConnection(
+                user or "guest",
+                password or "",
+                "ragtime",  # client machine name
+                host,  # server name
+                domain=domain or "",
+                use_ntlm_v2=True,
+                is_direct_tcp=True,
+            )
+
+            try:
+                connected = conn.connect(server_ip, 445, timeout=10)
+                if not connected:
+                    return BrowseResponse(
+                        path=path, entries=[], error="Failed to connect to SMB server"
+                    )
+            except Exception as e:
+                return BrowseResponse(
+                    path=path, entries=[], error=f"Connection failed: {e}"
+                )
+
+            try:
+                # List directory contents
+                browse_path = path.lstrip("/") if path else ""
+                file_list = conn.listPath(share, browse_path or "/")
+
+                entries = []
+                for f in file_list:
+                    if f.filename in (".", ".."):
+                        continue
+                    entry_path = (
+                        f"{path}/{f.filename}".lstrip("/") if path else f.filename
+                    )
+                    entries.append(
+                        DirectoryEntry(
+                            name=f.filename,
+                            path=entry_path,
+                            is_dir=f.isDirectory,
+                            size=f.file_size if not f.isDirectory else None,
+                        )
+                    )
+
+                # Sort: directories first, then by name
+                entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
+                return BrowseResponse(path=path or "/", entries=entries)
+
+            except Exception as e:
+                error_msg = str(e)
+                if "STATUS_ACCESS_DENIED" in error_msg:
+                    return BrowseResponse(
+                        path=path, entries=[], error="Access denied - check credentials"
+                    )
+                return BrowseResponse(path=path, entries=[], error=error_msg)
+            finally:
+                conn.close()
+
+        except ImportError:
+            return BrowseResponse(path=path, entries=[], error="pysmb not installed")
+        except Exception as e:
+            return BrowseResponse(path=path, entries=[], error=str(e))
+
+    try:
+        loop = asyncio.get_event_loop()
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, _browse_smb),
+            timeout=15.0,
+        )
+    except asyncio.TimeoutError:
+        return BrowseResponse(
+            path=path, entries=[], error=f"Timeout connecting to {host}"
+        )
+
+
+# -----------------------------------------------------------------------------
 # Filesystem Indexer Endpoints (Admin only)
 # -----------------------------------------------------------------------------
 

@@ -555,6 +555,31 @@ export interface MountDiscoveryResponse {
   docker_compose_example: string;
 }
 
+// NFS Discovery Types
+export interface NFSExport {
+  export_path: string;
+  allowed_hosts: string;
+}
+
+export interface NFSDiscoveryResponse {
+  success: boolean;
+  exports: NFSExport[];
+  error?: string;
+}
+
+// SMB Discovery Types
+export interface SMBShare {
+  name: string;
+  share_type: string;
+  comment: string;
+}
+
+export interface SMBDiscoveryResponse {
+  success: boolean;
+  shares: SMBShare[];
+  error?: string;
+}
+
 // =============================================================================
 // Chat Types
 // =============================================================================

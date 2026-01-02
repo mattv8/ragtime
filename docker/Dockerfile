@@ -78,6 +78,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     docker.io \
     libmagic1 \
     openssh-client \
+    nfs-common \
+    cifs-utils \
+    smbclient \
+    libnfs14 \
+    libnfs-utils \
+    libnfs-dev \
     nodejs \
     npm \
     # Add PostgreSQL APT repository for version 18 client
