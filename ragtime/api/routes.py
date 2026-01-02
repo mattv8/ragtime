@@ -159,6 +159,27 @@ async def _stream_response_tokens(user_msg: str, chat_history: list, model: str)
     # Track active tool for formatting
     current_tool: str | None = None
 
+    def _detect_code_language(tool_name: str, tool_input: dict) -> str:
+        """Detect the appropriate code language for syntax highlighting."""
+        if "sql" in tool_input:
+            return "sql"
+        if "python_code" in tool_input or "code" in tool_input:
+            return "python"
+        if tool_name and "postgres" in tool_name.lower():
+            return "sql"
+        if tool_name and "odoo" in tool_name.lower():
+            return "python"
+        return ""
+
+    def _format_tool_output(output: str, max_length: int = 1500) -> str:
+        """Format tool output, truncating if needed."""
+        if not output:
+            return "(no output)"
+        # Truncate very long outputs
+        if len(output) > max_length:
+            output = output[:max_length] + "\n... (truncated)"
+        return output
+
     # Stream tokens from the RAG agent
     async for event in rag.process_query_stream(user_msg, chat_history):
         # Handle structured events (tool calls)
@@ -171,7 +192,6 @@ async def _stream_response_tokens(user_msg: str, chat_history: list, model: str)
                 current_tool = tool_name
 
                 # Format tool start as readable text
-                # Use a clean format that renders well in markdown
                 input_display = ""
                 if tool_input:
                     # Extract the most relevant input field
@@ -182,7 +202,13 @@ async def _stream_response_tokens(user_msg: str, chat_history: list, model: str)
                     if not input_display:
                         input_display = json.dumps(tool_input, indent=2)
 
-                header = f"\n\n**Using {tool_name}**\n```\n{input_display}\n```\n"
+                # Detect language for syntax highlighting
+                lang = _detect_code_language(tool_name, tool_input)
+
+                # Simple blockquote format - universally compatible
+                header = (
+                    f"\n\n> **Using {tool_name}**\n\n```{lang}\n{input_display}\n```\n"
+                )
                 yield make_chunk(header)
 
             elif event_type == "tool_end":
@@ -190,17 +216,14 @@ async def _stream_response_tokens(user_msg: str, chat_history: list, model: str)
                 tool_output = event.get("output", "")
                 current_tool = None
 
-                # Format tool output - truncate if very long
-                if len(str(tool_output)) > 500:
-                    output_display = str(tool_output)[:500] + "...(truncated)"
-                else:
-                    output_display = str(tool_output)
+                output_display = _format_tool_output(str(tool_output))
 
-                footer = f"\n**Result:**\n```\n{output_display}\n```\n\n"
+                # Simple format for result
+                footer = f"\n> **Result:**\n\n```\n{output_display}\n```\n\n"
                 yield make_chunk(footer)
 
             elif event_type == "max_iterations_reached":
-                yield make_chunk("\n\n*[Reached maximum tool iterations]*\n")
+                yield make_chunk("\n\n> **Note:** Reached maximum tool iterations\n")
 
         else:
             # Plain string content - stream directly

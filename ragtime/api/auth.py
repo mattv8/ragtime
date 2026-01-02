@@ -7,11 +7,11 @@ Endpoints for login, logout, user info, and LDAP configuration.
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from prisma import Json
 from prisma.enums import UserRole
 from prisma.models import User
 from pydantic import BaseModel, Field
 
+from prisma import Json
 from ragtime.config.settings import settings
 from ragtime.core.auth import (
     authenticate,
@@ -24,11 +24,7 @@ from ragtime.core.auth import (
 )
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
-from ragtime.core.security import (
-    get_current_user,
-    get_session_token,
-    require_admin,
-)
+from ragtime.core.security import get_current_user, get_session_token, require_admin
 
 logger = get_logger(__name__)
 
@@ -42,12 +38,16 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 class LoginRequest(BaseModel):
     """Login request body."""
-    username: str = Field(..., min_length=1, description="Username (sAMAccountName, uid, or local admin)")
+
+    username: str = Field(
+        ..., min_length=1, description="Username (sAMAccountName, uid, or local admin)"
+    )
     password: str = Field(..., min_length=1, description="Password")
 
 
 class LoginResponse(BaseModel):
     """Login response with user info."""
+
     success: bool
     user_id: Optional[str] = None
     username: Optional[str] = None
@@ -59,6 +59,7 @@ class LoginResponse(BaseModel):
 
 class UserResponse(BaseModel):
     """Current user info response."""
+
     id: str
     username: str
     display_name: Optional[str]
@@ -69,14 +70,24 @@ class UserResponse(BaseModel):
 
 class LdapConfigRequest(BaseModel):
     """LDAP configuration update request."""
-    server_url: Optional[str] = Field(None, description="LDAP server URL (ldap://host:389 or ldaps://host:636)")
-    bind_dn: Optional[str] = Field(None, description="Bind DN or sAMAccountName for service account")
-    bind_password: Optional[str] = Field(None, description="Bind password (leave empty to keep existing)")
-    allow_self_signed: Optional[bool] = Field(None, description="Allow self-signed SSL certificates")
-    user_search_base: Optional[str] = Field(None, description="User search base DN (auto-discovered if empty)")
+
+    server_url: Optional[str] = Field(
+        None, description="LDAP server URL (ldap://host:389 or ldaps://host:636)"
+    )
+    bind_dn: Optional[str] = Field(
+        None, description="Bind DN or sAMAccountName for service account"
+    )
+    bind_password: Optional[str] = Field(
+        None, description="Bind password (leave empty to keep existing)"
+    )
+    allow_self_signed: Optional[bool] = Field(
+        None, description="Allow self-signed SSL certificates"
+    )
+    user_search_base: Optional[str] = Field(
+        None, description="User search base DN (auto-discovered if empty)"
+    )
     user_search_filter: Optional[str] = Field(
-        None,
-        description="User search filter (use {username} placeholder)"
+        None, description="User search filter (use {username} placeholder)"
     )
     admin_group_dn: Optional[str] = Field(None, description="Admin group DN")
     user_group_dn: Optional[str] = Field(None, description="User group DN (optional)")
@@ -84,6 +95,7 @@ class LdapConfigRequest(BaseModel):
 
 class LdapConfigResponse(BaseModel):
     """LDAP configuration response."""
+
     server_url: str
     bind_dn: str
     allow_self_signed: bool
@@ -98,14 +110,18 @@ class LdapConfigResponse(BaseModel):
 
 class LdapDiscoverRequest(BaseModel):
     """Request to discover LDAP structure."""
+
     server_url: str = Field(..., description="LDAP server URL")
     bind_dn: str = Field(..., description="Bind DN or sAMAccountName")
     bind_password: str = Field(..., description="Bind password")
-    allow_self_signed: bool = Field(False, description="Allow self-signed SSL certificates")
+    allow_self_signed: bool = Field(
+        False, description="Allow self-signed SSL certificates"
+    )
 
 
 class LdapDiscoverResponse(BaseModel):
     """LDAP discovery result."""
+
     success: bool
     base_dn: Optional[str] = None
     user_ous: list[str] = []
@@ -115,6 +131,7 @@ class LdapDiscoverResponse(BaseModel):
 
 class LdapBindDnLookupRequest(BaseModel):
     """Request to look up bind DN from username."""
+
     server_url: str = Field(..., description="LDAP server URL (ldap:// or ldaps://)")
     username: str = Field(..., description="Username (sAMAccountName, uid, or UPN)")
     password: str = Field(..., description="Password")
@@ -122,6 +139,7 @@ class LdapBindDnLookupRequest(BaseModel):
 
 class LdapBindDnLookupResponse(BaseModel):
     """Bind DN lookup result."""
+
     success: bool
     bind_dn: Optional[str] = None
     display_name: Optional[str] = None
@@ -130,6 +148,7 @@ class LdapBindDnLookupResponse(BaseModel):
 
 class AuthStatusResponse(BaseModel):
     """Authentication status response."""
+
     authenticated: bool
     ldap_configured: bool
     local_admin_enabled: bool
@@ -147,9 +166,12 @@ class AuthStatusResponse(BaseModel):
 def _detect_cookie_mismatch(request: Request) -> Optional[str]:
     """Detect cookie secure flag vs protocol mismatch."""
     # Check if request came over HTTPS (directly or via proxy)
+    # Check multiple headers that proxies might set
     is_https = (
-        request.url.scheme == "https" or
-        request.headers.get("x-forwarded-proto", "").lower() == "https"
+        request.url.scheme == "https"
+        or request.headers.get("x-forwarded-proto", "").lower() == "https"
+        or request.headers.get("x-forwarded-ssl", "").lower() == "on"
+        or request.headers.get("x-scheme", "").lower() == "https"
     )
 
     if settings.session_cookie_secure and not is_https:
@@ -234,7 +256,9 @@ async def login(
         max_age=settings.jwt_expire_hours * 3600,
     )
 
-    logger.info(f"User '{result.username}' logged in successfully (role: {result.role})")
+    logger.info(
+        f"User '{result.username}' logged in successfully (role: {result.role})"
+    )
 
     return LoginResponse(
         success=True,
@@ -388,8 +412,12 @@ async def get_ldap_configuration(_user: User = Depends(require_admin)):
         user_search_filter=config.userSearchFilter,
         admin_group_dn=config.adminGroupDn,
         user_group_dn=config.userGroupDn,
-        discovered_ous=config.discoveredOus if isinstance(config.discoveredOus, list) else [],
-        discovered_groups=config.discoveredGroups if isinstance(config.discoveredGroups, list) else [],
+        discovered_ous=(
+            config.discoveredOus if isinstance(config.discoveredOus, list) else []
+        ),
+        discovered_groups=(
+            config.discoveredGroups if isinstance(config.discoveredGroups, list) else []
+        ),
     )
 
 
@@ -408,17 +436,39 @@ async def update_ldap_configuration(
     server_url = body.server_url if body.server_url is not None else existing.serverUrl
     bind_dn = body.bind_dn if body.bind_dn is not None else existing.bindDn
     bind_password = body.bind_password if body.bind_password else existing.bindPassword
-    allow_self_signed = body.allow_self_signed if body.allow_self_signed is not None else existing.allowSelfSigned
-    user_search_filter = body.user_search_filter if body.user_search_filter is not None else existing.userSearchFilter
-    admin_group_dn = body.admin_group_dn if body.admin_group_dn is not None else existing.adminGroupDn
-    user_group_dn = body.user_group_dn if body.user_group_dn is not None else existing.userGroupDn
+    allow_self_signed = (
+        body.allow_self_signed
+        if body.allow_self_signed is not None
+        else existing.allowSelfSigned
+    )
+    user_search_filter = (
+        body.user_search_filter
+        if body.user_search_filter is not None
+        else existing.userSearchFilter
+    )
+    admin_group_dn = (
+        body.admin_group_dn
+        if body.admin_group_dn is not None
+        else existing.adminGroupDn
+    )
+    user_group_dn = (
+        body.user_group_dn if body.user_group_dn is not None else existing.userGroupDn
+    )
 
     # Discover structure if user_search_base not provided and we have connection details
     discovery = None
     base_dn = existing.baseDn or ""
-    user_search_base = body.user_search_base if body.user_search_base is not None else existing.userSearchBase
-    discovered_ous = existing.discoveredOus if isinstance(existing.discoveredOus, list) else []
-    discovered_groups = existing.discoveredGroups if isinstance(existing.discoveredGroups, list) else []
+    user_search_base = (
+        body.user_search_base
+        if body.user_search_base is not None
+        else existing.userSearchBase
+    )
+    discovered_ous = (
+        existing.discoveredOus if isinstance(existing.discoveredOus, list) else []
+    )
+    discovered_groups = (
+        existing.discoveredGroups if isinstance(existing.discoveredGroups, list) else []
+    )
 
     if server_url and bind_dn and bind_password and not user_search_base:
         discovery = await discover_ldap_structure(
@@ -444,7 +494,8 @@ async def update_ldap_configuration(
                 "allowSelfSigned": allow_self_signed,
                 "baseDn": base_dn,
                 "userSearchBase": user_search_base or "",
-                "userSearchFilter": user_search_filter or "(|(sAMAccountName={username})(uid={username}))",
+                "userSearchFilter": user_search_filter
+                or "(|(sAMAccountName={username})(uid={username}))",
                 "adminGroupDn": admin_group_dn or "",
                 "userGroupDn": user_group_dn or "",
                 "discoveredOus": Json(discovered_ous),
@@ -457,7 +508,8 @@ async def update_ldap_configuration(
                 "allowSelfSigned": allow_self_signed,
                 "baseDn": base_dn,
                 "userSearchBase": user_search_base or "",
-                "userSearchFilter": user_search_filter or "(|(sAMAccountName={username})(uid={username}))",
+                "userSearchFilter": user_search_filter
+                or "(|(sAMAccountName={username})(uid={username}))",
                 "adminGroupDn": admin_group_dn or "",
                 "userGroupDn": user_group_dn or "",
                 "discoveredOus": Json(discovered_ous),
@@ -477,8 +529,12 @@ async def update_ldap_configuration(
         user_search_filter=config.userSearchFilter,
         admin_group_dn=config.adminGroupDn,
         user_group_dn=config.userGroupDn,
-        discovered_ous=config.discoveredOus if isinstance(config.discoveredOus, list) else [],
-        discovered_groups=config.discoveredGroups if isinstance(config.discoveredGroups, list) else [],
+        discovered_ous=(
+            config.discoveredOus if isinstance(config.discoveredOus, list) else []
+        ),
+        discovered_groups=(
+            config.discoveredGroups if isinstance(config.discoveredGroups, list) else []
+        ),
     )
 
 
@@ -496,7 +552,10 @@ async def test_ldap_connection(
     )
 
     if result.success:
-        return {"success": True, "message": f"Connected successfully. Base DN: {result.base_dn}"}
+        return {
+            "success": True,
+            "message": f"Connected successfully. Base DN: {result.base_dn}",
+        }
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -546,7 +605,9 @@ async def delete_user(
     user = await db.user.find_unique(where={"id": user_id})
 
     if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
 
     await db.user.delete(where={"id": user_id})
     logger.info(f"User '{user.username}' deleted by admin '{current_user.username}'")
@@ -583,8 +644,12 @@ async def update_user_role(
     )
 
     if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
 
-    logger.info(f"User '{user.username}' role changed to '{role}' by admin '{current_user.username}'")
+    logger.info(
+        f"User '{user.username}' role changed to '{role}' by admin '{current_user.username}'"
+    )
 
     return {"success": True, "role": role}
