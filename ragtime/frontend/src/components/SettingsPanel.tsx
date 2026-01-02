@@ -288,6 +288,8 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
       const data = await api.getSettings();
       setSettings(data);
       setFormData({
+        // Server branding
+        server_name: data.server_name,
         // Embedding settings
         embedding_provider: data.embedding_provider,
         embedding_model: data.embedding_model,
