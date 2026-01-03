@@ -10,6 +10,7 @@ import asyncio
 import fnmatch
 import json
 import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -22,13 +23,8 @@ from typing import Any, BinaryIO, Dict, List, Optional
 
 from ragtime.config import settings
 from ragtime.core.logging import get_logger
-from ragtime.indexer.models import (
-    AppSettings,
-    IndexConfig,
-    IndexInfo,
-    IndexJob,
-    IndexStatus,
-)
+from ragtime.indexer.models import (AppSettings, IndexConfig, IndexInfo,
+                                    IndexJob, IndexStatus)
 from ragtime.indexer.repository import repository
 
 logger = get_logger(__name__)
@@ -327,9 +323,8 @@ class IndexerService:
         )
 
         if provider == "ollama":
-            from langchain_ollama import (
-                OllamaEmbeddings,
-            )  # type: ignore[import-not-found]
+            from langchain_ollama import \
+                OllamaEmbeddings  # type: ignore[import-not-found]
 
             return OllamaEmbeddings(
                 model=model,
@@ -354,6 +349,42 @@ class IndexerService:
             raise ValueError(
                 f"Unknown embedding provider: {provider}. Use 'ollama' or 'openai'."
             )
+
+    def _is_rate_limit_error(self, exc: Exception) -> bool:
+        """Detect OpenAI rate limit errors across libraries."""
+        status = getattr(exc, "status_code", None) or getattr(exc, "http_status", None)
+        if status == 429:
+            return True
+
+        text = str(exc).lower()
+        return "rate limit" in text or "rate_limit_exceeded" in text or "429" in text
+
+    def _retry_delay_seconds(self, exc: Exception, attempt: int, base_delay: float = 1.5) -> float:
+        """Compute delay before retrying after a rate limit.
+
+        Uses Retry-After headers or "try again in Xms" hints when available,
+        otherwise falls back to exponential backoff capped to 30s.
+        """
+        headers = getattr(getattr(exc, "response", None), "headers", {}) or {}
+        retry_after_header = None
+        if isinstance(headers, dict):
+            retry_after_header = headers.get("retry-after")
+
+        if retry_after_header:
+            try:
+                return max(base_delay, min(30.0, float(retry_after_header)))
+            except (TypeError, ValueError):
+                pass
+
+        text = str(exc).lower()
+        match = re.search(r"try again in ([0-9]+)ms", text)
+        if match:
+            try:
+                return max(base_delay, min(30.0, int(match.group(1)) / 1000))
+            except (TypeError, ValueError):
+                pass
+
+        return min(30.0, base_delay * (2**attempt))
 
     async def get_job(self, job_id: str) -> Optional[IndexJob]:
         """Get a job by ID (checks cache first, then database)."""
@@ -908,25 +939,50 @@ class IndexerService:
             f"Using {app_settings.embedding_provider} embeddings with model: {app_settings.embedding_model}"
         )
 
-        # Process in batches to show progress
-        batch_size = 100
+        # Process in batches to show progress and throttle embedding calls
+        batch_size = 50
+        batch_pause_seconds = 0.5
+        max_retries = 5
         db = None
 
         for i in range(0, len(chunks), batch_size):
             batch = chunks[i : i + batch_size]
+            batch_db = None
+            attempt = 0
+
+            while True:
+                try:
+                    batch_db = await asyncio.to_thread(
+                        FAISS.from_documents, batch, embeddings
+                    )
+                    break
+                except Exception as e:
+                    if self._is_rate_limit_error(e) and attempt < max_retries:
+                        wait_seconds = self._retry_delay_seconds(e, attempt)
+                        job.error_message = (
+                            f"OpenAI rate limit hit, retrying batch {i // batch_size + 1} in {wait_seconds:.1f}s"
+                        )
+                        await repository.update_job(job)
+                        logger.warning(job.error_message)
+                        await asyncio.sleep(wait_seconds)
+                        attempt += 1
+                        continue
+                    raise
 
             if db is None:
-                db = await asyncio.to_thread(FAISS.from_documents, batch, embeddings)
+                db = batch_db
             else:
-                batch_db = await asyncio.to_thread(
-                    FAISS.from_documents, batch, embeddings
-                )
                 db.merge_from(batch_db)
 
             # Update processed chunks progress
+            job.error_message = None
             job.processed_chunks = min(i + batch_size, len(chunks))
             await repository.update_job(job)
             logger.info(f"Embedded {job.processed_chunks}/{len(chunks)} chunks")
+
+            # Small pause between batches to stay under provider TPM limits
+            if batch_pause_seconds > 0 and (i + batch_size) < len(chunks):
+                await asyncio.sleep(batch_pause_seconds)
 
         if db is None:
             raise ValueError("No documents were embedded - FAISS index creation failed")

@@ -1,13 +1,19 @@
 """
-MCP SSE Routes - Server-Sent Events transport for MCP.
+MCP HTTP Transport Routes - Streamable HTTP transport for MCP.
 
-Provides HTTP endpoints for MCP clients that use SSE transport instead of stdio.
-Useful for web-based MCP clients and testing.
+Provides HTTP endpoints for MCP clients using the Streamable HTTP transport.
+This allows MCP clients to connect via URL configuration like:
+
+    "url": "http://localhost:8000/mcp"
+
+Supports both SSE streaming responses and JSON responses for stateless operation.
 """
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import APIRouter, Request
-from fastapi.responses import StreamingResponse
-from sse_starlette.sse import EventSourceResponse
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
 from ragtime.core.logging import get_logger
 from ragtime.mcp.server import mcp_server
@@ -15,16 +21,70 @@ from ragtime.mcp.tools import mcp_tool_adapter
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/mcp", tags=["MCP"])
+router = APIRouter(prefix="/mcp-debug", tags=["MCP Debug"])
+
+# Session manager for Streamable HTTP transport
+# Stateless mode with JSON responses for maximum compatibility
+_session_manager: StreamableHTTPSessionManager | None = None
+
+
+def get_session_manager() -> StreamableHTTPSessionManager:
+    """Get or create the MCP session manager."""
+    global _session_manager
+    if _session_manager is None:
+        _session_manager = StreamableHTTPSessionManager(
+            app=mcp_server,
+            event_store=None,  # Stateless mode - no event persistence
+            json_response=True,  # JSON responses for broad client compatibility
+            stateless=True,  # Stateless mode - each request is independent
+        )
+        logger.info("Created MCP StreamableHTTP session manager (stateless mode)")
+    return _session_manager
+
+
+@asynccontextmanager
+async def mcp_lifespan_manager() -> AsyncIterator[None]:
+    """Lifespan manager for MCP session manager."""
+    session_manager = get_session_manager()
+    async with session_manager.run():
+        logger.info("MCP StreamableHTTP session manager started")
+        try:
+            yield
+        finally:
+            logger.info("MCP StreamableHTTP session manager stopped")
+
+
+# MCP Transport Router - handles the actual MCP protocol at /mcp
+mcp_transport_router = APIRouter(tags=["MCP Transport"])
+
+
+async def _handle_mcp_request(request: Request) -> None:
+    """Handle MCP protocol request by delegating to session manager."""
+    session_manager = get_session_manager()
+    await session_manager.handle_request(request.scope, request.receive, request._send)
+
+
+@mcp_transport_router.api_route(
+    "/mcp",
+    methods=["GET", "POST", "DELETE", "OPTIONS"],
+    include_in_schema=False,
+)
+async def mcp_endpoint(request: Request):
+    """Handle MCP Streamable HTTP protocol requests."""
+    from starlette.responses import Response
+
+    await _handle_mcp_request(request)
+    # Return empty response - session manager already sent the response
+    return Response()
 
 
 @router.get("/tools")
 async def list_mcp_tools(include_unhealthy: bool = False):
     """
-    List available MCP tools.
+    List available MCP tools (debug endpoint).
 
     This is a convenience endpoint for debugging/testing.
-    The actual MCP protocol uses the SSE transport.
+    The actual MCP protocol uses the HTTP transport at /mcp.
 
     Args:
         include_unhealthy: If True, include tools that failed heartbeat check
@@ -50,10 +110,10 @@ async def list_mcp_tools(include_unhealthy: bool = False):
 @router.post("/tools/{tool_name}/call")
 async def call_mcp_tool(tool_name: str, request: Request):
     """
-    Call an MCP tool directly.
+    Call an MCP tool directly (debug endpoint).
 
     This is a convenience endpoint for debugging/testing.
-    The actual MCP protocol uses the SSE transport.
+    The actual MCP protocol uses the HTTP transport at /mcp.
     """
     body = await request.json()
     arguments = body.get("arguments", {})

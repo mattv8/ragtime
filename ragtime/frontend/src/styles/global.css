@@ -421,6 +421,10 @@ select option:checked {
 }
 
 .badge.clickable {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
   cursor: pointer;
   border: none;
   font-family: inherit;
@@ -553,6 +557,17 @@ select option:checked {
 
 .action-btn-cancel:hover {
   background: rgba(239, 68, 68, 0.3);
+}
+
+.action-btn-retry {
+  background: rgba(59, 130, 246, 0.2);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.4);
+  margin-right: 6px;
+}
+
+.action-btn-retry:hover {
+  background: rgba(59, 130, 246, 0.3);
 }
 
 .action-btn-delete {

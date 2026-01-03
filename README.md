@@ -5,6 +5,23 @@ OpenAI-compatible RAG API with LangChain tool calling for business intelligence 
 🚀 **[Live Demo](https://ragtime.dev.visnovsky.us)**
 📄 **[Contributing Guide](CONTRIBUTING.md)**
 
+## Table of Contents
+
+- [Features](#features)
+- [Quick Start](#quick-start)
+- [Environment Variables](#environment-variables)
+- [Connecting to OpenWebUI](#connecting-to-openwebui)
+- [Model Context Protocol (MCP) Integration](#model-context-protocol-mcp-integration)
+  - [MCP Server Setup](#mcp-server-setup)
+    - [HTTP Transport (Recommended)](#http-transport-recommended)
+    - [Stdio Transport (Alternative)](#stdio-transport-alternative)
+  - [Tool Configuration](#tool-configuration)
+- [Creating FAISS Indexes](#creating-faiss-indexes)
+- [License](#license)
+- [Updating](#updating)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+
 ## Features
 
 - **OpenAI API Compatible**: Works with OpenWebUI, ChatGPT clients, and any OpenAI-compatible interface
@@ -198,7 +215,6 @@ docker compose up -d
 
 ### Server Configuration
 - `PORT` - API port (default: `8000`)
-- `API_PORT` - UI/Vite port (default: `8001`)
 - `API_KEY` - Optional API key for external authentication
 - `ALLOWED_ORIGINS` - CORS allowed origins (default: `*`)
 - `SESSION_COOKIE_SECURE` - Set to `true` if behind HTTPS reverse proxy
@@ -212,7 +228,75 @@ docker compose up -d
 2. Add a new connection:
    - **API Base URL**: `http://ragtime:8000/v1` (or `http://localhost:8000/v1` if running locally)
    - **API Key**: Your configured `API_KEY` (or any value if not set)
-3. Select "ragtime" as the model
+3. Select your server's model name (default: "ragtime", configurable in Settings > Server Branding)
+
+## Model Context Protocol (MCP) Integration
+
+Ragtime exposes its tools via the [Model Context Protocol](https://modelcontextprotocol.io), allowing AI coding assistants to interact with your databases, execute shell commands, and search your indexed codebases.
+
+### Available MCP Tools
+
+When you configure tool connections in the Ragtime UI, they become available to MCP clients:
+
+- **PostgreSQL Queries** - Execute read-only SQL queries against configured databases
+- **Odoo Shell** - Run ORM queries against Odoo instances
+- **SSH Shell** - Execute commands on remote servers via SSH
+- **Filesystem Search** - Semantic search across indexed codebases and documentation
+- **Knowledge Search** - Search FAISS vector indexes created in the UI
+
+### MCP Server Setup
+
+#### HTTP Transport (Recommended)
+
+Ragtime exposes an MCP endpoint at `/mcp` that supports the Streamable HTTP transport. Add this to your MCP client configuration:
+
+```json
+{
+  "mcpServers": {
+    "ragtime": {
+      "url": "http://localhost:8000/mcp",
+      "type": "http"
+    }
+  }
+}
+```
+
+For remote access, replace `localhost:8000` with your server URL.
+
+#### Stdio Transport (Alternative)
+
+For local development or environments where HTTP isn't preferred, use stdio transport via Docker:
+
+```json
+{
+  "mcpServers": {
+    "ragtime": {
+      "command": "docker",
+      "args": ["exec", "-i", "ragtime", "python", "-m", "ragtime.mcp"]
+    }
+  }
+}
+```
+
+Replace `ragtime` with your container name if different (find it with `docker ps`).
+
+**Configuration file locations:**
+- **Claude Desktop**: `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows)
+- **VS Code / Copilot**: User or workspace MCP settings
+- **Cursor**: `.cursor/mcp.json`
+- **Windsurf**: `~/.codeium/windsurf/mcp_config.json`
+
+### Tool Configuration
+
+Before tools appear in your MCP client, configure them in the Ragtime UI:
+
+1. Navigate to the **Tools** tab at http://localhost:8000
+2. Click **Add Tool** and select the tool type
+3. Configure connection details (hostname, credentials, etc.)
+4. Test the connection to verify it works
+5. The tool will automatically appear in your MCP client
+
+**Tool Health Monitoring**: Ragtime only exposes tools that pass a heartbeat check. Offline or unreachable tools are automatically hidden from MCP clients.
 
 ## Creating FAISS Indexes
 

@@ -30,7 +30,8 @@ from ragtime.core.logging import get_logger, setup_logging
 from ragtime.indexer.routes import ASSETS_DIR as INDEXER_ASSETS_DIR
 from ragtime.indexer.routes import router as indexer_router
 
-# Import MCP routes for HTTP API access
+# Import MCP routes and transport for HTTP API access
+from ragtime.mcp.routes import mcp_lifespan_manager, mcp_transport_router
 from ragtime.mcp.routes import router as mcp_router
 from ragtime.rag import rag
 
@@ -74,7 +75,12 @@ async def lifespan(app: FastAPI):
 
     await background_task_service.start()
 
-    yield
+    # Start MCP session manager if enabled
+    if settings.mcp_enabled:
+        async with mcp_lifespan_manager():
+            yield
+    else:
+        yield
 
     # Cleanup
     await background_task_service.stop()
@@ -121,12 +127,11 @@ if INDEXER_ASSETS_DIR.exists():
     )
 logger.info("Indexer API enabled at /indexes, UI served at root (/)")
 
-# Include MCP routes (HTTP convenience API)
+# Include MCP routes
 if settings.mcp_enabled:
-    app.include_router(mcp_router)
-    logger.info(
-        "MCP HTTP API enabled at /mcp (for stdio transport: python -m ragtime.mcp)"
-    )
+    app.include_router(mcp_router)  # Debug endpoints at /mcp-debug/*
+    app.include_router(mcp_transport_router)  # MCP protocol at /mcp
+    logger.info("MCP enabled: HTTP transport at /mcp, debug API at /mcp-debug")
 
 
 # Root endpoint - serve Indexer UI or API info

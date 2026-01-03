@@ -137,6 +137,7 @@ export function JobsTable({ jobs, filesystemJobs = [], loading, error, onJobsCha
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [cancelConfirmId, setCancelConfirmId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [retryConfirmId, setRetryConfirmId] = useState<string | null>(null);
 
   const formatDate = (dateStr: string) => {
     return new Date(dateStr).toLocaleString();
@@ -187,6 +188,29 @@ export function JobsTable({ jobs, filesystemJobs = [], loading, error, onJobsCha
       onJobsChanged?.();
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : 'Failed to delete job');
+      setTimeout(() => setErrorMessage(null), 5000);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleRetry = async (jobId: string) => {
+    // Show inline confirmation
+    if (retryConfirmId === jobId) {
+      setRetryConfirmId(null);
+      return;
+    }
+    setRetryConfirmId(jobId);
+  };
+
+  const confirmRetry = async (jobId: string) => {
+    setRetryConfirmId(null);
+    setActionLoading(jobId);
+    try {
+      await api.retryJob(jobId);
+      onJobsChanged?.();
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Failed to retry job');
       setTimeout(() => setErrorMessage(null), 5000);
     } finally {
       setActionLoading(null);
@@ -367,6 +391,34 @@ export function JobsTable({ jobs, filesystemJobs = [], loading, error, onJobsCha
                                 title="Cancel this job"
                               >
                                 Cancel
+                              </button>
+                            )
+                          )}
+                          {job.type === 'document' && job.status === 'failed' && (
+                            retryConfirmId === job.id ? (
+                              <div style={{ display: 'flex', gap: '4px' }}>
+                                <button
+                                  className="action-btn action-btn-confirm"
+                                  onClick={() => confirmRetry(job.id)}
+                                  title="Confirm retry"
+                                >
+                                  Confirm
+                                </button>
+                                <button
+                                  className="action-btn action-btn-secondary"
+                                  onClick={() => setRetryConfirmId(null)}
+                                  title="Cancel"
+                                >
+                                  Back
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                className="action-btn action-btn-retry"
+                                onClick={() => handleRetry(job.id)}
+                                title="Retry this failed job"
+                              >
+                                Retry
                               </button>
                             )
                           )}

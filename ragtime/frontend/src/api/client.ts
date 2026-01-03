@@ -215,6 +215,18 @@ export const api = {
   },
 
   /**
+   * Retry a failed or stuck job
+   */
+  async retryJob(jobId: string, gitToken?: string): Promise<IndexJob> {
+    const response = await apiFetch(`${API_BASE}/jobs/${jobId}/retry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ git_token: gitToken }),
+    });
+    return handleResponse<IndexJob>(response);
+  },
+
+  /**
    * Delete a job record
    */
   async deleteJob(jobId: string): Promise<void> {
