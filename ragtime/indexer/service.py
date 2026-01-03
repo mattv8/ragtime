@@ -23,8 +23,13 @@ from typing import Any, BinaryIO, Dict, List, Optional
 
 from ragtime.config import settings
 from ragtime.core.logging import get_logger
-from ragtime.indexer.models import (AppSettings, IndexConfig, IndexInfo,
-                                    IndexJob, IndexStatus)
+from ragtime.indexer.models import (
+    AppSettings,
+    IndexConfig,
+    IndexInfo,
+    IndexJob,
+    IndexStatus,
+)
 from ragtime.indexer.repository import repository
 
 logger = get_logger(__name__)
@@ -117,6 +122,8 @@ class IndexerService:
         UPLOAD_TMP_DIR.mkdir(parents=True, exist_ok=True)
         # In-memory cache for active jobs (transient state during processing)
         self._active_jobs: Dict[str, IndexJob] = {}
+        # Cancellation flags for cooperative cancellation
+        self._cancellation_flags: Dict[str, bool] = {}
 
     async def recover_interrupted_jobs(self) -> int:
         """
@@ -323,8 +330,9 @@ class IndexerService:
         )
 
         if provider == "ollama":
-            from langchain_ollama import \
-                OllamaEmbeddings  # type: ignore[import-not-found]
+            from langchain_ollama import (
+                OllamaEmbeddings,
+            )  # type: ignore[import-not-found]
 
             return OllamaEmbeddings(
                 model=model,
@@ -359,7 +367,9 @@ class IndexerService:
         text = str(exc).lower()
         return "rate limit" in text or "rate_limit_exceeded" in text or "429" in text
 
-    def _retry_delay_seconds(self, exc: Exception, attempt: int, base_delay: float = 1.5) -> float:
+    def _retry_delay_seconds(
+        self, exc: Exception, attempt: int, base_delay: float = 1.5
+    ) -> float:
         """Compute delay before retrying after a rate limit.
 
         Uses Retry-After headers or "try again in Xms" hints when available,
@@ -404,7 +414,10 @@ class IndexerService:
         if not job:
             return False
 
-        # Remove from active jobs cache (will stop processing on next iteration)
+        # Set cancellation flag for cooperative cancellation
+        self._cancellation_flags[job_id] = True
+
+        # Remove from active jobs cache
         self._active_jobs.pop(job_id, None)
 
         # Update status in database
@@ -415,6 +428,10 @@ class IndexerService:
 
         logger.info(f"Cancelled job {job_id}")
         return True
+
+    def _is_cancelled(self, job_id: str) -> bool:
+        """Check if a job has been cancelled."""
+        return self._cancellation_flags.get(job_id, False)
 
     async def list_indexes(self) -> List[IndexInfo]:
         """List all available indexes, enriching with database metadata."""
@@ -595,6 +612,11 @@ class IndexerService:
             job.started_at = datetime.utcnow()
             await repository.update_job(job)
 
+            # Check for cancellation
+            if self._is_cancelled(job.id):
+                logger.info(f"Job {job.id} was cancelled before extraction")
+                return
+
             # Extract archive
             extract_dir = temp_dir / "extracted"
             extract_dir.mkdir()
@@ -602,23 +624,36 @@ class IndexerService:
             logger.info(f"Extracting {archive_path} to {extract_dir}")
             self._extract_archive(archive_path, extract_dir)
 
+            # Check for cancellation after extraction
+            if self._is_cancelled(job.id):
+                logger.info(f"Job {job.id} was cancelled after extraction")
+                return
+
             # Find the actual source directory (handle nested zips)
             source_dir = self._find_source_dir(extract_dir)
 
             # Create the index
             await self._create_faiss_index(job, source_dir)
 
-            job.status = IndexStatus.COMPLETED
-            job.completed_at = datetime.utcnow()
+            # Only mark completed if not cancelled
+            if not self._is_cancelled(job.id):
+                job.status = IndexStatus.COMPLETED
+                job.completed_at = datetime.utcnow()
+
+        except asyncio.CancelledError:
+            # Job was cancelled - status already set by cancel_job()
+            logger.info(f"Job {job.id} processing stopped due to cancellation")
 
         except Exception as e:
-            logger.exception(f"Failed to process upload for job {job.id}")
-            job.status = IndexStatus.FAILED
-            job.error_message = str(e)
+            if not self._is_cancelled(job.id):
+                logger.exception(f"Failed to process upload for job {job.id}")
+                job.status = IndexStatus.FAILED
+                job.error_message = str(e)
 
         finally:
-            # Cleanup temp directory
+            # Cleanup temp directory and cancellation flag
             shutil.rmtree(temp_dir, ignore_errors=True)
+            self._cancellation_flags.pop(job.id, None)
             await repository.update_job(job)
             self._active_jobs.pop(job.id, None)
 
@@ -630,6 +665,11 @@ class IndexerService:
             job.status = IndexStatus.PROCESSING
             job.started_at = datetime.utcnow()
             await repository.update_job(job)
+
+            # Check for cancellation
+            if self._is_cancelled(job.id):
+                logger.info(f"Job {job.id} was cancelled before cloning")
+                return
 
             # Clone repository
             clone_dir = temp_dir / "repo"
@@ -724,19 +764,32 @@ class IndexerService:
             logger.info("Clone complete, scanning files...")
             await repository.update_job(job)
 
+            # Check for cancellation after clone
+            if self._is_cancelled(job.id):
+                logger.info(f"Job {job.id} was cancelled after cloning")
+                return
+
             # Create the index, passing the token for storage in metadata
             await self._create_faiss_index(job, clone_dir, git_token=stored_token)
 
-            job.status = IndexStatus.COMPLETED
-            job.completed_at = datetime.utcnow()
+            # Only mark completed if not cancelled
+            if not self._is_cancelled(job.id):
+                job.status = IndexStatus.COMPLETED
+                job.completed_at = datetime.utcnow()
+
+        except asyncio.CancelledError:
+            # Job was cancelled - status already set by cancel_job()
+            logger.info(f"Job {job.id} processing stopped due to cancellation")
 
         except Exception as e:
-            logger.exception(f"Failed to process git for job {job.id}")
-            job.status = IndexStatus.FAILED
-            job.error_message = str(e)
+            if not self._is_cancelled(job.id):
+                logger.exception(f"Failed to process git for job {job.id}")
+                job.status = IndexStatus.FAILED
+                job.error_message = str(e)
 
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
+            self._cancellation_flags.pop(job.id, None)
             await repository.update_job(job)
             self._active_jobs.pop(job.id, None)
 
@@ -881,6 +934,11 @@ class IndexerService:
         documents = []
         skipped_binary = 0
         for file_path in all_files:
+            # Check for cancellation
+            if self._is_cancelled(job.id):
+                logger.info(f"Job {job.id} was cancelled during file loading")
+                raise asyncio.CancelledError("Job cancelled by user")
+
             # Skip binary files
             if file_path.suffix.lower() in BINARY_EXTENSIONS:
                 skipped_binary += 1
@@ -946,6 +1004,11 @@ class IndexerService:
         db = None
 
         for i in range(0, len(chunks), batch_size):
+            # Check for cancellation
+            if self._is_cancelled(job.id):
+                logger.info(f"Job {job.id} was cancelled during embedding")
+                raise asyncio.CancelledError("Job cancelled by user")
+
             batch = chunks[i : i + batch_size]
             batch_db = None
             attempt = 0
@@ -959,9 +1022,7 @@ class IndexerService:
                 except Exception as e:
                     if self._is_rate_limit_error(e) and attempt < max_retries:
                         wait_seconds = self._retry_delay_seconds(e, attempt)
-                        job.error_message = (
-                            f"OpenAI rate limit hit, retrying batch {i // batch_size + 1} in {wait_seconds:.1f}s"
-                        )
+                        job.error_message = f"OpenAI rate limit hit, retrying batch {i // batch_size + 1} in {wait_seconds:.1f}s"
                         await repository.update_job(job)
                         logger.warning(job.error_message)
                         await asyncio.sleep(wait_seconds)
