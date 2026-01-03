@@ -26,9 +26,7 @@ def setup_logging(name: Optional[str] = None) -> logging.Logger:
         level=log_level,
         format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
-        handlers=[
-            logging.StreamHandler(sys.stdout)
-        ]
+        handlers=[logging.StreamHandler(sys.stdout)],
     )
 
     # Set third-party loggers to WARNING to reduce noise
@@ -37,6 +35,7 @@ def setup_logging(name: Optional[str] = None) -> logging.Logger:
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("openai").setLevel(logging.WARNING)
     logging.getLogger("langchain").setLevel(logging.WARNING)
+    logging.getLogger("prisma").setLevel(logging.WARNING)
 
     return logging.getLogger(name or "rag_api")
 
