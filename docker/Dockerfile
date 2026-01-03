@@ -73,6 +73,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    dos2unix \
     git \
     gnupg \
     docker.io \
@@ -121,8 +122,9 @@ COPY docker/scripts/backup-restore.sh /docker-scripts/backup-restore.sh
 RUN mkdir -p /ragtime/data/faiss_index && \
     chown -R ragtime:ragtime /ragtime
 
-# Make scripts executable and create convenience command wrappers
-RUN chmod +x /entrypoint.sh /docker-scripts/backup-restore.sh \
+# Fix line endings (Windows CRLF -> Unix LF) and make scripts executable
+RUN dos2unix /entrypoint.sh /docker-scripts/backup-restore.sh \
+    && chmod +x /entrypoint.sh /docker-scripts/backup-restore.sh \
     && ln -sf /docker-scripts/backup-restore.sh /usr/local/bin/backup \
     && ln -sf /docker-scripts/backup-restore.sh /usr/local/bin/restore
 

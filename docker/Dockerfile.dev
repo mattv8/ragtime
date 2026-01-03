@@ -14,6 +14,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
+    dos2unix \
     git \
     libmagic1 \
     ca-certificates \
@@ -58,8 +59,9 @@ RUN cd /ragtime/ragtime/frontend && npm ci --loglevel=error
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/scripts/backup-restore.sh /docker-scripts/backup-restore.sh
 
-# Make scripts executable and create convenience command wrappers
-RUN chmod +x /entrypoint.sh /docker-scripts/backup-restore.sh \
+# Fix line endings (Windows CRLF -> Unix LF) and make scripts executable
+RUN dos2unix /entrypoint.sh /docker-scripts/backup-restore.sh \
+    && chmod +x /entrypoint.sh /docker-scripts/backup-restore.sh \
     && ln -sf /docker-scripts/backup-restore.sh /usr/local/bin/backup \
     && ln -sf /docker-scripts/backup-restore.sh /usr/local/bin/restore
 
