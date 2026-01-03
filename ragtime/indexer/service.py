@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Dict, List, Optional
 
 from ragtime.config import settings
+from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.logging import get_logger
 from ragtime.indexer.models import (
     AppSettings,
@@ -133,7 +134,6 @@ class IndexerService:
         immediately available for search without requiring a server restart.
         """
         try:
-            from ragtime.core.app_settings import invalidate_settings_cache
             from ragtime.rag.components import rag
 
             logger.info("Reinitializing RAG components to load new index")
@@ -658,8 +658,6 @@ class IndexerService:
             if not self._is_cancelled(job.id):
                 job.status = IndexStatus.COMPLETED
                 job.completed_at = datetime.utcnow()
-                # Reinitialize RAG to load the new index
-                await self._reinitialize_rag_components()
 
         except asyncio.CancelledError:
             # Job was cancelled - status already set by cancel_job()
@@ -677,6 +675,14 @@ class IndexerService:
             self._cancellation_flags.pop(job.id, None)
             await repository.update_job(job)
             self._active_jobs.pop(job.id, None)
+
+            # Reinitialize RAG components if job completed successfully
+            # This is done in finally block after job update to ensure:
+            # 1. Job status is persisted before reinitialization
+            # 2. Reinitialize errors don't affect job completion status
+            # 3. New index is loaded even if there were warnings during indexing
+            if job.status == IndexStatus.COMPLETED:
+                await self._reinitialize_rag_components()
 
     async def _process_git(self, job: IndexJob):
         """Process a git repository."""
@@ -797,8 +803,6 @@ class IndexerService:
             if not self._is_cancelled(job.id):
                 job.status = IndexStatus.COMPLETED
                 job.completed_at = datetime.utcnow()
-                # Reinitialize RAG to load the new index
-                await self._reinitialize_rag_components()
 
         except asyncio.CancelledError:
             # Job was cancelled - status already set by cancel_job()
@@ -815,6 +819,14 @@ class IndexerService:
             self._cancellation_flags.pop(job.id, None)
             await repository.update_job(job)
             self._active_jobs.pop(job.id, None)
+
+            # Reinitialize RAG components if job completed successfully
+            # This is done in finally block after job update to ensure:
+            # 1. Job status is persisted before reinitialization
+            # 2. Reinitialize errors don't affect job completion status
+            # 3. New index is loaded even if there were warnings during indexing
+            if job.status == IndexStatus.COMPLETED:
+                await self._reinitialize_rag_components()
 
     def _extract_archive(self, archive_path: Path, extract_dir: Path) -> None:
         """Extract an archive file (zip, tar, tar.gz, tar.bz2) to a directory."""
