@@ -125,6 +125,25 @@ class IndexerService:
         # Cancellation flags for cooperative cancellation
         self._cancellation_flags: Dict[str, bool] = {}
 
+    async def _reinitialize_rag_components(self) -> None:
+        """
+        Reinitialize RAG components to load newly created indexes.
+
+        Called after successful index creation to make the new index
+        immediately available for search without requiring a server restart.
+        """
+        try:
+            from ragtime.core.app_settings import invalidate_settings_cache
+            from ragtime.rag.components import rag
+
+            logger.info("Reinitializing RAG components to load new index")
+            invalidate_settings_cache()
+            await rag.initialize()
+            logger.info("RAG components reinitialized successfully")
+        except Exception as e:
+            # Log but don't fail the indexing job if RAG reinitialization fails
+            logger.warning(f"Failed to reinitialize RAG components: {e}")
+
     async def recover_interrupted_jobs(self) -> int:
         """
         Recover jobs that were interrupted by a server restart.
@@ -639,6 +658,8 @@ class IndexerService:
             if not self._is_cancelled(job.id):
                 job.status = IndexStatus.COMPLETED
                 job.completed_at = datetime.utcnow()
+                # Reinitialize RAG to load the new index
+                await self._reinitialize_rag_components()
 
         except asyncio.CancelledError:
             # Job was cancelled - status already set by cancel_job()
@@ -776,6 +797,8 @@ class IndexerService:
             if not self._is_cancelled(job.id):
                 job.status = IndexStatus.COMPLETED
                 job.completed_at = datetime.utcnow()
+                # Reinitialize RAG to load the new index
+                await self._reinitialize_rag_components()
 
         except asyncio.CancelledError:
             # Job was cancelled - status already set by cancel_job()
