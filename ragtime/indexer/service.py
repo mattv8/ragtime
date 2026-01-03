@@ -132,6 +132,12 @@ class IndexerService:
 
         Called after successful index creation to make the new index
         immediately available for search without requiring a server restart.
+
+        Note: The import of `rag` is done inside this method rather than at
+        module level to avoid potential circular import issues, as
+        rag.components imports from indexer.repository. Since this method
+        is called only once per index creation, the performance impact is
+        negligible.
         """
         try:
             from ragtime.rag.components import rag
