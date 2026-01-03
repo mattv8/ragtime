@@ -144,6 +144,21 @@ class IndexerService:
             # Log but don't fail the indexing job if RAG reinitialization fails
             logger.warning(f"Failed to reinitialize RAG components: {e}")
 
+    async def _maybe_reinitialize_rag(self, job: IndexJob) -> None:
+        """
+        Conditionally reinitialize RAG components for completed jobs.
+
+        This is called in finally blocks after job status is persisted to ensure:
+        1. Job status is saved before reinitialization
+        2. Reinitialize errors don't affect job completion status
+        3. New index is loaded even if there were warnings during indexing
+
+        Args:
+            job: The index job to check
+        """
+        if job.status == IndexStatus.COMPLETED:
+            await self._reinitialize_rag_components()
+
     async def recover_interrupted_jobs(self) -> int:
         """
         Recover jobs that were interrupted by a server restart.
@@ -677,12 +692,7 @@ class IndexerService:
             self._active_jobs.pop(job.id, None)
 
             # Reinitialize RAG components if job completed successfully
-            # This is done in finally block after job update to ensure:
-            # 1. Job status is persisted before reinitialization
-            # 2. Reinitialize errors don't affect job completion status
-            # 3. New index is loaded even if there were warnings during indexing
-            if job.status == IndexStatus.COMPLETED:
-                await self._reinitialize_rag_components()
+            await self._maybe_reinitialize_rag(job)
 
     async def _process_git(self, job: IndexJob):
         """Process a git repository."""
@@ -821,12 +831,7 @@ class IndexerService:
             self._active_jobs.pop(job.id, None)
 
             # Reinitialize RAG components if job completed successfully
-            # This is done in finally block after job update to ensure:
-            # 1. Job status is persisted before reinitialization
-            # 2. Reinitialize errors don't affect job completion status
-            # 3. New index is loaded even if there were warnings during indexing
-            if job.status == IndexStatus.COMPLETED:
-                await self._reinitialize_rag_components()
+            await self._maybe_reinitialize_rag(job)
 
     def _extract_archive(self, archive_path: Path, extract_dir: Path) -> None:
         """Extract an archive file (zip, tar, tar.gz, tar.bz2) to a directory."""
