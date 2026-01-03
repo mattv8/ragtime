@@ -55,6 +55,7 @@ model IndexJob {
   sourcePath String? @map("source_path")
   gitUrl     String? @map("git_url")
   gitBranch  String  @default("main") @map("git_branch")
+  gitToken   String? @map("git_token") // Token for private repo access (kept in DB for job recovery)
 
   // Progress tracking
   totalFiles      Int     @default(0) @map("total_files")
@@ -89,6 +90,8 @@ model IndexMetadata {
   // Source info
   sourceType String  @map("source_type")
   source     String?
+  gitBranch  String? @map("git_branch") // Branch for git sources
+  gitToken   String? @map("git_token") // Token for private repo access (stored for re-indexing)
 
   // Config snapshot (JSON)
   configSnapshot Json? @map("config_snapshot")

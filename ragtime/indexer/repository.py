@@ -141,6 +141,7 @@ class IndexerRepository:
                 "sourcePath": job.source_path,
                 "gitUrl": job.git_url,
                 "gitBranch": job.git_branch,
+                "gitToken": job.git_token,
                 "totalFiles": job.total_files,
                 "processedFiles": job.processed_files,
                 "totalChunks": job.total_chunks,
@@ -236,6 +237,7 @@ class IndexerRepository:
             source_path=prisma_job.sourcePath,
             git_url=prisma_job.gitUrl,
             git_branch=prisma_job.gitBranch,
+            git_token=prisma_job.gitToken,
             total_files=prisma_job.totalFiles,
             processed_files=prisma_job.processedFiles,
             total_chunks=prisma_job.totalChunks,
@@ -261,6 +263,8 @@ class IndexerRepository:
         source: Optional[str],
         config_snapshot: Optional[dict],
         description: str = "",
+        git_branch: Optional[str] = None,
+        git_token: Optional[str] = None,
     ) -> None:
         """Create or update index metadata."""
         db = await self._get_db()
@@ -275,6 +279,8 @@ class IndexerRepository:
             "sizeBytes": size_bytes,
             "sourceType": source_type,
             "source": source,
+            "gitBranch": git_branch,
+            "gitToken": git_token,
             "createdAt": datetime.utcnow(),
             "lastModified": datetime.utcnow(),
         }
@@ -286,6 +292,8 @@ class IndexerRepository:
             "sizeBytes": size_bytes,
             "sourceType": source_type,
             "source": source,
+            "gitBranch": git_branch,
+            "gitToken": git_token,
             "lastModified": datetime.utcnow(),
         }
 

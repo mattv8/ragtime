@@ -853,6 +853,12 @@ select option:checked {
   font-style: italic;
 }
 
+.meta-pill.git {
+  background: rgba(249, 115, 22, 0.15);
+  border-color: rgba(249, 115, 22, 0.3);
+  color: #fb923c;
+}
+
 @keyframes pulse-active {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.6; }

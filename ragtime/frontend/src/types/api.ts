@@ -123,6 +123,9 @@ export interface IndexInfo {
   document_count: number;
   description: string;
   enabled: boolean;
+  source_type: 'upload' | 'git';
+  source: string | null;  // git URL or original filename
+  git_branch: string | null;  // branch for git sources
   created_at: string | null;
   last_modified: string | null;
 }
@@ -131,6 +134,7 @@ export interface CreateIndexRequest {
   name: string;
   git_url?: string;
   git_branch?: string;
+  git_token?: string;
   config?: Partial<IndexConfig>;
 }
 

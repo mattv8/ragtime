@@ -50,6 +50,9 @@ class IndexJob(BaseModel):
     source_path: Optional[str] = None
     git_url: Optional[str] = None
     git_branch: str = "main"
+    git_token: Optional[str] = Field(
+        default=None, exclude=True
+    )  # Never persisted/returned
 
     # Progress tracking
     total_files: int = 0
@@ -79,6 +82,9 @@ class IndexInfo(BaseModel):
     document_count: int
     description: str = ""
     enabled: bool = True
+    source_type: str = "upload"  # 'upload' or 'git'
+    source: Optional[str] = None  # git URL or original filename
+    git_branch: Optional[str] = None  # branch for git sources
     created_at: Optional[datetime] = None
     last_modified: Optional[datetime] = None
 
@@ -91,6 +97,10 @@ class CreateIndexRequest(BaseModel):
         default=None, description="Git repository URL to clone"
     )
     git_branch: str = Field(default="main", description="Git branch to use")
+    git_token: Optional[str] = Field(
+        default=None,
+        description="GitHub Personal Access Token for private repos (not stored)",
+    )
     config: Optional[IndexConfig] = Field(
         default=None, description="Indexing configuration"
     )

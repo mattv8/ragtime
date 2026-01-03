@@ -9,22 +9,18 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional
 
 import httpx
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
+from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException,
+                     UploadFile)
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit
 from ragtime.core.security import get_current_user, require_admin
-from ragtime.indexer.models import (
-    AppSettings,
-    CreateIndexRequest,
-    IndexConfig,
-    IndexInfo,
-    IndexJobResponse,
-    IndexStatus,
-    UpdateSettingsRequest,
-)
+from ragtime.core.validation import require_valid_embedding_provider
+from ragtime.indexer.models import (AppSettings, CreateIndexRequest,
+                                    IndexConfig, IndexInfo, IndexJobResponse,
+                                    IndexStatus, UpdateSettingsRequest)
 from ragtime.indexer.repository import repository
 from ragtime.indexer.service import indexer
 
@@ -155,6 +151,7 @@ async def upload_and_index(
     chunk_size: int = Form(default=1000, ge=100, le=4000),
     chunk_overlap: int = Form(default=200, ge=0, le=1000),
     _user: User = Depends(require_admin),
+    _: None = Depends(require_valid_embedding_provider),
 ):
     """
     Upload an archive file and create a FAISS index from it. Admin only.
@@ -202,7 +199,9 @@ async def upload_and_index(
 
 @router.post("/git", response_model=IndexJobResponse)
 async def index_from_git(
-    request: CreateIndexRequest, _user: User = Depends(require_admin)
+    request: CreateIndexRequest,
+    _user: User = Depends(require_admin),
+    _: None = Depends(require_valid_embedding_provider),
 ):
     """
     Create a FAISS index from a git repository. Admin only.
@@ -218,7 +217,10 @@ async def index_from_git(
 
     try:
         job = await indexer.create_index_from_git(
-            git_url=request.git_url, branch=request.git_branch, config=config
+            git_url=request.git_url,
+            branch=request.git_branch,
+            config=config,
+            git_token=request.git_token,
         )
 
         return IndexJobResponse(
@@ -237,6 +239,163 @@ async def index_from_git(
     except Exception as e:
         logger.exception("Failed to start git indexing job")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class ReindexGitRequest(BaseModel):
+    """Request to re-index from git (pull latest changes)."""
+
+    git_token: Optional[str] = Field(
+        default=None,
+        description="GitHub/GitLab Personal Access Token for private repos (uses stored token if not provided)",
+    )
+
+
+@router.post("/{name}/reindex", response_model=IndexJobResponse)
+async def reindex_from_git(
+    name: str,
+    request: ReindexGitRequest = Body(default=ReindexGitRequest()),
+    _user: User = Depends(require_admin),
+    _: None = Depends(require_valid_embedding_provider),
+):
+    """
+    Re-index an existing git-based index by pulling latest changes. Admin only.
+
+    This endpoint fetches the latest changes from the git repository and
+    re-creates the FAISS index. Only works for indexes created from git repos.
+    For private repos, uses the stored token unless a new one is provided.
+    """
+    # Get existing index metadata
+    metadata = await repository.get_index_metadata(name)
+    if not metadata:
+        raise HTTPException(status_code=404, detail="Index not found")
+
+    if metadata.sourceType != "git":
+        raise HTTPException(
+            status_code=400,
+            detail="Re-indexing only supported for git-based indexes. Upload-based indexes must be re-uploaded.",
+        )
+
+    if not metadata.source:
+        raise HTTPException(
+            status_code=400,
+            detail="Git URL not found in index metadata. Cannot re-index.",
+        )
+
+    # Use provided token, or fall back to stored token
+    git_token = request.git_token or metadata.gitToken
+
+    # Get config from snapshot or use defaults
+    config_data = metadata.configSnapshot or {}
+    config = IndexConfig(
+        name=name,
+        description=metadata.description or "",
+        file_patterns=config_data.get(
+            "file_patterns", ["**/*.py", "**/*.md", "**/*.xml"]
+        ),
+        exclude_patterns=config_data.get(
+            "exclude_patterns", ["**/test/**", "**/tests/**", "**/__pycache__/**"]
+        ),
+        chunk_size=config_data.get("chunk_size", 1000),
+        chunk_overlap=config_data.get("chunk_overlap", 200),
+    )
+
+    try:
+        job = await indexer.create_index_from_git(
+            git_url=metadata.source,
+            branch=metadata.gitBranch or "main",
+            config=config,
+            git_token=git_token,
+        )
+
+        return IndexJobResponse(
+            id=job.id,
+            name=job.name,
+            status=job.status,
+            progress_percent=job.progress_percent,
+            total_files=job.total_files,
+            processed_files=job.processed_files,
+            total_chunks=job.total_chunks,
+            error_message=job.error_message,
+            created_at=job.created_at,
+            started_at=job.started_at,
+            completed_at=job.completed_at,
+        )
+    except Exception as e:
+        logger.exception("Failed to start re-indexing job")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class RetryJobRequest(BaseModel):
+    """Request to retry a failed job."""
+
+    git_token: Optional[str] = Field(
+        default=None,
+        description="GitHub/GitLab Personal Access Token (uses stored token if not provided)",
+    )
+
+
+@router.post("/jobs/{job_id}/retry", response_model=IndexJobResponse)
+async def retry_failed_job(
+    job_id: str,
+    request: RetryJobRequest = Body(default=RetryJobRequest()),
+    _user: User = Depends(require_admin),
+    _: None = Depends(require_valid_embedding_provider),
+):
+    """
+    Retry a failed or stuck indexing job. Admin only.
+
+    This creates a new job using the same settings as the failed job.
+    For private repos, uses the stored token unless a new one is provided.
+    """
+    # Get the failed job
+    failed_job = await repository.get_job(job_id)
+    if not failed_job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if failed_job.status not in [IndexStatus.FAILED, IndexStatus.PROCESSING]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot retry job with status '{failed_job.status}'. Only failed or stuck jobs can be retried.",
+        )
+
+    # Use provided token, or fall back to stored token
+    git_token = request.git_token or failed_job.git_token
+
+    if failed_job.source_type == "git":
+        if not failed_job.git_url:
+            raise HTTPException(
+                status_code=400, detail="Git URL not found in job. Cannot retry."
+            )
+
+        try:
+            new_job = await indexer.create_index_from_git(
+                git_url=failed_job.git_url,
+                branch=failed_job.git_branch,
+                config=failed_job.config,
+                git_token=git_token,
+            )
+
+            return IndexJobResponse(
+                id=new_job.id,
+                name=new_job.name,
+                status=new_job.status,
+                progress_percent=new_job.progress_percent,
+                total_files=new_job.total_files,
+                processed_files=new_job.processed_files,
+                total_chunks=new_job.total_chunks,
+                error_message=new_job.error_message,
+                created_at=new_job.created_at,
+                started_at=new_job.started_at,
+                completed_at=new_job.completed_at,
+            )
+        except Exception as e:
+            logger.exception("Failed to retry indexing job")
+            raise HTTPException(status_code=500, detail=str(e))
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Only git-based jobs can be retried. For upload-based indexes, please re-upload the file.",
+        )
 
 
 @router.delete("/{name}")
@@ -394,15 +553,11 @@ async def get_embedding_status(_user: User = Depends(require_admin)):
 # Tool Configuration Endpoints (Admin only)
 # -----------------------------------------------------------------------------
 
-from ragtime.indexer.models import (
-    CreateToolConfigRequest,
-    PostgresDiscoverRequest,
-    PostgresDiscoverResponse,
-    ToolConfig,
-    ToolTestRequest,
-    ToolType,
-    UpdateToolConfigRequest,
-)
+from ragtime.indexer.models import (CreateToolConfigRequest,
+                                    PostgresDiscoverRequest,
+                                    PostgresDiscoverResponse, ToolConfig,
+                                    ToolTestRequest, ToolType,
+                                    UpdateToolConfigRequest)
 
 
 class SSHKeyPairResponse(BaseModel):
@@ -806,7 +961,6 @@ async def generate_ssh_keypair(
 
 
 from ragtime.indexer.filesystem_service import filesystem_indexer
-
 # =============================================================================
 # Filesystem Indexer Routes (must be before {tool_id} routes)
 # =============================================================================
@@ -1198,7 +1352,8 @@ async def _test_odoo_ssh_connection(config: dict) -> ToolTestResponse:
     """Test Odoo shell connection via SSH using Paramiko."""
     import asyncio
 
-    from ragtime.core.ssh import SSHConfig, execute_ssh_command, test_ssh_connection
+    from ragtime.core.ssh import (SSHConfig, execute_ssh_command,
+                                  test_ssh_connection)
 
     ssh_host = config.get("ssh_host", "")
     ssh_port = config.get("ssh_port", 22)
@@ -2445,11 +2600,9 @@ async def browse_smb_share(
 # Filesystem Indexer Endpoints (Admin only)
 # -----------------------------------------------------------------------------
 
-from ragtime.indexer.models import (
-    FilesystemIndexJobResponse,
-    FilesystemIndexStatus,
-    TriggerFilesystemIndexRequest,
-)
+from ragtime.indexer.models import (FilesystemIndexJobResponse,
+                                    FilesystemIndexStatus,
+                                    TriggerFilesystemIndexRequest)
 
 
 class FilesystemIndexStatsResponse(BaseModel):
@@ -2472,6 +2625,7 @@ async def trigger_filesystem_index(
         default=TriggerFilesystemIndexRequest()
     ),
     _user: User = Depends(require_admin),
+    _: None = Depends(require_valid_embedding_provider),
 ):
     """
     Trigger filesystem indexing for a tool. Admin only.
@@ -2797,10 +2951,8 @@ class EmbeddingModelsResponse(BaseModel):
 
 # OpenAI embedding models - prioritized list (from LiteLLM community data)
 # These are the recommended models for most use cases
-from ragtime.core.embedding_models import (
-    OPENAI_EMBEDDING_PRIORITY,
-    get_embedding_models,
-)
+from ragtime.core.embedding_models import (OPENAI_EMBEDDING_PRIORITY,
+                                           get_embedding_models)
 
 OPENAI_DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
@@ -3121,13 +3273,10 @@ async def _fetch_anthropic_models(api_key: str) -> LLMModelsResponse:
 # Conversation/Chat Endpoints
 # =============================================================================
 
-from ragtime.indexer.models import (
-    ChatMessage,
-    Conversation,
-    ConversationResponse,
-    CreateConversationRequest,
-    SendMessageRequest,
-)
+from ragtime.indexer.models import (ChatMessage, Conversation,
+                                    ConversationResponse,
+                                    CreateConversationRequest,
+                                    SendMessageRequest)
 
 
 @router.get(

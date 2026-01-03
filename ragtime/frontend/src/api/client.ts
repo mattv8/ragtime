@@ -298,6 +298,18 @@ export const api = {
   },
 
   /**
+   * Re-index a git-based index by pulling latest changes
+   */
+  async reindexFromGit(name: string, gitToken?: string): Promise<IndexJob> {
+    const response = await apiFetch(`${API_BASE}/${encodeURIComponent(name)}/reindex`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ git_token: gitToken }),
+    });
+    return handleResponse<IndexJob>(response);
+  },
+
+  /**
    * Get application settings
    */
   async getSettings(): Promise<AppSettings> {

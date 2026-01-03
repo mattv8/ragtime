@@ -39,6 +39,14 @@ const RECENT_LIMIT = 5;
 function getProcessingPhase(job: IndexJob): string {
   if (job.status !== 'processing') return '';
 
+  // Check for cloning phase (error_message used as status hint during clone)
+  if (job.error_message?.includes('Cloning')) {
+    return 'Cloning repository';
+  }
+  // If no files found yet, we're still scanning
+  if (job.total_files === 0) {
+    return 'Scanning files';
+  }
   // If we have chunks and are embedding
   if (job.total_chunks > 0 && job.processed_chunks < job.total_chunks) {
     return 'Embedding';

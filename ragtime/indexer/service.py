@@ -286,7 +286,8 @@ class IndexerService:
         self._active_jobs[job.id] = job
 
         if job.source_type == "git":
-            # Git jobs can be re-cloned
+            # Git jobs for private repos cannot be resumed (token was not persisted for security)
+            # We'll attempt the clone - if it fails with auth error, provide a clear message
             asyncio.create_task(self._process_git(job))
         elif job.source_type == "upload":
             # Check if tmp file still exists
@@ -320,6 +321,10 @@ class IndexerService:
         provider = app_settings.embedding_provider.lower()
         model = app_settings.embedding_model
         dimensions = getattr(app_settings, "embedding_dimensions", None)
+
+        logger.info(
+            f"Getting embeddings: provider={provider}, model={model}, dimensions={dimensions}"
+        )
 
         if provider == "ollama":
             from langchain_ollama import (
@@ -401,6 +406,9 @@ class IndexerService:
                     created_at = None
                     enabled = True  # Default to enabled
                     description = ""
+                    source_type = "upload"
+                    source = None
+                    git_branch = None
 
                     if path.name in metadata_by_name:
                         meta = metadata_by_name[path.name]
@@ -408,6 +416,9 @@ class IndexerService:
                         created_at = meta.createdAt
                         enabled = meta.enabled
                         description = getattr(meta, "description", "")
+                        source_type = getattr(meta, "sourceType", "upload")
+                        source = getattr(meta, "source", None)
+                        git_branch = getattr(meta, "gitBranch", None)
                     else:
                         # Fallback to legacy .metadata.json file
                         meta_file = path / ".metadata.json"
@@ -432,6 +443,9 @@ class IndexerService:
                             document_count=doc_count,
                             description=description,
                             enabled=enabled,
+                            source_type=source_type,
+                            source=source,
+                            git_branch=git_branch,
                             created_at=created_at,
                             last_modified=datetime.fromtimestamp(path.stat().st_mtime),
                         )
@@ -513,7 +527,11 @@ class IndexerService:
         return job
 
     async def create_index_from_git(
-        self, git_url: str, branch: str, config: IndexConfig
+        self,
+        git_url: str,
+        branch: str,
+        config: IndexConfig,
+        git_token: str | None = None,
     ) -> IndexJob:
         """Create an index from a git repository."""
         job_id = str(uuid.uuid4())[:8]
@@ -525,6 +543,7 @@ class IndexerService:
             source_type="git",
             git_url=git_url,
             git_branch=branch,
+            git_token=git_token,  # Kept in memory only, not persisted
         )
 
         # Persist to database
@@ -585,28 +604,97 @@ class IndexerService:
             clone_dir = temp_dir / "repo"
             logger.info(f"Cloning {job.git_url} branch {job.git_branch}")
 
+            # Update job to show cloning phase
+            job.error_message = (
+                "Cloning repository..."  # Use error_message as status hint
+            )
+            await repository.update_job(job)
+
             if not job.git_url:
                 raise ValueError("Git URL is required for git source type")
 
-            process = await asyncio.create_subprocess_exec(
-                "git",
-                "clone",
-                "--depth",
-                "1",
-                "--branch",
-                job.git_branch or "main",
-                job.git_url,
-                str(clone_dir),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            _, stderr = await process.communicate()
+            # Build clone URL - inject token for private repos
+            clone_url = job.git_url
+            if job.git_token:
+                # Insert token into HTTPS URL with proper format for each provider
+                if clone_url.startswith("https://"):
+                    if "github.com" in clone_url:
+                        # GitHub: https://x-access-token:TOKEN@github.com/...
+                        clone_url = clone_url.replace(
+                            "https://github.com",
+                            f"https://x-access-token:{job.git_token}@github.com",
+                            1,
+                        )
+                    elif "gitlab.com" in clone_url:
+                        # GitLab: https://oauth2:TOKEN@gitlab.com/...
+                        clone_url = clone_url.replace(
+                            "https://gitlab.com",
+                            f"https://oauth2:{job.git_token}@gitlab.com",
+                            1,
+                        )
+                    else:
+                        # Generic: https://TOKEN@host/...
+                        clone_url = clone_url.replace(
+                            "https://", f"https://{job.git_token}@", 1
+                        )
+                elif clone_url.startswith("http://"):
+                    clone_url = clone_url.replace(
+                        "http://", f"http://{job.git_token}@", 1
+                    )
+
+            # Preserve token for metadata storage before clearing from clone URL
+            stored_token = job.git_token
+            # Clear token from job object (not needed in memory after we have stored_token)
+            job.git_token = None
+
+            # Set environment to prevent git from prompting for credentials
+            env = {
+                **os.environ,
+                "GIT_TERMINAL_PROMPT": "0",  # Disable credential prompting
+            }
+
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    "git",
+                    "clone",
+                    "--depth",
+                    "1",
+                    "--branch",
+                    job.git_branch or "main",
+                    clone_url,
+                    str(clone_dir),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=env,
+                )
+                # Timeout after 5 minutes for clone
+                _, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
+            except TimeoutError:
+                process.kill()
+                raise RuntimeError(
+                    "Git clone timed out after 5 minutes. The repository may be too large or unreachable."
+                )
 
             if process.returncode != 0:
-                raise RuntimeError(f"Git clone failed: {stderr.decode()}")
+                error_msg = stderr.decode()
+                # Provide clearer error for authentication failures
+                if (
+                    "could not read Username" in error_msg
+                    or "Authentication failed" in error_msg
+                ):
+                    raise RuntimeError(
+                        "Git clone failed: Authentication required. "
+                        "This is a private repository - please provide a valid access token."
+                    )
+                raise RuntimeError(f"Git clone failed: {error_msg}")
 
-            # Create the index
-            await self._create_faiss_index(job, clone_dir)
+            # Clear cloning status, update to scanning phase
+            job.error_message = None
+            logger.info("Clone complete, scanning files...")
+            await repository.update_job(job)
+
+            # Create the index, passing the token for storage in metadata
+            await self._create_faiss_index(job, clone_dir, git_token=stored_token)
 
             job.status = IndexStatus.COMPLETED
             job.completed_at = datetime.utcnow()
@@ -664,7 +752,9 @@ class IndexerService:
 
         return False
 
-    async def _create_faiss_index(self, job: IndexJob, source_dir: Path):
+    async def _create_faiss_index(
+        self, job: IndexJob, source_dir: Path, git_token: Optional[str] = None
+    ):
         """Create FAISS index from source directory."""
         from langchain_community.document_loaders import TextLoader
         from langchain_community.vectorstores import FAISS
@@ -698,9 +788,74 @@ class IndexerService:
         await repository.update_job(job)
         logger.info(f"Found {len(all_files)} files to index")
 
+        # Binary file extensions to skip (images, compiled files, etc.)
+        BINARY_EXTENSIONS = {
+            # Images
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".bmp",
+            ".ico",
+            ".svg",
+            ".webp",
+            ".tiff",
+            ".tif",
+            # Compiled/binary
+            ".pyc",
+            ".pyo",
+            ".so",
+            ".dll",
+            ".exe",
+            ".bin",
+            ".o",
+            ".a",
+            ".lib",
+            # Archives
+            ".zip",
+            ".tar",
+            ".gz",
+            ".bz2",
+            ".7z",
+            ".rar",
+            # Fonts
+            ".ttf",
+            ".otf",
+            ".woff",
+            ".woff2",
+            ".eot",
+            # Media
+            ".mp3",
+            ".mp4",
+            ".avi",
+            ".mov",
+            ".wav",
+            ".ogg",
+            ".webm",
+            # Other binary
+            ".pdf",
+            ".doc",
+            ".docx",
+            ".xls",
+            ".xlsx",
+            ".ppt",
+            ".pptx",
+            ".db",
+            ".sqlite",
+            ".pickle",
+            ".pkl",
+        }
+
         # Load documents
         documents = []
+        skipped_binary = 0
         for file_path in all_files:
+            # Skip binary files
+            if file_path.suffix.lower() in BINARY_EXTENSIONS:
+                skipped_binary += 1
+                job.processed_files += 1
+                continue
+
             try:
                 loader = TextLoader(str(file_path), autodetect_encoding=True)
                 docs = loader.load()
@@ -720,7 +875,12 @@ class IndexerService:
                     logger.info(f"Loaded {job.processed_files}/{job.total_files} files")
 
             except Exception as e:
-                logger.warning(f"Failed to load {file_path}: {e}")
+                # Debug level for common encoding issues, don't spam logs
+                logger.debug(f"Skipped {file_path.name}: {e}")
+                job.processed_files += 1
+
+        if skipped_binary > 0:
+            logger.info(f"Skipped {skipped_binary} binary files")
 
         if not documents:
             raise ValueError("No documents were loaded")
@@ -802,13 +962,12 @@ class IndexerService:
             source=job.git_url or job.source_path,
             config_snapshot=config.model_dump(),
             description=description,
+            git_branch=job.git_branch if job.source_type == "git" else None,
+            git_token=git_token,
         )
 
         logger.info(f"Index {job.name} created successfully!")
 
-
-# Global indexer instance - uses configured path
-indexer = IndexerService(index_base_path=settings.index_data_path)
 
 # Global indexer instance - uses configured path
 indexer = IndexerService(index_base_path=settings.index_data_path)
