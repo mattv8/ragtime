@@ -211,26 +211,33 @@ def _discover_ldap_structure_sync(
         ous_and_containers: list[str] = []
 
         # Search for organizational units
-        conn.search(
-            search_base=base_dn,
-            search_filter="(objectClass=organizationalUnit)",
-            search_scope=SUBTREE,
-            attributes=["distinguishedName", "ou"],
-        )
-        for entry in conn.entries:
-            ous_and_containers.append(str(entry.entry_dn))
+        try:
+            conn.search(
+                search_base=base_dn,
+                search_filter="(objectClass=organizationalUnit)",
+                search_scope=SUBTREE,
+                attributes=["distinguishedName", "ou"],
+            )
+            for entry in conn.entries:
+                ous_and_containers.append(str(entry.entry_dn))
+        except LDAPException as e:
+            logger.debug(f"OU search failed (may not be supported): {e}")
 
-        # Also check for CN=Users container (common in AD)
-        conn.search(
-            search_base=base_dn,
-            search_filter="(&(objectClass=container)(cn=Users))",
-            search_scope=SUBTREE,
-            attributes=["distinguishedName"],
-        )
-        for entry in conn.entries:
-            dn = str(entry.entry_dn)
-            if dn not in ous_and_containers:
-                ous_and_containers.append(dn)
+        # Also check for CN=Users container (common in AD, may not exist on OpenLDAP)
+        try:
+            conn.search(
+                search_base=base_dn,
+                search_filter="(&(objectClass=container)(cn=Users))",
+                search_scope=SUBTREE,
+                attributes=["distinguishedName"],
+            )
+            for entry in conn.entries:
+                dn = str(entry.entry_dn)
+                if dn not in ous_and_containers:
+                    ous_and_containers.append(dn)
+        except LDAPException as e:
+            # container objectClass doesn't exist on OpenLDAP/UCS - this is expected
+            logger.debug(f"Container search failed (may not be supported): {e}")
 
         # Sort by DN depth (fewer components = higher in hierarchy)
         # This creates a tree-like order: DC=..., then OU=...,DC=..., etc.
@@ -246,22 +253,44 @@ def _discover_ldap_structure_sync(
             if dn != base_dn and dn not in user_ous:
                 user_ous.append(dn)
 
-        # Discover groups
+        # Discover groups - search each objectClass separately to handle servers
+        # that don't support all objectClasses (AD uses 'group', OpenLDAP uses
+        # 'groupOfNames'/'groupOfUniqueNames', POSIX systems use 'posixGroup')
         groups = []
-        conn.search(
-            search_base=base_dn,
-            search_filter="(|(objectClass=group)(objectClass=groupOfNames)(objectClass=posixGroup))",
-            search_scope=SUBTREE,
-            attributes=["distinguishedName", "cn"],
-        )
-        for entry in conn.entries:
-            dn = str(entry.entry_dn)
-            cn = (
-                str(entry.cn)
-                if hasattr(entry, "cn")
-                else dn.split(",")[0].replace("CN=", "")
-            )
-            groups.append({"dn": dn, "name": cn})
+        seen_dns: set[str] = set()
+
+        # List of group objectClasses to try - each searched separately
+        # to avoid "invalid class in objectClass" errors on servers that
+        # don't have a particular schema
+        group_classes = [
+            "group",  # Active Directory
+            "groupOfNames",  # Standard LDAP
+            "groupOfUniqueNames",  # Standard LDAP variant
+            "posixGroup",  # POSIX/Unix
+        ]
+
+        for obj_class in group_classes:
+            try:
+                conn.search(
+                    search_base=base_dn,
+                    search_filter=f"(objectClass={obj_class})",
+                    search_scope=SUBTREE,
+                    attributes=["distinguishedName", "cn"],
+                    size_limit=200,  # Limit per search to avoid timeouts
+                )
+                for entry in conn.entries:
+                    dn = str(entry.entry_dn)
+                    if dn not in seen_dns:
+                        seen_dns.add(dn)
+                        cn = (
+                            str(entry.cn)
+                            if hasattr(entry, "cn")
+                            else dn.split(",")[0].replace("CN=", "")
+                        )
+                        groups.append({"dn": dn, "name": cn})
+            except LDAPException as e:
+                # This objectClass doesn't exist on this server - expected
+                logger.debug(f"Group search for {obj_class} failed: {e}")
 
         conn.unbind()
 
