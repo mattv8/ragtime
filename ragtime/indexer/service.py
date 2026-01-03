@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Dict, List, Optional
 
 from ragtime.config import settings
+from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.logging import get_logger
 from ragtime.indexer.models import (
     AppSettings,
@@ -124,6 +125,45 @@ class IndexerService:
         self._active_jobs: Dict[str, IndexJob] = {}
         # Cancellation flags for cooperative cancellation
         self._cancellation_flags: Dict[str, bool] = {}
+
+    async def _reinitialize_rag_components(self) -> None:
+        """
+        Reinitialize RAG components to load newly created indexes.
+
+        Called after successful index creation to make the new index
+        immediately available for search without requiring a server restart.
+
+        Note: The import of `rag` is done inside this method rather than at
+        module level to avoid potential circular import issues, as
+        rag.components imports from indexer.repository. Since this method
+        is called only once per index creation, the performance impact is
+        negligible.
+        """
+        try:
+            from ragtime.rag.components import rag
+
+            logger.info("Reinitializing RAG components to load new index")
+            invalidate_settings_cache()
+            await rag.initialize()
+            logger.info("RAG components reinitialized successfully")
+        except Exception as e:
+            # Log but don't fail the indexing job if RAG reinitialization fails
+            logger.warning(f"Failed to reinitialize RAG components: {e}")
+
+    async def _maybe_reinitialize_rag(self, job: IndexJob) -> None:
+        """
+        Conditionally reinitialize RAG components for completed jobs.
+
+        This is called in finally blocks after job status is persisted to ensure:
+        1. Job status is saved before reinitialization
+        2. Reinitialize errors don't affect job completion status
+        3. New index is loaded even if there were warnings during indexing
+
+        Args:
+            job: The index job to check
+        """
+        if job.status == IndexStatus.COMPLETED:
+            await self._reinitialize_rag_components()
 
     async def recover_interrupted_jobs(self) -> int:
         """
@@ -657,6 +697,9 @@ class IndexerService:
             await repository.update_job(job)
             self._active_jobs.pop(job.id, None)
 
+            # Reinitialize RAG components if job completed successfully
+            await self._maybe_reinitialize_rag(job)
+
     async def _process_git(self, job: IndexJob):
         """Process a git repository."""
         temp_dir = Path(tempfile.mkdtemp())
@@ -792,6 +835,9 @@ class IndexerService:
             self._cancellation_flags.pop(job.id, None)
             await repository.update_job(job)
             self._active_jobs.pop(job.id, None)
+
+            # Reinitialize RAG components if job completed successfully
+            await self._maybe_reinitialize_rag(job)
 
     def _extract_archive(self, archive_path: Path, extract_dir: Path) -> None:
         """Extract an archive file (zip, tar, tar.gz, tar.bz2) to a directory."""
