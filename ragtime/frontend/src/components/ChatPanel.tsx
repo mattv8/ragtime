@@ -1217,12 +1217,16 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
                 </>
               )}
 
-              {/* Continue Button - shows after completed assistant response */}
+              {/* Continue Button - shows only when max iterations reached or connection error */}
               {!isStreaming && activeConversation && activeConversation.messages.length > 0 &&
-               activeConversation.messages[activeConversation.messages.length - 1].role === 'assistant' && (
+               activeConversation.messages[activeConversation.messages.length - 1].role === 'assistant' &&
+               (hitMaxIterations || isConnectionError) && (
                 <div className="chat-continue-inline">
                   {hitMaxIterations && (
                     <span className="chat-continue-reason">Max iterations reached</span>
+                  )}
+                  {isConnectionError && !hitMaxIterations && (
+                    <span className="chat-continue-reason">Connection interrupted</span>
                   )}
                   <button
                     className="btn btn-continue-inline"
@@ -1264,6 +1268,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
               />
               {isStreaming ? (
                 <button
+                  type="button"
                   className="btn chat-stop-btn"
                   onClick={stopStreaming}
                 >
@@ -1271,9 +1276,10 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
                 </button>
               ) : (
                 <button
+                  type="button"
                   className="btn chat-send-btn"
                   onClick={sendMessage}
-                  disabled={!inputValue.trim()}
+                  disabled={!inputValue.trim() || !activeConversation}
                 >
                   Send
                 </button>

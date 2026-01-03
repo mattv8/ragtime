@@ -279,16 +279,16 @@ export function JobsTable({ jobs, filesystemJobs = [], loading, error, onJobsCha
 
                 return (
                   <tr key={`${job.type}-${job.id}`}>
-                    <td>
+                    <td data-label="ID">
                       <code>{job.id.slice(0, 8)}</code>
                     </td>
-                    <td>{job.name}</td>
-                    <td>
+                    <td data-label="Name">{job.name}</td>
+                    <td data-label="Type">
                       <span className={`badge type-${job.type}`}>
                         {job.type === 'document' ? 'Document' : 'Filesystem'}
                       </span>
                     </td>
-                    <td>
+                    <td data-label="Status">
                       {job.status === 'failed' && job.errorMessage ? (
                         <button
                           className="badge failed clickable"
@@ -301,7 +301,7 @@ export function JobsTable({ jobs, filesystemJobs = [], loading, error, onJobsCha
                         <span className={`badge ${job.status}`}>{job.status}</span>
                       )}
                     </td>
-                    <td className="progress-cell">
+                    <td data-label="Progress" className="progress-cell">
                       {(job.status === 'processing' || job.status === 'indexing') ? (
                         <div className="progress-container">
                           <div className="progress-bar">
@@ -360,8 +360,8 @@ export function JobsTable({ jobs, filesystemJobs = [], loading, error, onJobsCha
                         <span className="progress-failed">--</span>
                       )}
                     </td>
-                    <td>{formatDate(job.createdAt)}</td>
-                    <td className="actions-cell">
+                    <td data-label="Created">{formatDate(job.createdAt)}</td>
+                    <td data-label="Actions" className="actions-cell">
                       {actionLoading === job.id ? (
                         <span className="action-loading">...</span>
                       ) : (

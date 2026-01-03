@@ -3450,9 +3450,9 @@ textarea:focus {
   color: var(--color-text-primary);
   font-size: 1rem;
   font-family: inherit;
-  resize: none;
-  min-height: 44px;
-  max-height: 120px;
+  resize: vertical;
+  min-height: 48px;
+  max-height: 300px;
 }
 
 .chat-input:focus {
@@ -3844,26 +3844,6 @@ textarea:focus {
   border-left: 2px solid var(--color-accent-cyan);
 }
 
-/* Responsive */
-@media (max-width: 768px) {
-  .chat-sidebar {
-    position: absolute;
-    left: 0;
-    top: 0;
-    bottom: 0;
-    z-index: 5;
-  }
-
-  .chat-sidebar:not(.open) {
-    transform: translateX(-100%);
-    margin-right: 0;
-  }
-
-  .chat-message {
-    max-width: 95%;
-  }
-}
-
 /* =============================================================================
    Authentication Styles
    ============================================================================= */
@@ -4075,4 +4055,1123 @@ textarea:focus {
   margin-top: 20px;
   padding-top: 16px;
   border-top: 1px solid var(--color-border);
+}
+
+/* =============================================================================
+   RESPONSIVE / MOBILE STYLES
+   ============================================================================= */
+
+/* Tablet breakpoint (768px and below) */
+@media (max-width: 768px) {
+  /* Base adjustments */
+  body {
+    padding: 10px;
+  }
+
+  .container {
+    max-width: 100%;
+    padding: 0;
+  }
+
+  /* Top Navigation - Stack on mobile */
+  .topnav {
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 12px 16px;
+    margin: 10px auto 16px;
+  }
+
+  .topnav-brand {
+    font-size: 1.1rem;
+    flex: 1;
+  }
+
+  .topnav-links {
+    order: 3;
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: center;
+  }
+
+  .topnav-link {
+    padding: 8px 12px;
+    font-size: 0.85rem;
+  }
+
+  .topnav-user {
+    gap: 8px;
+  }
+
+  .topnav-username {
+    font-size: 0.8rem;
+  }
+
+  .admin-badge {
+    font-size: 0.6rem;
+    padding: 2px 6px;
+  }
+
+  /* Cards */
+  .card {
+    padding: 16px;
+    margin-bottom: 16px;
+    border-radius: 10px;
+  }
+
+  .card h2 {
+    font-size: 1.1rem;
+  }
+
+  /* Form layouts - Stack grid columns */
+  .row,
+  .form-row,
+  .form-row-3 {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .form-group-small {
+    max-width: none;
+  }
+
+  /* Buttons */
+  .btn {
+    padding: 10px 16px;
+    font-size: 0.9rem;
+  }
+
+  .btn-sm {
+    padding: 6px 12px;
+    font-size: 0.8rem;
+  }
+
+  .form-actions {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .form-actions button {
+    width: 100%;
+  }
+
+  /* Tables - Compact card layout for tablet/mobile */
+  .jobs-table {
+    display: block;
+    overflow: visible;
+  }
+
+  .jobs-table thead {
+    display: none;
+  }
+
+  .jobs-table tbody {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .jobs-table tr {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 12px;
+    padding: 10px 12px;
+    background: rgba(0, 0, 0, 0.25);
+    border-radius: 8px;
+    border: 1px solid var(--color-border);
+    align-items: center;
+  }
+
+  .jobs-table td {
+    display: flex;
+    justify-content: flex-start;
+    align-items: center;
+    padding: 2px 0;
+    border-bottom: none;
+    white-space: normal;
+    gap: 6px;
+    font-size: 0.8rem;
+  }
+
+  .jobs-table td:last-child {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+    padding-top: 6px;
+    margin-top: 2px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  .jobs-table td::before {
+    content: attr(data-label) ": ";
+    font-weight: 500;
+    color: var(--color-text-secondary);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+  }
+
+  /* Hide labels for type and status - badges are self-explanatory */
+  .jobs-table td:nth-child(3)::before,
+  .jobs-table td:nth-child(4)::before {
+    display: none;
+  }
+
+  /* Progress cell spans full width */
+  .jobs-table td.progress-cell {
+    grid-column: 1 / -1;
+    justify-content: center;
+  }
+
+  .jobs-table td.progress-cell::before {
+    display: none;
+  }
+
+  /* Hide progress row if empty/placeholder */
+  .jobs-table td.progress-cell:has(.progress-failed),
+  .jobs-table td.progress-cell:has(.progress-pending) {
+    display: none;
+  }
+
+  /* Actions cell */
+  .jobs-table td.actions-cell::before {
+    display: none;
+  }
+
+  .progress-cell {
+    min-width: auto;
+  }
+
+  /* Index items - Stack layout */
+  .index-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 14px;
+  }
+
+  .index-info h3 {
+    font-size: 1rem;
+  }
+
+  .index-actions {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .index-actions .btn {
+    flex: 1;
+    min-width: 70px;
+  }
+
+  /* Filesystem panel */
+  .filesystem-index-panel .index-item {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .filesystem-index-panel .index-actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  /* Meta pills - Wrap better */
+  .index-meta-pills,
+  .meta-pills {
+    gap: 4px;
+  }
+
+  .meta-pill {
+    font-size: 0.7rem;
+    padding: 2px 8px;
+  }
+
+  .meta-pill.path {
+    max-width: 100%;
+    word-break: break-all;
+    white-space: normal;
+  }
+
+  /* Tool cards - Full width */
+  .tools-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .tool-card {
+    padding: 14px;
+  }
+
+  .tool-card-header {
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .tool-card-actions {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .tool-card-actions .btn {
+    flex: 1;
+    min-width: 60px;
+  }
+
+  .tool-card-description {
+    -webkit-line-clamp: 2;
+    max-height: 2.8rem;
+  }
+
+  /* Modals */
+  .modal,
+  .modal-content {
+    width: 95%;
+    max-width: none;
+    margin: 10px;
+  }
+
+  .modal-header {
+    padding: 14px 16px;
+  }
+
+  .modal-header h3 {
+    font-size: 1rem;
+  }
+
+  .modal-body {
+    padding: 16px;
+  }
+
+  .modal-footer {
+    padding: 14px 16px;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .modal-footer button {
+    flex: 1;
+    min-width: 100px;
+  }
+
+  /* Wizard */
+  .wizard-card {
+    margin: 0 0 16px 0;
+    padding: 16px;
+  }
+
+  .wizard-progress {
+    gap: 6px;
+    padding-left: 20px;
+    padding-right: 20px;
+    margin-left: -20px;
+    margin-right: -20px;
+  }
+
+  .wizard-step {
+    padding: 6px 10px;
+    font-size: 0.8rem;
+  }
+
+  .step-number {
+    width: 20px;
+    height: 20px;
+    font-size: 0.7rem;
+  }
+
+  .wizard-content {
+    min-height: 200px;
+  }
+
+  .wizard-footer {
+    flex-direction: column-reverse;
+    gap: 10px;
+  }
+
+  .wizard-footer .btn {
+    width: 100%;
+  }
+
+  /* Tool type selection */
+  .tool-type-option {
+    padding: 14px;
+    gap: 12px;
+  }
+
+  .tool-type-option-icon {
+    font-size: 1.5rem;
+  }
+
+  /* Connection tabs */
+  .connection-tabs {
+    flex-wrap: wrap;
+  }
+
+  .connection-tab {
+    flex: 1 1 40%;
+    min-width: 120px;
+    text-align: center;
+  }
+
+  /* SSH key tabs */
+  .ssh-key-tabs {
+    flex-wrap: wrap;
+  }
+
+  .ssh-key-tab {
+    flex: 1 1 45%;
+    min-width: 100px;
+    text-align: center;
+    padding: 8px 10px;
+    font-size: 0.8rem;
+  }
+
+  /* Mount type tabs */
+  .mount-type-tabs {
+    flex-direction: column;
+  }
+
+  .mount-type-tab {
+    width: 100%;
+  }
+
+  /* Chat panel */
+  .chat-panel {
+    height: calc(100vh - 120px);
+    flex-direction: column;
+    position: relative;
+  }
+
+  /* Chat sidebar - Overlay mode */
+  .chat-sidebar {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 280px;
+    min-width: 280px;
+    z-index: 100;
+    box-shadow: 2px 0 20px rgba(0, 0, 0, 0.5);
+    background: var(--color-bg-secondary);
+  }
+
+  .chat-sidebar:not(.open) {
+    transform: translateX(-100%);
+    margin-right: 0;
+    box-shadow: none;
+    pointer-events: none;
+  }
+
+  .chat-sidebar-expand {
+    z-index: 50;
+  }
+
+  /* Chat main area - ensure it's above collapsed sidebar */
+  .chat-main {
+    z-index: 1;
+    position: relative;
+  }
+
+  /* Chat header */
+  .chat-header {
+    padding: 10px 14px;
+    gap: 10px;
+    flex-wrap: wrap;
+    z-index: 2;
+  }
+
+  .chat-header-info {
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  .chat-header-info h2 {
+    font-size: 1rem;
+    min-width: 100px;
+    flex: 1;
+  }
+
+  .chat-model-select {
+    max-width: 150px;
+    font-size: 0.75rem;
+  }
+
+  .chat-header-actions {
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .chat-toggle-control {
+    font-size: 0.8rem;
+    gap: 0.5rem;
+  }
+
+  .chat-toggle-label {
+    display: none; /* Hide labels, keep toggles */
+  }
+
+  /* Chat messages */
+  .chat-messages {
+    padding: 14px;
+    gap: 12px;
+  }
+
+  .chat-message {
+    max-width: 92%;
+  }
+
+  .chat-message-content {
+    padding: 10px 12px;
+  }
+
+  /* Chat input */
+  .chat-input-area {
+    padding: 12px 14px;
+    gap: 10px;
+    flex-wrap: wrap;
+    z-index: 2;
+    position: relative;
+  }
+
+  .chat-input {
+    flex: 1 1 100%;
+    width: 100%;
+    min-height: 80px;
+    max-height: 200px;
+    padding: 12px 14px;
+    font-size: 1rem;
+    resize: vertical;
+  }
+
+  .chat-send-btn,
+  .chat-stop-btn {
+    flex: 1;
+    padding: 12px 16px;
+    min-width: 80px;
+  }
+
+  /* Conversation list */
+  .chat-conversation-item {
+    padding: 10px;
+  }
+
+  .chat-conversation-title {
+    font-size: 0.9rem;
+  }
+
+  /* Settings panel */
+  fieldset {
+    padding: 12px;
+  }
+
+  fieldset legend {
+    font-size: 0.9rem;
+  }
+
+  .checkbox-group {
+    gap: 12px;
+  }
+
+  /* Input with button */
+  .input-with-button {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .input-with-button input {
+    border-radius: 8px;
+  }
+
+  .input-with-button .btn-test {
+    border-radius: 8px;
+    width: 100%;
+  }
+
+  /* Connection test row */
+  .connection-test-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  /* File input */
+  .file-input-wrapper {
+    padding: 24px;
+  }
+
+  .file-input-wrapper .icon {
+    font-size: 2rem;
+  }
+
+  /* Tabs */
+  .tabs {
+    flex-wrap: wrap;
+  }
+
+  .tab {
+    flex: 1;
+    min-width: 80px;
+    text-align: center;
+    padding: 8px 12px;
+    font-size: 0.9rem;
+  }
+
+  /* Wizard tabs */
+  .wizard-tabs {
+    width: 100%;
+    display: flex;
+  }
+
+  .wizard-tab {
+    flex: 1;
+    text-align: center;
+  }
+
+  /* Login */
+  .login-card {
+    padding: 24px;
+  }
+
+  .login-title {
+    font-size: 1.6rem;
+  }
+
+  /* Browser entries */
+  .browser-entries {
+    max-height: 180px;
+  }
+
+  .browser-entry {
+    padding: 10px 12px;
+  }
+
+  /* Directory browser */
+  .browser-path-wrapper {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .browser-path-input {
+    width: 100%;
+  }
+
+  /* API info box */
+  .api-info-box {
+    padding: 12px;
+  }
+
+  .api-info-box code {
+    display: block;
+    margin-top: 4px;
+    word-break: break-all;
+    white-space: normal;
+  }
+
+  /* Empty states */
+  .empty-state {
+    padding: 24px 16px;
+  }
+
+  /* Progress details */
+  .progress-details {
+    font-size: 0.7rem;
+  }
+
+  /* Model filter modal */
+  .model-filter-list {
+    max-height: 300px;
+  }
+
+  .model-filter-item {
+    padding: 8px 10px;
+  }
+
+  /* Context meter */
+  .chat-context-meter {
+    display: none; /* Hide on mobile to save space */
+  }
+
+  /* Section descriptions */
+  .section-description {
+    font-size: 0.8rem;
+  }
+}
+
+/* Small phone breakpoint (480px and below) */
+@media (max-width: 480px) {
+  body {
+    padding: 6px;
+  }
+
+  .topnav {
+    padding: 10px 12px;
+    margin: 6px auto 12px;
+  }
+
+  .topnav-brand {
+    font-size: 1rem;
+  }
+
+  .topnav-links {
+    gap: 4px;
+  }
+
+  .topnav-link {
+    padding: 6px 10px;
+    font-size: 0.8rem;
+  }
+
+  .topnav-username {
+    display: none; /* Hide username, keep logout */
+  }
+
+  .card {
+    padding: 12px;
+    border-radius: 8px;
+  }
+
+  .card h2 {
+    font-size: 1rem;
+  }
+
+  /* Buttons become smaller */
+  .btn {
+    padding: 8px 12px;
+    font-size: 0.85rem;
+  }
+
+  .btn-sm {
+    padding: 5px 10px;
+    font-size: 0.75rem;
+  }
+
+  /* Stack index item completely */
+  .index-item {
+    padding: 12px;
+  }
+
+  .index-info h3 {
+    font-size: 0.95rem;
+  }
+
+  .index-meta {
+    font-size: 0.75rem;
+  }
+
+  /* Tool cards */
+  .tool-card-header {
+    gap: 8px;
+  }
+
+  .tool-card-icon {
+    font-size: 1.2rem;
+  }
+
+  .tool-card-title h3 {
+    font-size: 0.9rem;
+  }
+
+  .tool-card-type {
+    font-size: 0.7rem;
+  }
+
+  .tool-card-meta {
+    gap: 10px;
+    font-size: 0.75rem;
+  }
+
+  /* Chat panel */
+  .chat-panel {
+    height: calc(100vh - 100px);
+  }
+
+  .chat-sidebar {
+    width: 100%;
+    min-width: 100%;
+  }
+
+  .chat-header {
+    padding: 8px 12px;
+  }
+
+  .chat-header-info h2 {
+    font-size: 0.9rem;
+    min-width: 80px;
+  }
+
+  .chat-model-badge,
+  .chat-background-indicator {
+    font-size: 0.65rem;
+    padding: 3px 6px;
+  }
+
+  .chat-model-select {
+    max-width: 120px;
+    font-size: 0.7rem;
+  }
+
+  .chat-messages {
+    padding: 10px;
+    gap: 10px;
+  }
+
+  .chat-message {
+    max-width: 96%;
+  }
+
+  .chat-message-content {
+    padding: 8px 10px;
+    border-radius: 10px;
+  }
+
+  .chat-message-text {
+    font-size: 0.9rem;
+  }
+
+  .chat-input-area {
+    padding: 10px;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .chat-input {
+    flex: 1 1 100%;
+    width: 100%;
+    min-height: 70px;
+    max-height: 180px;
+    padding: 12px;
+    font-size: 0.95rem;
+    resize: vertical;
+  }
+
+  .chat-send-btn,
+  .chat-stop-btn {
+    flex: 1;
+    padding: 12px 16px;
+    min-width: auto;
+  }
+
+  /* Modal takes full screen on small phones */
+  .modal-overlay {
+    padding: 10px;
+  }
+
+  .modal,
+  .modal-content {
+    width: 100%;
+    max-height: 95vh;
+    border-radius: 10px;
+  }
+
+  .modal-header {
+    padding: 12px 14px;
+  }
+
+  .modal-body {
+    padding: 14px;
+  }
+
+  /* Wizard */
+  .wizard-card {
+    padding: 12px;
+  }
+
+  .wizard-progress {
+    padding-left: 10px;
+    padding-right: 10px;
+    margin-left: -10px;
+    margin-right: -10px;
+  }
+
+  .wizard-step {
+    padding: 4px 8px;
+    font-size: 0.75rem;
+  }
+
+  .step-number {
+    width: 18px;
+    height: 18px;
+    font-size: 0.65rem;
+  }
+
+  .step-title {
+    font-size: 0.75rem;
+  }
+
+  /* Tool type options */
+  .tool-type-option {
+    padding: 12px;
+    gap: 10px;
+    flex-direction: column;
+    text-align: center;
+  }
+
+  .tool-type-option-icon {
+    font-size: 1.8rem;
+  }
+
+  /* Login */
+  .login-card {
+    padding: 20px 16px;
+  }
+
+  .login-title {
+    font-size: 1.4rem;
+  }
+
+  .login-subtitle {
+    font-size: 0.85rem;
+  }
+
+  /* Fieldsets */
+  fieldset {
+    padding: 10px;
+  }
+
+  fieldset legend {
+    font-size: 0.85rem;
+    padding: 0 6px;
+  }
+
+  /* Labels */
+  .form-group label {
+    font-size: 0.85rem;
+  }
+
+  /* Inputs */
+  input[type="text"],
+  input[type="number"],
+  input[type="password"],
+  select,
+  textarea {
+    padding: 10px;
+    font-size: 0.9rem;
+  }
+
+  /* Badges */
+  .badge {
+    padding: 3px 8px;
+    font-size: 0.7rem;
+  }
+
+  /* Toggle switch - slightly smaller */
+  .toggle-switch {
+    width: 38px;
+    height: 20px;
+  }
+
+  .toggle-slider:before {
+    height: 14px;
+    width: 14px;
+  }
+
+  .toggle-switch input:checked + .toggle-slider:before {
+    transform: translateX(18px);
+  }
+
+  /* Tables - inherit compact layout from 768px, just smaller fonts */
+  .jobs-table tr {
+    padding: 8px 10px;
+    gap: 2px 10px;
+  }
+
+  .jobs-table td {
+    font-size: 0.75rem;
+  }
+
+  .jobs-table td::before {
+    font-size: 0.65rem;
+  }
+
+  /* Action buttons in table */
+  .actions-cell {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: flex-end;
+  }
+
+  .action-btn {
+    padding: 5px 8px;
+    font-size: 0.65rem;
+  }
+
+  /* Tool call display */
+  .tool-call-code {
+    font-size: 0.75rem;
+    max-height: 150px;
+    padding: 8px;
+  }
+
+  .tool-call-header {
+    padding: 6px 8px;
+    font-size: 0.8rem;
+  }
+
+  /* Markdown tables in chat */
+  .markdown-content table {
+    font-size: 0.75rem;
+  }
+
+  .markdown-content th,
+  .markdown-content td {
+    padding: 4px 6px;
+  }
+
+  /* Code blocks */
+  .markdown-content pre {
+    padding: 8px;
+    font-size: 0.75rem;
+  }
+
+  .markdown-content code {
+    font-size: 0.8em;
+    padding: 1px 4px;
+  }
+}
+
+/* Landscape phone adjustments */
+@media (max-height: 500px) and (orientation: landscape) {
+  .chat-panel {
+    height: calc(100vh - 80px);
+  }
+
+  .chat-sidebar {
+    width: 200px;
+    min-width: 200px;
+  }
+
+  .chat-messages {
+    padding: 10px;
+  }
+
+  .chat-input-area {
+    padding: 8px 10px;
+  }
+
+  .login-card {
+    padding: 20px;
+    max-height: 90vh;
+    overflow-y: auto;
+  }
+
+  .modal {
+    max-height: 90vh;
+  }
+}
+
+/* High DPI / Retina displays - ensure touch targets */
+@media (hover: none) and (pointer: coarse) {
+  /* Ensure minimum touch target size (44px recommended) */
+  .btn,
+  .topnav-link,
+  .tab,
+  .wizard-step,
+  .connection-tab,
+  .ssh-key-tab,
+  .mount-type-tab,
+  .wizard-tab {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .toggle-switch {
+    min-width: 44px;
+    min-height: 28px;
+  }
+
+  .toggle-slider:before {
+    height: 20px;
+    width: 20px;
+    left: 3px;
+    bottom: 3px;
+  }
+
+  .toggle-switch input:checked + .toggle-slider:before {
+    transform: translateX(16px);
+  }
+
+  /* Larger hit areas for action buttons */
+  .action-btn,
+  .chat-action-btn {
+    min-height: 36px;
+    min-width: 36px;
+  }
+
+  /* Browser entries need larger touch targets */
+  .browser-entry {
+    min-height: 44px;
+  }
+
+  /* Checkbox labels */
+  .checkbox-label {
+    min-height: 44px;
+  }
+
+  .checkbox-label input[type="checkbox"] {
+    width: 22px;
+    height: 22px;
+  }
+
+  /* Tool card actions */
+  .tool-card-actions .btn {
+    min-height: 40px;
+  }
+
+  /* Model filter items */
+  .model-filter-item {
+    min-height: 48px;
+  }
+
+  /* Conversation items */
+  .chat-conversation-item {
+    min-height: 56px;
+  }
+}
+
+/* Print styles */
+@media print {
+  body {
+    background: white;
+    color: black;
+  }
+
+  .topnav,
+  .chat-sidebar,
+  .chat-input-area,
+  .btn,
+  .action-btn,
+  .toggle-switch {
+    display: none !important;
+  }
+
+  .chat-panel {
+    height: auto;
+  }
+
+  .chat-messages {
+    overflow: visible;
+  }
+
+  .card {
+    break-inside: avoid;
+    box-shadow: none;
+    border: 1px solid #ccc;
+  }
+}
+
+/* Reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
