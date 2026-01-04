@@ -9,8 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional
 
 import httpx
-from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException,
-                     UploadFile)
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
@@ -18,9 +17,15 @@ from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit
 from ragtime.core.security import get_current_user, require_admin
 from ragtime.core.validation import require_valid_embedding_provider
-from ragtime.indexer.models import (AppSettings, CreateIndexRequest,
-                                    IndexConfig, IndexInfo, IndexJobResponse,
-                                    IndexStatus, UpdateSettingsRequest)
+from ragtime.indexer.models import (
+    AppSettings,
+    CreateIndexRequest,
+    IndexConfig,
+    IndexInfo,
+    IndexJobResponse,
+    IndexStatus,
+    UpdateSettingsRequest,
+)
 from ragtime.indexer.repository import repository
 from ragtime.indexer.service import indexer
 
@@ -553,11 +558,15 @@ async def get_embedding_status(_user: User = Depends(require_admin)):
 # Tool Configuration Endpoints (Admin only)
 # -----------------------------------------------------------------------------
 
-from ragtime.indexer.models import (CreateToolConfigRequest,
-                                    PostgresDiscoverRequest,
-                                    PostgresDiscoverResponse, ToolConfig,
-                                    ToolTestRequest, ToolType,
-                                    UpdateToolConfigRequest)
+from ragtime.indexer.models import (
+    CreateToolConfigRequest,
+    PostgresDiscoverRequest,
+    PostgresDiscoverResponse,
+    ToolConfig,
+    ToolTestRequest,
+    ToolType,
+    UpdateToolConfigRequest,
+)
 
 
 class SSHKeyPairResponse(BaseModel):
@@ -589,6 +598,9 @@ async def create_tool_config(
     request: CreateToolConfigRequest, _user: User = Depends(require_admin)
 ):
     """Create a new tool configuration. Admin only."""
+    from ragtime.core.app_settings import invalidate_settings_cache
+    from ragtime.rag import rag
+
     config = ToolConfig(
         name=request.name,
         tool_type=request.tool_type,
@@ -598,7 +610,13 @@ async def create_tool_config(
         timeout=request.timeout,
         allow_write=request.allow_write,
     )
-    return await repository.create_tool_config(config)
+    result = await repository.create_tool_config(config)
+
+    # Reinitialize RAG agent to make the new tool available immediately
+    invalidate_settings_cache()
+    await rag.initialize()
+
+    return result
 
 
 # Heartbeat models - must be defined before the route
@@ -694,10 +712,18 @@ async def update_tool_config(
     tool_id: str, request: UpdateToolConfigRequest, _user: User = Depends(require_admin)
 ):
     """Update an existing tool configuration. Admin only."""
+    from ragtime.core.app_settings import invalidate_settings_cache
+    from ragtime.rag import rag
+
     updates = request.model_dump(exclude_unset=True)
     config = await repository.update_tool_config(tool_id, updates)
     if config is None:
         raise HTTPException(status_code=404, detail="Tool configuration not found")
+
+    # Reinitialize RAG agent to pick up the tool changes
+    invalidate_settings_cache()
+    await rag.initialize()
+
     return config
 
 
@@ -709,6 +735,9 @@ async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin))
     For Odoo tools, also disconnects from the Docker network if no other
     tools are using it.
     """
+    from ragtime.core.app_settings import invalidate_settings_cache
+    from ragtime.rag import rag
+
     # Get the tool config before deleting to check for network cleanup
     tool = await repository.get_tool_config(tool_id)
     if tool is None:
@@ -746,6 +775,10 @@ async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin))
                 logger.warning(
                     f"Failed to disconnect from network '{docker_network}': {e}"
                 )
+
+    # Reinitialize RAG agent to remove the deleted tool
+    invalidate_settings_cache()
+    await rag.initialize()
 
     return {"message": "Tool configuration deleted"}
 
@@ -961,6 +994,7 @@ async def generate_ssh_keypair(
 
 
 from ragtime.indexer.filesystem_service import filesystem_indexer
+
 # =============================================================================
 # Filesystem Indexer Routes (must be before {tool_id} routes)
 # =============================================================================
@@ -1352,8 +1386,7 @@ async def _test_odoo_ssh_connection(config: dict) -> ToolTestResponse:
     """Test Odoo shell connection via SSH using Paramiko."""
     import asyncio
 
-    from ragtime.core.ssh import (SSHConfig, execute_ssh_command,
-                                  test_ssh_connection)
+    from ragtime.core.ssh import SSHConfig, execute_ssh_command, test_ssh_connection
 
     ssh_host = config.get("ssh_host", "")
     ssh_port = config.get("ssh_port", 22)
@@ -2600,9 +2633,11 @@ async def browse_smb_share(
 # Filesystem Indexer Endpoints (Admin only)
 # -----------------------------------------------------------------------------
 
-from ragtime.indexer.models import (FilesystemIndexJobResponse,
-                                    FilesystemIndexStatus,
-                                    TriggerFilesystemIndexRequest)
+from ragtime.indexer.models import (
+    FilesystemIndexJobResponse,
+    FilesystemIndexStatus,
+    TriggerFilesystemIndexRequest,
+)
 
 
 class FilesystemIndexStatsResponse(BaseModel):
@@ -2951,8 +2986,10 @@ class EmbeddingModelsResponse(BaseModel):
 
 # OpenAI embedding models - prioritized list (from LiteLLM community data)
 # These are the recommended models for most use cases
-from ragtime.core.embedding_models import (OPENAI_EMBEDDING_PRIORITY,
-                                           get_embedding_models)
+from ragtime.core.embedding_models import (
+    OPENAI_EMBEDDING_PRIORITY,
+    get_embedding_models,
+)
 
 OPENAI_DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
@@ -3273,10 +3310,13 @@ async def _fetch_anthropic_models(api_key: str) -> LLMModelsResponse:
 # Conversation/Chat Endpoints
 # =============================================================================
 
-from ragtime.indexer.models import (ChatMessage, Conversation,
-                                    ConversationResponse,
-                                    CreateConversationRequest,
-                                    SendMessageRequest)
+from ragtime.indexer.models import (
+    ChatMessage,
+    Conversation,
+    ConversationResponse,
+    CreateConversationRequest,
+    SendMessageRequest,
+)
 
 
 @router.get(
