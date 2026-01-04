@@ -892,27 +892,34 @@ class IndexerService:
 
         config = job.config
 
-        # Collect all files to process
-        all_files = []
-        for pattern in config.file_patterns:
-            # Use removeprefix instead of lstrip to avoid stripping too many characters
-            # lstrip("**/") on "**/*.py" incorrectly gives ".py", removeprefix gives "*.py"
-            glob_pattern = pattern.removeprefix("**/").removeprefix("*/")
-            logger.debug(f"Globbing with pattern: {glob_pattern} (original: {pattern})")
-            for file_path in source_dir.rglob(glob_pattern):
-                if file_path.is_file():
-                    rel_path = file_path.relative_to(source_dir)
+        # Collect all files to process (run in thread pool as rglob can be slow on large repos)
+        def collect_files_sync() -> List[Path]:
+            """Synchronous file collection - runs in thread pool."""
+            files = []
+            for pattern in config.file_patterns:
+                # Use removeprefix instead of lstrip to avoid stripping too many characters
+                # lstrip("**/") on "**/*.py" incorrectly gives ".py", removeprefix gives "*.py"
+                glob_pattern = pattern.removeprefix("**/").removeprefix("*/")
+                logger.debug(
+                    f"Globbing with pattern: {glob_pattern} (original: {pattern})"
+                )
+                for file_path in source_dir.rglob(glob_pattern):
+                    if file_path.is_file():
+                        rel_path = file_path.relative_to(source_dir)
 
-                    # Check excludes - also use removeprefix instead of lstrip
-                    skip = False
-                    for exc_pattern in config.exclude_patterns:
-                        clean_exc = exc_pattern.removeprefix("**/")
-                        if fnmatch.fnmatch(str(rel_path), clean_exc):
-                            skip = True
-                            break
+                        # Check excludes - also use removeprefix instead of lstrip
+                        skip = False
+                        for exc_pattern in config.exclude_patterns:
+                            clean_exc = exc_pattern.removeprefix("**/")
+                            if fnmatch.fnmatch(str(rel_path), clean_exc):
+                                skip = True
+                                break
 
-                    if not skip and file_path not in all_files:
-                        all_files.append(file_path)
+                        if not skip and file_path not in files:
+                            files.append(file_path)
+            return files
+
+        all_files = await asyncio.to_thread(collect_files_sync)
 
         job.total_files = len(all_files)
         await repository.update_job(job)
@@ -977,8 +984,17 @@ class IndexerService:
         }
 
         # Load documents
+        # Note: TextLoader.load() is synchronous and can block the event loop,
+        # especially with autodetect_encoding=True which uses chardet. We run
+        # it in a thread pool to avoid blocking other async operations.
         documents = []
         skipped_binary = 0
+
+        def load_file_sync(file_path: Path) -> List:
+            """Synchronous file loading - runs in thread pool."""
+            loader = TextLoader(str(file_path), autodetect_encoding=True)
+            return loader.load()
+
         for file_path in all_files:
             # Check for cancellation
             if self._is_cancelled(job.id):
@@ -992,8 +1008,8 @@ class IndexerService:
                 continue
 
             try:
-                loader = TextLoader(str(file_path), autodetect_encoding=True)
-                docs = loader.load()
+                # Run synchronous file loading in thread pool to avoid blocking
+                docs = await asyncio.to_thread(load_file_sync, file_path)
 
                 # Add source metadata
                 rel_path_str = str(file_path.relative_to(source_dir))
@@ -1004,7 +1020,7 @@ class IndexerService:
                 documents.extend(docs)
                 job.processed_files += 1
 
-                # Update progress periodically
+                # Update progress periodically and yield to event loop
                 if job.processed_files % 50 == 0:
                     await repository.update_job(job)
                     logger.info(f"Loaded {job.processed_files}/{job.total_files} files")
@@ -1022,14 +1038,14 @@ class IndexerService:
 
         logger.info(f"Loaded {len(documents)} documents, splitting into chunks...")
 
-        # Split into chunks
+        # Split into chunks (run in thread pool to avoid blocking with many documents)
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=config.chunk_size,
             chunk_overlap=config.chunk_overlap,
             length_function=len,
             separators=["\n\n", "\n", " ", ""],
         )
-        chunks = splitter.split_documents(documents)
+        chunks = await asyncio.to_thread(splitter.split_documents, documents)
         job.total_chunks = len(chunks)
         await repository.update_job(job)
 
