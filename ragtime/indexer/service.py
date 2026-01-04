@@ -14,7 +14,6 @@ import re
 import shutil
 import subprocess
 import tarfile
-import tempfile
 import uuid
 import zipfile
 from datetime import datetime
@@ -329,9 +328,20 @@ class IndexerService:
         self._active_jobs[job.id] = job
 
         if job.source_type == "git":
-            # Git jobs for private repos cannot be resumed (token was not persisted for security)
-            # We'll attempt the clone - if it fails with auth error, provide a clear message
-            asyncio.create_task(self._process_git(job))
+            # Check if the cloned repo still exists in _tmp from a previous attempt
+            tmp_path = UPLOAD_TMP_DIR / job.id
+            clone_dir = tmp_path / "repo"
+            clone_complete_marker = tmp_path / ".clone_complete"
+
+            if clone_dir.exists() and clone_complete_marker.exists():
+                # Clone completed previously, skip directly to indexing
+                logger.info(f"Found existing clone for job {job.id}, resuming indexing")
+                asyncio.create_task(self._process_git(job, skip_clone=True))
+            else:
+                # Need to re-clone - clean up any partial clone first
+                if tmp_path.exists():
+                    shutil.rmtree(tmp_path, ignore_errors=True)
+                asyncio.create_task(self._process_git(job))
         elif job.source_type == "upload":
             # Check if tmp file still exists
             tmp_path = UPLOAD_TMP_DIR / job.id
@@ -700,9 +710,18 @@ class IndexerService:
             # Reinitialize RAG components if job completed successfully
             await self._maybe_reinitialize_rag(job)
 
-    async def _process_git(self, job: IndexJob):
-        """Process a git repository."""
-        temp_dir = Path(tempfile.mkdtemp())
+    async def _process_git(self, job: IndexJob, skip_clone: bool = False):
+        """Process a git repository.
+
+        Args:
+            job: The index job to process
+            skip_clone: If True, skip cloning (repo already exists from previous attempt)
+        """
+        # Use persistent _tmp directory so cloned repos survive restarts
+        temp_dir = UPLOAD_TMP_DIR / job.id
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        clone_dir = temp_dir / "repo"
+        clone_complete_marker = temp_dir / ".clone_complete"
 
         try:
             job.status = IndexStatus.PROCESSING
@@ -714,97 +733,108 @@ class IndexerService:
                 logger.info(f"Job {job.id} was cancelled before cloning")
                 return
 
-            # Clone repository
-            clone_dir = temp_dir / "repo"
-            logger.info(f"Cloning {job.git_url} branch {job.git_branch}")
+            # Preserve token for metadata storage before clearing from job object
+            stored_token = job.git_token
 
-            # Update job to show cloning phase
-            job.error_message = (
-                "Cloning repository..."  # Use error_message as status hint
-            )
-            await repository.update_job(job)
+            if skip_clone:
+                # Repo already cloned from previous attempt
+                logger.info(
+                    f"Skipping clone for job {job.id}, using existing repo at {clone_dir}"
+                )
+            else:
+                # Clone repository
+                logger.info(f"Cloning {job.git_url} branch {job.git_branch}")
 
-            if not job.git_url:
-                raise ValueError("Git URL is required for git source type")
+                # Update job to show cloning phase
+                job.error_message = (
+                    "Cloning repository..."  # Use error_message as status hint
+                )
+                await repository.update_job(job)
 
-            # Build clone URL - inject token for private repos
-            clone_url = job.git_url
-            if job.git_token:
-                # Insert token into HTTPS URL with proper format for each provider
-                if clone_url.startswith("https://"):
-                    if "github.com" in clone_url:
-                        # GitHub: https://x-access-token:TOKEN@github.com/...
+                if not job.git_url:
+                    raise ValueError("Git URL is required for git source type")
+
+                # Build clone URL - inject token for private repos
+                clone_url = job.git_url
+                if job.git_token:
+                    # Insert token into HTTPS URL with proper format for each provider
+                    if clone_url.startswith("https://"):
+                        if "github.com" in clone_url:
+                            # GitHub: https://x-access-token:TOKEN@github.com/...
+                            clone_url = clone_url.replace(
+                                "https://github.com",
+                                f"https://x-access-token:{job.git_token}@github.com",
+                                1,
+                            )
+                        elif "gitlab.com" in clone_url:
+                            # GitLab: https://oauth2:TOKEN@gitlab.com/...
+                            clone_url = clone_url.replace(
+                                "https://gitlab.com",
+                                f"https://oauth2:{job.git_token}@gitlab.com",
+                                1,
+                            )
+                        else:
+                            # Generic: https://TOKEN@host/...
+                            clone_url = clone_url.replace(
+                                "https://", f"https://{job.git_token}@", 1
+                            )
+                    elif clone_url.startswith("http://"):
                         clone_url = clone_url.replace(
-                            "https://github.com",
-                            f"https://x-access-token:{job.git_token}@github.com",
-                            1,
+                            "http://", f"http://{job.git_token}@", 1
                         )
-                    elif "gitlab.com" in clone_url:
-                        # GitLab: https://oauth2:TOKEN@gitlab.com/...
-                        clone_url = clone_url.replace(
-                            "https://gitlab.com",
-                            f"https://oauth2:{job.git_token}@gitlab.com",
-                            1,
-                        )
-                    else:
-                        # Generic: https://TOKEN@host/...
-                        clone_url = clone_url.replace(
-                            "https://", f"https://{job.git_token}@", 1
-                        )
-                elif clone_url.startswith("http://"):
-                    clone_url = clone_url.replace(
-                        "http://", f"http://{job.git_token}@", 1
+
+                # Set environment to prevent git from prompting for credentials
+                env = {
+                    **os.environ,
+                    "GIT_TERMINAL_PROMPT": "0",  # Disable credential prompting
+                }
+
+                try:
+                    process = await asyncio.create_subprocess_exec(
+                        "git",
+                        "clone",
+                        "--depth",
+                        "1",
+                        "--branch",
+                        job.git_branch or "main",
+                        clone_url,
+                        str(clone_dir),
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        env=env,
+                    )
+                    # Timeout after 5 minutes for clone
+                    _, stderr = await asyncio.wait_for(
+                        process.communicate(), timeout=300
+                    )
+                except TimeoutError:
+                    process.kill()
+                    raise RuntimeError(
+                        "Git clone timed out after 5 minutes. The repository may be too large or unreachable."
                     )
 
-            # Preserve token for metadata storage before clearing from clone URL
-            stored_token = job.git_token
+                if process.returncode != 0:
+                    error_msg = stderr.decode()
+                    # Provide clearer error for authentication failures
+                    if (
+                        "could not read Username" in error_msg
+                        or "Authentication failed" in error_msg
+                    ):
+                        raise RuntimeError(
+                            "Git clone failed: Authentication required. "
+                            "This is a private repository - please provide a valid access token."
+                        )
+                    raise RuntimeError(f"Git clone failed: {error_msg}")
+
+                # Mark clone as complete so we can resume from here if interrupted
+                clone_complete_marker.touch()
+                logger.info("Clone complete, scanning files...")
+
             # Clear token from job object (not needed in memory after we have stored_token)
             job.git_token = None
 
-            # Set environment to prevent git from prompting for credentials
-            env = {
-                **os.environ,
-                "GIT_TERMINAL_PROMPT": "0",  # Disable credential prompting
-            }
-
-            try:
-                process = await asyncio.create_subprocess_exec(
-                    "git",
-                    "clone",
-                    "--depth",
-                    "1",
-                    "--branch",
-                    job.git_branch or "main",
-                    clone_url,
-                    str(clone_dir),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    env=env,
-                )
-                # Timeout after 5 minutes for clone
-                _, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
-            except TimeoutError:
-                process.kill()
-                raise RuntimeError(
-                    "Git clone timed out after 5 minutes. The repository may be too large or unreachable."
-                )
-
-            if process.returncode != 0:
-                error_msg = stderr.decode()
-                # Provide clearer error for authentication failures
-                if (
-                    "could not read Username" in error_msg
-                    or "Authentication failed" in error_msg
-                ):
-                    raise RuntimeError(
-                        "Git clone failed: Authentication required. "
-                        "This is a private repository - please provide a valid access token."
-                    )
-                raise RuntimeError(f"Git clone failed: {error_msg}")
-
             # Clear cloning status, update to scanning phase
             job.error_message = None
-            logger.info("Clone complete, scanning files...")
             await repository.update_job(job)
 
             # Check for cancellation after clone
@@ -831,7 +861,10 @@ class IndexerService:
                 job.error_message = str(e)
 
         finally:
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            # Only clean up temp_dir if job completed (success or failure)
+            # If job is still pending/processing (e.g., server shutdown), leave files for resume
+            if job.status in (IndexStatus.COMPLETED, IndexStatus.FAILED):
+                shutil.rmtree(temp_dir, ignore_errors=True)
             self._cancellation_flags.pop(job.id, None)
             await repository.update_job(job)
             self._active_jobs.pop(job.id, None)
