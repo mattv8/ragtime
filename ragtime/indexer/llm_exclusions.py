@@ -21,14 +21,63 @@ from ragtime.core.logging import get_logger
 logger = get_logger(__name__)
 
 
-# Text-based file types that should NEVER be suggested for exclusion
-# (plain text formats that are directly readable)
-VALUABLE_TEXT_EXTENSIONS: set[str] = {
+# Extensions that should NEVER be suggested for exclusion by any indexer type.
+# These are plain text formats that are universally readable and valuable.
+# Note: PARSEABLE_DOCUMENT_EXTENSIONS (.pdf, .docx, etc.) are handled separately -
+# they're protected for filesystem indexer (which can parse them) but allowed
+# as exclusion suggestions for git/upload indexer (which cannot read them).
+NEVER_EXCLUDE_EXTENSIONS: set[str] = {
     ".txt",
     ".md",
     ".rst",
     ".csv",
 }
+
+
+def _filter_bad_exclusion_patterns(
+    patterns: list[str],
+    is_filesystem_indexer: bool = False,
+) -> list[str]:
+    """
+    Filter out exclusion patterns that would exclude valuable file types.
+
+    This is a safeguard to catch bad suggestions from LLM or heuristics.
+
+    Args:
+        patterns: List of glob patterns like "**/*.txt" or "**/docs/**"
+        is_filesystem_indexer: If True, also filter out parseable document patterns
+
+    Returns:
+        Filtered list with valuable file type patterns removed
+    """
+    filtered = []
+    for pattern in patterns:
+        lower_pattern = pattern.lower()
+
+        # Never exclude universally valuable text files
+        is_valuable = any(
+            lower_pattern.endswith(ext) or lower_pattern.endswith(f'{ext}"')
+            for ext in NEVER_EXCLUDE_EXTENSIONS
+        )
+        if is_valuable:
+            logger.debug(f"Filtering out bad exclusion pattern: {pattern}")
+            continue
+
+        # For filesystem indexer, also don't exclude parseable documents
+        if is_filesystem_indexer:
+            is_parseable_doc = any(
+                lower_pattern.endswith(ext) or lower_pattern.endswith(f'{ext}"')
+                for ext in PARSEABLE_DOCUMENT_EXTENSIONS
+            )
+            if is_parseable_doc:
+                logger.debug(
+                    f"Filtering out parseable document exclusion for filesystem indexer: {pattern}"
+                )
+                continue
+
+        filtered.append(pattern)
+
+    return filtered
 
 
 class ExclusionSuggestion(BaseModel):
@@ -89,10 +138,52 @@ def _format_file_stats_for_prompt(ext_stats: dict[str, dict]) -> str:
     return "\n".join(lines)
 
 
-def _build_exclusion_prompt(repo_name: str, ext_stats: dict[str, dict]) -> str:
+def _build_exclusion_prompt(
+    repo_name: str,
+    ext_stats: dict[str, dict],
+    is_filesystem_indexer: bool = False,
+) -> str:
     """Build the exclusion analysis prompt with file statistics."""
     stats_table = _format_file_stats_for_prompt(ext_stats)
 
+    if is_filesystem_indexer:
+        # Filesystem indexer CAN parse documents - different prompt
+        return f"""Analyze these file types found in the directory "{repo_name}" and suggest which should be excluded from a document search index.
+
+CONTEXT: This is for a Filesystem Indexer that can parse documents including PDF, Word, Excel, and other office formats using specialized extractors.
+
+FILE TYPE STATISTICS (sorted by estimated chunks - higher = more impact on index size):
+
+{stats_table}
+
+EXCLUSION CATEGORIES:
+
+1. ALWAYS EXCLUDE (binary files that cannot be meaningfully indexed):
+   - Images: .png, .jpg, .gif, .ico, .svg, .webp
+   - Fonts: .woff, .ttf, .eot
+   - Compiled code: .pyc, .class, .o, .exe, .dll, .so
+   - Archives: .zip, .tar, .gz, .7z, .rar
+   - Media: .mp3, .mp4, .wav, .avi
+
+2. DO NOT EXCLUDE (valuable documents that CAN be parsed):
+   - Office documents: .pdf, .doc, .docx, .xls, .xlsx, .ppt, .pptx
+   - OpenDocument: .odt, .ods, .odp
+   - Text formats: .txt, .md, .rst, .csv, .rtf
+   - Source code: .py, .js, .ts, .java, .go, .rs, .c, .cpp, etc.
+   - Config files: .json, .yaml, .yml, .toml, .xml, .ini
+
+3. SUGGEST EXCLUDING (generated/low-value content):
+   - Minified: *.min.js, *.min.css, *.bundle.js, *.chunk.js
+   - Lock files: package-lock.json, yarn.lock, Gemfile.lock
+   - Build outputs: dist/, build/, __pycache__/
+   - Dependencies: node_modules/, vendor/, .venv/
+   - Temporary files: *.tmp, *.bak, *~
+
+Only suggest exclusions for file types that are actually in the statistics above.
+Return patterns in glob format like "**/*.ext" for extensions or "**/dirname/**" for directories.
+DO NOT suggest excluding document types (.pdf, .docx, .xlsx, etc.) - this indexer can parse them."""
+
+    # Git/archive indexer prompt (original)
     return f"""Analyze these file types found in the repository "{repo_name}" and suggest which should be excluded from a code/documentation search index.
 
 CONTEXT: This is for a git/archive indexer that uses TextLoader. It can only read plain text files.
@@ -137,6 +228,7 @@ async def _get_llm_exclusions_openai(
     repo_name: str,
     api_key: str,
     model: str,
+    is_filesystem_indexer: bool = False,
 ) -> Optional[ExclusionAnalysis]:
     """Get exclusion suggestions using OpenAI's structured output."""
     try:
@@ -144,7 +236,7 @@ async def _get_llm_exclusions_openai(
 
         client = AsyncOpenAI(api_key=api_key)
 
-        prompt = _build_exclusion_prompt(repo_name, ext_stats)
+        prompt = _build_exclusion_prompt(repo_name, ext_stats, is_filesystem_indexer)
 
         response = await client.chat.completions.create(
             model=model,
@@ -226,6 +318,7 @@ async def _get_llm_exclusions_anthropic(
     repo_name: str,
     api_key: str,
     model: str,
+    is_filesystem_indexer: bool = False,
 ) -> Optional[ExclusionAnalysis]:
     """Get exclusion suggestions using Anthropic's tool use for structured output."""
     try:
@@ -233,7 +326,7 @@ async def _get_llm_exclusions_anthropic(
 
         client = anthropic.AsyncAnthropic(api_key=api_key)
 
-        prompt = _build_exclusion_prompt(repo_name, ext_stats)
+        prompt = _build_exclusion_prompt(repo_name, ext_stats, is_filesystem_indexer)
         prompt += "\n\nYou MUST call the analyze_exclusions tool with your suggestions."
 
         # Use tool calling for structured output (more reliable than beta.messages.parse)
@@ -316,7 +409,10 @@ async def _get_llm_exclusions_anthropic(
         return None
 
 
-def _get_heuristic_exclusions(ext_stats: dict[str, dict]) -> list[str]:
+def _get_heuristic_exclusions(
+    ext_stats: dict[str, dict],
+    is_filesystem_indexer: bool = False,
+) -> list[str]:
     """
     Fallback heuristic-based exclusion suggestions.
 
@@ -324,6 +420,7 @@ def _get_heuristic_exclusions(ext_stats: dict[str, dict]) -> list[str]:
 
     Args:
         ext_stats: Dict mapping extension to stats dict with file_count, total_size, estimated_chunks
+        is_filesystem_indexer: If True, don't suggest excluding parseable documents (PDF, Office, etc.)
     """
     suggested = []
 
@@ -336,25 +433,28 @@ def _get_heuristic_exclusions(ext_stats: dict[str, dict]) -> list[str]:
     for ext in unparseable_found:
         suggested.append(f"**/*{ext}")
 
-    # Suggest excluding parseable documents (PDF, Office) with a note that
-    # git/upload indexer cannot parse them
-    parseable_docs_found = [
-        ext for ext in extensions if ext in PARSEABLE_DOCUMENT_EXTENSIONS
-    ]
-    for ext in parseable_docs_found:
-        suggested.append(f"**/*{ext}")
+    # Only suggest excluding parseable documents for git/upload indexer
+    # Filesystem indexer CAN parse these, so don't suggest exclusion
+    if not is_filesystem_indexer:
+        parseable_docs_found = [
+            ext for ext in extensions if ext in PARSEABLE_DOCUMENT_EXTENSIONS
+        ]
+        for ext in parseable_docs_found:
+            suggested.append(f"**/*{ext}")
 
     # Check for minified patterns (these are pattern-based, not just extensions)
     # Add common minified patterns if we see related extensions
     if any(ext in extensions for ext in [".js", ".css"]):
         suggested.extend(MINIFIED_PATTERNS[:4])  # Add main minified patterns
 
-    return list(set(suggested))
+    # Final safeguard: filter out any patterns that would exclude valuable files
+    return _filter_bad_exclusion_patterns(list(set(suggested)), is_filesystem_indexer)
 
 
 async def get_smart_exclusion_suggestions(
     ext_stats: dict[str, dict],
     repo_name: str = "repository",
+    is_filesystem_indexer: bool = False,
 ) -> tuple[list[str], bool]:
     """
     Get intelligent exclusion suggestions for the given file extension statistics.
@@ -364,6 +464,8 @@ async def get_smart_exclusion_suggestions(
     Args:
         ext_stats: Dict mapping extension to stats dict with file_count, total_size, estimated_chunks
         repo_name: Name of the repository for context
+        is_filesystem_indexer: If True, don't suggest excluding parseable documents (PDF, Office, etc.)
+            since the filesystem indexer can parse them.
 
     Returns:
         Tuple of (list of exclusion patterns, whether LLM was used)
@@ -386,10 +488,12 @@ async def get_smart_exclusion_suggestions(
         # Use a fast, capable model for this task
         analysis_model = llm_model if llm_model.startswith("gpt-4") else "gpt-4o-mini"
         result = await _get_llm_exclusions_openai(
-            ext_stats, repo_name, openai_key, analysis_model
+            ext_stats, repo_name, openai_key, analysis_model, is_filesystem_indexer
         )
         if result:
             patterns = [s.pattern for s in result.suggested_patterns]
+            # Filter out any bad suggestions the LLM might have made
+            patterns = _filter_bad_exclusion_patterns(patterns, is_filesystem_indexer)
             logger.info(
                 f"LLM (OpenAI) suggested {len(patterns)} exclusion patterns: {result.reasoning_summary}"
             )
@@ -404,16 +508,18 @@ async def get_smart_exclusion_suggestions(
             else llm_model
         )
         result = await _get_llm_exclusions_anthropic(
-            ext_stats, repo_name, anthropic_key, analysis_model
+            ext_stats, repo_name, anthropic_key, analysis_model, is_filesystem_indexer
         )
         if result:
             patterns = [s.pattern for s in result.suggested_patterns]
+            # Filter out any bad suggestions the LLM might have made
+            patterns = _filter_bad_exclusion_patterns(patterns, is_filesystem_indexer)
             logger.info(
                 f"LLM (Anthropic) suggested {len(patterns)} exclusion patterns: {result.reasoning_summary}"
             )
             return patterns, True
 
     # Fallback to heuristics
-    patterns = _get_heuristic_exclusions(ext_stats)
+    patterns = _get_heuristic_exclusions(ext_stats, is_filesystem_indexer)
     logger.debug(f"Using heuristic exclusions: {len(patterns)} patterns")
     return patterns, False

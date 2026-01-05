@@ -551,6 +551,12 @@ export interface FilesystemIndexJob {
   total_chunks: number;
   processed_chunks: number;
   error_message: string | null;
+  cancel_requested: boolean;
+  // Collection phase progress (for slow network filesystems)
+  files_scanned: number;
+  dirs_scanned: number;
+  current_directory: string | null;
+  // Timing
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
@@ -572,6 +578,47 @@ export interface FilesystemIndexStats {
 
 export interface TriggerFilesystemIndexRequest {
   full_reindex?: boolean;
+}
+
+// Filesystem Analysis Types
+export type FilesystemAnalysisStatus = 'pending' | 'scanning' | 'analyzing' | 'completed' | 'failed';
+
+export interface FileTypeStats {
+  extension: string;
+  file_count: number;
+  total_size_bytes: number;
+  estimated_chunks: number;
+  sample_files: string[];
+}
+
+export interface FilesystemAnalysisResult {
+  total_files: number;
+  total_size_bytes: number;
+  total_size_mb: number;
+  estimated_chunks: number;
+  estimated_index_size_mb: number;
+  file_type_stats: FileTypeStats[];
+  suggested_exclusions: string[];
+  warnings: string[];
+  chunk_size: number;
+  chunk_overlap: number;
+  analysis_duration_seconds: number;
+  directories_scanned: number;
+}
+
+export interface FilesystemAnalysisJob {
+  id: string;
+  tool_config_id: string;
+  status: FilesystemAnalysisStatus;
+  progress_percent: number;
+  files_scanned: number;
+  dirs_scanned: number;
+  total_dirs_to_scan: number;
+  current_directory: string;
+  error_message: string | null;
+  created_at: string;
+  completed_at: string | null;
+  result: FilesystemAnalysisResult | null;
 }
 
 // Mount discovery types

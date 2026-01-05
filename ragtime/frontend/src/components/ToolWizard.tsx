@@ -13,8 +13,10 @@ import type {
   ConnectionConfig,
   MountInfo,
   DirectoryEntry,
+  FileTypeStats,
 } from '@/types';
 import { TOOL_TYPE_INFO, MOUNT_TYPE_INFO } from '@/types';
+import { DisabledPopover } from './Popover';
 
 // System mounts to filter out from the "Available Mounts" display
 // These are internal container mounts not useful for user filesystem indexing
@@ -815,14 +817,15 @@ function SMBBrowser({
     }
   };
 
-  // Browse share contents
+  // Browse share contents - use local state for fresh values after discovery
   const browseShare = useCallback(async (shareName: string, path: string = '') => {
-    if (!host) return;
+    const currentHost = hostInput.trim() || host;
+    if (!currentHost) return;
     setBrowsing(true);
     setError(null);
 
     try {
-      const result = await api.browseSmbShare(host, shareName, path, user, password, domain);
+      const result = await api.browseSmbShare(currentHost, shareName, path, userInput || user, passwordInput || password, domainInput || domain);
       if (result.error) {
         setError(result.error);
         setEntries([]);
@@ -834,7 +837,7 @@ function SMBBrowser({
     } finally {
       setBrowsing(false);
     }
-  }, [host, user, password, domain]);
+  }, [host, user, password, domain, hostInput, userInput, passwordInput, domainInput]);
 
   const handleExpandShare = (shareName: string) => {
     if (expandedShare === shareName) {
@@ -865,6 +868,8 @@ function SMBBrowser({
   const handleSelect = (path: string) => {
     if (expandedShare) {
       onSelectPath(expandedShare, path);
+      // Collapse the browser to show compact view
+      setExpandedShare(null);
     }
   };
 
@@ -1525,6 +1530,24 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
         }
   );
 
+  // Auto-generate name from filesystem path basename if not already set
+  useEffect(() => {
+    if (!isEditing && toolType === 'filesystem_indexer' && filesystemConfig.base_path && !name) {
+      const pathParts = filesystemConfig.base_path.split('/').filter(Boolean);
+      const basename = pathParts[pathParts.length - 1] || 'filesystem';
+      const generatedName = basename.charAt(0).toUpperCase() + basename.slice(1);
+      setName(generatedName);
+    }
+  }, [filesystemConfig.base_path, toolType, isEditing, name]);
+
+  // Filesystem analysis state
+  const [_fsAnalysisJobId, setFsAnalysisJobId] = useState<string | null>(null);
+  const [fsAnalysisJob, setFsAnalysisJob] = useState<import('@/types').FilesystemAnalysisJob | null>(null);
+  const [fsAnalyzing, setFsAnalyzing] = useState(false);
+  const [fsAnalysisExpanded, setFsAnalysisExpanded] = useState(false);
+  const [fsExclusionsApplied, setFsExclusionsApplied] = useState(false);
+  const [fsAdvancedOpen, setFsAdvancedOpen] = useState(false);
+
   // SSH Key management state
   const [sshKeyMode, setSshKeyMode] = useState<'generate' | 'upload' | 'path' | 'password'>(
     (() => {
@@ -1554,7 +1577,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
       case 'ssh_shell':
         return sshConfig;
       case 'filesystem_indexer':
-        return filesystemConfig;
+        // Use the tool name as the index_name (Step 3 Name field)
+        return { ...filesystemConfig, index_name: name || filesystemConfig.index_name };
     }
   };
 
@@ -1773,13 +1797,114 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
     }
   };
 
+  // Track the created tool ID for new tools that get auto-saved during analysis
+  const [createdToolId, setCreatedToolId] = useState<string | null>(null);
+
+  // Filesystem analysis handlers
+  const handleStartFilesystemAnalysis = async () => {
+    // Auto-generate name from path basename if not provided
+    let toolName = name.trim();
+    if (!toolName && filesystemConfig.base_path) {
+      const pathParts = filesystemConfig.base_path.split('/').filter(Boolean);
+      const basename = pathParts[pathParts.length - 1] || 'filesystem';
+      toolName = basename.charAt(0).toUpperCase() + basename.slice(1);
+      setName(toolName);
+    }
+
+    setFsAnalyzing(true);
+    setFsAnalysisJob(null);
+    setFsExclusionsApplied(false);
+    setError(null);
+
+    try {
+      let toolId = existingTool?.id || createdToolId;
+
+      if (toolId) {
+        // Update existing tool config
+        await api.updateToolConfig(toolId, {
+          name: toolName,
+          description,
+          connection_config: getConnectionConfig(),
+          max_results: maxResults,
+          timeout: timeoutValue,
+          allow_write: allowWrite,
+        });
+      } else {
+        // Auto-create the tool first
+        const request: CreateToolConfigRequest = {
+          name: toolName,
+          tool_type: toolType,
+          description,
+          connection_config: getConnectionConfig(),
+          max_results: maxResults,
+          timeout: timeoutValue,
+          allow_write: allowWrite,
+        };
+        const created = await api.createToolConfig(request);
+        toolId = created.id;
+        setCreatedToolId(toolId);
+      }
+
+      // Start analysis
+      const job = await api.startFilesystemAnalysis(toolId);
+      setFsAnalysisJobId(job.id);
+      setFsAnalysisJob(job);
+
+      // Poll for completion
+      pollFilesystemAnalysis(toolId, job.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start analysis');
+      setFsAnalyzing(false);
+    }
+  };
+
+  const pollFilesystemAnalysis = async (toolId: string, jobId: string) => {
+    try {
+      const job = await api.getFilesystemAnalysisJob(toolId, jobId);
+      setFsAnalysisJob(job);
+
+      if (job.status === 'completed' || job.status === 'failed') {
+        setFsAnalyzing(false);
+        if (job.status === 'completed' && job.result) {
+          setFsAnalysisExpanded(true);
+        }
+      } else {
+        // Continue polling
+        setTimeout(() => pollFilesystemAnalysis(toolId, jobId), 500);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to get analysis status');
+      setFsAnalyzing(false);
+    }
+  };
+
+  const handleApplyFsExclusions = () => {
+    if (!fsAnalysisJob?.result?.suggested_exclusions) return;
+
+    const currentExclusions = filesystemConfig.exclude_patterns || [];
+    const newExclusions = fsAnalysisJob.result.suggested_exclusions.filter(
+      (pattern: string) => !currentExclusions.includes(pattern)
+    );
+
+    if (newExclusions.length > 0) {
+      setFilesystemConfig({
+        ...filesystemConfig,
+        exclude_patterns: [...currentExclusions, ...newExclusions],
+      });
+    }
+    setFsExclusionsApplied(true);
+    setFsAdvancedOpen(true); // Expand advanced section to show applied exclusions
+  };
+
   const handleSave = async () => {
     setSaving(true);
     setError(null);
 
     try {
-      if (isEditing && existingTool) {
-        await api.updateToolConfig(existingTool.id, {
+      const toolId = existingTool?.id || createdToolId;
+      if (toolId) {
+        // Update existing tool (or tool that was auto-created during analysis)
+        await api.updateToolConfig(toolId, {
           name,
           description,
           connection_config: getConnectionConfig(),
@@ -1845,8 +1970,15 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
         );
         return Boolean(sshConfig.host && sshConfig.user && hasSshAuth);
       case 'filesystem_indexer':
-        // Need base_path and index_name
-        return Boolean(filesystemConfig.base_path && filesystemConfig.index_name);
+        // Validate based on mount type
+        if (filesystemConfig.mount_type === 'docker_volume') {
+          return Boolean(filesystemConfig.base_path);
+        } else if (filesystemConfig.mount_type === 'smb') {
+          return Boolean(filesystemConfig.smb_host && filesystemConfig.smb_share);
+        } else if (filesystemConfig.mount_type === 'nfs') {
+          return Boolean(filesystemConfig.nfs_host && filesystemConfig.nfs_export);
+        }
+        return Boolean(filesystemConfig.base_path);
     }
   };
 
@@ -2329,7 +2461,24 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
               key={type}
               type="button"
               className={`mount-type-tab ${filesystemConfig.mount_type === type ? 'active' : ''}`}
-              onClick={() => setFilesystemConfig({ ...filesystemConfig, mount_type: type })}
+              onClick={() => {
+                // Clear path and mount-type-specific fields when switching
+                if (filesystemConfig.mount_type !== type) {
+                  setFilesystemConfig({
+                    ...filesystemConfig,
+                    mount_type: type,
+                    base_path: '',
+                    // Clear other mount type fields to avoid mixing
+                    smb_host: type === 'smb' ? filesystemConfig.smb_host : '',
+                    smb_share: type === 'smb' ? filesystemConfig.smb_share : '',
+                    smb_user: type === 'smb' ? filesystemConfig.smb_user : '',
+                    smb_password: type === 'smb' ? filesystemConfig.smb_password : '',
+                    smb_domain: type === 'smb' ? filesystemConfig.smb_domain : '',
+                    nfs_host: type === 'nfs' ? filesystemConfig.nfs_host : '',
+                    nfs_export: type === 'nfs' ? filesystemConfig.nfs_export : '',
+                  });
+                }
+              }}
             >
               {MOUNT_TYPE_INFO[type].name}
               {MOUNT_TYPE_INFO[type].recommended && <span className="recommended-badge">Recommended</span>}
@@ -2362,18 +2511,18 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
               domain={filesystemConfig.smb_domain || ''}
               selectedShare={filesystemConfig.smb_share || ''}
               selectedPath={filesystemConfig.base_path?.replace(/^\/mnt\/smb\/?/, '') || ''}
-              onHostChange={(host) => setFilesystemConfig({ ...filesystemConfig, smb_host: host })}
-              onCredentialsChange={(user, password, domain) => setFilesystemConfig({
-                ...filesystemConfig,
+              onHostChange={(host) => setFilesystemConfig(prev => ({ ...prev, smb_host: host }))}
+              onCredentialsChange={(user, password, domain) => setFilesystemConfig(prev => ({
+                ...prev,
                 smb_user: user,
                 smb_password: password,
                 smb_domain: domain
-              })}
-              onSelectPath={(share, path) => setFilesystemConfig({
-                ...filesystemConfig,
+              }))}
+              onSelectPath={(share, path) => setFilesystemConfig(prev => ({
+                ...prev,
                 smb_share: share,
                 base_path: path ? `/${path}` : '/'
-              })}
+              }))}
             />
           </div>
         </>
@@ -2412,142 +2561,270 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
         </>
       )}
 
-      {/* Index Configuration */}
-      <h4 style={{ marginBottom: '1rem' }}>Indexing Configuration</h4>
+      <div className="analysis-section" style={{ marginTop: '1.5rem' }}>
+        <h4 style={{ marginBottom: '1rem' }}>Pre-Index Analysis</h4>
 
-      <div className="form-group">
-        <label>Index Name</label>
-        <input
-          type="text"
-          value={filesystemConfig.index_name}
-          onChange={(e) => setFilesystemConfig({ ...filesystemConfig, index_name: e.target.value })}
-          placeholder="my-documents"
-        />
-        <p className="field-help">
-          Unique name for this index (used in semantic search).
-        </p>
-      </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '0.75rem' }}>
+          <DisabledPopover
+            disabled={!fsAnalyzing && !filesystemConfig.base_path}
+            message="Select a path above first"
+            position="top"
+          >
+            <button
+              type="button"
+              className="btn"
+              onClick={handleStartFilesystemAnalysis}
+              disabled={fsAnalyzing || !filesystemConfig.base_path}
+            >
+              {fsAnalyzing ? 'Analyzing...' : 'Analyze Filesystem'}
+            </button>
+          </DisabledPopover>
 
-      <div className="form-row">
-        <div className="form-group" style={{ flex: 1 }}>
-          <label>File Patterns</label>
-          <input
-            type="text"
-            value={(filesystemConfig.file_patterns || []).join(', ')}
-            onChange={(e) => setFilesystemConfig({
-              ...filesystemConfig,
-              file_patterns: e.target.value.split(',').map(p => p.trim()).filter(Boolean)
-            })}
-            placeholder="**/*.txt, **/*.md, **/*.pdf"
-          />
-          <p className="field-help">Glob patterns for files to include.</p>
+          {fsAnalysisJob && fsAnalyzing && (
+            <span className="analysis-progress">
+              {fsAnalysisJob.status === 'scanning' && (
+                <>Scanning: {fsAnalysisJob.files_scanned} files found ({fsAnalysisJob.dirs_scanned}/{fsAnalysisJob.total_dirs_to_scan} dirs)</>
+              )}
+              {fsAnalysisJob.status === 'analyzing' && 'Generating suggestions...'}
+              {fsAnalysisJob.current_directory && (
+                <span style={{ opacity: 0.7, marginLeft: '0.5rem' }}>
+                  {fsAnalysisJob.current_directory}
+                </span>
+              )}
+            </span>
+          )}
         </div>
-        <div className="form-group" style={{ flex: 1 }}>
-          <label>Exclude Patterns</label>
-          <input
-            type="text"
-            value={(filesystemConfig.exclude_patterns || []).join(', ')}
-            onChange={(e) => setFilesystemConfig({
-              ...filesystemConfig,
-              exclude_patterns: e.target.value.split(',').map(p => p.trim()).filter(Boolean)
-            })}
-            placeholder="**/node_modules/**, **/.git/**"
-          />
-          <p className="field-help">Glob patterns to exclude.</p>
-        </div>
-      </div>
 
-      <div className="form-row">
-        <div className="form-group" style={{ flex: 1 }}>
-          <label>Chunk Size</label>
-          <input
-            type="number"
-            value={filesystemConfig.chunk_size || 1000}
-            onChange={(e) => setFilesystemConfig({ ...filesystemConfig, chunk_size: parseInt(e.target.value) || 1000 })}
-            min={100}
-            max={4000}
-          />
-        </div>
-        <div className="form-group" style={{ flex: 1 }}>
-          <label>Chunk Overlap</label>
-          <input
-            type="number"
-            value={filesystemConfig.chunk_overlap || 200}
-            onChange={(e) => setFilesystemConfig({ ...filesystemConfig, chunk_overlap: parseInt(e.target.value) || 200 })}
-            min={0}
-            max={1000}
-          />
-        </div>
-        <div className="form-group" style={{ flex: 1 }}>
-          <label>
+        {fsAnalysisJob?.status === 'failed' && (
+          <div className="analysis-error" style={{ color: 'var(--error)', marginBottom: '1rem' }}>
+            Analysis failed: {fsAnalysisJob.error_message}
+          </div>
+        )}
+
+        {fsAnalysisJob?.status === 'completed' && fsAnalysisJob.result && (
+          <details open={fsAnalysisExpanded} onToggle={(e) => setFsAnalysisExpanded((e.target as HTMLDetailsElement).open)}>
+            <summary style={{ cursor: 'pointer', fontWeight: 500, marginBottom: '0.5rem' }}>
+              Analysis Results ({fsAnalysisJob.result.total_files} files, {fsAnalysisJob.result.total_size_mb} MB, ~{fsAnalysisJob.result.estimated_chunks} chunks)
+            </summary>
+
+            <div className="analysis-results" style={{ padding: '1rem', backgroundColor: 'var(--panel-bg)', borderRadius: '4px', marginTop: '0.5rem' }}>
+              {/* Warnings */}
+              {fsAnalysisJob.result.warnings.length > 0 && (
+                <div className="analysis-warnings" style={{ marginBottom: '1rem' }}>
+                  <strong>Warnings:</strong>
+                  <ul style={{ margin: '0.5rem 0 0 1.5rem', padding: 0 }}>
+                    {fsAnalysisJob.result.warnings.map((warning: string, i: number) => (
+                      <li key={i} style={{ marginBottom: '0.25rem', color: 'var(--warning, #e09f3e)' }}>{warning}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* File Type Stats Table */}
+              <div style={{ marginBottom: '1rem' }}>
+                <strong>File Types:</strong>
+                <table style={{ width: '100%', marginTop: '0.5rem', fontSize: '0.875rem', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ textAlign: 'left', borderBottom: '1px solid var(--border)' }}>
+                      <th style={{ padding: '0.5rem' }}>Extension</th>
+                      <th style={{ padding: '0.5rem', textAlign: 'right' }}>Files</th>
+                      <th style={{ padding: '0.5rem', textAlign: 'right' }}>Size</th>
+                      <th style={{ padding: '0.5rem', textAlign: 'right' }}>Est. Chunks</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {fsAnalysisJob.result.file_type_stats.slice(0, 10).map((stat: FileTypeStats) => (
+                      <tr key={stat.extension} style={{ borderBottom: '1px solid var(--border-light, #333)' }}>
+                        <td style={{ padding: '0.5rem' }}>{stat.extension}</td>
+                        <td style={{ padding: '0.5rem', textAlign: 'right' }}>{stat.file_count}</td>
+                        <td style={{ padding: '0.5rem', textAlign: 'right' }}>{(stat.total_size_bytes / 1024 / 1024).toFixed(2)} MB</td>
+                        <td style={{ padding: '0.5rem', textAlign: 'right' }}>{stat.estimated_chunks}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {fsAnalysisJob.result.file_type_stats.length > 10 && (
+                  <p style={{ fontSize: '0.85rem', opacity: 0.7, marginTop: '0.5rem' }}>
+                    ... and {fsAnalysisJob.result.file_type_stats.length - 10} more file types
+                  </p>
+                )}
+              </div>
+
+              {/* Suggested Exclusions */}
+              {fsAnalysisJob.result.suggested_exclusions.length > 0 && !fsExclusionsApplied && (
+                <div
+                  style={{
+                    marginBottom: '16px',
+                    background: 'rgba(59, 130, 246, 0.1)',
+                    border: '1px solid rgba(59, 130, 246, 0.3)',
+                    borderRadius: '8px',
+                    padding: '12px',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <strong style={{ color: '#60a5fa' }}>Suggested Exclusions:</strong>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      style={{ fontSize: '0.8rem', padding: '4px 8px' }}
+                      onClick={handleApplyFsExclusions}
+                    >
+                      Apply All
+                    </button>
+                  </div>
+                  <code style={{ fontSize: '0.85rem', color: '#888' }}>
+                    {fsAnalysisJob.result.suggested_exclusions.join(', ')}
+                  </code>
+                </div>
+              )}
+
+              {fsExclusionsApplied && (
+                <div
+                  style={{
+                    marginBottom: '16px',
+                    background: 'rgba(34, 197, 94, 0.1)',
+                    border: '1px solid rgba(34, 197, 94, 0.3)',
+                    borderRadius: '8px',
+                    padding: '12px',
+                  }}
+                >
+                  <span style={{ color: '#22c55e' }}>
+                    Suggested exclusions applied. Re-run analysis to update estimates.
+                  </span>
+                </div>
+              )}
+
+              <div style={{ marginTop: '1rem', fontSize: '0.85rem', opacity: 0.7 }}>
+                Analysis completed in {fsAnalysisJob.result.analysis_duration_seconds}s ({fsAnalysisJob.result.directories_scanned} directories scanned)
+              </div>
+            </div>
+          </details>
+        )}
+
+        {/* Advanced Indexing & Safety - appears after analysis results so "Apply All" can reveal updated exclusions */}
+        <details open={fsAdvancedOpen} onToggle={(e) => setFsAdvancedOpen((e.target as HTMLDetailsElement).open)} style={{ marginTop: '1rem' }}>
+          <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '0.5rem' }}>
+            Advanced Indexing & Safety
+          </summary>
+          <div className="form-row" style={{ marginTop: '0.5rem' }}>
+            <div className="form-group" style={{ flex: 1 }}>
+              <label>File Patterns</label>
+              <input
+                type="text"
+                value={(filesystemConfig.file_patterns || []).join(', ')}
+                onChange={(e) => setFilesystemConfig({
+                  ...filesystemConfig,
+                  file_patterns: e.target.value.split(',').map(p => p.trim()).filter(Boolean)
+                })}
+                placeholder="**/*.txt, **/*.md, **/*.pdf"
+              />
+              <p className="field-help">Glob patterns for files to include.</p>
+            </div>
+            <div className="form-group" style={{ flex: 1 }}>
+              <label>Exclude Patterns</label>
+              <input
+                type="text"
+                value={(filesystemConfig.exclude_patterns || []).join(', ')}
+                onChange={(e) => setFilesystemConfig({
+                  ...filesystemConfig,
+                  exclude_patterns: e.target.value.split(',').map(p => p.trim()).filter(Boolean)
+                })}
+                placeholder="**/node_modules/**, **/.git/**"
+              />
+              <p className="field-help">Glob patterns to exclude.</p>
+            </div>
+          </div>
+
+          <div className="form-row" style={{ marginTop: '0.75rem' }}>
+            <div className="form-group" style={{ flex: 1 }}>
+              <label>Chunk Size</label>
+              <input
+                type="number"
+                value={filesystemConfig.chunk_size || 1000}
+                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, chunk_size: parseInt(e.target.value) || 1000 })}
+                min={100}
+                max={4000}
+              />
+            </div>
+            <div className="form-group" style={{ flex: 1 }}>
+              <label>Chunk Overlap</label>
+              <input
+                type="number"
+                value={filesystemConfig.chunk_overlap || 200}
+                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, chunk_overlap: parseInt(e.target.value) || 200 })}
+                min={0}
+                max={1000}
+              />
+            </div>
+            <div className="form-group" style={{ flex: 1 }}>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={filesystemConfig.recursive !== false}
+                  onChange={(e) => setFilesystemConfig({ ...filesystemConfig, recursive: e.target.checked })}
+                  style={{ marginRight: '0.5rem' }}
+                />
+                Recursive
+              </label>
+            </div>
+          </div>
+
+          <div className="cloud-sync-warning" style={{ marginTop: '0.75rem' }}>
+            <strong>Note:</strong> Indexing cloud-synced folders (OneDrive, Dropbox, Google Drive)
+            may trigger downloads of "online-only" files. Consider indexing local copies or
+            specific subfolders to avoid unwanted downloads.
+          </div>
+
+          <div className="form-row" style={{ marginTop: '0.75rem' }}>
+            <div className="form-group" style={{ flex: 1 }}>
+              <label>Max File Size (MB)</label>
+              <input
+                type="number"
+                value={filesystemConfig.max_file_size_mb || 10}
+                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, max_file_size_mb: parseInt(e.target.value) || 10 })}
+                min={1}
+                max={100}
+              />
+            </div>
+            <div className="form-group" style={{ flex: 1 }}>
+              <label>Max Total Files</label>
+              <input
+                type="number"
+                value={filesystemConfig.max_total_files || 10000}
+                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, max_total_files: parseInt(e.target.value) || 10000 })}
+                min={1}
+                max={100000}
+              />
+            </div>
+            <div className="form-group" style={{ flex: 1 }}>
+              <label>Re-index Interval (hours)</label>
+              <input
+                type="number"
+                value={filesystemConfig.reindex_interval_hours || 24}
+                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, reindex_interval_hours: parseInt(e.target.value) || 24 })}
+                min={0}
+                max={8760}
+              />
+              <p className="field-help">0 = manual only</p>
+            </div>
+          </div>
+
+          <div className="form-group" style={{ marginTop: '0.75rem' }}>
+            <label>Allowed Extensions</label>
             <input
-              type="checkbox"
-              checked={filesystemConfig.recursive !== false}
-              onChange={(e) => setFilesystemConfig({ ...filesystemConfig, recursive: e.target.checked })}
-              style={{ marginRight: '0.5rem' }}
+              type="text"
+              value={(filesystemConfig.allowed_extensions || []).join(', ')}
+              onChange={(e) => setFilesystemConfig({
+                ...filesystemConfig,
+                allowed_extensions: e.target.value.split(',').map(p => p.trim()).filter(Boolean)
+              })}
+              placeholder=".txt, .md, .pdf, .docx, .py, .json"
             />
-            Recursive
-          </label>
-        </div>
-      </div>
-
-      {/* Safety Limits */}
-      <h4 style={{ marginBottom: '1rem' }}>Safety Limits</h4>
-
-      <div className="cloud-sync-warning">
-        <strong>Note:</strong> Indexing cloud-synced folders (OneDrive, Dropbox, Google Drive)
-        may trigger downloads of "online-only" files. Consider indexing local copies or
-        specific subfolders to avoid unwanted downloads.
-      </div>
-
-      <div className="form-row">
-        <div className="form-group" style={{ flex: 1 }}>
-          <label>Max File Size (MB)</label>
-          <input
-            type="number"
-            value={filesystemConfig.max_file_size_mb || 10}
-            onChange={(e) => setFilesystemConfig({ ...filesystemConfig, max_file_size_mb: parseInt(e.target.value) || 10 })}
-            min={1}
-            max={100}
-          />
-        </div>
-        <div className="form-group" style={{ flex: 1 }}>
-          <label>Max Total Files</label>
-          <input
-            type="number"
-            value={filesystemConfig.max_total_files || 10000}
-            onChange={(e) => setFilesystemConfig({ ...filesystemConfig, max_total_files: parseInt(e.target.value) || 10000 })}
-            min={1}
-            max={100000}
-          />
-        </div>
-        <div className="form-group" style={{ flex: 1 }}>
-          <label>Re-index Interval (hours)</label>
-          <input
-            type="number"
-            value={filesystemConfig.reindex_interval_hours || 24}
-            onChange={(e) => setFilesystemConfig({ ...filesystemConfig, reindex_interval_hours: parseInt(e.target.value) || 24 })}
-            min={0}
-            max={8760}
-          />
-          <p className="field-help">0 = manual only</p>
-        </div>
-      </div>
-
-      <div className="form-group">
-        <label>Allowed Extensions</label>
-        <input
-          type="text"
-          value={(filesystemConfig.allowed_extensions || []).join(', ')}
-          onChange={(e) => setFilesystemConfig({
-            ...filesystemConfig,
-            allowed_extensions: e.target.value.split(',').map(p => p.trim()).filter(Boolean)
-          })}
-          placeholder=".txt, .md, .pdf, .docx, .py, .json"
-        />
-        <p className="field-help">
-          Security filter: only files with these extensions will be indexed.
-        </p>
+            <p className="field-help">
+              Security filter: only files with these extensions will be indexed.
+            </p>
+          </div>
+        </details>
       </div>
     </div>
   );

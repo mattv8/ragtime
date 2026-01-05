@@ -1,12 +1,21 @@
-import { useState, useCallback, useEffect, type DragEvent, type ChangeEvent } from 'react';
+import { useState, useCallback, type DragEvent, type ChangeEvent } from 'react';
 import { api } from '@/api';
-import type { IndexJob } from '@/types';
+import type { IndexJob, IndexAnalysisResult } from '@/types';
 
 interface UploadFormProps {
   onJobCreated: () => void;
+  onCancel?: () => void;
+  onAnalysisStart?: () => void;
+  onAnalysisComplete?: () => void;
 }
 
 type StatusType = 'info' | 'success' | 'error' | null;
+type WizardStep = 'upload' | 'analyzing' | 'review' | 'indexing';
+
+// Default file patterns to include all files, and placeholder hints for UI
+const DEFAULT_FILE_PATTERNS = '**/*';
+const PLACEHOLDER_FILE_PATTERNS = 'e.g. **/*.py, **/*.md (default: all files)';
+const PLACEHOLDER_EXCLUDE_PATTERNS = 'e.g. **/node_modules/**, **/__pycache__/**';
 
 /** Extract index name from archive filename (strip extension) */
 function getIndexNameFromFile(filename: string): string {
@@ -16,7 +25,7 @@ function getIndexNameFromFile(filename: string): string {
     .toLowerCase();
 }
 
-export function UploadForm({ onJobCreated }: UploadFormProps) {
+export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysisComplete }: UploadFormProps) {
   const [file, setFile] = useState<File | null>(null);
   const [indexName, setIndexName] = useState('');
   const [description, setDescription] = useState('');
@@ -28,12 +37,34 @@ export function UploadForm({ onJobCreated }: UploadFormProps) {
     message: '',
   });
 
-  // Auto-fill index name when file is selected
-  useEffect(() => {
-    if (file) {
-      setIndexName(getIndexNameFromFile(file.name));
-    }
-  }, [file]);
+  const [wizardStep, setWizardStep] = useState<WizardStep>('upload');
+  const [analysisResult, setAnalysisResult] = useState<IndexAnalysisResult | null>(null);
+
+  const [filePatterns, setFilePatterns] = useState(DEFAULT_FILE_PATTERNS);
+  const [excludePatterns, setExcludePatterns] = useState('');
+  const [chunkSize, setChunkSize] = useState(1000);
+  const [chunkOverlap, setChunkOverlap] = useState(200);
+  const [maxFileSizeKb, setMaxFileSizeKb] = useState(500);
+  const [exclusionsApplied, setExclusionsApplied] = useState(false);
+  const [patternsExpanded, setPatternsExpanded] = useState(false);
+
+  const resetState = useCallback(() => {
+    setFile(null);
+    setIndexName('');
+    setDescription('');
+    setIsLoading(false);
+    setProgress(0);
+    setStatus({ type: null, message: '' });
+    setWizardStep('upload');
+    setAnalysisResult(null);
+    setFilePatterns(DEFAULT_FILE_PATTERNS);
+    setExcludePatterns('');
+    setChunkSize(1000);
+    setChunkOverlap(200);
+    setMaxFileSizeKb(500);
+    setExclusionsApplied(false);
+    setPatternsExpanded(false);
+  }, []);
 
   const handleDragOver = useCallback((e: DragEvent) => {
     e.preventDefault();
@@ -48,20 +79,74 @@ export function UploadForm({ onJobCreated }: UploadFormProps) {
     e.preventDefault();
     setIsDragOver(false);
     if (e.dataTransfer.files.length) {
-      setFile(e.dataTransfer.files[0]);
+      const droppedFile = e.dataTransfer.files[0];
+      setFile(droppedFile);
+      setIndexName(getIndexNameFromFile(droppedFile.name));
     }
   }, []);
 
   const handleFileChange = useCallback((e: ChangeEvent<HTMLInputElement>) => {
     if (e.target.files?.length) {
-      setFile(e.target.files[0]);
+      const selectedFile = e.target.files[0];
+      setFile(selectedFile);
+      setIndexName(getIndexNameFromFile(selectedFile.name));
     }
   }, []);
 
-  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
+  const handleAnalyze = async () => {
     if (!file) {
-      setStatus({ type: 'error', message: 'Please select a file' });
+      setStatus({ type: 'error', message: 'Please select a file first' });
+      return;
+    }
+
+    setWizardStep('analyzing');
+    setIsLoading(true);
+    setStatus({ type: 'info', message: 'Uploading and analyzing archive...' });
+    onAnalysisStart?.();
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('file_patterns', filePatterns);
+      formData.append('exclude_patterns', excludePatterns);
+      formData.append('chunk_size', String(chunkSize));
+      formData.append('chunk_overlap', String(chunkOverlap));
+      formData.append('max_file_size_kb', String(maxFileSizeKb));
+
+      const result = await api.analyzeUpload(formData);
+      setAnalysisResult(result);
+      setWizardStep('review');
+      setStatus({ type: null, message: '' });
+    } catch (err) {
+      setStatus({ type: 'error', message: `Analysis failed: ${err instanceof Error ? err.message : 'Request failed'}` });
+      setWizardStep('upload');
+    } finally {
+      setIsLoading(false);
+      onAnalysisComplete?.();
+    }
+  };
+
+  const applySuggestedExclusions = () => {
+    if (!analysisResult?.suggested_exclusions.length) {
+      return;
+    }
+
+    const currentExcludes = excludePatterns.split(',').map((s) => s.trim()).filter(Boolean);
+    const newExcludes = [...new Set([...currentExcludes, ...analysisResult.suggested_exclusions])];
+    setExcludePatterns(newExcludes.join(','));
+    setExclusionsApplied(true);
+    setPatternsExpanded(true);
+  };
+
+  const handleReanalyze = async () => {
+    setExclusionsApplied(false);
+    setWizardStep('analyzing');
+    await handleAnalyze();
+  };
+
+  const handleStartIndexing = async () => {
+    if (!file) {
+      setStatus({ type: 'error', message: 'No file selected' });
       return;
     }
     if (!indexName.trim()) {
@@ -69,84 +154,334 @@ export function UploadForm({ onJobCreated }: UploadFormProps) {
       return;
     }
 
-    const form = e.currentTarget;
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('name', indexName);
-    formData.append('description', description);
-    formData.append('file_patterns', (form.elements.namedItem('file_patterns') as HTMLInputElement).value);
-    formData.append('exclude_patterns', (form.elements.namedItem('exclude_patterns') as HTMLInputElement).value);
-    formData.append('chunk_size', (form.elements.namedItem('chunk_size') as HTMLInputElement).value);
-    formData.append('chunk_overlap', (form.elements.namedItem('chunk_overlap') as HTMLInputElement).value);
-
+    setWizardStep('indexing');
     setIsLoading(true);
-    setStatus({ type: 'info', message: 'Uploading and processing...' });
+    setStatus({ type: 'info', message: 'Uploading and starting indexing job...' });
     setProgress(30);
 
     try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('name', indexName);
+      formData.append('description', description);
+      formData.append('file_patterns', filePatterns);
+      formData.append('exclude_patterns', excludePatterns);
+      formData.append('chunk_size', String(chunkSize));
+      formData.append('chunk_overlap', String(chunkOverlap));
+
       const job: IndexJob = await api.uploadAndIndex(formData);
       setProgress(100);
-      setStatus({ type: 'success', message: `Job started - ID: ${job.id} - Status: ${job.status}` });
-      form.reset();
-      setFile(null);
-      setIndexName('');
-      setDescription('');
+      const successMessage = `Job started - ID: ${job.id} - Status: ${job.status}`;
+      resetState();
+      setStatus({ type: 'success', message: successMessage });
       onJobCreated();
     } catch (err) {
       setStatus({ type: 'error', message: `Error: ${err instanceof Error ? err.message : 'Upload failed'}` });
+      setWizardStep('review');
     } finally {
       setIsLoading(false);
       setTimeout(() => setProgress(0), 2000);
     }
   };
 
-  return (
-    <form onSubmit={handleSubmit}>
-      {/* File drop area - always visible */}
-      <div className="form-group">
-        <div
-          className={`file-input-wrapper ${isDragOver ? 'dragover' : ''} ${file ? 'has-file' : ''}`}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-        >
-          <div className="icon">↑</div>
-          <div>Drag & drop an archive file here, or click to browse</div>
-          <div style={{ fontSize: '0.85rem', color: '#888', marginTop: 8 }}>
-            Supported: .zip, .tar, .tar.gz, .tar.bz2
-          </div>
-          {file && <div className="file-name">{file.name}</div>}
-          <input
-            type="file"
-            name="file"
-            accept=".zip,.tar,.tar.gz,.tgz,.tar.bz2,.tbz2"
-            onChange={handleFileChange}
-          />
-        </div>
-      </div>
+  const handleBack = () => {
+    setWizardStep('upload');
+    setAnalysisResult(null);
+    setStatus({ type: null, message: '' });
+    setExclusionsApplied(false);
+  };
 
-      {/* Show remaining fields only after file is selected */}
-      {file && (
-        <>
+  const handleCancel = () => {
+    resetState();
+    onCancel?.();
+  };
+
+  const formatBytes = (bytes: number): string => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  // Upload step - file selection
+  if (wizardStep === 'upload' || wizardStep === 'analyzing') {
+    return (
+      <div>
+        {/* File drop area */}
+        <div className="form-group">
+          <div
+            className={`file-input-wrapper ${isDragOver ? 'dragover' : ''} ${file ? 'has-file' : ''}`}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
+            <div className="icon">↑</div>
+            <div>Drag & drop an archive file here, or click to browse</div>
+            <div style={{ fontSize: '0.85rem', color: '#888', marginTop: 8 }}>
+              Supported: .zip, .tar, .tar.gz, .tar.bz2
+            </div>
+            {file && <div className="file-name">{file.name}</div>}
+            <input
+              type="file"
+              name="file"
+              accept=".zip,.tar,.tar.gz,.tgz,.tar.bz2,.tbz2"
+              onChange={handleFileChange}
+              disabled={isLoading}
+            />
+          </div>
+        </div>
+
+        {/* Show config options after file is selected */}
+        {file && (
+          <>
+            <p className="field-help" style={{ marginBottom: '16px' }}>
+              Index name will be derived from the archive filename. Click "Analyze" to preview the index before creating.
+            </p>
+
+            <details style={{ marginBottom: '16px' }}>
+              <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Options</summary>
+              <div className="row">
+                <div className="form-group">
+                  <label>File Patterns (comma-separated)</label>
+                  <input
+                    type="text"
+                    value={filePatterns}
+                    onChange={(e) => setFilePatterns(e.target.value)}
+                    placeholder={PLACEHOLDER_FILE_PATTERNS}
+                    disabled={isLoading}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Exclude Patterns</label>
+                  <input
+                    type="text"
+                    value={excludePatterns}
+                    onChange={(e) => setExcludePatterns(e.target.value)}
+                    placeholder={PLACEHOLDER_EXCLUDE_PATTERNS}
+                    disabled={isLoading}
+                  />
+                </div>
+              </div>
+              <div className="row">
+                <div className="form-group">
+                  <label>Chunk Size</label>
+                  <input
+                    type="number"
+                    value={chunkSize}
+                    onChange={(e) => setChunkSize(parseInt(e.target.value, 10) || 1000)}
+                    min={100}
+                    max={4000}
+                    disabled={isLoading}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Chunk Overlap</label>
+                  <input
+                    type="number"
+                    value={chunkOverlap}
+                    onChange={(e) => setChunkOverlap(parseInt(e.target.value, 10) || 200)}
+                    min={0}
+                    max={1000}
+                    disabled={isLoading}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Max File Size (KB)</label>
+                  <input
+                    type="number"
+                    value={maxFileSizeKb}
+                    onChange={(e) => setMaxFileSizeKb(parseInt(e.target.value, 10) || 500)}
+                    min={10}
+                    max={10000}
+                    disabled={isLoading}
+                  />
+                  <small style={{ color: '#888', fontSize: '0.8rem' }}>Files larger than this are skipped</small>
+                </div>
+              </div>
+            </details>
+
+            <div className="wizard-actions">
+              {onCancel && (
+                <button type="button" className="btn btn-secondary" onClick={handleCancel} disabled={isLoading}>
+                  Cancel
+                </button>
+              )}
+              <button type="button" className="btn" onClick={handleAnalyze} disabled={isLoading || !file}>
+                {isLoading ? 'Analyzing...' : 'Analyze Archive'}
+              </button>
+            </div>
+          </>
+        )}
+
+        {status.type && <div className={`status-message ${status.type}`}>{status.message}</div>}
+      </div>
+    );
+  }
+
+  // Review step - show analysis results
+  if (wizardStep === 'review' && analysisResult) {
+    return (
+      <div>
+        <h4 style={{ marginBottom: '16px' }}>
+          Analysis Results for: {file?.name || 'Unknown'}
+        </h4>
+
+        {analysisResult.warnings.length > 0 && (
+          <div
+            style={{
+              background: 'rgba(251, 191, 36, 0.1)',
+              border: '1px solid rgba(251, 191, 36, 0.3)',
+              borderRadius: '8px',
+              padding: '12px',
+              marginBottom: '16px',
+            }}
+          >
+            <strong style={{ color: '#fbbf24' }}>Warnings:</strong>
+            <ul style={{ margin: '8px 0 0 0', paddingLeft: '20px' }}>
+              {analysisResult.warnings.map((warning, i) => (
+                <li key={i} style={{ color: '#fbbf24', fontSize: '0.9rem' }}>
+                  {warning}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '16px' }}>
+          <div style={{ background: 'var(--bg-tertiary)', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
+            <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--accent)' }}>
+              {analysisResult.total_files.toLocaleString()}
+            </div>
+            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Files</div>
+          </div>
+          <div style={{ background: 'var(--bg-tertiary)', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
+            <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--accent)' }}>
+              {analysisResult.total_size_mb.toLocaleString()} MB
+            </div>
+            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Source Size</div>
+          </div>
+          <div style={{ background: 'var(--bg-tertiary)', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
+            <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--accent)' }}>
+              {analysisResult.estimated_chunks.toLocaleString()}
+            </div>
+            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Est. Chunks</div>
+          </div>
+          <div style={{ background: 'var(--bg-tertiary)', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
+            <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--accent)' }}>
+              {analysisResult.estimated_index_size_mb.toLocaleString()} MB
+            </div>
+            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Est. Index Size</div>
+          </div>
+        </div>
+
+        {/* Suggested exclusions */}
+        {analysisResult.suggested_exclusions.length > 0 && !exclusionsApplied && (
+          <div
+            style={{
+              background: 'rgba(96, 165, 250, 0.1)',
+              border: '1px solid rgba(96, 165, 250, 0.3)',
+              borderRadius: '8px',
+              padding: '12px',
+              marginBottom: '16px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
+              <strong style={{ color: '#60a5fa' }}>Suggested Exclusions:</strong>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={applySuggestedExclusions}
+                style={{ fontSize: '0.8rem', padding: '4px 12px' }}
+              >
+                Apply All
+              </button>
+            </div>
+            <code style={{ fontSize: '0.85rem', color: '#94a3b8', wordBreak: 'break-word' }}>
+              {analysisResult.suggested_exclusions.join(', ')}
+            </code>
+          </div>
+        )}
+
+        {exclusionsApplied && (
+          <div
+            style={{
+              background: 'rgba(34, 197, 94, 0.1)',
+              border: '1px solid rgba(34, 197, 94, 0.3)',
+              borderRadius: '8px',
+              padding: '12px',
+              marginBottom: '16px',
+            }}
+          >
+            <strong style={{ color: '#22c55e' }}>Exclusions applied!</strong>
+            <span style={{ marginLeft: '8px', color: '#94a3b8', fontSize: '0.9rem' }}>
+              Click "Re-analyze" to see the updated estimates.
+            </span>
+          </div>
+        )}
+
+        {/* File type breakdown */}
+        {analysisResult.file_type_stats.length > 0 && (
+          <details style={{ marginBottom: '16px' }}>
+            <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>
+              File Type Breakdown ({analysisResult.file_type_stats.length} types)
+            </summary>
+            <div style={{ maxHeight: '200px', overflowY: 'auto' }}>
+              <table style={{ width: '100%', fontSize: '0.85rem' }}>
+                <thead>
+                  <tr style={{ textAlign: 'left', borderBottom: '1px solid #444' }}>
+                    <th style={{ padding: '4px 8px' }}>Extension</th>
+                    <th style={{ padding: '4px 8px' }}>Files</th>
+                    <th style={{ padding: '4px 8px' }}>Size</th>
+                    <th style={{ padding: '4px 8px' }}>Est. Chunks</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {analysisResult.file_type_stats.slice(0, 15).map((stat) => (
+                    <tr key={stat.extension} style={{ borderBottom: '1px solid #333' }}>
+                      <td style={{ padding: '4px 8px', fontFamily: 'monospace' }}>{stat.extension}</td>
+                      <td style={{ padding: '4px 8px' }}>{stat.file_count}</td>
+                      <td style={{ padding: '4px 8px' }}>{formatBytes(stat.total_size_bytes)}</td>
+                      <td style={{ padding: '4px 8px' }}>{stat.estimated_chunks}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {analysisResult.file_type_stats.length > 15 && (
+                <div style={{ padding: '8px', color: '#888', fontSize: '0.85rem' }}>
+                  ... and {analysisResult.file_type_stats.length - 15} more types
+                </div>
+              )}
+            </div>
+          </details>
+        )}
+
+        {/* Advanced options with current patterns */}
+        <details open={patternsExpanded} style={{ marginBottom: '16px' }}>
+          <summary
+            style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}
+            onClick={(e) => {
+              e.preventDefault();
+              setPatternsExpanded(!patternsExpanded);
+            }}
+          >
+            Indexing Configuration
+          </summary>
+
           <div className="form-group">
             <label>Index Name *</label>
             <input
               type="text"
-              name="name"
               value={indexName}
               onChange={(e) => setIndexName(e.target.value)}
               placeholder="e.g., odoo-17, my-codebase"
-              required
             />
           </div>
 
           <div className="form-group">
             <label>Description (for AI context)</label>
             <textarea
-              name="description"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="Describe what this index contains so the AI knows when to use it, e.g., 'Odoo 17 modules source code including accounting, inventory, and sales apps'"
+              placeholder="Describe what this index contains so the AI knows when to use it"
               rows={2}
               style={{ resize: 'vertical', minHeight: '60px' }}
             />
@@ -154,61 +489,54 @@ export function UploadForm({ onJobCreated }: UploadFormProps) {
 
           <div className="row">
             <div className="form-group">
-              <label>File Patterns (comma-separated)</label>
+              <label>File Patterns</label>
               <input
                 type="text"
-                name="file_patterns"
-                defaultValue="**/*.py,**/*.md,**/*.xml,**/*.rst"
+                value={filePatterns}
+                onChange={(e) => setFilePatterns(e.target.value)}
               />
             </div>
             <div className="form-group">
               <label>Exclude Patterns</label>
               <input
                 type="text"
-                name="exclude_patterns"
-                defaultValue="**/node_modules/**,**/__pycache__/**,**/.git/**"
+                value={excludePatterns}
+                onChange={(e) => setExcludePatterns(e.target.value)}
               />
             </div>
           </div>
+        </details>
 
-          <div className="row">
-            <div className="form-group">
-              <label>Chunk Size</label>
-              <input
-                type="number"
-                name="chunk_size"
-                defaultValue={1000}
-                min={100}
-                max={4000}
-              />
-            </div>
-            <div className="form-group">
-              <label>Chunk Overlap</label>
-              <input
-                type="number"
-                name="chunk_overlap"
-                defaultValue={200}
-                min={0}
-                max={1000}
-              />
-            </div>
-          </div>
-
-          <button type="submit" className="btn" disabled={isLoading}>
-            Create Index
+        {/* Wizard actions */}
+        <div className="wizard-actions">
+          <button type="button" className="btn btn-secondary" onClick={handleBack} disabled={isLoading}>
+            Back
           </button>
-        </>
-      )}
-
-      {progress > 0 && (
-        <div className="progress-bar">
-          <div className="fill" style={{ width: `${progress}%` }} />
+          {exclusionsApplied && (
+            <button type="button" className="btn btn-secondary" onClick={handleReanalyze} disabled={isLoading}>
+              Re-analyze
+            </button>
+          )}
+          <button type="button" className="btn" onClick={handleStartIndexing} disabled={isLoading || !indexName.trim()}>
+            {isLoading ? 'Starting...' : 'Create Index'}
+          </button>
         </div>
-      )}
 
-      {status.type && (
-        <div className={`status-message ${status.type}`}>{status.message}</div>
-      )}
-    </form>
+        {progress > 0 && (
+          <div className="progress-bar">
+            <div className="fill" style={{ width: `${progress}%` }} />
+          </div>
+        )}
+
+        {status.type && <div className={`status-message ${status.type}`}>{status.message}</div>}
+      </div>
+    );
+  }
+
+  // Fallback
+  return (
+    <div>
+      {status.type && <div className={`status-message ${status.type}`}>{status.message}</div>}
+    </div>
   );
 }

@@ -27,12 +27,12 @@ class IndexConfig(BaseModel):
         description="Description of what this index contains (shown to LLM for context)",
     )
     file_patterns: List[str] = Field(
-        default=["**/*.py", "**/*.md", "**/*.rst", "**/*.txt", "**/*.xml"],
-        description="Glob patterns for files to include",
+        default=["**/*"],
+        description="Glob patterns for files to include (default: **/* matches all files)",
     )
     exclude_patterns: List[str] = Field(
-        default=["**/node_modules/**", "**/__pycache__/**", "**/venv/**", "**/.git/**"],
-        description="Glob patterns for files/dirs to exclude",
+        default_factory=list,
+        description="Glob patterns for files/dirs to exclude (e.g. **/node_modules/**, **/__pycache__/**)",
     )
     chunk_size: int = Field(default=1000, ge=100, le=4000)
     chunk_overlap: int = Field(default=200, ge=0, le=1000)
@@ -181,12 +181,12 @@ class AnalyzeIndexRequest(BaseModel):
         default=None, description="Token for private repos"
     )
     file_patterns: List[str] = Field(
-        default=["**/*.py", "**/*.md", "**/*.rst", "**/*.txt", "**/*.xml"],
-        description="Glob patterns for files to include",
+        default=["**/*"],
+        description="Glob patterns for files to include (default: **/* matches all files)",
     )
     exclude_patterns: List[str] = Field(
-        default=["**/node_modules/**", "**/__pycache__/**", "**/venv/**", "**/.git/**"],
-        description="Glob patterns for files/dirs to exclude",
+        default_factory=list,
+        description="Glob patterns for files/dirs to exclude (e.g. **/node_modules/**, **/__pycache__/**)",
     )
     chunk_size: int = Field(default=1000, ge=100, le=4000)
     chunk_overlap: int = Field(default=200, ge=0, le=1000)
@@ -573,15 +573,8 @@ class FilesystemConnectionConfig(BaseModel):
         description="Name for this index (used in embeddings table)"
     )
     file_patterns: List[str] = Field(
-        default=[
-            "**/*.txt",
-            "**/*.md",
-            "**/*.pdf",
-            "**/*.docx",
-            "**/*.py",
-            "**/*.json",
-        ],
-        description="Glob patterns for files to include",
+        default=["**/*"],
+        description="Glob patterns for files to include (default: **/* matches all files)",
     )
     exclude_patterns: List[str] = Field(
         default=[
@@ -589,7 +582,6 @@ class FilesystemConnectionConfig(BaseModel):
             "**/__pycache__/**",
             "**/venv/**",
             "**/.git/**",
-            "**/.*",
         ],
         description="Glob patterns for files/dirs to exclude",
     )
@@ -666,6 +658,12 @@ class FilesystemIndexJob(BaseModel):
     total_chunks: int = 0
     processed_chunks: int = 0
     error_message: Optional[str] = None
+    cancel_requested: bool = False
+
+    # File collection progress (for slow network filesystems)
+    files_scanned: int = 0  # Files found during collection phase
+    dirs_scanned: int = 0  # Directories scanned during collection
+    current_directory: Optional[str] = None  # Current directory being scanned
 
     # Timing
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -706,6 +704,12 @@ class FilesystemIndexJobResponse(BaseModel):
     total_chunks: int
     processed_chunks: int
     error_message: Optional[str] = None
+    cancel_requested: bool = False
+    # Collection phase progress (for slow network filesystems)
+    files_scanned: int = 0
+    dirs_scanned: int = 0
+    current_directory: Optional[str] = None
+    # Timing
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
@@ -718,6 +722,101 @@ class TriggerFilesystemIndexRequest(BaseModel):
         default=False,
         description="If true, re-index all files regardless of change detection",
     )
+
+
+class FilesystemAnalysisStatus(str, Enum):
+    """Status of a filesystem analysis job."""
+
+    PENDING = "pending"
+    SCANNING = "scanning"
+    ANALYZING = "analyzing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class FilesystemAnalysisJob(BaseModel):
+    """A filesystem analysis job for progress tracking."""
+
+    id: str
+    tool_config_id: str
+    status: FilesystemAnalysisStatus = FilesystemAnalysisStatus.PENDING
+
+    # Progress tracking
+    files_scanned: int = 0
+    total_dirs_to_scan: int = 0
+    dirs_scanned: int = 0
+    current_directory: str = ""
+    error_message: Optional[str] = None
+
+    # Timing
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    completed_at: Optional[datetime] = None
+
+    @property
+    def progress_percent(self) -> float:
+        if self.total_dirs_to_scan == 0:
+            return 0.0
+        return (self.dirs_scanned / self.total_dirs_to_scan) * 100
+
+
+class FilesystemAnalysisResult(BaseModel):
+    """Results from pre-indexing filesystem analysis."""
+
+    # Overall stats
+    total_files: int = Field(description="Total number of files found")
+    total_size_bytes: int = Field(description="Total size in bytes")
+    total_size_mb: float = Field(description="Total size in megabytes")
+    estimated_chunks: int = Field(
+        description="Estimated total chunks (based on chunk_size)"
+    )
+    estimated_index_size_mb: float = Field(
+        description="Estimated pgvector index size in MB"
+    )
+
+    # Breakdown by file type
+    file_type_stats: List[FileTypeStats] = Field(
+        default_factory=list, description="Stats broken down by file extension"
+    )
+
+    # Suggested exclusions
+    suggested_exclusions: List[str] = Field(
+        default_factory=list,
+        description="Suggested glob patterns to add to exclude_patterns",
+    )
+
+    # Warnings/recommendations
+    warnings: List[str] = Field(
+        default_factory=list, description="Warnings about potential issues"
+    )
+
+    # Config used for analysis
+    chunk_size: int = Field(description="Chunk size used for estimation")
+    chunk_overlap: int = Field(description="Chunk overlap used for estimation")
+
+    # Analysis metadata
+    analysis_duration_seconds: float = Field(
+        default=0.0, description="Time taken to complete analysis"
+    )
+    directories_scanned: int = Field(
+        default=0, description="Number of directories scanned"
+    )
+
+
+class FilesystemAnalysisJobResponse(BaseModel):
+    """Response for filesystem analysis job status (polling)."""
+
+    id: str
+    tool_config_id: str
+    status: FilesystemAnalysisStatus
+    progress_percent: float
+    files_scanned: int
+    dirs_scanned: int
+    total_dirs_to_scan: int
+    current_directory: str = ""
+    error_message: Optional[str] = None
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+    result: Optional[FilesystemAnalysisResult] = None
 
 
 class ToolConfig(BaseModel):

@@ -726,6 +726,61 @@ class IndexerService:
             # Cleanup
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    async def analyze_upload(
+        self,
+        file: BinaryIO,
+        filename: str,
+        file_patterns: List[str],
+        exclude_patterns: List[str],
+        chunk_size: int = 1000,
+        chunk_overlap: int = 200,
+        max_file_size_kb: int = 500,
+    ) -> IndexAnalysisResult:
+        """
+        Analyze an uploaded archive to estimate index size and suggest exclusions.
+
+        Extracts the archive, scans files matching patterns, and provides:
+        - Total file count, size, and estimated chunks
+        - Breakdown by file extension
+        - Suggested exclusion patterns for large/binary files
+        - Warnings about potential issues
+
+        The temporary extraction is deleted after analysis.
+        """
+        temp_dir = UPLOAD_TMP_DIR / f"analysis_{uuid.uuid4().hex[:8]}"
+
+        try:
+            temp_dir.mkdir(parents=True, exist_ok=True)
+
+            # Save uploaded file temporarily
+            archive_path = temp_dir / filename
+            with open(archive_path, "wb") as f:
+                shutil.copyfileobj(file, f)
+
+            logger.info(f"Saved archive for analysis: {archive_path}")
+
+            # Extract archive
+            extract_dir = temp_dir / "extracted"
+            extract_dir.mkdir(parents=True, exist_ok=True)
+            self._extract_archive(archive_path, extract_dir)
+
+            # Find actual source directory
+            source_dir = self._find_source_dir(extract_dir)
+
+            # Scan and analyze files
+            return await self._analyze_directory(
+                source_dir,
+                file_patterns=file_patterns,
+                exclude_patterns=exclude_patterns,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                max_file_size_kb=max_file_size_kb,
+            )
+
+        finally:
+            # Cleanup
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     async def _analyze_directory(
         self,
         source_dir: Path,

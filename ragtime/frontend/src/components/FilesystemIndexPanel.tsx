@@ -212,7 +212,7 @@ export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged }: Filesyst
           api.getFilesystemStats(tool.id).catch(() => null),
         ]);
         // Get the most recent active job, or most recent completed job
-        const activeJob = jobs.find(j => j.status === 'pending' || j.status === 'indexing');
+        const activeJob = jobs.find((j: typeof jobs[0]) => j.status === 'pending' || j.status === 'indexing');
         const recentJob = activeJob || jobs[0] || null;
         jobUpdates[tool.id] = recentJob;
         statsUpdates[tool.id] = stats;

@@ -194,6 +194,18 @@ export const api = {
   },
 
   /**
+   * Analyze an uploaded archive before indexing
+   * Returns estimated file counts, chunk counts, size, and suggested exclusions
+   */
+  async analyzeUpload(formData: FormData): Promise<IndexAnalysisResult> {
+    const response = await apiFetch(`${API_BASE}/upload/analyze`, {
+      method: 'POST',
+      body: formData,
+    });
+    return handleResponse<IndexAnalysisResult>(response);
+  },
+
+  /**
    * List all indexing jobs
    */
   async listJobs(): Promise<IndexJob[]> {
@@ -552,6 +564,24 @@ export const api = {
   },
 
   /**
+   * Start filesystem analysis for a tool (returns job for polling)
+   */
+  async startFilesystemAnalysis(toolId: string): Promise<import('@/types').FilesystemAnalysisJob> {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/filesystem/analyze`, {
+      method: 'POST',
+    });
+    return handleResponse<import('@/types').FilesystemAnalysisJob>(response);
+  },
+
+  /**
+   * Get filesystem analysis job status and results
+   */
+  async getFilesystemAnalysisJob(toolId: string, jobId: string): Promise<import('@/types').FilesystemAnalysisJob> {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/filesystem/analyze/${jobId}`);
+    return handleResponse<import('@/types').FilesystemAnalysisJob>(response);
+  },
+
+  /**
    * Trigger filesystem indexing for a tool
    */
   async triggerFilesystemIndex(toolId: string, fullReindex?: boolean): Promise<import('@/types').FilesystemIndexJob> {
@@ -571,6 +601,16 @@ export const api = {
       method: 'POST',
     });
     return handleResponse<{ success: boolean; message: string }>(response);
+  },
+
+  /**
+   * Retry a failed or cancelled filesystem indexing job
+   */
+  async retryFilesystemJob(toolId: string, jobId: string): Promise<import('@/types').FilesystemIndexJob> {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/filesystem/jobs/${jobId}/retry`, {
+      method: 'POST',
+    });
+    return handleResponse<import('@/types').FilesystemIndexJob>(response);
   },
 
   /**

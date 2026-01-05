@@ -7,7 +7,7 @@
   --color-accent-cyan: #00d4ff;
   --color-accent-purple: #7c3aed;
   --color-border: rgba(255, 255, 255, 0.1);
-  --color-card-bg: rgba(255, 255, 255, 0.05);
+  --color-card-bg: #1d2b41;
   --color-input-bg: rgba(0, 0, 0, 0.3);
   --color-success: #4ade80;
   --color-success-bg: rgba(34, 197, 94, 0.2);
@@ -365,9 +365,15 @@ select option:checked {
   color: var(--color-info);
 }
 
+.jobs-table-wrapper {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 .jobs-table {
   width: 100%;
   border-collapse: collapse;
+  min-width: 1000px;
 }
 
 .jobs-table th,
@@ -382,6 +388,19 @@ select option:checked {
   font-weight: 500;
   font-size: 0.85rem;
   text-transform: uppercase;
+}
+
+/* Sticky actions column */
+.jobs-table th:nth-child(7),
+.jobs-table td:nth-child(7) {
+  position: sticky;
+  right: 0;
+  background: var(--color-card-bg);
+  z-index: 1;
+}
+
+.jobs-table th:nth-child(7) {
+  z-index: 2;
 }
 
 .badge {
@@ -5198,4 +5217,121 @@ textarea:focus {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* ============================================
+   Popover Component
+   ============================================ */
+
+.popover-container {
+  position: relative;
+  display: inline-block;
+}
+
+.popover {
+  position: absolute;
+  z-index: 1000;
+  padding: 0.5rem 0.75rem;
+  background: var(--color-bg-secondary, #16213e);
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.15));
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  font-size: 0.85rem;
+  color: var(--color-text-primary, #e4e4e4);
+  white-space: nowrap;
+  pointer-events: none;
+  animation: popover-fade-in 0.15s ease-out;
+}
+
+@keyframes popover-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.popover-content {
+  min-width: 250px;
+  max-width: 450px;
+  white-space: normal;
+  line-height: 1.4;
+}
+
+.popover-arrow {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: var(--color-bg-secondary, #16213e);
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.15));
+  transform: rotate(45deg);
+}
+
+/* Popover positions */
+.popover-top {
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.popover-top .popover-arrow {
+  bottom: -5px;
+  left: 50%;
+  margin-left: -4px;
+  border-top: none;
+  border-left: none;
+}
+
+.popover-bottom {
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.popover-bottom .popover-arrow {
+  top: -5px;
+  left: 50%;
+  margin-left: -4px;
+  border-bottom: none;
+  border-right: none;
+}
+
+.popover-left {
+  right: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.popover-left .popover-arrow {
+  right: -5px;
+  top: 50%;
+  margin-top: -4px;
+  border-left: none;
+  border-bottom: none;
+}
+
+.popover-right {
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.popover-right .popover-arrow {
+  left: -5px;
+  top: 50%;
+  margin-top: -4px;
+  border-right: none;
+  border-top: none;
+}
+
+/* Info variant for hints */
+.popover.popover-info {
+  background: var(--color-info-bg, rgba(59, 130, 246, 0.2));
+  border-color: var(--color-info-border, rgba(59, 130, 246, 0.4));
+}
+
+.popover.popover-info .popover-arrow {
+  background: var(--color-info-bg, rgba(59, 130, 246, 0.2));
+  border-color: var(--color-info-border, rgba(59, 130, 246, 0.4));
 }

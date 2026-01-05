@@ -63,7 +63,7 @@ async def lifespan(app: FastAPI):
     # Clean up any orphaned filesystem indexing jobs from previous runs
     from ragtime.indexer.filesystem_service import filesystem_indexer
 
-    await filesystem_indexer.cleanup_orphaned_jobs()
+    await filesystem_indexer._cleanup_stale_jobs()
 
     # Discover orphan indexes (FAISS files without database metadata)
     discovered = await indexer.discover_orphan_indexes()

@@ -8,14 +8,18 @@ type WizardStep = 'input' | 'analyzing' | 'review' | 'indexing';
 interface GitIndexWizardProps {
   onJobCreated?: () => void;
   onCancel?: () => void;
+  onAnalysisStart?: () => void;
+  onAnalysisComplete?: () => void;
 }
 
+// Default file patterns to include all files, and placeholder hints for UI
 const DEFAULT_FILE_PATTERNS = '**/*';
-const DEFAULT_EXCLUDE_PATTERNS = '**/node_modules/**,**/__pycache__/**,**/venv/**,**/.git/**,**/.venv/**';
+const PLACEHOLDER_FILE_PATTERNS = 'e.g. **/*.py, **/*.md (default: all files)';
+const PLACEHOLDER_EXCLUDE_PATTERNS = 'e.g. **/node_modules/**, **/__pycache__/**';
 const GITHUB_TOKEN_PREFIXES = ['ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_', 'github_pat_'];
 const GITLAB_TOKEN_PREFIXES = ['glpat-', 'glptt-', 'gldt-', 'glsoat-'];
 
-export function GitIndexWizard({ onJobCreated, onCancel }: GitIndexWizardProps) {
+export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnalysisComplete }: GitIndexWizardProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState<{ type: StatusType; message: string }>({
     type: null,
@@ -33,7 +37,7 @@ export function GitIndexWizard({ onJobCreated, onCancel }: GitIndexWizardProps) 
   const [branchError, setBranchError] = useState<string | null>(null);
 
   const [filePatterns, setFilePatterns] = useState(DEFAULT_FILE_PATTERNS);
-  const [excludePatterns, setExcludePatterns] = useState(DEFAULT_EXCLUDE_PATTERNS);
+  const [excludePatterns, setExcludePatterns] = useState('');
   const [chunkSize, setChunkSize] = useState(1000);
   const [chunkOverlap, setChunkOverlap] = useState(200);
   const [maxFileSizeKb, setMaxFileSizeKb] = useState(500);
@@ -52,7 +56,7 @@ export function GitIndexWizard({ onJobCreated, onCancel }: GitIndexWizardProps) 
     setSelectedBranch('');
     setBranchError(null);
     setFilePatterns(DEFAULT_FILE_PATTERNS);
-    setExcludePatterns(DEFAULT_EXCLUDE_PATTERNS);
+    setExcludePatterns('');
     setChunkSize(1000);
     setChunkOverlap(200);
     setMaxFileSizeKb(500);
@@ -234,6 +238,7 @@ export function GitIndexWizard({ onJobCreated, onCancel }: GitIndexWizardProps) 
     setWizardStep('analyzing');
     setIsLoading(true);
     setStatus({ type: 'info', message: 'Analyzing repository (this may take a minute)...' });
+    onAnalysisStart?.();
 
     try {
       const result = await api.analyzeRepository({
@@ -254,6 +259,7 @@ export function GitIndexWizard({ onJobCreated, onCancel }: GitIndexWizardProps) 
       setWizardStep('input');
     } finally {
       setIsLoading(false);
+      onAnalysisComplete?.();
     }
   };
 
@@ -438,7 +444,7 @@ export function GitIndexWizard({ onJobCreated, onCancel }: GitIndexWizardProps) 
                 type="text"
                 value={filePatterns}
                 onChange={(e) => setFilePatterns(e.target.value)}
-                placeholder="e.g., **/*.py,**/*.md"
+                placeholder={PLACEHOLDER_FILE_PATTERNS}
                 disabled={isLoading}
               />
             </div>
@@ -448,7 +454,7 @@ export function GitIndexWizard({ onJobCreated, onCancel }: GitIndexWizardProps) 
                 type="text"
                 value={excludePatterns}
                 onChange={(e) => setExcludePatterns(e.target.value)}
-                placeholder="e.g., **/test/**"
+                placeholder={PLACEHOLDER_EXCLUDE_PATTERNS}
                 disabled={isLoading}
               />
             </div>
