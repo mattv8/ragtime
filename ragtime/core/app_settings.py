@@ -58,6 +58,9 @@ class SettingsCache:
                 "max_query_results": prisma_settings.maxQueryResults,
                 "query_timeout": prisma_settings.queryTimeout,
                 "enable_write_ops": prisma_settings.enableWriteOps,
+                # Search configuration
+                "search_results_k": prisma_settings.searchResultsK,
+                "aggregate_search": prisma_settings.aggregateSearch,
                 # LLM settings
                 "llm_provider": prisma_settings.llmProvider,
                 "llm_model": prisma_settings.llmModel,
@@ -90,6 +93,9 @@ class SettingsCache:
                 "max_query_results": 100,
                 "query_timeout": 30,
                 "enable_write_ops": False,
+                # Search configuration
+                "search_results_k": 5,
+                "aggregate_search": True,
                 # LLM settings
                 "llm_provider": "openai",
                 "llm_model": "gpt-4-turbo",

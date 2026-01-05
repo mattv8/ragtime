@@ -2,7 +2,7 @@
  * API client for Ragtime Indexer
  */
 
-import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, PostgresDiscoverRequest, PostgresDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse } from '@/types';
+import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, PostgresDiscoverRequest, PostgresDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult } from '@/types';
 
 const API_BASE = '/indexes';
 const AUTH_BASE = '/auth';
@@ -181,6 +181,19 @@ export const api = {
   },
 
   /**
+   * Analyze a git repository before indexing
+   * Returns estimated file counts, chunk counts, size, and suggested exclusions
+   */
+  async analyzeRepository(request: AnalyzeIndexRequest): Promise<IndexAnalysisResult> {
+    const response = await apiFetch(`${API_BASE}/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<IndexAnalysisResult>(response);
+  },
+
+  /**
    * List all indexing jobs
    */
   async listJobs(): Promise<IndexJob[]> {
@@ -307,6 +320,18 @@ export const api = {
       body: JSON.stringify({ description }),
     });
     return handleResponse<{ description: string }>(response);
+  },
+
+  /**
+   * Update an index's search weight for result prioritization
+   */
+  async updateIndexWeight(name: string, weight: number): Promise<{ weight: number }> {
+    const response = await apiFetch(`${API_BASE}/${encodeURIComponent(name)}/weight`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ weight }),
+    });
+    return handleResponse<{ weight: number }>(response);
   },
 
   /**

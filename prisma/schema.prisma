@@ -86,6 +86,7 @@ model IndexMetadata {
   chunkCount    Int      @default(0) @map("chunk_count")
   sizeBytes     BigInt   @default(0) @map("size_bytes")
   enabled       Boolean  @default(true) // Include in RAG context
+  searchWeight  Float    @default(1.0) @map("search_weight") // Weighting for search prioritization (0.0-10.0)
 
   // Source info
   sourceType String  @map("source_type")
@@ -145,6 +146,10 @@ model AppSettings {
   maxQueryResults   Int      @default(100) @map("max_query_results")
   queryTimeout      Int      @default(30) @map("query_timeout")
   maxIterations     Int      @default(15) @map("max_iterations") // Agent iteration limit
+
+  // Search Configuration
+  searchResultsK    Int      @default(5) @map("search_results_k") // Number of results per vector search (k)
+  aggregateSearch   Boolean  @default(true) @map("aggregate_search") // If true, use single search_knowledge; if false, create per-index tools
 
   // Security
   enableWriteOps    Boolean  @default(false) @map("enable_write_ops")

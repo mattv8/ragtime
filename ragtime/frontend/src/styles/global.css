@@ -874,6 +874,30 @@ select option:checked {
   color: #fb923c;
 }
 
+.meta-pill.weight {
+  background: rgba(148, 163, 184, 0.1);
+  border-color: rgba(148, 163, 184, 0.2);
+  color: #94a3b8;
+  transition: all 0.2s;
+}
+
+.meta-pill.weight:hover {
+  background: rgba(148, 163, 184, 0.2);
+  border-color: rgba(148, 163, 184, 0.4);
+  color: #cbd5e1;
+}
+
+.meta-pill.weight.weight-modified {
+  background: rgba(251, 191, 36, 0.15);
+  border-color: rgba(251, 191, 36, 0.3);
+  color: #fbbf24;
+}
+
+.meta-pill.weight.weight-modified:hover {
+  background: rgba(251, 191, 36, 0.25);
+  border-color: rgba(251, 191, 36, 0.5);
+}
+
 @keyframes pulse-active {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.6; }

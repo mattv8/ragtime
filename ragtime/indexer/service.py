@@ -22,9 +22,19 @@ from typing import Any, BinaryIO, Dict, List, Optional
 
 from ragtime.config import settings
 from ragtime.core.app_settings import invalidate_settings_cache
+from ragtime.core.file_constants import (
+    BINARY_EXTENSIONS,
+    MINIFIED_PATTERNS,
+    PARSEABLE_DOCUMENT_EXTENSIONS,
+    UNPARSEABLE_BINARY_EXTENSIONS,
+)
 from ragtime.core.logging import get_logger
+from ragtime.indexer.llm_exclusions import get_smart_exclusion_suggestions
 from ragtime.indexer.models import (
+    AnalyzeIndexRequest,
     AppSettings,
+    FileTypeStats,
+    IndexAnalysisResult,
     IndexConfig,
     IndexInfo,
     IndexJob,
@@ -36,6 +46,90 @@ logger = get_logger(__name__)
 
 # Persistent storage for uploaded files
 UPLOAD_TMP_DIR = Path(settings.index_data_path) / "_tmp"
+
+
+# =============================================================================
+# Git Provider Token Authentication
+# =============================================================================
+# Supported platforms and their HTTPS clone URL token formats:
+#
+# GitHub (github.com):
+#   - Token prefixes: ghp_, gho_, ghu_, ghs_, ghr_, github_pat_
+#   - Format: https://x-access-token:{token}@github.com/owner/repo.git
+#   - Docs: https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens
+#
+# GitLab (gitlab.com and self-hosted):
+#   - Token prefixes: glpat-, glptt-, gldt-, glsoat-
+#   - Format: https://oauth2:{token}@{host}/owner/repo.git
+#   - Note: Username can be any non-empty string; "oauth2" is conventional
+#   - Docs: https://docs.gitlab.com/ee/user/profile/personal_access_tokens.html
+#
+# Bitbucket (bitbucket.org):
+#   - Token prefixes: (no standard prefix - API tokens)
+#   - Format: https://x-bitbucket-api-token-auth:{token}@bitbucket.org/workspace/repo.git
+#   - Docs: https://support.atlassian.com/bitbucket-cloud/docs/using-api-tokens/
+#
+# Generic (Gitea, Gogs, Forgejo, etc.):
+#   - Format: https://{token}@{host}/owner/repo.git
+#   - Most self-hosted Git servers accept token as username
+# =============================================================================
+
+# Token prefix patterns for provider detection (case-sensitive)
+_GITHUB_TOKEN_PREFIXES = ("ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_")
+_GITLAB_TOKEN_PREFIXES = ("glpat-", "glptt-", "gldt-", "glsoat-")
+
+
+def _build_authenticated_git_url(git_url: str, token: Optional[str] = None) -> str:
+    """
+    Build a Git clone URL with embedded token authentication.
+
+    Detects the Git provider from the URL hostname or token prefix and applies
+    the appropriate authentication format.
+
+    Args:
+        git_url: The original HTTPS Git URL (e.g., https://github.com/owner/repo.git)
+        token: Optional personal access token for authentication
+
+    Returns:
+        The URL with embedded credentials, or the original URL if no token provided
+    """
+    if not token:
+        return git_url
+
+    # Parse URL: protocol://host/path
+    match = re.match(r"(https?://)([^/]+)(/.*)$", git_url)
+    if not match:
+        # Not a standard HTTP(S) URL, return as-is
+        return git_url
+
+    protocol, host, path = match.groups()
+    host_lower = host.lower()
+
+    # Priority 1: Detect by hostname (most reliable)
+    if "github.com" in host_lower:
+        # GitHub: https://x-access-token:{token}@github.com/...
+        return f"{protocol}x-access-token:{token}@{host}{path}"
+
+    if "gitlab" in host_lower:
+        # GitLab (hosted or self-hosted with "gitlab" in hostname)
+        return f"{protocol}oauth2:{token}@{host}{path}"
+
+    if "bitbucket.org" in host_lower:
+        # Bitbucket Cloud: https://x-bitbucket-api-token-auth:{token}@bitbucket.org/...
+        return f"{protocol}x-bitbucket-api-token-auth:{token}@{host}{path}"
+
+    # Priority 2: Detect by token prefix (for self-hosted instances)
+    if token.startswith(_GITHUB_TOKEN_PREFIXES):
+        # GitHub Enterprise or similar using GitHub token format
+        return f"{protocol}x-access-token:{token}@{host}{path}"
+
+    if token.startswith(_GITLAB_TOKEN_PREFIXES):
+        # Self-hosted GitLab (e.g., git.example.com) detected by token prefix
+        return f"{protocol}oauth2:{token}@{host}{path}"
+
+    # Priority 3: Generic fallback
+    # Most Git servers (Gitea, Gogs, Forgejo, etc.) accept token as username
+    return f"{protocol}{token}@{host}{path}"
 
 
 async def generate_index_description(
@@ -517,7 +611,9 @@ class IndexerService:
                         source_type = getattr(meta, "sourceType", "upload")
                         source = getattr(meta, "source", None)
                         git_branch = getattr(meta, "gitBranch", None)
+                        search_weight = getattr(meta, "searchWeight", 1.0)
                     else:
+                        search_weight = 1.0
                         # Fallback to legacy .metadata.json file
                         meta_file = path / ".metadata.json"
                         if meta_file.exists():
@@ -541,6 +637,7 @@ class IndexerService:
                             document_count=doc_count,
                             description=description,
                             enabled=enabled,
+                            search_weight=search_weight,
                             source_type=source_type,
                             source=source,
                             git_branch=git_branch,
@@ -568,6 +665,303 @@ class IndexerService:
             logger.info(f"Deleted index metadata without files present: {name}")
 
         return deleted_files or metadata_deleted
+
+    async def analyze_git_repository(
+        self, request: AnalyzeIndexRequest
+    ) -> IndexAnalysisResult:
+        """
+        Analyze a git repository to estimate index size and suggest exclusions.
+
+        This performs a shallow clone, scans files matching patterns, and provides:
+        - Total file count, size, and estimated chunks
+        - Breakdown by file extension
+        - Suggested exclusion patterns for large/binary files
+        - Warnings about potential issues
+
+        The temporary clone is deleted after analysis.
+        """
+        temp_dir = UPLOAD_TMP_DIR / f"analysis_{uuid.uuid4().hex[:8]}"
+
+        try:
+            temp_dir.mkdir(parents=True, exist_ok=True)
+
+            # Build authenticated URL if token provided
+            clone_url = _build_authenticated_git_url(request.git_url, request.git_token)
+
+            # Shallow clone (depth=1) for speed
+            logger.info(f"Shallow cloning {request.git_url} for analysis")
+            result = subprocess.run(
+                [
+                    "git",
+                    "clone",
+                    "--depth",
+                    "1",
+                    "--branch",
+                    request.git_branch,
+                    clone_url,
+                    str(temp_dir / "repo"),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,  # 2 minute timeout for clone
+                check=False,  # We handle the error ourselves
+            )
+
+            if result.returncode != 0:
+                raise RuntimeError(f"Git clone failed: {result.stderr}")
+
+            repo_dir = temp_dir / "repo"
+
+            # Scan and analyze files
+            return await self._analyze_directory(
+                repo_dir,
+                file_patterns=request.file_patterns,
+                exclude_patterns=request.exclude_patterns,
+                chunk_size=request.chunk_size,
+                chunk_overlap=request.chunk_overlap,
+                max_file_size_kb=request.max_file_size_kb,
+            )
+
+        finally:
+            # Cleanup
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    async def _analyze_directory(
+        self,
+        source_dir: Path,
+        file_patterns: List[str],
+        exclude_patterns: List[str],
+        chunk_size: int,
+        chunk_overlap: int,
+        max_file_size_kb: int = 500,
+    ) -> IndexAnalysisResult:
+        """
+        Analyze a directory to estimate indexing results.
+        """
+        from collections import defaultdict
+
+        max_file_size_bytes = max_file_size_kb * 1024
+
+        # File extension stats
+        ext_stats: Dict[str, Dict[str, Any]] = defaultdict(
+            lambda: {
+                "file_count": 0,
+                "total_size": 0,
+                "sample_files": [],
+            }
+        )
+
+        # Use centralized constants from file_constants module
+        # BINARY_EXTENSIONS and MINIFIED_PATTERNS are imported at module level
+
+        total_files = 0
+        total_size = 0
+        skipped_oversized = 0  # Files exceeding max_file_size_kb
+        matched_patterns: set = set()
+        warnings: List[str] = []
+        suggested_exclusions: List[str] = []
+        large_files: List[tuple] = []  # (path, size)
+        minified_files: List[str] = []
+
+        # Compile exclude patterns
+        def is_excluded(file_path: Path) -> bool:
+            rel_path = str(file_path.relative_to(source_dir))
+            for pattern in exclude_patterns:
+                if fnmatch.fnmatch(rel_path, pattern):
+                    return True
+                # Also check just the filename
+                if fnmatch.fnmatch(file_path.name, pattern):
+                    return True
+            return False
+
+        # Compile include patterns
+        def matches_include(file_path: Path) -> tuple:
+            """Returns (matches, pattern) if file matches any include pattern."""
+            rel_path = str(file_path.relative_to(source_dir))
+            for pattern in file_patterns:
+                if fnmatch.fnmatch(rel_path, pattern):
+                    return (True, pattern)
+                if fnmatch.fnmatch(file_path.name, pattern):
+                    return (True, pattern)
+            return (False, None)
+
+        # Check if file matches minified patterns
+        def is_minified(filename: str) -> bool:
+            for pattern in MINIFIED_PATTERNS:
+                if fnmatch.fnmatch(filename, pattern):
+                    return True
+            return False
+
+        # Walk the directory
+        for file_path in source_dir.rglob("*"):
+            if not file_path.is_file():
+                continue
+
+            # Skip excluded
+            if is_excluded(file_path):
+                continue
+
+            # Check if matches include patterns
+            matches, pattern = matches_include(file_path)
+            if not matches:
+                continue
+
+            matched_patterns.add(pattern)
+
+            # Get file stats
+            try:
+                size = file_path.stat().st_size
+            except OSError:
+                continue
+
+            # Skip zero-byte files
+            if size == 0:
+                continue
+
+            # Skip files exceeding max size limit
+            if size > max_file_size_bytes:
+                skipped_oversized += 1
+                continue
+
+            ext = file_path.suffix.lower() or "(no extension)"
+            rel_path = str(file_path.relative_to(source_dir))
+
+            total_files += 1
+            total_size += size
+
+            # Track by extension
+            stats = ext_stats[ext]
+            stats["file_count"] += 1
+            stats["total_size"] += size
+            if len(stats["sample_files"]) < 5:
+                stats["sample_files"].append(rel_path)
+
+            # Check for issues
+            if ext in BINARY_EXTENSIONS:
+                # Should suggest excluding these
+                pass
+
+            # Track files approaching the limit (>80% of max)
+            if size > max_file_size_bytes * 0.8:
+                large_files.append((rel_path, size))
+
+            if is_minified(file_path.name):
+                minified_files.append(rel_path)
+
+        # Calculate estimated chunks per file type
+        for ext, stats in ext_stats.items():
+            # Estimate chunks: (file_size - overlap) / (chunk_size - overlap)
+            # Simplified: size / effective_chunk_size
+            effective_chunk = chunk_size - chunk_overlap
+            if effective_chunk > 0:
+                stats["estimated_chunks"] = max(
+                    1, stats["total_size"] // effective_chunk
+                )
+            else:
+                stats["estimated_chunks"] = stats["file_count"]
+
+        # Get smart exclusion suggestions (LLM if available, otherwise heuristics)
+        # Extract repo name from source_dir for context
+        repo_name = (
+            source_dir.name if source_dir.name != "repo" else source_dir.parent.name
+        )
+
+        # Get smart suggestions (uses LLM if configured, falls back to heuristics)
+        # Pass full ext_stats so LLM can see file counts and estimated chunks
+        smart_exclusions, _used_llm = await get_smart_exclusion_suggestions(
+            ext_stats=dict(ext_stats),  # Convert defaultdict to regular dict
+            repo_name=repo_name,
+        )
+        suggested_exclusions.extend(smart_exclusions)
+
+        # Add warnings based on what we found
+        # Separate truly unparseable from parseable documents
+        unparseable_found = [
+            ext for ext in ext_stats if ext in UNPARSEABLE_BINARY_EXTENSIONS
+        ]
+        parseable_docs_found = [
+            ext for ext in ext_stats if ext in PARSEABLE_DOCUMENT_EXTENSIONS
+        ]
+
+        if unparseable_found:
+            warnings.append(
+                f"Found {len(unparseable_found)} binary file types that will be auto-skipped: "
+                + ", ".join(unparseable_found[:5])
+                + ("..." if len(unparseable_found) > 5 else "")
+            )
+
+        if parseable_docs_found:
+            warnings.append(
+                f"Found document types ({', '.join(parseable_docs_found)}) that require "
+                "special parsers. The git/upload indexer cannot extract text from these - "
+                "consider excluding them or use the Filesystem Indexer instead."
+            )
+
+        if skipped_oversized > 0:
+            warnings.append(
+                f"Skipped {skipped_oversized} files exceeding the {max_file_size_kb}KB size limit. "
+                "Increase max file size if you need to include them."
+            )
+
+        if large_files:
+            threshold_kb = int(max_file_size_kb * 0.8)
+            if len(large_files) > 5:
+                warnings.append(
+                    f"Found {len(large_files)} files over {threshold_kb}KB (approaching limit). "
+                    f"Examples: {large_files[0][0]} ({large_files[0][1] // 1024}KB)"
+                )
+            else:
+                for path, size in large_files[:3]:
+                    warnings.append(f"Large file: {path} ({size // 1024}KB)")
+
+        # Calculate totals
+        total_estimated_chunks = sum(
+            stats["estimated_chunks"] for stats in ext_stats.values()
+        )
+
+        # Estimate index size:
+        # - Each chunk embedding ~6KB for 1536 dims (OpenAI) or ~3KB for 768 dims (Ollama)
+        # - Plus metadata overhead
+        # Use conservative 6KB per chunk estimate
+        estimated_index_size_mb = (total_estimated_chunks * 6) / 1024
+
+        # Build file type stats list (sorted by chunk count descending)
+        file_type_list = [
+            FileTypeStats(
+                extension=ext,
+                file_count=stats["file_count"],
+                total_size_bytes=stats["total_size"],
+                estimated_chunks=stats["estimated_chunks"],
+                sample_files=stats["sample_files"],
+            )
+            for ext, stats in sorted(
+                ext_stats.items(),
+                key=lambda x: x[1]["estimated_chunks"],
+                reverse=True,
+            )
+        ]
+
+        # Add size warning if very large
+        if estimated_index_size_mb > 1000:  # > 1GB
+            warnings.insert(
+                0,
+                f"Estimated index size is {estimated_index_size_mb:.0f}MB. "
+                "Consider adding more exclusion patterns or reducing included file types.",
+            )
+
+        return IndexAnalysisResult(
+            total_files=total_files,
+            total_size_bytes=total_size,
+            total_size_mb=round(total_size / (1024 * 1024), 2),
+            estimated_chunks=total_estimated_chunks,
+            estimated_index_size_mb=round(estimated_index_size_mb, 2),
+            file_type_stats=file_type_list,
+            suggested_exclusions=list(set(suggested_exclusions)),
+            matched_file_patterns=list(matched_patterns),
+            warnings=warnings,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
 
     async def create_index_from_upload(
         self, file: BinaryIO, filename: str, config: IndexConfig
@@ -754,34 +1148,8 @@ class IndexerService:
                 if not job.git_url:
                     raise ValueError("Git URL is required for git source type")
 
-                # Build clone URL - inject token for private repos
-                clone_url = job.git_url
-                if job.git_token:
-                    # Insert token into HTTPS URL with proper format for each provider
-                    if clone_url.startswith("https://"):
-                        if "github.com" in clone_url:
-                            # GitHub: https://x-access-token:TOKEN@github.com/...
-                            clone_url = clone_url.replace(
-                                "https://github.com",
-                                f"https://x-access-token:{job.git_token}@github.com",
-                                1,
-                            )
-                        elif "gitlab.com" in clone_url:
-                            # GitLab: https://oauth2:TOKEN@gitlab.com/...
-                            clone_url = clone_url.replace(
-                                "https://gitlab.com",
-                                f"https://oauth2:{job.git_token}@gitlab.com",
-                                1,
-                            )
-                        else:
-                            # Generic: https://TOKEN@host/...
-                            clone_url = clone_url.replace(
-                                "https://", f"https://{job.git_token}@", 1
-                            )
-                    elif clone_url.startswith("http://"):
-                        clone_url = clone_url.replace(
-                            "http://", f"http://{job.git_token}@", 1
-                        )
+                # Build clone URL with token authentication
+                clone_url = _build_authenticated_git_url(job.git_url, job.git_token)
 
                 # Set environment to prevent git from prompting for credentials
                 env = {
@@ -958,63 +1326,7 @@ class IndexerService:
         await repository.update_job(job)
         logger.info(f"Found {len(all_files)} files to index")
 
-        # Binary file extensions to skip (images, compiled files, etc.)
-        BINARY_EXTENSIONS = {
-            # Images
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".gif",
-            ".bmp",
-            ".ico",
-            ".svg",
-            ".webp",
-            ".tiff",
-            ".tif",
-            # Compiled/binary
-            ".pyc",
-            ".pyo",
-            ".so",
-            ".dll",
-            ".exe",
-            ".bin",
-            ".o",
-            ".a",
-            ".lib",
-            # Archives
-            ".zip",
-            ".tar",
-            ".gz",
-            ".bz2",
-            ".7z",
-            ".rar",
-            # Fonts
-            ".ttf",
-            ".otf",
-            ".woff",
-            ".woff2",
-            ".eot",
-            # Media
-            ".mp3",
-            ".mp4",
-            ".avi",
-            ".mov",
-            ".wav",
-            ".ogg",
-            ".webm",
-            # Other binary
-            ".pdf",
-            ".doc",
-            ".docx",
-            ".xls",
-            ".xlsx",
-            ".ppt",
-            ".pptx",
-            ".db",
-            ".sqlite",
-            ".pickle",
-            ".pkl",
-        }
+        # BINARY_EXTENSIONS is imported from ragtime.core.file_constants
 
         # Load documents
         # Note: TextLoader.load() is synchronous and can block the event loop,
@@ -1034,11 +1346,24 @@ class IndexerService:
                 logger.info(f"Job {job.id} was cancelled during file loading")
                 raise asyncio.CancelledError("Job cancelled by user")
 
-            # Skip binary files
-            if file_path.suffix.lower() in BINARY_EXTENSIONS:
+            ext_lower = file_path.suffix.lower()
+
+            # Skip truly unparseable binary files (images, executables, etc.)
+            # These cannot be processed by TextLoader under any circumstances
+            if ext_lower in UNPARSEABLE_BINARY_EXTENSIONS:
                 skipped_binary += 1
                 job.processed_files += 1
                 continue
+
+            # Warn about parseable documents (PDF, Office) - these need special
+            # parsers that git/upload indexer doesn't have. User was warned during
+            # analysis and can exclude them if desired. If they chose to include,
+            # TextLoader will likely fail or produce garbage.
+            if ext_lower in PARSEABLE_DOCUMENT_EXTENSIONS:
+                logger.debug(
+                    f"Attempting to load document file {file_path.name} - "
+                    "may fail without document parser"
+                )
 
             try:
                 # Run synchronous file loading in thread pool to avoid blocking

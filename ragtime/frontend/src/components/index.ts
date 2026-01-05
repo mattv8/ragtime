@@ -1,5 +1,6 @@
 export { UploadForm } from './UploadForm';
 export { GitForm } from './GitForm';
+export { GitIndexWizard } from './GitIndexWizard';
 export { JobsTable } from './JobsTable';
 export { IndexesList } from './IndexesList';
 export { FilesystemIndexPanel } from './FilesystemIndexPanel';

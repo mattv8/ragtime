@@ -18,8 +18,10 @@ from ragtime.core.model_limits import get_context_limit
 from ragtime.core.security import get_current_user, require_admin
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.indexer.models import (
+    AnalyzeIndexRequest,
     AppSettings,
     CreateIndexRequest,
+    IndexAnalysisResult,
     IndexConfig,
     IndexInfo,
     IndexJobResponse,
@@ -49,6 +51,31 @@ DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 async def list_indexes(_user: User = Depends(require_admin)):
     """List all available FAISS indexes. Admin only."""
     return await indexer.list_indexes()
+
+
+@router.post("/analyze", response_model=IndexAnalysisResult)
+async def analyze_repository(
+    request: AnalyzeIndexRequest,
+    _user: User = Depends(require_admin),
+):
+    """
+    Analyze a git repository before indexing.
+
+    Performs a shallow clone and scans files to provide:
+    - Total file count, size, and estimated chunks
+    - Breakdown by file extension
+    - Suggested exclusion patterns
+    - Warnings about potential issues (large files, binaries, etc.)
+
+    Use this to preview index size and tune configuration before creating an index.
+    """
+    try:
+        return await indexer.analyze_git_repository(request)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("Analysis failed")
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {e}") from e
 
 
 @router.get("/jobs", response_model=List[IndexJobResponse])
@@ -423,6 +450,16 @@ class UpdateIndexDescriptionRequest(BaseModel):
     description: str = Field(description="Description for AI context")
 
 
+class UpdateIndexWeightRequest(BaseModel):
+    """Request to update index search weight."""
+
+    weight: float = Field(
+        ge=0.0,
+        le=10.0,
+        description="Search weight (0.0-10.0). Higher values make this index more prominent in results.",
+    )
+
+
 @router.patch("/{name}/toggle")
 async def toggle_index(
     name: str, request: ToggleIndexRequest, _user: User = Depends(require_admin)
@@ -450,6 +487,29 @@ async def update_index_description(
     return {
         "message": f"Description updated for '{name}'",
         "description": request.description,
+    }
+
+
+@router.patch("/{name}/weight")
+async def update_index_weight(
+    name: str,
+    request: UpdateIndexWeightRequest,
+    _user: User = Depends(require_admin),
+):
+    """Update an index's search weight. Admin only.
+
+    Weight affects result prioritization when aggregate_search is enabled:
+    - 1.0 = default/equal weighting
+    - >1.0 = higher priority (more results from this index shown first)
+    - <1.0 = lower priority
+    - 0.0 = effectively excluded from weighted results (still searched, but deprioritized)
+    """
+    success = await repository.update_index_weight(name, request.weight)
+    if not success:
+        raise HTTPException(status_code=404, detail="Index not found")
+    return {
+        "message": f"Search weight updated for '{name}'",
+        "weight": request.weight,
     }
 
 

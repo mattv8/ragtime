@@ -341,11 +341,13 @@ class RAGComponents:
                                 embedding_model,
                                 allow_dangerous_deserialization=True,
                             )
+                            # Use configurable k from settings
+                            search_k = self._app_settings.get("search_results_k", 5)
                             self.retrievers[index_name] = db.as_retriever(
-                                search_kwargs={"k": 5}
+                                search_kwargs={"k": search_k}
                             )
                             logger.info(
-                                f"Loaded FAISS index: {index_name} from {index_path}"
+                                f"Loaded FAISS index: {index_name} from {index_path} (k={search_k})"
                             )
                         except Exception as e:
                             logger.warning(
@@ -377,6 +379,7 @@ class RAGComponents:
                     "path": m.path,
                     "description": getattr(m, "description", ""),
                     "enabled": m.enabled,
+                    "search_weight": getattr(m, "searchWeight", 1.0),
                     "document_count": m.documentCount,
                     "chunk_count": m.chunkCount,
                     "source_type": m.sourceType,
@@ -397,12 +400,20 @@ class RAGComponents:
 
         tools = []
 
-        # Always add search_knowledge tool if we have FAISS retrievers
+        # Add knowledge search tool(s) if we have FAISS retrievers
         if self.retrievers:
-            tools.append(self._create_knowledge_search_tool())
-            logger.info(
-                f"Added search_knowledge tool for {len(self.retrievers)} index(es)"
-            )
+            aggregate_search = self._app_settings.get("aggregate_search", True)
+            if aggregate_search:
+                # Single aggregated search_knowledge tool
+                tools.append(self._create_knowledge_search_tool())
+                logger.info(
+                    f"Added search_knowledge tool for {len(self.retrievers)} index(es)"
+                )
+            else:
+                # Separate search_<index_name> tools for each index
+                knowledge_tools = self._create_per_index_search_tools()
+                tools.extend(knowledge_tools)
+                logger.info(f"Added {len(knowledge_tools)} per-index search tools")
 
         # Get tools from the new ToolConfig system
         if self._tool_configs:
@@ -601,6 +612,112 @@ class RAGComponents:
             description=description,
             args_schema=KnowledgeSearchInput,
         )
+
+    def _create_per_index_search_tools(self) -> List[Any]:
+        """Create separate search tools for each index.
+
+        When aggregate_search is disabled, this creates search_<index_name>
+        tools that give the AI granular control over which index to search.
+        """
+        from langchain_core.tools import StructuredTool
+        from pydantic import BaseModel, Field
+
+        tools = []
+
+        # Get index metadata for descriptions and weights
+        index_weights = {}
+        index_descriptions = {}
+        for idx in self._index_metadata or []:
+            if idx.get("enabled", True):
+                name = idx.get("name", "")
+                index_weights[name] = idx.get("search_weight", 1.0)
+                index_descriptions[name] = idx.get("description", "")
+
+        for index_name, retriever in self.retrievers.items():
+            # Create a closure to capture the current index_name and retriever
+            def make_search_func(idx_name: str, idx_retriever):
+                def search_index(query: str) -> str:
+                    """Search this specific index for relevant information."""
+                    results = []
+
+                    logger.debug(
+                        f"search_{idx_name} called with query='{query[:50]}...'"
+                    )
+
+                    try:
+                        docs = idx_retriever.invoke(query)
+                        logger.debug(
+                            f"Index '{idx_name}' returned {len(docs)} documents"
+                        )
+                        for doc in docs:
+                            source = doc.metadata.get("source", "unknown")
+                            content = (
+                                doc.page_content[:500] + "..."
+                                if len(doc.page_content) > 500
+                                else doc.page_content
+                            )
+                            results.append(f"{source}:\n{content}")
+                    except Exception as e:
+                        error_msg = str(e)
+                        logger.warning(
+                            f"Error searching {idx_name}: {e}", exc_info=True
+                        )
+                        if (
+                            "ollama" in error_msg.lower()
+                            or "failed to connect" in error_msg.lower()
+                        ):
+                            return (
+                                f"Embedding service unavailable - Cannot connect to Ollama. "
+                                "Check that Ollama is running and accessible."
+                            )
+                        return f"Search error: {error_msg}"
+
+                    if results:
+                        return (
+                            f"Found {len(results)} relevant documents:\n\n"
+                            + "\n\n---\n\n".join(results)
+                        )
+
+                    return (
+                        f"No relevant documents found in {idx_name} for query: {query}"
+                    )
+
+                return search_index
+
+            # Create input schema for this tool
+            class IndexSearchInput(BaseModel):
+                query: str = Field(
+                    description="Search query to find relevant documentation or code"
+                )
+
+            # Build description including the index description and weight hint
+            weight = index_weights.get(index_name, 1.0)
+            idx_desc = index_descriptions.get(index_name, "")
+
+            tool_description = (
+                f"Search the '{index_name}' index for relevant information."
+            )
+            if idx_desc:
+                tool_description += f" {idx_desc}"
+            if weight != 1.0:
+                if weight > 1.0:
+                    tool_description += f" [Priority: High (weight={weight})]"
+                elif weight > 0:
+                    tool_description += f" [Priority: Low (weight={weight})]"
+
+            # Sanitize index name for tool name (replace invalid chars)
+            safe_name = index_name.replace("-", "_").replace(" ", "_").lower()
+            tool_name = f"search_{safe_name}"
+
+            tool = StructuredTool.from_function(
+                func=make_search_func(index_name, retriever),
+                name=tool_name,
+                description=tool_description,
+                args_schema=IndexSearchInput,
+            )
+            tools.append(tool)
+
+        return tools
 
     async def _create_postgres_tool(self, config: dict, tool_name: str, tool_id: str):
         """Create a PostgreSQL query tool from config."""
@@ -1282,5 +1399,7 @@ except Exception as e:
             yield f"I encountered an error processing your request: {str(e)}"
 
 
+# Global RAG components instance
+rag = RAGComponents()
 # Global RAG components instance
 rag = RAGComponents()
