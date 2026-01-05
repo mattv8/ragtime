@@ -115,7 +115,7 @@ OpenAI-compatible RAG API with LangChain tool calling for business intelligence 
    # Usage:
    #   1. Create .env file with your configuration
    #   2. docker compose up -d
-   #   3. Access at http://localhost:8000
+   #   3. Access at http://localhost:${PORT:-8000}
 
    services:
      # PostgreSQL database for Prisma persistence
@@ -139,7 +139,7 @@ OpenAI-compatible RAG API with LangChain tool calling for business intelligence 
 
      # Ragtime RAG API
      ragtime:
-       # For older CPUs without X86_V2 support, use the legacy image:
+       # For older CPUs without X86_V2 support, use the legacy tag:
        # image: hub.docker.visnovsky.us/library/ragtime:main
        image: hub.docker.visnovsky.us/library/ragtime:main
        container_name: ragtime
@@ -159,6 +159,10 @@ OpenAI-compatible RAG API with LangChain tool calling for business intelligence 
          - ./data:/app/data
          # Docker socket for container exec (optional, for tool execution)
          - /var/run/docker.sock:/var/run/docker.sock:ro
+       # Uncomment below if using SMB/NFS mounting inside container (consider mounting via docker volume instead)
+       # privileged: true
+       # cap_add:
+       #   - SYS_ADMIN
        networks:
          - ragtime-network
        depends_on:
