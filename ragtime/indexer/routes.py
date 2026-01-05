@@ -590,6 +590,50 @@ async def update_index_weight(
     }
 
 
+@router.get("/{name}/download")
+async def download_index(name: str, _user: User = Depends(require_admin)):
+    """Download FAISS index files as a zip archive. Admin only.
+
+    Returns a zip file containing the index.faiss and index.pkl files.
+    """
+    import io
+    import zipfile
+
+    from starlette.responses import StreamingResponse
+
+    # Get index path from indexer service
+    index_path = indexer.index_base_path / name
+
+    # Validate the index exists
+    if not index_path.exists():
+        raise HTTPException(status_code=404, detail=f"Index '{name}' not found")
+
+    # Check that required files exist
+    faiss_file = index_path / "index.faiss"
+    pkl_file = index_path / "index.pkl"
+
+    if not faiss_file.exists() or not pkl_file.exists():
+        raise HTTPException(
+            status_code=400,
+            detail="Index files incomplete - index.faiss or index.pkl not found",
+        )
+
+    # Create zip file in memory
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        # Add both files to zip with a single directory for clarity
+        zf.write(faiss_file, arcname=f"{name}/index.faiss")
+        zf.write(pkl_file, arcname=f"{name}/index.pkl")
+
+    zip_buffer.seek(0)
+
+    return StreamingResponse(
+        iter([zip_buffer.getvalue()]),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={name}_index.zip"},
+    )
+
+
 # -----------------------------------------------------------------------------
 # Settings Endpoints (Admin only)
 # -----------------------------------------------------------------------------
