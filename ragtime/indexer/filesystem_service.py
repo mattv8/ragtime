@@ -1711,7 +1711,6 @@ class FilesystemIndexerService:
                 smart_exclusions, _used_llm = await get_smart_exclusion_suggestions(
                     ext_stats=dict(ext_stats),
                     repo_name=config.index_name or base_path.name,
-                    is_filesystem_indexer=True,  # Don't exclude parseable docs
                 )
                 suggested_exclusions.extend(smart_exclusions)
 

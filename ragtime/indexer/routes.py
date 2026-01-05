@@ -601,8 +601,20 @@ async def download_index(name: str, _user: User = Depends(require_admin)):
 
     from starlette.responses import StreamingResponse
 
+    # Validate index name (prevent path traversal)
+    if "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(status_code=400, detail="Invalid index name")
+
     # Get index path from indexer service
     index_path = indexer.index_base_path / name
+
+    # Ensure the resolved path is within index_base_path (defense in depth)
+    try:
+        index_path = index_path.resolve()
+        if not str(index_path).startswith(str(indexer.index_base_path.resolve())):
+            raise HTTPException(status_code=400, detail="Invalid index path")
+    except (OSError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid index name")
 
     # Validate the index exists
     if not index_path.exists():

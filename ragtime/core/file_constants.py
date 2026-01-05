@@ -95,11 +95,8 @@ UNPARSEABLE_BINARY_EXTENSIONS: set[str] = {
 # PARSEABLE DOCUMENT EXTENSIONS
 # =============================================================================
 # Documents that require special parsers (PDF, Office, OpenDocument).
-# - Filesystem indexer: CAN parse these (has document_parser.py)
-# - Git/Upload indexer: CANNOT parse these (uses TextLoader only)
-#
-# For git/upload indexer, these are suggested for exclusion with a warning,
-# but the user can override if they want to try (will likely produce garbage).
+# Both the filesystem indexer and git/upload indexer can parse these using
+# document_parser.py extractors.
 PARSEABLE_DOCUMENT_EXTENSIONS: set[str] = {
     ".pdf",
     ".doc",
@@ -108,6 +105,33 @@ PARSEABLE_DOCUMENT_EXTENSIONS: set[str] = {
     ".xlsx",
     ".ppt",
     ".pptx",
+    ".odt",
+    ".ods",
+    ".odp",
+    ".rtf",
+}
+
+# =============================================================================
+# NEVER SUGGEST EXCLUDE EXTENSIONS
+# =============================================================================
+# Extensions that should NEVER be suggested for exclusion by LLM or heuristics.
+# These are valuable formats that all indexers can parse and are useful for RAG.
+# Includes plain text formats and parseable document formats.
+NEVER_SUGGEST_EXCLUDE_EXTENSIONS: set[str] = {
+    # Plain text formats - universally readable and valuable
+    ".txt",
+    ".md",
+    ".rst",
+    ".csv",
+    # Office documents - parsed by document_parser.py
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".ppt",
+    ".pptx",
+    # OpenDocument formats
     ".odt",
     ".ods",
     ".odp",
