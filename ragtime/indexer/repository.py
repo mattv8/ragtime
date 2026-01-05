@@ -362,6 +362,23 @@ class IndexerRepository:
             logger.warning(f"Failed to update description for index {name}: {e}")
             return False
 
+    async def update_index_weight(self, name: str, weight: float) -> bool:
+        """Update the search weight for an index."""
+        db = await self._get_db()
+
+        # Clamp weight to valid range
+        weight = max(0.0, min(10.0, weight))
+
+        try:
+            await db.indexmetadata.update(
+                where={"name": name}, data={"searchWeight": weight}
+            )
+            logger.debug(f"Updated search weight for index {name} to {weight}")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to update search weight for index {name}: {e}")
+            return False
+
     # -------------------------------------------------------------------------
     # Application Settings Operations
     # -------------------------------------------------------------------------
@@ -408,6 +425,9 @@ class IndexerRepository:
             max_query_results=prisma_settings.maxQueryResults,
             query_timeout=prisma_settings.queryTimeout,
             enable_write_ops=prisma_settings.enableWriteOps,
+            # Search configuration
+            search_results_k=prisma_settings.searchResultsK,
+            aggregate_search=prisma_settings.aggregateSearch,
             # Embedding dimension tracking
             embedding_dimension=prisma_settings.embeddingDimension,
             embedding_config_hash=prisma_settings.embeddingConfigHash,
@@ -449,6 +469,9 @@ class IndexerRepository:
             "max_query_results": "maxQueryResults",
             "query_timeout": "queryTimeout",
             "enable_write_ops": "enableWriteOps",
+            # Search configuration
+            "search_results_k": "searchResultsK",
+            "aggregate_search": "aggregateSearch",
             # Embedding dimension tracking (internal use)
             "embedding_dimension": "embeddingDimension",
             "embedding_config_hash": "embeddingConfigHash",

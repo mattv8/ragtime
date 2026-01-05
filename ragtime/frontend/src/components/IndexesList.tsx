@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, type DragEvent, type ChangeEvent } from 'react';
 import { api } from '@/api';
 import type { IndexInfo, IndexJob } from '@/types';
+import { GitIndexWizard } from './GitIndexWizard';
 
 interface IndexesListProps {
   indexes: IndexInfo[];
@@ -27,6 +28,84 @@ interface EditModalProps {
   onSave: (name: string, description: string) => Promise<void>;
   onClose: () => void;
   saving: boolean;
+}
+
+interface WeightModalProps {
+  index: IndexInfo;
+  onSave: (name: string, weight: number) => Promise<void>;
+  onClose: () => void;
+  saving: boolean;
+}
+
+function EditWeightModal({ index, onSave, onClose, saving }: WeightModalProps) {
+  const [weight, setWeight] = useState(index.search_weight);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const clampedWeight = Math.max(0, Math.min(10, weight));
+    await onSave(index.name, clampedWeight);
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '400px' }}>
+        <div className="modal-header">
+          <h3>Search Weight: {index.name}</h3>
+          <button className="modal-close" onClick={onClose}>&times;</button>
+        </div>
+        <form onSubmit={handleSubmit}>
+          <div className="modal-body">
+            <p style={{ fontSize: '0.9rem', color: '#888', marginBottom: '16px' }}>
+              Search weight influences how the AI prioritizes results from this index relative to others.
+            </p>
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ display: 'block', marginBottom: '8px' }}>
+                Weight: <strong>{weight.toFixed(1)}</strong>
+              </label>
+              <input
+                type="range"
+                min="0"
+                max="10"
+                step="0.1"
+                value={weight}
+                onChange={(e) => setWeight(parseFloat(e.target.value))}
+                style={{ width: '100%' }}
+                disabled={saving}
+              />
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: '#666' }}>
+                <span>0 (lowest)</span>
+                <span>1 (default)</span>
+                <span>10 (highest)</span>
+              </div>
+            </div>
+            <div style={{ fontSize: '0.85rem', color: '#888', background: 'rgba(0,0,0,0.2)', padding: '12px', borderRadius: '6px' }}>
+              <div><strong>1.0</strong> = Default/equal weighting</div>
+              <div><strong>&gt;1.0</strong> = Higher priority (preferred by AI)</div>
+              <div><strong>&lt;1.0</strong> = Lower priority</div>
+              <div><strong>0.0</strong> = Deprioritized (still searchable)</div>
+            </div>
+          </div>
+          <div className="modal-footer">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={onClose}
+              disabled={saving}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="btn"
+              disabled={saving}
+            >
+              {saving ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
 }
 
 function EditDescriptionModal({ index, onSave, onClose, saving }: EditModalProps) {
@@ -91,6 +170,10 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [deleteConfirmName, setDeleteConfirmName] = useState<string | null>(null);
 
+  // Weight modal state
+  const [weightEditIndex, setWeightEditIndex] = useState<IndexInfo | null>(null);
+  const [savingWeight, setSavingWeight] = useState(false);
+
   // Reindex modal state
   const [reindexingIndex, setReindexingIndex] = useState<IndexInfo | null>(null);
   const [reindexToken, setReindexToken] = useState('');
@@ -106,140 +189,10 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
   const [isDragOver, setIsDragOver] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [status, setStatus] = useState<{ type: 'info' | 'success' | 'error' | null; message: string }>({
+  const [uploadStatus, setUploadStatus] = useState<{ type: 'info' | 'success' | 'error' | null; message: string }>({
     type: null,
     message: '',
   });
-
-  // Git form state
-  const [gitUrl, setGitUrl] = useState('');
-  const [gitToken, setGitToken] = useState('');
-  const [isPrivateRepo, setIsPrivateRepo] = useState(false);
-  const [branches, setBranches] = useState<string[]>([]);
-  const [selectedBranch, setSelectedBranch] = useState('');
-  const [loadingBranches, setLoadingBranches] = useState(false);
-  const [branchError, setBranchError] = useState<string | null>(null);
-
-  /** Parse GitHub/GitLab URL to extract host, owner and repo */
-  const parseGitUrl = useCallback((url: string): { host: 'github' | 'gitlab' | null; owner: string; repo: string } | null => {
-    // GitHub HTTPS: https://github.com/owner/repo.git or https://github.com/owner/repo
-    const githubHttpsMatch = url.match(/github\.com\/([^/]+)\/([^/.]+)/);
-    if (githubHttpsMatch) {
-      return { host: 'github', owner: githubHttpsMatch[1], repo: githubHttpsMatch[2] };
-    }
-    // GitHub SSH: git@github.com:owner/repo.git
-    const githubSshMatch = url.match(/git@github\.com:([^/]+)\/([^/.]+)/);
-    if (githubSshMatch) {
-      return { host: 'github', owner: githubSshMatch[1], repo: githubSshMatch[2] };
-    }
-    // GitLab HTTPS: https://gitlab.com/owner/repo.git or https://gitlab.com/owner/repo
-    const gitlabHttpsMatch = url.match(/gitlab\.com\/([^/]+)\/([^/.]+)/);
-    if (gitlabHttpsMatch) {
-      return { host: 'gitlab', owner: gitlabHttpsMatch[1], repo: gitlabHttpsMatch[2] };
-    }
-    // GitLab SSH: git@gitlab.com:owner/repo.git
-    const gitlabSshMatch = url.match(/git@gitlab\.com:([^/]+)\/([^/.]+)/);
-    if (gitlabSshMatch) {
-      return { host: 'gitlab', owner: gitlabSshMatch[1], repo: gitlabSshMatch[2] };
-    }
-    return null;
-  }, []);
-
-  /** Fetch branches from GitHub or GitLab API */
-  const fetchBranches = useCallback(async (url: string, token?: string, silent404 = false) => {
-    const parsed = parseGitUrl(url);
-    if (!parsed) {
-      setBranches([]);
-      setBranchError(null);
-      return;
-    }
-
-    setLoadingBranches(true);
-    setBranchError(null);
-
-    try {
-      let apiUrl: string;
-      const headers: HeadersInit = {};
-
-      if (parsed.host === 'github') {
-        apiUrl = `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/branches?per_page=100`;
-        headers.Accept = 'application/vnd.github.v3+json';
-        if (token) {
-          headers.Authorization = `token ${token}`;
-        }
-      } else {
-        // GitLab API
-        const projectPath = encodeURIComponent(`${parsed.owner}/${parsed.repo}`);
-        apiUrl = `https://gitlab.com/api/v4/projects/${projectPath}/repository/branches?per_page=100`;
-        if (token) {
-          headers['PRIVATE-TOKEN'] = token;
-        }
-      }
-
-      const response = await fetch(apiUrl, { headers });
-
-      if (!response.ok) {
-        if (response.status === 404) {
-          // For silent 404 (probing public repo), don't show error - repo might be private
-          if (!silent404) {
-            setBranchError(token ? 'Repository not found or token lacks access' : 'Repository not found or is private');
-          }
-        } else if (response.status === 401) {
-          setBranchError('Invalid or expired token');
-        } else {
-          setBranchError(`API error: ${response.status}`);
-        }
-        setBranches([]);
-        return;
-      }
-
-      const data = await response.json();
-      const branchNames = data.map((b: { name: string }) => b.name);
-      setBranches(branchNames);
-
-      // Auto-select default branch if available
-      if (branchNames.length > 0 && !selectedBranch) {
-        const defaultBranch = branchNames.includes('main') ? 'main' : branchNames.includes('master') ? 'master' : branchNames[0];
-        setSelectedBranch(defaultBranch);
-      }
-    } catch {
-      if (!silent404) {
-        setBranchError('Failed to fetch branches');
-      }
-      setBranches([]);
-    } finally {
-      setLoadingBranches(false);
-    }
-  }, [parseGitUrl, selectedBranch]);
-
-  // Fetch branches when URL changes - only for private repos with a token
-  // For public repos, we probe silently (don't show 404 errors since repo might be private)
-  useEffect(() => {
-    if (!gitUrl) {
-      setBranches([]);
-      setSelectedBranch('');
-      setBranchError(null);
-      return;
-    }
-
-    // Debounce the fetch
-    const timer = setTimeout(() => {
-      if (isPrivateRepo && gitToken && gitToken.length >= 10) {
-        // For private repos with token, fetch branches and show any errors
-        fetchBranches(gitUrl, gitToken, false);
-      } else if (!isPrivateRepo) {
-        // For public repos, try to fetch but silently handle 404
-        // (repo might be private and user hasn't checked the box yet)
-        fetchBranches(gitUrl, undefined, true);
-      } else {
-        // Private repo without token - clear branches
-        setBranches([]);
-        setBranchError(null);
-      }
-    }, 500);
-
-    return () => clearTimeout(timer);
-  }, [gitUrl, gitToken, isPrivateRepo, fetchBranches]);
 
   // Auto-fill index name when file is selected
   useEffect(() => {
@@ -275,11 +228,11 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
   const handleUploadSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!file) {
-      setStatus({ type: 'error', message: 'Please select a file' });
+      setUploadStatus({ type: 'error', message: 'Please select a file' });
       return;
     }
     if (!indexName.trim()) {
-      setStatus({ type: 'error', message: 'Please enter an index name' });
+      setUploadStatus({ type: 'error', message: 'Please enter an index name' });
       return;
     }
 
@@ -294,71 +247,23 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
     formData.append('chunk_overlap', (form.elements.namedItem('chunk_overlap') as HTMLInputElement).value);
 
     setIsLoading(true);
-    setStatus({ type: 'info', message: 'Uploading and processing...' });
+    setUploadStatus({ type: 'info', message: 'Uploading and processing...' });
     setProgress(30);
 
     try {
       const job: IndexJob = await api.uploadAndIndex(formData);
       setProgress(100);
-      setStatus({ type: 'success', message: `Job started - ID: ${job.id} - Status: ${job.status}` });
+      setUploadStatus({ type: 'success', message: `Job started - ID: ${job.id} - Status: ${job.status}` });
       form.reset();
       setFile(null);
       setIndexName('');
       setShowCreateWizard(false);
       onJobCreated?.();
     } catch (err) {
-      setStatus({ type: 'error', message: `Error: ${err instanceof Error ? err.message : 'Upload failed'}` });
+      setUploadStatus({ type: 'error', message: `Error: ${err instanceof Error ? err.message : 'Upload failed'}` });
     } finally {
       setIsLoading(false);
       setTimeout(() => setProgress(0), 2000);
-    }
-  };
-
-  const handleGitSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const form = e.currentTarget;
-
-    // Derive index name from repo URL
-    const parsed = parseGitUrl(gitUrl);
-    if (!parsed) {
-      setStatus({ type: 'error', message: 'Invalid Git URL format' });
-      return;
-    }
-    const name = parsed.repo.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
-    const filePatterns = (form.elements.namedItem('file_patterns') as HTMLInputElement).value || '**/*';
-    const excludePatterns = (form.elements.namedItem('exclude_patterns') as HTMLInputElement).value || '';
-
-    setIsLoading(true);
-    setStatus({ type: 'info', message: 'Starting git clone...' });
-
-    try {
-      const job: IndexJob = await api.indexFromGit({
-        name,
-        git_url: gitUrl,
-        git_branch: selectedBranch || 'main',
-        git_token: isPrivateRepo ? gitToken : undefined,
-        config: {
-          name,
-          description: '',  // Auto-generated during indexing
-          file_patterns: filePatterns.split(',').map((s) => s.trim()),
-          exclude_patterns: excludePatterns.split(',').map((s) => s.trim()),
-        },
-      });
-      setStatus({ type: 'success', message: `Job started - ID: ${job.id} - Status: ${job.status}` });
-      form.reset();
-      // Reset git form state
-      setGitUrl('');
-      setGitToken('');
-      setIsPrivateRepo(false);
-      setBranches([]);
-      setSelectedBranch('');
-      setBranchError(null);
-      setShowCreateWizard(false);
-      onJobCreated?.();
-    } catch (err) {
-      setStatus({ type: 'error', message: `Error: ${err instanceof Error ? err.message : 'Request failed'}` });
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -366,15 +271,13 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
     setShowCreateWizard(false);
     setFile(null);
     setIndexName('');
-    // Reset git form state
-    setGitUrl('');
-    setGitToken('');
-    setIsPrivateRepo(false);
-    setBranches([]);
-    setSelectedBranch('');
-    setBranchError(null);
-    setStatus({ type: null, message: '' });
+    setUploadStatus({ type: null, message: '' });
     setProgress(0);
+  };
+
+  const handleGitJobCreated = () => {
+    setShowCreateWizard(false);
+    onJobCreated?.();
   };
 
   const handleDelete = async (name: string) => {
@@ -426,6 +329,20 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
       setTimeout(() => setErrorMessage(null), 5000);
     } finally {
       setSavingDescription(false);
+    }
+  };
+
+  const handleSaveWeight = async (name: string, weight: number) => {
+    setSavingWeight(true);
+    try {
+      await api.updateIndexWeight(name, weight);
+      setWeightEditIndex(null);
+      onToggle?.();  // Refresh index list
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Failed to update weight');
+      setTimeout(() => setErrorMessage(null), 5000);
+    } finally {
+      setSavingWeight(false);
     }
   };
 
@@ -506,129 +423,7 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
           </p>
 
           {activeSource === 'git' ? (
-            <form onSubmit={handleGitSubmit}>
-              <div className="row">
-                <div className="form-group" style={{ flex: 2 }}>
-                  <label>Git URL *</label>
-                  <input
-                    type="text"
-                    value={gitUrl}
-                    onChange={(e) => setGitUrl(e.target.value)}
-                    placeholder="https://github.com/user/repo.git"
-                    required
-                  />
-                </div>
-                <div className="form-group" style={{ flex: 1 }}>
-                  <label>
-                    Branch
-                    {loadingBranches && <span style={{ marginLeft: '0.5rem', color: '#888', fontSize: '0.85em' }}>(loading...)</span>}
-                  </label>
-                  {branches.length > 0 ? (
-                    <select
-                      value={selectedBranch}
-                      onChange={(e) => setSelectedBranch(e.target.value)}
-                      style={{ width: '100%' }}
-                    >
-                      {branches.map((branch) => (
-                        <option key={branch} value={branch}>{branch}</option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      type="text"
-                      value={selectedBranch}
-                      onChange={(e) => setSelectedBranch(e.target.value)}
-                      placeholder={branchError ? 'Enter branch name' : 'main'}
-                    />
-                  )}
-                  {branchError && (
-                    <small style={{ color: '#f87171', fontSize: '0.85em', display: 'block', marginTop: '0.25rem' }}>
-                      {branchError}
-                    </small>
-                  )}
-                </div>
-              </div>
-
-              <p className="field-help" style={{ marginBottom: '16px' }}>
-                Index name will be derived from the repository name. A description will be auto-generated from the indexed content. You can edit both later.
-              </p>
-
-              <div className="form-group" style={{ marginBottom: isPrivateRepo ? '0.5rem' : undefined }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={isPrivateRepo}
-                    onChange={(e) => {
-                      setIsPrivateRepo(e.target.checked);
-                      if (!e.target.checked) {
-                        setGitToken('');
-                        // Re-fetch branches without token for public repos
-                        if (gitUrl) {
-                          fetchBranches(gitUrl);
-                        }
-                      }
-                    }}
-                    style={{ width: 'auto', margin: 0 }}
-                  />
-                  Private repository (requires authentication)
-                </label>
-              </div>
-
-              {isPrivateRepo && (
-                <div className="form-group" style={{ marginLeft: '1.5rem', borderLeft: '2px solid #444', paddingLeft: '1rem', marginBottom: '1rem' }}>
-                  <label>GitHub/GitLab Personal Access Token *</label>
-                  <input
-                    type="password"
-                    value={gitToken}
-                    onChange={(e) => setGitToken(e.target.value)}
-                    placeholder="ghp_xxxx... or glpat-xxxx..."
-                    autoComplete="off"
-                    required={isPrivateRepo}
-                  />
-                  <small style={{ color: '#888', fontSize: '0.85em', display: 'block', marginTop: '0.25rem' }}>
-                    Generate a token with repo access:{' '}
-                    <a href="https://github.com/settings/tokens/new" target="_blank" rel="noopener noreferrer" style={{ color: '#60a5fa' }}>GitHub</a>
-                    {' | '}
-                    <a href="https://gitlab.com/-/user_settings/personal_access_tokens" target="_blank" rel="noopener noreferrer" style={{ color: '#60a5fa' }}>GitLab</a>
-                    . Token is used once for cloning and never stored.
-                  </small>
-                </div>
-              )}
-
-              <div className="row">
-                <div className="form-group">
-                  <label>File Patterns (comma-separated)</label>
-                  <input
-                    type="text"
-                    name="file_patterns"
-                    defaultValue="**/*"
-                    placeholder="e.g., **/*.py,**/*.md,**/*.xml"
-                  />
-                </div>
-                <div className="form-group">
-                  <label>Exclude Patterns</label>
-                  <input
-                    type="text"
-                    name="exclude_patterns"
-                    defaultValue=""
-                    placeholder="e.g., **/test/**,**/__pycache__/**"
-                  />
-                </div>
-              </div>
-
-              <div className="wizard-actions">
-                <button type="button" className="btn btn-secondary" onClick={handleCancelWizard}>
-                  Cancel
-                </button>
-                <button type="submit" className="btn" disabled={isLoading}>
-                  {isLoading ? 'Cloning...' : 'Clone & Index'}
-                </button>
-              </div>
-
-              {status.type && (
-                <div className={`status-message ${status.type}`}>{status.message}</div>
-              )}
-            </form>
+            <GitIndexWizard onJobCreated={handleGitJobCreated} onCancel={handleCancelWizard} />
           ) : (
             <form onSubmit={handleUploadSubmit}>
               {/* File drop area */}
@@ -734,8 +529,8 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
                 </div>
               )}
 
-              {status.type && (
-                <div className={`status-message ${status.type}`}>{status.message}</div>
+              {uploadStatus.type && (
+                <div className={`status-message ${uploadStatus.type}`}>{uploadStatus.message}</div>
               )}
             </form>
           )}
@@ -794,6 +589,14 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
                   {`Updated ${new Date(idx.last_modified).toLocaleString()}`}
                 </span>
               )}
+              <span
+                className={`meta-pill weight ${idx.search_weight !== 1.0 ? 'weight-modified' : ''}`}
+                title="Search weight: Higher values prioritize this index in results. Click to edit."
+                style={{ cursor: 'pointer' }}
+                onClick={() => setWeightEditIndex(idx)}
+              >
+                Weight: {idx.search_weight.toFixed(1)}
+              </span>
               {!idx.enabled && <span className="meta-pill disabled">Excluded from RAG</span>}
             </div>
           </div>
@@ -851,6 +654,15 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
               onSave={handleSaveDescription}
               onClose={() => setEditingIndex(null)}
               saving={savingDescription}
+            />
+          )}
+
+          {weightEditIndex && (
+            <EditWeightModal
+              index={weightEditIndex}
+              onSave={handleSaveWeight}
+              onClose={() => setWeightEditIndex(null)}
+              saving={savingWeight}
             />
           )}
 

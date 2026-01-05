@@ -36,6 +36,12 @@ class IndexConfig(BaseModel):
     )
     chunk_size: int = Field(default=1000, ge=100, le=4000)
     chunk_overlap: int = Field(default=200, ge=0, le=1000)
+    max_file_size_kb: int = Field(
+        default=500,
+        ge=10,
+        le=10000,
+        description="Maximum file size in KB to include (files larger are skipped). Default 500KB.",
+    )
     embedding_model: str = Field(default="text-embedding-3-small")
 
 
@@ -82,6 +88,12 @@ class IndexInfo(BaseModel):
     document_count: int
     description: str = ""
     enabled: bool = True
+    search_weight: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=10.0,
+        description="Search weight for result prioritization. Higher values make this index more prominent in aggregated results. Default 1.0 = equal weighting.",
+    )
     source_type: str = "upload"  # 'upload' or 'git'
     source: Optional[str] = None  # git URL or original filename
     git_branch: Optional[str] = None  # branch for git sources
@@ -103,6 +115,86 @@ class CreateIndexRequest(BaseModel):
     )
     config: Optional[IndexConfig] = Field(
         default=None, description="Indexing configuration"
+    )
+
+
+class FileTypeStats(BaseModel):
+    """Statistics for a file extension."""
+
+    extension: str = Field(description="File extension (e.g., '.py', '.js')")
+    file_count: int = Field(description="Number of files with this extension")
+    total_size_bytes: int = Field(description="Total size of files in bytes")
+    estimated_chunks: int = Field(
+        description="Estimated number of chunks after splitting"
+    )
+    sample_files: List[str] = Field(
+        default_factory=list, description="Sample file paths (up to 5)"
+    )
+
+
+class IndexAnalysisResult(BaseModel):
+    """Results from pre-indexing analysis."""
+
+    # Overall stats
+    total_files: int = Field(description="Total number of files found")
+    total_size_bytes: int = Field(description="Total size in bytes")
+    total_size_mb: float = Field(description="Total size in megabytes")
+    estimated_chunks: int = Field(
+        description="Estimated total chunks (based on chunk_size)"
+    )
+    estimated_index_size_mb: float = Field(
+        description="Estimated FAISS index size in MB"
+    )
+
+    # Breakdown by file type
+    file_type_stats: List[FileTypeStats] = Field(
+        default_factory=list, description="Stats broken down by file extension"
+    )
+
+    # Suggested exclusions (patterns that would significantly reduce size)
+    suggested_exclusions: List[str] = Field(
+        default_factory=list,
+        description="Suggested glob patterns to exclude (e.g., minified files, binaries)",
+    )
+
+    # Currently matched files (using current patterns)
+    matched_file_patterns: List[str] = Field(
+        default_factory=list, description="File patterns that matched files"
+    )
+
+    # Warnings/recommendations
+    warnings: List[str] = Field(
+        default_factory=list, description="Warnings about potential issues"
+    )
+
+    # Config used for analysis
+    chunk_size: int = Field(description="Chunk size used for estimation")
+    chunk_overlap: int = Field(description="Chunk overlap used for estimation")
+
+
+class AnalyzeIndexRequest(BaseModel):
+    """Request to analyze a git repository before indexing."""
+
+    git_url: str = Field(description="Git repository URL to analyze")
+    git_branch: str = Field(default="main", description="Git branch to analyze")
+    git_token: Optional[str] = Field(
+        default=None, description="Token for private repos"
+    )
+    file_patterns: List[str] = Field(
+        default=["**/*.py", "**/*.md", "**/*.rst", "**/*.txt", "**/*.xml"],
+        description="Glob patterns for files to include",
+    )
+    exclude_patterns: List[str] = Field(
+        default=["**/node_modules/**", "**/__pycache__/**", "**/venv/**", "**/.git/**"],
+        description="Glob patterns for files/dirs to exclude",
+    )
+    chunk_size: int = Field(default=1000, ge=100, le=4000)
+    chunk_overlap: int = Field(default=200, ge=0, le=1000)
+    max_file_size_kb: int = Field(
+        default=500,
+        ge=10,
+        le=10000,
+        description="Maximum file size in KB to include",
     )
 
 
@@ -195,6 +287,18 @@ class AppSettings(BaseModel):
         ge=1,
         le=50,
         description="Maximum agent iterations before stopping tool calls",
+    )
+
+    # Search configuration
+    search_results_k: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        description="Number of results returned per vector search (k). Higher values provide more context but increase response time and token usage.",
+    )
+    aggregate_search: bool = Field(
+        default=True,
+        description="If True, provide a single search_knowledge tool that searches all indexes. If False, create separate search_<index_name> tools for granular control.",
     )
 
     # Legacy tool configuration (deprecated - use ToolConfig)
@@ -311,6 +415,9 @@ class UpdateSettingsRequest(BaseModel):
     max_query_results: Optional[int] = Field(default=None, ge=1, le=1000)
     query_timeout: Optional[int] = Field(default=None, ge=1, le=300)
     enable_write_ops: Optional[bool] = None
+    # Search configuration
+    search_results_k: Optional[int] = Field(default=None, ge=1, le=100)
+    aggregate_search: Optional[bool] = None
 
 
 # -----------------------------------------------------------------------------

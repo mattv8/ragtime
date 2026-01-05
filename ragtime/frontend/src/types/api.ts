@@ -98,6 +98,7 @@ export interface IndexConfig {
   exclude_patterns: string[];
   chunk_size: number;
   chunk_overlap: number;
+  max_file_size_kb?: number;  // Max file size in KB (default 500)
   embedding_model?: string;
 }
 
@@ -123,6 +124,7 @@ export interface IndexInfo {
   document_count: number;
   description: string;
   enabled: boolean;
+  search_weight: number;  // 0.0-10.0, default 1.0
   source_type: 'upload' | 'git';
   source: string | null;  // git URL or original filename
   git_branch: string | null;  // branch for git sources
@@ -136,6 +138,40 @@ export interface CreateIndexRequest {
   git_branch?: string;
   git_token?: string;
   config?: Partial<IndexConfig>;
+}
+
+// Index Analysis Types (pre-indexing estimation)
+export interface FileTypeStats {
+  extension: string;
+  file_count: number;
+  total_size_bytes: number;
+  estimated_chunks: number;
+  sample_files: string[];
+}
+
+export interface IndexAnalysisResult {
+  total_files: number;
+  total_size_bytes: number;
+  total_size_mb: number;
+  estimated_chunks: number;
+  estimated_index_size_mb: number;
+  file_type_stats: FileTypeStats[];
+  suggested_exclusions: string[];
+  matched_file_patterns: string[];
+  warnings: string[];
+  chunk_size: number;
+  chunk_overlap: number;
+}
+
+export interface AnalyzeIndexRequest {
+  git_url: string;
+  git_branch: string;
+  git_token?: string;
+  file_patterns: string[];
+  exclude_patterns: string[];
+  chunk_size: number;
+  chunk_overlap: number;
+  max_file_size_kb?: number;
 }
 
 export interface UploadFormData {
@@ -176,6 +212,9 @@ export interface AppSettings {
   anthropic_api_key: string;
   allowed_chat_models: string[];
   max_iterations: number;
+  // Search Configuration
+  search_results_k: number;
+  aggregate_search: boolean;
   // Tool Configuration
   enabled_tools: string[];
   odoo_container: string;
@@ -209,6 +248,9 @@ export interface UpdateSettingsRequest {
   anthropic_api_key?: string;
   allowed_chat_models?: string[];
   max_iterations?: number;
+  // Search settings
+  search_results_k?: number;
+  aggregate_search?: boolean;
   // Tool settings
   enabled_tools?: string[];
   odoo_container?: string;
