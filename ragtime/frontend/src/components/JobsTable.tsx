@@ -27,6 +27,10 @@ type UnifiedJob = {
   errorMessage: string | null;
   createdAt: string;
   phase: string;
+  cancelRequested?: boolean;
+  // Collection phase info (filesystem jobs)
+  filesScanned?: number;
+  currentDirectory?: string | null;
   // For filesystem jobs
   toolConfigId?: string;
 };
@@ -107,10 +111,51 @@ function toUnifiedJob(job: IndexJob): UnifiedJob {
  * Convert FilesystemIndexJob to unified job format
  */
 function toUnifiedFilesystemJob(job: FilesystemIndexJob): UnifiedJob {
-  const progress = job.status === 'completed' ? 100
-    : job.status === 'pending' ? 0
-    : job.status === 'failed' || job.status === 'cancelled' ? 0
-    : job.total_files > 0 ? Math.round((job.processed_files / job.total_files) * 100) : 0;
+  // Determine the phase and progress based on job state
+  let phase = '';
+  let progress = 0;
+
+  if (job.status === 'completed') {
+    phase = 'Complete';
+    progress = 100;
+  } else if (job.status === 'pending') {
+    phase = 'Queued';
+    progress = 0;
+  } else if (job.status === 'failed' || job.status === 'cancelled') {
+    phase = job.status === 'failed' ? 'Failed' : 'Cancelled';
+    progress = 0;
+  } else if (job.status === 'indexing') {
+    if (job.cancel_requested) {
+      phase = 'Cancelling...';
+      progress = Math.max(progress, 5);
+    }
+    // Check if still in collection phase (total_files is 0 but files_scanned > 0)
+    if (job.total_files === 0 && job.files_scanned > 0) {
+      phase = `Scanning: ${job.files_scanned} files found`;
+      if (job.current_directory) {
+        // Truncate long paths
+        const dir = job.current_directory.length > 30
+          ? '...' + job.current_directory.slice(-30)
+          : job.current_directory;
+        phase += ` (${dir})`;
+      }
+      // Show indeterminate-ish progress during scan (pulse between 5-15%)
+      progress = 5 + (job.files_scanned % 10);
+    } else if (job.total_files > 0) {
+      // File processing phase
+      const processedTotal = job.processed_files + job.skipped_files;
+      progress = Math.round((processedTotal / job.total_files) * 100);
+      phase = job.cancel_requested
+        ? 'Cancelling...'
+        : `Indexing: ${processedTotal}/${job.total_files}`;
+      if (job.skipped_files > 0) {
+        phase += ` (${job.skipped_files} unchanged)`;
+      }
+    } else {
+      phase = 'Starting...';
+      progress = 0;
+    }
+  }
 
   return {
     id: job.id,
@@ -125,8 +170,11 @@ function toUnifiedFilesystemJob(job: FilesystemIndexJob): UnifiedJob {
     processedChunks: job.processed_chunks,
     errorMessage: job.error_message,
     createdAt: job.created_at,
-    phase: job.status === 'indexing' ? 'Indexing' : '',
+      phase,
+    filesScanned: job.files_scanned,
+    currentDirectory: job.current_directory,
     toolConfigId: job.tool_config_id,
+    cancelRequested: job.cancel_requested,
   };
 }
 
@@ -203,12 +251,17 @@ export function JobsTable({ jobs, filesystemJobs = [], loading, error, onJobsCha
     setRetryConfirmId(jobId);
   };
 
-  const confirmRetry = async (jobId: string) => {
+  const confirmRetry = async (jobId: string, jobType: 'document' | 'filesystem', toolConfigId?: string) => {
     setRetryConfirmId(null);
     setActionLoading(jobId);
     try {
-      await api.retryJob(jobId);
-      onJobsChanged?.();
+      if (jobType === 'filesystem' && toolConfigId) {
+        await api.retryFilesystemJob(toolConfigId, jobId);
+        onFilesystemJobsChanged?.();
+      } else {
+        await api.retryJob(jobId);
+        onJobsChanged?.();
+      }
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : 'Failed to retry job');
       setTimeout(() => setErrorMessage(null), 5000);
@@ -261,19 +314,20 @@ export function JobsTable({ jobs, filesystemJobs = [], loading, error, onJobsCha
 
       {allJobs.length > 0 && (
         <>
-          <table className="jobs-table">
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Name</th>
-                <th>Type</th>
-                <th>Status</th>
-                <th>Progress</th>
-                <th>Created</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
+          <div className="jobs-table-wrapper">
+            <table className="jobs-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Name</th>
+                  <th>Type</th>
+                  <th>Status</th>
+                  <th>Progress</th>
+                  <th>Created</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
               {displayedJobs.map((job) => {
                 const isActive = job.status === 'pending' || job.status === 'processing' || job.status === 'indexing';
 
@@ -394,12 +448,12 @@ export function JobsTable({ jobs, filesystemJobs = [], loading, error, onJobsCha
                               </button>
                             )
                           )}
-                          {job.type === 'document' && job.status === 'failed' && (
+                          {(job.status === 'failed' || job.status === 'cancelled') && (
                             retryConfirmId === job.id ? (
                               <div style={{ display: 'flex', gap: '4px' }}>
                                 <button
                                   className="action-btn action-btn-confirm"
-                                  onClick={() => confirmRetry(job.id)}
+                                  onClick={() => confirmRetry(job.id, job.type, job.toolConfigId)}
                                   title="Confirm retry"
                                 >
                                   Confirm
@@ -458,6 +512,7 @@ export function JobsTable({ jobs, filesystemJobs = [], loading, error, onJobsCha
               })}
             </tbody>
           </table>
+          </div>
 
           {hasMore && (
             <div style={{ textAlign: 'center', marginTop: '12px' }}>

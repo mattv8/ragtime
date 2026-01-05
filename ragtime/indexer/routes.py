@@ -17,6 +17,7 @@ from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit
 from ragtime.core.security import get_current_user, require_admin
 from ragtime.core.validation import require_valid_embedding_provider
+from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import (
     AnalyzeIndexRequest,
     AppSettings,
@@ -75,6 +76,73 @@ async def analyze_repository(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.exception("Analysis failed")
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {e}") from e
+
+
+@router.post("/upload/analyze", response_model=IndexAnalysisResult)
+async def analyze_upload(
+    file: UploadFile = File(
+        ...,
+        description="Archive file to analyze (.zip, .tar, .tar.gz, .tar.bz2)",
+    ),
+    file_patterns: str = Form(
+        default="",
+        description="Comma-separated glob patterns for files to include (e.g. **/*.py, **/*.md)",
+    ),
+    exclude_patterns: str = Form(
+        default="",
+        description="Comma-separated glob patterns to exclude (e.g. **/node_modules/**, **/__pycache__/**)",
+    ),
+    chunk_size: int = Form(default=1000, ge=100, le=4000),
+    chunk_overlap: int = Form(default=200, ge=0, le=1000),
+    max_file_size_kb: int = Form(default=500, ge=10, le=10000),
+    _user: User = Depends(require_admin),
+):
+    """
+    Analyze an uploaded archive before indexing.
+
+    Extracts and scans files to provide:
+    - Total file count, size, and estimated chunks
+    - Breakdown by file extension
+    - Suggested exclusion patterns
+    - Warnings about potential issues (large files, binaries, etc.)
+
+    Use this to preview index size and tune configuration before creating an index.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Filename is required")
+
+    filename_lower = file.filename.lower()
+    if not any(filename_lower.endswith(ext) for ext in SUPPORTED_ARCHIVE_EXTENSIONS):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file format. Supported formats: {', '.join(SUPPORTED_ARCHIVE_EXTENSIONS)}",
+        )
+
+    try:
+        # Parse patterns, defaulting file_patterns to **/* if empty
+        parsed_file_patterns = [
+            p.strip() for p in file_patterns.split(",") if p.strip()
+        ]
+        if not parsed_file_patterns:
+            parsed_file_patterns = ["**/*"]
+        parsed_exclude_patterns = [
+            p.strip() for p in exclude_patterns.split(",") if p.strip()
+        ]
+
+        return await indexer.analyze_upload(
+            file=file.file,
+            filename=file.filename,
+            file_patterns=parsed_file_patterns,
+            exclude_patterns=parsed_exclude_patterns,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            max_file_size_kb=max_file_size_kb,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("Upload analysis failed")
         raise HTTPException(status_code=500, detail=f"Analysis failed: {e}") from e
 
 
@@ -173,12 +241,12 @@ async def upload_and_index(
         description="Description for AI context - helps the model understand what this index contains",
     ),
     file_patterns: str = Form(
-        default="**/*.py,**/*.md,**/*.rst,**/*.txt,**/*.xml",
-        description="Comma-separated glob patterns for files to include",
+        default="",
+        description="Comma-separated glob patterns for files to include (e.g. **/*.py, **/*.md)",
     ),
     exclude_patterns: str = Form(
-        default="**/node_modules/**,**/__pycache__/**,**/venv/**,**/.git/**",
-        description="Comma-separated glob patterns to exclude",
+        default="",
+        description="Comma-separated glob patterns to exclude (e.g. **/node_modules/**, **/__pycache__/**)",
     ),
     chunk_size: int = Form(default=1000, ge=100, le=4000),
     chunk_overlap: int = Form(default=200, ge=0, le=1000),
@@ -192,6 +260,9 @@ async def upload_and_index(
     The archive should contain source code files. Large codebases are supported.
     Processing happens in the background - check /jobs/{id} for status.
     """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Filename is required")
+
     filename_lower = file.filename.lower()
     if not any(filename_lower.endswith(ext) for ext in SUPPORTED_ARCHIVE_EXTENSIONS):
         raise HTTPException(
@@ -199,11 +270,19 @@ async def upload_and_index(
             detail=f"Unsupported file format. Supported formats: {', '.join(SUPPORTED_ARCHIVE_EXTENSIONS)}",
         )
 
+    # Parse patterns, defaulting file_patterns to **/* if empty
+    parsed_file_patterns = [p.strip() for p in file_patterns.split(",") if p.strip()]
+    if not parsed_file_patterns:
+        parsed_file_patterns = ["**/*"]
+    parsed_exclude_patterns = [
+        p.strip() for p in exclude_patterns.split(",") if p.strip()
+    ]
+
     config = IndexConfig(
         name=name,
         description=description,
-        file_patterns=[p.strip() for p in file_patterns.split(",")],
-        exclude_patterns=[p.strip() for p in exclude_patterns.split(",")],
+        file_patterns=parsed_file_patterns,
+        exclude_patterns=parsed_exclude_patterns,
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
     )
@@ -321,9 +400,7 @@ async def reindex_from_git(
     config = IndexConfig(
         name=name,
         description=metadata.description or "",
-        file_patterns=config_data.get(
-            "file_patterns", ["**/*.py", "**/*.md", "**/*.xml"]
-        ),
+        file_patterns=config_data.get("file_patterns", ["**/*"]),
         exclude_patterns=config_data.get(
             "exclude_patterns", ["**/test/**", "**/tests/**", "**/__pycache__/**"]
         ),
@@ -794,6 +871,7 @@ async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin))
 
     For Odoo tools, also disconnects from the Docker network if no other
     tools are using it.
+    For filesystem indexer tools, unmounts any SMB/NFS shares.
     """
     from ragtime.core.app_settings import invalidate_settings_cache
     from ragtime.rag import rag
@@ -808,10 +886,20 @@ async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin))
     if tool.tool_type == "odoo_shell" and tool.connection_config:
         docker_network = tool.connection_config.get("docker_network")
 
+    # Check if this is a filesystem indexer tool (needs mount cleanup)
+    is_filesystem_tool = tool.tool_type == "filesystem_indexer"
+
     # Delete the tool
     success = await repository.delete_tool_config(tool_id)
     if not success:
         raise HTTPException(status_code=404, detail="Tool configuration not found")
+
+    # Cleanup: unmount filesystem for filesystem indexer tools
+    if is_filesystem_tool:
+        try:
+            await filesystem_indexer.unmount_tool(tool_id)
+        except Exception as e:
+            logger.warning(f"Failed to unmount filesystem for tool {tool_id}: {e}")
 
     # Cleanup: disconnect from network if no other tools need it
     if docker_network:
@@ -2694,6 +2782,9 @@ async def browse_smb_share(
 # -----------------------------------------------------------------------------
 
 from ragtime.indexer.models import (
+    FilesystemAnalysisJobResponse,
+    FilesystemAnalysisResult,
+    FilesystemAnalysisStatus,
     FilesystemIndexJobResponse,
     FilesystemIndexStatus,
     TriggerFilesystemIndexRequest,
@@ -2707,6 +2798,108 @@ class FilesystemIndexStatsResponse(BaseModel):
     embedding_count: int
     file_count: int
     last_indexed: Optional[str] = None
+
+
+@router.post(
+    "/tools/{tool_id}/filesystem/analyze",
+    response_model=FilesystemAnalysisJobResponse,
+    tags=["Filesystem Indexer"],
+)
+async def start_filesystem_analysis(
+    tool_id: str,
+    _user: User = Depends(require_admin),
+):
+    """
+    Start filesystem analysis for a tool. Admin only.
+
+    Analyzes the filesystem to estimate index size, suggest exclusions,
+    and identify potential issues before indexing. Returns a job ID
+    that can be polled for progress and results.
+    """
+    # Get the tool config
+    tool_config = await repository.get_tool_config(tool_id)
+    if not tool_config:
+        raise HTTPException(status_code=404, detail="Tool configuration not found")
+
+    if tool_config.tool_type != ToolType.FILESYSTEM_INDEXER:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Tool type must be 'filesystem_indexer', got '{tool_config.tool_type.value}'",
+        )
+
+    # Parse connection config
+    try:
+        fs_config = FilesystemConnectionConfig(**tool_config.connection_config)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid filesystem configuration: {str(e)}"
+        ) from e
+
+    # Start analysis
+    job = await filesystem_indexer.start_analysis(
+        tool_config_id=tool_id,
+        config=fs_config,
+    )
+
+    return FilesystemAnalysisJobResponse(
+        id=job.id,
+        tool_config_id=job.tool_config_id,
+        status=job.status,
+        progress_percent=job.progress_percent,
+        files_scanned=job.files_scanned,
+        dirs_scanned=job.dirs_scanned,
+        total_dirs_to_scan=job.total_dirs_to_scan,
+        current_directory=job.current_directory,
+        error_message=job.error_message,
+        created_at=job.created_at,
+        completed_at=job.completed_at,
+        result=None,
+    )
+
+
+@router.get(
+    "/tools/{tool_id}/filesystem/analyze/{job_id}",
+    response_model=FilesystemAnalysisJobResponse,
+    tags=["Filesystem Indexer"],
+)
+async def get_filesystem_analysis_status(
+    tool_id: str,
+    job_id: str,
+    _user: User = Depends(require_admin),
+):
+    """
+    Get filesystem analysis job status and results. Admin only.
+
+    Poll this endpoint to track analysis progress. When status is 'completed',
+    the result field will contain the full analysis.
+    """
+    result = await filesystem_indexer.get_analysis_job(job_id)
+
+    if not result:
+        raise HTTPException(status_code=404, detail="Analysis job not found")
+
+    job, analysis_result = result
+
+    # Verify tool_id matches
+    if job.tool_config_id != tool_id:
+        raise HTTPException(
+            status_code=404, detail="Analysis job not found for this tool"
+        )
+
+    return FilesystemAnalysisJobResponse(
+        id=job.id,
+        tool_config_id=job.tool_config_id,
+        status=job.status,
+        progress_percent=job.progress_percent,
+        files_scanned=job.files_scanned,
+        dirs_scanned=job.dirs_scanned,
+        total_dirs_to_scan=job.total_dirs_to_scan,
+        current_directory=job.current_directory,
+        error_message=job.error_message,
+        created_at=job.created_at,
+        completed_at=job.completed_at,
+        result=analysis_result,
+    )
 
 
 @router.post(
@@ -2804,6 +2997,10 @@ async def list_filesystem_index_jobs(
             total_chunks=job.total_chunks,
             processed_chunks=job.processed_chunks,
             error_message=job.error_message,
+            files_scanned=job.files_scanned,
+            dirs_scanned=job.dirs_scanned,
+            current_directory=job.current_directory,
+            cancel_requested=job.cancel_requested,
             created_at=job.created_at,
             started_at=job.started_at,
             completed_at=job.completed_at,
@@ -2842,6 +3039,56 @@ async def cancel_filesystem_index_job(
         )
 
     return {"success": True, "message": "Cancellation requested"}
+
+
+@router.post(
+    "/tools/{tool_id}/filesystem/jobs/{job_id}/retry",
+    response_model=FilesystemIndexJobResponse,
+    tags=["Filesystem Indexer"],
+)
+async def retry_filesystem_index_job(
+    tool_id: str, job_id: str, _user: User = Depends(require_admin)
+):
+    """
+    Retry a failed or cancelled filesystem indexing job. Admin only.
+
+    Creates a new job using the same tool configuration.
+    """
+    # Verify tool exists
+    tool_config = await repository.get_tool_config(tool_id)
+    if not tool_config:
+        raise HTTPException(status_code=404, detail="Tool configuration not found")
+
+    if tool_config.tool_type != ToolType.FILESYSTEM_INDEXER:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Tool type must be 'filesystem_indexer', got '{tool_config.tool_type.value}'",
+        )
+
+    # Retry the job
+    new_job = await filesystem_indexer.retry_job(job_id)
+    if not new_job:
+        raise HTTPException(
+            status_code=400,
+            detail="Job not found or not in a retryable state (must be failed or cancelled)",
+        )
+
+    return FilesystemIndexJobResponse(
+        id=new_job.id,
+        tool_config_id=new_job.tool_config_id,
+        status=new_job.status,
+        index_name=new_job.index_name,
+        progress_percent=new_job.progress_percent,
+        total_files=new_job.total_files,
+        processed_files=new_job.processed_files,
+        skipped_files=new_job.skipped_files,
+        total_chunks=new_job.total_chunks,
+        processed_chunks=new_job.processed_chunks,
+        error_message=new_job.error_message,
+        created_at=new_job.created_at,
+        started_at=new_job.started_at,
+        completed_at=new_job.completed_at,
+    )
 
 
 @router.get(

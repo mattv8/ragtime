@@ -1,7 +1,8 @@
-import { useState, useCallback, useEffect, type DragEvent, type ChangeEvent } from 'react';
+import { useState } from 'react';
 import { api } from '@/api';
-import type { IndexInfo, IndexJob } from '@/types';
+import type { IndexInfo } from '@/types';
 import { GitIndexWizard } from './GitIndexWizard';
+import { UploadForm } from './UploadForm';
 
 interface IndexesListProps {
   indexes: IndexInfo[];
@@ -14,14 +15,6 @@ interface IndexesListProps {
 }
 
 type SourceType = 'upload' | 'git';
-
-/** Extract index name from archive filename (strip extension) */
-function getIndexNameFromFile(filename: string): string {
-  return filename
-    .replace(/\.(zip|tar|tar\.gz|tgz|tar\.bz2|tbz2)$/i, '')
-    .replace(/[^a-zA-Z0-9_-]/g, '-')
-    .toLowerCase();
-}
 
 interface EditModalProps {
   index: IndexInfo;
@@ -182,97 +175,10 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
   // Create wizard state
   const [showCreateWizard, setShowCreateWizard] = useState(false);
   const [activeSource, setActiveSource] = useState<SourceType>('git');
-
-  // Upload form state
-  const [file, setFile] = useState<File | null>(null);
-  const [indexName, setIndexName] = useState('');
-  const [isDragOver, setIsDragOver] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [uploadStatus, setUploadStatus] = useState<{ type: 'info' | 'success' | 'error' | null; message: string }>({
-    type: null,
-    message: '',
-  });
-
-  // Auto-fill index name when file is selected
-  useEffect(() => {
-    if (file) {
-      setIndexName(getIndexNameFromFile(file.name));
-    }
-  }, [file]);
-
-  // Upload form handlers
-  const handleDragOver = useCallback((e: DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(true);
-  }, []);
-
-  const handleDragLeave = useCallback(() => {
-    setIsDragOver(false);
-  }, []);
-
-  const handleDrop = useCallback((e: DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
-    if (e.dataTransfer.files.length) {
-      setFile(e.dataTransfer.files[0]);
-    }
-  }, []);
-
-  const handleFileChange = useCallback((e: ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files?.length) {
-      setFile(e.target.files[0]);
-    }
-  }, []);
-
-  const handleUploadSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    if (!file) {
-      setUploadStatus({ type: 'error', message: 'Please select a file' });
-      return;
-    }
-    if (!indexName.trim()) {
-      setUploadStatus({ type: 'error', message: 'Please enter an index name' });
-      return;
-    }
-
-    const form = e.currentTarget;
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('name', indexName);
-    formData.append('description', '');  // Auto-generate description
-    formData.append('file_patterns', (form.elements.namedItem('file_patterns') as HTMLInputElement).value);
-    formData.append('exclude_patterns', (form.elements.namedItem('exclude_patterns') as HTMLInputElement).value);
-    formData.append('chunk_size', (form.elements.namedItem('chunk_size') as HTMLInputElement).value);
-    formData.append('chunk_overlap', (form.elements.namedItem('chunk_overlap') as HTMLInputElement).value);
-
-    setIsLoading(true);
-    setUploadStatus({ type: 'info', message: 'Uploading and processing...' });
-    setProgress(30);
-
-    try {
-      const job: IndexJob = await api.uploadAndIndex(formData);
-      setProgress(100);
-      setUploadStatus({ type: 'success', message: `Job started - ID: ${job.id} - Status: ${job.status}` });
-      form.reset();
-      setFile(null);
-      setIndexName('');
-      setShowCreateWizard(false);
-      onJobCreated?.();
-    } catch (err) {
-      setUploadStatus({ type: 'error', message: `Error: ${err instanceof Error ? err.message : 'Upload failed'}` });
-    } finally {
-      setIsLoading(false);
-      setTimeout(() => setProgress(0), 2000);
-    }
-  };
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   const handleCancelWizard = () => {
     setShowCreateWizard(false);
-    setFile(null);
-    setIndexName('');
-    setUploadStatus({ type: null, message: '' });
-    setProgress(0);
   };
 
   const handleGitJobCreated = () => {
@@ -373,13 +279,23 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
     <div className="card">
       <div className="section-header">
         <h2>Document Indexes</h2>
-        <button
-          type="button"
-          className="btn"
-          onClick={() => setShowCreateWizard(!showCreateWizard)}
-        >
-          {showCreateWizard ? 'Cancel' : 'Create Document Index'}
-        </button>
+        {showCreateWizard ? (
+          <button
+            type="button"
+            className="close-btn"
+            onClick={() => setShowCreateWizard(false)}
+          >
+            ✕
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setShowCreateWizard(true)}
+          >
+            Create Document Index
+          </button>
+        )}
       </div>
 
       <p className="section-description">
@@ -396,6 +312,7 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
                 type="button"
                 className={`wizard-tab ${activeSource === 'git' ? 'active' : ''}`}
                 onClick={() => setActiveSource('git')}
+                disabled={isAnalyzing}
               >
                 Git Repository
               </button>
@@ -403,6 +320,7 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
                 type="button"
                 className={`wizard-tab ${activeSource === 'upload' ? 'active' : ''}`}
                 onClick={() => setActiveSource('upload')}
+                disabled={isAnalyzing}
               >
                 Upload Archive
               </button>
@@ -423,116 +341,19 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
           </p>
 
           {activeSource === 'git' ? (
-            <GitIndexWizard onJobCreated={handleGitJobCreated} onCancel={handleCancelWizard} />
+            <GitIndexWizard
+              onJobCreated={handleGitJobCreated}
+              onCancel={handleCancelWizard}
+              onAnalysisStart={() => setIsAnalyzing(true)}
+              onAnalysisComplete={() => setIsAnalyzing(false)}
+            />
           ) : (
-            <form onSubmit={handleUploadSubmit}>
-              {/* File drop area */}
-              <div className="form-group">
-                <div
-                  className={`file-input-wrapper ${isDragOver ? 'dragover' : ''} ${file ? 'has-file' : ''}`}
-                  onDragOver={handleDragOver}
-                  onDragLeave={handleDragLeave}
-                  onDrop={handleDrop}
-                >
-                  <div className="icon">↑</div>
-                  <div>Drag & drop an archive file here, or click to browse</div>
-                  <div style={{ fontSize: '0.85rem', color: '#888', marginTop: 8 }}>
-                    Supported: .zip, .tar, .tar.gz, .tar.bz2
-                  </div>
-                  {file && <div className="file-name">{file.name}</div>}
-                  <input
-                    type="file"
-                    name="file"
-                    accept=".zip,.tar,.tar.gz,.tgz,.tar.bz2,.tbz2"
-                    onChange={handleFileChange}
-                  />
-                </div>
-              </div>
-
-              {/* Show remaining fields only after file is selected */}
-              {file && (
-                <>
-                  <div className="form-group">
-                    <label>Index Name *</label>
-                    <input
-                      type="text"
-                      name="name"
-                      value={indexName}
-                      onChange={(e) => setIndexName(e.target.value)}
-                      placeholder="e.g., my-project, docs-v2"
-                      required
-                    />
-                  </div>
-
-                  <p className="field-help" style={{ marginBottom: '16px' }}>
-                    A description will be auto-generated from the indexed content. You can edit it later.
-                  </p>
-
-                  <div className="row">
-                    <div className="form-group">
-                      <label>File Patterns (comma-separated)</label>
-                      <input
-                        type="text"
-                        name="file_patterns"
-                        defaultValue="**/*"
-                        placeholder="e.g., **/*.py,**/*.md,**/*.xml"
-                      />
-                    </div>
-                    <div className="form-group">
-                      <label>Exclude Patterns</label>
-                      <input
-                        type="text"
-                        name="exclude_patterns"
-                        defaultValue=""
-                        placeholder="e.g., **/node_modules/**,**/__pycache__/**"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="row">
-                    <div className="form-group">
-                      <label>Chunk Size</label>
-                      <input
-                        type="number"
-                        name="chunk_size"
-                        defaultValue={1000}
-                        min={100}
-                        max={4000}
-                      />
-                    </div>
-                    <div className="form-group">
-                      <label>Chunk Overlap</label>
-                      <input
-                        type="number"
-                        name="chunk_overlap"
-                        defaultValue={200}
-                        min={0}
-                        max={1000}
-                      />
-                    </div>
-                  </div>
-
-                  <div className="wizard-actions">
-                    <button type="button" className="btn btn-secondary" onClick={handleCancelWizard}>
-                      Cancel
-                    </button>
-                    <button type="submit" className="btn" disabled={isLoading}>
-                      {isLoading ? 'Creating...' : 'Create Index'}
-                    </button>
-                  </div>
-                </>
-              )}
-
-              {progress > 0 && (
-                <div className="progress-bar">
-                  <div className="fill" style={{ width: `${progress}%` }} />
-                </div>
-              )}
-
-              {uploadStatus.type && (
-                <div className={`status-message ${uploadStatus.type}`}>{uploadStatus.message}</div>
-              )}
-            </form>
+            <UploadForm
+              onJobCreated={handleGitJobCreated}
+              onCancel={handleCancelWizard}
+              onAnalysisStart={() => setIsAnalyzing(true)}
+              onAnalysisComplete={() => setIsAnalyzing(false)}
+            />
           )}
         </div>
       )}

@@ -9,3 +9,4 @@ export { ToolsPanel } from './ToolsPanel';
 export { ToolWizard } from './ToolWizard';
 export { ChatPanel } from './ChatPanel';
 export { LoginPage } from './LoginPage';
+export { Popover, DisabledPopover } from './Popover';
