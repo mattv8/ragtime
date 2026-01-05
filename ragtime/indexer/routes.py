@@ -96,6 +96,10 @@ async def analyze_upload(
     chunk_size: int = Form(default=1000, ge=100, le=4000),
     chunk_overlap: int = Form(default=200, ge=0, le=1000),
     max_file_size_kb: int = Form(default=500, ge=10, le=10000),
+    enable_ocr: bool = Form(
+        default=False,
+        description="Enable OCR to extract text from images",
+    ),
     _user: User = Depends(require_admin),
 ):
     """
@@ -138,6 +142,7 @@ async def analyze_upload(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             max_file_size_kb=max_file_size_kb,
+            enable_ocr=enable_ocr,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -250,6 +255,10 @@ async def upload_and_index(
     ),
     chunk_size: int = Form(default=1000, ge=100, le=4000),
     chunk_overlap: int = Form(default=200, ge=0, le=1000),
+    enable_ocr: bool = Form(
+        default=False,
+        description="Enable OCR to extract text from images (slower but captures text in screenshots, scanned docs, etc.)",
+    ),
     _user: User = Depends(require_admin),
     _: None = Depends(require_valid_embedding_provider),
 ):
@@ -285,6 +294,7 @@ async def upload_and_index(
         exclude_patterns=parsed_exclude_patterns,
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
+        enable_ocr=enable_ocr,
     )
 
     try:

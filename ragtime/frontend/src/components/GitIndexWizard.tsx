@@ -41,6 +41,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
   const [chunkSize, setChunkSize] = useState(1000);
   const [chunkOverlap, setChunkOverlap] = useState(200);
   const [maxFileSizeKb, setMaxFileSizeKb] = useState(500);
+  const [enableOcr, setEnableOcr] = useState(false);
   const [exclusionsApplied, setExclusionsApplied] = useState(false);
   const [patternsExpanded, setPatternsExpanded] = useState(false);
 
@@ -60,6 +61,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
     setChunkSize(1000);
     setChunkOverlap(200);
     setMaxFileSizeKb(500);
+    setEnableOcr(false);
     setExclusionsApplied(false);
     setPatternsExpanded(false);
   }, []);
@@ -250,6 +252,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         chunk_size: chunkSize,
         chunk_overlap: chunkOverlap,
         max_file_size_kb: maxFileSizeKb,
+        enable_ocr: enableOcr,
       });
       setAnalysisResult(result);
       setWizardStep('review');
@@ -307,6 +310,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           chunk_size: chunkSize,
           chunk_overlap: chunkOverlap,
           max_file_size_kb: maxFileSizeKb,
+          enable_ocr: enableOcr,
         },
       });
       const successMessage = `Job started - ID: ${job.id}`;
@@ -494,6 +498,22 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
               />
               <small style={{ color: '#888', fontSize: '0.8rem' }}>Files larger than this are skipped</small>
             </div>
+          </div>
+          <div className="form-group" style={{ marginTop: '12px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={enableOcr}
+                onChange={(e) => setEnableOcr(e.target.checked)}
+                disabled={isLoading}
+              />
+              Enable OCR (extract text from images)
+            </label>
+            <small style={{ color: '#888', fontSize: '0.8rem', marginLeft: '24px' }}>
+              {enableOcr
+                ? 'Image files (PNG, JPG, etc.) will be processed with Tesseract OCR to extract text.'
+                : 'When disabled, image files will be skipped during indexing.'}
+            </small>
           </div>
         </details>
 
@@ -709,6 +729,22 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
                 disabled={isLoading}
               />
             </div>
+          </div>
+          <div className="form-group" style={{ marginTop: '12px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={enableOcr}
+                onChange={(e) => setEnableOcr(e.target.checked)}
+                disabled={isLoading}
+              />
+              Enable OCR (extract text from images)
+            </label>
+            <small style={{ color: '#888', fontSize: '0.8rem', marginLeft: '24px' }}>
+              {enableOcr
+                ? 'Image files (PNG, JPG, etc.) will be processed with Tesseract OCR to extract text.'
+                : 'When disabled, image files will be skipped during indexing.'}
+            </small>
           </div>
           <button type="button" className="btn btn-secondary" onClick={handleReanalyze} disabled={isLoading} style={{ marginTop: '8px' }}>
             {isLoading ? 'Re-analyzing...' : 'Re-analyze'}

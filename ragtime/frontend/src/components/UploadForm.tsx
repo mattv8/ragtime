@@ -45,6 +45,7 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
   const [chunkSize, setChunkSize] = useState(1000);
   const [chunkOverlap, setChunkOverlap] = useState(200);
   const [maxFileSizeKb, setMaxFileSizeKb] = useState(500);
+  const [enableOcr, setEnableOcr] = useState(false);
   const [exclusionsApplied, setExclusionsApplied] = useState(false);
   const [patternsExpanded, setPatternsExpanded] = useState(false);
 
@@ -62,6 +63,7 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
     setChunkSize(1000);
     setChunkOverlap(200);
     setMaxFileSizeKb(500);
+    setEnableOcr(false);
     setExclusionsApplied(false);
     setPatternsExpanded(false);
   }, []);
@@ -112,6 +114,7 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
       formData.append('chunk_size', String(chunkSize));
       formData.append('chunk_overlap', String(chunkOverlap));
       formData.append('max_file_size_kb', String(maxFileSizeKb));
+      formData.append('enable_ocr', String(enableOcr));
 
       const result = await api.analyzeUpload(formData);
       setAnalysisResult(result);
@@ -168,6 +171,7 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
       formData.append('exclude_patterns', excludePatterns);
       formData.append('chunk_size', String(chunkSize));
       formData.append('chunk_overlap', String(chunkOverlap));
+      formData.append('enable_ocr', String(enableOcr));
 
       const job: IndexJob = await api.uploadAndIndex(formData);
       setProgress(100);
@@ -295,6 +299,22 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
                     disabled={isLoading}
                   />
                   <small style={{ color: '#888', fontSize: '0.8rem' }}>Files larger than this are skipped</small>
+                </div>
+                <div className="form-group">
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <input
+                      type="checkbox"
+                      checked={enableOcr}
+                      onChange={(e) => setEnableOcr(e.target.checked)}
+                      disabled={isLoading}
+                    />
+                    Enable OCR (Extract text from images)
+                  </label>
+                  <small style={{ color: '#888', fontSize: '0.8rem' }}>
+                    {enableOcr
+                      ? 'Images (PNG, JPG, etc.) will be processed with OCR to extract text'
+                      : 'Enable to extract text from screenshots, scanned documents, and other images'}
+                  </small>
                 </div>
               </div>
             </details>
