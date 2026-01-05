@@ -1517,14 +1517,14 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
           nfs_export: '',
           nfs_options: 'ro,noatime',
           index_name: '',
-          file_patterns: ['**/*.txt', '**/*.md', '**/*.pdf', '**/*.docx', '**/*.xlsx', '**/*.pptx', '**/*.py', '**/*.json'],
+          file_patterns: ['**/*.txt', '**/*.md', '**/*.pdf', '**/*.docx', '**/*.xlsx', '**/*.pptx', '**/*.py', '**/*.json', '**/*.png', '**/*.jpg', '**/*.jpeg', '**/*.gif', '**/*.bmp', '**/*.tiff', '**/*.webp'],
           exclude_patterns: ['**/node_modules/**', '**/__pycache__/**', '**/venv/**', '**/.git/**', '**/.*', '**/*.cloud', '**/*.icloud'],
           recursive: true,
           chunk_size: 1000,
           chunk_overlap: 200,
           max_file_size_mb: 10,
           max_total_files: 10000,
-          allowed_extensions: ['.txt', '.md', '.pdf', '.docx', '.doc', '.xlsx', '.xls', '.pptx', '.odt', '.ods', '.odp', '.py', '.js', '.ts', '.json', '.xml', '.html', '.csv', '.rst'],
+          enable_ocr: false,
           reindex_interval_hours: 24,
           last_indexed_at: null,
         }
@@ -2810,18 +2810,18 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
           </div>
 
           <div className="form-group" style={{ marginTop: '0.75rem' }}>
-            <label>Allowed Extensions</label>
-            <input
-              type="text"
-              value={(filesystemConfig.allowed_extensions || []).join(', ')}
-              onChange={(e) => setFilesystemConfig({
-                ...filesystemConfig,
-                allowed_extensions: e.target.value.split(',').map(p => p.trim()).filter(Boolean)
-              })}
-              placeholder=".txt, .md, .pdf, .docx, .py, .json"
-            />
-            <p className="field-help">
-              Security filter: only files with these extensions will be indexed.
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={filesystemConfig.enable_ocr || false}
+                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, enable_ocr: e.target.checked })}
+              />
+              Enable OCR (extract text from images)
+            </label>
+            <p className="field-help" style={{ marginLeft: '24px' }}>
+              {filesystemConfig.enable_ocr
+                ? 'Image files (PNG, JPG, etc.) will be processed with OCR to extract text. Ensure file patterns include image extensions.'
+                : 'When disabled, image files matching file patterns will be skipped during indexing.'}
             </p>
           </div>
         </details>

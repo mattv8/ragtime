@@ -32,6 +32,7 @@ from ragtime.core.file_constants import (
     UNPARSEABLE_BINARY_EXTENSIONS,
 )
 from ragtime.core.logging import get_logger
+from ragtime.indexer.document_parser import OCR_EXTENSIONS
 from ragtime.indexer.models import (
     FilesystemAnalysisJob,
     FilesystemAnalysisResult,
@@ -42,6 +43,7 @@ from ragtime.indexer.models import (
     FilesystemIndexStatus,
     FileTypeStats,
 )
+from ragtime.indexer.repository import repository
 
 logger = get_logger(__name__)
 
@@ -72,6 +74,40 @@ class FilesystemIndexerService:
         # Persistent mount tracking: tool_config_id -> MountInfo
         self._mounts: Dict[str, MountInfo] = {}
         self._mount_lock = threading.Lock()  # Protect mount operations
+
+    async def _append_embedding_dimension_warning(self, warnings: List[str]) -> None:
+        """Warn when embedding dimensions exceed pgvector's 2000-dim index limit."""
+        try:
+            settings = await repository.get_settings()
+        except Exception as e:
+            logger.debug(f"Could not load settings for embedding warning: {e}")
+            return
+
+        provider = settings.embedding_provider.lower()
+        model = settings.embedding_model
+        configured_dim = getattr(settings, "embedding_dimensions", None)
+        tracked_dim = settings.embedding_dimension
+
+        # Prefer explicit configuration, otherwise use tracked dimension from previous runs
+        dimension = configured_dim or tracked_dim
+
+        # Heuristic defaults for OpenAI text-embedding-3 models when dimension not set
+        if provider == "openai" and dimension is None:
+            if model.startswith("text-embedding-3-large"):
+                dimension = 3072
+            elif model.startswith("text-embedding-3-small"):
+                dimension = 1536
+
+        limit = 2000
+        if dimension is not None and dimension > limit:
+            warnings.insert(
+                0,
+                (
+                    f"Embedding dimension {dimension} exceeds pgvector's {limit}-dim index limit. "
+                    "Search will fall back to exact (non-indexed). Use <=2000 dims (e.g., 1536 for "
+                    "OpenAI text-embedding-3-*) or a lower-dimension model."
+                ),
+            )
 
     def _get_mount_key(self, config: FilesystemConnectionConfig) -> str:
         """Generate a unique key for a mount based on its configuration."""
@@ -434,8 +470,9 @@ class FilesystemIndexerService:
             current_dim: Optional[int] = None
             if result:
                 typmod = result[0].get("typmod")
-                if isinstance(typmod, int) and typmod > 4:
-                    current_dim = typmod - 4
+                # pgvector stores dimension directly in atttypmod (no offset)
+                if isinstance(typmod, int) and typmod > 0:
+                    current_dim = typmod
 
             dimension_changed = current_dim is not None and current_dim != embedding_dim
 
@@ -587,12 +624,6 @@ class FilesystemIndexerService:
         max_size_bytes = config.max_file_size_mb * 1024 * 1024
         dirs_scanned = 0
 
-        # Normalize allowed extensions
-        allowed_exts = set(
-            ext.lower() if ext.startswith(".") else f".{ext.lower()}"
-            for ext in config.allowed_extensions
-        )
-
         # Build exclude patterns for matching
         exclude_patterns = config.exclude_patterns
 
@@ -664,10 +695,6 @@ class FilesystemIndexerService:
 
                     # Check if file matches patterns
                     if not matches_file_pattern(filename):
-                        continue
-
-                    # Check extension whitelist
-                    if file_path.suffix.lower() not in allowed_exts:
                         continue
 
                     # Check file size and skip zero-byte files
@@ -1146,7 +1173,7 @@ class FilesystemIndexerService:
                     chunk_overlap=config.chunk_overlap,
                     max_file_size_mb=config.max_file_size_mb,
                     max_total_files=config.max_total_files,
-                    allowed_extensions=config.allowed_extensions,
+                    enable_ocr=config.enable_ocr,
                 )
 
                 # Collect files to process - run in thread to avoid blocking on network filesystems
@@ -1230,6 +1257,7 @@ class FilesystemIndexerService:
                         return
 
                     rel_path = str(file_path.relative_to(base_path))
+                    logger.info(f"Processing file: {rel_path}")
 
                     try:
                         # Check if file changed (incremental indexing) - run in thread for network filesystems
@@ -1438,7 +1466,9 @@ class FilesystemIndexerService:
 
         try:
             # Read file content
-            content = await asyncio.to_thread(self._read_file_content, file_path)
+            content = await asyncio.to_thread(
+                self._read_file_content, file_path, config.enable_ocr
+            )
             if not content:
                 return []
 
@@ -1457,43 +1487,16 @@ class FilesystemIndexerService:
             logger.warning(f"Error loading file {file_path}: {e}")
             return []
 
-    def _read_file_content(self, file_path: Path) -> str:
-        """Read file content, handling various encodings and document formats."""
-        from ragtime.indexer.document_parser import (
-            DOCUMENT_EXTENSIONS,
-            extract_text_from_file,
-        )
+    def _read_file_content(self, file_path: Path, enable_ocr: bool = False) -> str:
+        """Read file content using the unified document parser (handles OCR, docs, text)."""
+        from ragtime.indexer.document_parser import extract_text_from_file
 
-        suffix = file_path.suffix.lower()
+        text = extract_text_from_file(file_path, enable_ocr=enable_ocr)
 
-        # Use document parser for Office/PDF files
-        if suffix in {
-            ".pdf",
-            ".docx",
-            ".doc",
-            ".xlsx",
-            ".xls",
-            ".pptx",
-            ".odt",
-            ".ods",
-            ".odp",
-        }:
-            return extract_text_from_file(file_path)
+        if text:
+            return text
 
-        # Plain text files - try various encodings
-        encodings = ["utf-8", "latin-1", "cp1252", "iso-8859-1"]
-
-        for encoding in encodings:
-            try:
-                with open(file_path, "r", encoding=encoding) as f:
-                    return f.read()
-            except UnicodeDecodeError:
-                continue
-            except Exception as e:
-                logger.warning(f"Error reading {file_path} with {encoding}: {e}")
-                return ""
-
-        logger.warning(f"Could not decode file {file_path} with any encoding")
+        logger.debug(f"No content extracted from {file_path}")
         return ""
 
     # =========================================================================
@@ -1590,10 +1593,6 @@ class FilesystemIndexerService:
                 )
 
                 max_size_bytes = config.max_file_size_mb * 1024 * 1024
-                allowed_exts = set(
-                    ext.lower() if ext.startswith(".") else f".{ext.lower()}"
-                    for ext in config.allowed_extensions
-                )
 
                 def should_exclude(rel_path: str) -> bool:
                     for pattern in config.exclude_patterns:
@@ -1607,7 +1606,6 @@ class FilesystemIndexerService:
                 total_files = 0
                 total_size = 0
                 skipped_size = 0
-                skipped_extension = 0
                 skipped_excluded = 0
                 warnings: List[str] = []
                 suggested_exclusions: List[str] = []
@@ -1616,7 +1614,7 @@ class FilesystemIndexerService:
 
                 # Walk directory tree with progress updates
                 def scan_directory() -> None:
-                    nonlocal total_files, total_size, skipped_size, skipped_extension
+                    nonlocal total_files, total_size, skipped_size
                     nonlocal skipped_excluded, dirs_processed
 
                     for pattern in config.file_patterns:
@@ -1650,11 +1648,6 @@ class FilesystemIndexerService:
 
                             ext = file_path.suffix.lower() or "(no extension)"
                             rel_path = str(file_path.relative_to(base_path))
-
-                            # Check extension whitelist
-                            if ext not in allowed_exts and ext != "(no extension)":
-                                skipped_extension += 1
-                                continue
 
                             # Check exclude patterns
                             if should_exclude(rel_path):
@@ -1720,11 +1713,6 @@ class FilesystemIndexerService:
                         f"Skipped {skipped_size} files exceeding the {config.max_file_size_mb}MB size limit."
                     )
 
-                if skipped_extension > 0:
-                    warnings.append(
-                        f"Skipped {skipped_extension} files with extensions not in allowed list."
-                    )
-
                 if skipped_excluded > 0:
                     warnings.append(
                         f"Skipped {skipped_excluded} files matching exclude patterns."
@@ -1748,6 +1736,23 @@ class FilesystemIndexerService:
                         f"Found {doc_count} document files ({', '.join(parseable_found)}) - "
                         "these will be parsed using document extractors."
                     )
+
+                # Check for OCR-eligible images
+                ocr_images_found = [ext for ext in ext_stats if ext in OCR_EXTENSIONS]
+                if ocr_images_found:
+                    img_count = sum(
+                        ext_stats[ext]["file_count"] for ext in ocr_images_found
+                    )
+                    if config.enable_ocr:
+                        warnings.append(
+                            f"Found {img_count} image files ({', '.join(ocr_images_found)}) - "
+                            "these will be processed with OCR to extract text."
+                        )
+                    else:
+                        warnings.append(
+                            f"Found {img_count} image files ({', '.join(ocr_images_found)}) - "
+                            "these will be skipped. Enable OCR to extract text from images."
+                        )
 
                 # Calculate totals
                 total_estimated_chunks = sum(
@@ -1782,6 +1787,9 @@ class FilesystemIndexerService:
                         f"Estimated index size is {estimated_index_size_mb:.0f}MB. "
                         "Consider adding more exclusion patterns to reduce size.",
                     )
+
+                # Warn if embedding dimension exceeds pgvector index limit
+                await self._append_embedding_dimension_warning(warnings)
 
                 elapsed = time.time() - start_time
 

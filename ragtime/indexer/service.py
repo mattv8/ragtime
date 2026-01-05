@@ -29,7 +29,7 @@ from ragtime.core.file_constants import (
     UNPARSEABLE_BINARY_EXTENSIONS,
 )
 from ragtime.core.logging import get_logger
-from ragtime.indexer.document_parser import extract_text_from_file
+from ragtime.indexer.document_parser import OCR_EXTENSIONS, extract_text_from_file
 from ragtime.indexer.llm_exclusions import get_smart_exclusion_suggestions
 from ragtime.indexer.models import (
     AnalyzeIndexRequest,
@@ -541,6 +541,39 @@ class IndexerService:
 
         return min(30.0, base_delay * (2**attempt))
 
+    async def _append_embedding_dimension_warning(self, warnings: List[str]) -> None:
+        """Warn when configured embeddings exceed pgvector's 2000-dim index limit."""
+        try:
+            settings = await repository.get_settings()
+        except Exception as e:
+            logger.debug(f"Could not load settings for embedding warning: {e}")
+            return
+
+        provider = settings.embedding_provider.lower()
+        model = settings.embedding_model
+        configured_dim = getattr(settings, "embedding_dimensions", None)
+        tracked_dim = settings.embedding_dimension
+
+        # Prefer explicit configuration, otherwise use tracked dimension from previous runs
+        dimension = configured_dim or tracked_dim
+
+        # Heuristic defaults for OpenAI text-embedding-3 models when dimension not set
+        if provider == "openai" and dimension is None:
+            if model.startswith("text-embedding-3-large"):
+                dimension = 3072
+            elif model.startswith("text-embedding-3-small"):
+                dimension = 1536
+
+        limit = 2000
+        if dimension is not None and dimension > limit:
+            warning = (
+                f"Embedding dimension {dimension} exceeds pgvector's {limit}-dim index limit. "
+                "Search will fall back to exact (non-indexed). "
+                "Use a <=2000-dim model (e.g., set Embedding Dimensions to 1536 for OpenAI text-embedding-3-*) "
+                "or choose a lower-dimension embedding model."
+            )
+            warnings.insert(0, warning)
+
     async def get_job(self, job_id: str) -> Optional[IndexJob]:
         """Get a job by ID (checks cache first, then database)."""
         # Check in-memory cache for active jobs
@@ -721,6 +754,7 @@ class IndexerService:
                 chunk_size=request.chunk_size,
                 chunk_overlap=request.chunk_overlap,
                 max_file_size_kb=request.max_file_size_kb,
+                enable_ocr=request.enable_ocr,
             )
 
         finally:
@@ -736,6 +770,7 @@ class IndexerService:
         chunk_size: int = 1000,
         chunk_overlap: int = 200,
         max_file_size_kb: int = 500,
+        enable_ocr: bool = False,
     ) -> IndexAnalysisResult:
         """
         Analyze an uploaded archive to estimate index size and suggest exclusions.
@@ -776,6 +811,7 @@ class IndexerService:
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
                 max_file_size_kb=max_file_size_kb,
+                enable_ocr=enable_ocr,
             )
 
         finally:
@@ -790,6 +826,7 @@ class IndexerService:
         chunk_size: int,
         chunk_overlap: int,
         max_file_size_kb: int = 500,
+        enable_ocr: bool = False,
     ) -> IndexAnalysisResult:
         """
         Analyze a directory to estimate indexing results.
@@ -931,13 +968,28 @@ class IndexerService:
         suggested_exclusions.extend(smart_exclusions)
 
         # Add warnings based on what we found
-        # Separate truly unparseable from parseable documents
+        # Separate truly unparseable from parseable documents and OCR-eligible images
+        ocr_images_found = [ext for ext in ext_stats if ext in OCR_EXTENSIONS]
         unparseable_found = [
-            ext for ext in ext_stats if ext in UNPARSEABLE_BINARY_EXTENSIONS
+            ext
+            for ext in ext_stats
+            if ext in UNPARSEABLE_BINARY_EXTENSIONS and ext not in OCR_EXTENSIONS
         ]
         parseable_docs_found = [
             ext for ext in ext_stats if ext in PARSEABLE_DOCUMENT_EXTENSIONS
         ]
+
+        if ocr_images_found:
+            if enable_ocr:
+                warnings.append(
+                    f"Found image types ({', '.join(ocr_images_found)}) that will be processed "
+                    "with OCR to extract text."
+                )
+            else:
+                warnings.append(
+                    f"Found image types ({', '.join(ocr_images_found)}) that will be skipped. "
+                    "Enable OCR to extract text from these files."
+                )
 
         if unparseable_found:
             warnings.append(
@@ -1003,6 +1055,9 @@ class IndexerService:
                 f"Estimated index size is {estimated_index_size_mb:.0f}MB. "
                 "Consider adding more exclusion patterns or reducing included file types.",
             )
+
+        # Warn if embedding dimensions exceed pgvector's index limit (applies to filesystem + doc indexing)
+        await self._append_embedding_dimension_warning(warnings)
 
         return IndexAnalysisResult(
             total_files=total_files,
@@ -1389,6 +1444,7 @@ class IndexerService:
         # it in a thread pool to avoid blocking other async operations.
         documents = []
         skipped_binary = 0
+        enable_ocr = config.enable_ocr
 
         def load_file_sync(file_path: Path) -> List:
             """Synchronous file loading - runs in thread pool."""
@@ -1396,9 +1452,11 @@ class IndexerService:
 
             ext_lower = file_path.suffix.lower()
 
-            # Use document parser for Office/PDF files
-            if ext_lower in PARSEABLE_DOCUMENT_EXTENSIONS:
-                content = extract_text_from_file(file_path)
+            # Use document parser for Office/PDF files and images (when OCR enabled)
+            if ext_lower in PARSEABLE_DOCUMENT_EXTENSIONS or (
+                enable_ocr and ext_lower in OCR_EXTENSIONS
+            ):
+                content = extract_text_from_file(file_path, enable_ocr=enable_ocr)
                 if content:
                     return [LangChainDocument(page_content=content)]
                 return []
@@ -1415,12 +1473,16 @@ class IndexerService:
 
             ext_lower = file_path.suffix.lower()
 
-            # Skip truly unparseable binary files (images, executables, etc.)
-            # These cannot be processed under any circumstances
+            # Skip truly unparseable binary files (executables, etc.)
+            # When OCR is enabled, allow image files to be processed
             if ext_lower in UNPARSEABLE_BINARY_EXTENSIONS:
-                skipped_binary += 1
-                job.processed_files += 1
-                continue
+                if enable_ocr and ext_lower in OCR_EXTENSIONS:
+                    # Process image with OCR
+                    logger.debug(f"Processing image {file_path.name} with OCR")
+                else:
+                    skipped_binary += 1
+                    job.processed_files += 1
+                    continue
 
             # Log document parsing (no longer a warning since we can parse them)
             if ext_lower in PARSEABLE_DOCUMENT_EXTENSIONS:

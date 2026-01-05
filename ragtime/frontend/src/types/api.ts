@@ -100,6 +100,7 @@ export interface IndexConfig {
   chunk_overlap: number;
   max_file_size_kb?: number;  // Max file size in KB (default 500)
   embedding_model?: string;
+  enable_ocr?: boolean;  // Enable OCR for images (default false)
 }
 
 export interface IndexJob {
@@ -172,6 +173,7 @@ export interface AnalyzeIndexRequest {
   chunk_size: number;
   chunk_overlap: number;
   max_file_size_kb?: number;
+  enable_ocr?: boolean;
 }
 
 export interface UploadFormData {
@@ -404,7 +406,7 @@ export interface FilesystemConnectionConfig {
   // Safety limits
   max_file_size_mb?: number;
   max_total_files?: number;
-  allowed_extensions?: string[];
+  enable_ocr?: boolean;
 
   // Re-indexing schedule
   reindex_interval_hours?: number;

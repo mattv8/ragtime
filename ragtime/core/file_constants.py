@@ -94,10 +94,11 @@ UNPARSEABLE_BINARY_EXTENSIONS: set[str] = {
 # =============================================================================
 # PARSEABLE DOCUMENT EXTENSIONS
 # =============================================================================
-# Documents that require special parsers (PDF, Office, OpenDocument).
+# Documents that require special parsers (PDF, Office, OpenDocument, etc.).
 # Both the filesystem indexer and git/upload indexer can parse these using
 # document_parser.py extractors.
 PARSEABLE_DOCUMENT_EXTENSIONS: set[str] = {
+    # Office documents
     ".pdf",
     ".doc",
     ".docx",
@@ -105,10 +106,33 @@ PARSEABLE_DOCUMENT_EXTENSIONS: set[str] = {
     ".xlsx",
     ".ppt",
     ".pptx",
+    # OpenDocument
     ".odt",
     ".ods",
     ".odp",
+    # Rich text
     ".rtf",
+    # Ebooks
+    ".epub",
+    # Email
+    ".eml",
+    ".msg",
+}
+
+# =============================================================================
+# OCR-CAPABLE EXTENSIONS
+# =============================================================================
+# Image formats that can have text extracted via OCR (when enabled).
+# These are in UNPARSEABLE_BINARY_EXTENSIONS but can be processed with OCR.
+OCR_EXTENSIONS: set[str] = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".tiff",
+    ".tif",
+    ".bmp",
+    ".gif",
+    ".webp",
 }
 
 # =============================================================================
@@ -136,6 +160,11 @@ NEVER_SUGGEST_EXCLUDE_EXTENSIONS: set[str] = {
     ".ods",
     ".odp",
     ".rtf",
+    # Ebooks
+    ".epub",
+    # Email
+    ".eml",
+    ".msg",
 }
 
 # =============================================================================

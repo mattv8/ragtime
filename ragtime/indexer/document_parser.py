@@ -7,7 +7,12 @@ Extracts text content from various document formats:
 - Excel (.xlsx, .xls)
 - PowerPoint (.pptx)
 - OpenDocument (.odt, .ods, .odp)
-- Plain text (.txt, .md, .rst, .json, .xml, .html, .csv)
+- RTF (.rtf)
+- EPUB (.epub)
+- Email (.eml, .msg)
+- HTML (.html, .htm) - with tag stripping
+- Images with OCR (.png, .jpg, .jpeg, .tiff, .bmp, .gif, .webp)
+- Plain text (.txt, .md, .rst, .json, .xml, .csv)
 - Code files (.py, .js, .ts, etc.)
 """
 
@@ -19,14 +24,31 @@ from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Extensions that support OCR text extraction
+OCR_EXTENSIONS: set[str] = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".tiff",
+    ".tif",
+    ".bmp",
+    ".gif",
+    ".webp",
+}
 
-def extract_text_from_file(file_path: Path, content: Optional[bytes] = None) -> str:
+
+def extract_text_from_file(
+    file_path: Path,
+    content: Optional[bytes] = None,
+    enable_ocr: bool = False,
+) -> str:
     """
     Extract text content from a file based on its extension.
 
     Args:
         file_path: Path to the file
         content: Optional pre-loaded file content (bytes)
+        enable_ocr: Whether to use OCR for image files (slower but extracts text from images)
 
     Returns:
         Extracted text content as string
@@ -61,6 +83,22 @@ def extract_text_from_file(file_path: Path, content: Optional[bytes] = None) -> 
             return _extract_ods(content)
         elif suffix == ".odp":
             return _extract_odp(content)
+        elif suffix == ".rtf":
+            return _extract_rtf(content)
+        elif suffix == ".epub":
+            return _extract_epub(content)
+        elif suffix == ".eml":
+            return _extract_eml(content)
+        elif suffix == ".msg":
+            return _extract_msg(content)
+        elif suffix in {".html", ".htm"}:
+            return _extract_html(content)
+        elif suffix in OCR_EXTENSIONS and enable_ocr:
+            return _extract_image_ocr(content)
+        elif suffix in OCR_EXTENSIONS:
+            # OCR disabled, skip image files
+            logger.debug(f"Skipping image {file_path.name} - OCR disabled")
+            return ""
         else:
             # Plain text files
             return _extract_text(content)
@@ -110,7 +148,9 @@ def _extract_docx(content: bytes) -> str:
         # Extract tables
         for table in doc.tables:
             for row in table.rows:
-                row_text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+                row_text = " | ".join(
+                    cell.text.strip() for cell in row.cells if cell.text.strip()
+                )
                 if row_text:
                     text_parts.append(row_text)
 
@@ -128,10 +168,7 @@ def _extract_doc_legacy(file_path: Path, content: bytes) -> str:
 
     try:
         result = subprocess.run(
-            ["antiword", str(file_path)],
-            capture_output=True,
-            text=True,
-            timeout=30
+            ["antiword", str(file_path)], capture_output=True, text=True, timeout=30
         )
         if result.returncode == 0:
             return result.stdout
@@ -345,28 +382,290 @@ def _extract_text(content: bytes) -> str:
     return content.decode("utf-8", errors="replace")
 
 
+def _extract_rtf(content: bytes) -> str:
+    """Extract text from RTF file."""
+    try:
+        from striprtf.striprtf import rtf_to_text
+    except ImportError:
+        logger.warning("striprtf not installed, cannot extract RTF content")
+        return ""
+
+    try:
+        # Decode RTF content
+        text = content.decode("utf-8", errors="replace")
+        return rtf_to_text(text)
+    except Exception as e:
+        logger.warning(f"RTF extraction error: {e}")
+        return ""
+
+
+def _extract_epub(content: bytes) -> str:
+    """Extract text from EPUB ebook file."""
+    try:
+        import ebooklib
+        from ebooklib import epub
+    except ImportError:
+        logger.warning("ebooklib not installed, cannot extract EPUB content")
+        return ""
+
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        logger.warning("beautifulsoup4 not installed, cannot extract EPUB content")
+        return ""
+
+    try:
+        book = epub.read_epub(io.BytesIO(content))
+        text_parts = []
+
+        for item in book.get_items():
+            if item.get_type() == ebooklib.ITEM_DOCUMENT:
+                soup = BeautifulSoup(item.get_content(), "html.parser")
+                text = soup.get_text(separator="\n", strip=True)
+                if text:
+                    text_parts.append(text)
+
+        return "\n\n".join(text_parts)
+    except Exception as e:
+        logger.warning(f"EPUB extraction error: {e}")
+        return ""
+
+
+def _extract_eml(content: bytes) -> str:
+    """Extract text from email EML file."""
+    import email
+    from email.policy import default
+
+    try:
+        msg = email.message_from_bytes(content, policy=default)
+        text_parts = []
+
+        # Add headers
+        if msg.get("Subject"):
+            text_parts.append(f"Subject: {msg.get('Subject')}")
+        if msg.get("From"):
+            text_parts.append(f"From: {msg.get('From')}")
+        if msg.get("To"):
+            text_parts.append(f"To: {msg.get('To')}")
+        if msg.get("Date"):
+            text_parts.append(f"Date: {msg.get('Date')}")
+
+        text_parts.append("")  # Blank line after headers
+
+        # Extract body
+        if msg.is_multipart():
+            for part in msg.walk():
+                content_type = part.get_content_type()
+                if content_type == "text/plain":
+                    payload = part.get_payload(decode=True)
+                    if payload:
+                        charset = part.get_content_charset() or "utf-8"
+                        text_parts.append(payload.decode(charset, errors="replace"))
+                elif content_type == "text/html":
+                    payload = part.get_payload(decode=True)
+                    if payload:
+                        # Strip HTML tags for plain text
+                        try:
+                            from bs4 import BeautifulSoup
+
+                            charset = part.get_content_charset() or "utf-8"
+                            soup = BeautifulSoup(
+                                payload.decode(charset, errors="replace"), "html.parser"
+                            )
+                            text_parts.append(soup.get_text(separator="\n", strip=True))
+                        except ImportError:
+                            # Fallback: just decode and append
+                            charset = part.get_content_charset() or "utf-8"
+                            text_parts.append(payload.decode(charset, errors="replace"))
+        else:
+            payload = msg.get_payload(decode=True)
+            if payload:
+                charset = msg.get_content_charset() or "utf-8"
+                text_parts.append(payload.decode(charset, errors="replace"))
+
+        return "\n".join(text_parts)
+    except Exception as e:
+        logger.warning(f"EML extraction error: {e}")
+        return ""
+
+
+def _extract_msg(content: bytes) -> str:
+    """Extract text from Outlook MSG file."""
+    try:
+        import extract_msg
+    except ImportError:
+        logger.warning("extract-msg not installed, cannot extract MSG content")
+        return ""
+
+    try:
+        msg = extract_msg.openMsg(io.BytesIO(content))
+        text_parts = []
+
+        # Add headers
+        if msg.subject:
+            text_parts.append(f"Subject: {msg.subject}")
+        if msg.sender:
+            text_parts.append(f"From: {msg.sender}")
+        if msg.to:
+            text_parts.append(f"To: {msg.to}")
+        if msg.date:
+            text_parts.append(f"Date: {msg.date}")
+
+        text_parts.append("")  # Blank line after headers
+
+        # Add body
+        if msg.body:
+            text_parts.append(msg.body)
+
+        msg.close()
+        return "\n".join(text_parts)
+    except Exception as e:
+        logger.warning(f"MSG extraction error: {e}")
+        return ""
+
+
+def _extract_html(content: bytes) -> str:
+    """Extract text from HTML file, stripping tags."""
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        # Fallback to plain text extraction
+        return _extract_text(content)
+
+    try:
+        # Decode content
+        text = _extract_text(content)
+
+        # Parse and extract text
+        soup = BeautifulSoup(text, "html.parser")
+
+        # Remove script and style elements
+        for script in soup(["script", "style", "meta", "link"]):
+            script.decompose()
+
+        # Get text with newlines preserved
+        return soup.get_text(separator="\n", strip=True)
+    except Exception as e:
+        logger.warning(f"HTML extraction error: {e}")
+        return _extract_text(content)
+
+
+def _extract_image_ocr(content: bytes) -> str:
+    """Extract text from image using OCR (Tesseract)."""
+    try:
+        import pytesseract
+        from PIL import Image
+    except ImportError:
+        logger.warning(
+            "pytesseract/Pillow not installed, cannot perform OCR. "
+            "Install with: pip install pytesseract Pillow"
+        )
+        return ""
+
+    try:
+        import time
+
+        start_time = time.time()
+
+        # Open image from bytes
+        image = Image.open(io.BytesIO(content))
+        original_size = image.size
+
+        # Aggressively resize for fast OCR - 1200px is plenty for text extraction
+        max_dimension = 1200
+        if max(image.size) > max_dimension:
+            ratio = max_dimension / max(image.size)
+            new_size = tuple(int(dim * ratio) for dim in image.size)
+            image = image.resize(new_size, Image.Resampling.LANCZOS)
+            logger.debug(f"OCR: Resized image from {original_size} to {image.size}")
+        else:
+            logger.debug(f"OCR: Image size {image.size} within limit, no resize needed")
+
+        # Perform OCR with 10s timeout
+        import subprocess
+
+        text = pytesseract.image_to_string(image, timeout=10)
+        elapsed = time.time() - start_time
+        logger.debug(f"OCR completed in {elapsed:.2f}s, extracted {len(text)} chars")
+
+        return text.strip()
+    except subprocess.TimeoutExpired:
+        logger.warning("OCR timeout (10s) - skipping image")
+        return ""
+    except Exception as e:
+        # Check if Tesseract is not installed
+        if "tesseract is not installed" in str(e).lower():
+            logger.warning(
+                "Tesseract OCR not installed on system. "
+                "Install with: apt-get install tesseract-ocr"
+            )
+        else:
+            logger.warning(f"OCR extraction error: {e}")
+        return ""
+
+
 # Supported extensions for document parsing
-DOCUMENT_EXTENSIONS = {
+DOCUMENT_EXTENSIONS: set[str] = {
     # Office documents
     ".pdf",
-    ".docx", ".doc",
-    ".xlsx", ".xls",
+    ".docx",
+    ".doc",
+    ".xlsx",
+    ".xls",
     ".pptx",
     # OpenDocument
-    ".odt", ".ods", ".odp",
+    ".odt",
+    ".ods",
+    ".odp",
+    # Rich text
+    ".rtf",
+    # Ebooks
+    ".epub",
+    # Email
+    ".eml",
+    ".msg",
     # Plain text
-    ".txt", ".md", ".rst",
-    ".json", ".xml", ".html", ".htm",
-    ".csv", ".tsv",
+    ".txt",
+    ".md",
+    ".rst",
+    ".json",
+    ".xml",
+    ".html",
+    ".htm",
+    ".csv",
+    ".tsv",
     # Code
-    ".py", ".js", ".ts", ".jsx", ".tsx",
-    ".java", ".c", ".cpp", ".h", ".hpp",
-    ".go", ".rs", ".rb", ".php",
-    ".sql", ".sh", ".bash", ".zsh",
-    ".yaml", ".yml", ".toml", ".ini", ".cfg",
+    ".py",
+    ".js",
+    ".ts",
+    ".jsx",
+    ".tsx",
+    ".java",
+    ".c",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".go",
+    ".rs",
+    ".rb",
+    ".php",
+    ".sql",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".cfg",
 }
 
 
 def is_supported_document(file_path: Path) -> bool:
     """Check if a file type is supported for text extraction."""
     return file_path.suffix.lower() in DOCUMENT_EXTENSIONS
+
+
+def is_ocr_supported(file_path: Path) -> bool:
+    """Check if a file type supports OCR extraction."""
+    return file_path.suffix.lower() in OCR_EXTENSIONS

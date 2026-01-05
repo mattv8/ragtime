@@ -43,6 +43,10 @@ class IndexConfig(BaseModel):
         description="Maximum file size in KB to include (files larger are skipped). Default 500KB.",
     )
     embedding_model: str = Field(default="text-embedding-3-small")
+    enable_ocr: bool = Field(
+        default=False,
+        description="Enable OCR to extract text from images (slower but captures text in screenshots, scanned docs, etc.)",
+    )
 
 
 class IndexJob(BaseModel):
@@ -195,6 +199,10 @@ class AnalyzeIndexRequest(BaseModel):
         ge=10,
         le=10000,
         description="Maximum file size in KB to include",
+    )
+    enable_ocr: bool = Field(
+        default=False,
+        description="Enable OCR to extract text from images",
     )
 
 
@@ -602,23 +610,9 @@ class FilesystemConnectionConfig(BaseModel):
     max_total_files: int = Field(
         default=10000, ge=1, le=100000, description="Maximum total files to index"
     )
-    allowed_extensions: List[str] = Field(
-        default=[
-            ".txt",
-            ".md",
-            ".pdf",
-            ".docx",
-            ".doc",
-            ".py",
-            ".js",
-            ".ts",
-            ".json",
-            ".xml",
-            ".html",
-            ".csv",
-            ".rst",
-        ],
-        description="Allowed file extensions (security filter)",
+    enable_ocr: bool = Field(
+        default=False,
+        description="Enable OCR to extract text from images (slower but captures text in screenshots, scanned docs, etc.)",
     )
 
     # Re-indexing schedule
