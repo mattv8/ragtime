@@ -29,6 +29,7 @@ from ragtime.core.file_constants import (
     UNPARSEABLE_BINARY_EXTENSIONS,
 )
 from ragtime.core.logging import get_logger
+from ragtime.indexer.document_parser import extract_text_from_file
 from ragtime.indexer.llm_exclusions import get_smart_exclusion_suggestions
 from ragtime.indexer.models import (
     AnalyzeIndexRequest,
@@ -947,9 +948,8 @@ class IndexerService:
 
         if parseable_docs_found:
             warnings.append(
-                f"Found document types ({', '.join(parseable_docs_found)}) that require "
-                "special parsers. The git/upload indexer cannot extract text from these - "
-                "consider excluding them or use the Filesystem Indexer instead."
+                f"Found document types ({', '.join(parseable_docs_found)}) that will be parsed "
+                "using document extractors (PDF, Word, Excel, PowerPoint, OpenDocument)."
             )
 
         if skipped_oversized > 0:
@@ -1392,6 +1392,18 @@ class IndexerService:
 
         def load_file_sync(file_path: Path) -> List:
             """Synchronous file loading - runs in thread pool."""
+            from langchain_core.documents import Document as LangChainDocument
+
+            ext_lower = file_path.suffix.lower()
+
+            # Use document parser for Office/PDF files
+            if ext_lower in PARSEABLE_DOCUMENT_EXTENSIONS:
+                content = extract_text_from_file(file_path)
+                if content:
+                    return [LangChainDocument(page_content=content)]
+                return []
+
+            # Use TextLoader for plain text files
             loader = TextLoader(str(file_path), autodetect_encoding=True)
             return loader.load()
 
@@ -1404,20 +1416,16 @@ class IndexerService:
             ext_lower = file_path.suffix.lower()
 
             # Skip truly unparseable binary files (images, executables, etc.)
-            # These cannot be processed by TextLoader under any circumstances
+            # These cannot be processed under any circumstances
             if ext_lower in UNPARSEABLE_BINARY_EXTENSIONS:
                 skipped_binary += 1
                 job.processed_files += 1
                 continue
 
-            # Warn about parseable documents (PDF, Office) - these need special
-            # parsers that git/upload indexer doesn't have. User was warned during
-            # analysis and can exclude them if desired. If they chose to include,
-            # TextLoader will likely fail or produce garbage.
+            # Log document parsing (no longer a warning since we can parse them)
             if ext_lower in PARSEABLE_DOCUMENT_EXTENSIONS:
                 logger.debug(
-                    f"Attempting to load document file {file_path.name} - "
-                    "may fail without document parser"
+                    f"Parsing document file {file_path.name} with document parser"
                 )
 
             try:
