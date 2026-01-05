@@ -172,6 +172,9 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
   const [reindexToken, setReindexToken] = useState('');
   const [reindexing, setReindexing] = useState(false);
 
+  // Download state
+  const [downloading, setDownloading] = useState<string | null>(null);
+
   // Create wizard state
   const [showCreateWizard, setShowCreateWizard] = useState(false);
   const [activeSource, setActiveSource] = useState<SourceType>('git');
@@ -272,6 +275,18 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
       setTimeout(() => setErrorMessage(null), 5000);
     } finally {
       setReindexing(false);
+    }
+  };
+
+  const handleDownload = async (name: string) => {
+    setDownloading(name);
+    try {
+      await api.downloadIndex(name);
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Download failed');
+      setTimeout(() => setErrorMessage(null), 5000);
+    } finally {
+      setDownloading(null);
     }
   };
 
@@ -428,6 +443,14 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
               title="Edit description for AI context"
             >
               Edit
+            </button>
+            <button
+              className="btn btn-sm btn-secondary"
+              onClick={() => handleDownload(idx.name)}
+              disabled={downloading === idx.name}
+              title="Download FAISS index files as zip"
+            >
+              {downloading === idx.name ? 'Downloading...' : 'Download'}
             </button>
             {idx.source_type === 'git' && idx.source && (
               <button

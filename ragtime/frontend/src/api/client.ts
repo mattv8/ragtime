@@ -359,6 +359,37 @@ export const api = {
   },
 
   /**
+   * Download a FAISS index as a zip file
+   */
+  async downloadIndex(name: string): Promise<void> {
+    const response = await apiFetch(`${API_BASE}/${encodeURIComponent(name)}/download`);
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new ApiError(
+        data.detail || 'Download failed',
+        response.status,
+        data.detail
+      );
+    }
+
+    // Get the filename from the Content-Disposition header
+    const contentDisposition = response.headers.get('content-disposition') || '';
+    const filenameMatch = contentDisposition.match(/filename=([^;]+)/);
+    const filename = filenameMatch ? filenameMatch[1] : `${name}_index.zip`;
+
+    // Get the blob and create a download link
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  },
+
+  /**
    * Get application settings
    */
   async getSettings(): Promise<AppSettings> {
