@@ -33,7 +33,9 @@ info() {
 }
 
 # Paths
-FAISS_DIR="/ragtime/data"
+# FAISS indexes live at INDEX_DATA_PATH (same env the app uses).
+# Default matches production compose mount (/app/data); dev overrides via env.
+FAISS_DIR="${INDEX_DATA_PATH:-/app/data}"
 TEMP_BASE="/tmp/ragtime_backup"
 PRISMA_DIR="/ragtime/prisma"
 
@@ -248,24 +250,29 @@ do_backup() {
     fi
 
     # Step 2: Copy FAISS indexes (unless db-only)
+    log_msg "${BLUE}[INFO]${NC} FAISS directory: ${FAISS_DIR}"
     mkdir -p "$TEMP_DIR/faiss"
     if [ "$db_only" = true ]; then
         log_msg "${BLUE}[INFO]${NC} Skipping FAISS indexes (db-only mode)"
     else
-        if [ -d "$FAISS_DIR" ] && [ "$(ls -A $FAISS_DIR 2>/dev/null)" ]; then
+        if [ ! -d "$FAISS_DIR" ]; then
+            warn "FAISS directory not found: $FAISS_DIR"
+        elif [ -z "$(ls -A "$FAISS_DIR" 2>/dev/null)" ]; then
+            log_msg "${BLUE}[INFO]${NC} No FAISS indexes to backup"
+        else
             log_msg "${GREEN}[BACKUP]${NC} Copying FAISS indexes..."
-            # Copy all index directories (exclude _tmp)
+            shopt -s nullglob
             for dir in "$FAISS_DIR"/*/; do
                 dirname=$(basename "$dir")
-                if [ "$dirname" != "_tmp" ] && [ -d "$dir" ]; then
-                    cp -r "$dir" "$TEMP_DIR/faiss/"
+                if [ "$dirname" = "_tmp" ]; then
+                    continue
                 fi
+                cp -r "$dir" "$TEMP_DIR/faiss/"
+                log_msg "${BLUE}[INFO]${NC} Added index directory: $dirname"
             done
-            local index_count=$(find "$TEMP_DIR/faiss" -maxdepth 1 -type d | wc -l)
-            index_count=$((index_count - 1))  # Subtract 1 for the faiss dir itself
+            shopt -u nullglob
+            local index_count=$(find "$TEMP_DIR/faiss" -maxdepth 1 -mindepth 1 -type d | wc -l)
             log_msg "${BLUE}[INFO]${NC} FAISS indexes: $index_count indexes"
-        else
-            log_msg "${BLUE}[INFO]${NC} No FAISS indexes to backup"
         fi
     fi
 
