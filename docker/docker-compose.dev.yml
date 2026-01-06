@@ -63,7 +63,6 @@ services:
       - ~/.ssh:/root/.ssh:ro
       # Mount scripts for backup/restore
       - ./scripts:/docker-scripts:ro
-    # Required for SMB/NFS mounting inside container
     privileged: true
     cap_add:
       - SYS_ADMIN
