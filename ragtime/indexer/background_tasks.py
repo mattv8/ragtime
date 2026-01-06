@@ -9,13 +9,13 @@ Also handles scheduled filesystem re-indexing tasks.
 
 import asyncio
 from datetime import datetime, timedelta
-from typing import Optional, Dict
+from typing import Dict, Optional
 
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from ragtime.core.logging import get_logger
-from ragtime.indexer.repository import repository
 from ragtime.indexer.models import ChatTaskStatus, FilesystemConnectionConfig
+from ragtime.indexer.repository import repository
 
 logger = get_logger(__name__)
 
@@ -245,7 +245,8 @@ class BackgroundTaskService:
                                     tool_name = event.get("tool", "unknown")
                                     tool_input = event.get("input", {})
                                     tool_output = event.get("output", "")
-                                    # Format tool call for context
+                                    # Format tool call for context - use natural language
+                                    # to avoid the model mimicking markup patterns
                                     input_str = ""
                                     if isinstance(tool_input, dict):
                                         # Extract query/code from common field names
@@ -257,8 +258,9 @@ class BackgroundTaskService:
                                             input_str = str(tool_input)
                                     else:
                                         input_str = str(tool_input)
+                                    # Use prose format instead of markup to prevent mimicry
                                     content_parts.append(
-                                        f"\n[Tool: {tool_name}]\nQuery: {input_str}\nResult: {tool_output}\n"
+                                        f"\n(I used {tool_name} with: {input_str[:200]}{'...' if len(input_str) > 200 else ''} - Result: {tool_output[:500]}{'...' if len(str(tool_output)) > 500 else ''})\n"
                                     )
                             full_content = "".join(content_parts)
                         else:
