@@ -4,6 +4,7 @@ RAG Components - FAISS Vector Store and LangChain Agent setup.
 
 import asyncio
 import os
+import re
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -493,7 +494,10 @@ class RAGComponents:
 
         for config in self._tool_configs:
             tool_type = config.get("tool_type")
-            tool_name = config.get("name", "").replace(" ", "_").lower()
+            # Convert the user-provided tool name into a tool-safe identifier
+            raw_name = (config.get("name", "") or "").strip()
+            # Lowercase and replace any non-alphanumeric sequence with a single underscore
+            tool_name = re.sub(r"[^a-zA-Z0-9]+", "_", raw_name).strip("_").lower()
             tool_id = config.get("id")
 
             if tool_type == "postgres":
@@ -1399,7 +1403,5 @@ except Exception as e:
             yield f"I encountered an error processing your request: {str(e)}"
 
 
-# Global RAG components instance
-rag = RAGComponents()
 # Global RAG components instance
 rag = RAGComponents()

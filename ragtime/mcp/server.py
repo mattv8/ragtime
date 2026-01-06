@@ -39,6 +39,18 @@ async def get_mcp_server() -> Server:
     return _mcp_server
 
 
+def notify_tools_changed() -> None:
+    """
+    Notify that tools have changed.
+    
+    This invalidates the MCP tool cache so the next tools/list request
+    returns the updated list. In stateless mode, clients poll for changes
+    when they see listChanged: true in server capabilities.
+    """
+    mcp_tool_adapter.invalidate_cache()
+    logger.info("MCP tool cache invalidated - tools list has changed")
+
+
 def _register_handlers(server: Server) -> None:
     """Register MCP protocol handlers on the server instance."""
 

@@ -2909,7 +2909,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
           placeholder="e.g., Production Database, Staging Odoo"
         />
         <p className="field-help">
-          A short, descriptive name for this tool instance.
+          A short, descriptive name for this tool instance. A tool-safe name will be derived from this name.
         </p>
       </div>
 

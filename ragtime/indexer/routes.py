@@ -802,6 +802,7 @@ async def create_tool_config(
 ):
     """Create a new tool configuration. Admin only."""
     from ragtime.core.app_settings import invalidate_settings_cache
+    from ragtime.mcp.server import notify_tools_changed
     from ragtime.rag import rag
 
     config = ToolConfig(
@@ -818,6 +819,9 @@ async def create_tool_config(
     # Reinitialize RAG agent to make the new tool available immediately
     invalidate_settings_cache()
     await rag.initialize()
+    
+    # Notify MCP clients that tools have changed
+    notify_tools_changed()
 
     return result
 
@@ -916,6 +920,7 @@ async def update_tool_config(
 ):
     """Update an existing tool configuration. Admin only."""
     from ragtime.core.app_settings import invalidate_settings_cache
+    from ragtime.mcp.server import notify_tools_changed
     from ragtime.rag import rag
 
     updates = request.model_dump(exclude_unset=True)
@@ -926,6 +931,9 @@ async def update_tool_config(
     # Reinitialize RAG agent to pick up the tool changes
     invalidate_settings_cache()
     await rag.initialize()
+    
+    # Notify MCP clients that tools have changed (e.g., renamed)
+    notify_tools_changed()
 
     return config
 
@@ -940,6 +948,7 @@ async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin))
     For filesystem indexer tools, unmounts any SMB/NFS shares.
     """
     from ragtime.core.app_settings import invalidate_settings_cache
+    from ragtime.mcp.server import notify_tools_changed
     from ragtime.rag import rag
 
     # Get the tool config before deleting to check for network cleanup
@@ -993,6 +1002,9 @@ async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin))
     # Reinitialize RAG agent to remove the deleted tool
     invalidate_settings_cache()
     await rag.initialize()
+    
+    # Notify MCP clients that tools have changed
+    notify_tools_changed()
 
     return {"message": "Tool configuration deleted"}
 
@@ -1003,6 +1015,7 @@ async def toggle_tool_config(
 ):
     """Toggle a tool's enabled status. Admin only."""
     from ragtime.core.app_settings import invalidate_settings_cache
+    from ragtime.mcp.server import notify_tools_changed
     from ragtime.rag import rag
 
     config = await repository.update_tool_config(tool_id, {"enabled": enabled})
@@ -1010,6 +1023,11 @@ async def toggle_tool_config(
         raise HTTPException(status_code=404, detail="Tool configuration not found")
 
     # Invalidate cache and reinitialize RAG agent to pick up the change
+    invalidate_settings_cache()
+    await rag.initialize()
+    
+    # Notify MCP clients that tools have changed
+    notify_tools_changed()
     invalidate_settings_cache()
     await rag.initialize()
 
