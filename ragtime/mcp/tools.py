@@ -169,7 +169,6 @@ class MCPToolAdapter:
 
         for config in tool_configs:
             tool_id = config.get("id", "")
-            tool_type = config.get("tool_type", "")
             enabled = config.get("enabled", True)
 
             # Skip disabled tools
@@ -389,7 +388,7 @@ class MCPToolAdapter:
         # Create a temporary RAGComponents instance to build the tool
         # This is a bit wasteful but ensures we reuse all validation/security logic
         rag_temp = RAGComponents()
-        rag_temp._tool_configs = [config]
+        rag_temp._tool_configs = [config]  # pyright: ignore[reportPrivateUsage]
 
         tool_name = config.get("name", "").replace(" ", "_").lower()
         # Ensure executor uses the exact same tool-safe naming convention
@@ -401,23 +400,31 @@ class MCPToolAdapter:
         tool_id = config.get("id", "")
 
         if tool_type == "postgres":
-            tool = await rag_temp._create_postgres_tool(config, tool_name, tool_id)
+            tool = await rag_temp._create_postgres_tool(
+                config, tool_name, tool_id
+            )  # pyright: ignore[reportPrivateUsage]
         elif tool_type == "odoo_shell":
-            tool = await rag_temp._create_odoo_tool(config, tool_name, tool_id)
+            tool = await rag_temp._create_odoo_tool(
+                config, tool_name, tool_id
+            )  # pyright: ignore[reportPrivateUsage]
         elif tool_type == "ssh_shell":
-            tool = await rag_temp._create_ssh_tool(config, tool_name, tool_id)
+            tool = await rag_temp._create_ssh_tool(
+                config, tool_name, tool_id
+            )  # pyright: ignore[reportPrivateUsage]
         elif tool_type == "filesystem_indexer":
-            tool = await rag_temp._create_filesystem_tool(config, tool_name, tool_id)
+            tool = await rag_temp._create_filesystem_tool(
+                config, tool_name, tool_id
+            )  # pyright: ignore[reportPrivateUsage]
         else:
 
-            async def unknown_executor(**kwargs: Any) -> str:
+            async def unknown_executor(**_kwargs: Any) -> str:
                 return f"Error: Unknown tool type '{tool_type}'"
 
             return unknown_executor
 
         if tool is None:
 
-            async def failed_executor(**kwargs: Any) -> str:
+            async def failed_executor(**_kwargs: Any) -> str:
                 return f"Error: Failed to create tool '{tool_name}'"
 
             return failed_executor

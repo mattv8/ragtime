@@ -3,14 +3,13 @@ RAG Components - FAISS Vector Store and LangChain Agent setup.
 """
 
 import asyncio
-import os
 import re
 from pathlib import Path
 from typing import Any, List, Optional
 
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_openai import ChatOpenAI
 
@@ -186,7 +185,7 @@ class RAGComponents:
     def __init__(self):
         self.retrievers: dict[str, Any] = {}
         self.agent_executor: Optional[AgentExecutor] = None
-        self.llm: Optional[ChatOpenAI] = None
+        self.llm: Optional[Any] = None  # ChatOpenAI, ChatAnthropic, or ChatOllama
         self.is_ready: bool = False
         self._app_settings: Optional[dict] = None
         self._tool_configs: Optional[List[dict]] = None
@@ -226,12 +225,15 @@ class RAGComponents:
 
     async def _init_llm(self):
         """Initialize LLM based on database settings."""
+        assert self._app_settings is not None  # Set by initialize()
         provider = self._app_settings.get("llm_provider", "openai").lower()
         model = self._app_settings.get("llm_model", "gpt-4-turbo")
 
         if provider == "ollama":
             try:
-                from langchain_ollama import ChatOllama
+                from langchain_ollama import (
+                    ChatOllama,
+                )  # type: ignore[import-untyped,import-not-found]
 
                 base_url = self._app_settings.get(
                     "ollama_base_url", "http://localhost:11434"
@@ -252,7 +254,7 @@ class RAGComponents:
                 try:
                     from langchain_anthropic import ChatAnthropic
 
-                    self.llm = ChatAnthropic(
+                    self.llm = ChatAnthropic(  # type: ignore[call-arg]  # pyright: ignore[reportCallIssue]
                         model=model, temperature=0, anthropic_api_key=api_key
                     )
                     logger.info(f"Using Anthropic LLM: {model}")
@@ -275,7 +277,7 @@ class RAGComponents:
             self.llm = None
             return
 
-        self.llm = ChatOpenAI(
+        self.llm = ChatOpenAI(  # type: ignore[call-arg]  # pyright: ignore[reportCallIssue]
             model=model if provider == "openai" else "gpt-4-turbo",
             temperature=0,
             streaming=True,
@@ -285,11 +287,14 @@ class RAGComponents:
 
     async def _get_embedding_model(self):
         """Get embedding model based on database settings."""
+        assert self._app_settings is not None  # Set by initialize()
         provider = self._app_settings.get("embedding_provider", "ollama").lower()
         model = self._app_settings.get("embedding_model", "nomic-embed-text")
 
         if provider == "ollama":
-            from langchain_ollama import OllamaEmbeddings
+            from langchain_ollama import (
+                OllamaEmbeddings,
+            )  # type: ignore[import-untyped]
 
             base_url = self._app_settings.get(
                 "ollama_base_url", "http://localhost:11434"
@@ -303,7 +308,7 @@ class RAGComponents:
             if not api_key:
                 logger.warning("OpenAI embeddings selected but no API key configured")
             logger.info(f"Using OpenAI embeddings: {model}")
-            return OpenAIEmbeddings(model=model, openai_api_key=api_key)
+            return OpenAIEmbeddings(model=model, openai_api_key=api_key)  # type: ignore[call-arg]
         else:
             raise ValueError(f"Unknown embedding provider: {provider}")
 
@@ -314,6 +319,7 @@ class RAGComponents:
         only those that are enabled. The path is read directly from the database
         metadata, which was saved by the indexer service.
         """
+        assert self._app_settings is not None  # Set by initialize()
         # Try to load from database metadata (preferred)
         if self._index_metadata:
             enabled_indexes = [
@@ -393,6 +399,7 @@ class RAGComponents:
 
     async def _create_agent(self):
         """Create the LangChain agent with tools."""
+        assert self._app_settings is not None  # Set by initialize()
         # Skip agent creation if LLM is not configured
         if self.llm is None:
             logger.warning("Skipping agent creation - no LLM configured")
@@ -483,22 +490,19 @@ class RAGComponents:
             skip_knowledge_tool: If True, don't add the search_knowledge tool
                 (used when caller has already added it)
         """
-        from langchain_core.tools import StructuredTool
-        from pydantic import BaseModel, Field
-
         tools = []
 
         # Add knowledge search tool if we have FAISS retrievers (unless skipped)
         if self.retrievers and not skip_knowledge_tool:
             tools.append(self._create_knowledge_search_tool())
 
-        for config in self._tool_configs:
+        for config in self._tool_configs or []:
             tool_type = config.get("tool_type")
             # Convert the user-provided tool name into a tool-safe identifier
             raw_name = (config.get("name", "") or "").strip()
             # Lowercase and replace any non-alphanumeric sequence with a single underscore
             tool_name = re.sub(r"[^a-zA-Z0-9]+", "_", raw_name).strip("_").lower()
-            tool_id = config.get("id")
+            tool_id = config.get("id") or ""
 
             if tool_type == "postgres":
                 tool = await self._create_postgres_tool(config, tool_name, tool_id)
@@ -600,6 +604,7 @@ class RAGComponents:
                 return "Search failed:\n" + "\n".join(errors)
 
             logger.debug("search_knowledge found no results")
+            return "No relevant documentation found for this query."
 
         # Build description with available indexes
         index_names = list(self.retrievers.keys())
@@ -671,7 +676,7 @@ class RAGComponents:
                             or "failed to connect" in error_msg.lower()
                         ):
                             return (
-                                f"Embedding service unavailable - Cannot connect to Ollama. "
+                                "Embedding service unavailable - Cannot connect to Ollama. "
                                 "Check that Ollama is running and accessible."
                             )
                         return f"Search error: {error_msg}"
@@ -723,7 +728,7 @@ class RAGComponents:
 
         return tools
 
-    async def _create_postgres_tool(self, config: dict, tool_name: str, tool_id: str):
+    async def _create_postgres_tool(self, config: dict, tool_name: str, _tool_id: str):
         """Create a PostgreSQL query tool from config."""
         import subprocess
 
@@ -731,7 +736,6 @@ class RAGComponents:
         from pydantic import BaseModel, Field
 
         conn_config = config.get("connection_config", {})
-        max_results = config.get("max_results", 100)
         timeout = config.get("timeout", 30)
         allow_write = config.get("allow_write", False)
         description = config.get("description", "")
@@ -841,9 +845,8 @@ class RAGComponents:
             args_schema=PostgresInput,
         )
 
-    async def _create_odoo_tool(self, config: dict, tool_name: str, tool_id: str):
+    async def _create_odoo_tool(self, config: dict, tool_name: str, _tool_id: str):
         """Create an Odoo shell tool from config (Docker or SSH mode)."""
-        import re
         import subprocess
 
         from langchain_core.tools import StructuredTool
@@ -1027,7 +1030,7 @@ except Exception as e:
             args_schema=OdooInput,
         )
 
-    async def _create_ssh_tool(self, config: dict, tool_name: str, tool_id: str):
+    async def _create_ssh_tool(self, config: dict, tool_name: str, _tool_id: str):
         """Create an SSH shell tool from config."""
         from langchain_core.tools import StructuredTool
         from pydantic import BaseModel, Field
@@ -1215,7 +1218,7 @@ except Exception as e:
         return user_message
 
     async def process_query(
-        self, user_message: str, chat_history: List[Any] = None
+        self, user_message: str, chat_history: Optional[List[Any]] = None
     ) -> str:
         """
         Process a user query through the RAG pipeline (non-streaming).
@@ -1253,18 +1256,21 @@ except Exception as e:
                         "Error: No LLM configured. Please configure an LLM in Settings."
                     )
 
-                messages = [SystemMessage(content=self._system_prompt)]
+                messages: List[BaseMessage] = [
+                    SystemMessage(content=self._system_prompt)
+                ]
                 messages.extend(chat_history)
                 messages.append(HumanMessage(content=augmented_input))
                 response = await self.llm.ainvoke(messages)
-                return response.content
+                content = response.content
+                return content if isinstance(content, str) else str(content)
 
         except Exception as e:
             logger.exception("Error processing query")
             return f"I encountered an error processing your request: {str(e)}"
 
     async def process_query_stream(
-        self, user_message: str, chat_history: List[Any] = None
+        self, user_message: str, chat_history: Optional[List[Any]] = None
     ):
         """
         Process a user query with true token-by-token streaming.
@@ -1377,7 +1383,9 @@ except Exception as e:
                     yield "Error: No LLM configured. Please configure an LLM in Settings."
                     return
 
-                messages = [SystemMessage(content=self._system_prompt)]
+                messages: List[BaseMessage] = [
+                    SystemMessage(content=self._system_prompt)
+                ]
                 messages.extend(chat_history)
                 messages.append(HumanMessage(content=augmented_input))
 
