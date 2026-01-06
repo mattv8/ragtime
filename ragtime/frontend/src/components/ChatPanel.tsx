@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { Copy, Check } from 'lucide-react';
 import { api } from '@/api';
 import type { Conversation, ChatMessage, AvailableModel, ChatTask, User } from '@/types';
 
@@ -34,6 +35,8 @@ type StreamingRenderEvent =
 // Memoized to prevent re-renders when tool call data hasn't changed
 const ToolCallDisplay = memo(function ToolCallDisplay({ toolCall, defaultExpanded = false }: { toolCall: ActiveToolCall; defaultExpanded?: boolean }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
+  const [copiedQuery, setCopiedQuery] = useState(false);
+  const [copiedResult, setCopiedResult] = useState(false);
 
   // Memoize formatted input to avoid recalculating on every render
   const inputDisplay = useMemo(() => {
@@ -48,6 +51,21 @@ const ToolCallDisplay = memo(function ToolCallDisplay({ toolCall, defaultExpande
     // Fall back to JSON
     return JSON.stringify(toolCall.input, null, 2);
   }, [toolCall.input]);
+
+  const copyToClipboard = useCallback(async (text: string, type: 'query' | 'result') => {
+    try {
+      await navigator.clipboard.writeText(text);
+      if (type === 'query') {
+        setCopiedQuery(true);
+        setTimeout(() => setCopiedQuery(false), 2000);
+      } else {
+        setCopiedResult(true);
+        setTimeout(() => setCopiedResult(false), 2000);
+      }
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  }, []);
 
   return (
     <div className={`tool-call tool-call-${toolCall.status}`}>
@@ -65,13 +83,31 @@ const ToolCallDisplay = memo(function ToolCallDisplay({ toolCall, defaultExpande
         <div className="tool-call-details">
           {inputDisplay && (
             <div className="tool-call-section">
-              <div className="tool-call-section-label">Query:</div>
+              <div className="tool-call-section-header">
+                <span className="tool-call-section-label">Query:</span>
+                <button
+                  className="tool-call-copy-btn"
+                  onClick={() => copyToClipboard(inputDisplay, 'query')}
+                  title="Copy query"
+                >
+                  {copiedQuery ? <Check size={12} /> : <Copy size={12} />}
+                </button>
+              </div>
               <pre className="tool-call-code">{inputDisplay}</pre>
             </div>
           )}
           {toolCall.output && (
             <div className="tool-call-section">
-              <div className="tool-call-section-label">Result:</div>
+              <div className="tool-call-section-header">
+                <span className="tool-call-section-label">Result:</span>
+                <button
+                  className="tool-call-copy-btn"
+                  onClick={() => copyToClipboard(toolCall.output!, 'result')}
+                  title="Copy result"
+                >
+                  {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                </button>
+              </div>
               <pre className="tool-call-code">{toolCall.output}</pre>
             </div>
           )}
