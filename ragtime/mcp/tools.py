@@ -10,6 +10,7 @@ tools and MCP's tool format. It supports:
 """
 
 import asyncio
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
@@ -308,7 +309,9 @@ class MCPToolAdapter:
     def _build_tool_name(self, config: dict) -> str:
         """Build MCP tool name from config."""
         tool_type = config.get("tool_type", "")
-        name = config.get("name", "").replace(" ", "_").lower()
+        # Tool-safe name: lowercase and replace any non-alphanumeric sequence with underscore
+        raw_name = (config.get("name", "") or "").strip()
+        name = re.sub(r"[^a-zA-Z0-9]+", "_", raw_name).strip("_").lower()
 
         # Prefix based on tool type
         prefixes = {
@@ -389,6 +392,12 @@ class MCPToolAdapter:
         rag_temp._tool_configs = [config]
 
         tool_name = config.get("name", "").replace(" ", "_").lower()
+        # Ensure executor uses the exact same tool-safe naming convention
+        tool_name = (
+            re.sub(r"[^a-zA-Z0-9]+", "_", (config.get("name", "") or "").strip())
+            .strip("_")
+            .lower()
+        )
         tool_id = config.get("id", "")
 
         if tool_type == "postgres":
