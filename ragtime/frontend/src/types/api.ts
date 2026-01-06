@@ -118,6 +118,15 @@ export interface IndexJob {
   completed_at: string | null;
 }
 
+export interface IndexConfigSnapshot {
+  file_patterns: string[];
+  exclude_patterns: string[];
+  chunk_size: number;
+  chunk_overlap: number;
+  max_file_size_kb: number;
+  enable_ocr: boolean;
+}
+
 export interface IndexInfo {
   name: string;
   path: string;
@@ -129,8 +138,20 @@ export interface IndexInfo {
   source_type: 'upload' | 'git';
   source: string | null;  // git URL or original filename
   git_branch: string | null;  // branch for git sources
+  has_stored_token: boolean;  // True if a git token is stored for re-indexing
+  config_snapshot: IndexConfigSnapshot | null;  // Configuration used for indexing
   created_at: string | null;
   last_modified: string | null;
+}
+
+export interface UpdateIndexConfigRequest {
+  git_branch?: string;
+  file_patterns?: string[];
+  exclude_patterns?: string[];
+  chunk_size?: number;
+  chunk_overlap?: number;
+  max_file_size_kb?: number;
+  enable_ocr?: boolean;
 }
 
 export interface CreateIndexRequest {
@@ -174,6 +195,36 @@ export interface AnalyzeIndexRequest {
   chunk_overlap: number;
   max_file_size_kb?: number;
   enable_ocr?: boolean;
+}
+
+// =============================================================================
+// Git Repository Visibility
+// =============================================================================
+
+export type RepoVisibility = 'public' | 'private' | 'not_found' | 'error';
+
+export interface CheckRepoVisibilityRequest {
+  git_url: string;
+  index_name?: string;
+}
+
+export interface RepoVisibilityResponse {
+  visibility: RepoVisibility;
+  has_stored_token: boolean;
+  needs_token: boolean;
+  message: string;
+}
+
+export interface FetchBranchesRequest {
+  git_url: string;
+  git_token?: string;
+  index_name?: string;
+}
+
+export interface FetchBranchesResponse {
+  branches: string[];
+  error: string | null;
+  needs_token: boolean;
 }
 
 export interface UploadFormData {

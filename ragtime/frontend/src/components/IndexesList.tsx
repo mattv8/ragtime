@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '@/api';
-import type { IndexInfo } from '@/types';
+import type { IndexInfo, RepoVisibilityResponse } from '@/types';
 import { GitIndexWizard } from './GitIndexWizard';
 import { UploadForm } from './UploadForm';
+import { DescriptionField } from './DescriptionField';
 
 interface IndexesListProps {
   indexes: IndexInfo[];
@@ -12,6 +13,8 @@ interface IndexesListProps {
   onToggle?: () => void;
   onDescriptionUpdate?: () => void;
   onJobCreated?: () => void;
+  /** When true, hide search weight controls (not used in aggregate mode) */
+  aggregateSearch?: boolean;
 }
 
 type SourceType = 'upload' | 'git';
@@ -118,18 +121,11 @@ function EditDescriptionModal({ index, onSave, onClose, saving }: EditModalProps
         </div>
         <form onSubmit={handleSubmit}>
           <div className="modal-body">
-            <p style={{ fontSize: '0.9rem', color: '#888', marginBottom: '12px' }}>
-              This description helps the AI understand what knowledge is available in this index.
-              It was auto-generated during indexing and can be customized.
-            </p>
-            <textarea
+            <DescriptionField
               value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="Describe what this index contains for AI context..."
-              rows={4}
-              style={{ width: '100%', resize: 'vertical', minHeight: '100px' }}
+              onChange={setDescription}
               disabled={saving}
-              autoFocus
+              rows={4}
             />
           </div>
           <div className="modal-footer">
@@ -155,7 +151,7 @@ function EditDescriptionModal({ index, onSave, onClose, saving }: EditModalProps
   );
 }
 
-export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDescriptionUpdate, onJobCreated }: IndexesListProps) {
+export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDescriptionUpdate, onJobCreated, aggregateSearch = true }: IndexesListProps) {
   const [deleting, setDeleting] = useState<string | null>(null);
   const [toggling, setToggling] = useState<string | null>(null);
   const [editingIndex, setEditingIndex] = useState<IndexInfo | null>(null);
@@ -171,6 +167,8 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
   const [reindexingIndex, setReindexingIndex] = useState<IndexInfo | null>(null);
   const [reindexToken, setReindexToken] = useState('');
   const [reindexing, setReindexing] = useState(false);
+  const [reindexVisibility, setReindexVisibility] = useState<RepoVisibilityResponse | null>(null);
+  const [checkingReindexVisibility, setCheckingReindexVisibility] = useState(false);
 
   // Download state
   const [downloading, setDownloading] = useState<string | null>(null);
@@ -178,7 +176,41 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
   // Create wizard state
   const [showCreateWizard, setShowCreateWizard] = useState(false);
   const [activeSource, setActiveSource] = useState<SourceType>('git');
+
+  // Git index edit state
+  const [editingGitIndex, setEditingGitIndex] = useState<IndexInfo | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+
+  // Check repo visibility when reindex modal opens
+  useEffect(() => {
+    if (!reindexingIndex?.source) {
+      setReindexVisibility(null);
+      return;
+    }
+
+    const checkVisibility = async () => {
+      setCheckingReindexVisibility(true);
+      try {
+        const result = await api.checkRepoVisibility({
+          git_url: reindexingIndex.source!,
+          index_name: reindexingIndex.name,
+        });
+        setReindexVisibility(result);
+      } catch {
+        // Fallback to has_stored_token if check fails
+        setReindexVisibility({
+          visibility: 'error',
+          has_stored_token: reindexingIndex.has_stored_token,
+          needs_token: !reindexingIndex.has_stored_token,
+          message: 'Could not check repository visibility',
+        });
+      } finally {
+        setCheckingReindexVisibility(false);
+      }
+    };
+
+    checkVisibility();
+  }, [reindexingIndex?.source, reindexingIndex?.name, reindexingIndex?.has_stored_token]);
 
   const handleCancelWizard = () => {
     setShowCreateWizard(false);
@@ -425,25 +457,37 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
                   {`Updated ${new Date(idx.last_modified).toLocaleString()}`}
                 </span>
               )}
-              <span
-                className={`meta-pill weight ${idx.search_weight !== 1.0 ? 'weight-modified' : ''}`}
-                title="Search weight: Higher values prioritize this index in results. Click to edit."
-                style={{ cursor: 'pointer' }}
-                onClick={() => setWeightEditIndex(idx)}
-              >
-                Weight: {idx.search_weight.toFixed(1)}
-              </span>
+              {!aggregateSearch && (
+                <span
+                  className={`meta-pill weight ${idx.search_weight !== 1.0 ? 'weight-modified' : ''}`}
+                  title="Search weight: Higher values prioritize this index in results. Click to edit."
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => setWeightEditIndex(idx)}
+                >
+                  Weight: {idx.search_weight.toFixed(1)}
+                </span>
+              )}
               {!idx.enabled && <span className="meta-pill disabled">Excluded from RAG</span>}
             </div>
           </div>
           <div style={{ display: 'flex', gap: '8px' }}>
-            <button
-              className="btn btn-sm btn-secondary"
-              onClick={() => setEditingIndex(idx)}
-              title="Edit description for AI context"
-            >
-              Edit
-            </button>
+            {idx.source_type === 'git' && idx.source ? (
+              <button
+                className="btn btn-sm btn-secondary"
+                onClick={() => setEditingGitIndex(idx)}
+                title="Edit index configuration (description, patterns, branch, etc.)"
+              >
+                Edit
+              </button>
+            ) : (
+              <button
+                className="btn btn-sm btn-secondary"
+                onClick={() => setEditingIndex(idx)}
+                title="Edit description for AI context"
+              >
+                Edit
+              </button>
+            )}
             <button
               className="btn btn-sm btn-secondary"
               onClick={() => handleDownload(idx.name)}
@@ -511,52 +555,125 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
           )}
 
           {reindexingIndex && (
-            <div className="modal-overlay">
-              <div className="modal" style={{ maxWidth: '500px' }}>
-                <h3>Pull &amp; Re-index</h3>
-                <p style={{ marginBottom: '12px', color: 'var(--text-secondary)' }}>
-                  Re-index <strong>{reindexingIndex.name}</strong> from Git repository.
-                </p>
-                <div style={{ marginBottom: '16px', padding: '12px', background: 'var(--bg-tertiary)', borderRadius: '8px', fontSize: '13px' }}>
-                  <div><strong>Source:</strong> {reindexingIndex.source}</div>
-                  {reindexingIndex.git_branch && (
-                    <div><strong>Branch:</strong> {reindexingIndex.git_branch}</div>
+            <div className="modal-overlay" onClick={() => { setReindexingIndex(null); setReindexToken(''); setReindexVisibility(null); }}>
+              <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '500px' }}>
+                <div className="modal-header">
+                  <h3>Pull &amp; Re-index</h3>
+                  <button className="modal-close" onClick={() => { setReindexingIndex(null); setReindexToken(''); setReindexVisibility(null); }}>&times;</button>
+                </div>
+                <div className="modal-body">
+                  <p style={{ marginBottom: '16px', color: 'var(--text-secondary)' }}>
+                    Re-index <strong>{reindexingIndex.name}</strong> from Git repository.
+                  </p>
+                  <div style={{ marginBottom: '16px', padding: '12px', background: 'var(--bg-tertiary)', borderRadius: '8px', fontSize: '13px' }}>
+                    <div style={{ marginBottom: '4px' }}><strong>Source:</strong> {reindexingIndex.source}</div>
+                    {reindexingIndex.git_branch && (
+                      <div><strong>Branch:</strong> {reindexingIndex.git_branch}</div>
+                    )}
+                  </div>
+
+                  {/* Show loading state while checking visibility */}
+                  {checkingReindexVisibility && (
+                    <div style={{ marginBottom: '16px', padding: '12px', background: 'var(--bg-tertiary)', borderRadius: '8px', color: 'var(--text-secondary)' }}>
+                      Checking repository access...
+                    </div>
+                  )}
+
+                  {/* Private repo with valid stored token */}
+                  {!checkingReindexVisibility && reindexVisibility?.visibility === 'private' && !reindexVisibility.needs_token && (
+                    <div style={{ marginBottom: '16px', padding: '12px', background: 'rgba(34, 197, 94, 0.1)', borderRadius: '8px', border: '1px solid rgba(34, 197, 94, 0.3)' }}>
+                      <span style={{ color: '#22c55e' }}>Private repository - will use stored token.</span>
+                    </div>
+                  )}
+
+                  {/* Private repo needing token (no stored token or invalid) */}
+                  {!checkingReindexVisibility && reindexVisibility?.needs_token && (
+                    <div className="form-group">
+                      {reindexVisibility.has_stored_token && (
+                        <div style={{ marginBottom: '12px', padding: '12px', background: 'rgba(251, 191, 36, 0.1)', borderRadius: '8px', border: '1px solid rgba(251, 191, 36, 0.3)' }}>
+                          <span style={{ color: '#fbbf24' }}>{reindexVisibility.message || 'Stored token is no longer valid.'}</span>
+                        </div>
+                      )}
+                      <label htmlFor="reindex-token">
+                        Git Token {reindexVisibility.visibility === 'private' ? '*' : '(optional)'}
+                      </label>
+                      <small style={{ display: 'block', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                        {reindexVisibility.visibility === 'private'
+                          ? 'Required for this private repository. Token will be stored for future re-indexing.'
+                          : 'Provide a token if the repository requires authentication.'}
+                      </small>
+                      <input
+                        id="reindex-token"
+                        type="password"
+                        className="form-input"
+                        value={reindexToken}
+                        onChange={(e) => setReindexToken(e.target.value)}
+                        placeholder="ghp_xxxx... or glpat-xxxx..."
+                      />
+                    </div>
+                  )}
+
+                  {/* Error checking visibility - show token input as fallback */}
+                  {!checkingReindexVisibility && reindexVisibility?.visibility === 'error' && !reindexVisibility.has_stored_token && (
+                    <div className="form-group">
+                      <label htmlFor="reindex-token">
+                        Git Token (optional)
+                      </label>
+                      <small style={{ display: 'block', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                        Provide a token if the repository requires authentication.
+                      </small>
+                      <input
+                        id="reindex-token"
+                        type="password"
+                        className="form-input"
+                        value={reindexToken}
+                        onChange={(e) => setReindexToken(e.target.value)}
+                        placeholder="ghp_xxxx... or glpat-xxxx..."
+                      />
+                    </div>
                   )}
                 </div>
-                <div className="form-group">
-                  <label htmlFor="reindex-token">
-                    Git Token (optional)
-                    <span style={{ color: 'var(--text-secondary)', fontWeight: 'normal', marginLeft: '8px' }}>
-                      Required for private repos or if token expired
-                    </span>
-                  </label>
-                  <input
-                    id="reindex-token"
-                    type="password"
-                    className="form-input"
-                    value={reindexToken}
-                    onChange={(e) => setReindexToken(e.target.value)}
-                    placeholder="Enter token if needed"
-                  />
-                </div>
-                <div className="modal-actions">
+                <div className="modal-footer">
                   <button
                     className="btn btn-secondary"
                     onClick={() => {
                       setReindexingIndex(null);
                       setReindexToken('');
+                      setReindexVisibility(null);
                     }}
-                    disabled={reindexing}
+                    disabled={reindexing || checkingReindexVisibility}
                   >
                     Cancel
                   </button>
                   <button
                     className="btn btn-primary"
                     onClick={handleReindex}
-                    disabled={reindexing}
+                    disabled={reindexing || checkingReindexVisibility || (reindexVisibility?.needs_token && !reindexToken)}
                   >
-                    {reindexing ? 'Starting...' : 'Re-index'}
+                    {checkingReindexVisibility ? 'Checking...' : reindexing ? 'Starting...' : 'Re-index'}
                   </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {editingGitIndex && (
+            <div className="modal-overlay" onClick={() => setEditingGitIndex(null)}>
+              <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '700px' }}>
+                <div className="modal-header">
+                  <h3>Edit Index Configuration</h3>
+                  <button className="modal-close" onClick={() => setEditingGitIndex(null)}>&times;</button>
+                </div>
+                <div className="modal-body">
+                  <GitIndexWizard
+                    key={editingGitIndex.name}
+                    editIndex={editingGitIndex}
+                    onCancel={() => setEditingGitIndex(null)}
+                    onConfigSaved={() => {
+                      setEditingGitIndex(null);
+                      onToggle?.();  // Refresh the list to show updated config
+                    }}
+                  />
                 </div>
               </div>
             </div>

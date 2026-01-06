@@ -21,12 +21,16 @@ from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import (
     AnalyzeIndexRequest,
     AppSettings,
+    CheckRepoVisibilityRequest,
     CreateIndexRequest,
+    FetchBranchesRequest,
+    FetchBranchesResponse,
     IndexAnalysisResult,
     IndexConfig,
     IndexInfo,
     IndexJobResponse,
     IndexStatus,
+    RepoVisibilityResponse,
     UpdateSettingsRequest,
 )
 from ragtime.indexer.repository import repository
@@ -149,6 +153,90 @@ async def analyze_upload(
     except Exception as e:
         logger.exception("Upload analysis failed")
         raise HTTPException(status_code=500, detail=f"Analysis failed: {e}") from e
+
+
+@router.post("/check-visibility", response_model=RepoVisibilityResponse)
+async def check_repo_visibility(
+    request: CheckRepoVisibilityRequest,
+    _user: User = Depends(require_admin),
+):
+    """
+    Check if a Git repository is publicly accessible.
+
+    This is used to determine whether a token is needed for re-indexing.
+    If an index_name is provided, checks if a stored token exists and is valid.
+
+    Returns:
+    - visibility: 'public', 'private', 'not_found', or 'error'
+    - has_stored_token: True if a valid token is stored
+    - needs_token: True if user needs to provide a token
+    - message: Human-readable status message
+    """
+    from ragtime.core.git import check_repo_visibility as git_check_visibility
+
+    # Get stored token if index_name provided
+    stored_token = None
+    if request.index_name:
+        try:
+            metadata = await repository.get_index_metadata(request.index_name)
+            if metadata and metadata.gitToken:
+                stored_token = metadata.gitToken
+        except Exception:
+            pass  # No stored token available
+
+    result = await git_check_visibility(
+        url=request.git_url,
+        stored_token=stored_token,
+    )
+
+    return RepoVisibilityResponse(
+        visibility=result.visibility.value,
+        has_stored_token=result.has_stored_token,
+        needs_token=result.needs_token,
+        message=result.message,
+    )
+
+
+@router.post("/fetch-branches", response_model=FetchBranchesResponse)
+async def fetch_branches(
+    request: FetchBranchesRequest,
+    _user: User = Depends(require_admin),
+):
+    """
+    Fetch branches from a Git repository.
+
+    Uses stored token from an existing index if available, otherwise uses provided token.
+    """
+    from ragtime.core.git import fetch_branches as git_fetch_branches
+
+    # Try to get stored token from existing index if index_name provided
+    token = request.git_token
+    if not token and request.index_name:
+        try:
+            metadata = await repository.get_index_metadata(request.index_name)
+            if metadata and metadata.gitToken:
+                token = metadata.gitToken
+        except Exception:
+            pass  # No stored token available
+
+    branches, error = await git_fetch_branches(
+        url=request.git_url,
+        token=token,
+    )
+
+    if error:
+        needs_token = "private" in error.lower() or "token" in error.lower()
+        return FetchBranchesResponse(
+            branches=[],
+            error=error,
+            needs_token=needs_token,
+        )
+
+    return FetchBranchesResponse(
+        branches=branches,
+        error=None,
+        needs_token=False,
+    )
 
 
 @router.get("/jobs", response_model=List[IndexJobResponse])
@@ -600,6 +688,99 @@ async def update_index_weight(
     }
 
 
+class UpdateIndexConfigRequest(BaseModel):
+    """Request to update index configuration for next re-index."""
+
+    git_branch: Optional[str] = Field(
+        default=None, description="Git branch to use for re-indexing"
+    )
+    file_patterns: Optional[List[str]] = Field(
+        default=None, description="Glob patterns for files to include"
+    )
+    exclude_patterns: Optional[List[str]] = Field(
+        default=None, description="Glob patterns for files to exclude"
+    )
+    chunk_size: Optional[int] = Field(
+        default=None, ge=100, le=4000, description="Chunk size for text splitting"
+    )
+    chunk_overlap: Optional[int] = Field(
+        default=None, ge=0, le=1000, description="Chunk overlap for text splitting"
+    )
+    max_file_size_kb: Optional[int] = Field(
+        default=None, ge=10, le=10000, description="Maximum file size in KB"
+    )
+    enable_ocr: Optional[bool] = Field(
+        default=None, description="Enable OCR for images"
+    )
+
+
+@router.patch("/{name}/config")
+async def update_index_config(
+    name: str,
+    request: UpdateIndexConfigRequest,
+    _user: User = Depends(require_admin),
+):
+    """Update an index's configuration for the next re-index. Admin only.
+
+    This updates the stored config snapshot that will be used when
+    "Pull & Re-index" is triggered. Only works for git-based indexes.
+    """
+    # Get existing metadata
+    metadata = await repository.get_index_metadata(name)
+    if not metadata:
+        raise HTTPException(status_code=404, detail="Index not found")
+
+    if metadata.sourceType != "git":
+        raise HTTPException(
+            status_code=400,
+            detail="Config updates only supported for git-based indexes",
+        )
+
+    # Merge with existing config snapshot
+    existing_config = metadata.configSnapshot or {}
+    new_config = {}
+
+    # Copy existing values
+    for key in [
+        "file_patterns",
+        "exclude_patterns",
+        "chunk_size",
+        "chunk_overlap",
+        "max_file_size_kb",
+        "enable_ocr",
+    ]:
+        if key in existing_config:
+            new_config[key] = existing_config[key]
+
+    # Apply updates
+    if request.file_patterns is not None:
+        new_config["file_patterns"] = request.file_patterns
+    if request.exclude_patterns is not None:
+        new_config["exclude_patterns"] = request.exclude_patterns
+    if request.chunk_size is not None:
+        new_config["chunk_size"] = request.chunk_size
+    if request.chunk_overlap is not None:
+        new_config["chunk_overlap"] = request.chunk_overlap
+    if request.max_file_size_kb is not None:
+        new_config["max_file_size_kb"] = request.max_file_size_kb
+    if request.enable_ocr is not None:
+        new_config["enable_ocr"] = request.enable_ocr
+
+    success = await repository.update_index_config(
+        name=name,
+        git_branch=request.git_branch,
+        config_snapshot=new_config if new_config else None,
+    )
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to update config")
+
+    return {
+        "message": f"Config updated for '{name}'",
+        "git_branch": request.git_branch or metadata.gitBranch,
+        "config_snapshot": new_config,
+    }
+
+
 @router.get("/{name}/download")
 async def download_index(name: str, _user: User = Depends(require_admin)):
     """Download FAISS index files as a zip archive. Admin only.
@@ -819,7 +1000,7 @@ async def create_tool_config(
     # Reinitialize RAG agent to make the new tool available immediately
     invalidate_settings_cache()
     await rag.initialize()
-    
+
     # Notify MCP clients that tools have changed
     notify_tools_changed()
 
@@ -931,7 +1112,7 @@ async def update_tool_config(
     # Reinitialize RAG agent to pick up the tool changes
     invalidate_settings_cache()
     await rag.initialize()
-    
+
     # Notify MCP clients that tools have changed (e.g., renamed)
     notify_tools_changed()
 
@@ -1002,7 +1183,7 @@ async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin))
     # Reinitialize RAG agent to remove the deleted tool
     invalidate_settings_cache()
     await rag.initialize()
-    
+
     # Notify MCP clients that tools have changed
     notify_tools_changed()
 
@@ -1025,7 +1206,7 @@ async def toggle_tool_config(
     # Invalidate cache and reinitialize RAG agent to pick up the change
     invalidate_settings_cache()
     await rag.initialize()
-    
+
     # Notify MCP clients that tools have changed
     notify_tools_changed()
     invalidate_settings_cache()

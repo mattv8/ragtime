@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '@/api';
-import type { IndexAnalysisResult, IndexJob } from '@/types';
+import type { IndexAnalysisResult, IndexJob, IndexInfo } from '@/types';
+import { DescriptionField } from './DescriptionField';
 
 type StatusType = 'info' | 'success' | 'error' | null;
 type WizardStep = 'input' | 'analyzing' | 'review' | 'indexing';
@@ -10,16 +11,20 @@ interface GitIndexWizardProps {
   onCancel?: () => void;
   onAnalysisStart?: () => void;
   onAnalysisComplete?: () => void;
+  /** When provided, wizard operates in edit mode for an existing git index */
+  editIndex?: IndexInfo;
+  /** Called when config is saved in edit mode (without triggering re-index) */
+  onConfigSaved?: () => void;
 }
 
 // Default file patterns to include all files, and placeholder hints for UI
 const DEFAULT_FILE_PATTERNS = '**/*';
 const PLACEHOLDER_FILE_PATTERNS = 'e.g. **/*.py, **/*.md (default: all files)';
 const PLACEHOLDER_EXCLUDE_PATTERNS = 'e.g. **/node_modules/**, **/__pycache__/**';
-const GITHUB_TOKEN_PREFIXES = ['ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_', 'github_pat_'];
-const GITLAB_TOKEN_PREFIXES = ['glpat-', 'glptt-', 'gldt-', 'glsoat-'];
 
-export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnalysisComplete }: GitIndexWizardProps) {
+export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnalysisComplete, editIndex, onConfigSaved }: GitIndexWizardProps) {
+  const isEditMode = !!editIndex;
+
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState<{ type: StatusType; message: string }>({
     type: null,
@@ -28,22 +33,94 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
   const [wizardStep, setWizardStep] = useState<WizardStep>('input');
   const [analysisResult, setAnalysisResult] = useState<IndexAnalysisResult | null>(null);
 
-  const [gitUrl, setGitUrl] = useState('');
+  const [gitUrl, setGitUrl] = useState(editIndex?.source || '');
   const [gitToken, setGitToken] = useState('');
   const [isPrivateRepo, setIsPrivateRepo] = useState(false);
+  const [hasStoredToken, setHasStoredToken] = useState(editIndex?.has_stored_token || false);
+  const [storedTokenValid, setStoredTokenValid] = useState(true);  // Assume valid until proven otherwise
+  const [checkingVisibility, setCheckingVisibility] = useState(false);
   const [branches, setBranches] = useState<string[]>([]);
-  const [selectedBranch, setSelectedBranch] = useState('');
+  const [selectedBranch, setSelectedBranch] = useState(editIndex?.git_branch || '');
   const [loadingBranches, setLoadingBranches] = useState(false);
   const [branchError, setBranchError] = useState<string | null>(null);
 
-  const [filePatterns, setFilePatterns] = useState(DEFAULT_FILE_PATTERNS);
-  const [excludePatterns, setExcludePatterns] = useState('');
-  const [chunkSize, setChunkSize] = useState(1000);
-  const [chunkOverlap, setChunkOverlap] = useState(200);
-  const [maxFileSizeKb, setMaxFileSizeKb] = useState(500);
-  const [enableOcr, setEnableOcr] = useState(false);
+  // Initialize from editIndex config_snapshot if available
+  const configSnapshot = editIndex?.config_snapshot;
+  const [filePatterns, setFilePatterns] = useState(
+    configSnapshot?.file_patterns?.join(', ') || DEFAULT_FILE_PATTERNS
+  );
+  const [excludePatterns, setExcludePatterns] = useState(
+    configSnapshot?.exclude_patterns?.join(', ') || ''
+  );
+  const [chunkSize, setChunkSize] = useState(configSnapshot?.chunk_size || 1000);
+  const [chunkOverlap, setChunkOverlap] = useState(configSnapshot?.chunk_overlap || 200);
+  const [maxFileSizeKb, setMaxFileSizeKb] = useState(configSnapshot?.max_file_size_kb || 500);
+  const [enableOcr, setEnableOcr] = useState(configSnapshot?.enable_ocr || false);
   const [exclusionsApplied, setExclusionsApplied] = useState(false);
-  const [patternsExpanded, setPatternsExpanded] = useState(false);
+  const [patternsExpanded, setPatternsExpanded] = useState(isEditMode);  // Expand by default in edit mode
+  const [description, setDescription] = useState(editIndex?.description || '');
+
+  // Sync state when editIndex changes (for when modal reopens with different index)
+  useEffect(() => {
+    if (editIndex) {
+      setGitUrl(editIndex.source || '');
+      setSelectedBranch(editIndex.git_branch || '');
+      setDescription(editIndex.description || '');
+      setHasStoredToken(editIndex.has_stored_token || false);
+      setStoredTokenValid(true);  // Reset to assume valid
+      const snapshot = editIndex.config_snapshot;
+      if (snapshot) {
+        setFilePatterns(snapshot.file_patterns?.join(', ') || DEFAULT_FILE_PATTERNS);
+        setExcludePatterns(snapshot.exclude_patterns?.join(', ') || '');
+        setChunkSize(snapshot.chunk_size || 1000);
+        setChunkOverlap(snapshot.chunk_overlap || 200);
+        setMaxFileSizeKb(snapshot.max_file_size_kb || 500);
+        setEnableOcr(snapshot.enable_ocr || false);
+      } else {
+        setFilePatterns(DEFAULT_FILE_PATTERNS);
+        setExcludePatterns('');
+        setChunkSize(1000);
+        setChunkOverlap(200);
+        setMaxFileSizeKb(500);
+        setEnableOcr(false);
+      }
+      setPatternsExpanded(true);
+    }
+  }, [editIndex]);
+
+  // Check repo visibility in edit mode to detect if repo became private
+  useEffect(() => {
+    if (!isEditMode || !editIndex?.source) return;
+
+    const checkVisibility = async () => {
+      setCheckingVisibility(true);
+      try {
+        const result = await api.checkRepoVisibility({
+          git_url: editIndex.source!,
+          index_name: editIndex.name,
+        });
+
+        if (result.visibility === 'private') {
+          setIsPrivateRepo(true);
+          setHasStoredToken(result.has_stored_token);
+          setStoredTokenValid(!result.needs_token);
+          if (result.needs_token) {
+            setBranchError(result.message);
+          }
+        } else if (result.visibility === 'public') {
+          setIsPrivateRepo(false);
+          setBranchError(null);
+        }
+        // For 'error' or 'not_found', keep current state
+      } catch {
+        // Silently fail - don't break the UI
+      } finally {
+        setCheckingVisibility(false);
+      }
+    };
+
+    checkVisibility();
+  }, [isEditMode, editIndex?.source, editIndex?.name]);
 
   const resetState = useCallback(() => {
     setIsLoading(false);
@@ -66,77 +143,36 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
     setPatternsExpanded(false);
   }, []);
 
-  const detectProviderFromToken = useCallback((token: string): 'github' | 'gitlab' | null => {
-    if (GITHUB_TOKEN_PREFIXES.some((prefix) => token.startsWith(prefix))) {
-      return 'github';
-    }
-    if (GITLAB_TOKEN_PREFIXES.some((prefix) => token.startsWith(prefix))) {
-      return 'gitlab';
-    }
-    return null;
-  }, []);
-
+  /**
+   * Parse a Git URL to extract the repository name.
+   * Used for generating index names and URL validation.
+   */
   const parseGitUrl = useCallback(
-    (
-      url: string,
-      token?: string,
-    ): { host: 'github' | 'gitlab' | 'generic'; hostUrl: string; owner: string; repo: string } | null => {
+    (url: string): { repo: string } | null => {
       if (!url || typeof url !== 'string') {
         return null;
       }
 
-      const httpsMatch = url.match(/^https?:\/\/([^\/]+)\/([^\/]+)\/([^\/]+?)(\.git)?$/);
+      // HTTPS format: https://github.com/owner/repo.git
+      const httpsMatch = url.match(/^https?:\/\/[^\/]+\/[^\/]+\/([^\/]+?)(\.git)?$/);
       if (httpsMatch) {
-        const [, hostUrl, owner, repo] = httpsMatch;
-        let host: 'github' | 'gitlab' | 'generic' = 'generic';
-        if (hostUrl === 'github.com') {
-          host = 'github';
-        } else if (hostUrl === 'gitlab.com' || hostUrl.includes('gitlab')) {
-          host = 'gitlab';
-        } else if (token) {
-          const detectedProvider = detectProviderFromToken(token);
-          if (detectedProvider) {
-            host = detectedProvider;
-          }
-        }
-        return { host, hostUrl, owner, repo };
+        return { repo: httpsMatch[1] };
       }
 
-      const sshMatch = url.match(/^git@([^:]+):([^\/]+)\/([^\/]+?)(\.git)?$/);
+      // SSH format: git@github.com:owner/repo.git
+      const sshMatch = url.match(/^git@[^:]+:[^\/]+\/([^\/]+?)(\.git)?$/);
       if (sshMatch) {
-        const [, hostUrl, owner, repo] = sshMatch;
-        let host: 'github' | 'gitlab' | 'generic' = 'generic';
-        if (hostUrl === 'github.com') {
-          host = 'github';
-        } else if (hostUrl === 'gitlab.com' || hostUrl.includes('gitlab')) {
-          host = 'gitlab';
-        } else if (token) {
-          const detectedProvider = detectProviderFromToken(token);
-          if (detectedProvider) {
-            host = detectedProvider;
-          }
-        }
-        return { host, hostUrl, owner, repo };
+        return { repo: sshMatch[1] };
       }
 
       return null;
     },
-    [detectProviderFromToken],
+    [],
   );
 
   const fetchBranches = useCallback(
     async (url: string, token?: string, silent404 = false) => {
-      const parsed = parseGitUrl(url, token);
-      if (!parsed) {
-        setBranches([]);
-        setBranchError(null);
-        return;
-      }
-
-      const isPublicGitHub = parsed.hostUrl === 'github.com';
-      const isPublicGitLab = parsed.hostUrl === 'gitlab.com';
-
-      if (!isPublicGitHub && !isPublicGitLab) {
+      if (!url) {
         setBranches([]);
         setBranchError(null);
         return;
@@ -146,41 +182,21 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
       setBranchError(null);
 
       try {
-        let apiUrl: string;
-        const headers: HeadersInit = {};
+        const result = await api.fetchBranches({
+          git_url: url,
+          git_token: token || undefined,
+          index_name: editIndex?.name,
+        });
 
-        if (isPublicGitHub) {
-          apiUrl = `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/branches?per_page=100`;
-          headers.Accept = 'application/vnd.github.v3+json';
-          if (token) {
-            headers.Authorization = `token ${token}`;
-          }
-        } else {
-          const projectPath = encodeURIComponent(`${parsed.owner}/${parsed.repo}`);
-          apiUrl = `https://gitlab.com/api/v4/projects/${projectPath}/repository/branches?per_page=100`;
-          if (token) {
-            headers['PRIVATE-TOKEN'] = token;
-          }
-        }
-
-        const response = await fetch(apiUrl, { headers });
-
-        if (!response.ok) {
-          if (response.status === 404) {
-            if (!silent404) {
-              setBranchError(token ? 'Repository not found or token lacks access' : 'Repository not found or is private');
-            }
-          } else if (response.status === 401) {
-            setBranchError('Invalid or expired token');
-          } else {
-            setBranchError(`API error: ${response.status}`);
+        if (result.error) {
+          if (!silent404 && result.error) {
+            setBranchError(result.error);
           }
           setBranches([]);
           return;
         }
 
-        const data = await response.json();
-        const branchNames = data.map((b: { name: string }) => b.name);
+        const branchNames = result.branches;
         setBranches(branchNames);
 
         if (branchNames.length > 0 && !selectedBranch) {
@@ -200,13 +216,23 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         setLoadingBranches(false);
       }
     },
-    [parseGitUrl, selectedBranch],
+    [editIndex?.name, selectedBranch],
   );
+
+  // Fetch branches on mount in edit mode (if we have a git URL)
+  useEffect(() => {
+    if (isEditMode && editIndex?.source) {
+      // Immediately try to fetch branches for the existing URL
+      fetchBranches(editIndex.source, undefined, true);
+    }
+  }, [isEditMode, editIndex?.source, fetchBranches]);
 
   useEffect(() => {
     if (!gitUrl) {
       setBranches([]);
-      setSelectedBranch('');
+      if (!isEditMode) {
+        setSelectedBranch('');
+      }
       setBranchError(null);
       return;
     }
@@ -223,7 +249,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
     }, 500);
 
     return () => clearTimeout(timer);
-  }, [fetchBranches, gitToken, gitUrl, isPrivateRepo]);
+  }, [fetchBranches, gitToken, gitUrl, isPrivateRepo, isEditMode]);
 
   const handleAnalyze = async () => {
     if (!gitUrl) {
@@ -231,7 +257,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
       return;
     }
 
-    const parsed = parseGitUrl(gitUrl, isPrivateRepo ? gitToken : undefined);
+    const parsed = parseGitUrl(gitUrl);
     if (!parsed) {
       setStatus({ type: 'error', message: 'Invalid Git URL format' });
       return;
@@ -285,7 +311,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
   };
 
   const handleStartIndexing = async () => {
-    const parsed = parseGitUrl(gitUrl, isPrivateRepo ? gitToken : undefined);
+    const parsed = parseGitUrl(gitUrl);
     if (!parsed) {
       setStatus({ type: 'error', message: 'Invalid Git URL format' });
       return;
@@ -337,11 +363,183 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
     onCancel?.();
   };
 
+  /**
+   * Save config changes in edit mode (does not trigger re-index)
+   */
+  const handleSaveConfig = async () => {
+    if (!editIndex) return;
+
+    setIsLoading(true);
+    setStatus({ type: 'info', message: 'Saving configuration...' });
+
+    try {
+      // Update description separately
+      await api.updateIndexDescription(editIndex.name, description);
+      // Update config
+      await api.updateIndexConfig(editIndex.name, {
+        git_branch: selectedBranch || undefined,
+        file_patterns: filePatterns.split(',').map((s) => s.trim()).filter(Boolean),
+        exclude_patterns: excludePatterns.split(',').map((s) => s.trim()).filter(Boolean),
+        chunk_size: chunkSize,
+        chunk_overlap: chunkOverlap,
+        max_file_size_kb: maxFileSizeKb,
+        enable_ocr: enableOcr,
+      });
+      setStatus({ type: 'success', message: 'Configuration saved. Click "Pull & Re-index" to apply changes.' });
+      onConfigSaved?.();
+    } catch (err) {
+      setStatus({ type: 'error', message: `Error: ${err instanceof Error ? err.message : 'Save failed'}` });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const formatBytes = (bytes: number): string => {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
+
+  // Edit mode: show simplified config editor
+  if (isEditMode && wizardStep === 'input') {
+    return (
+      <div>
+        <h4 style={{ marginBottom: '12px' }}>Edit Index Configuration: {editIndex.name}</h4>
+        <p className="field-help" style={{ marginBottom: '16px' }}>
+          Update settings for the next time you click "Pull & Re-index". Changes will not take effect until you re-index.
+        </p>
+
+        <div style={{ marginBottom: '16px', padding: '12px', background: 'var(--bg-tertiary)', borderRadius: '8px', fontSize: '13px' }}>
+          <div><strong>Source:</strong> {editIndex.source}</div>
+        </div>
+
+        <DescriptionField
+          value={description}
+          onChange={setDescription}
+          disabled={isLoading}
+        />
+
+        <div className="form-group">
+          <label>
+            Branch
+            {loadingBranches && (
+              <span style={{ marginLeft: '0.5rem', color: '#888', fontSize: '0.85em' }}>(loading...)</span>
+            )}
+          </label>
+          {branches.length > 0 ? (
+            <select
+              value={selectedBranch}
+              onChange={(e) => setSelectedBranch(e.target.value)}
+              style={{ width: '100%' }}
+              disabled={isLoading}
+            >
+              {branches.map((branch) => (
+                <option key={branch} value={branch}>
+                  {branch}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              type="text"
+              value={selectedBranch}
+              onChange={(e) => setSelectedBranch(e.target.value)}
+              placeholder={branchError ? 'Enter branch name' : 'main'}
+              disabled={isLoading}
+            />
+          )}
+        </div>
+
+        <div className="row">
+          <div className="form-group">
+            <label>File Patterns (comma-separated)</label>
+            <input
+              type="text"
+              value={filePatterns}
+              onChange={(e) => setFilePatterns(e.target.value)}
+              placeholder={PLACEHOLDER_FILE_PATTERNS}
+              disabled={isLoading}
+            />
+          </div>
+          <div className="form-group">
+            <label>Exclude Patterns</label>
+            <input
+              type="text"
+              value={excludePatterns}
+              onChange={(e) => setExcludePatterns(e.target.value)}
+              placeholder={PLACEHOLDER_EXCLUDE_PATTERNS}
+              disabled={isLoading}
+            />
+          </div>
+        </div>
+        <div className="row">
+          <div className="form-group">
+            <label>Chunk Size</label>
+            <input
+              type="number"
+              value={chunkSize}
+              onChange={(e) => setChunkSize(parseInt(e.target.value, 10) || 1000)}
+              min={100}
+              max={4000}
+              disabled={isLoading}
+            />
+          </div>
+          <div className="form-group">
+            <label>Chunk Overlap</label>
+            <input
+              type="number"
+              value={chunkOverlap}
+              onChange={(e) => setChunkOverlap(parseInt(e.target.value, 10) || 200)}
+              min={0}
+              max={1000}
+              disabled={isLoading}
+            />
+          </div>
+          <div className="form-group">
+            <label>Max File Size (KB)</label>
+            <input
+              type="number"
+              value={maxFileSizeKb}
+              onChange={(e) => setMaxFileSizeKb(parseInt(e.target.value, 10) || 500)}
+              min={10}
+              max={10000}
+              disabled={isLoading}
+            />
+            <small style={{ color: '#888', fontSize: '0.8rem' }}>Files larger than this are skipped</small>
+          </div>
+        </div>
+        <div className="form-group" style={{ marginTop: '12px' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={enableOcr}
+              onChange={(e) => setEnableOcr(e.target.checked)}
+              disabled={isLoading}
+            />
+            Enable OCR (extract text from images)
+          </label>
+          <small style={{ color: '#888', fontSize: '0.8rem', marginLeft: '24px' }}>
+            {enableOcr
+              ? 'Image files (PNG, JPG, etc.) will be processed with Tesseract OCR to extract text.'
+              : 'When disabled, image files will be skipped during indexing.'}
+          </small>
+        </div>
+
+        <div className="wizard-actions" style={{ marginTop: '16px' }}>
+          {onCancel && (
+            <button type="button" className="btn btn-secondary" onClick={handleCancel} disabled={isLoading}>
+              Cancel
+            </button>
+          )}
+          <button type="button" className="btn" onClick={handleSaveConfig} disabled={isLoading}>
+            {isLoading ? 'Saving...' : 'Save Configuration'}
+          </button>
+        </div>
+
+        {status.type && <div className={`status-message ${status.type}`}>{status.message}</div>}
+      </div>
+    );
+  }
 
   if (wizardStep === 'input' || wizardStep === 'analyzing') {
     return (
@@ -413,9 +611,10 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
                 }
               }}
               style={{ width: 'auto', margin: 0 }}
-              disabled={isLoading}
+              disabled={isLoading || checkingVisibility}
             />
             Private repository (requires authentication)
+            {checkingVisibility && <span style={{ color: '#888', fontSize: '0.85em' }}>(checking...)</span>}
           </label>
         </div>
 
@@ -424,18 +623,46 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
             className="form-group"
             style={{ marginLeft: '1.5rem', borderLeft: '2px solid #444', paddingLeft: '1rem', marginBottom: '1rem' }}
           >
-            <label>Personal Access Token *</label>
-            <input
-              type="password"
-              value={gitToken}
-              onChange={(e) => setGitToken(e.target.value)}
-              placeholder="ghp_xxxx... or glpat-xxxx..."
-              autoComplete="off"
-              disabled={isLoading}
-            />
-            <small style={{ color: '#888', fontSize: '0.85em', display: 'block', marginTop: '0.25rem' }}>
-              Required for private repositories. Token is used for cloning only and never stored.
-            </small>
+            {/* Show stored token status in edit mode */}
+            {isEditMode && hasStoredToken && storedTokenValid && (
+              <div style={{ marginBottom: '12px', padding: '12px', background: 'rgba(34, 197, 94, 0.1)', borderRadius: '8px', border: '1px solid rgba(34, 197, 94, 0.3)' }}>
+                <span style={{ color: '#22c55e' }}>Token stored - will use existing credentials.</span>
+                <button
+                  type="button"
+                  onClick={() => setStoredTokenValid(false)}
+                  style={{ marginLeft: '12px', padding: '4px 8px', fontSize: '12px', background: 'transparent', border: '1px solid #666', borderRadius: '4px', color: '#888', cursor: 'pointer' }}
+                >
+                  Update Token
+                </button>
+              </div>
+            )}
+
+            {/* Show warning if stored token is invalid */}
+            {isEditMode && hasStoredToken && !storedTokenValid && (
+              <div style={{ marginBottom: '12px', padding: '12px', background: 'rgba(251, 191, 36, 0.1)', borderRadius: '8px', border: '1px solid rgba(251, 191, 36, 0.3)' }}>
+                <span style={{ color: '#fbbf24' }}>Stored token no longer works - please provide a new token.</span>
+              </div>
+            )}
+
+            {/* Show token input if needed */}
+            {(!isEditMode || !hasStoredToken || !storedTokenValid) && (
+              <>
+                <label>Personal Access Token {!isEditMode ? '*' : ''}</label>
+                <input
+                  type="password"
+                  value={gitToken}
+                  onChange={(e) => setGitToken(e.target.value)}
+                  placeholder="ghp_xxxx... or glpat-xxxx..."
+                  autoComplete="off"
+                  disabled={isLoading}
+                />
+                <small style={{ color: '#888', fontSize: '0.85em', display: 'block', marginTop: '0.25rem' }}>
+                  {isEditMode
+                    ? 'Provide a new token to update stored credentials.'
+                    : 'Required for private repositories. Token is stored securely for automatic re-indexing.'}
+                </small>
+              </>
+            )}
           </div>
         )}
 

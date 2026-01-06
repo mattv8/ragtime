@@ -2,7 +2,7 @@
  * API client for Ragtime Indexer
  */
 
-import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, PostgresDiscoverRequest, PostgresDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult } from '@/types';
+import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, PostgresDiscoverRequest, PostgresDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse } from '@/types';
 
 const API_BASE = '/indexes';
 const AUTH_BASE = '/auth';
@@ -206,6 +206,32 @@ export const api = {
   },
 
   /**
+   * Check if a Git repository is publicly accessible.
+   * Used to determine whether a token is needed for re-indexing.
+   */
+  async checkRepoVisibility(request: CheckRepoVisibilityRequest): Promise<RepoVisibilityResponse> {
+    const response = await apiFetch(`${API_BASE}/check-visibility`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<RepoVisibilityResponse>(response);
+  },
+
+  /**
+   * Fetch branches from a Git repository.
+   * Uses stored token from existing index if available.
+   */
+  async fetchBranches(request: FetchBranchesRequest): Promise<FetchBranchesResponse> {
+    const response = await apiFetch(`${API_BASE}/fetch-branches`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<FetchBranchesResponse>(response);
+  },
+
+  /**
    * List all indexing jobs
    */
   async listJobs(): Promise<IndexJob[]> {
@@ -344,6 +370,18 @@ export const api = {
       body: JSON.stringify({ weight }),
     });
     return handleResponse<{ weight: number }>(response);
+  },
+
+  /**
+   * Update an index's configuration for next re-index (git indexes only)
+   */
+  async updateIndexConfig(name: string, config: import('@/types').UpdateIndexConfigRequest): Promise<{ git_branch: string; config_snapshot: import('@/types').IndexConfigSnapshot }> {
+    const response = await apiFetch(`${API_BASE}/${encodeURIComponent(name)}/config`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    });
+    return handleResponse<{ git_branch: string; config_snapshot: import('@/types').IndexConfigSnapshot }>(response);
   },
 
   /**
