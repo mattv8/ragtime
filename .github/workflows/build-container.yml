@@ -219,7 +219,8 @@ jobs:
         run: |
           BRANCH="${{ needs.build-and-push.outputs.branch }}"
           echo "Updating docker-compose.yml image tag to: ${BRANCH}"
-          sed -i "s|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:.*|image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${BRANCH}|" docker-compose.yml
+          # Update only non-commented image lines so legacy tag guidance stays untouched
+          sed -i "/^[[:space:]]*#/!s|^\([[:space:]]*\)image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:.*|\1image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${BRANCH}|" docker-compose.yml
           echo "Updated docker-compose.yml:"
           grep "image:" docker-compose.yml
 
