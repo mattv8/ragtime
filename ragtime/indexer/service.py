@@ -140,21 +140,68 @@ async def generate_index_description(
     source: Optional[str] = None,
 ) -> str:
     """
-    Auto-generate a description for an index using the LLM.
+    Auto-generate a description for an index using the configured LLM.
 
     Samples file paths and content to create a concise description
     that helps the AI understand what knowledge is available.
+
+    Uses the LLM provider configured in app settings (OpenAI, Anthropic, or Ollama).
     """
     try:
-        from langchain_openai import ChatOpenAI
-
         from ragtime.core.app_settings import get_app_settings
 
         app_settings = await get_app_settings()
-        api_key = app_settings.get("openai_api_key", "")
+        provider = app_settings.get("llm_provider", "openai").lower()
 
-        if not api_key:
-            logger.debug("No OpenAI API key - skipping auto-description generation")
+        # Get the appropriate LLM based on configured provider
+        llm = None
+
+        if provider == "ollama":
+            try:
+                from langchain_ollama import ChatOllama
+
+                base_url = app_settings.get("ollama_base_url", "http://localhost:11434")
+                model = app_settings.get("llm_model", "llama3.2")
+                llm = ChatOllama(model=model, base_url=base_url, temperature=0.3)
+                logger.debug(f"Using Ollama for description generation: {model}")
+            except ImportError:
+                logger.warning("langchain-ollama not installed")
+
+        elif provider == "anthropic":
+            api_key = app_settings.get("anthropic_api_key", "")
+            if api_key:
+                try:
+                    from langchain_anthropic import ChatAnthropic
+
+                    model = app_settings.get("llm_model", "claude-sonnet-4-20250514")
+                    llm = ChatAnthropic(
+                        model=model, temperature=0.3, anthropic_api_key=api_key
+                    )
+                    logger.debug(f"Using Anthropic for description generation: {model}")
+                except ImportError:
+                    logger.warning("langchain-anthropic not installed")
+            else:
+                logger.debug("Anthropic selected but no API key configured")
+
+        elif provider == "openai":
+            api_key = app_settings.get("openai_api_key", "")
+            if api_key:
+                from langchain_openai import ChatOpenAI
+
+                # Use cheaper model for descriptions
+                llm = ChatOpenAI(
+                    model="gpt-4o-mini",
+                    temperature=0.3,
+                    api_key=api_key,
+                )
+                logger.debug("Using OpenAI for description generation: gpt-4o-mini")
+            else:
+                logger.debug("OpenAI selected but no API key configured")
+
+        if llm is None:
+            logger.debug(
+                f"No LLM available for description generation (provider: {provider})"
+            )
             return ""
 
         # Sample file paths for context (unique paths only)
@@ -183,12 +230,6 @@ Write a concise description focusing on:
 - What questions this index can help answer
 
 Description:"""
-
-        llm = ChatOpenAI(
-            model="gpt-4o-mini",  # Use cheaper model for descriptions
-            temperature=0.3,
-            api_key=api_key,
-        )
 
         response = await llm.ainvoke(prompt)
         content = response.content
@@ -635,6 +676,7 @@ class IndexerService:
                     source_type = "upload"
                     source = None
                     git_branch = None
+                    has_stored_token = False
 
                     if path.name in metadata_by_name:
                         meta = metadata_by_name[path.name]
@@ -646,8 +688,11 @@ class IndexerService:
                         source = getattr(meta, "source", None)
                         git_branch = getattr(meta, "gitBranch", None)
                         search_weight = getattr(meta, "searchWeight", 1.0)
+                        config_snapshot_data = getattr(meta, "configSnapshot", None)
+                        has_stored_token = bool(getattr(meta, "gitToken", None))
                     else:
                         search_weight = 1.0
+                        config_snapshot_data = None
                         # Fallback to legacy .metadata.json file
                         meta_file = path / ".metadata.json"
                         if meta_file.exists():
@@ -663,6 +708,28 @@ class IndexerService:
                             except Exception:
                                 pass
 
+                    # Build config_snapshot from data if available
+                    config_snapshot = None
+                    if config_snapshot_data:
+                        from ragtime.indexer.models import IndexConfigSnapshot
+
+                        config_snapshot = IndexConfigSnapshot(
+                            file_patterns=config_snapshot_data.get(
+                                "file_patterns", ["**/*"]
+                            ),
+                            exclude_patterns=config_snapshot_data.get(
+                                "exclude_patterns", []
+                            ),
+                            chunk_size=config_snapshot_data.get("chunk_size", 1000),
+                            chunk_overlap=config_snapshot_data.get(
+                                "chunk_overlap", 200
+                            ),
+                            max_file_size_kb=config_snapshot_data.get(
+                                "max_file_size_kb", 500
+                            ),
+                            enable_ocr=config_snapshot_data.get("enable_ocr", False),
+                        )
+
                     indexes.append(
                         IndexInfo(
                             name=path.name,
@@ -675,6 +742,8 @@ class IndexerService:
                             source_type=source_type,
                             source=source,
                             git_branch=git_branch,
+                            has_stored_token=has_stored_token,
+                            config_snapshot=config_snapshot,
                             created_at=created_at,
                             last_modified=datetime.fromtimestamp(path.stat().st_mtime),
                         )
@@ -1603,15 +1672,22 @@ class IndexerService:
         # Calculate index size
         size_bytes = sum(f.stat().st_size for f in index_path.rglob("*") if f.is_file())
 
-        # Auto-generate description if not provided
+        # Auto-generate description if not provided, but preserve existing description if available
         description = getattr(config, "description", "")
         if not description:
-            description = await generate_index_description(
-                index_name=job.name,
-                documents=documents,
-                source_type=job.source_type,
-                source=job.git_url or job.source_path,
-            )
+            # Check if there's an existing description in the database
+            existing_metadata = await repository.get_index_metadata(job.name)
+            if existing_metadata and existing_metadata.description:
+                description = existing_metadata.description
+                logger.info(f"Preserving existing description for {job.name}")
+            else:
+                description = await generate_index_description(
+                    index_name=job.name,
+                    documents=documents,
+                    source_type=job.source_type,
+                    source=job.git_url or job.source_path,
+                )
+                logger.info(f"Generated new description for {job.name}")
 
         # Save metadata to database
         await repository.upsert_index_metadata(

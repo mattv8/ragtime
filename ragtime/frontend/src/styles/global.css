@@ -1647,6 +1647,7 @@ input[type="password"]:focus {
 .btn-primary {
   background: var(--color-accent);
   color: white;
+  border: 1px solid rgba(107, 114, 128, 0.4);
 }
 
 .btn-primary:hover:not(:disabled) {

@@ -1,6 +1,7 @@
 import { useState, useCallback, type DragEvent, type ChangeEvent } from 'react';
 import { api } from '@/api';
 import type { IndexJob, IndexAnalysisResult } from '@/types';
+import { DescriptionField } from './DescriptionField';
 
 interface UploadFormProps {
   onJobCreated: () => void;
@@ -496,16 +497,12 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
             />
           </div>
 
-          <div className="form-group">
-            <label>Description (for AI context)</label>
-            <textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="Describe what this index contains so the AI knows when to use it"
-              rows={2}
-              style={{ resize: 'vertical', minHeight: '60px' }}
-            />
-          </div>
+          <DescriptionField
+            value={description}
+            onChange={setDescription}
+            rows={2}
+            compact
+          />
 
           <div className="row">
             <div className="form-group">

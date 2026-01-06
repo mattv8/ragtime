@@ -35,6 +35,7 @@ export function App() {
   const [_filesystemTools, setFilesystemTools] = useState<ToolConfig[]>([]);
   const [filesystemJobs, setFilesystemJobs] = useState<FilesystemIndexJob[]>([]);
   const filesystemPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [aggregateSearch, setAggregateSearch] = useState(true);
 
   // Load server name from settings
   useEffect(() => {
@@ -45,6 +46,8 @@ export function App() {
           setServerName(settings.server_name);
           document.title = settings.server_name;
         }
+        // Also load aggregate_search setting
+        setAggregateSearch(settings.aggregate_search ?? true);
       } catch {
         // Ignore errors, use default name
       }
@@ -307,6 +310,7 @@ export function App() {
             onToggle={loadIndexes}
             onDescriptionUpdate={loadIndexes}
             onJobCreated={handleJobCreated}
+            aggregateSearch={aggregateSearch}
           />
 
           {/* Filesystem Indexes (pgvector) */}

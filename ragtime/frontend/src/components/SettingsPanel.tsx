@@ -864,11 +864,12 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
           <div className="form-group">
             <label className="checkbox-label">
               <input
-                type="checkbox"
-                checked={formData.aggregate_search ?? settings?.aggregate_search ?? true}
-                onChange={(e) =>
-                  setFormData({ ...formData, aggregate_search: e.target.checked })
-                }
+              type="checkbox"
+              checked={formData.aggregate_search ?? settings?.aggregate_search ?? true}
+              onChange={(e) =>
+                setFormData({ ...formData, aggregate_search: e.target.checked })
+              }
+              style={{ marginRight: '0.5rem' }}
               />
               <span>Aggregate search results (single tool)</span>
             </label>

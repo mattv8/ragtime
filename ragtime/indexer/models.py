@@ -83,6 +83,17 @@ class IndexJob(BaseModel):
         return (self.processed_files / self.total_files) * 100
 
 
+class IndexConfigSnapshot(BaseModel):
+    """Snapshot of index configuration settings used during indexing."""
+
+    file_patterns: List[str] = Field(default=["**/*"])
+    exclude_patterns: List[str] = Field(default_factory=list)
+    chunk_size: int = Field(default=1000)
+    chunk_overlap: int = Field(default=200)
+    max_file_size_kb: int = Field(default=500)
+    enable_ocr: bool = Field(default=False)
+
+
 class IndexInfo(BaseModel):
     """Information about an existing index."""
 
@@ -101,6 +112,10 @@ class IndexInfo(BaseModel):
     source_type: str = "upload"  # 'upload' or 'git'
     source: Optional[str] = None  # git URL or original filename
     git_branch: Optional[str] = None  # branch for git sources
+    has_stored_token: bool = False  # True if a git token is stored for re-indexing
+    config_snapshot: Optional[IndexConfigSnapshot] = (
+        None  # Configuration used for indexing
+    )
     created_at: Optional[datetime] = None
     last_modified: Optional[datetime] = None
 
@@ -115,7 +130,7 @@ class CreateIndexRequest(BaseModel):
     git_branch: str = Field(default="main", description="Git branch to use")
     git_token: Optional[str] = Field(
         default=None,
-        description="GitHub Personal Access Token for private repos (not stored)",
+        description="GitHub Personal Access Token for private repos (stored encrypted for re-indexing)",
     )
     config: Optional[IndexConfig] = Field(
         default=None, description="Indexing configuration"
@@ -221,6 +236,60 @@ class IndexJobResponse(BaseModel):
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+
+
+# -----------------------------------------------------------------------------
+# Git Repository Models
+# -----------------------------------------------------------------------------
+
+
+class CheckRepoVisibilityRequest(BaseModel):
+    """Request to check repository visibility."""
+
+    git_url: str = Field(description="Git repository URL to check")
+    index_name: Optional[str] = Field(
+        default=None,
+        description="Index name to check for stored token (if re-indexing)",
+    )
+
+
+class RepoVisibilityResponse(BaseModel):
+    """Response for repository visibility check."""
+
+    visibility: str = Field(description="'public', 'private', 'not_found', or 'error'")
+    has_stored_token: bool = Field(
+        default=False, description="Whether a valid token is stored for this repo"
+    )
+    needs_token: bool = Field(
+        default=False,
+        description="Whether user needs to provide a token for access",
+    )
+    message: str = Field(default="", description="Human-readable status message")
+
+
+class FetchBranchesRequest(BaseModel):
+    """Request to fetch branches from a Git repository."""
+
+    git_url: str = Field(description="Git repository URL")
+    git_token: Optional[str] = Field(
+        default=None, description="Token for private repos (optional)"
+    )
+    index_name: Optional[str] = Field(
+        default=None,
+        description="Index name to use stored token from (optional)",
+    )
+
+
+class FetchBranchesResponse(BaseModel):
+    """Response for branch listing."""
+
+    branches: List[str] = Field(
+        default_factory=list, description="List of branch names"
+    )
+    error: Optional[str] = Field(default=None, description="Error message if failed")
+    needs_token: bool = Field(
+        default=False, description="Whether authentication is required"
+    )
 
 
 # -----------------------------------------------------------------------------

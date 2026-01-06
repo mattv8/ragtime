@@ -379,6 +379,32 @@ class IndexerRepository:
             logger.warning(f"Failed to update search weight for index {name}: {e}")
             return False
 
+    async def update_index_config(
+        self,
+        name: str,
+        git_branch: str | None = None,
+        config_snapshot: dict | None = None,
+    ) -> bool:
+        """Update the git branch and/or config snapshot for an index."""
+        db = await self._get_db()
+
+        update_data = {}
+        if git_branch is not None:
+            update_data["gitBranch"] = git_branch
+        if config_snapshot is not None:
+            update_data["configSnapshot"] = Json(config_snapshot)
+
+        if not update_data:
+            return True  # Nothing to update
+
+        try:
+            await db.indexmetadata.update(where={"name": name}, data=update_data)
+            logger.debug(f"Updated config for index {name}")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to update config for index {name}: {e}")
+            return False
+
     # -------------------------------------------------------------------------
     # Application Settings Operations
     # -------------------------------------------------------------------------
