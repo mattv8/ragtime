@@ -201,6 +201,7 @@ SAFE_ODOO_PATTERNS = [
     r"\.filtered\s*\(",
     r"\.sorted\s*\(",
     r"env\s*\[.*\]",
+    r"env\.registry",
 ]
 
 # Dangerous Odoo patterns (write operations)
@@ -215,12 +216,10 @@ DANGEROUS_ODOO_PATTERNS = [
     r"__import__",
     r"eval\s*\(",
     r"exec\s*\(",
-    r"open\s*\(",
     r"file\s*\(",
     r"compile\s*\(",
     r"globals\s*\(",
     r"locals\s*\(",
-    r"getattr\s*\(",
     r"setattr\s*\(",
     r"delattr\s*\(",
     r"__builtins__",
@@ -301,6 +300,26 @@ def validate_odoo_code(code: str, enable_write_ops: bool = False) -> Tuple[bool,
             else:
                 logger.warning(f"Dangerous Odoo pattern detected: {pattern}")
                 return False, "Code contains forbidden pattern"
+
+    # Allow read-only getattr over model fields (e.g., getattr(order, field_name))
+    getattr_matches = re.findall(r"getattr\s*\(", code, re.IGNORECASE)
+    if getattr_matches:
+        safe_getattr = re.search(r"getattr\s*\(\s*\w+\s*,\s*field_name", code)
+        if not safe_getattr:
+            if enable_write_ops:
+                logger.warning("getattr detected but allowed due to write flag")
+            else:
+                logger.warning("getattr detected and blocked (not whitelisted usage)")
+                return False, "getattr usage is restricted to field_name inspection"
+
+    # Allow open() only when clearly read-only; block write/append/update modes
+    open_write_pattern = r"open\s*\([^)]*,\s*['\"][^'\"]*[wa\+][^'\"]*['\"]"
+    if re.search(open_write_pattern, code, re.IGNORECASE):
+        if enable_write_ops:
+            logger.warning("open() with write/append mode detected but allowed")
+        else:
+            logger.warning("open() with write/append mode detected and blocked")
+            return False, "File writes via open() are not allowed"
 
     # Must contain at least one safe pattern
     has_safe_pattern = any(re.search(pattern, code) for pattern in SAFE_ODOO_PATTERNS)
