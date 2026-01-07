@@ -44,6 +44,11 @@ from ragtime.indexer.models import (
     FileTypeStats,
 )
 from ragtime.indexer.repository import repository
+from ragtime.indexer.vector_utils import (
+    ensure_embedding_column,
+    ensure_pgvector_extension,
+    get_embeddings_model,
+)
 
 logger = get_logger(__name__)
 
@@ -67,7 +72,6 @@ class FilesystemIndexerService:
     def __init__(self):
         self._active_jobs: Dict[str, FilesystemIndexJob] = {}
         self._cancellation_flags: Dict[str, bool] = {}  # job_id -> should_cancel
-        self._pgvector_validated = False
         # Analysis job tracking (in-memory since analysis is fast)
         self._analysis_jobs: Dict[str, FilesystemAnalysisJob] = {}
         self._analysis_results: Dict[str, FilesystemAnalysisResult] = {}
@@ -407,37 +411,7 @@ class FilesystemIndexerService:
 
         Returns True if pgvector is available, False otherwise.
         """
-        if self._pgvector_validated:
-            return True
-
-        try:
-            db = await get_db()
-
-            # Check if pgvector extension exists
-            result = await db.query_raw(
-                "SELECT 1 FROM pg_extension WHERE extname = 'vector'"
-            )
-
-            if not result:
-                # Try to create the extension
-                logger.info("pgvector extension not found, attempting to create...")
-                try:
-                    await db.execute_raw("CREATE EXTENSION IF NOT EXISTS vector")
-                    logger.info("pgvector extension created successfully")
-                except Exception as e:
-                    logger.error(f"Failed to create pgvector extension: {e}")
-                    logger.error(
-                        "Please run: CREATE EXTENSION IF NOT EXISTS vector; "
-                        "as a superuser in your PostgreSQL database"
-                    )
-                    return False
-
-            self._pgvector_validated = True
-            return True
-
-        except Exception as e:
-            logger.error(f"Error checking pgvector extension: {e}")
-            return False
+        return await ensure_pgvector_extension(logger_override=logger)
 
     async def ensure_embedding_column(self, embedding_dim: int = 1536) -> bool:
         """
@@ -449,102 +423,12 @@ class FilesystemIndexerService:
         Note: pgvector has a 2000-dimension limit for both IVFFlat and HNSW indexes.
         For embeddings > 2000 dimensions, we skip index creation and use exact search.
         """
-        try:
-            db = await get_db()
-
-            # Inspect existing column and its dimension (atttypmod = dims + 4 for vector)
-            result = await db.query_raw(
-                """
-                SELECT a.atttypmod AS typmod
-                FROM pg_attribute a
-                JOIN pg_class c ON a.attrelid = c.oid
-                JOIN pg_namespace n ON c.relnamespace = n.oid
-                WHERE c.relname = 'filesystem_embeddings'
-                  AND n.nspname = 'public'
-                  AND a.attname = 'embedding'
-                  AND a.attnum > 0
-                  AND NOT a.attisdropped
-            """
-            )
-
-            current_dim: Optional[int] = None
-            if result:
-                typmod = result[0].get("typmod")
-                # pgvector stores dimension directly in atttypmod (no offset)
-                if isinstance(typmod, int) and typmod > 0:
-                    current_dim = typmod
-
-            dimension_changed = current_dim is not None and current_dim != embedding_dim
-
-            if not result:
-                logger.info(f"Adding embedding column (vector({embedding_dim}))")
-                await db.execute_raw(
-                    f"""
-                    ALTER TABLE filesystem_embeddings
-                    ADD COLUMN IF NOT EXISTS embedding vector({embedding_dim})
-                """
-                )
-            elif dimension_changed:
-                logger.info(
-                    f"Updating embedding column dimension {current_dim} -> {embedding_dim}"
-                )
-                # Drop old index before altering column
-                await db.execute_raw(
-                    "DROP INDEX IF EXISTS filesystem_embeddings_embedding_idx"
-                )
-                await db.execute_raw(
-                    f"ALTER TABLE filesystem_embeddings "
-                    f"ALTER COLUMN embedding TYPE vector({embedding_dim})"
-                )
-
-            # pgvector max dimension for ANN indexes is 2000
-            # For higher dimensions, skip indexing and use exact (sequential) search
-            if embedding_dim > 2000:
-                logger.warning(
-                    f"Embedding dimension {embedding_dim} exceeds pgvector's 2000-dim index limit. "
-                    "Using exact (non-indexed) search which may be slower for large datasets. "
-                    "To enable fast indexed search, set 'Embedding Dimensions' to 1536 or less "
-                    "in Settings (OpenAI text-embedding-3-* models support dimension reduction)."
-                )
-                # Drop any existing index since it's incompatible
-                await db.execute_raw(
-                    "DROP INDEX IF EXISTS filesystem_embeddings_embedding_idx"
-                )
-                return True
-
-            # Check if index exists
-            index_info = await db.query_raw(
-                """
-                SELECT am.amname AS index_type
-                FROM pg_index i
-                JOIN pg_class c ON i.indexrelid = c.oid
-                JOIN pg_am am ON c.relam = am.oid
-                WHERE c.relname = 'filesystem_embeddings_embedding_idx'
-            """
-            )
-
-            # Recreate index if dimension changed or no index exists
-            if dimension_changed or not index_info:
-                await db.execute_raw(
-                    "DROP INDEX IF EXISTS filesystem_embeddings_embedding_idx"
-                )
-                logger.info(
-                    f"Creating IVFFlat index for {embedding_dim}-dim embeddings"
-                )
-                await db.execute_raw(
-                    """
-                    CREATE INDEX filesystem_embeddings_embedding_idx
-                    ON filesystem_embeddings
-                    USING ivfflat (embedding vector_cosine_ops)
-                    WITH (lists = 100)
-                """
-                )
-
-            return True
-
-        except Exception as e:
-            logger.error(f"Error ensuring embedding column: {e}")
-            return False
+        return await ensure_embedding_column(
+            table_name="filesystem_embeddings",
+            index_name="filesystem_embeddings_embedding_idx",
+            embedding_dim=embedding_dim,
+            logger_override=logger,
+        )
 
     async def validate_path_access(
         self, config: FilesystemConnectionConfig
@@ -1428,33 +1312,10 @@ class FilesystemIndexerService:
 
     async def _get_embeddings(self, app_settings: dict):
         """Get the configured embedding model based on app settings."""
-        provider = app_settings.get("embedding_provider", "ollama").lower()
-        model = app_settings.get("embedding_model", "nomic-embed-text")
-        dimensions = app_settings.get("embedding_dimensions")
-
-        if provider == "ollama":
-            from langchain_ollama import OllamaEmbeddings
-
-            return OllamaEmbeddings(
-                model=model,
-                base_url=app_settings.get("ollama_base_url", "http://localhost:11434"),
-            )
-        elif provider == "openai":
-            from langchain_openai import OpenAIEmbeddings
-
-            api_key = app_settings.get("openai_api_key", "")
-            if not api_key:
-                raise ValueError(
-                    "OpenAI embeddings selected but no API key configured in Settings"
-                )
-            # Pass dimensions for text-embedding-3-* models (supports MRL)
-            kwargs = {"model": model, "api_key": api_key}
-            if dimensions and model.startswith("text-embedding-3"):
-                kwargs["dimensions"] = dimensions
-                logger.info(f"Using OpenAI embeddings with {dimensions} dimensions")
-            return OpenAIEmbeddings(**kwargs)
-        else:
-            raise ValueError(f"Unknown embedding provider: {provider}")
+        return await get_embeddings_model(
+            app_settings,
+            logger_override=logger,
+        )
 
     async def _load_and_chunk_file(
         self,

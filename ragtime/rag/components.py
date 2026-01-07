@@ -191,9 +191,37 @@ class RAGComponents:
         self._tool_configs: Optional[List[dict]] = None
         self._index_metadata: Optional[List[dict]] = None
         self._system_prompt: str = BASE_SYSTEM_PROMPT
+        self._init_lock: asyncio.Lock = asyncio.Lock()
+        self._init_in_progress: bool = False
 
     async def initialize(self):
-        """Initialize all RAG components."""
+        """Initialize all RAG components.
+
+        Uses a lock to prevent concurrent initializations - if another init
+        is in progress, this call will wait for it to complete rather than
+        starting a duplicate initialization.
+        """
+        # Fast path: if init is already in progress, just wait for it
+        if self._init_in_progress:
+            logger.debug("RAG initialization already in progress, waiting...")
+            async with self._init_lock:
+                # Lock acquired means the other init finished
+                logger.debug("RAG initialization completed by another caller")
+                return
+
+        async with self._init_lock:
+            # Double-check after acquiring lock
+            if self._init_in_progress:
+                return
+
+            self._init_in_progress = True
+            try:
+                await self._do_initialize()
+            finally:
+                self._init_in_progress = False
+
+    async def _do_initialize(self):
+        """Perform the actual RAG initialization."""
         logger.info("Initializing RAG components...")
 
         # Load settings from database
@@ -231,8 +259,9 @@ class RAGComponents:
 
         if provider == "ollama":
             try:
-                from langchain_ollama import \
-                    ChatOllama  # type: ignore[import-untyped,import-not-found]
+                from langchain_ollama import (
+                    ChatOllama,
+                )  # type: ignore[import-untyped,import-not-found]  # pyright: ignore[reportMissingImports]
 
                 base_url = self._app_settings.get(
                     "ollama_base_url", "http://localhost:11434"
@@ -253,8 +282,10 @@ class RAGComponents:
                 try:
                     from langchain_anthropic import ChatAnthropic
 
-                    self.llm = ChatAnthropic(  # type: ignore[call-arg]  # pyright: ignore[reportCallIssue]
-                        model=model, temperature=0, anthropic_api_key=api_key
+                    self.llm = ChatAnthropic(
+                        model=model,
+                        temperature=0,
+                        api_key=api_key,
                     )
                     logger.info(f"Using Anthropic LLM: {model}")
                     return
@@ -276,11 +307,11 @@ class RAGComponents:
             self.llm = None
             return
 
-        self.llm = ChatOpenAI(  # type: ignore[call-arg]  # pyright: ignore[reportCallIssue]
+        self.llm = ChatOpenAI(
             model=model if provider == "openai" else "gpt-4-turbo",
             temperature=0,
             streaming=True,
-            openai_api_key=api_key,
+            api_key=api_key,
         )
         logger.info(f"Using OpenAI LLM: {self.llm.model_name}")
 
@@ -291,8 +322,9 @@ class RAGComponents:
         model = self._app_settings.get("embedding_model", "nomic-embed-text")
 
         if provider == "ollama":
-            from langchain_ollama import \
-                OllamaEmbeddings  # type: ignore[import-untyped]
+            from langchain_ollama import (
+                OllamaEmbeddings,
+            )  # type: ignore[import-untyped,import-not-found]  # pyright: ignore[reportMissingImports]
 
             base_url = self._app_settings.get(
                 "ollama_base_url", "http://localhost:11434"
@@ -524,6 +556,8 @@ class RAGComponents:
                 tool = await self._create_ssh_tool(config, tool_name, tool_id)
             elif tool_type == "filesystem_indexer":
                 tool = await self._create_filesystem_tool(config, tool_name, tool_id)
+            elif tool_type == "solidworks_pdm":
+                tool = await self._create_pdm_search_tool(config, tool_name, tool_id)
             else:
                 logger.warning(f"Unknown tool type: {tool_type}")
                 continue
@@ -834,8 +868,7 @@ class RAGComponents:
 
         async def execute_query(query: str = "", reason: str = "", **_: Any) -> str:
             """Execute PostgreSQL query using this tool's configuration."""
-            from ragtime.core.security import (sanitize_output,
-                                               validate_sql_query)
+            from ragtime.core.security import sanitize_output, validate_sql_query
 
             # Validate required fields
             if not query or not query.strip():
@@ -1005,8 +1038,7 @@ class RAGComponents:
 
         async def execute_odoo(code: str = "", reason: str = "", **_: Any) -> str:
             """Execute Odoo shell command using this tool's configuration."""
-            from ragtime.core.security import (sanitize_output,
-                                               validate_odoo_code)
+            from ragtime.core.security import sanitize_output, validate_odoo_code
 
             # Validate required fields
             if not code or not code.strip():
@@ -1284,6 +1316,71 @@ except Exception as e:
             name=f"search_{tool_name}",
             description=tool_description,
             args_schema=FilesystemSearchInput,
+        )
+
+    async def _create_pdm_search_tool(self, config: dict, tool_name: str, tool_id: str):
+        """Create a SolidWorks PDM search tool from config."""
+        from langchain_core.tools import StructuredTool
+        from pydantic import BaseModel, Field
+
+        from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
+
+        description = config.get("description", "")
+
+        # Use tool_name for index lookup - matches how trigger_index creates it
+        index_name = f"pdm_{tool_name}"
+
+        # Store tool_id for potential future use in logging/tracking
+        _tool_id = tool_id  # noqa: F841
+
+        # Check if there are any PDM embeddings for this tool
+        embedding_count = await pdm_indexer.get_embedding_count(tool_id, tool_name)
+        if embedding_count == 0:
+            logger.debug(f"PDM tool configured but no embeddings found for {tool_name}")
+            # Still create the tool - it will just return "no results" until indexed
+
+        class PdmSearchInput(BaseModel):
+            query: str = Field(
+                description=(
+                    "Natural language search query to find PDM documents. "
+                    "Search for parts, assemblies, drawings by part number, "
+                    "material, description, author, folder, or BOM relationships."
+                )
+            )
+            document_type: Optional[str] = Field(
+                default=None,
+                description=(
+                    "Optional filter by document type: SLDPRT (parts), "
+                    "SLDASM (assemblies), SLDDRW (drawings), or None for all"
+                ),
+            )
+
+        async def search_pdm(
+            query: str, document_type: Optional[str] = None, **_: Any
+        ) -> str:
+            """Search the PDM index."""
+            logger.info(f"[{tool_name}] PDM search: {query[:100]}...")
+            return await search_pdm_index(
+                query=query,
+                index_name=index_name,
+                document_type=document_type,
+                max_results=10,
+            )
+
+        tool_description = (
+            f"Search SolidWorks PDM metadata from {config.get('name', 'PDM vault')}. "
+            f"Find parts, assemblies, and drawings by part number, material, "
+            f"description, author, folder path, or BOM relationships."
+        )
+        if description:
+            tool_description += f" Database contains: {description}"
+
+        logger.info(f"Created PDM search tool: search_{tool_name}")
+        return StructuredTool.from_function(
+            coroutine=search_pdm,
+            name=f"search_{tool_name}",
+            description=tool_description,
+            args_schema=PdmSearchInput,
         )
 
     def get_context_from_retrievers(

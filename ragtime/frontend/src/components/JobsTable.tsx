@@ -1,25 +1,28 @@
 import { useState } from 'react';
 import { api } from '@/api';
-import type { IndexJob, FilesystemIndexJob, SchemaIndexJob } from '@/types';
+import type { IndexJob, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob } from '@/types';
 
 interface JobsTableProps {
   jobs: IndexJob[];
   filesystemJobs?: FilesystemIndexJob[];
   schemaJobs?: SchemaIndexJob[];
+  pdmJobs?: PdmIndexJob[];
   loading: boolean;
   error: string | null;
   onJobsChanged?: () => void;
   onFilesystemJobsChanged?: () => void;
   onSchemaJobsChanged?: () => void;
+  onPdmJobsChanged?: () => void;
   onCancelFilesystemJob?: (toolId: string, jobId: string) => void;
   onCancelSchemaJob?: (toolId: string, jobId: string) => void;
+  onCancelPdmJob?: (toolId: string, jobId: string) => void;
 }
 
 // Unified job type for display
 type UnifiedJob = {
   id: string;
   name: string;
-  type: 'document' | 'filesystem' | 'schema';
+  type: 'document' | 'filesystem' | 'schema' | 'pdm';
   status: string;
   progress: number;
   totalFiles: number;
@@ -34,11 +37,15 @@ type UnifiedJob = {
   // Collection phase info (filesystem jobs)
   filesScanned?: number;
   currentDirectory?: string | null;
-  // For filesystem/schema jobs
+  // For filesystem/schema/pdm jobs
   toolConfigId?: string;
   // Schema-specific fields
   totalTables?: number;
   processedTables?: number;
+  // PDM-specific fields
+  totalDocuments?: number;
+  processedDocuments?: number;
+  skippedDocuments?: number;
 };
 
 const RECENT_LIMIT = 5;
@@ -234,7 +241,62 @@ function toUnifiedSchemaJob(job: SchemaIndexJob): UnifiedJob {
   };
 }
 
-export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], loading, error, onJobsChanged, onFilesystemJobsChanged, onSchemaJobsChanged, onCancelFilesystemJob, onCancelSchemaJob }: JobsTableProps) {
+/**
+ * Convert PdmIndexJob to unified job format
+ */
+function toUnifiedPdmJob(job: PdmIndexJob): UnifiedJob {
+  // Determine the phase and progress based on job state
+  let phase = '';
+  let progress = 0;
+
+  if (job.status === 'completed') {
+    phase = 'Complete';
+    progress = 100;
+  } else if (job.status === 'pending') {
+    phase = 'Queued';
+    progress = 0;
+  } else if (job.status === 'failed' || job.status === 'cancelled') {
+    phase = job.status === 'failed' ? 'Failed' : 'Cancelled';
+    progress = 0;
+  } else if (job.status === 'indexing') {
+    if (job.cancel_requested) {
+      phase = 'Cancelling...';
+    } else if (job.total_documents === 0) {
+      phase = 'Counting documents...';
+      progress = 5;
+    } else {
+      const processed = job.processed_documents + job.skipped_documents;
+      progress = Math.round((processed / job.total_documents) * 100);
+      phase = `Indexing: ${processed}/${job.total_documents} documents`;
+      if (job.skipped_documents > 0) {
+        phase += ` (${job.skipped_documents} unchanged)`;
+      }
+    }
+  }
+
+  return {
+    id: job.id,
+    name: job.index_name,
+    type: 'pdm',
+    status: job.status,
+    progress,
+    totalFiles: job.total_documents,
+    processedFiles: job.processed_documents,
+    skippedFiles: job.skipped_documents,
+    totalChunks: job.total_chunks,
+    processedChunks: job.processed_chunks,
+    errorMessage: job.error_message,
+    createdAt: job.created_at,
+    phase,
+    toolConfigId: job.tool_config_id,
+    cancelRequested: job.cancel_requested,
+    totalDocuments: job.total_documents,
+    processedDocuments: job.processed_documents,
+    skippedDocuments: job.skipped_documents,
+  };
+}
+
+export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs = [], loading, error, onJobsChanged, onFilesystemJobsChanged, onSchemaJobsChanged, onPdmJobsChanged, onCancelFilesystemJob, onCancelSchemaJob, onCancelPdmJob }: JobsTableProps) {
   const [showAll, setShowAll] = useState(false);
   const [selectedJob, setSelectedJob] = useState<UnifiedJob | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -256,7 +318,7 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], loading,
     setCancelConfirmId(jobId);
   };
 
-  const confirmCancel = async (jobId: string, jobType: 'document' | 'filesystem' | 'schema', toolConfigId?: string) => {
+  const confirmCancel = async (jobId: string, jobType: 'document' | 'filesystem' | 'schema' | 'pdm', toolConfigId?: string) => {
     setCancelConfirmId(null);
     setActionLoading(jobId);
     try {
@@ -266,6 +328,9 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], loading,
       } else if (jobType === 'schema' && toolConfigId) {
         await onCancelSchemaJob?.(toolConfigId, jobId);
         onSchemaJobsChanged?.();
+      } else if (jobType === 'pdm' && toolConfigId) {
+        await onCancelPdmJob?.(toolConfigId, jobId);
+        onPdmJobsChanged?.();
       } else {
         await api.cancelJob(jobId);
         onJobsChanged?.();
@@ -310,7 +375,7 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], loading,
     setRetryConfirmId(jobId);
   };
 
-  const confirmRetry = async (jobId: string, jobType: 'document' | 'filesystem' | 'schema', toolConfigId?: string) => {
+  const confirmRetry = async (jobId: string, jobType: 'document' | 'filesystem' | 'schema' | 'pdm', toolConfigId?: string) => {
     setRetryConfirmId(null);
     setActionLoading(jobId);
     try {
@@ -320,6 +385,9 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], loading,
       } else if (jobType === 'schema' && toolConfigId) {
         await api.retrySchemaJob(toolConfigId, jobId);
         onSchemaJobsChanged?.();
+      } else if (jobType === 'pdm' && toolConfigId) {
+        await api.retryPdmJob(toolConfigId, jobId);
+        onPdmJobsChanged?.();
       } else {
         await api.retryJob(jobId);
         onJobsChanged?.();
@@ -337,6 +405,7 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], loading,
     ...jobs.map(toUnifiedJob),
     ...filesystemJobs.map(toUnifiedFilesystemJob),
     ...schemaJobs.map(toUnifiedSchemaJob),
+    ...pdmJobs.map(toUnifiedPdmJob),
   ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   const displayedJobs = showAll ? allJobs : allJobs.slice(0, RECENT_LIMIT);

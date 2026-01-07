@@ -15,6 +15,7 @@ import type {
   MountInfo,
   DirectoryEntry,
   FileTypeStats,
+  SolidworksPdmConnectionConfig,
 } from '@/types';
 import { TOOL_TYPE_INFO, MOUNT_TYPE_INFO } from '@/types';
 import { DisabledPopover } from './Popover';
@@ -1410,9 +1411,11 @@ interface ToolWizardProps {
   defaultToolType?: ToolType;
 }
 
-type WizardStep = 'type' | 'connection' | 'description' | 'options' | 'review';
+type WizardStep = 'type' | 'connection' | 'pdm_filtering' | 'description' | 'options' | 'review';
 
-const WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'description', 'options', 'review'];
+// Base steps - pdm_filtering is dynamically inserted for solidworks_pdm tools
+const BASE_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'description', 'options', 'review'];
+const PDM_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'pdm_filtering', 'description', 'options', 'review'];
 
 function getStepTitle(step: WizardStep): string {
   switch (step) {
@@ -1420,6 +1423,8 @@ function getStepTitle(step: WizardStep): string {
       return 'Select Tool Type';
     case 'connection':
       return 'Configure Connection';
+    case 'pdm_filtering':
+      return 'Document Filtering';
     case 'description':
       return 'Add Description';
     case 'options':
@@ -1433,6 +1438,14 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
   const isEditing = existingTool !== null;
   const progressRef = useRef<HTMLDivElement>(null);
 
+  // Form state - use defaultToolType if provided
+  const [toolType, setToolType] = useState<ToolType>(existingTool?.tool_type || defaultToolType || 'postgres');
+
+  // Get the appropriate wizard steps based on tool type
+  const getWizardSteps = useCallback((): WizardStep[] => {
+    return toolType === 'solidworks_pdm' ? PDM_WIZARD_STEPS : BASE_WIZARD_STEPS;
+  }, [toolType]);
+
   // Wizard state - skip type selection if defaultToolType is provided
   const skipTypeStep = !isEditing && defaultToolType !== undefined;
   const [currentStep, setCurrentStep] = useState<WizardStep>(
@@ -1442,9 +1455,6 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string; details?: unknown } | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  // Form state - use defaultToolType if provided
-  const [toolType, setToolType] = useState<ToolType>(existingTool?.tool_type || defaultToolType || 'postgres');
 
   // Auto-scroll active step into view
   useEffect(() => {
@@ -1538,6 +1548,39 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
         }
   );
 
+  // SolidWorks PDM config state
+  const [pdmConfig, setPdmConfig] = useState<SolidworksPdmConnectionConfig>(
+    existingTool?.tool_type === 'solidworks_pdm'
+      ? (existingTool.connection_config as SolidworksPdmConnectionConfig)
+      : {
+          host: '',
+          port: 1433,
+          user: '',
+          password: '',
+          database: '',
+          file_extensions: ['.SLDPRT', '.SLDASM', '.SLDDRW'],
+          exclude_deleted: true,
+          variable_names: ['Description', 'Material', 'Revision', 'Status'],
+          include_bom: true,
+          include_folder_path: true,
+          include_configurations: true,
+          max_documents: null,
+          last_indexed_at: null,
+        }
+  );
+
+  // PDM discovery state
+  const [pdmDiscoveringDatabases, setPdmDiscoveringDatabases] = useState(false);
+  const [pdmDiscoveredDatabases, setPdmDiscoveredDatabases] = useState<string[]>([]);
+  const [pdmDatabaseDiscoveryError, setPdmDatabaseDiscoveryError] = useState<string | null>(null);
+  const [pdmDiscoveringSchema, setPdmDiscoveringSchema] = useState(false);
+  const [pdmDiscoveredExtensions, setPdmDiscoveredExtensions] = useState<string[]>([]);
+  const [pdmDiscoveredVariables, setPdmDiscoveredVariables] = useState<string[]>([]);
+  const [pdmDocumentCount, setPdmDocumentCount] = useState<number>(0);
+  const [pdmSchemaDiscoveryError, setPdmSchemaDiscoveryError] = useState<string | null>(null);
+  const [pdmExtensionFilter, setPdmExtensionFilter] = useState('');
+  const [pdmVariableFilter, setPdmVariableFilter] = useState('');
+
   // Auto-generate name from filesystem path basename if not already set
   useEffect(() => {
     if (!isEditing && toolType === 'filesystem_indexer' && filesystemConfig.base_path && !name) {
@@ -1547,6 +1590,14 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
       setName(generatedName);
     }
   }, [filesystemConfig.base_path, toolType, isEditing, name]);
+
+  // Auto-discover PDM schema when entering the pdm_filtering step
+  const handleDiscoverPdmSchemaRef = useRef<(() => Promise<void>) | null>(null);
+  useEffect(() => {
+    if (currentStep === 'pdm_filtering' && pdmDiscoveredExtensions.length === 0 && !pdmDiscoveringSchema && handleDiscoverPdmSchemaRef.current) {
+      handleDiscoverPdmSchemaRef.current();
+    }
+  }, [currentStep, pdmDiscoveredExtensions.length, pdmDiscoveringSchema]);
 
   // Filesystem analysis state
   const [_fsAnalysisJobId, setFsAnalysisJobId] = useState<string | null>(null);
@@ -1589,6 +1640,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
       case 'filesystem_indexer':
         // Use the tool name as the index_name (Step 3 Name field)
         return { ...filesystemConfig, index_name: name || filesystemConfig.index_name };
+      case 'solidworks_pdm':
+        return pdmConfig;
     }
   };
 
@@ -1735,7 +1788,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
     }
   };
 
-  const getCurrentStepIndex = () => WIZARD_STEPS.indexOf(currentStep);
+  const wizardSteps = getWizardSteps();
+  const getCurrentStepIndex = () => wizardSteps.indexOf(currentStep);
 
   const canNavigateToStep = (stepIndex: number): boolean => {
     // Can always go back to previous steps
@@ -1746,7 +1800,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
   };
 
   const goToStep = (step: WizardStep) => {
-    const stepIndex = WIZARD_STEPS.indexOf(step);
+    const stepIndex = wizardSteps.indexOf(step);
     if (canNavigateToStep(stepIndex)) {
       setCurrentStep(step);
       setTestResult(null);
@@ -1756,8 +1810,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
 
   const goToNextStep = () => {
     const currentIndex = getCurrentStepIndex();
-    if (currentIndex < WIZARD_STEPS.length - 1) {
-      setCurrentStep(WIZARD_STEPS[currentIndex + 1]);
+    if (currentIndex < wizardSteps.length - 1) {
+      setCurrentStep(wizardSteps[currentIndex + 1]);
       setTestResult(null);
       setError(null);
     }
@@ -1768,10 +1822,10 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
     if (currentIndex > 0) {
       // Skip type step if editing
       const prevIndex = currentIndex - 1;
-      if (isEditing && WIZARD_STEPS[prevIndex] === 'type') {
+      if (isEditing && wizardSteps[prevIndex] === 'type') {
         return;
       }
-      setCurrentStep(WIZARD_STEPS[prevIndex]);
+      setCurrentStep(wizardSteps[prevIndex]);
       setTestResult(null);
       setError(null);
     }
@@ -1954,6 +2008,16 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
         }
       }
 
+      // Trigger PDM document indexing for SolidWorks PDM tools
+      if (toolType === 'solidworks_pdm' && savedToolId) {
+        try {
+          await api.triggerPdmIndex(savedToolId);
+        } catch (pdmErr) {
+          // Don't fail the save if PDM indexing fails to start
+          console.error('Failed to start PDM indexing:', pdmErr);
+        }
+      }
+
       onSave();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save');
@@ -1967,6 +2031,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
         return true;
       case 'connection':
         return validateConnection();
+      case 'pdm_filtering':
+        // Must have at least one file extension selected
+        return (pdmConfig.file_extensions?.length ?? 0) > 0;
       case 'description':
         return name.trim().length > 0;
       case 'options':
@@ -2012,6 +2079,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
           return Boolean(filesystemConfig.nfs_host && filesystemConfig.nfs_export);
         }
         return Boolean(filesystemConfig.base_path);
+      case 'solidworks_pdm':
+        // Host, user, password, and database are required
+        return Boolean(pdmConfig.host && pdmConfig.user && pdmConfig.password && pdmConfig.database);
     }
   };
 
@@ -2339,6 +2409,527 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
             </div>
           )}
         </div>
+      </div>
+    );
+  };
+
+  // Handler for PDM database discovery
+  const handleDiscoverPdmDatabases = async () => {
+    if (!pdmConfig.host || !pdmConfig.user || !pdmConfig.password) {
+      setPdmDatabaseDiscoveryError('Host, user, and password are required to discover databases');
+      return;
+    }
+
+    setPdmDiscoveringDatabases(true);
+    setPdmDatabaseDiscoveryError(null);
+    setPdmDiscoveredDatabases([]);
+
+    try {
+      const result = await api.discoverMssqlDatabases({
+        host: pdmConfig.host,
+        port: pdmConfig.port || 1433,
+        user: pdmConfig.user,
+        password: pdmConfig.password,
+      });
+
+      if (result.success) {
+        setPdmDiscoveredDatabases(result.databases);
+      } else {
+        setPdmDatabaseDiscoveryError(result.error || 'Failed to discover databases');
+      }
+    } catch (err) {
+      setPdmDatabaseDiscoveryError(err instanceof Error ? err.message : 'Discovery failed');
+    } finally {
+      setPdmDiscoveringDatabases(false);
+    }
+  };
+
+  // Handler for PDM schema discovery (extensions and variables)
+  const handleDiscoverPdmSchema = async () => {
+    if (!pdmConfig.host || !pdmConfig.user || !pdmConfig.password || !pdmConfig.database) {
+      setPdmSchemaDiscoveryError('Database connection must be configured first');
+      return;
+    }
+
+    setPdmDiscoveringSchema(true);
+    setPdmSchemaDiscoveryError(null);
+
+    try {
+      const result = await api.discoverPdmSchema({
+        host: pdmConfig.host,
+        port: pdmConfig.port || 1433,
+        user: pdmConfig.user,
+        password: pdmConfig.password,
+        database: pdmConfig.database,
+      });
+
+      if (result.success) {
+        setPdmDiscoveredExtensions(result.file_extensions);
+        setPdmDiscoveredVariables(result.variable_names);
+        setPdmDocumentCount(result.document_count);
+
+        // Auto-select common SolidWorks extensions if not already configured
+        if (!pdmConfig.file_extensions || pdmConfig.file_extensions.length === 0) {
+          const defaultExts = ['.SLDPRT', '.SLDASM', '.SLDDRW'];
+          const availableDefaults = defaultExts.filter(ext =>
+            result.file_extensions.some(e => e.toUpperCase() === ext.toUpperCase())
+          );
+          if (availableDefaults.length > 0) {
+            setPdmConfig(prev => ({ ...prev, file_extensions: availableDefaults }));
+          }
+        }
+      } else {
+        setPdmSchemaDiscoveryError(result.error || 'Failed to discover schema');
+      }
+    } catch (err) {
+      setPdmSchemaDiscoveryError(err instanceof Error ? err.message : 'Discovery failed');
+    } finally {
+      setPdmDiscoveringSchema(false);
+    }
+  };
+
+  // Set the ref so useEffect can call this function
+  handleDiscoverPdmSchemaRef.current = handleDiscoverPdmSchema;
+
+  const renderPdmConnection = () => {
+    return (
+      <div className="wizard-content">
+        <p className="wizard-help">
+          Connect to a SolidWorks PDM database to index engineering documents.
+        </p>
+
+        <div className="connection-panel">
+          <h4 style={{ marginTop: 0, marginBottom: '0.75rem' }}>Database Connection</h4>
+          <div className="form-row">
+            <div className="form-group">
+              <label>Host</label>
+              <input
+                type="text"
+                value={pdmConfig.host || ''}
+                onChange={(e) => {
+                  setPdmConfig({ ...pdmConfig, host: e.target.value });
+                  setPdmDiscoveredDatabases([]);
+                }}
+                placeholder="server.database.windows.net"
+              />
+            </div>
+            <div className="form-group form-group-small">
+              <label>Port</label>
+              <input
+                type="number"
+                value={pdmConfig.port || 1433}
+                onChange={(e) => setPdmConfig({ ...pdmConfig, port: parseInt(e.target.value) || 1433 })}
+                min={1}
+                max={65535}
+              />
+            </div>
+          </div>
+          <div className="form-row">
+            <div className="form-group">
+              <label>User</label>
+              <input
+                type="text"
+                value={pdmConfig.user || ''}
+                onChange={(e) => {
+                  setPdmConfig({ ...pdmConfig, user: e.target.value });
+                  setPdmDiscoveredDatabases([]);
+                }}
+                placeholder="sa or domain\\user"
+              />
+            </div>
+            <div className="form-group">
+              <label>Password</label>
+              <input
+                type="password"
+                value={pdmConfig.password || ''}
+                onChange={(e) => {
+                  setPdmConfig({ ...pdmConfig, password: e.target.value });
+                  setPdmDiscoveredDatabases([]);
+                }}
+                placeholder="********"
+              />
+            </div>
+          </div>
+
+          {/* Database discovery and selection */}
+          <div className="form-group">
+            <label>Database</label>
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
+              {pdmDiscoveredDatabases.length > 0 ? (
+                <select
+                  value={pdmConfig.database || ''}
+                  onChange={(e) => setPdmConfig({ ...pdmConfig, database: e.target.value })}
+                  style={{ flex: 1 }}
+                >
+                  <option value="">-- Select Database --</option>
+                  {pdmDiscoveredDatabases.map(db => (
+                    <option key={db} value={db}>{db}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={pdmConfig.database || ''}
+                  onChange={(e) => setPdmConfig({ ...pdmConfig, database: e.target.value })}
+                  placeholder="PDM_Vault"
+                  style={{ flex: 1 }}
+                />
+              )}
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={handleDiscoverPdmDatabases}
+                disabled={pdmDiscoveringDatabases || !pdmConfig.host || !pdmConfig.user || !pdmConfig.password}
+                style={{ whiteSpace: 'nowrap', padding: '12px 16px' }}
+              >
+                {pdmDiscoveringDatabases ? 'Discovering...' : 'Discover'}
+              </button>
+            </div>
+            {pdmDatabaseDiscoveryError && (
+              <p className="field-help" style={{ color: 'var(--error-color)' }}>
+                {pdmDatabaseDiscoveryError}
+              </p>
+            )}
+            {pdmDiscoveredDatabases.length > 0 && (
+              <p className="field-help">
+                Found {pdmDiscoveredDatabases.length} database(s).
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderPdmFiltering = () => {
+    return (
+      <div className="wizard-content">
+        <p className="wizard-help">
+          Configure which documents and metadata to index from the PDM vault.
+          {pdmDocumentCount > 0 && (
+            <span style={{ marginLeft: '0.5rem', fontWeight: 500 }}>
+              (Found {pdmDocumentCount.toLocaleString()} total documents)
+            </span>
+          )}
+        </p>
+
+        {pdmDiscoveringSchema ? (
+          <div className="discovering-panel" style={{ padding: '2rem', textAlign: 'center' }}>
+            <p>Discovering PDM schema...</p>
+          </div>
+        ) : pdmSchemaDiscoveryError ? (
+          <div className="error-panel" style={{ padding: '1rem', backgroundColor: 'rgba(255,0,0,0.1)', borderRadius: '4px', marginBottom: '1rem' }}>
+            <p style={{ color: 'var(--error-color)', margin: 0 }}>{pdmSchemaDiscoveryError}</p>
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={handleDiscoverPdmSchema}
+              style={{ marginTop: '0.5rem' }}
+            >
+              Retry Discovery
+            </button>
+          </div>
+        ) : (
+          <>
+            {/* File Extensions Section */}
+            <div className="pdm-section" style={{ marginBottom: '1.5rem' }}>
+              <h4 style={{ marginTop: 0, marginBottom: '0.75rem' }}>File Extensions</h4>
+              <p className="field-help" style={{ marginBottom: '0.75rem' }}>
+                PDM indexing captures metadata (filenames, variables, BOM) - not file contents.
+                PDM vaults typically store many file types beyond SolidWorks files.
+              </p>
+
+              <div style={{ marginBottom: '0.75rem' }}>
+                <label className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={(pdmConfig.file_extensions || []).length > 0}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        // Enable filtering - default to SolidWorks CAD files only
+                        setPdmConfig({ ...pdmConfig, file_extensions: ['.SLDPRT', '.SLDASM', '.SLDDRW'] });
+                      } else {
+                        // Disable filtering - index all file types
+                        setPdmConfig({ ...pdmConfig, file_extensions: [] });
+                      }
+                    }}
+                    style={{ width: 'auto', margin: 0 }}
+                  />
+                  <span>Limit to specific extensions</span>
+                  <span className="field-help" style={{ marginLeft: '0.5rem', fontStyle: 'italic' }}>
+                    {(pdmConfig.file_extensions || []).length > 0
+                      ? `(${pdmConfig.file_extensions?.length} selected)`
+                      : '(indexing all file types)'}
+                  </span>
+                </label>
+              </div>
+
+              {(pdmConfig.file_extensions || []).length > 0 && pdmDiscoveredExtensions.length > 0 && (
+                <>
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.5rem', flexWrap: 'wrap' }}>
+                    <input
+                      type="text"
+                      value={pdmExtensionFilter}
+                      onChange={(e) => setPdmExtensionFilter(e.target.value)}
+                      placeholder="Filter extensions..."
+                      style={{ maxWidth: '200px', margin: 0, padding: '8px 12px' }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => setPdmConfig({ ...pdmConfig, file_extensions: [...pdmDiscoveredExtensions] })}
+                      style={{ padding: '8px 16px' }}
+                    >
+                      Select All
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => setPdmConfig({ ...pdmConfig, file_extensions: [] })}
+                      style={{ padding: '8px 16px' }}
+                    >
+                      Select None
+                    </button>
+                  </div>
+                  <div className="extension-grid" style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: '0.5rem',
+                    maxHeight: '200px',
+                    overflow: 'auto',
+                    padding: '0.5rem',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '4px',
+                    backgroundColor: 'var(--bg-secondary)'
+                  }}>
+                    {pdmDiscoveredExtensions
+                      .filter(ext => ext.toLowerCase().includes(pdmExtensionFilter.toLowerCase()))
+                      .map(ext => {
+                        const isSelected = (pdmConfig.file_extensions || []).some(
+                          e => e.toUpperCase() === ext.toUpperCase()
+                        );
+                        return (
+                          <label
+                            key={ext}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '0.5rem',
+                              cursor: 'pointer',
+                              padding: '0.25rem 0.5rem',
+                              borderRadius: '4px',
+                              backgroundColor: isSelected ? 'var(--primary-color-light)' : 'var(--bg-primary)',
+                              border: '1px solid var(--border-color)',
+                              whiteSpace: 'nowrap'
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={(e) => {
+                                const current = pdmConfig.file_extensions || [];
+                                if (e.target.checked) {
+                                  setPdmConfig({ ...pdmConfig, file_extensions: [...current, ext] });
+                                } else {
+                                  setPdmConfig({
+                                    ...pdmConfig,
+                                    file_extensions: current.filter(x => x.toUpperCase() !== ext.toUpperCase())
+                                  });
+                                }
+                              }}
+                              style={{ width: 'auto', margin: 0 }}
+                            />
+                            <span style={{ fontSize: '0.9rem' }}>{ext}</span>
+                          </label>
+                        );
+                      })}
+                  </div>
+                </>
+              )}
+
+              <div style={{ marginTop: '0.75rem' }}>
+                <label className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={pdmConfig.exclude_deleted ?? true}
+                    onChange={(e) => setPdmConfig({ ...pdmConfig, exclude_deleted: e.target.checked })}
+                    style={{ width: 'auto', margin: 0 }}
+                  />
+                  <span>Exclude deleted documents</span>
+                </label>
+              </div>
+            </div>
+
+            {/* Variable Names Section */}
+            <div className="pdm-section" style={{ marginBottom: '1.5rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
+              <h4 style={{ marginTop: 0, marginBottom: '0.75rem' }}>PDM Variables</h4>
+              <p className="field-help" style={{ marginBottom: '0.75rem' }}>
+                Variables are custom properties stored in PDM for each document.
+              </p>
+
+              <div style={{ marginBottom: '0.75rem' }}>
+                <label className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={(pdmConfig.variable_names || []).length > 0}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        // Enable filtering with common PDM variables as default
+                        setPdmConfig({ ...pdmConfig, variable_names: ['Description', 'Revision', 'Material', 'Status'] });
+                      } else {
+                        // Disable filtering - extract all variables
+                        setPdmConfig({ ...pdmConfig, variable_names: [] });
+                      }
+                    }}
+                    style={{ width: 'auto', margin: 0 }}
+                  />
+                  <span>Limit to specific variables</span>
+                  <span className="field-help" style={{ marginLeft: '0.5rem', fontStyle: 'italic' }}>
+                    {(pdmConfig.variable_names || []).length > 0
+                      ? `(${pdmConfig.variable_names?.length} selected)`
+                      : '(extracting all variables)'}
+                  </span>
+                </label>
+              </div>
+
+              {(pdmConfig.variable_names || []).length > 0 && pdmDiscoveredVariables.length > 0 && (
+                <>
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.5rem', flexWrap: 'wrap' }}>
+                    <input
+                      type="text"
+                      value={pdmVariableFilter}
+                      onChange={(e) => setPdmVariableFilter(e.target.value)}
+                      placeholder="Filter variables..."
+                      style={{ maxWidth: '200px', margin: 0, padding: '8px 12px' }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => setPdmConfig({ ...pdmConfig, variable_names: [...pdmDiscoveredVariables] })}
+                      style={{ padding: '8px 16px' }}
+                    >
+                      Select All
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => setPdmConfig({ ...pdmConfig, variable_names: [] })}
+                      style={{ padding: '8px 16px' }}
+                    >
+                      Select None
+                    </button>
+                  </div>
+                  <div className="variable-grid" style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: '0.5rem',
+                    maxHeight: '250px',
+                    overflow: 'auto',
+                    padding: '0.5rem',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '4px',
+                    backgroundColor: 'var(--bg-secondary)'
+                  }}>
+                    {pdmDiscoveredVariables
+                      .filter(varName => varName.toLowerCase().includes(pdmVariableFilter.toLowerCase()))
+                      .map(varName => {
+                        const isSelected = (pdmConfig.variable_names || []).includes(varName);
+                        return (
+                          <label
+                            key={varName}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '0.5rem',
+                              cursor: 'pointer',
+                              padding: '0.25rem 0.5rem',
+                              borderRadius: '4px',
+                              backgroundColor: isSelected ? 'var(--primary-color-light)' : 'var(--bg-primary)',
+                              border: '1px solid var(--border-color)',
+                              whiteSpace: 'nowrap'
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={(e) => {
+                                const current = pdmConfig.variable_names || [];
+                                if (e.target.checked) {
+                                  setPdmConfig({ ...pdmConfig, variable_names: [...current, varName] });
+                                } else {
+                                  setPdmConfig({
+                                    ...pdmConfig,
+                                    variable_names: current.filter(x => x !== varName)
+                                  });
+                                }
+                              }}
+                              style={{ width: 'auto', margin: 0 }}
+                            />
+                            <span style={{ fontSize: '0.9rem' }}>{varName}</span>
+                          </label>
+                        );
+                      })}
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Metadata Options Section */}
+            <div className="pdm-section" style={{ borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
+              <h4 style={{ marginTop: 0, marginBottom: '0.75rem' }}>Indexing Options</h4>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                <label className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={pdmConfig.include_bom ?? true}
+                    onChange={(e) => setPdmConfig({ ...pdmConfig, include_bom: e.target.checked })}
+                    style={{ width: 'auto', margin: 0 }}
+                  />
+                  <span>Include BOM (Bill of Materials)</span>
+                </label>
+
+                <label className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={pdmConfig.include_folder_path ?? true}
+                    onChange={(e) => setPdmConfig({ ...pdmConfig, include_folder_path: e.target.checked })}
+                    style={{ width: 'auto', margin: 0 }}
+                  />
+                  <span>Include folder path</span>
+                </label>
+
+                <label className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={pdmConfig.include_configurations ?? true}
+                    onChange={(e) => setPdmConfig({ ...pdmConfig, include_configurations: e.target.checked })}
+                    style={{ width: 'auto', margin: 0 }}
+                  />
+                  <span>Include configurations</span>
+                </label>
+              </div>
+
+              <div className="form-group" style={{ marginTop: '1rem' }}>
+                <label>Max Documents (optional)</label>
+                <input
+                  type="number"
+                  value={pdmConfig.max_documents ?? ''}
+                  onChange={(e) => setPdmConfig({
+                    ...pdmConfig,
+                    max_documents: e.target.value ? parseInt(e.target.value) : null
+                  })}
+                  placeholder="No limit"
+                  min={1}
+                  style={{ maxWidth: '150px' }}
+                />
+                <p className="field-help">
+                  Limit the number of documents to index. Useful for testing. Leave empty to index all matching documents.
+                </p>
+              </div>
+            </div>
+          </>
+        )}
       </div>
     );
   };
@@ -3023,6 +3614,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
           return renderSSHConnection();
         case 'filesystem_indexer':
           return renderFilesystemConnection();
+        case 'solidworks_pdm':
+          return renderPdmConnection();
       }
     })();
 
@@ -3223,6 +3816,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
         return renderTypeSelection();
       case 'connection':
         return renderConnectionConfig();
+      case 'pdm_filtering':
+        return renderPdmFiltering();
       case 'description':
         return renderDescription();
       case 'options':
@@ -3243,9 +3838,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
 
       {/* Progress indicator */}
       <div className="wizard-progress" ref={progressRef}>
-        {WIZARD_STEPS.map((step, index) => {
+        {wizardSteps.map((step, index) => {
           if (isEditing && step === 'type') return null;
-          const stepIndex = WIZARD_STEPS.indexOf(step);
+          const stepIndex = wizardSteps.indexOf(step);
           const isNavigable = canNavigateToStep(stepIndex);
           return (
             <button

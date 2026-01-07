@@ -5,26 +5,31 @@ PostgreSQL query tool for executing read-only SQL queries.
 import asyncio
 import re
 import subprocess
-from pydantic import BaseModel, Field
 
 from langchain_core.tools import StructuredTool
+from pydantic import BaseModel, Field
 
-from ragtime.core.logging import get_logger
-from ragtime.core.security import validate_sql_query, sanitize_output
 from ragtime.core.app_settings import get_app_settings
+from ragtime.core.logging import get_logger
+from ragtime.core.security import sanitize_output, validate_sql_query
 
 logger = get_logger(__name__)
 
 
 class PostgresQueryInput(BaseModel):
     """Input schema for PostgreSQL queries."""
+
     query: str = Field(
         description="SQL SELECT query to execute. Must be read-only and include LIMIT clause. "
-                    "For JSONB name fields, use (column->>'en_US') syntax."
+        "For JSONB name fields, use (column->>'en_US') syntax."
     )
     description: str = Field(
-        description="Brief description of what this query retrieves (for logging)"
+        default="",
+        description="Brief description of what this query retrieves (for logging)",
+        alias="reason",
     )
+
+    model_config = {"populate_by_name": True}
 
 
 async def execute_postgres_query(query: str, description: str) -> str:
@@ -66,10 +71,7 @@ async def execute_postgres_query(query: str, description: str) -> str:
         current_limit = int(limit_match.group(1))
         if current_limit > max_query_results:
             query = re.sub(
-                r"LIMIT\s+\d+",
-                f"LIMIT {max_query_results}",
-                query,
-                flags=re.IGNORECASE
+                r"LIMIT\s+\d+", f"LIMIT {max_query_results}", query, flags=re.IGNORECASE
             )
             logger.info(f"Reduced LIMIT from {current_limit} to {max_query_results}")
 
@@ -81,31 +83,37 @@ async def execute_postgres_query(query: str, description: str) -> str:
         # Direct connection using psql
         cmd = [
             "psql",
-            "-h", postgres_host,
-            "-p", str(postgres_port),
-            "-U", postgres_user,
-            "-d", postgres_db,
-            "-c", query
+            "-h",
+            postgres_host,
+            "-p",
+            str(postgres_port),
+            "-U",
+            postgres_user,
+            "-d",
+            postgres_db,
+            "-c",
+            query,
         ]
         env = {"PGPASSWORD": postgres_password}
     else:
         # Docker exec method
         cmd = [
-            "docker", "exec", "-i", postgres_container,
-            "bash", "-c",
-            f'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \'{escaped_query}\''
+            "docker",
+            "exec",
+            "-i",
+            postgres_container,
+            "bash",
+            "-c",
+            f'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \'{escaped_query}\'',
         ]
         env = None
 
     try:
         process = await asyncio.wait_for(
             asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=env
+                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
             ),
-            timeout=query_timeout
+            timeout=query_timeout,
         )
         stdout, stderr = await process.communicate()
 
@@ -117,7 +125,11 @@ async def execute_postgres_query(query: str, description: str) -> str:
             return f"Error executing query: {errors}"
 
         logger.debug(f"Result rows: {output.count(chr(10))}")
-        return sanitize_output(output) if output else "Query executed successfully (no results)"
+        return (
+            sanitize_output(output)
+            if output
+            else "Query executed successfully (no results)"
+        )
 
     except asyncio.TimeoutError:
         logger.error(f"PostgreSQL query timed out after {query_timeout}s")
@@ -148,5 +160,5 @@ IMPORTANT:
 
 Example: SELECT id, name, amount_total FROM sale_order WHERE state = 'sale' LIMIT 20;
 """,
-    args_schema=PostgresQueryInput
+    args_schema=PostgresQueryInput,
 )

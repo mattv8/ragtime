@@ -1,0 +1,1190 @@
+"""
+SolidWorks PDM Indexer Service - Creates and manages pgvector-based PDM indexes.
+
+This service handles:
+- Connecting to PDM SQL Server database
+- Extracting document metadata and variables
+- Building structured text for each document
+- Storing embeddings in PostgreSQL using pgvector
+- Progress tracking and job management
+- Incremental indexing (skip unchanged documents based on metadata hash)
+
+PDM Database Structure:
+- Documents: Main document table (DocumentID, Filename, etc.)
+- DocumentsInProjects: Junction table linking documents to folders (ProjectID, DocumentID)
+- VariableValue: Variable values per document/configuration
+- Variable: Variable name definitions (ID -> Name mapping)
+- Projects: Folder/project information (ProjectID, Name, Path, etc.)
+- BomSheets: BOM relationships
+"""
+
+import asyncio
+import json
+import uuid
+from datetime import datetime, timezone
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple, cast
+
+from ragtime.core.database import get_db
+from ragtime.core.logging import get_logger
+from ragtime.indexer.models import (
+    PdmDocumentInfo,
+    PdmIndexJob,
+    PdmIndexJobResponse,
+    PdmIndexStatus,
+    SolidworksPdmConnectionConfig,
+)
+from ragtime.indexer.repository import repository
+from ragtime.indexer.vector_utils import (
+    ensure_embedding_column,
+    ensure_pgvector_extension,
+    get_embeddings_model,
+)
+
+# pylint: disable=not-callable
+
+logger = get_logger(__name__)
+
+
+class PdmIndexerService:
+    """Service for creating and managing SolidWorks PDM indexes with pgvector."""
+
+    def __init__(self):
+        self._active_jobs: Dict[str, PdmIndexJob] = {}
+        self._cancellation_flags: Dict[str, bool] = {}  # job_id -> should_cancel
+
+    # =========================================================================
+    # Public API
+    # =========================================================================
+
+    async def trigger_index(
+        self,
+        tool_config_id: str,
+        connection_config: dict,
+        full_reindex: bool = False,
+        tool_name: str | None = None,
+    ) -> PdmIndexJob:
+        """
+        Trigger PDM metadata indexing for a tool config.
+
+        Args:
+            tool_config_id: The tool configuration ID
+            connection_config: PDM connection configuration
+            full_reindex: If True, re-index all documents regardless of hash
+            tool_name: Safe tool name for display (if None, uses tool_config_id)
+
+        Returns:
+            The created PdmIndexJob
+        """
+        # Check for existing active job
+        existing_job = await self.get_active_job(tool_config_id)
+        if existing_job and existing_job.status in (
+            PdmIndexStatus.PENDING,
+            PdmIndexStatus.INDEXING,
+        ):
+            logger.info(f"PDM index job already running for tool {tool_config_id}")
+            return existing_job
+
+        # Create job
+        job_id = str(uuid.uuid4())
+        safe_name = tool_name or tool_config_id
+        index_name = f"pdm_{safe_name}"
+
+        job = PdmIndexJob(
+            id=job_id,
+            tool_config_id=tool_config_id,
+            status=PdmIndexStatus.PENDING,
+            index_name=index_name,
+            created_at=datetime.now(timezone.utc),
+        )
+
+        # Store job in database
+        await self._create_job(job)
+        self._active_jobs[job_id] = job
+        self._cancellation_flags[job_id] = False
+
+        # Start background processing
+        asyncio.create_task(self._process_index(job, connection_config, full_reindex))
+
+        logger.info(f"Started PDM indexing job {job_id} for tool {tool_config_id}")
+        return job
+
+    async def get_job_status(self, job_id: str) -> Optional[PdmIndexJobResponse]:
+        """Get the current status of a PDM indexing job."""
+        # Check in-memory first
+        if job_id in self._active_jobs:
+            job = self._active_jobs[job_id]
+            return PdmIndexJobResponse(
+                id=job.id,
+                tool_config_id=job.tool_config_id,
+                status=job.status,
+                index_name=job.index_name,
+                progress_percent=job.progress_percent,
+                total_documents=job.total_documents,
+                processed_documents=job.processed_documents,
+                skipped_documents=job.skipped_documents,
+                total_chunks=job.total_chunks,
+                processed_chunks=job.processed_chunks,
+                error_message=job.error_message,
+                cancel_requested=job.cancel_requested,
+                created_at=job.created_at,
+                started_at=job.started_at,
+                completed_at=job.completed_at,
+            )
+
+        # Fall back to database
+        return await self._get_job_from_db(job_id)
+
+    async def get_active_job(self, tool_config_id: str) -> Optional[PdmIndexJob]:
+        """Get any active job for a tool config."""
+        # Check in-memory first
+        for job in self._active_jobs.values():
+            if job.tool_config_id == tool_config_id:
+                return job
+
+        # Check database for pending/indexing jobs
+        try:
+            db: Any = await get_db()
+            prisma_job = await db.pdmindexjob.find_first(
+                where={
+                    "toolConfigId": tool_config_id,
+                    "status": {"in": ["pending", "indexing"]},
+                },
+                order={"createdAt": "desc"},
+            )
+            if prisma_job:
+                return self._prisma_job_to_model(prisma_job)
+        except Exception as e:
+            logger.warning(f"Error checking for active PDM job: {e}")
+
+        return None
+
+    async def get_latest_job(
+        self, tool_config_id: str
+    ) -> Optional[PdmIndexJobResponse]:
+        """Get the most recent job for a tool config."""
+        try:
+            db: Any = await get_db()
+            prisma_job = await db.pdmindexjob.find_first(
+                where={"toolConfigId": tool_config_id},
+                order={"createdAt": "desc"},
+            )
+            if prisma_job:
+                job = self._prisma_job_to_model(prisma_job)
+                return PdmIndexJobResponse(
+                    id=job.id,
+                    tool_config_id=job.tool_config_id,
+                    status=job.status,
+                    index_name=job.index_name,
+                    progress_percent=job.progress_percent,
+                    total_documents=job.total_documents,
+                    processed_documents=job.processed_documents,
+                    skipped_documents=job.skipped_documents,
+                    total_chunks=job.total_chunks,
+                    processed_chunks=job.processed_chunks,
+                    error_message=job.error_message,
+                    cancel_requested=False,  # Not tracked in DB
+                    created_at=job.created_at,
+                    started_at=job.started_at,
+                    completed_at=job.completed_at,
+                )
+        except Exception as e:
+            logger.warning(f"Error getting latest PDM job: {e}")
+
+        return None
+
+    async def cancel_job(self, job_id: str) -> bool:
+        """Request cancellation of an active job."""
+        if job_id in self._cancellation_flags:
+            self._cancellation_flags[job_id] = True
+            if job_id in self._active_jobs:
+                self._active_jobs[job_id].cancel_requested = True
+            logger.info(f"Cancellation requested for PDM job {job_id}")
+            return True
+        return False
+
+    async def list_all_jobs(self, limit: int = 50) -> List[PdmIndexJobResponse]:
+        """
+        List all PDM indexing jobs across all tools.
+
+        Args:
+            limit: Maximum number of jobs to return
+
+        Returns:
+            List of PDM job responses, sorted by created_at desc
+        """
+        jobs: List[PdmIndexJobResponse] = []
+
+        try:
+            db: Any = await get_db()
+
+            # Get jobs from database
+            db_jobs = await db.pdmindexjob.find_many(
+                take=limit,
+                order={"createdAt": "desc"},
+            )
+
+            for db_job in db_jobs:
+                # Check if this job is still active in memory (fresher data)
+                if db_job.id in self._active_jobs:
+                    job = self._active_jobs[db_job.id]
+                    jobs.append(
+                        PdmIndexJobResponse(
+                            id=job.id,
+                            tool_config_id=job.tool_config_id,
+                            status=job.status,
+                            index_name=job.index_name,
+                            progress_percent=job.progress_percent,
+                            total_documents=job.total_documents,
+                            processed_documents=job.processed_documents,
+                            skipped_documents=job.skipped_documents,
+                            total_chunks=job.total_chunks,
+                            processed_chunks=job.processed_chunks,
+                            error_message=job.error_message,
+                            cancel_requested=job.cancel_requested,
+                            created_at=job.created_at,
+                            started_at=job.started_at,
+                            completed_at=job.completed_at,
+                        )
+                    )
+                else:
+                    # Use database data
+                    job = self._prisma_job_to_model(db_job)
+                    jobs.append(
+                        PdmIndexJobResponse(
+                            id=job.id,
+                            tool_config_id=job.tool_config_id,
+                            status=job.status,
+                            index_name=job.index_name,
+                            progress_percent=job.progress_percent,
+                            total_documents=job.total_documents,
+                            processed_documents=job.processed_documents,
+                            skipped_documents=job.skipped_documents,
+                            total_chunks=job.total_chunks,
+                            processed_chunks=job.processed_chunks,
+                            error_message=job.error_message,
+                            cancel_requested=False,
+                            created_at=job.created_at,
+                            started_at=job.started_at,
+                            completed_at=job.completed_at,
+                        )
+                    )
+
+        except Exception as e:
+            logger.warning(f"Error listing PDM jobs: {e}")
+
+        return jobs
+
+    async def retry_job(self, job_id: str) -> Optional[PdmIndexJob]:
+        """Retry a failed or cancelled PDM indexing job."""
+        try:
+            db: Any = await get_db()
+
+            # Get the original job
+            db_job = await db.pdmindexjob.find_unique(where={"id": job_id})
+            if not db_job:
+                logger.warning(f"Cannot retry: job {job_id} not found")
+                return None
+
+            job_status = str(db_job.status)
+
+            # Only allow retry for failed or cancelled jobs
+            if job_status not in ("failed", "cancelled"):
+                logger.warning(f"Cannot retry: job {job_id} has status {job_status}")
+                return None
+
+            # Get the tool config to get connection details
+            tool_config = await repository.get_tool_config(db_job.toolConfigId)
+            if not tool_config or not tool_config.id:
+                logger.warning(
+                    f"Cannot retry: tool config {db_job.toolConfigId} not found"
+                )
+                return None
+
+            # Trigger a new indexing job
+            return await self.trigger_index(
+                tool_config_id=tool_config.id,
+                connection_config=tool_config.connection_config or {},
+                full_reindex=True,  # Force full reindex on retry
+            )
+
+        except Exception as e:
+            logger.error(f"Error retrying PDM job {job_id}: {e}")
+            return None
+
+    async def delete_index(self, tool_config_id: str) -> Tuple[bool, str]:
+        """Delete all PDM embeddings for a tool config."""
+        try:
+            db: Any = await get_db()
+
+            # Find index name (try both conventions)
+            # First try tool name pattern
+            tool_config = await repository.get_tool_config(tool_config_id)
+            index_names = [f"pdm_{tool_config_id}"]
+            if tool_config:
+                index_names.insert(0, f"pdm_{tool_config.name}")
+
+            deleted_embeddings = 0
+            deleted_metadata = 0
+
+            for index_name in index_names:
+                # Delete embeddings
+                result = await db.execute_raw(
+                    f"DELETE FROM pdm_embeddings WHERE index_name = '{index_name}'"
+                )
+                if isinstance(result, int):
+                    deleted_embeddings += result
+
+                # Delete document metadata
+                result = await db.execute_raw(
+                    f"DELETE FROM pdm_document_metadata WHERE index_name = '{index_name}'"
+                )
+                if isinstance(result, int):
+                    deleted_metadata += result
+
+            # Delete jobs
+            await db.pdmindexjob.delete_many(where={"toolConfigId": tool_config_id})
+
+            logger.info(
+                f"Deleted PDM index for tool {tool_config_id}: "
+                f"{deleted_embeddings} embeddings, {deleted_metadata} metadata records"
+            )
+            return True, f"Deleted {deleted_embeddings} PDM embeddings"
+
+        except Exception as e:
+            logger.error(f"Error deleting PDM index: {e}")
+            return False, str(e)
+
+    async def get_embedding_count(
+        self, tool_config_id: str, tool_name: str | None = None
+    ) -> int:
+        """Get the number of PDM embeddings for a tool."""
+        names_to_check = []
+        if tool_name:
+            names_to_check.append(f"pdm_{tool_name}")
+        names_to_check.append(f"pdm_{tool_config_id}")
+
+        try:
+            db: Any = await get_db()
+            for index_name in names_to_check:
+                result = await db.query_raw(
+                    f"SELECT COUNT(*) as count FROM pdm_embeddings "
+                    f"WHERE index_name = '{index_name}'"
+                )
+                if result and int(result[0].get("count", 0)) > 0:
+                    return int(result[0].get("count", 0))
+        except Exception as e:
+            logger.warning(f"Error getting PDM embedding count: {e}")
+        return 0
+
+    async def get_document_count(
+        self, tool_config_id: str, tool_name: str | None = None
+    ) -> int:
+        """Get the number of indexed PDM documents for a tool."""
+        names_to_check = []
+        if tool_name:
+            names_to_check.append(f"pdm_{tool_name}")
+        names_to_check.append(f"pdm_{tool_config_id}")
+
+        try:
+            db: Any = await get_db()
+            for index_name in names_to_check:
+                result = await db.query_raw(
+                    f"SELECT COUNT(*) as count FROM pdm_document_metadata "
+                    f"WHERE index_name = '{index_name}'"
+                )
+                if result and int(result[0].get("count", 0)) > 0:
+                    return int(result[0].get("count", 0))
+        except Exception as e:
+            logger.warning(f"Error getting PDM document count: {e}")
+        return 0
+
+    # =========================================================================
+    # PDM Data Extraction
+    # =========================================================================
+
+    async def extract_documents(
+        self,
+        config: SolidworksPdmConnectionConfig,
+        max_documents: int | None = None,
+    ) -> AsyncIterator[PdmDocumentInfo]:
+        """Extract documents with metadata from PDM database."""
+        try:
+            import pymssql  # type: ignore[import-untyped]
+
+            pymssql = cast(Any, pymssql)
+            connect_fn = cast(Any, getattr(pymssql, "connect", None))
+            if not callable(connect_fn):
+                raise RuntimeError("pymssql.connect is not available")
+            connect_fn = cast(Callable[..., Any], connect_fn)
+        except ImportError as exc:
+            raise RuntimeError("pymssql not installed for PDM database access") from exc
+
+        connect_fn_callable: Callable[..., Any] = cast(Callable[..., Any], connect_fn)
+
+        # Get variable IDs for the configured variable names
+        variable_map = await self._get_variable_map(config)
+
+        def run_extraction() -> List[PdmDocumentInfo]:
+            conn: Any = cast(Callable[..., Any], connect_fn_callable)(
+                server=config.host,
+                port=str(config.port or 1433),
+                user=config.user,
+                password=config.password,
+                database=config.database,
+                login_timeout=30,
+                timeout=300,  # Longer timeout for large queries
+            )
+            cursor: Any = conn.cursor(as_dict=True)
+
+            # Build file extension filter
+            # Extensions may already include the dot (e.g., '.SLDPRT'), so use them as-is
+            ext_filter = " OR ".join(
+                [f"d.Filename LIKE '%{ext}'" for ext in (config.file_extensions or [])]
+            )
+            if not ext_filter:
+                ext_filter = "1=1"  # No filter
+
+            # Query documents
+            deleted_filter = "AND d.Deleted = 0" if config.exclude_deleted else ""
+            dip_deleted_filter = (
+                "AND (dip.Deleted IS NULL OR dip.Deleted = 0)"
+                if config.exclude_deleted
+                else ""
+            )
+            limit_clause = f"TOP {max_documents}" if max_documents else ""
+
+            cursor.execute(
+                f"""
+                SELECT {limit_clause}
+                    d.DocumentID,
+                    d.Filename,
+                    d.LatestRevisionNo,
+                    p.Path AS FolderPath
+                FROM Documents d
+                LEFT JOIN DocumentsInProjects dip ON d.DocumentID = dip.DocumentID
+                    {dip_deleted_filter}
+                LEFT JOIN Projects p ON dip.ProjectID = p.ProjectID
+                WHERE ({ext_filter})
+                    {deleted_filter}
+                ORDER BY d.DocumentID
+            """
+            )
+
+            documents = []
+            for row in cursor.fetchall():
+                doc_id = row["DocumentID"]
+                filename = row["Filename"]
+                revision = row["LatestRevisionNo"] or 1
+                folder_path = row["FolderPath"]
+
+                # Determine document type from extension
+                doc_type = "UNKNOWN"
+                if "." in filename:
+                    doc_type = filename.rsplit(".", 1)[-1].upper()
+
+                # Get variables for this document
+                # Get variables from all configurations, preferring latest revision
+                variables = {}
+                if variable_map:
+                    var_ids = list(variable_map.keys())
+                    var_ids_str = ",".join(str(v) for v in var_ids)
+                    cursor.execute(
+                        f"""
+                        SELECT DISTINCT vv.VariableID, vv.ValueText
+                        FROM VariableValue vv
+                        WHERE vv.DocumentID = {doc_id}
+                            AND vv.VariableID IN ({var_ids_str})
+                            AND vv.RevisionNo = {revision}
+                            AND vv.ValueText IS NOT NULL
+                            AND vv.ValueText != ''
+                    """
+                    )
+                    for var_row in cursor.fetchall():
+                        var_id = var_row["VariableID"]
+                        var_name = variable_map.get(var_id)
+                        if var_name and var_row["ValueText"]:
+                            variables[var_name] = var_row["ValueText"]
+
+                # Get configurations if enabled
+                configurations = []
+                if config.include_configurations:
+                    cursor.execute(
+                        f"""
+                        SELECT DISTINCT
+                            dc.ConfigurationName,
+                            vv_pn.ValueText AS PartNumber,
+                            vv_desc.ValueText AS Description
+                        FROM VariableValue vv
+                        INNER JOIN DocumentConfiguration dc
+                            ON vv.ConfigurationID = dc.ConfigurationID
+                        LEFT JOIN VariableValue vv_pn
+                            ON vv.DocumentID = vv_pn.DocumentID
+                            AND vv.ConfigurationID = vv_pn.ConfigurationID
+                            AND vv.RevisionNo = vv_pn.RevisionNo
+                            AND vv_pn.VariableID = 122  -- Part Number
+                        LEFT JOIN VariableValue vv_desc
+                            ON vv.DocumentID = vv_desc.DocumentID
+                            AND vv.ConfigurationID = vv_desc.ConfigurationID
+                            AND vv.RevisionNo = vv_desc.RevisionNo
+                            AND vv_desc.VariableID = 58  -- Description
+                        WHERE vv.DocumentID = {doc_id}
+                            AND vv.RevisionNo = {revision}
+                    """
+                    )
+                    for cfg_row in cursor.fetchall():
+                        config_name = cfg_row["ConfigurationName"]
+                        if config_name:
+                            configurations.append(
+                                {
+                                    "name": config_name,
+                                    "part_number": cfg_row["PartNumber"] or "",
+                                    "description": cfg_row["Description"] or "",
+                                }
+                            )
+
+                # Get BOM components if assembly and enabled
+                bom_components = []
+                if config.include_bom and doc_type == "SLDASM":
+                    cursor.execute(
+                        f"""
+                        SELECT TOP 100
+                            bsr.RowDocumentID AS ChildFileID,
+                            d2.Filename AS ChildFilename,
+                            dc.ConfigurationName AS ChildConfigName
+                        FROM BomSheets bs
+                        INNER JOIN BomSheetRow bsr ON bs.BomDocumentID = bsr.BomDocumentID
+                        INNER JOIN Documents d2 ON bsr.RowDocumentID = d2.DocumentID
+                        LEFT JOIN DocumentConfiguration dc ON bsr.RowConfigurationID = dc.ConfigurationID
+                        WHERE bs.SourceDocumentID = {doc_id}
+                    """
+                    )
+                    for bom_row in cursor.fetchall():
+                        bom_components.append(
+                            {
+                                "document_id": bom_row["ChildFileID"],
+                                "filename": bom_row["ChildFilename"],
+                                "configuration": bom_row["ChildConfigName"] or "",
+                                "quantity": 1,  # PDM doesn't store quantity in BomSheetRow
+                            }
+                        )
+
+                doc_info = PdmDocumentInfo(
+                    document_id=doc_id,
+                    filename=filename,
+                    document_type=doc_type,
+                    folder_path=folder_path if config.include_folder_path else None,
+                    revision_no=revision,
+                    part_number=variables.get("Part Number"),
+                    description=variables.get("Description"),
+                    material=variables.get("Material"),
+                    author=variables.get("Author"),
+                    stocked_status=variables.get("Stocked Status"),
+                    variables=variables,
+                    configurations=configurations,
+                    bom_components=bom_components,
+                )
+                documents.append(doc_info)
+
+            conn.close()
+            return documents
+
+        # Run in thread to avoid blocking
+        documents = await asyncio.to_thread(run_extraction)
+        for doc in documents:
+            yield doc
+
+    async def _get_variable_map(
+        self, config: SolidworksPdmConnectionConfig
+    ) -> Dict[int, str]:
+        """Get a mapping of variable ID to variable name."""
+        try:
+            import pymssql  # type: ignore[import-untyped]
+
+            pymssql = cast(Any, pymssql)
+            connect_fn = cast(Any, getattr(pymssql, "connect", None))
+            if not callable(connect_fn):
+                return {}
+            connect_fn = cast(Callable[..., Any], connect_fn)
+        except ImportError:
+            return {}
+
+        connect_fn_callable: Callable[..., Any] = cast(Callable[..., Any], connect_fn)
+
+        def run_query() -> Dict[int, str]:
+            conn: Any = cast(Callable[..., Any], connect_fn_callable)(
+                server=config.host,
+                port=str(config.port or 1433),
+                user=config.user,
+                password=config.password,
+                database=config.database,
+                login_timeout=30,
+                timeout=60,
+            )
+            cursor: Any = conn.cursor(as_dict=True)
+
+            # Get all variables and map name -> ID
+            cursor.execute("SELECT VariableID, VariableName FROM Variable")
+            var_map: Dict[int, str] = {}
+            rows = cursor.fetchall() or []
+            for row in rows:
+                var_name = row["VariableName"]
+                if var_name in (config.variable_names or []):
+                    var_map[row["VariableID"]] = var_name
+
+            conn.close()
+            return var_map
+
+        return await asyncio.to_thread(run_query)
+
+    # =========================================================================
+    # Background Processing
+    # =========================================================================
+
+    async def _process_index(
+        self,
+        job: PdmIndexJob,
+        connection_config: dict,
+        full_reindex: bool,
+    ):
+        """Main processing loop for PDM indexing."""
+        try:
+            # Update job status
+            job.status = PdmIndexStatus.INDEXING
+            job.started_at = datetime.now(timezone.utc)
+            await self._update_job(job)
+
+            # Ensure pgvector is available
+            if not await self._ensure_pgvector():
+                raise RuntimeError("pgvector extension not available")
+
+            # Get app settings for embedding configuration
+            from ragtime.core.app_settings import get_app_settings
+
+            app_settings = await get_app_settings()
+            settings = await repository.get_settings()
+
+            # Check for embedding configuration mismatch
+            current_config_hash = settings.get_embedding_config_hash()
+            tracking_needs_update = (
+                settings.embedding_dimension is None
+                or settings.embedding_config_hash is None
+            )
+
+            if settings.embedding_config_hash is not None:
+                if settings.embedding_config_hash != current_config_hash:
+                    if not full_reindex:
+                        job.status = PdmIndexStatus.FAILED
+                        job.completed_at = datetime.now(timezone.utc)
+                        job.error_message = (
+                            "Embedding configuration mismatch. "
+                            "A full re-index is required."
+                        )
+                        await self._update_job(job)
+                        logger.error(job.error_message)
+                        return
+                    tracking_needs_update = True
+
+            # Get embeddings provider
+            embeddings = await self._get_embeddings(app_settings)
+            if embeddings is None:
+                raise RuntimeError(
+                    "No embedding provider configured. Configure an embedding provider in Settings."
+                )
+
+            # Check embedding dimension and ensure column matches
+            test_embedding = await asyncio.to_thread(
+                embeddings.embed_documents, ["test"]
+            )
+            embedding_dim = len(test_embedding[0])
+            await self._ensure_embedding_column(embedding_dim)
+
+            # Update tracking if needed
+            if tracking_needs_update:
+                await repository.update_settings(
+                    {
+                        "embedding_dimension": embedding_dim,
+                        "embedding_config_hash": current_config_hash,
+                    }
+                )
+                logger.info(
+                    f"Updated embedding tracking: dim={embedding_dim}, hash={current_config_hash}"
+                )
+
+            # Parse connection config
+            config = SolidworksPdmConnectionConfig(**connection_config)
+
+            # Count documents first
+            doc_count = await self._count_documents(config)
+            job.total_documents = doc_count
+            await self._update_job(job)
+
+            if doc_count == 0:
+                job.status = PdmIndexStatus.COMPLETED
+                job.completed_at = datetime.now(timezone.utc)
+                job.error_message = "No documents found matching criteria"
+                await self._update_job(job)
+                return
+
+            # Check for cancellation
+            if self._cancellation_flags.get(job.id, False):
+                job.status = PdmIndexStatus.CANCELLED
+                job.completed_at = datetime.now(timezone.utc)
+                await self._update_job(job)
+                return
+
+            # If full reindex, clear existing embeddings
+            if full_reindex:
+                await self._clear_embeddings(job.index_name)
+
+            # Process documents in batches
+            batch_size = 50
+            batch = []
+            processed = 0
+            skipped = 0
+
+            async for doc in self.extract_documents(config, config.max_documents):
+                # Check for cancellation periodically
+                if self._cancellation_flags.get(job.id, False):
+                    job.status = PdmIndexStatus.CANCELLED
+                    job.completed_at = datetime.now(timezone.utc)
+                    await self._update_job(job)
+                    logger.info(f"PDM indexing cancelled for job {job.id}")
+                    return
+
+                # Check if document has changed
+                if not full_reindex:
+                    current_hash = doc.compute_metadata_hash()
+                    stored_hash = await self._get_stored_hash(
+                        job.index_name, doc.document_id
+                    )
+                    if stored_hash == current_hash:
+                        skipped += 1
+                        job.skipped_documents = skipped
+                        if (processed + skipped) % 100 == 0:
+                            await self._update_job(job)
+                        continue
+
+                batch.append(doc)
+
+                if len(batch) >= batch_size:
+                    await self._process_batch(job, batch, embeddings)
+                    processed += len(batch)
+                    job.processed_documents = processed
+                    await self._update_job(job)
+                    batch = []
+
+            # Process remaining batch
+            if batch:
+                await self._process_batch(job, batch, embeddings)
+                processed += len(batch)
+                job.processed_documents = processed
+
+            # Mark completed
+            job.status = PdmIndexStatus.COMPLETED
+            job.completed_at = datetime.now(timezone.utc)
+            await self._update_job(job)
+
+            # Clean up
+            if job.id in self._active_jobs:
+                del self._active_jobs[job.id]
+            if job.id in self._cancellation_flags:
+                del self._cancellation_flags[job.id]
+
+            logger.info(
+                f"PDM indexing completed for job {job.id}: "
+                f"{processed} processed, {skipped} skipped"
+            )
+
+        except Exception as e:
+            logger.exception(f"PDM indexing failed: {e}")
+            job.status = PdmIndexStatus.FAILED
+            job.completed_at = datetime.now(timezone.utc)
+            job.error_message = str(e)[:500]
+            await self._update_job(job)
+
+            if job.id in self._active_jobs:
+                del self._active_jobs[job.id]
+            if job.id in self._cancellation_flags:
+                del self._cancellation_flags[job.id]
+
+    async def _process_batch(
+        self,
+        job: PdmIndexJob,
+        documents: List[PdmDocumentInfo],
+        embeddings,
+    ):
+        """Process a batch of documents - generate embeddings and store."""
+        if not documents:
+            return
+
+        db: Any = await get_db()
+
+        # Generate text content for each document
+        texts = [doc.to_embedding_text() for doc in documents]
+
+        # Generate embeddings
+        doc_embeddings = await asyncio.to_thread(embeddings.embed_documents, texts)
+
+        # Store embeddings and metadata
+        for doc, text, embedding in zip(documents, texts, doc_embeddings):
+            metadata_hash = doc.compute_metadata_hash()
+
+            # Upsert embedding - use parameters for all user-provided values
+            embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
+            # Escape single quotes in strings for SQL
+            safe_filename = doc.filename.replace("'", "''")
+            safe_doc_type = doc.document_type.replace("'", "''")
+            await db.execute_raw(
+                f"""
+                INSERT INTO pdm_embeddings
+                    (id, index_name, document_id, document_type, content, part_number,
+                     filename, folder_path, metadata, embedding, created_at)
+                VALUES
+                    (gen_random_uuid(), '{job.index_name}', {doc.document_id},
+                     '{safe_doc_type}', $1, $2, '{safe_filename}',
+                     $3, $4::jsonb, '{embedding_str}'::vector, NOW())
+                ON CONFLICT (index_name, document_id)
+                DO UPDATE SET
+                    content = EXCLUDED.content,
+                    part_number = EXCLUDED.part_number,
+                    folder_path = EXCLUDED.folder_path,
+                    metadata = EXCLUDED.metadata,
+                    embedding = EXCLUDED.embedding,
+                    created_at = NOW()
+            """,
+                text,
+                doc.part_number or "",
+                doc.folder_path or "",
+                json.dumps(doc.variables),
+            )
+
+            # Upsert document metadata
+            await db.execute_raw(
+                f"""
+                INSERT INTO pdm_document_metadata
+                    (id, index_name, document_id, filename, revision_no, metadata_hash, last_indexed)
+                VALUES
+                    (gen_random_uuid(), '{job.index_name}', {doc.document_id},
+                     '{safe_filename}', {doc.revision_no}, '{metadata_hash}', NOW())
+                ON CONFLICT (index_name, document_id)
+                DO UPDATE SET
+                    filename = EXCLUDED.filename,
+                    revision_no = EXCLUDED.revision_no,
+                    metadata_hash = EXCLUDED.metadata_hash,
+                    last_indexed = NOW()
+            """
+            )
+
+        job.total_chunks += len(documents)
+        job.processed_chunks += len(documents)
+
+    async def _count_documents(self, config: SolidworksPdmConnectionConfig) -> int:
+        """Count documents matching the filter criteria."""
+        try:
+            import pymssql  # type: ignore[import-untyped]
+
+            pymssql = cast(Any, pymssql)
+            connect_fn = cast(Any, getattr(pymssql, "connect", None))
+            if not callable(connect_fn):
+                return 0
+            connect_fn = cast(Callable[..., Any], connect_fn)
+        except ImportError:
+            return 0
+
+        connect_fn_callable: Callable[..., Any] = cast(Callable[..., Any], connect_fn)
+
+        def run_count() -> int:
+            conn: Any = cast(Callable[..., Any], connect_fn_callable)(
+                server=config.host,
+                port=str(config.port or 1433),
+                user=config.user,
+                password=config.password,
+                database=config.database,
+                login_timeout=30,
+                timeout=60,
+            )
+            cursor: Any = conn.cursor()
+
+            # Extensions may already include the dot (e.g., '.SLDPRT'), so use them as-is
+            ext_filter = " OR ".join(
+                [f"Filename LIKE '%{ext}'" for ext in (config.file_extensions or [])]
+            )
+            if not ext_filter:
+                ext_filter = "1=1"
+
+            deleted_filter = "AND Deleted = 0" if config.exclude_deleted else ""
+
+            cursor.execute(
+                f"""
+                SELECT COUNT(*) FROM Documents
+                WHERE ({ext_filter}) {deleted_filter}
+            """
+            )
+            result = cursor.fetchone()
+            conn.close()
+            return result[0] if result else 0
+
+        return await asyncio.to_thread(run_count)
+
+    async def _get_stored_hash(
+        self, index_name: str, document_id: int
+    ) -> Optional[str]:
+        """Get the stored metadata hash for a document."""
+        try:
+            db: Any = await get_db()
+            result = await db.query_raw(
+                f"""
+                SELECT metadata_hash FROM pdm_document_metadata
+                WHERE index_name = '{index_name}' AND document_id = {document_id}
+            """
+            )
+            if result and result[0].get("metadata_hash"):
+                return result[0]["metadata_hash"]
+        except Exception:
+            pass
+        return None
+
+    async def _clear_embeddings(self, index_name: str):
+        """Clear all embeddings for an index."""
+        db: Any = await get_db()
+        await db.execute_raw(
+            f"DELETE FROM pdm_embeddings WHERE index_name = '{index_name}'"
+        )
+        await db.execute_raw(
+            f"DELETE FROM pdm_document_metadata WHERE index_name = '{index_name}'"
+        )
+        logger.info(f"Cleared PDM embeddings for index {index_name}")
+
+    # =========================================================================
+    # Database Helpers
+    # =========================================================================
+
+    async def _ensure_pgvector(self) -> bool:
+        return await ensure_pgvector_extension(logger_override=logger)
+
+    async def _ensure_embedding_column(self, dimension: int) -> bool:
+        """
+        Ensure the embedding column exists with the correct dimension.
+
+        If the column doesn't exist, add it. If it exists but dimension changed,
+        alter the column and rebuild the index.
+        """
+        return await ensure_embedding_column(
+            table_name="pdm_embeddings",
+            index_name="pdm_embeddings_embedding_idx",
+            embedding_dim=dimension,
+            logger_override=logger,
+        )
+
+    async def _get_embeddings(self, app_settings: dict):
+        """Get the configured embedding model based on app settings."""
+        return await get_embeddings_model(app_settings, logger_override=logger)
+
+    async def _create_job(self, job: PdmIndexJob):
+        """Create a new job in the database."""
+        db: Any = await get_db()
+        await db.pdmindexjob.create(
+            data={
+                "id": job.id,
+                "toolConfigId": job.tool_config_id,
+                "status": job.status.value,
+                "indexName": job.index_name,
+                "totalDocuments": job.total_documents,
+                "processedDocuments": job.processed_documents,
+                "skippedDocuments": job.skipped_documents,
+                "totalChunks": job.total_chunks,
+                "processedChunks": job.processed_chunks,
+                "errorMessage": job.error_message,
+                "createdAt": job.created_at,
+                "startedAt": job.started_at,
+                "completedAt": job.completed_at,
+            }
+        )
+
+    async def _update_job(self, job: PdmIndexJob):
+        """Update job status in database."""
+        db: Any = await get_db()
+        try:
+            await db.pdmindexjob.update(
+                where={"id": job.id},
+                data={
+                    "status": job.status.value,
+                    "totalDocuments": job.total_documents,
+                    "processedDocuments": job.processed_documents,
+                    "skippedDocuments": job.skipped_documents,
+                    "totalChunks": job.total_chunks,
+                    "processedChunks": job.processed_chunks,
+                    "errorMessage": job.error_message,
+                    "startedAt": job.started_at,
+                    "completedAt": job.completed_at,
+                },
+            )
+        except Exception as e:
+            logger.warning(f"Failed to update PDM job: {e}")
+
+    async def _get_job_from_db(self, job_id: str) -> Optional[PdmIndexJobResponse]:
+        """Get a job from the database."""
+        try:
+            db: Any = await get_db()
+            prisma_job = await db.pdmindexjob.find_unique(where={"id": job_id})
+            if prisma_job:
+                job = self._prisma_job_to_model(prisma_job)
+                return PdmIndexJobResponse(
+                    id=job.id,
+                    tool_config_id=job.tool_config_id,
+                    status=job.status,
+                    index_name=job.index_name,
+                    progress_percent=job.progress_percent,
+                    total_documents=job.total_documents,
+                    processed_documents=job.processed_documents,
+                    skipped_documents=job.skipped_documents,
+                    total_chunks=job.total_chunks,
+                    processed_chunks=job.processed_chunks,
+                    error_message=job.error_message,
+                    cancel_requested=False,
+                    created_at=job.created_at,
+                    started_at=job.started_at,
+                    completed_at=job.completed_at,
+                )
+        except Exception as e:
+            logger.warning(f"Error getting PDM job from DB: {e}")
+        return None
+
+    def _prisma_job_to_model(self, prisma_job) -> PdmIndexJob:
+        """Convert Prisma job to PdmIndexJob model."""
+        return PdmIndexJob(
+            id=prisma_job.id,
+            tool_config_id=prisma_job.toolConfigId,
+            status=PdmIndexStatus(str(prisma_job.status)),
+            index_name=prisma_job.indexName,
+            total_documents=prisma_job.totalDocuments or 0,
+            processed_documents=prisma_job.processedDocuments or 0,
+            skipped_documents=prisma_job.skippedDocuments or 0,
+            total_chunks=prisma_job.totalChunks or 0,
+            processed_chunks=prisma_job.processedChunks or 0,
+            error_message=prisma_job.errorMessage,
+            created_at=prisma_job.createdAt,
+            started_at=prisma_job.startedAt,
+            completed_at=prisma_job.completedAt,
+        )
+
+
+# Singleton instance
+pdm_indexer = PdmIndexerService()
+
+
+# =============================================================================
+# Search Functions
+# =============================================================================
+
+
+async def search_pdm_index(
+    query: str,
+    index_name: str,
+    document_type: str | None = None,
+    max_results: int = 10,
+) -> str:
+    """
+    Search PDM embeddings for relevant document information.
+
+    Args:
+        query: Natural language query about PDM documents (parts, assemblies, etc.)
+        index_name: The PDM index name (usually 'pdm_{tool_name}')
+        document_type: Optional filter: SLDPRT, SLDASM, SLDDRW, or None for all
+        max_results: Maximum number of results to return
+
+    Returns:
+        Formatted string with matching PDM documents
+    """
+    try:
+        db: Any = await get_db()
+
+        # Get embedding model
+        from ragtime.core.app_settings import get_app_settings
+
+        app_settings = await get_app_settings()
+        embeddings = await _get_search_embeddings(app_settings)
+
+        if embeddings is None:
+            return "Error: No embedding provider configured"
+
+        # Generate query embedding
+        query_embedding = await asyncio.to_thread(embeddings.embed_documents, [query])
+        embedding = query_embedding[0]
+        embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
+
+        # Build document type filter
+        type_filter = ""
+        if document_type:
+            type_filter = f"AND document_type = '{document_type.upper()}'"
+
+        # Search using pgvector similarity
+        results = await db.query_raw(
+            f"""
+            SELECT
+                id, index_name, document_id, document_type, content,
+                part_number, filename, folder_path, metadata,
+                1 - (embedding <=> '{embedding_str}'::vector) as similarity
+            FROM pdm_embeddings
+            WHERE index_name = '{index_name}'
+                {type_filter}
+            ORDER BY embedding <=> '{embedding_str}'::vector
+            LIMIT {max_results}
+        """
+        )
+
+        if not results:
+            return "No matching documents found in PDM index."
+
+        output_parts = []
+        for result in results:
+            similarity = result.get("similarity", 0)
+            content = result.get("content", "")
+            filename = result.get("filename", "")
+            doc_type = result.get("document_type", "")
+            part_number = result.get("part_number", "")
+
+            header = f"[{filename}]"
+            if part_number:
+                header += f" (PN: {part_number})"
+            header += f" [{doc_type}] (similarity: {similarity:.3f})"
+
+            output_parts.append(f"{header}\n{content}")
+
+        return "\n\n---\n\n".join(output_parts)
+
+    except Exception as e:
+        logger.error(f"Error searching PDM index: {e}")
+        return f"Error searching PDM: {str(e)}"
+
+
+async def _get_search_embeddings(app_settings: dict):
+    """Get the configured embedding model based on app settings for search."""
+    provider = app_settings.get("embedding_provider", "ollama").lower()
+    model = app_settings.get("embedding_model", "nomic-embed-text")
+    dimensions = app_settings.get("embedding_dimensions")
+
+    if provider == "ollama":
+        import importlib
+
+        ollama_module = importlib.import_module("langchain_ollama")
+        OllamaEmbeddings = getattr(ollama_module, "OllamaEmbeddings")
+
+        return OllamaEmbeddings(
+            model=model,
+            base_url=app_settings.get("ollama_base_url", "http://localhost:11434"),
+        )
+    elif provider == "openai":
+        from langchain_openai import OpenAIEmbeddings
+
+        api_key = app_settings.get("openai_api_key", "")
+        if not api_key:
+            raise ValueError(
+                "OpenAI embeddings selected but no API key configured in Settings"
+            )
+        kwargs = {"model": model, "api_key": api_key}
+        if dimensions and model.startswith("text-embedding-3"):
+            kwargs["dimensions"] = dimensions
+        return OpenAIEmbeddings(**kwargs)
+    else:
+        raise ValueError(f"Unknown embedding provider: {provider}")

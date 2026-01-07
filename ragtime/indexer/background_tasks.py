@@ -16,6 +16,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from ragtime.core.logging import get_logger
 from ragtime.indexer.models import ChatTaskStatus, FilesystemConnectionConfig
 from ragtime.indexer.repository import repository
+from ragtime.indexer.utils import safe_tool_name
 
 logger = get_logger(__name__)
 
@@ -285,6 +286,7 @@ class BackgroundTaskService:
                         tool_type=config.toolType,
                         connection_config=connection_config,
                         full_reindex=False,  # Use hash-based change detection
+                        tool_name=safe_tool_name(config.name) or None,
                     )
 
                 except Exception as e:

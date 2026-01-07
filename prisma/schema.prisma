@@ -178,6 +178,7 @@ enum ToolType {
   odoo_shell
   ssh_shell
   filesystem_indexer
+  solidworks_pdm
 }
 
 /// Mount type for filesystem indexer
@@ -355,6 +356,84 @@ model SchemaEmbedding {
   @@unique([indexName, tableName])
   @@index([indexName])
   @@map("schema_embeddings")
+}
+
+// -----------------------------------------------------------------------------
+// SolidWorks PDM Indexer (pgvector-based, for PDM document metadata)
+// -----------------------------------------------------------------------------
+
+/// PDM document indexing job status
+enum PdmIndexStatus {
+  pending
+  indexing
+  completed
+  failed
+  cancelled
+}
+
+/// SolidWorks PDM indexing job
+model PdmIndexJob {
+  id           String         @id @default(uuid())
+  toolConfigId String         @map("tool_config_id")
+
+  status       PdmIndexStatus @default(pending)
+  indexName    String         @map("index_name")
+
+  // Progress tracking
+  totalDocuments     Int      @default(0) @map("total_documents")
+  processedDocuments Int      @default(0) @map("processed_documents")
+  skippedDocuments   Int      @default(0) @map("skipped_documents")  // Unchanged documents
+  totalChunks        Int      @default(0) @map("total_chunks")
+  processedChunks    Int      @default(0) @map("processed_chunks")
+  errorMessage       String?  @map("error_message")
+
+  // Timing
+  createdAt   DateTime  @default(now()) @map("created_at")
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+
+  @@map("pdm_index_jobs")
+}
+
+/// PDM document metadata for incremental indexing (change detection)
+model PdmDocumentMetadata {
+  id           String   @id @default(uuid())
+  indexName    String   @map("index_name")
+  documentId   Int      @map("document_id")     // PDM DocumentID from SQL Server
+  filename     String
+  revisionNo   Int      @map("revision_no")
+  metadataHash String   @map("metadata_hash")   // Hash of all variables for change detection
+  lastIndexed  DateTime @default(now()) @map("last_indexed")
+
+  @@unique([indexName, documentId])
+  @@index([indexName])
+  @@map("pdm_document_metadata")
+}
+
+/// Vector embeddings for SolidWorks PDM documents stored in pgvector
+/// NOTE: Requires pgvector extension: CREATE EXTENSION IF NOT EXISTS vector;
+/// The embedding column uses raw SQL for vector type, managed via migration
+model PdmEmbedding {
+  id           String   @id @default(uuid())
+  indexName    String   @map("index_name")
+  documentId   Int      @map("document_id")
+  documentType String   @map("document_type")   // SLDPRT, SLDASM, SLDDRW, etc.
+  content      String   // The structured text content
+  // embedding field is added via raw SQL migration (vector type)
+
+  // Searchable metadata (duplicated for filtering)
+  partNumber   String?  @map("part_number")
+  filename     String
+  folderPath   String?  @map("folder_path")
+
+  metadata     Json     @default("{}")  // Full variable data as JSON
+
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([indexName, documentId])
+  @@index([indexName])
+  @@index([partNumber])
+  @@map("pdm_embeddings")
 }
 
 // -----------------------------------------------------------------------------

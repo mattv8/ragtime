@@ -377,7 +377,7 @@ export interface EmbeddingModelsResponse {
 }
 
 // Tool Configuration Types
-export type ToolType = 'postgres' | 'mssql' | 'odoo_shell' | 'ssh_shell' | 'filesystem_indexer';
+export type ToolType = 'postgres' | 'mssql' | 'odoo_shell' | 'ssh_shell' | 'filesystem_indexer' | 'solidworks_pdm';
 
 // Mount type for filesystem indexer
 export type FilesystemMountType = 'docker_volume' | 'smb' | 'nfs' | 'local';
@@ -482,7 +482,32 @@ export interface FilesystemConnectionConfig {
   last_indexed_at?: string | null;
 }
 
-export type ConnectionConfig = PostgresConnectionConfig | MssqlConnectionConfig | OdooShellConnectionConfig | SSHShellConnectionConfig | FilesystemConnectionConfig;
+export interface SolidworksPdmConnectionConfig {
+  // MSSQL Connection (same as MssqlConnectionConfig)
+  host: string;
+  port?: number;
+  user: string;
+  password: string;
+  database: string;
+
+  // Document filtering
+  file_extensions?: string[];
+  exclude_deleted?: boolean;
+
+  // Metadata extraction
+  variable_names?: string[];
+  include_bom?: boolean;
+  include_folder_path?: boolean;
+  include_configurations?: boolean;
+
+  // Indexing options
+  max_documents?: number | null;
+
+  // Last indexed info
+  last_indexed_at?: string | null;
+}
+
+export type ConnectionConfig = PostgresConnectionConfig | MssqlConnectionConfig | OdooShellConnectionConfig | SSHShellConnectionConfig | FilesystemConnectionConfig | SolidworksPdmConnectionConfig;
 
 export interface ToolConfig {
   id: string;
@@ -546,6 +571,37 @@ export interface PostgresDiscoverResponse {
   error?: string;
 }
 
+// MSSQL Database Discovery
+export interface MssqlDiscoverRequest {
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+}
+
+export interface MssqlDiscoverResponse {
+  success: boolean;
+  databases: string[];
+  error?: string;
+}
+
+// PDM Schema Discovery
+export interface PdmDiscoverRequest {
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+  database: string;
+}
+
+export interface PdmDiscoverResponse {
+  success: boolean;
+  file_extensions: string[];
+  variable_names: string[];
+  document_count: number;
+  error?: string;
+}
+
 // SSH Keypair Generation
 export interface SSHKeyPairResponse {
   private_key: string;
@@ -591,6 +647,11 @@ export const TOOL_TYPE_INFO: Record<ToolType, { name: string; description: strin
   filesystem_indexer: {
     name: 'Filesystem Indexer',
     description: 'Index files from a filesystem path (Docker volume, SMB, NFS, or local) for semantic search',
+    icon: 'folder',
+  },
+  solidworks_pdm: {
+    name: 'SolidWorks PDM',
+    description: 'Index SolidWorks PDM documents with metadata for semantic search',
     icon: 'folder',
   },
 };
@@ -786,6 +847,44 @@ export interface SchemaIndexStats {
   table_count: number;
   last_indexed: string | null;
   schema_hash: string | null;
+}
+
+// =============================================================================
+// SolidWorks PDM Indexer Types
+// =============================================================================
+
+export type PdmIndexStatus = 'pending' | 'indexing' | 'completed' | 'failed' | 'cancelled';
+
+export interface PdmIndexJob {
+  id: string;
+  tool_config_id: string;
+  status: PdmIndexStatus;
+  index_name: string;
+  progress_percent: number;
+  total_documents: number;
+  processed_documents: number;
+  skipped_documents: number;
+  total_chunks: number;
+  processed_chunks: number;
+  error_message: string | null;
+  cancel_requested: boolean;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface PdmIndexStatusResponse {
+  enabled: boolean;
+  last_indexed: string | null;
+  document_count: number;
+  embedding_count: number;
+  current_job: PdmIndexJob | null;
+}
+
+export interface PdmIndexStats {
+  document_count: number;
+  embedding_count: number;
+  last_indexed: string | null;
 }
 
 // =============================================================================
