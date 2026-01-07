@@ -301,6 +301,63 @@ model FilesystemEmbedding {
 }
 
 // -----------------------------------------------------------------------------
+// Schema Indexer (pgvector-based, for SQL database tools)
+// -----------------------------------------------------------------------------
+
+/// Schema indexing job status
+enum SchemaIndexStatus {
+  pending
+  indexing
+  completed
+  failed
+  cancelled
+}
+
+/// Schema indexing job (for SQL database tools)
+model SchemaIndexJob {
+  id           String            @id @default(uuid())
+  toolConfigId String            @map("tool_config_id")
+
+  status       SchemaIndexStatus @default(pending)
+  indexName    String            @map("index_name")
+
+  // Progress tracking
+  totalTables      Int      @default(0) @map("total_tables")
+  processedTables  Int      @default(0) @map("processed_tables")
+  totalChunks      Int      @default(0) @map("total_chunks")
+  processedChunks  Int      @default(0) @map("processed_chunks")
+  errorMessage     String?  @map("error_message")
+
+  // Timing
+  createdAt   DateTime  @default(now()) @map("created_at")
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+
+  @@map("schema_index_jobs")
+}
+
+/// Vector embeddings for SQL database schemas stored in pgvector
+/// NOTE: Requires pgvector extension: CREATE EXTENSION IF NOT EXISTS vector;
+/// The embedding column uses raw SQL for vector type, managed via migration
+model SchemaEmbedding {
+  id           String   @id @default(uuid())
+  indexName    String   @map("index_name")    // References tool config id or name
+  tableName    String   @map("table_name")    // Full table name (schema.table)
+  tableSchema  String   @map("table_schema")  // Database schema (e.g., 'public', 'dbo')
+  content      String   // The formatted schema text (table + columns + constraints)
+  // embedding field is added via raw SQL migration (vector type)
+
+  // Metadata for search context
+  metadata     Json     @default("{}")  // Additional context (column count, relations, etc.)
+
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([indexName, tableName])
+  @@index([indexName])
+  @@map("schema_embeddings")
+}
+
+// -----------------------------------------------------------------------------
 // Authentication & Users
 // -----------------------------------------------------------------------------
 

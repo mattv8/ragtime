@@ -27,6 +27,7 @@ class BackgroundTaskService:
         self._running_tasks: Dict[str, asyncio.Task] = {}
         self._shutdown = False
         self._filesystem_scheduler_task: Optional[asyncio.Task] = None
+        self._schema_scheduler_task: Optional[asyncio.Task] = None
 
     async def start(self):
         """Start the background task service."""
@@ -40,6 +41,10 @@ class BackgroundTaskService:
         self._filesystem_scheduler_task = asyncio.create_task(
             self._filesystem_reindex_scheduler()
         )
+        # Start schema re-indexing scheduler
+        self._schema_scheduler_task = asyncio.create_task(
+            self._schema_reindex_scheduler()
+        )
 
     async def stop(self):
         """Stop the background task service."""
@@ -47,10 +52,21 @@ class BackgroundTaskService:
         self._shutdown = True
 
         # Cancel filesystem scheduler
-        if self._filesystem_scheduler_task and not self._filesystem_scheduler_task.done():
+        if (
+            self._filesystem_scheduler_task
+            and not self._filesystem_scheduler_task.done()
+        ):
             self._filesystem_scheduler_task.cancel()
             try:
                 await self._filesystem_scheduler_task
+            except asyncio.CancelledError:
+                pass
+
+        # Cancel schema scheduler
+        if self._schema_scheduler_task and not self._schema_scheduler_task.done():
+            self._schema_scheduler_task.cancel()
+            try:
+                await self._schema_scheduler_task
             except asyncio.CancelledError:
                 pass
 
@@ -82,14 +98,14 @@ class BackgroundTaskService:
         try:
             db = await repository._get_db()
             stale_tasks = await db.chattask.find_many(
-                where={
-                    "status": {"in": ["pending", "running"]}
-                }
+                where={"status": {"in": ["pending", "running"]}}
             )
 
             for prisma_task in stale_tasks:
                 task = repository._prisma_task_to_model(prisma_task)
-                logger.info(f"Resuming stale task {task.id} for conversation {task.conversation_id}")
+                logger.info(
+                    f"Resuming stale task {task.id} for conversation {task.conversation_id}"
+                )
                 self.start_task(task.conversation_id, task.user_message, task.id)
 
         except Exception as e:
@@ -183,11 +199,107 @@ class BackgroundTaskService:
         except Exception as e:
             logger.error(f"Error in filesystem reindex check: {e}")
 
+    async def _schema_reindex_scheduler(self):
+        """
+        Periodically check SQL database tools and trigger schema re-indexing.
+
+        Runs every hour and checks each postgres/mssql tool config to see
+        if it's due for schema re-indexing based on its configured interval.
+        """
+        # Initial delay to let the system stabilize
+        await asyncio.sleep(120)  # 2 minutes
+
+        while not self._shutdown:
+            try:
+                await self._check_and_trigger_schema_reindex()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in schema reindex scheduler: {e}")
+
+            # Check every hour
+            await asyncio.sleep(3600)
+
+    async def _check_and_trigger_schema_reindex(self):
+        """Check SQL database tools and trigger schema re-indexing if due."""
+        from ragtime.indexer.schema_service import schema_indexer
+
+        try:
+            db = await repository._get_db()
+
+            # Get all enabled postgres/mssql tool configs
+            tool_configs = await db.toolconfig.find_many(
+                where={
+                    "toolType": {"in": ["postgres", "mssql"]},
+                    "enabled": True,
+                }
+            )
+
+            for config in tool_configs:
+                try:
+                    connection_config = config.connectionConfig
+                    if not isinstance(connection_config, dict):
+                        continue
+
+                    # Check if schema indexing is enabled
+                    schema_index_enabled = connection_config.get(
+                        "schema_index_enabled", False
+                    )
+                    if not schema_index_enabled:
+                        continue
+
+                    # Get interval (default 24 hours)
+                    interval_hours = connection_config.get(
+                        "schema_index_interval_hours", 24
+                    )
+                    if interval_hours <= 0:
+                        continue  # Manual only
+
+                    # Check if re-indexing is due
+                    last_indexed_str = connection_config.get("last_schema_indexed_at")
+                    if last_indexed_str:
+                        try:
+                            # Parse ISO format datetime
+                            if isinstance(last_indexed_str, str):
+                                last_indexed = datetime.fromisoformat(
+                                    last_indexed_str.replace("Z", "+00:00")
+                                )
+                            else:
+                                last_indexed = last_indexed_str
+
+                            next_reindex = last_indexed + timedelta(
+                                hours=interval_hours
+                            )
+                            if datetime.now(last_indexed.tzinfo or None) < next_reindex:
+                                continue  # Not due yet
+                        except (ValueError, TypeError):
+                            pass  # Invalid date, trigger reindex
+
+                    # Trigger schema re-indexing
+                    logger.info(
+                        f"Triggering scheduled schema re-index for '{config.name}' "
+                        f"(last indexed: {last_indexed_str or 'never'})"
+                    )
+                    await schema_indexer.trigger_index(
+                        tool_config_id=config.id,
+                        tool_type=config.toolType,
+                        connection_config=connection_config,
+                        full_reindex=False,  # Use hash-based change detection
+                    )
+
+                except Exception as e:
+                    logger.warning(
+                        f"Error checking schema for tool '{config.name}': {e}"
+                    )
+
+        except Exception as e:
+            logger.error(f"Error in schema reindex check: {e}")
+
     def start_task(
         self,
         conversation_id: str,
         user_message: str,
-        existing_task_id: Optional[str] = None
+        existing_task_id: Optional[str] = None,
     ) -> str:
         """
         Start a background task for processing a chat message.
@@ -207,7 +319,9 @@ class BackgroundTaskService:
             try:
                 # Create or get the task
                 if not task_id:
-                    task = await repository.create_chat_task(conversation_id, user_message)
+                    task = await repository.create_chat_task(
+                        conversation_id, user_message
+                    )
                     task_id = task.id
                 else:
                     task = await repository.get_chat_task(task_id)
@@ -216,7 +330,9 @@ class BackgroundTaskService:
                         return
 
                 # Update status to running
-                await repository.update_chat_task_status(task_id, ChatTaskStatus.running)
+                await repository.update_chat_task_status(
+                    task_id, ChatTaskStatus.running
+                )
 
                 # Get conversation for chat history
                 conv = await repository.get_conversation(conversation_id)
@@ -250,7 +366,13 @@ class BackgroundTaskService:
                                     input_str = ""
                                     if isinstance(tool_input, dict):
                                         # Extract query/code from common field names
-                                        for field in ["query", "sql", "code", "command", "python_code"]:
+                                        for field in [
+                                            "query",
+                                            "sql",
+                                            "code",
+                                            "command",
+                                            "python_code",
+                                        ]:
                                             if field in tool_input:
                                                 input_str = str(tool_input[field])
                                                 break
@@ -313,7 +435,12 @@ class BackgroundTaskService:
 
                             # Force immediate update so the UI shows the running tool
                             result = await repository.update_chat_task_streaming_state(
-                                task_id, full_response, events, tool_calls, hit_max_iterations, current_version
+                                task_id,
+                                full_response,
+                                events,
+                                tool_calls,
+                                hit_max_iterations,
+                                current_version,
                             )
                             if result and result.streaming_state:
                                 current_version = result.streaming_state.version
@@ -326,15 +453,24 @@ class BackgroundTaskService:
                             if tool_idx is not None:
                                 # Update the existing tool event with output
                                 events[tool_idx]["output"] = event.get("output")
-                                tool_calls.append({
-                                    "tool": events[tool_idx]["tool"],
-                                    "input": events[tool_idx].get("input"),
-                                    "output": events[tool_idx].get("output"),
-                                })
+                                tool_calls.append(
+                                    {
+                                        "tool": events[tool_idx]["tool"],
+                                        "input": events[tool_idx].get("input"),
+                                        "output": events[tool_idx].get("output"),
+                                    }
+                                )
 
                                 # Force immediate update so the UI shows the completed tool
-                                result = await repository.update_chat_task_streaming_state(
-                                    task_id, full_response, events, tool_calls, hit_max_iterations, current_version
+                                result = (
+                                    await repository.update_chat_task_streaming_state(
+                                        task_id,
+                                        full_response,
+                                        events,
+                                        tool_calls,
+                                        hit_max_iterations,
+                                        current_version,
+                                    )
                                 )
                                 if result and result.streaming_state:
                                     current_version = result.streaming_state.version
@@ -345,7 +481,12 @@ class BackgroundTaskService:
                             logger.info(f"Task {task_id} hit max iterations limit")
                             # Force immediate update
                             result = await repository.update_chat_task_streaming_state(
-                                task_id, full_response, events, tool_calls, hit_max_iterations, current_version
+                                task_id,
+                                full_response,
+                                events,
+                                tool_calls,
+                                hit_max_iterations,
+                                current_version,
                             )
                             if result and result.streaming_state:
                                 current_version = result.streaming_state.version
@@ -366,7 +507,12 @@ class BackgroundTaskService:
                     now = datetime.utcnow()
                     if (now - last_update).total_seconds() > 0.4:
                         result = await repository.update_chat_task_streaming_state(
-                            task_id, full_response, events, tool_calls, hit_max_iterations, current_version
+                            task_id,
+                            full_response,
+                            events,
+                            tool_calls,
+                            hit_max_iterations,
+                            current_version,
                         )
                         if result and result.streaming_state:
                             current_version = result.streaming_state.version
@@ -374,7 +520,12 @@ class BackgroundTaskService:
 
                 # Task completed successfully - save final state
                 await repository.complete_chat_task(
-                    task_id, full_response, events, tool_calls, hit_max_iterations, current_version
+                    task_id,
+                    full_response,
+                    events,
+                    tool_calls,
+                    hit_max_iterations,
+                    current_version,
                 )
 
                 # Add the assistant response to the conversation
@@ -383,15 +534,19 @@ class BackgroundTaskService:
                     "assistant",
                     full_response,
                     tool_calls=tool_calls if tool_calls else None,
-                    events=events if events else None
+                    events=events if events else None,
                 )
 
                 # Auto-generate title if needed
                 conv = await repository.get_conversation(conversation_id)
                 if conv and conv.title == "New Chat" and len(conv.messages) >= 2:
                     first_msg = conv.messages[0].content[:50]
-                    new_title = first_msg + ("..." if len(conv.messages[0].content) > 50 else "")
-                    await repository.update_conversation_title(conversation_id, new_title)
+                    new_title = first_msg + (
+                        "..." if len(conv.messages[0].content) > 50 else ""
+                    )
+                    await repository.update_conversation_title(
+                        conversation_id, new_title
+                    )
 
                 logger.info(f"Background task {task_id} completed successfully")
 
@@ -403,7 +558,7 @@ class BackgroundTaskService:
                         "assistant",
                         full_response,
                         tool_calls=tool_calls if tool_calls else None,
-                        events=events if events else None
+                        events=events if events else None,
                     )
                     logger.info(f"Saved partial response for cancelled task {task_id}")
 
@@ -430,11 +585,7 @@ class BackgroundTaskService:
             # Return placeholder - caller should create task first
             return ""
 
-    async def start_task_async(
-        self,
-        conversation_id: str,
-        user_message: str
-    ) -> str:
+    async def start_task_async(self, conversation_id: str, user_message: str) -> str:
         """
         Start a background task asynchronously.
 

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '@/api';
 import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, LoginPage } from '@/components';
-import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, ToolConfig, AppSettings } from '@/types';
+import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, ToolConfig, AppSettings } from '@/types';
 import '@/styles/global.css';
 
 type ViewType = 'chat' | 'indexer' | 'tools' | 'settings';
@@ -36,6 +36,10 @@ export function App() {
   const [filesystemJobs, setFilesystemJobs] = useState<FilesystemIndexJob[]>([]);
   const filesystemPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [aggregateSearch, setAggregateSearch] = useState(true);
+
+  // Schema indexer state
+  const [schemaJobs, setSchemaJobs] = useState<SchemaIndexJob[]>([]);
+  const schemaPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Load server name from settings
   useEffect(() => {
@@ -174,14 +178,30 @@ export function App() {
     await loadFilesystemJobs();
   }, [loadFilesystemJobs]);
 
+  // Load schema indexing jobs
+  const loadSchemaJobs = useCallback(async () => {
+    try {
+      const jobs = await api.listSchemaJobs();
+      setSchemaJobs(jobs);
+    } catch (err) {
+      console.warn('Failed to load schema jobs:', err);
+    }
+  }, []);
+
+  const handleCancelSchemaJob = useCallback(async (toolId: string, jobId: string) => {
+    await api.cancelSchemaIndexJob(toolId, jobId);
+    await loadSchemaJobs();
+  }, [loadSchemaJobs]);
+
   // Initial load (only when authenticated and admin for indexer data)
   useEffect(() => {
     if (currentUser && isAdmin) {
       loadJobs();
       loadIndexes();
       loadFilesystemJobs();
+      loadSchemaJobs();
     }
-  }, [currentUser, isAdmin, loadJobs, loadIndexes, loadFilesystemJobs]);
+  }, [currentUser, isAdmin, loadJobs, loadIndexes, loadFilesystemJobs, loadSchemaJobs]);
 
   // Fast polling for active filesystem jobs
   useEffect(() => {
@@ -206,6 +226,30 @@ export function App() {
       }
     };
   }, [currentUser, isAdmin, filesystemJobs, loadFilesystemJobs]);
+
+  // Fast polling for active schema jobs
+  useEffect(() => {
+    if (!currentUser || !isAdmin) return;
+
+    const hasActiveSchemaJob = schemaJobs.some(
+      j => j.status === 'pending' || j.status === 'indexing'
+    );
+
+    if (hasActiveSchemaJob) {
+      schemaPollRef.current = setInterval(loadSchemaJobs, 2000);
+    } else {
+      if (schemaPollRef.current) {
+        clearInterval(schemaPollRef.current);
+        schemaPollRef.current = null;
+      }
+    }
+
+    return () => {
+      if (schemaPollRef.current) {
+        clearInterval(schemaPollRef.current);
+      }
+    };
+  }, [currentUser, isAdmin, schemaJobs, loadSchemaJobs]);
 
   // Auto-refresh: fast polling when jobs are active, slow background refresh otherwise
   useEffect(() => {
@@ -320,11 +364,14 @@ export function App() {
           <JobsTable
             jobs={jobs}
             filesystemJobs={filesystemJobs}
+            schemaJobs={schemaJobs}
             loading={jobsLoading}
             error={jobsError}
             onJobsChanged={loadJobs}
             onFilesystemJobsChanged={loadFilesystemJobs}
+            onSchemaJobsChanged={loadSchemaJobs}
             onCancelFilesystemJob={handleCancelFilesystemJob}
+            onCancelSchemaJob={handleCancelSchemaJob}
           />
         </>
       )}

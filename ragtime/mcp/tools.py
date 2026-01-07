@@ -113,6 +113,24 @@ TOOL_INPUT_SCHEMAS: dict[str, dict] = {
         },
         "required": ["query"],
     },
+    # Schema search tool (for database tools with schema indexing enabled)
+    "schema_search": {
+        "type": "object",
+        "properties": {
+            "prompt": {
+                "type": "string",
+                "description": "The natural language query used to search the database schema for relevant table and column information.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "The maximum number of matches to return. Defaults to 5.",
+                "default": 5,
+                "minimum": 1,
+                "maximum": 20,
+            },
+        },
+        "required": ["prompt"],
+    },
 }
 
 
@@ -202,6 +220,11 @@ class MCPToolAdapter:
             if tool_def:
                 tools.append(tool_def)
 
+            # Create schema search tool if schema indexing is enabled for this tool
+            schema_tool_def = await self._create_schema_search_tool_definition(config)
+            if schema_tool_def:
+                tools.append(schema_tool_def)
+
         # Add knowledge search tool if indexes are available
         knowledge_tool = await self._create_knowledge_search_tool()
         if knowledge_tool:
@@ -243,6 +266,18 @@ class MCPToolAdapter:
             if knowledge_tool:
                 self._tool_executors[tool_name] = knowledge_tool.execute_fn
                 return await knowledge_tool.execute_fn(**arguments)
+
+        # Check for schema search tools (pattern: search_<name>_schema)
+        if tool_name.startswith("search_") and tool_name.endswith("_schema"):
+            for config in tool_configs:
+                schema_tool_name = self._build_schema_tool_name(config)
+                if schema_tool_name == tool_name:
+                    schema_tool_def = await self._create_schema_search_tool_definition(
+                        config
+                    )
+                    if schema_tool_def:
+                        self._tool_executors[tool_name] = schema_tool_def.execute_fn
+                        return await schema_tool_def.execute_fn(**arguments)
 
         return f"Error: Unknown tool '{tool_name}'"
 
@@ -336,6 +371,77 @@ class MCPToolAdapter:
         }
         prefix = prefixes.get(tool_type, "tool_")
         return f"{prefix}{name}"
+
+    def _build_schema_tool_name(self, config: dict) -> str | None:
+        """Build MCP schema search tool name from config, if applicable."""
+        tool_type = config.get("tool_type", "")
+        # Only database tools can have schema search
+        if tool_type not in ("postgres", "mssql"):
+            return None
+
+        # Tool-safe name
+        raw_name = (config.get("name", "") or "").strip()
+        name = re.sub(r"[^a-zA-Z0-9]+", "_", raw_name).strip("_").lower()
+        return f"search_{name}_schema"
+
+    async def _create_schema_search_tool_definition(
+        self, config: dict
+    ) -> MCPToolDefinition | None:
+        """
+        Create an MCP tool definition for schema search if enabled.
+
+        Returns:
+            MCPToolDefinition or None if schema indexing not enabled
+        """
+        tool_type = config.get("tool_type", "")
+        # Only database tools can have schema search
+        if tool_type not in ("postgres", "mssql"):
+            return None
+
+        conn_config = config.get("connection_config", {})
+        schema_index_enabled = conn_config.get("schema_index_enabled", False)
+        if not schema_index_enabled:
+            return None
+
+        tool_name = self._build_schema_tool_name(config)
+        if not tool_name:
+            return None
+
+        # Get safe name for index lookup
+        raw_name = (config.get("name", "") or "").strip()
+        safe_name = re.sub(r"[^a-zA-Z0-9]+", "_", raw_name).strip("_").lower()
+        index_name = f"schema_{safe_name}"
+
+        # Build description
+        db_name = config.get("name", "database")
+        description = config.get("description", "")
+        tool_description = (
+            f"This retrieves relevant {db_name} schema entries based on a natural language query. "
+            f"Use this BEFORE writing SQL queries to understand available tables and columns."
+        )
+        if description:
+            tool_description += f" Database contains: {description}"
+
+        # Create executor
+        async def search_schema(prompt: str, limit: int = 5, **_: Any) -> str:
+            """Execute schema search."""
+            from ragtime.indexer.schema_service import search_schema_index
+
+            logger.debug(f"MCP schema search for {db_name}: {prompt[:100]}")
+            result = await search_schema_index(
+                query=prompt,
+                index_name=index_name,
+                max_results=min(limit, 20),
+            )
+            return result
+
+        return MCPToolDefinition(
+            name=tool_name,
+            description=tool_description,
+            input_schema=TOOL_INPUT_SCHEMAS["schema_search"],
+            tool_config=config,
+            execute_fn=search_schema,
+        )
 
     async def _create_tool_definition(self, config: dict) -> MCPToolDefinition | None:
         """

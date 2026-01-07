@@ -1,22 +1,25 @@
 import { useState } from 'react';
 import { api } from '@/api';
-import type { IndexJob, FilesystemIndexJob } from '@/types';
+import type { IndexJob, FilesystemIndexJob, SchemaIndexJob } from '@/types';
 
 interface JobsTableProps {
   jobs: IndexJob[];
   filesystemJobs?: FilesystemIndexJob[];
+  schemaJobs?: SchemaIndexJob[];
   loading: boolean;
   error: string | null;
   onJobsChanged?: () => void;
   onFilesystemJobsChanged?: () => void;
+  onSchemaJobsChanged?: () => void;
   onCancelFilesystemJob?: (toolId: string, jobId: string) => void;
+  onCancelSchemaJob?: (toolId: string, jobId: string) => void;
 }
 
 // Unified job type for display
 type UnifiedJob = {
   id: string;
   name: string;
-  type: 'document' | 'filesystem';
+  type: 'document' | 'filesystem' | 'schema';
   status: string;
   progress: number;
   totalFiles: number;
@@ -31,8 +34,11 @@ type UnifiedJob = {
   // Collection phase info (filesystem jobs)
   filesScanned?: number;
   currentDirectory?: string | null;
-  // For filesystem jobs
+  // For filesystem/schema jobs
   toolConfigId?: string;
+  // Schema-specific fields
+  totalTables?: number;
+  processedTables?: number;
 };
 
 const RECENT_LIMIT = 5;
@@ -178,7 +184,57 @@ function toUnifiedFilesystemJob(job: FilesystemIndexJob): UnifiedJob {
   };
 }
 
-export function JobsTable({ jobs, filesystemJobs = [], loading, error, onJobsChanged, onFilesystemJobsChanged, onCancelFilesystemJob }: JobsTableProps) {
+/**
+ * Convert SchemaIndexJob to unified job format
+ */
+function toUnifiedSchemaJob(job: SchemaIndexJob): UnifiedJob {
+  // Determine the phase and progress based on job state
+  let phase = '';
+  let progress = 0;
+
+  if (job.status === 'completed') {
+    phase = 'Complete';
+    progress = 100;
+  } else if (job.status === 'pending') {
+    phase = 'Queued';
+    progress = 0;
+  } else if (job.status === 'failed' || job.status === 'cancelled') {
+    phase = job.status === 'failed' ? 'Failed' : 'Cancelled';
+    progress = 0;
+  } else if (job.status === 'indexing') {
+    if (job.cancel_requested) {
+      phase = 'Cancelling...';
+    } else if (job.total_tables === 0) {
+      phase = 'Introspecting schema...';
+      progress = 5;
+    } else {
+      progress = Math.round((job.processed_tables / job.total_tables) * 100);
+      phase = `Indexing: ${job.processed_tables}/${job.total_tables} tables`;
+    }
+  }
+
+  return {
+    id: job.id,
+    name: job.index_name,
+    type: 'schema',
+    status: job.status,
+    progress,
+    totalFiles: 0,
+    processedFiles: 0,
+    skippedFiles: 0,
+    totalChunks: job.total_chunks,
+    processedChunks: job.processed_chunks,
+    errorMessage: job.error_message,
+    createdAt: job.created_at,
+    phase,
+    toolConfigId: job.tool_config_id,
+    cancelRequested: job.cancel_requested,
+    totalTables: job.total_tables,
+    processedTables: job.processed_tables,
+  };
+}
+
+export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], loading, error, onJobsChanged, onFilesystemJobsChanged, onSchemaJobsChanged, onCancelFilesystemJob, onCancelSchemaJob }: JobsTableProps) {
   const [showAll, setShowAll] = useState(false);
   const [selectedJob, setSelectedJob] = useState<UnifiedJob | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -200,13 +256,16 @@ export function JobsTable({ jobs, filesystemJobs = [], loading, error, onJobsCha
     setCancelConfirmId(jobId);
   };
 
-  const confirmCancel = async (jobId: string, jobType: 'document' | 'filesystem', toolConfigId?: string) => {
+  const confirmCancel = async (jobId: string, jobType: 'document' | 'filesystem' | 'schema', toolConfigId?: string) => {
     setCancelConfirmId(null);
     setActionLoading(jobId);
     try {
       if (jobType === 'filesystem' && toolConfigId) {
         await onCancelFilesystemJob?.(toolConfigId, jobId);
         onFilesystemJobsChanged?.();
+      } else if (jobType === 'schema' && toolConfigId) {
+        await onCancelSchemaJob?.(toolConfigId, jobId);
+        onSchemaJobsChanged?.();
       } else {
         await api.cancelJob(jobId);
         onJobsChanged?.();
@@ -251,13 +310,16 @@ export function JobsTable({ jobs, filesystemJobs = [], loading, error, onJobsCha
     setRetryConfirmId(jobId);
   };
 
-  const confirmRetry = async (jobId: string, jobType: 'document' | 'filesystem', toolConfigId?: string) => {
+  const confirmRetry = async (jobId: string, jobType: 'document' | 'filesystem' | 'schema', toolConfigId?: string) => {
     setRetryConfirmId(null);
     setActionLoading(jobId);
     try {
       if (jobType === 'filesystem' && toolConfigId) {
         await api.retryFilesystemJob(toolConfigId, jobId);
         onFilesystemJobsChanged?.();
+      } else if (jobType === 'schema' && toolConfigId) {
+        await api.retrySchemaJob(toolConfigId, jobId);
+        onSchemaJobsChanged?.();
       } else {
         await api.retryJob(jobId);
         onJobsChanged?.();
@@ -274,6 +336,7 @@ export function JobsTable({ jobs, filesystemJobs = [], loading, error, onJobsCha
   const allJobs: UnifiedJob[] = [
     ...jobs.map(toUnifiedJob),
     ...filesystemJobs.map(toUnifiedFilesystemJob),
+    ...schemaJobs.map(toUnifiedSchemaJob),
   ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   const displayedJobs = showAll ? allJobs : allJobs.slice(0, RECENT_LIMIT);
@@ -339,7 +402,7 @@ export function JobsTable({ jobs, filesystemJobs = [], loading, error, onJobsCha
                     <td data-label="Name">{job.name}</td>
                     <td data-label="Type">
                       <span className={`badge type-${job.type}`}>
-                        {job.type === 'document' ? 'Document' : 'Filesystem'}
+                        {job.type === 'document' ? 'Document' : job.type === 'filesystem' ? 'Filesystem' : 'Schema'}
                       </span>
                     </td>
                     <td data-label="Status">
@@ -367,7 +430,12 @@ export function JobsTable({ jobs, filesystemJobs = [], loading, error, onJobsCha
                           <div className="progress-details">
                             <span className="progress-phase">{job.phase}</span>
                             <span className="progress-stats">
-                              {job.type === 'filesystem' ? (
+                              {job.type === 'schema' ? (
+                                // Schema jobs: show table progress
+                                <>{job.processedTables}/{job.totalTables} tables
+                                  {job.totalChunks > 0 && ` (${job.totalChunks} chunks)`}
+                                </>
+                              ) : job.type === 'filesystem' ? (
                                 // Filesystem jobs: show file progress (total is known upfront)
                                 <>{job.processedFiles}/{job.totalFiles} files
                                   {job.totalChunks > 0 && ` (${job.totalChunks} chunks)`}
@@ -386,7 +454,11 @@ export function JobsTable({ jobs, filesystemJobs = [], loading, error, onJobsCha
                         </div>
                       ) : job.status === 'completed' ? (
                         <span className="progress-complete">
-                          {job.type === 'filesystem' ? (
+                          {job.type === 'schema' ? (
+                            <>
+                              {job.totalTables} tables, {job.totalChunks} chunks
+                            </>
+                          ) : job.type === 'filesystem' ? (
                             <>
                               {job.processedFiles > 0 ? (
                                 <>

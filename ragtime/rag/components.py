@@ -231,9 +231,8 @@ class RAGComponents:
 
         if provider == "ollama":
             try:
-                from langchain_ollama import (
-                    ChatOllama,
-                )  # type: ignore[import-untyped,import-not-found]
+                from langchain_ollama import \
+                    ChatOllama  # type: ignore[import-untyped,import-not-found]
 
                 base_url = self._app_settings.get(
                     "ollama_base_url", "http://localhost:11434"
@@ -292,9 +291,8 @@ class RAGComponents:
         model = self._app_settings.get("embedding_model", "nomic-embed-text")
 
         if provider == "ollama":
-            from langchain_ollama import (
-                OllamaEmbeddings,
-            )  # type: ignore[import-untyped]
+            from langchain_ollama import \
+                OllamaEmbeddings  # type: ignore[import-untyped]
 
             base_url = self._app_settings.get(
                 "ollama_base_url", "http://localhost:11434"
@@ -506,8 +504,20 @@ class RAGComponents:
 
             if tool_type == "postgres":
                 tool = await self._create_postgres_tool(config, tool_name, tool_id)
+                # Also create schema search tool if schema indexing is enabled
+                schema_tool = await self._create_schema_search_tool(
+                    config, tool_name, tool_id
+                )
+                if schema_tool:
+                    tools.append(schema_tool)
             elif tool_type == "mssql":
                 tool = await self._create_mssql_tool(config, tool_name, tool_id)
+                # Also create schema search tool if schema indexing is enabled
+                schema_tool = await self._create_schema_search_tool(
+                    config, tool_name, tool_id
+                )
+                if schema_tool:
+                    tools.append(schema_tool)
             elif tool_type == "odoo_shell":
                 tool = await self._create_odoo_tool(config, tool_name, tool_id)
             elif tool_type == "ssh_shell":
@@ -522,6 +532,77 @@ class RAGComponents:
                 tools.append(tool)
 
         return tools
+
+    async def _create_schema_search_tool(
+        self, config: dict, tool_name: str, tool_id: str
+    ):
+        """Create a schema search tool for SQL database tools.
+
+        This tool allows the agent to search the indexed database schema
+        to find relevant table/column information before writing queries.
+        """
+        from langchain_core.tools import StructuredTool
+        from pydantic import BaseModel, Field
+
+        conn_config = config.get("connection_config", {})
+
+        # Check if schema indexing is enabled
+        schema_index_enabled = conn_config.get("schema_index_enabled", False)
+        logger.debug(
+            f"Schema tool check for {tool_name}: enabled={schema_index_enabled}"
+        )
+        if not schema_index_enabled:
+            return None
+
+        # Check if there are any schema embeddings for this tool
+        from ragtime.indexer.schema_service import schema_indexer
+
+        embedding_count = await schema_indexer.get_embedding_count(tool_id, tool_name)
+        if embedding_count == 0:
+            logger.debug(
+                f"Schema indexing enabled but no embeddings found for {tool_name}"
+            )
+            # Still create the tool - it will just return "no results" until indexed
+            # This is better than no tool at all
+
+        # Use tool_name (safe name) for index lookup - matches how trigger_index creates it
+        index_name = f"schema_{tool_name}"
+        description = config.get("description", "")
+
+        class SchemaSearchInput(BaseModel):
+            query: str = Field(
+                description="Search query to find relevant tables, columns, or relationships in the database schema"
+            )
+
+        async def search_schema(query: str) -> str:
+            """Search the database schema for relevant table information."""
+            from ragtime.indexer.schema_service import search_schema_index
+
+            logger.debug(f"[{tool_name}] Schema search: {query[:100]}")
+
+            result = await search_schema_index(
+                query=query,
+                index_name=index_name,
+                max_results=5,
+            )
+            return result
+
+        tool_description = (
+            f"Search the schema of the {config.get('name', 'database')} database "
+            f"to find table names, column definitions, relationships, and indexes. "
+            f"Use this BEFORE writing SQL queries when you need to understand the database structure."
+        )
+        if description:
+            tool_description += f" Database contains: {description}"
+
+        schema_tool = StructuredTool.from_function(
+            coroutine=search_schema,
+            name=f"search_{tool_name}_schema",
+            description=tool_description,
+            args_schema=SchemaSearchInput,
+        )
+        logger.info(f"Created schema search tool: search_{tool_name}_schema")
+        return schema_tool
 
     def _create_knowledge_search_tool(self):
         """Create a tool for on-demand FAISS knowledge search.
@@ -753,7 +834,8 @@ class RAGComponents:
 
         async def execute_query(query: str = "", reason: str = "", **_: Any) -> str:
             """Execute PostgreSQL query using this tool's configuration."""
-            from ragtime.core.security import sanitize_output, validate_sql_query
+            from ragtime.core.security import (sanitize_output,
+                                               validate_sql_query)
 
             # Validate required fields
             if not query or not query.strip():
@@ -923,7 +1005,8 @@ class RAGComponents:
 
         async def execute_odoo(code: str = "", reason: str = "", **_: Any) -> str:
             """Execute Odoo shell command using this tool's configuration."""
-            from ragtime.core.security import sanitize_output, validate_odoo_code
+            from ragtime.core.security import (sanitize_output,
+                                               validate_odoo_code)
 
             # Validate required fields
             if not code or not code.strip():

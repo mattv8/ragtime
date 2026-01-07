@@ -1140,3 +1140,185 @@ class ChatTaskResponse(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     last_update_at: datetime
+
+
+# =============================================================================
+# Schema Indexer Models (for SQL database tools)
+# =============================================================================
+
+
+class SchemaIndexStatus(str, Enum):
+    """Status of a schema indexing job."""
+
+    PENDING = "pending"
+    INDEXING = "indexing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class SchemaIndexConfig(BaseModel):
+    """Configuration for schema indexing on SQL database tools.
+
+    This is stored as part of the connection_config JSON for postgres/mssql tools.
+    """
+
+    schema_index_enabled: bool = Field(
+        default=False,
+        description="Whether to index the database schema for AI-assisted querying",
+    )
+    schema_index_interval_hours: int = Field(
+        default=24,
+        ge=0,
+        le=8760,  # Max 1 year
+        description="Hours between automatic schema re-indexing (0 = manual only)",
+    )
+    last_schema_indexed_at: Optional[datetime] = Field(
+        default=None, description="Timestamp of last completed schema index"
+    )
+    schema_hash: Optional[str] = Field(
+        default=None,
+        description="Hash of schema content for change detection",
+    )
+
+
+class SchemaIndexJob(BaseModel):
+    """A schema indexing job for SQL database tools."""
+
+    id: str
+    tool_config_id: str
+    status: SchemaIndexStatus = SchemaIndexStatus.PENDING
+    index_name: str
+
+    # Progress tracking
+    total_tables: int = 0
+    processed_tables: int = 0
+    total_chunks: int = 0
+    processed_chunks: int = 0
+    error_message: Optional[str] = None
+    cancel_requested: bool = False
+
+    # Timing
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+    @property
+    def progress_percent(self) -> float:
+        if self.total_tables == 0:
+            return 0.0
+        return (self.processed_tables / self.total_tables) * 100
+
+
+class SchemaIndexJobResponse(BaseModel):
+    """Response for schema index job status."""
+
+    id: str
+    tool_config_id: str
+    status: SchemaIndexStatus
+    index_name: str
+    progress_percent: float
+    total_tables: int
+    processed_tables: int
+    total_chunks: int
+    processed_chunks: int
+    error_message: Optional[str] = None
+    cancel_requested: bool = False
+    # Timing
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+
+class TriggerSchemaIndexRequest(BaseModel):
+    """Request to trigger schema indexing for a tool config."""
+
+    full_reindex: bool = Field(
+        default=False,
+        description="If true, re-index all tables regardless of change detection",
+    )
+
+
+class TableSchemaInfo(BaseModel):
+    """Information about a single table's schema."""
+
+    table_schema: str = Field(
+        description="Database schema name (e.g., 'public', 'dbo')"
+    )
+    table_name: str = Field(description="Table name")
+    full_name: str = Field(description="Fully qualified name (schema.table)")
+    table_type: str = Field(default="TABLE", description="TABLE or VIEW")
+    columns: List[dict] = Field(
+        default_factory=list,
+        description="List of column definitions with name, type, nullable, default",
+    )
+    primary_key: List[str] = Field(
+        default_factory=list, description="List of primary key column names"
+    )
+    foreign_keys: List[dict] = Field(
+        default_factory=list,
+        description="List of foreign key relationships",
+    )
+    indexes: List[dict] = Field(
+        default_factory=list, description="List of index definitions"
+    )
+    row_count_estimate: Optional[int] = Field(
+        default=None, description="Estimated row count (if available)"
+    )
+
+    def to_embedding_text(self) -> str:
+        """Convert table schema to text suitable for embedding.
+
+        Format designed for semantic search - includes all relevant details
+        in a structured but natural language format.
+        """
+        lines = []
+
+        # Header with table type
+        table_type = self.table_type.upper()
+        lines.append(f"# {table_type}: {self.full_name}")
+        if self.row_count_estimate:
+            lines.append(f"Estimated rows: ~{self.row_count_estimate:,}")
+
+        # Columns section
+        lines.append("\n## Columns:")
+        for col in self.columns:
+            col_name = col.get("name", "")
+            col_type = col.get("type", "")
+            nullable = "NULL" if col.get("nullable", True) else "NOT NULL"
+            default = col.get("default", "")
+
+            col_line = f"  - {col_name}: {col_type} {nullable}"
+            if default:
+                col_line += f" DEFAULT {default}"
+            if col_name in self.primary_key:
+                col_line += " [PRIMARY KEY]"
+            lines.append(col_line)
+
+        # Primary key section
+        if self.primary_key:
+            lines.append(f"\n## Primary Key: ({', '.join(self.primary_key)})")
+
+        # Foreign keys section
+        if self.foreign_keys:
+            lines.append("\n## Foreign Keys:")
+            for fk in self.foreign_keys:
+                fk_name = fk.get("name", "")
+                fk_columns = fk.get("columns", [])
+                ref_table = fk.get("references_table", "")
+                ref_columns = fk.get("references_columns", [])
+                lines.append(
+                    f"  - {fk_name}: ({', '.join(fk_columns)}) -> "
+                    f"{ref_table}({', '.join(ref_columns)})"
+                )
+
+        # Indexes section
+        if self.indexes:
+            lines.append("\n## Indexes:")
+            for idx in self.indexes:
+                idx_name = idx.get("name", "")
+                idx_columns = idx.get("columns", [])
+                is_unique = "UNIQUE " if idx.get("unique", False) else ""
+                lines.append(f"  - {is_unique}{idx_name}: ({', '.join(idx_columns)})")
+
+        return "\n".join(lines)

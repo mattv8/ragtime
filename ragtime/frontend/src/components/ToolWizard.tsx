@@ -1911,13 +1911,15 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
     setError(null);
 
     try {
-      const toolId = existingTool?.id || createdToolId;
-      if (toolId) {
+      let savedToolId = existingTool?.id || createdToolId;
+      const connectionConfig = getConnectionConfig();
+
+      if (savedToolId) {
         // Update existing tool (or tool that was auto-created during analysis)
-        await api.updateToolConfig(toolId, {
+        await api.updateToolConfig(savedToolId, {
           name,
           description,
-          connection_config: getConnectionConfig(),
+          connection_config: connectionConfig,
           max_results: maxResults,
           timeout: timeoutValue,
           allow_write: allowWrite,
@@ -1927,13 +1929,31 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
           name,
           tool_type: toolType,
           description,
-          connection_config: getConnectionConfig(),
+          connection_config: connectionConfig,
           max_results: maxResults,
           timeout: timeoutValue,
           allow_write: allowWrite,
         };
-        await api.createToolConfig(request);
+        const created = await api.createToolConfig(request);
+        savedToolId = created.id;
       }
+
+      // Trigger schema indexing for SQL tools if enabled
+      if ((toolType === 'postgres' || toolType === 'mssql') && savedToolId) {
+        const config = connectionConfig as { schema_index_enabled?: boolean };
+        const wasEnabled = (existingTool?.connection_config as { schema_index_enabled?: boolean } | undefined)?.schema_index_enabled;
+
+        // Trigger indexing if schema_index_enabled is newly enabled or was already enabled (force refresh on save)
+        if (config.schema_index_enabled && !wasEnabled) {
+          try {
+            await api.triggerSchemaIndex(savedToolId);
+          } catch (schemaErr) {
+            // Don't fail the save if schema indexing fails to start
+            console.error('Failed to start schema indexing:', schemaErr);
+          }
+        }
+      }
+
       onSave();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save');
@@ -2171,6 +2191,47 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
             </div>
           </div>
         ) : null}
+
+        {/* Schema Indexing Section */}
+        <div className="schema-indexing-section" style={{ marginTop: '1.5rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
+          <h4 style={{ marginTop: 0, marginBottom: '0.75rem' }}>Schema Indexing</h4>
+          <p className="field-help" style={{ marginBottom: '1rem' }}>
+            Index database schema for faster AI-powered queries. Requires an embedding provider to be configured.
+          </p>
+
+          <label className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={postgresConfig.schema_index_enabled ?? false}
+              onChange={(e) => setPostgresConfig({
+                ...postgresConfig,
+                schema_index_enabled: e.target.checked
+              })}
+              style={{ width: 'auto', margin: 0 }}
+            />
+            <span>Enable schema indexing</span>
+          </label>
+
+          {postgresConfig.schema_index_enabled && (
+            <div className="form-group" style={{ marginTop: '1rem' }}>
+              <label>Re-index interval (hours)</label>
+              <input
+                type="number"
+                value={postgresConfig.schema_index_interval_hours ?? 24}
+                onChange={(e) => setPostgresConfig({
+                  ...postgresConfig,
+                  schema_index_interval_hours: parseInt(e.target.value) || 24
+                })}
+                min={1}
+                max={168}
+                style={{ maxWidth: '120px' }}
+              />
+              <p className="field-help">
+                How often to automatically re-index the database schema (1-168 hours).
+              </p>
+            </div>
+          )}
+        </div>
       </div>
     );
   };
@@ -2236,6 +2297,47 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
               The database name to connect to.
             </p>
           </div>
+        </div>
+
+        {/* Schema Indexing Section */}
+        <div className="schema-indexing-section" style={{ marginTop: '1.5rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
+          <h4 style={{ marginTop: 0, marginBottom: '0.75rem' }}>Schema Indexing</h4>
+          <p className="field-help" style={{ marginBottom: '1rem' }}>
+            Index database schema for faster AI-powered queries. Requires an embedding provider to be configured.
+          </p>
+
+          <label className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={mssqlConfig.schema_index_enabled ?? false}
+              onChange={(e) => setMssqlConfig({
+                ...mssqlConfig,
+                schema_index_enabled: e.target.checked
+              })}
+              style={{ width: 'auto', margin: 0 }}
+            />
+            <span>Enable schema indexing</span>
+          </label>
+
+          {mssqlConfig.schema_index_enabled && (
+            <div className="form-group" style={{ marginTop: '1rem' }}>
+              <label>Re-index interval (hours)</label>
+              <input
+                type="number"
+                value={mssqlConfig.schema_index_interval_hours ?? 24}
+                onChange={(e) => setMssqlConfig({
+                  ...mssqlConfig,
+                  schema_index_interval_hours: parseInt(e.target.value) || 24
+                })}
+                min={1}
+                max={168}
+                style={{ maxWidth: '120px' }}
+              />
+              <p className="field-help">
+                How often to automatically re-index the database schema (1-168 hours).
+              </p>
+            </div>
+          )}
         </div>
       </div>
     );
