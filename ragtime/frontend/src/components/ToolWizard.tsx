@@ -6,6 +6,7 @@ import type {
   ToolType,
   CreateToolConfigRequest,
   PostgresConnectionConfig,
+  MssqlConnectionConfig,
   OdooShellConnectionConfig,
   SSHShellConnectionConfig,
   FilesystemConnectionConfig,
@@ -1470,6 +1471,13 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
       : { host: '', port: 5432, user: '', password: '', database: '', container: '', docker_network: '' }
   );
 
+  // MSSQL config state
+  const [mssqlConfig, setMssqlConfig] = useState<MssqlConnectionConfig>(
+    existingTool?.tool_type === 'mssql'
+      ? (existingTool.connection_config as MssqlConnectionConfig)
+      : { host: '', port: 1433, user: '', password: '', database: '' }
+  );
+
   const [odooConnectionMode, setOdooConnectionMode] = useState<'docker' | 'ssh'>(
     existingTool?.tool_type === 'odoo_shell' && (existingTool.connection_config as OdooShellConnectionConfig).mode === 'ssh'
       ? 'ssh'
@@ -1572,6 +1580,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
     switch (toolType) {
       case 'postgres':
         return postgresConfig;
+      case 'mssql':
+        return mssqlConfig;
       case 'odoo_shell':
         return { ...odooConfig, mode: odooConnectionMode };
       case 'ssh_shell':
@@ -1951,6 +1961,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
       case 'postgres':
         // Either host or container must be specified
         return Boolean((postgresConfig.host && postgresConfig.user) || postgresConfig.container);
+      case 'mssql':
+        // Host, user, password, and database are required
+        return Boolean(mssqlConfig.host && mssqlConfig.user && mssqlConfig.password && mssqlConfig.database);
       case 'odoo_shell':
         // For Docker mode, need container. For SSH mode, need host and user.
         if (odooConnectionMode === 'ssh') {
@@ -2158,6 +2171,72 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
             </div>
           </div>
         ) : null}
+      </div>
+    );
+  };
+
+  const renderMssqlConnection = () => {
+    return (
+      <div className="wizard-content">
+        <p className="wizard-help">
+          Connect to a Microsoft SQL Server or Azure SQL database.
+        </p>
+
+        <div className="connection-panel">
+          <div className="form-row">
+            <div className="form-group">
+              <label>Host</label>
+              <input
+                type="text"
+                value={mssqlConfig.host || ''}
+                onChange={(e) => setMssqlConfig({ ...mssqlConfig, host: e.target.value })}
+                placeholder="server.database.windows.net"
+              />
+            </div>
+            <div className="form-group form-group-small">
+              <label>Port</label>
+              <input
+                type="number"
+                value={mssqlConfig.port || 1433}
+                onChange={(e) => setMssqlConfig({ ...mssqlConfig, port: parseInt(e.target.value) || 1433 })}
+                min={1}
+                max={65535}
+              />
+            </div>
+          </div>
+          <div className="form-row">
+            <div className="form-group">
+              <label>User</label>
+              <input
+                type="text"
+                value={mssqlConfig.user || ''}
+                onChange={(e) => setMssqlConfig({ ...mssqlConfig, user: e.target.value })}
+                placeholder="sa or domain\\user"
+              />
+            </div>
+            <div className="form-group">
+              <label>Password</label>
+              <input
+                type="password"
+                value={mssqlConfig.password || ''}
+                onChange={(e) => setMssqlConfig({ ...mssqlConfig, password: e.target.value })}
+                placeholder="********"
+              />
+            </div>
+          </div>
+          <div className="form-group">
+            <label>Database</label>
+            <input
+              type="text"
+              value={mssqlConfig.database || ''}
+              onChange={(e) => setMssqlConfig({ ...mssqlConfig, database: e.target.value })}
+              placeholder="master"
+            />
+            <p className="field-help">
+              The database name to connect to.
+            </p>
+          </div>
+        </div>
       </div>
     );
   };
@@ -2834,6 +2913,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
       switch (toolType) {
         case 'postgres':
           return renderPostgresConnection();
+        case 'mssql':
+          return renderMssqlConnection();
         case 'odoo_shell':
           return renderOdooConnection();
         case 'ssh_shell':

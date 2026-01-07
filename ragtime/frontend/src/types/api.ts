@@ -377,7 +377,7 @@ export interface EmbeddingModelsResponse {
 }
 
 // Tool Configuration Types
-export type ToolType = 'postgres' | 'odoo_shell' | 'ssh_shell' | 'filesystem_indexer';
+export type ToolType = 'postgres' | 'mssql' | 'odoo_shell' | 'ssh_shell' | 'filesystem_indexer';
 
 // Mount type for filesystem indexer
 export type FilesystemMountType = 'docker_volume' | 'smb' | 'nfs' | 'local';
@@ -390,6 +390,14 @@ export interface PostgresConnectionConfig {
   database?: string;
   container?: string;
   docker_network?: string;
+}
+
+export interface MssqlConnectionConfig {
+  host: string;
+  port?: number;
+  user: string;
+  password: string;
+  database: string;
 }
 
 export interface OdooShellConnectionConfig {
@@ -464,7 +472,7 @@ export interface FilesystemConnectionConfig {
   last_indexed_at?: string | null;
 }
 
-export type ConnectionConfig = PostgresConnectionConfig | OdooShellConnectionConfig | SSHShellConnectionConfig | FilesystemConnectionConfig;
+export type ConnectionConfig = PostgresConnectionConfig | MssqlConnectionConfig | OdooShellConnectionConfig | SSHShellConnectionConfig | FilesystemConnectionConfig;
 
 export interface ToolConfig {
   id: string;
@@ -553,6 +561,11 @@ export const TOOL_TYPE_INFO: Record<ToolType, { name: string; description: strin
   postgres: {
     name: 'PostgreSQL Database',
     description: 'Connect to a PostgreSQL database to execute SQL queries',
+    icon: 'database',
+  },
+  mssql: {
+    name: 'MSSQL / SQL Server',
+    description: 'Connect to Microsoft SQL Server or Azure SQL database',
     icon: 'database',
   },
   odoo_shell: {

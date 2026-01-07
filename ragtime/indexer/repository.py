@@ -41,6 +41,22 @@ logger = get_logger(__name__)
 CHARS_PER_TOKEN = 4
 
 
+def _sanitize_for_postgres(text: str) -> str:
+    """
+    Sanitize text for PostgreSQL storage.
+
+    PostgreSQL text columns cannot store null bytes (\\u0000).
+    This function removes them to prevent storage errors.
+
+    Args:
+        text: The text to sanitize.
+
+    Returns:
+        Sanitized text safe for PostgreSQL storage.
+    """
+    return text.replace("\x00", "") if text else text
+
+
 def _safe_serialize(value: Any) -> str:
     try:
         return json.dumps(value, default=str)
@@ -772,6 +788,9 @@ class IndexerRepository:
         """Add a message to a conversation."""
         db = await self._get_db()
 
+        # Sanitize content for PostgreSQL storage (remove null bytes)
+        content = _sanitize_for_postgres(content)
+
         # Get current conversation
         prisma_conv = await db.conversation.find_unique(where={"id": conversation_id})
         if not prisma_conv:
@@ -1004,6 +1023,9 @@ class IndexerRepository:
         """Create a new background chat task."""
         db = await self._get_db()
 
+        # Sanitize user message for PostgreSQL storage (remove null bytes)
+        user_message = _sanitize_for_postgres(user_message)
+
         prisma_task = await db.chattask.create(
             data={  # type: ignore[arg-type]
                 "id": str(uuid.uuid4()),
@@ -1094,6 +1116,9 @@ class IndexerRepository:
         """Update a chat task's streaming state with version tracking."""
         db = await self._get_db()
 
+        # Sanitize content for PostgreSQL storage (remove null bytes)
+        content = _sanitize_for_postgres(content)
+
         # Increment version for change detection
         new_version = current_version + 1
 
@@ -1130,6 +1155,9 @@ class IndexerRepository:
     ) -> Optional[ChatTask]:
         """Mark a chat task as completed with the final response."""
         db = await self._get_db()
+
+        # Sanitize content for PostgreSQL storage (remove null bytes)
+        response_content = _sanitize_for_postgres(response_content)
 
         # Final version increment to signal completion
         final_version = current_version + 1

@@ -506,6 +506,7 @@ class ToolType(str, Enum):
     """Type of tool connection."""
 
     POSTGRES = "postgres"
+    MSSQL = "mssql"
     ODOO_SHELL = "odoo_shell"
     SSH_SHELL = "ssh_shell"
     FILESYSTEM_INDEXER = "filesystem_indexer"
@@ -537,6 +538,16 @@ class PostgresConnectionConfig(BaseModel):
         default="",
         description="Docker network to connect ragtime to the PostgreSQL container's network",
     )
+
+
+class MssqlConnectionConfig(BaseModel):
+    """Connection configuration for MSSQL/SQL Server tool."""
+
+    host: str = Field(description="MSSQL server hostname or IP address")
+    port: int = Field(default=1433, ge=1, le=65535, description="MSSQL port")
+    user: str = Field(description="MSSQL username (e.g., 'sa' or 'domain\\user')")
+    password: str = Field(description="MSSQL password")
+    database: str = Field(description="Database name to connect to")
 
 
 class OdooShellConnectionConfig(BaseModel):
