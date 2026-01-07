@@ -390,6 +390,11 @@ export interface PostgresConnectionConfig {
   database?: string;
   container?: string;
   docker_network?: string;
+  // Schema indexing options
+  schema_index_enabled?: boolean;
+  schema_index_interval_hours?: number;
+  last_schema_indexed_at?: string | null;
+  schema_hash?: string | null;
 }
 
 export interface MssqlConnectionConfig {
@@ -398,6 +403,11 @@ export interface MssqlConnectionConfig {
   user: string;
   password: string;
   database: string;
+  // Schema indexing options
+  schema_index_enabled?: boolean;
+  schema_index_interval_hours?: number;
+  last_schema_indexed_at?: string | null;
+  schema_hash?: string | null;
 }
 
 export interface OdooShellConnectionConfig {
@@ -737,6 +747,45 @@ export interface SMBDiscoveryResponse {
   success: boolean;
   shares: SMBShare[];
   error?: string;
+}
+
+// =============================================================================
+// Schema Indexer Types (SQL Database Schema Indexing)
+// =============================================================================
+
+export type SchemaIndexStatus = 'pending' | 'indexing' | 'completed' | 'failed' | 'cancelled';
+
+export interface SchemaIndexJob {
+  id: string;
+  tool_config_id: string;
+  status: SchemaIndexStatus;
+  index_name: string;
+  progress_percent: number;
+  total_tables: number;
+  processed_tables: number;
+  total_chunks: number;
+  processed_chunks: number;
+  error_message: string | null;
+  cancel_requested: boolean;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface SchemaIndexStatusResponse {
+  enabled: boolean;
+  last_indexed: string | null;
+  schema_hash: string | null;
+  interval_hours: number;
+  embedding_count: number;
+  current_job: SchemaIndexJob | null;
+}
+
+export interface SchemaIndexStats {
+  embedding_count: number;
+  table_count: number;
+  last_indexed: string | null;
+  schema_hash: string | null;
 }
 
 // =============================================================================

@@ -31,9 +31,12 @@ from ragtime.indexer.models import (
     IndexJobResponse,
     IndexStatus,
     RepoVisibilityResponse,
+    SchemaIndexJobResponse,
+    TriggerSchemaIndexRequest,
     UpdateSettingsRequest,
 )
 from ragtime.indexer.repository import repository
+from ragtime.indexer.schema_service import schema_indexer
 from ragtime.indexer.service import indexer
 
 if TYPE_CHECKING:
@@ -4789,4 +4792,258 @@ async def cancel_chat_task(task_id: str):
         started_at=updated_task.started_at,
         completed_at=updated_task.completed_at,
         last_update_at=updated_task.last_update_at,
+    )
+
+
+# =============================================================================
+# Schema Indexer Routes (for SQL database tools)
+# =============================================================================
+
+
+@router.post(
+    "/tools/{tool_id}/schema/index",
+    response_model=SchemaIndexJobResponse,
+    tags=["Schema Indexer"],
+)
+async def trigger_schema_index(
+    tool_id: str,
+    request: TriggerSchemaIndexRequest = Body(default=TriggerSchemaIndexRequest()),
+    _user: User = Depends(require_admin),
+    _: None = Depends(require_valid_embedding_provider),
+):
+    """
+    Trigger schema indexing for a SQL database tool. Admin only.
+
+    Starts a background job to introspect the database schema and create
+    embeddings for each table (table name, columns, constraints, indexes).
+
+    The embeddings enable semantic search of the database schema, helping
+    the AI write better queries by understanding the database structure.
+    """
+    from ragtime.indexer.models import ToolType
+
+    # Get the tool config
+    tool_config = await repository.get_tool_config(tool_id)
+    if not tool_config:
+        raise HTTPException(status_code=404, detail="Tool configuration not found")
+
+    # Only allow for SQL database tools
+    if tool_config.tool_type not in (ToolType.POSTGRES, ToolType.MSSQL):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Schema indexing is only available for postgres and mssql tools, got '{tool_config.tool_type.value}'",
+        )
+
+    # Check that schema indexing is enabled
+    conn_config = tool_config.connection_config or {}
+    if not conn_config.get("schema_index_enabled", False):
+        raise HTTPException(
+            status_code=400,
+            detail="Schema indexing is not enabled for this tool. Enable it in the tool configuration.",
+        )
+
+    # Validate pgvector is available
+    if not await schema_indexer._ensure_pgvector():
+        raise HTTPException(
+            status_code=503,
+            detail="pgvector extension not available. Please install it: CREATE EXTENSION IF NOT EXISTS vector;",
+        )
+
+    # Build safe tool name for index display
+    import re
+
+    raw_name = (tool_config.name or "").strip()
+    safe_tool_name = re.sub(r"[^a-zA-Z0-9]+", "_", raw_name).strip("_").lower()
+
+    # Start indexing
+    job = await schema_indexer.trigger_index(
+        tool_config_id=tool_id,
+        tool_type=tool_config.tool_type.value,
+        connection_config=conn_config,
+        full_reindex=request.full_reindex,
+        tool_name=safe_tool_name or None,
+    )
+
+    return SchemaIndexJobResponse(
+        id=job.id,
+        tool_config_id=job.tool_config_id,
+        status=job.status,
+        index_name=job.index_name,
+        progress_percent=job.progress_percent,
+        total_tables=job.total_tables,
+        processed_tables=job.processed_tables,
+        total_chunks=job.total_chunks,
+        processed_chunks=job.processed_chunks,
+        error_message=job.error_message,
+        cancel_requested=job.cancel_requested,
+        created_at=job.created_at,
+        started_at=job.started_at,
+        completed_at=job.completed_at,
+    )
+
+
+@router.get(
+    "/tools/{tool_id}/schema/status",
+    response_model=Optional[SchemaIndexJobResponse],
+    tags=["Schema Indexer"],
+)
+async def get_schema_index_status(tool_id: str, _user: User = Depends(require_admin)):
+    """Get the latest schema indexing job status for a tool. Admin only."""
+    job = await schema_indexer.get_latest_job(tool_id)
+    return job
+
+
+@router.get(
+    "/tools/{tool_id}/schema/job/{job_id}",
+    response_model=SchemaIndexJobResponse,
+    tags=["Schema Indexer"],
+)
+async def get_schema_index_job(
+    tool_id: str, job_id: str, _user: User = Depends(require_admin)
+):
+    """Get a specific schema indexing job status. Admin only."""
+    job = await schema_indexer.get_job_status(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.tool_config_id != tool_id:
+        raise HTTPException(status_code=404, detail="Job not found for this tool")
+    return job
+
+
+@router.post(
+    "/tools/{tool_id}/schema/job/{job_id}/cancel",
+    tags=["Schema Indexer"],
+)
+async def cancel_schema_index_job(
+    tool_id: str, job_id: str, _user: User = Depends(require_admin)
+):
+    """Cancel an active schema indexing job. Admin only."""
+    job = await schema_indexer.get_job_status(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.tool_config_id != tool_id:
+        raise HTTPException(status_code=404, detail="Job not found for this tool")
+
+    success = await schema_indexer.cancel_job(job_id)
+    if not success:
+        raise HTTPException(status_code=400, detail="Cannot cancel job (not active)")
+
+    return {"message": "Cancellation requested", "job_id": job_id}
+
+
+@router.delete(
+    "/tools/{tool_id}/schema/index",
+    tags=["Schema Indexer"],
+)
+async def delete_schema_index(tool_id: str, _user: User = Depends(require_admin)):
+    """Delete all schema embeddings for a tool. Admin only."""
+    success, message = await schema_indexer.delete_index(tool_id)
+    if not success:
+        raise HTTPException(status_code=500, detail=message)
+
+    return {"message": message}
+
+
+class SchemaStatsResponse(BaseModel):
+    """Response for schema index statistics."""
+
+    embedding_count: int = Field(description="Number of table embeddings")
+    last_indexed_at: Optional[str] = Field(
+        default=None, description="ISO timestamp of last successful index"
+    )
+    schema_hash: Optional[str] = Field(
+        default=None, description="Hash of indexed schema for change detection"
+    )
+
+
+@router.get(
+    "/tools/{tool_id}/schema/stats",
+    response_model=SchemaStatsResponse,
+    tags=["Schema Indexer"],
+)
+async def get_schema_index_stats(tool_id: str, _user: User = Depends(require_admin)):
+    """Get schema index statistics for a tool. Admin only."""
+    # Get embedding count
+    embedding_count = await schema_indexer.get_embedding_count(tool_id)
+
+    # Get last indexed timestamp and hash from tool config
+    tool_config = await repository.get_tool_config(tool_id)
+    last_indexed_at = None
+    schema_hash = None
+
+    if tool_config:
+        conn_config = tool_config.connection_config or {}
+        last_indexed_at = conn_config.get("last_schema_indexed_at")
+        schema_hash = conn_config.get("schema_hash")
+
+    return SchemaStatsResponse(
+        embedding_count=embedding_count,
+        last_indexed_at=last_indexed_at,
+        schema_hash=schema_hash,
+    )
+
+
+@router.get(
+    "/schema/jobs",
+    response_model=List[SchemaIndexJobResponse],
+    tags=["Schema Indexer"],
+)
+async def list_schema_jobs(
+    limit: int = 50,
+    _user: User = Depends(require_admin),
+):
+    """
+    List all schema indexing jobs across all tools. Admin only.
+
+    Returns jobs sorted by created_at descending.
+    """
+    jobs = await schema_indexer.list_all_jobs(limit=limit)
+    return jobs
+
+
+@router.post(
+    "/tools/{tool_id}/schema/job/{job_id}/retry",
+    response_model=SchemaIndexJobResponse,
+    tags=["Schema Indexer"],
+)
+async def retry_schema_index_job(
+    tool_id: str,
+    job_id: str,
+    _user: User = Depends(require_admin),
+    _: None = Depends(require_valid_embedding_provider),
+):
+    """
+    Retry a failed or cancelled schema indexing job. Admin only.
+
+    Creates a new job with a full reindex.
+    """
+    # Verify job belongs to tool
+    existing_job = await schema_indexer.get_job_status(job_id)
+    if not existing_job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if existing_job.tool_config_id != tool_id:
+        raise HTTPException(status_code=404, detail="Job not found for this tool")
+
+    # Retry the job
+    new_job = await schema_indexer.retry_job(job_id)
+    if not new_job:
+        raise HTTPException(
+            status_code=400, detail="Cannot retry job (not failed/cancelled)"
+        )
+
+    return SchemaIndexJobResponse(
+        id=new_job.id,
+        tool_config_id=new_job.tool_config_id,
+        status=new_job.status,
+        index_name=new_job.index_name,
+        progress_percent=new_job.progress_percent,
+        total_tables=new_job.total_tables,
+        processed_tables=new_job.processed_tables,
+        total_chunks=new_job.total_chunks,
+        processed_chunks=new_job.processed_chunks,
+        error_message=new_job.error_message,
+        cancel_requested=new_job.cancel_requested,
+        created_at=new_job.created_at,
+        started_at=new_job.started_at,
+        completed_at=new_job.completed_at,
     )

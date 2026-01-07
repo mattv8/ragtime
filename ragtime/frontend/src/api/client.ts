@@ -780,6 +780,85 @@ export const api = {
   },
 
   // =========================================================================
+  // Schema Indexer API (SQL Database Schema Indexing)
+  // =========================================================================
+
+  /**
+   * Trigger schema indexing for a SQL database tool
+   */
+  async triggerSchemaIndex(toolId: string, forceReindex?: boolean): Promise<import('@/types').SchemaIndexJob> {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/schema/index`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force_reindex: forceReindex ?? false }),
+    });
+    return handleResponse<import('@/types').SchemaIndexJob>(response);
+  },
+
+  /**
+   * Get schema index status for a tool
+   */
+  async getSchemaIndexStatus(toolId: string): Promise<import('@/types').SchemaIndexStatusResponse> {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/schema/status`);
+    return handleResponse<import('@/types').SchemaIndexStatusResponse>(response);
+  },
+
+  /**
+   * Get a specific schema index job
+   */
+  async getSchemaIndexJob(toolId: string, jobId: string): Promise<import('@/types').SchemaIndexJob> {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/schema/job/${jobId}`);
+    return handleResponse<import('@/types').SchemaIndexJob>(response);
+  },
+
+  /**
+   * Cancel an active schema indexing job
+   */
+  async cancelSchemaIndexJob(toolId: string, jobId: string): Promise<{ success: boolean; message: string }> {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/schema/job/${jobId}/cancel`, {
+      method: 'POST',
+    });
+    return handleResponse<{ success: boolean; message: string }>(response);
+  },
+
+  /**
+   * Delete schema index for a tool
+   */
+  async deleteSchemaIndex(toolId: string): Promise<{ success: boolean; deleted_count: number }> {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/schema/index`, {
+      method: 'DELETE',
+    });
+    return handleResponse<{ success: boolean; deleted_count: number }>(response);
+  },
+
+  /**
+   * Get schema index stats for a tool
+   */
+  async getSchemaIndexStats(toolId: string): Promise<import('@/types').SchemaIndexStats> {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/schema/stats`);
+    return handleResponse<import('@/types').SchemaIndexStats>(response);
+  },
+
+  /**
+   * List all schema indexing jobs across all tools
+   */
+  async listSchemaJobs(limit?: number): Promise<import('@/types').SchemaIndexJob[]> {
+    const params = limit ? `?limit=${limit}` : '';
+    const response = await apiFetch(`${API_BASE}/schema/jobs${params}`);
+    return handleResponse<import('@/types').SchemaIndexJob[]>(response);
+  },
+
+  /**
+   * Retry a failed/cancelled schema indexing job
+   */
+  async retrySchemaJob(toolId: string, jobId: string): Promise<import('@/types').SchemaIndexJob> {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/schema/job/${jobId}/retry`, {
+      method: 'POST',
+    });
+    return handleResponse<import('@/types').SchemaIndexJob>(response);
+  },
+
+  // =========================================================================
   // Chat/Conversation API
   // =========================================================================
 

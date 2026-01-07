@@ -439,6 +439,10 @@ select option:checked {
   background: #8b5cf6;
 }
 
+.badge.type-schema {
+  background: #0ea5e9;
+}
+
 .badge.clickable {
   display: inline-flex;
   align-items: center;
