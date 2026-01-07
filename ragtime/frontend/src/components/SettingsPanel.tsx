@@ -832,68 +832,6 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
           </div>
         </fieldset>
 
-        {/* Search Configuration */}
-        <fieldset>
-          <legend>Search Configuration</legend>
-          <p className="fieldset-help">
-            Configure how vector search behaves across your indexed knowledge bases.
-          </p>
-
-          <div className="form-group">
-            <label>Results per Search (k)</label>
-            <input
-              type="number"
-              min={1}
-              max={100}
-              value={formData.search_results_k ?? settings?.search_results_k ?? 5}
-              onChange={(e) =>
-                setFormData({
-                  ...formData,
-                  search_results_k: Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 5)),
-                })
-              }
-            />
-            <p className="field-help">
-              Number of matching document chunks retrieved per vector search query (k).
-              Lower values (3-5) are faster and cheaper but may miss relevant context.
-              Higher values (10-20) provide more context but increase token usage and response time.
-              Very high values (50+) may introduce noise from less relevant matches.
-            </p>
-          </div>
-
-          <div className="form-group">
-            <label className="checkbox-label">
-              <input
-              type="checkbox"
-              checked={formData.aggregate_search ?? settings?.aggregate_search ?? true}
-              onChange={(e) =>
-                setFormData({ ...formData, aggregate_search: e.target.checked })
-              }
-              style={{ marginRight: '0.5rem' }}
-              />
-              <span>Aggregate search results (single tool)</span>
-            </label>
-            <p className="field-help">
-              <strong>Enabled (default):</strong> A single <code>search_knowledge</code> tool searches all indexes.
-              Results are combined and the AI receives context from all sources.<br />
-              <strong>Disabled:</strong> Creates separate <code>search_&lt;index_name&gt;</code> tools for each index.
-              The AI can choose which specific index to search, giving it granular control.
-              Use this when you have distinct knowledge bases (e.g., code vs. docs) and want the AI to target searches.
-            </p>
-          </div>
-
-          <div className="form-group" style={{ marginTop: '1rem' }}>
-            <button
-              type="button"
-              className="btn"
-              onClick={handleSaveSearch}
-              disabled={searchSaving}
-            >
-              {searchSaving ? 'Saving...' : 'Save Search Configuration'}
-            </button>
-          </div>
-        </fieldset>
-
         {/* Embedding Configuration */}
         <fieldset>
           <legend>Embedding Configuration</legend>
@@ -1390,6 +1328,69 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
             </button>
           </div>
         </fieldset>
+
+        {/* Search Configuration */}
+        <fieldset>
+          <legend>Search Configuration</legend>
+          <p className="fieldset-help">
+            Configure how vector search behaves across your indexed knowledge bases.
+          </p>
+
+          <div className="form-group">
+            <label>Results per Search (k)</label>
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={formData.search_results_k ?? settings?.search_results_k ?? 5}
+              onChange={(e) =>
+                setFormData({
+                  ...formData,
+                  search_results_k: Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 5)),
+                })
+              }
+            />
+            <p className="field-help">
+              Number of matching document chunks retrieved per vector search query (k).
+              Lower values (3-5) are faster and cheaper but may miss relevant context.
+              Higher values (10-20) provide more context but increase token usage and response time.
+              Very high values (50+) may introduce noise from less relevant matches.
+            </p>
+          </div>
+
+          <div className="form-group">
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={formData.aggregate_search ?? settings?.aggregate_search ?? true}
+                onChange={(e) =>
+                  setFormData({ ...formData, aggregate_search: e.target.checked })
+                }
+                style={{ marginRight: '0.5rem' }}
+              />
+              <span>Aggregate search results (single tool)</span>
+            </label>
+            <p className="field-help">
+              <strong>Enabled (default):</strong> A single <code>search_knowledge</code> tool searches all indexes.
+              Results are combined and the AI receives context from all sources.<br />
+              <strong>Disabled:</strong> Creates separate <code>search_&lt;index_name&gt;</code> tools for each index.
+              The AI can choose which specific index to search, giving it granular control.
+              Use this when you have distinct knowledge bases (e.g., code vs. docs) and want the AI to target searches.
+            </p>
+          </div>
+
+          <div className="form-group" style={{ marginTop: '1rem' }}>
+            <button
+              type="button"
+              className="btn"
+              onClick={handleSaveSearch}
+              disabled={searchSaving}
+            >
+              {searchSaving ? 'Saving...' : 'Save Search Configuration'}
+            </button>
+          </div>
+        </fieldset>
+
       </form>
 
       {settings?.updated_at && (
@@ -1397,6 +1398,7 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
           Last updated: {new Date(settings.updated_at).toLocaleString()}
         </p>
       )}
+
 
       {/* Model Filter Modal */}
       {showModelFilterModal && (
@@ -1456,16 +1458,16 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
                         model.provider.toLowerCase().includes(modelFilterText.toLowerCase())
                       )
                       .map((model) => (
-                      <label key={model.id} className="model-filter-item">
-                        <input
-                          type="checkbox"
-                          checked={selectedModels.has(model.id)}
-                          onChange={() => toggleModel(model.id)}
-                        />
-                        <span className="model-filter-name">{model.name}</span>
-                        <span className="model-filter-provider">{model.provider}</span>
-                      </label>
-                    ))}
+                        <label key={model.id} className="model-filter-item">
+                          <input
+                            type="checkbox"
+                            checked={selectedModels.has(model.id)}
+                            onChange={() => toggleModel(model.id)}
+                          />
+                          <span className="model-filter-name">{model.name}</span>
+                          <span className="model-filter-provider">{model.provider}</span>
+                        </label>
+                      ))}
                   </div>
                 </>
               )}

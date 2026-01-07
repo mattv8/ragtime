@@ -22,9 +22,11 @@ interface ToolCardProps {
   onToggle: (toolId: string, enabled: boolean) => void;
   onTest: (toolId: string) => void;
   testing: boolean;
+  onPdmReindex?: (toolId: string, fullReindex: boolean) => void;
+  pdmIndexing?: boolean;
 }
 
-function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing }: ToolCardProps) {
+function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing, onPdmReindex, pdmIndexing }: ToolCardProps) {
   const typeInfo = TOOL_TYPE_INFO[tool.tool_type];
 
   const getConnectionSummary = (): string => {
@@ -37,6 +39,14 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
           return `${config.host}:${port}/${database}`;
         }
         return `Container: ${'container' in config ? config.container : 'N/A'}`;
+      case 'mssql':
+      case 'solidworks_pdm':
+        if ('host' in config && config.host) {
+          const port = 'port' in config ? config.port : 1433;
+          const database = 'database' in config ? config.database : '';
+          return `${config.host}:${port}/${database}`;
+        }
+        return 'MSSQL connection';
       case 'odoo_shell':
         return `Container: ${'container' in config ? config.container : 'N/A'}`;
       case 'ssh_shell':
@@ -45,6 +55,11 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
           return `${config.user}@${config.host}:${port}`;
         }
         return 'SSH connection';
+      case 'filesystem_indexer':
+        if ('paths' in config && Array.isArray(config.paths)) {
+          return `${config.paths.length} path(s)`;
+        }
+        return 'Filesystem indexer';
       default:
         return 'Unknown';
     }
@@ -127,6 +142,28 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
         >
           {testing ? 'Testing...' : 'Test'}
         </button>
+        {tool.tool_type === 'solidworks_pdm' && onPdmReindex && (
+          <>
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => onPdmReindex(tool.id, false)}
+              disabled={pdmIndexing}
+              title="Index new and changed documents"
+            >
+              {pdmIndexing ? 'Indexing...' : 'Index'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => onPdmReindex(tool.id, true)}
+              disabled={pdmIndexing}
+              title="Re-index all documents from scratch"
+            >
+              Full Re-index
+            </button>
+          </>
+        )}
         <button
           type="button"
           className="btn btn-sm"
@@ -154,6 +191,7 @@ export function ToolsPanel() {
   const [showWizard, setShowWizard] = useState(false);
   const [editingTool, setEditingTool] = useState<ToolConfig | null>(null);
   const [testingToolId, setTestingToolId] = useState<string | null>(null);
+  const [pdmIndexingToolId, setPdmIndexingToolId] = useState<string | null>(null);
   const [heartbeats, setHeartbeats] = useState<Record<string, HeartbeatStatus>>({});
   const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [confirmation, setConfirmation] = useState<ConfirmationState | null>(null);
@@ -281,6 +319,21 @@ export function ToolsPanel() {
     }
   };
 
+  const handlePdmReindex = async (toolId: string, fullReindex: boolean) => {
+    try {
+      setPdmIndexingToolId(toolId);
+      setSuccess(fullReindex ? 'Starting full PDM re-index...' : 'Starting PDM index update...');
+      await api.triggerPdmIndex(toolId, fullReindex);
+      setSuccess(fullReindex ? 'Full PDM re-index started' : 'PDM index update started');
+      setTimeout(() => setSuccess(null), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to trigger PDM index');
+      setTimeout(() => setError(null), 5000);
+    } finally {
+      setPdmIndexingToolId(null);
+    }
+  };
+
   if (showWizard) {
     return (
       <ToolWizard
@@ -353,6 +406,8 @@ export function ToolsPanel() {
                 onToggle={handleToggleTool}
                 onTest={handleTestTool}
                 testing={testingToolId === tool.id}
+                onPdmReindex={handlePdmReindex}
+                pdmIndexing={pdmIndexingToolId === tool.id}
               />
             ))}
           </div>

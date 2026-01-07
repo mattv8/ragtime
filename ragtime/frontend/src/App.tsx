@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '@/api';
 import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, LoginPage } from '@/components';
-import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, ToolConfig, AppSettings } from '@/types';
+import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob, ToolConfig, AppSettings } from '@/types';
 import '@/styles/global.css';
 
 type ViewType = 'chat' | 'indexer' | 'tools' | 'settings';
@@ -40,6 +40,10 @@ export function App() {
   // Schema indexer state
   const [schemaJobs, setSchemaJobs] = useState<SchemaIndexJob[]>([]);
   const schemaPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // PDM indexer state
+  const [pdmJobs, setPdmJobs] = useState<PdmIndexJob[]>([]);
+  const pdmPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Load server name from settings
   useEffect(() => {
@@ -193,6 +197,21 @@ export function App() {
     await loadSchemaJobs();
   }, [loadSchemaJobs]);
 
+  // Load PDM indexing jobs
+  const loadPdmJobs = useCallback(async () => {
+    try {
+      const jobs = await api.listPdmJobs();
+      setPdmJobs(jobs);
+    } catch (err) {
+      console.warn('Failed to load PDM jobs:', err);
+    }
+  }, []);
+
+  const handleCancelPdmJob = useCallback(async (toolId: string, jobId: string) => {
+    await api.cancelPdmIndexJob(toolId, jobId);
+    await loadPdmJobs();
+  }, [loadPdmJobs]);
+
   // Initial load (only when authenticated and admin for indexer data)
   useEffect(() => {
     if (currentUser && isAdmin) {
@@ -200,8 +219,9 @@ export function App() {
       loadIndexes();
       loadFilesystemJobs();
       loadSchemaJobs();
+      loadPdmJobs();
     }
-  }, [currentUser, isAdmin, loadJobs, loadIndexes, loadFilesystemJobs, loadSchemaJobs]);
+  }, [currentUser, isAdmin, loadJobs, loadIndexes, loadFilesystemJobs, loadSchemaJobs, loadPdmJobs]);
 
   // Fast polling for active filesystem jobs
   useEffect(() => {
@@ -250,6 +270,30 @@ export function App() {
       }
     };
   }, [currentUser, isAdmin, schemaJobs, loadSchemaJobs]);
+
+  // Fast polling for active PDM jobs
+  useEffect(() => {
+    if (!currentUser || !isAdmin) return;
+
+    const hasActivePdmJob = pdmJobs.some(
+      j => j.status === 'pending' || j.status === 'indexing'
+    );
+
+    if (hasActivePdmJob) {
+      pdmPollRef.current = setInterval(loadPdmJobs, 2000);
+    } else {
+      if (pdmPollRef.current) {
+        clearInterval(pdmPollRef.current);
+        pdmPollRef.current = null;
+      }
+    }
+
+    return () => {
+      if (pdmPollRef.current) {
+        clearInterval(pdmPollRef.current);
+      }
+    };
+  }, [currentUser, isAdmin, pdmJobs, loadPdmJobs]);
 
   // Auto-refresh: fast polling when jobs are active, slow background refresh otherwise
   useEffect(() => {
@@ -365,13 +409,16 @@ export function App() {
             jobs={jobs}
             filesystemJobs={filesystemJobs}
             schemaJobs={schemaJobs}
+            pdmJobs={pdmJobs}
             loading={jobsLoading}
             error={jobsError}
             onJobsChanged={loadJobs}
             onFilesystemJobsChanged={loadFilesystemJobs}
             onSchemaJobsChanged={loadSchemaJobs}
+            onPdmJobsChanged={loadPdmJobs}
             onCancelFilesystemJob={handleCancelFilesystemJob}
             onCancelSchemaJob={handleCancelSchemaJob}
+            onCancelPdmJob={handleCancelPdmJob}
           />
         </>
       )}

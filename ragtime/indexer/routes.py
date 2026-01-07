@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any, List, Optional
 
 import httpx
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
 from ragtime.core.logging import get_logger
@@ -30,14 +29,18 @@ from ragtime.indexer.models import (
     IndexInfo,
     IndexJobResponse,
     IndexStatus,
+    PdmIndexJobResponse,
     RepoVisibilityResponse,
     SchemaIndexJobResponse,
+    TriggerPdmIndexRequest,
     TriggerSchemaIndexRequest,
     UpdateSettingsRequest,
 )
+from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer
 from ragtime.indexer.service import indexer
+from ragtime.indexer.utils import safe_tool_name
 
 if TYPE_CHECKING:
     from prisma.models import User
@@ -182,8 +185,7 @@ async def check_repo_visibility(
     if request.index_name:
         try:
             metadata = await repository.get_index_metadata(request.index_name)
-            if metadata and metadata.gitToken:
-                stored_token = metadata.gitToken
+            stored_token = getattr(metadata, "gitToken", None) if metadata else None
         except Exception:
             pass  # No stored token available
 
@@ -217,8 +219,7 @@ async def fetch_branches(
     if not token and request.index_name:
         try:
             metadata = await repository.get_index_metadata(request.index_name)
-            if metadata and metadata.gitToken:
-                token = metadata.gitToken
+            token = getattr(metadata, "gitToken", None) if metadata else None
         except Exception:
             pass  # No stored token available
 
@@ -314,7 +315,7 @@ async def delete_job(job_id: str, _user: User = Depends(require_admin)):
 
     if job.status in [IndexStatus.PENDING, IndexStatus.PROCESSING]:
         raise HTTPException(
-            status_code=400, detail=f"Cannot delete active job. Cancel it first."
+            status_code=400, detail="Cannot delete active job. Cancel it first."
         )
 
     await repository.delete_job(job_id)
@@ -406,7 +407,7 @@ async def upload_and_index(
         )
     except Exception as e:
         logger.exception("Failed to start indexing job")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.post("/git", response_model=IndexJobResponse)
@@ -450,7 +451,7 @@ async def index_from_git(
         )
     except Exception as e:
         logger.exception("Failed to start git indexing job")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 class ReindexGitRequest(BaseModel):
@@ -494,10 +495,13 @@ async def reindex_from_git(
         )
 
     # Use provided token, or fall back to stored token
-    git_token = request.git_token or metadata.gitToken
+    git_token = request.git_token or getattr(metadata, "gitToken", None)
 
     # Get config from snapshot or use defaults
-    config_data = metadata.configSnapshot or {}
+    config_snapshot = getattr(metadata, "configSnapshot", None)
+    config_data: dict[str, Any] = (
+        config_snapshot if isinstance(config_snapshot, dict) else {}
+    )
     config = IndexConfig(
         name=name,
         description=metadata.description or "",
@@ -512,7 +516,7 @@ async def reindex_from_git(
     try:
         job = await indexer.create_index_from_git(
             git_url=metadata.source,
-            branch=metadata.gitBranch or "main",
+            branch=(getattr(metadata, "gitBranch", None) or "main"),
             config=config,
             git_token=git_token,
         )
@@ -532,7 +536,7 @@ async def reindex_from_git(
         )
     except Exception as e:
         logger.exception("Failed to start re-indexing job")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 class RetryJobRequest(BaseModel):
@@ -600,7 +604,7 @@ async def retry_failed_job(
             )
         except Exception as e:
             logger.exception("Failed to retry indexing job")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=str(e)) from e
     else:
         raise HTTPException(
             status_code=400,
@@ -740,7 +744,10 @@ async def update_index_config(
         )
 
     # Merge with existing config snapshot
-    existing_config = metadata.configSnapshot or {}
+    existing_snapshot = getattr(metadata, "configSnapshot", None)
+    existing_config: dict[str, Any] = (
+        existing_snapshot if isinstance(existing_snapshot, dict) else {}
+    )
     new_config = {}
 
     # Copy existing values
@@ -779,7 +786,7 @@ async def update_index_config(
 
     return {
         "message": f"Config updated for '{name}'",
-        "git_branch": request.git_branch or metadata.gitBranch,
+        "git_branch": request.git_branch or getattr(metadata, "gitBranch", None),
         "config_snapshot": new_config,
     }
 
@@ -807,8 +814,8 @@ async def download_index(name: str, _user: User = Depends(require_admin)):
         index_path = index_path.resolve()
         if not str(index_path).startswith(str(indexer.index_base_path.resolve())):
             raise HTTPException(status_code=400, detail="Invalid index path")
-    except (OSError, ValueError):
-        raise HTTPException(status_code=400, detail="Invalid index name")
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid index name") from exc
 
     # Validate the index exists
     if not index_path.exists():
@@ -947,6 +954,10 @@ async def get_embedding_status(_user: User = Depends(require_admin)):
 
 from ragtime.indexer.models import (
     CreateToolConfigRequest,
+    MssqlDiscoverRequest,
+    MssqlDiscoverResponse,
+    PdmDiscoverRequest,
+    PdmDiscoverResponse,
     PostgresDiscoverRequest,
     PostgresDiscoverResponse,
     ToolConfig,
@@ -1212,8 +1223,8 @@ async def toggle_tool_config(
 
     # Notify MCP clients that tools have changed
     notify_tools_changed()
-    invalidate_settings_cache()
-    await rag.initialize()
+
+    return config
 
 
 @router.post("/tools/test", response_model=ToolTestResponse, tags=["Tools"])
@@ -1224,9 +1235,6 @@ async def test_tool_connection(
     Test a tool connection without saving. Admin only.
     Used during the wizard to validate connection settings.
     """
-    import asyncio
-    import subprocess
-
     tool_type = request.tool_type
     config = request.connection_config
 
@@ -1240,6 +1248,8 @@ async def test_tool_connection(
         return await _test_ssh_connection(config)
     elif tool_type == ToolType.FILESYSTEM_INDEXER:
         return await _test_filesystem_connection(config)
+    elif tool_type == ToolType.SOLIDWORKS_PDM:
+        return await _test_pdm_connection(config)
     else:
         return ToolTestResponse(
             success=False, message=f"Unknown tool type: {tool_type}"
@@ -1265,6 +1275,84 @@ async def _test_filesystem_connection(config: dict) -> ToolTestResponse:
             return ToolTestResponse(success=False, message=result["message"])
     except Exception as e:
         return ToolTestResponse(success=False, message=f"Configuration error: {str(e)}")
+
+
+async def _test_pdm_connection(config: dict) -> ToolTestResponse:
+    """Test SolidWorks PDM database connection."""
+    import asyncio
+
+    try:
+        import pymssql  # type: ignore[import-untyped]
+    except ImportError:
+        return ToolTestResponse(
+            success=False,
+            message="pymssql package not installed. Install with: pip install pymssql",
+        )
+
+    host = config.get("host", "")
+    port = config.get("port", 1433)
+    user = config.get("user", "")
+    password = config.get("password", "")
+    database = config.get("database", "")
+
+    if not all([host, user, password, database]):
+        return ToolTestResponse(
+            success=False, message="Missing required connection parameters"
+        )
+
+    def test_connection() -> tuple[bool, str, dict | None]:
+        conn = None
+        try:
+            conn = pymssql.connect(  # type: ignore[attr-defined]
+                server=host,
+                port=str(port),
+                user=user,
+                password=password,
+                database=database,
+                login_timeout=10,
+                timeout=10,
+                as_dict=True,
+            )
+            cursor = conn.cursor()
+
+            # Test query to count SolidWorks documents
+            cursor.execute(
+                """
+                SELECT COUNT(*) as doc_count FROM Documents
+                WHERE Filename LIKE '%.SLDPRT' OR Filename LIKE '%.SLDASM' OR Filename LIKE '%.SLDDRW'
+            """
+            )
+            result = cursor.fetchone()
+            doc_count = result["doc_count"] if result else 0
+
+            return (
+                True,
+                f"Connected successfully. Found {doc_count} SolidWorks documents.",
+                {"document_count": doc_count},
+            )
+
+        except Exception as e:
+            error_str = str(e)
+            if "Login failed" in error_str:
+                return False, "Login failed - check username and password", None
+            if "Cannot open database" in error_str:
+                return (
+                    False,
+                    f"Cannot open database '{database}' - check database name",
+                    None,
+                )
+            return False, f"Connection error: {error_str}", None
+        finally:
+            if conn:
+                conn.close()
+
+    try:
+        success, message, details = await asyncio.to_thread(test_connection)
+        return ToolTestResponse(success=success, message=message, details=details)
+    except asyncio.TimeoutError:
+        return ToolTestResponse(success=False, message="Connection timed out")
+    except Exception as e:
+        return ToolTestResponse(success=False, message=f"Error: {str(e)}")
 
 
 @router.post(
@@ -1305,7 +1393,7 @@ async def discover_postgres_databases(
             ),
             timeout=10.0,
         )
-        stdout, stderr = await process.communicate()
+        _stdout, stderr = await process.communicate()
 
         if process.returncode == 0:
             # Parse database names from output
@@ -1333,6 +1421,185 @@ async def discover_postgres_databases(
 
 
 @router.post(
+    "/tools/mssql/discover", response_model=MssqlDiscoverResponse, tags=["Tools"]
+)
+async def discover_mssql_databases(
+    request: MssqlDiscoverRequest, _user: User = Depends(require_admin)
+):
+    """
+    Discover available databases on an MSSQL server. Admin only.
+    Connects to the server and lists all accessible databases.
+    """
+    import asyncio
+
+    try:
+        import pymssql  # type: ignore[import-untyped]
+    except ImportError:
+        return MssqlDiscoverResponse(
+            success=False,
+            databases=[],
+            error="pymssql package not installed",
+        )
+
+    def discover_databases() -> tuple[bool, list[str], str | None]:
+        conn = None
+        try:
+            conn = pymssql.connect(  # type: ignore[attr-defined]
+                server=request.host,
+                port=str(request.port),
+                user=request.user,
+                password=request.password,
+                database="master",  # Connect to master to list databases
+                login_timeout=10,
+                timeout=10,
+                as_dict=True,
+            )
+            cursor = conn.cursor()
+
+            # Query system databases
+            cursor.execute(
+                """
+                SELECT name FROM sys.databases
+                WHERE database_id > 4  -- Exclude system databases
+                ORDER BY name
+                """
+            )
+            rows = cursor.fetchall() or []
+            databases = [row["name"] for row in rows]  # type: ignore[index]
+            return True, databases, None
+
+        except Exception as e:
+            error_str = str(e)
+            if "Login failed" in error_str:
+                return False, [], "Login failed - check username and password"
+            return False, [], f"Connection error: {error_str}"
+        finally:
+            if conn:
+                conn.close()
+
+    try:
+        success, databases, error = await asyncio.to_thread(discover_databases)
+        return MssqlDiscoverResponse(success=success, databases=databases, error=error)
+    except asyncio.TimeoutError:
+        return MssqlDiscoverResponse(
+            success=False, databases=[], error="Connection timed out"
+        )
+    except Exception as e:
+        return MssqlDiscoverResponse(
+            success=False, databases=[], error=f"Discovery failed: {str(e)}"
+        )
+
+
+@router.post("/tools/pdm/discover", response_model=PdmDiscoverResponse, tags=["Tools"])
+async def discover_pdm_schema(
+    request: PdmDiscoverRequest, _user: User = Depends(require_admin)
+):
+    """
+    Discover PDM schema metadata from a SolidWorks PDM database. Admin only.
+    Returns available file extensions and variable names.
+    """
+    import asyncio
+
+    try:
+        import pymssql  # type: ignore[import-untyped]
+    except ImportError:
+        return PdmDiscoverResponse(
+            success=False,
+            error="pymssql package not installed",
+        )
+
+    def discover_schema() -> tuple[bool, list[str], list[str], int, str | None]:
+        """Returns (success, file_extensions, variable_names, doc_count, error)."""
+        conn = None
+        try:
+            conn = pymssql.connect(  # type: ignore[attr-defined]
+                server=request.host,
+                port=str(request.port),
+                user=request.user,
+                password=request.password,
+                database=request.database,
+                login_timeout=10,
+                timeout=30,
+                as_dict=True,
+            )
+            cursor = conn.cursor()
+
+            # Get distinct file extensions from Documents table
+            # Use RIGHT() with CHARINDEX on reversed string to get extension from end
+            # Filter out configuration markers containing angle brackets
+            cursor.execute(
+                """
+                SELECT DISTINCT
+                    UPPER(RIGHT(Filename, CHARINDEX('.', REVERSE(Filename)))) AS Extension
+                FROM Documents
+                WHERE Filename LIKE '%.%'
+                    AND Deleted = 0
+                    AND CHARINDEX('.', REVERSE(Filename)) > 1
+                    AND CHARINDEX('.', REVERSE(Filename)) <= 10
+                    AND Filename NOT LIKE '%<%'
+                ORDER BY Extension
+                """
+            )
+            ext_rows = cursor.fetchall() or []
+            extensions = [
+                row["Extension"]  # type: ignore[index]
+                for row in ext_rows
+                if row["Extension"]  # type: ignore[index]
+            ]
+
+            # Get all variable names from Variable table
+            # Filter out GUID-like names (patterns like {xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx})
+            cursor.execute(
+                """
+                SELECT VariableName FROM Variable
+                WHERE VariableName NOT LIKE '{________-____-____-____-____________}'
+                    AND VariableName NOT LIKE '{%-%-%-%-%}'
+                ORDER BY VariableName
+                """
+            )
+            var_rows = cursor.fetchall() or []
+            variables = [
+                row["VariableName"]  # type: ignore[index]
+                for row in var_rows
+                if row["VariableName"]  # type: ignore[index]
+            ]
+
+            # Get total document count
+            cursor.execute("SELECT COUNT(*) as cnt FROM Documents WHERE Deleted = 0")
+            result = cursor.fetchone()
+            doc_count = result["cnt"] if result else 0  # type: ignore[index]
+
+            return True, extensions, variables, doc_count, None
+
+        except Exception as e:
+            error_str = str(e)
+            if "Login failed" in error_str:
+                return False, [], [], 0, "Login failed - check username and password"
+            if "Cannot open database" in error_str:
+                return False, [], [], 0, f"Cannot open database '{request.database}'"
+            return False, [], [], 0, f"Connection error: {error_str}"
+        finally:
+            if conn:
+                conn.close()
+
+    try:
+        success, extensions, variables, doc_count, error = await asyncio.to_thread(
+            discover_schema
+        )
+        return PdmDiscoverResponse(
+            success=success,
+            file_extensions=extensions,
+            variable_names=variables,
+            document_count=doc_count,
+            error=error,
+        )
+    except asyncio.TimeoutError:
+        return PdmDiscoverResponse(success=False, error="Connection timed out")
+    except Exception as e:
+        return PdmDiscoverResponse(success=False, error=f"Discovery failed: {str(e)}")
+
+
+@router.post(
     "/tools/ssh/generate-keypair", response_model=SSHKeyPairResponse, tags=["Tools"]
 )
 async def generate_ssh_keypair(
@@ -1348,7 +1615,6 @@ async def generate_ssh_keypair(
         comment: Comment for the key (appears in public key)
         passphrase: Optional passphrase to encrypt the private key
     """
-    import os
     import subprocess
     import tempfile
 
@@ -1374,6 +1640,7 @@ async def generate_ssh_keypair(
                 ],
                 capture_output=True,
                 text=True,
+                check=True,
                 timeout=30,
             )
 
@@ -1384,9 +1651,9 @@ async def generate_ssh_keypair(
                 )
 
             # Read the generated keys
-            with open(key_path, "r") as f:
+            with open(key_path, "r", encoding="utf-8") as f:
                 private_key = f.read()
-            with open(f"{key_path}.pub", "r") as f:
+            with open(f"{key_path}.pub", "r", encoding="utf-8") as f:
                 public_key = f.read().strip()
 
             # Get fingerprint
@@ -1394,6 +1661,7 @@ async def generate_ssh_keypair(
                 ["ssh-keygen", "-lf", key_path],
                 capture_output=True,
                 text=True,
+                check=True,
                 timeout=10,
             )
             fingerprint = (
@@ -1404,14 +1672,12 @@ async def generate_ssh_keypair(
                 private_key=private_key, public_key=public_key, fingerprint=fingerprint
             )
 
-    except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=500, detail="Key generation timed out")
+    except subprocess.TimeoutExpired as e:
+        raise HTTPException(status_code=500, detail="Key generation timed out") from e
     except Exception as e:
         logger.exception("Failed to generate SSH keypair")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
-
-from ragtime.indexer.filesystem_service import filesystem_indexer
 
 # =============================================================================
 # Filesystem Indexer Routes (must be before {tool_id} routes)
@@ -1480,9 +1746,6 @@ async def _heartbeat_check(tool_type, config: dict) -> ToolTestResponse:
     Quick heartbeat check for a tool connection.
     Uses minimal queries/commands to verify connectivity.
     """
-    import asyncio
-    import subprocess
-
     # Normalize tool_type to string value (handle enum or string)
     if hasattr(tool_type, "value"):
         tool_type_str = tool_type.value
@@ -1499,6 +1762,8 @@ async def _heartbeat_check(tool_type, config: dict) -> ToolTestResponse:
         return await _heartbeat_ssh(config)
     elif tool_type_str == "filesystem_indexer":
         return await _heartbeat_filesystem(config)
+    elif tool_type_str == "solidworks_pdm":
+        return await _heartbeat_pdm(config)
     else:
         return ToolTestResponse(
             success=False, message=f"Unknown tool type: {tool_type_str}"
@@ -1550,7 +1815,7 @@ async def _heartbeat_postgres(config: dict) -> ToolTestResponse:
         process = await asyncio.create_subprocess_exec(
             *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
         )
-        stdout, stderr = await process.communicate()
+        _stdout, stderr = await process.communicate()
 
         return ToolTestResponse(
             success=process.returncode == 0,
@@ -1645,7 +1910,7 @@ async def _heartbeat_odoo(config: dict) -> ToolTestResponse:
             process = await asyncio.create_subprocess_exec(
                 *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
             )
-            stdout, stderr = await process.communicate()
+            _stdout, stderr = await process.communicate()
 
             return ToolTestResponse(
                 success=process.returncode == 0,
@@ -1737,6 +2002,56 @@ async def _heartbeat_filesystem(config: dict) -> ToolTestResponse:
         return ToolTestResponse(success=False, message=str(e)[:100])
 
 
+async def _heartbeat_pdm(config: dict) -> ToolTestResponse:
+    """Quick SolidWorks PDM database heartbeat check."""
+    import asyncio
+
+    try:
+        import pymssql  # type: ignore[import-untyped]
+    except ImportError:
+        return ToolTestResponse(success=False, message="pymssql not installed")
+
+    host = config.get("host", "")
+    port = config.get("port", 1433)
+    user = config.get("user", "")
+    password = config.get("password", "")
+    database = config.get("database", "")
+
+    if not all([host, user, password, database]):
+        return ToolTestResponse(success=False, message="PDM connection not configured")
+
+    def check_connection() -> tuple[bool, str]:
+        conn = None
+        try:
+            conn = pymssql.connect(  # type: ignore[attr-defined]
+                server=host,
+                port=str(port),
+                user=user,
+                password=password,
+                database=database,
+                login_timeout=5,
+                timeout=5,
+            )
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            return True, "OK"
+        except Exception as e:
+            return False, str(e)[:80]
+        finally:
+            if conn:
+                conn.close()
+
+    try:
+        success, message = await asyncio.wait_for(
+            asyncio.to_thread(check_connection), timeout=6
+        )
+        return ToolTestResponse(success=success, message=message)
+    except asyncio.TimeoutError:
+        return ToolTestResponse(success=False, message="Connection timed out")
+    except Exception as e:
+        return ToolTestResponse(success=False, message=str(e)[:80])
+
+
 async def _test_postgres_connection(config: dict) -> ToolTestResponse:
     """Test PostgreSQL connection."""
     import asyncio
@@ -1789,7 +2104,7 @@ async def _test_postgres_connection(config: dict) -> ToolTestResponse:
             ),
             timeout=10.0,
         )
-        stdout, stderr = await process.communicate()
+        _stdout, stderr = await process.communicate()
 
         if process.returncode == 0:
             return ToolTestResponse(
@@ -1969,7 +2284,7 @@ async def _test_odoo_docker_connection(config: dict) -> ToolTestResponse:
             ),
             timeout=10.0,
         )
-        stdout, stderr = await process.communicate()
+        stdout, _stderr = await process.communicate()
 
         if process.returncode != 0:
             return ToolTestResponse(
@@ -1994,7 +2309,7 @@ async def _test_odoo_docker_connection(config: dict) -> ToolTestResponse:
             ),
             timeout=10.0,
         )
-        stdout, stderr = await process.communicate()
+        stdout, _stderr = await process.communicate()
 
         if process.returncode == 0:
             version = stdout.decode().strip()
@@ -2519,7 +2834,7 @@ class MountDiscoveryResponse(BaseModel):
     response_model=MountDiscoveryResponse,
     tags=["Filesystem Indexer"],
 )
-async def discover_mounts(_: User = Depends(require_admin)):
+async def discover_mounts(_user: User = Depends(require_admin)):
     """
     Discover current volume mounts in the container.
 
@@ -2539,7 +2854,7 @@ async def discover_mounts(_: User = Depends(require_admin)):
             process = await asyncio.create_subprocess_exec(
                 *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
             )
-            stdout, _ = await process.communicate()
+            stdout, _stderr = await process.communicate()
 
             if process.returncode == 0:
                 import json
@@ -2560,7 +2875,7 @@ async def discover_mounts(_: User = Depends(require_admin)):
     # Also check /proc/mounts as fallback
     if not mounts:
         try:
-            with open("/proc/mounts", "r") as f:
+            with open("/proc/mounts", "r", encoding="utf-8") as f:
                 for line in f:
                     parts = line.split()
                     if len(parts) >= 4 and parts[1].startswith("/mnt"):
@@ -2810,7 +3125,9 @@ async def discover_smb_shares(
 
     def _discover_smb() -> SMBDiscoveryResponse:
         try:
-            from smb.SMBConnection import SMBConnection
+            from smb.SMBConnection import (
+                SMBConnection,
+            )  # pyright: ignore[reportMissingImports]
 
             # Resolve hostname to IP
             try:
@@ -4114,7 +4431,8 @@ async def list_conversations(user: User = Depends(get_current_user)):
 
 @router.post("/conversations", response_model=ConversationResponse)
 async def create_conversation(
-    request: CreateConversationRequest = None, user: User = Depends(get_current_user)
+    request: Optional[CreateConversationRequest] = None,
+    user: User = Depends(get_current_user),
 ):
     """Create a new chat conversation for the current user."""
     # Get default model from app settings if not provided
@@ -4267,7 +4585,7 @@ async def send_message(
     Send a message to a conversation and get a response.
     Non-streaming version.
     """
-    from langchain_core.messages import AIMessage, HumanMessage
+    from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
     from ragtime.rag import rag
 
@@ -4294,9 +4612,11 @@ async def send_message(
 
     # Add user message
     conv = await repository.add_message(conversation_id, "user", user_message)
+    if conv is None:
+        raise HTTPException(status_code=500, detail="Failed to add user message")
 
     # Build chat history for RAG
-    chat_history = []
+    chat_history: list[BaseMessage] = []
     for msg in conv.messages[:-1]:  # Exclude the current message
         if msg.role == "user":
             chat_history.append(HumanMessage(content=msg.content))
@@ -4312,12 +4632,17 @@ async def send_message(
 
     # Add assistant response
     conv = await repository.add_message(conversation_id, "assistant", answer)
+    if conv is None:
+        raise HTTPException(status_code=500, detail="Failed to add assistant message")
 
     # Auto-generate title from first user message if still "New Chat"
     if conv.title == "New Chat" and len(conv.messages) >= 2:
         first_msg = conv.messages[0].content[:50]
         new_title = first_msg + ("..." if len(conv.messages[0].content) > 50 else "")
-        conv = await repository.update_conversation_title(conversation_id, new_title)
+        conv = (
+            await repository.update_conversation_title(conversation_id, new_title)
+            or conv
+        )
 
     return {
         "message": ChatMessage(
@@ -4343,7 +4668,7 @@ async def send_message_stream(
     import time
 
     from fastapi.responses import StreamingResponse
-    from langchain_core.messages import AIMessage, HumanMessage
+    from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
     from ragtime.rag import rag
 
@@ -4373,9 +4698,11 @@ async def send_message_stream(
 
     # Refresh conversation to get updated messages
     conv = await repository.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=500, detail="Failed to store message")
 
     # Build chat history for RAG
-    chat_history = []
+    chat_history: list[BaseMessage] = []
     for msg in conv.messages[:-1]:  # Exclude current message
         if msg.role == "user":
             chat_history.append(HumanMessage(content=msg.content))
@@ -4849,19 +5176,13 @@ async def trigger_schema_index(
             detail="pgvector extension not available. Please install it: CREATE EXTENSION IF NOT EXISTS vector;",
         )
 
-    # Build safe tool name for index display
-    import re
-
-    raw_name = (tool_config.name or "").strip()
-    safe_tool_name = re.sub(r"[^a-zA-Z0-9]+", "_", raw_name).strip("_").lower()
-
     # Start indexing
     job = await schema_indexer.trigger_index(
         tool_config_id=tool_id,
         tool_type=tool_config.tool_type.value,
         connection_config=conn_config,
         full_reindex=request.full_reindex,
-        tool_name=safe_tool_name or None,
+        tool_name=safe_tool_name(tool_config.name) or None,
     )
 
     return SchemaIndexJobResponse(
@@ -5039,6 +5360,248 @@ async def retry_schema_index_job(
         progress_percent=new_job.progress_percent,
         total_tables=new_job.total_tables,
         processed_tables=new_job.processed_tables,
+        total_chunks=new_job.total_chunks,
+        processed_chunks=new_job.processed_chunks,
+        error_message=new_job.error_message,
+        cancel_requested=new_job.cancel_requested,
+        created_at=new_job.created_at,
+        started_at=new_job.started_at,
+        completed_at=new_job.completed_at,
+    )
+
+
+# =============================================================================
+# SolidWorks PDM Indexer Routes
+# =============================================================================
+
+
+@router.post(
+    "/tools/{tool_id}/pdm/index",
+    response_model=PdmIndexJobResponse,
+    tags=["PDM Indexer"],
+)
+async def trigger_pdm_index(
+    tool_id: str,
+    request: TriggerPdmIndexRequest = Body(default=TriggerPdmIndexRequest()),
+    _user: User = Depends(require_admin),
+    _: None = Depends(require_valid_embedding_provider),
+):
+    """
+    Trigger PDM metadata indexing for a SolidWorks PDM tool. Admin only.
+
+    Starts a background job to extract document metadata from the PDM database
+    and create embeddings for semantic search over parts, assemblies, drawings,
+    materials, BOMs, and other PDM properties.
+    """
+    from ragtime.indexer.models import ToolType
+
+    # Get the tool config
+    tool_config = await repository.get_tool_config(tool_id)
+    if not tool_config:
+        raise HTTPException(status_code=404, detail="Tool configuration not found")
+
+    # Only allow for solidworks_pdm tools
+    expected_type = ToolType("solidworks_pdm")
+    if tool_config.tool_type != expected_type:
+        raise HTTPException(
+            status_code=400,
+            detail=f"PDM indexing is only available for solidworks_pdm tools, got '{tool_config.tool_type.value}'",
+        )
+
+    # Validate pgvector is available
+    if not await pdm_indexer._ensure_pgvector():
+        raise HTTPException(
+            status_code=503,
+            detail="pgvector extension not available. Please install it: CREATE EXTENSION IF NOT EXISTS vector;",
+        )
+
+    # Start indexing
+    job = await pdm_indexer.trigger_index(
+        tool_config_id=tool_id,
+        connection_config=tool_config.connection_config or {},
+        full_reindex=request.full_reindex,
+        tool_name=safe_tool_name(tool_config.name) or None,
+    )
+
+    return PdmIndexJobResponse(
+        id=job.id,
+        tool_config_id=job.tool_config_id,
+        status=job.status,
+        index_name=job.index_name,
+        progress_percent=job.progress_percent,
+        total_documents=job.total_documents,
+        processed_documents=job.processed_documents,
+        skipped_documents=job.skipped_documents,
+        total_chunks=job.total_chunks,
+        processed_chunks=job.processed_chunks,
+        error_message=job.error_message,
+        cancel_requested=job.cancel_requested,
+        created_at=job.created_at,
+        started_at=job.started_at,
+        completed_at=job.completed_at,
+    )
+
+
+@router.get(
+    "/tools/{tool_id}/pdm/status",
+    response_model=Optional[PdmIndexJobResponse],
+    tags=["PDM Indexer"],
+)
+async def get_pdm_index_status(tool_id: str, _user: User = Depends(require_admin)):
+    """Get the latest PDM indexing job status for a tool. Admin only."""
+    job = await pdm_indexer.get_latest_job(tool_id)
+    return job
+
+
+@router.get(
+    "/tools/{tool_id}/pdm/job/{job_id}",
+    response_model=PdmIndexJobResponse,
+    tags=["PDM Indexer"],
+)
+async def get_pdm_index_job(
+    tool_id: str, job_id: str, _user: User = Depends(require_admin)
+):
+    """Get a specific PDM indexing job status. Admin only."""
+    job = await pdm_indexer.get_job_status(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.tool_config_id != tool_id:
+        raise HTTPException(status_code=404, detail="Job not found for this tool")
+    return job
+
+
+@router.post(
+    "/tools/{tool_id}/pdm/job/{job_id}/cancel",
+    tags=["PDM Indexer"],
+)
+async def cancel_pdm_index_job(
+    tool_id: str, job_id: str, _user: User = Depends(require_admin)
+):
+    """Cancel an active PDM indexing job. Admin only."""
+    job = await pdm_indexer.get_job_status(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.tool_config_id != tool_id:
+        raise HTTPException(status_code=404, detail="Job not found for this tool")
+
+    success = await pdm_indexer.cancel_job(job_id)
+    if not success:
+        raise HTTPException(status_code=400, detail="Cannot cancel job (not active)")
+
+    return {"message": "Cancellation requested", "job_id": job_id}
+
+
+@router.delete(
+    "/tools/{tool_id}/pdm/index",
+    tags=["PDM Indexer"],
+)
+async def delete_pdm_index(tool_id: str, _user: User = Depends(require_admin)):
+    """Delete all PDM embeddings for a tool. Admin only."""
+    success, message = await pdm_indexer.delete_index(tool_id)
+    if not success:
+        raise HTTPException(status_code=500, detail=message)
+
+    return {"message": message}
+
+
+class PdmStatsResponse(BaseModel):
+    """Response for PDM index statistics."""
+
+    document_count: int = Field(description="Number of indexed documents")
+    embedding_count: int = Field(description="Number of embeddings")
+    last_indexed_at: Optional[str] = Field(
+        default=None, description="ISO timestamp of last successful index"
+    )
+
+
+@router.get(
+    "/tools/{tool_id}/pdm/stats",
+    response_model=PdmStatsResponse,
+    tags=["PDM Indexer"],
+)
+async def get_pdm_index_stats(tool_id: str, _user: User = Depends(require_admin)):
+    """Get PDM index statistics for a tool. Admin only."""
+    # Get counts
+    tool_config = await repository.get_tool_config(tool_id)
+    tool_name = safe_tool_name(tool_config.name) if tool_config else None
+
+    document_count = await pdm_indexer.get_document_count(tool_id, tool_name)
+    embedding_count = await pdm_indexer.get_embedding_count(tool_id, tool_name)
+
+    # Get last indexed timestamp from latest completed job
+    last_indexed_at = None
+    latest_job = await pdm_indexer.get_latest_job(tool_id)
+    if (
+        latest_job
+        and latest_job.status.value == "completed"
+        and latest_job.completed_at
+    ):
+        last_indexed_at = latest_job.completed_at.isoformat()
+
+    return PdmStatsResponse(
+        document_count=document_count,
+        embedding_count=embedding_count,
+        last_indexed_at=last_indexed_at,
+    )
+
+
+@router.get(
+    "/pdm/jobs",
+    response_model=List[PdmIndexJobResponse],
+    tags=["PDM Indexer"],
+)
+async def list_pdm_jobs(
+    limit: int = 50,
+    _user: User = Depends(require_admin),
+):
+    """
+    List all PDM indexing jobs across all tools. Admin only.
+
+    Returns jobs sorted by created_at descending.
+    """
+    jobs = await pdm_indexer.list_all_jobs(limit=limit)
+    return jobs
+
+
+@router.post(
+    "/tools/{tool_id}/pdm/job/{job_id}/retry",
+    response_model=PdmIndexJobResponse,
+    tags=["PDM Indexer"],
+)
+async def retry_pdm_index_job(
+    tool_id: str,
+    job_id: str,
+    _user: User = Depends(require_admin),
+    _: None = Depends(require_valid_embedding_provider),
+):
+    """
+    Retry a failed or cancelled PDM indexing job. Admin only.
+
+    Creates a new job with a full reindex.
+    """
+    # Verify job belongs to tool
+    existing_job = await pdm_indexer.get_job_status(job_id)
+    if not existing_job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if existing_job.tool_config_id != tool_id:
+        raise HTTPException(status_code=404, detail="Job not found for this tool")
+
+    # Retry the job
+    new_job = await pdm_indexer.retry_job(job_id)
+    if not new_job:
+        raise HTTPException(
+            status_code=400, detail="Cannot retry job (not failed/cancelled)"
+        )
+
+    return PdmIndexJobResponse(
+        id=new_job.id,
+        tool_config_id=new_job.tool_config_id,
+        status=new_job.status,
+        index_name=new_job.index_name,
+        progress_percent=new_job.progress_percent,
+        total_documents=new_job.total_documents,
+        processed_documents=new_job.processed_documents,
+        skipped_documents=new_job.skipped_documents,
         total_chunks=new_job.total_chunks,
         processed_chunks=new_job.processed_chunks,
         error_message=new_job.error_message,

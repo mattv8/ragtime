@@ -35,8 +35,12 @@ class MssqlQueryInput(BaseModel):
         )
     )
     description: str = Field(
-        description="Brief description of what this query retrieves (for logging)"
+        default="",
+        description="Brief description of what this query retrieves (for logging)",
+        alias="reason",
     )
+
+    model_config = {"populate_by_name": True}
 
 
 async def execute_mssql_query_async(

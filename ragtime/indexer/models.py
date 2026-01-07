@@ -510,6 +510,7 @@ class ToolType(str, Enum):
     ODOO_SHELL = "odoo_shell"
     SSH_SHELL = "ssh_shell"
     FILESYSTEM_INDEXER = "filesystem_indexer"
+    SOLIDWORKS_PDM = "solidworks_pdm"
 
 
 class FilesystemMountType(str, Enum):
@@ -974,6 +975,57 @@ class PostgresDiscoverResponse(BaseModel):
     )
 
 
+class MssqlDiscoverRequest(BaseModel):
+    """Request to discover databases on an MSSQL server."""
+
+    host: str = Field(description="SQL Server hostname or IP")
+    port: int = Field(default=1433, description="SQL Server port")
+    user: str = Field(description="SQL Server username")
+    password: str = Field(description="SQL Server password")
+
+
+class MssqlDiscoverResponse(BaseModel):
+    """Response from MSSQL database discovery."""
+
+    success: bool = Field(description="Whether discovery succeeded")
+    databases: List[str] = Field(
+        default_factory=list, description="List of discovered database names"
+    )
+    error: Optional[str] = Field(
+        default=None, description="Error message if discovery failed"
+    )
+
+
+class PdmDiscoverRequest(BaseModel):
+    """Request to discover PDM schema metadata."""
+
+    host: str = Field(description="SQL Server hostname or IP")
+    port: int = Field(default=1433, description="SQL Server port")
+    user: str = Field(description="SQL Server username")
+    password: str = Field(description="SQL Server password")
+    database: str = Field(description="PDM database name")
+
+
+class PdmDiscoverResponse(BaseModel):
+    """Response from PDM schema discovery."""
+
+    success: bool = Field(description="Whether discovery succeeded")
+    file_extensions: List[str] = Field(
+        default_factory=list,
+        description="List of file extensions found in the Documents table",
+    )
+    variable_names: List[str] = Field(
+        default_factory=list,
+        description="List of variable names from the Variable table",
+    )
+    document_count: int = Field(
+        default=0, description="Total number of documents in the vault"
+    )
+    error: Optional[str] = Field(
+        default=None, description="Error message if discovery failed"
+    )
+
+
 # -----------------------------------------------------------------------------
 # Chat Conversation Models
 # -----------------------------------------------------------------------------
@@ -1322,3 +1374,287 @@ class TableSchemaInfo(BaseModel):
                 lines.append(f"  - {is_unique}{idx_name}: ({', '.join(idx_columns)})")
 
         return "\n".join(lines)
+
+
+# -----------------------------------------------------------------------------
+# SolidWorks PDM Indexer Models
+# -----------------------------------------------------------------------------
+
+
+class PdmIndexStatus(str, Enum):
+    """Status of a PDM indexing job."""
+
+    PENDING = "pending"
+    INDEXING = "indexing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class PdmIndexJob(BaseModel):
+    """A PDM metadata indexing job for SolidWorks PDM tools."""
+
+    id: str
+    tool_config_id: str
+    status: PdmIndexStatus = PdmIndexStatus.PENDING
+    index_name: str
+
+    # Progress tracking
+    total_documents: int = 0
+    processed_documents: int = 0
+    skipped_documents: int = 0  # Unchanged documents
+    total_chunks: int = 0
+    processed_chunks: int = 0
+    error_message: Optional[str] = None
+    cancel_requested: bool = False
+
+    # Timing
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+    @property
+    def progress_percent(self) -> float:
+        if self.total_documents == 0:
+            return 0.0
+        return (
+            (self.processed_documents + self.skipped_documents) / self.total_documents
+        ) * 100
+
+
+class PdmIndexJobResponse(BaseModel):
+    """Response for PDM index job status."""
+
+    id: str
+    tool_config_id: str
+    status: PdmIndexStatus
+    index_name: str
+    progress_percent: float
+    total_documents: int
+    processed_documents: int
+    skipped_documents: int
+    total_chunks: int
+    processed_chunks: int
+    error_message: Optional[str] = None
+    cancel_requested: bool = False
+    # Timing
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+
+class TriggerPdmIndexRequest(BaseModel):
+    """Request to trigger PDM indexing for a tool config."""
+
+    full_reindex: bool = Field(
+        default=False,
+        description="If true, re-index all documents regardless of change detection",
+    )
+
+
+class PdmDocumentInfo(BaseModel):
+    """Information about a single PDM document."""
+
+    document_id: int = Field(description="PDM DocumentID from SQL Server")
+    filename: str = Field(description="Document filename (e.g., SW-24779.SLDPRT)")
+    document_type: str = Field(
+        description="File extension type (SLDPRT, SLDASM, SLDDRW)"
+    )
+    folder_path: Optional[str] = Field(
+        default=None, description="Folder path in PDM vault"
+    )
+    revision_no: int = Field(default=1, description="Current revision number")
+
+    # Variables from PDM
+    part_number: Optional[str] = Field(default=None, description="Part number variable")
+    description: Optional[str] = Field(default=None, description="Description variable")
+    material: Optional[str] = Field(default=None, description="Material variable")
+    author: Optional[str] = Field(default=None, description="Author/creator")
+    stocked_status: Optional[str] = Field(
+        default=None, description="Stocked status (STOCKED, BUILT, etc.)"
+    )
+
+    # Additional variables as dict
+    variables: dict = Field(
+        default_factory=dict, description="All extracted PDM variables"
+    )
+
+    # BOM data (for assemblies)
+    bom_components: List[dict] = Field(
+        default_factory=list, description="List of BOM child components"
+    )
+
+    # Configurations
+    configurations: List[dict] = Field(
+        default_factory=list,
+        description="List of configurations with their part numbers",
+    )
+
+    def to_embedding_text(self) -> str:
+        """Convert PDM document to text suitable for embedding.
+
+        Format designed for semantic search - includes all relevant details
+        in a structured but natural language format.
+        """
+        lines = []
+
+        # Header with document type
+        doc_type_map = {
+            "SLDPRT": "PART",
+            "SLDASM": "ASSEMBLY",
+            "SLDDRW": "DRAWING",
+        }
+        display_type = doc_type_map.get(self.document_type.upper(), self.document_type)
+        lines.append(f"# {display_type}: {self.filename}")
+
+        # Identification section
+        lines.append("\n## Identification")
+        if self.part_number:
+            lines.append(f"- Part Number: {self.part_number}")
+        lines.append(f"- Filename: {self.filename}")
+        if self.folder_path:
+            lines.append(f"- Folder: {self.folder_path}")
+        lines.append(f"- Revision: {self.revision_no}")
+
+        # Properties section
+        if self.description or self.material or self.stocked_status or self.author:
+            lines.append("\n## Properties")
+            if self.description:
+                lines.append(f"- Description: {self.description}")
+            if self.material:
+                lines.append(f"- Material: {self.material}")
+            if self.stocked_status:
+                lines.append(f"- Stocked Status: {self.stocked_status}")
+            if self.author:
+                lines.append(f"- Author: {self.author}")
+
+        # Additional variables
+        extra_vars = {
+            k: v
+            for k, v in self.variables.items()
+            if k
+            not in (
+                "Part Number",
+                "Description",
+                "Material",
+                "Stocked Status",
+                "Author",
+            )
+            and v
+        }
+        if extra_vars:
+            lines.append("\n## Additional Properties")
+            for name, value in sorted(extra_vars.items()):
+                lines.append(f"- {name}: {value}")
+
+        # Configurations
+        if self.configurations:
+            lines.append("\n## Configurations")
+            for config in self.configurations:
+                config_name = config.get("name", "Default")
+                config_pn = config.get("part_number", "")
+                config_desc = config.get("description", "")
+                config_line = f"- {config_name}"
+                if config_pn:
+                    config_line += f": Part Number {config_pn}"
+                if config_desc:
+                    config_line += f', Description "{config_desc}"'
+                lines.append(config_line)
+
+        # BOM Components (for assemblies)
+        if self.bom_components:
+            lines.append("\n## BOM Components")
+            for i, comp in enumerate(self.bom_components[:50], 1):  # Limit to 50
+                comp_name = comp.get("filename", "")
+                comp_pn = comp.get("part_number", "")
+                comp_qty = comp.get("quantity", 1)
+                comp_config = comp.get("configuration", "")
+                comp_line = f"{i}. {comp_name}"
+                if comp_config:
+                    comp_line += f" (Config: {comp_config})"
+                if comp_pn:
+                    comp_line += f" - PN: {comp_pn}"
+                comp_line += f" - Qty: {comp_qty}"
+                lines.append(comp_line)
+            if len(self.bom_components) > 50:
+                lines.append(f"... and {len(self.bom_components) - 50} more components")
+
+        return "\n".join(lines)
+
+    def compute_metadata_hash(self) -> str:
+        """Compute a hash of the document metadata for change detection."""
+        import hashlib
+        import json
+
+        data = {
+            "filename": self.filename,
+            "revision_no": self.revision_no,
+            "variables": self.variables,
+            "configurations": self.configurations,
+            "bom_components": self.bom_components,
+        }
+        content = json.dumps(data, sort_keys=True)
+        return hashlib.sha256(content.encode()).hexdigest()[:32]
+
+
+class SolidworksPdmConnectionConfig(BaseModel):
+    """Connection configuration for SolidWorks PDM indexer tool."""
+
+    # MSSQL Connection (same as MssqlConnectionConfig)
+    host: str = Field(description="PDM SQL Server hostname or IP")
+    port: int = Field(default=1433, ge=1, le=65535, description="SQL Server port")
+    user: str = Field(description="SQL Server username (readonly recommended)")
+    password: str = Field(default="", description="SQL Server password")
+    database: str = Field(description="PDM database name (e.g., 'HAM-PDM')")
+
+    # Document filtering
+    file_extensions: List[str] = Field(
+        default=["SLDPRT", "SLDASM", "SLDDRW"],
+        description="File extensions to index (without dot)",
+    )
+    exclude_deleted: bool = Field(default=True, description="Exclude deleted documents")
+
+    # Metadata extraction
+    variable_names: List[str] = Field(
+        default=[
+            "Part Number",
+            "Description",
+            "Material",
+            "Author",
+            "Stocked Status",
+            "Finish",
+            "Weight",
+            "Cost",
+        ],
+        description="PDM variable names to extract and index",
+    )
+    include_bom: bool = Field(
+        default=True, description="Include BOM relationships for assemblies"
+    )
+    include_folder_path: bool = Field(
+        default=True, description="Include folder path in indexed content"
+    )
+    include_configurations: bool = Field(
+        default=True, description="Include configuration data"
+    )
+
+    # Indexing options
+    max_documents: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Maximum number of documents to index (for testing, None = all)",
+    )
+
+
+class PdmIndexStatusResponse(BaseModel):
+    """Response for PDM index status."""
+
+    enabled: bool = Field(description="Whether PDM indexing is configured")
+    last_indexed: Optional[str] = Field(
+        default=None, description="Timestamp of last successful index"
+    )
+    document_count: int = Field(default=0, description="Number of indexed documents")
+    embedding_count: int = Field(default=0, description="Number of embeddings stored")
+    current_job: Optional[PdmIndexJobResponse] = Field(
+        default=None, description="Currently active indexing job"
+    )

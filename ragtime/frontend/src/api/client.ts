@@ -2,7 +2,7 @@
  * API client for Ragtime Indexer
  */
 
-import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, PostgresDiscoverRequest, PostgresDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse } from '@/types';
+import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse } from '@/types';
 
 const API_BASE = '/indexes';
 const AUTH_BASE = '/auth';
@@ -580,6 +580,30 @@ export const api = {
   },
 
   /**
+   * Discover available databases on an MSSQL server
+   */
+  async discoverMssqlDatabases(request: MssqlDiscoverRequest): Promise<MssqlDiscoverResponse> {
+    const response = await apiFetch(`${API_BASE}/tools/mssql/discover`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<MssqlDiscoverResponse>(response);
+  },
+
+  /**
+   * Discover PDM schema metadata (file extensions and variable names)
+   */
+  async discoverPdmSchema(request: PdmDiscoverRequest): Promise<PdmDiscoverResponse> {
+    const response = await apiFetch(`${API_BASE}/tools/pdm/discover`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<PdmDiscoverResponse>(response);
+  },
+
+  /**
    * Test a saved tool's connection
    */
   async testSavedToolConnection(toolId: string): Promise<ToolTestResponse> {
@@ -856,6 +880,85 @@ export const api = {
       method: 'POST',
     });
     return handleResponse<import('@/types').SchemaIndexJob>(response);
+  },
+
+  // =========================================================================
+  // SolidWorks PDM Indexer API (PDM Database Document Indexing)
+  // =========================================================================
+
+  /**
+   * Trigger PDM document indexing for a SolidWorks PDM tool
+   */
+  async triggerPdmIndex(toolId: string, fullReindex?: boolean): Promise<import('@/types').PdmIndexJob> {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/pdm/index`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ full_reindex: fullReindex ?? false }),
+    });
+    return handleResponse<import('@/types').PdmIndexJob>(response);
+  },
+
+  /**
+   * Get PDM index status for a tool
+   */
+  async getPdmIndexStatus(toolId: string): Promise<import('@/types').PdmIndexStatusResponse> {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/pdm/status`);
+    return handleResponse<import('@/types').PdmIndexStatusResponse>(response);
+  },
+
+  /**
+   * Get a specific PDM index job
+   */
+  async getPdmIndexJob(toolId: string, jobId: string): Promise<import('@/types').PdmIndexJob> {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/pdm/job/${jobId}`);
+    return handleResponse<import('@/types').PdmIndexJob>(response);
+  },
+
+  /**
+   * Cancel an active PDM indexing job
+   */
+  async cancelPdmIndexJob(toolId: string, jobId: string): Promise<{ success: boolean; message: string }> {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/pdm/job/${jobId}/cancel`, {
+      method: 'POST',
+    });
+    return handleResponse<{ success: boolean; message: string }>(response);
+  },
+
+  /**
+   * Delete PDM index for a tool
+   */
+  async deletePdmIndex(toolId: string): Promise<{ success: boolean; deleted_count: number }> {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/pdm/index`, {
+      method: 'DELETE',
+    });
+    return handleResponse<{ success: boolean; deleted_count: number }>(response);
+  },
+
+  /**
+   * Get PDM index stats for a tool
+   */
+  async getPdmIndexStats(toolId: string): Promise<import('@/types').PdmIndexStats> {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/pdm/stats`);
+    return handleResponse<import('@/types').PdmIndexStats>(response);
+  },
+
+  /**
+   * List all PDM indexing jobs across all tools
+   */
+  async listPdmJobs(limit?: number): Promise<import('@/types').PdmIndexJob[]> {
+    const params = limit ? `?limit=${limit}` : '';
+    const response = await apiFetch(`${API_BASE}/pdm/jobs${params}`);
+    return handleResponse<import('@/types').PdmIndexJob[]>(response);
+  },
+
+  /**
+   * Retry a failed/cancelled PDM indexing job
+   */
+  async retryPdmJob(toolId: string, jobId: string): Promise<import('@/types').PdmIndexJob> {
+    const response = await apiFetch(`${API_BASE}/tools/${toolId}/pdm/job/${jobId}/retry`, {
+      method: 'POST',
+    });
+    return handleResponse<import('@/types').PdmIndexJob>(response);
   },
 
   // =========================================================================

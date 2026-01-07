@@ -33,6 +33,12 @@ from ragtime.indexer.models import (
     TableSchemaInfo,
 )
 from ragtime.indexer.repository import repository
+from ragtime.indexer.utils import safe_tool_name
+from ragtime.indexer.vector_utils import (
+    ensure_embedding_column,
+    ensure_pgvector_extension,
+    get_embeddings_model,
+)
 
 logger = get_logger(__name__)
 
@@ -52,7 +58,6 @@ class SchemaIndexerService:
     def __init__(self):
         self._active_jobs: Dict[str, SchemaIndexJob] = {}
         self._cancellation_flags: Dict[str, bool] = {}  # job_id -> should_cancel
-        self._pgvector_validated = False
 
     # =========================================================================
     # Public API
@@ -317,41 +322,52 @@ class SchemaIndexerService:
                 tool_type=tool_config.tool_type.value,
                 connection_config=tool_config.connection_config or {},
                 full_reindex=True,  # Force full reindex on retry
+                tool_name=safe_tool_name(tool_config.name) or None,
             )
 
         except Exception as e:
             logger.error(f"Error retrying schema job {job_id}: {e}")
             return None
 
-    async def delete_index(self, tool_config_id: str) -> Tuple[bool, str]:
+    async def delete_index(
+        self, tool_config_id: str, tool_name: str | None = None
+    ) -> Tuple[bool, str]:
         """
         Delete all schema embeddings for a tool config.
 
         Args:
             tool_config_id: The tool configuration ID
+            tool_name: Safe tool name used in index_name (preferred)
 
         Returns:
             Tuple of (success, message)
         """
-        index_name = f"schema_{tool_config_id}"
+        # Try tool_name first (new convention), then tool_config_id (legacy)
+        names_to_delete = []
+        if tool_name:
+            names_to_delete.append(f"schema_{tool_name}")
+        names_to_delete.append(f"schema_{tool_config_id}")
 
         try:
             db = await get_db()
 
-            # Delete embeddings
-            result = await db.execute_raw(
-                f"DELETE FROM schema_embeddings WHERE index_name = '{index_name}'"
-            )
-            deleted_count = result if isinstance(result, int) else 0
+            total_deleted = 0
+            for index_name in names_to_delete:
+                # Delete embeddings
+                result = await db.execute_raw(
+                    f"DELETE FROM schema_embeddings WHERE index_name = '{index_name}'"
+                )
+                deleted_count = result if isinstance(result, int) else 0
+                total_deleted += deleted_count
 
             # Delete jobs
             await db.schemaindexjob.delete_many(where={"toolConfigId": tool_config_id})
 
             logger.info(
                 f"Deleted schema index for tool {tool_config_id}: "
-                f"{deleted_count} embeddings removed"
+                f"{total_deleted} embeddings removed"
             )
-            return True, f"Deleted {deleted_count} schema embeddings"
+            return True, f"Deleted {total_deleted} schema embeddings"
 
         except Exception as e:
             logger.error(f"Error deleting schema index: {e}")
@@ -1173,109 +1189,23 @@ class SchemaIndexerService:
             self._cancellation_flags.pop(job.id, None)
 
     async def _get_embeddings(self, settings):
-        """Get embedding model based on settings."""
-        provider = settings.embedding_provider.lower()
-        model = settings.embedding_model
-
-        if provider == "ollama":
-            from langchain_ollama import OllamaEmbeddings
-
-            base_url = settings.ollama_base_url
-            return OllamaEmbeddings(model=model, base_url=base_url)
-        elif provider == "openai":
-            from langchain_openai import OpenAIEmbeddings
-
-            api_key = settings.openai_api_key
-            if not api_key:
-                return None
-            kwargs = {"model": model, "openai_api_key": api_key}
-            # Handle dimension reduction for text-embedding-3-* models
-            if settings.embedding_dimensions and model.startswith("text-embedding-3"):
-                kwargs["dimensions"] = settings.embedding_dimensions
-            return OpenAIEmbeddings(**kwargs)
-        else:
-            logger.warning(f"Unknown embedding provider: {provider}")
-            return None
+        return await get_embeddings_model(
+            settings,
+            allow_missing_api_key=True,
+            return_none_on_error=True,
+            logger_override=logger,
+        )
 
     async def _ensure_pgvector(self) -> bool:
-        """Ensure pgvector extension is available."""
-        if self._pgvector_validated:
-            return True
-
-        try:
-            db = await get_db()
-            result = await db.query_raw(
-                "SELECT 1 FROM pg_extension WHERE extname = 'vector'"
-            )
-
-            if not result:
-                await db.execute_raw("CREATE EXTENSION IF NOT EXISTS vector")
-
-            self._pgvector_validated = True
-            return True
-        except Exception as e:
-            logger.error(f"Error checking pgvector: {e}")
-            return False
+        return await ensure_pgvector_extension(logger_override=logger)
 
     async def _ensure_embedding_column(self, embedding_dim: int = 1536) -> bool:
-        """Ensure the embedding column has the correct dimension."""
-        try:
-            db = await get_db()
-
-            # Check current dimension
-            result = await db.query_raw(
-                """
-                SELECT a.atttypmod AS typmod
-                FROM pg_attribute a
-                JOIN pg_class c ON a.attrelid = c.oid
-                JOIN pg_namespace n ON c.relnamespace = n.oid
-                WHERE c.relname = 'schema_embeddings'
-                  AND n.nspname = 'public'
-                  AND a.attname = 'embedding'
-                  AND a.attnum > 0
-                  AND NOT a.attisdropped
-            """
-            )
-
-            if not result:
-                # Column doesn't exist, add it
-                logger.info(f"Adding embedding column (vector({embedding_dim}))")
-                await db.execute_raw(
-                    f"ALTER TABLE schema_embeddings "
-                    f"ADD COLUMN IF NOT EXISTS embedding vector({embedding_dim})"
-                )
-            else:
-                current_dim = result[0].get("typmod")
-                if current_dim and current_dim != embedding_dim:
-                    logger.info(
-                        f"Updating embedding column dimension {current_dim} -> {embedding_dim}"
-                    )
-                    await db.execute_raw(
-                        "DROP INDEX IF EXISTS schema_embeddings_embedding_idx"
-                    )
-                    await db.execute_raw(
-                        f"ALTER TABLE schema_embeddings "
-                        f"ALTER COLUMN embedding TYPE vector({embedding_dim})"
-                    )
-
-            # Create index if dimension <= 2000
-            if embedding_dim <= 2000:
-                try:
-                    await db.execute_raw(
-                        """
-                        CREATE INDEX IF NOT EXISTS schema_embeddings_embedding_idx
-                        ON schema_embeddings
-                        USING ivfflat (embedding vector_cosine_ops)
-                        WITH (lists = 100)
-                    """
-                    )
-                except Exception as e:
-                    logger.debug(f"Could not create vector index: {e}")
-
-            return True
-        except Exception as e:
-            logger.error(f"Error ensuring embedding column: {e}")
-            return False
+        return await ensure_embedding_column(
+            table_name="schema_embeddings",
+            index_name="schema_embeddings_embedding_idx",
+            embedding_dim=embedding_dim,
+            logger_override=logger,
+        )
 
     async def _clear_embeddings(self, index_name: str):
         """Clear all embeddings for an index."""
