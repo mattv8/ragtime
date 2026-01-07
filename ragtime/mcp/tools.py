@@ -83,6 +83,20 @@ TOOL_INPUT_SCHEMAS: dict[str, dict] = {
         },
         "required": ["query"],
     },
+    "mssql": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "SQL query to execute. Must include TOP n for SELECT queries.",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Brief description of what this query retrieves",
+            },
+        },
+        "required": ["query"],
+    },
     # Knowledge search tool (built-in, always available when indexes exist)
     "knowledge_search": {
         "type": "object",
@@ -315,6 +329,7 @@ class MCPToolAdapter:
         # Prefix based on tool type
         prefixes = {
             "postgres": "query_",
+            "mssql": "query_",
             "odoo_shell": "odoo_",
             "ssh_shell": "ssh_",
             "filesystem_indexer": "search_",
@@ -360,6 +375,7 @@ class MCPToolAdapter:
 
         type_descriptions = {
             "postgres": f"Query the '{name}' PostgreSQL database using SQL.",
+            "mssql": f"Query the '{name}' MSSQL/SQL Server database using SQL.",
             "odoo_shell": f"Execute Python ORM code in '{name}' Odoo shell.",
             "ssh_shell": f"Execute shell commands on '{name}' via SSH.",
             "filesystem_indexer": f"Search indexed documents from '{name}'.",
@@ -401,6 +417,10 @@ class MCPToolAdapter:
 
         if tool_type == "postgres":
             tool = await rag_temp._create_postgres_tool(
+                config, tool_name, tool_id
+            )  # pyright: ignore[reportPrivateUsage]
+        elif tool_type == "mssql":
+            tool = await rag_temp._create_mssql_tool(
                 config, tool_name, tool_id
             )  # pyright: ignore[reportPrivateUsage]
         elif tool_type == "odoo_shell":

@@ -506,6 +506,8 @@ class RAGComponents:
 
             if tool_type == "postgres":
                 tool = await self._create_postgres_tool(config, tool_name, tool_id)
+            elif tool_type == "mssql":
+                tool = await self._create_mssql_tool(config, tool_name, tool_id)
             elif tool_type == "odoo_shell":
                 tool = await self._create_odoo_tool(config, tool_name, tool_id)
             elif tool_type == "ssh_shell":
@@ -843,6 +845,39 @@ class RAGComponents:
             name=f"query_{tool_name}",
             description=tool_description,
             args_schema=PostgresInput,
+        )
+
+    async def _create_mssql_tool(self, config: dict, tool_name: str, _tool_id: str):
+        """Create an MSSQL/SQL Server query tool from config."""
+        from ragtime.tools.mssql import create_mssql_tool
+
+        conn_config = config.get("connection_config", {})
+        timeout = config.get("timeout", 30)
+        max_results = config.get("max_results", 100)
+        allow_write = config.get("allow_write", False)
+        description = config.get("description", "")
+
+        host = conn_config.get("host", "")
+        port = conn_config.get("port", 1433)
+        user = conn_config.get("user", "")
+        password = conn_config.get("password", "")
+        database = conn_config.get("database", "")
+
+        if not host:
+            logger.error(f"MSSQL tool {tool_name} missing host configuration")
+            return None
+
+        return create_mssql_tool(
+            name=config.get("name", tool_name),
+            host=host,
+            port=port,
+            user=user,
+            password=password,
+            database=database,
+            timeout=timeout,
+            max_results=max_results,
+            allow_write=allow_write,
+            description=description,
         )
 
     async def _create_odoo_tool(self, config: dict, tool_name: str, _tool_id: str):

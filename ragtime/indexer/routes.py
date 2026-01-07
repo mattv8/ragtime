@@ -1229,6 +1229,8 @@ async def test_tool_connection(
 
     if tool_type == ToolType.POSTGRES:
         return await _test_postgres_connection(config)
+    elif tool_type == ToolType.MSSQL:
+        return await _test_mssql_connection(config)
     elif tool_type == ToolType.ODOO_SHELL:
         return await _test_odoo_connection(config)
     elif tool_type == ToolType.SSH_SHELL:
@@ -1486,6 +1488,8 @@ async def _heartbeat_check(tool_type, config: dict) -> ToolTestResponse:
 
     if tool_type_str == "postgres":
         return await _heartbeat_postgres(config)
+    elif tool_type_str == "mssql":
+        return await _heartbeat_mssql(config)
     elif tool_type_str == "odoo_shell":
         return await _heartbeat_odoo(config)
     elif tool_type_str == "ssh_shell":
@@ -1555,6 +1559,34 @@ async def _heartbeat_postgres(config: dict) -> ToolTestResponse:
         )
     except Exception as e:
         return ToolTestResponse(success=False, message=str(e)[:100])
+
+
+async def _heartbeat_mssql(config: dict) -> ToolTestResponse:
+    """Quick MSSQL heartbeat check."""
+    from ragtime.tools.mssql import test_mssql_connection
+
+    host = config.get("host", "")
+    port = config.get("port", 1433)
+    user = config.get("user", "")
+    password = config.get("password", "")
+    database = config.get("database", "")
+
+    if not host or not user or not database:
+        return ToolTestResponse(success=False, message="MSSQL not configured")
+
+    success, message, _ = await test_mssql_connection(
+        host=host,
+        port=port,
+        user=user,
+        password=password,
+        database=database,
+        timeout=5,
+    )
+
+    return ToolTestResponse(
+        success=success,
+        message="OK" if success else message[:100],
+    )
 
 
 async def _heartbeat_odoo(config: dict) -> ToolTestResponse:
@@ -1780,6 +1812,37 @@ async def _test_postgres_connection(config: dict) -> ToolTestResponse:
         return ToolTestResponse(
             success=False, message=f"Connection test failed: {str(e)}"
         )
+
+
+async def _test_mssql_connection(config: dict) -> ToolTestResponse:
+    """Test MSSQL/SQL Server connection."""
+    from ragtime.tools.mssql import test_mssql_connection
+
+    host = config.get("host", "")
+    port = config.get("port", 1433)
+    user = config.get("user", "")
+    password = config.get("password", "")
+    database = config.get("database", "")
+
+    if not host:
+        return ToolTestResponse(success=False, message="Host is required")
+    if not user or not password:
+        return ToolTestResponse(
+            success=False, message="Username and password are required"
+        )
+    if not database:
+        return ToolTestResponse(success=False, message="Database is required")
+
+    success, message, details = await test_mssql_connection(
+        host=host,
+        port=port,
+        user=user,
+        password=password,
+        database=database,
+        timeout=10,
+    )
+
+    return ToolTestResponse(success=success, message=message, details=details)
 
 
 async def _test_odoo_connection(config: dict) -> ToolTestResponse:

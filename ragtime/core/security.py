@@ -149,13 +149,39 @@ DANGEROUS_SQL_PATTERNS = [
 
 # Allowed read-only SQL keywords
 SAFE_SQL_KEYWORDS = [
-    "SELECT", "WITH", "FROM", "WHERE", "JOIN",
-    "GROUP BY", "ORDER BY", "LIMIT", "HAVING",
-    "UNION", "DISTINCT", "AS", "ON", "AND", "OR",
-    "LEFT", "RIGHT", "INNER", "OUTER", "CROSS",
-    "COUNT", "SUM", "AVG", "MIN", "MAX",
-    "CASE", "WHEN", "THEN", "ELSE", "END",
-    "COALESCE", "NULLIF", "CAST",
+    "SELECT",
+    "WITH",
+    "FROM",
+    "WHERE",
+    "JOIN",
+    "GROUP BY",
+    "ORDER BY",
+    "LIMIT",
+    "HAVING",
+    "UNION",
+    "DISTINCT",
+    "AS",
+    "ON",
+    "AND",
+    "OR",
+    "LEFT",
+    "RIGHT",
+    "INNER",
+    "OUTER",
+    "CROSS",
+    "COUNT",
+    "SUM",
+    "AVG",
+    "MIN",
+    "MAX",
+    "CASE",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "END",
+    "COALESCE",
+    "NULLIF",
+    "CAST",
 ]
 
 # =============================================================================
@@ -243,7 +269,10 @@ def validate_sql_query(query: str, enable_write: bool = False) -> Tuple[bool, st
         for pattern in system_patterns:
             if re.search(pattern, query_upper, re.IGNORECASE):
                 logger.warning(f"System-level SQL pattern blocked: {pattern}")
-                return False, "Query contains system-level operations that are not allowed"
+                return (
+                    False,
+                    "Query contains system-level operations that are not allowed",
+                )
 
     # Must have LIMIT clause for SELECT queries to prevent huge result sets
     if query_upper.startswith("SELECT") and "LIMIT" not in query_upper:
@@ -274,9 +303,7 @@ def validate_odoo_code(code: str, enable_write_ops: bool = False) -> Tuple[bool,
                 return False, "Code contains forbidden pattern"
 
     # Must contain at least one safe pattern
-    has_safe_pattern = any(
-        re.search(pattern, code) for pattern in SAFE_ODOO_PATTERNS
-    )
+    has_safe_pattern = any(re.search(pattern, code) for pattern in SAFE_ODOO_PATTERNS)
 
     if not has_safe_pattern:
         return False, "Code must contain valid ORM read operations"
@@ -286,7 +313,10 @@ def validate_odoo_code(code: str, enable_write_ops: bool = False) -> Tuple[bool,
 
 def sanitize_output(output: str, max_length: int = 50000) -> str:
     """
-    Sanitize and truncate output to prevent memory issues.
+    Sanitize and truncate output to prevent memory and storage issues.
+
+    Removes null bytes (\\u0000) which PostgreSQL cannot store in text columns,
+    and truncates output to prevent memory issues.
 
     Args:
         output: The output string to sanitize.
@@ -295,6 +325,12 @@ def sanitize_output(output: str, max_length: int = 50000) -> str:
     Returns:
         Sanitized output string.
     """
+    # Remove null bytes - PostgreSQL text columns cannot store \u0000
+    output = output.replace("\x00", "")
+
     if len(output) > max_length:
-        return output[:max_length] + f"\n\n... (truncated, {len(output) - max_length} chars omitted)"
+        return (
+            output[:max_length]
+            + f"\n\n... (truncated, {len(output) - max_length} chars omitted)"
+        )
     return output

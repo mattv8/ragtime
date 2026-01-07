@@ -29,6 +29,9 @@ httpx>=0.26.0,<1.0.0
 # SSH connectivity
 paramiko>=3.4.0,<4.0.0
 
+# Database connectors
+pymssql>=2.2.8,<3.0.0  # MSSQL/SQL Server (native TDS, no ODBC)
+
 # FAISS indexing dependencies
 langchain-text-splitters>=0.0.1,<1.0.0
 tiktoken>=0.5.0,<1.0.0
