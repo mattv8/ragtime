@@ -42,7 +42,7 @@ async def get_mcp_server() -> Server:
 def notify_tools_changed() -> None:
     """
     Notify that tools have changed.
-    
+
     This invalidates the MCP tool cache so the next tools/list request
     returns the updated list. In stateless mode, clients poll for changes
     when they see listChanged: true in server capabilities.
@@ -137,13 +137,18 @@ async def run_mcp_server(transport: str = "stdio") -> None:
 
     try:
         if transport == "stdio":
+            from mcp.server.lowlevel import NotificationOptions
             from mcp.server.stdio import stdio_server
 
             async with stdio_server() as (read_stream, write_stream):
+                # Advertise listChanged: true so clients know to poll for tool updates
+                notification_options = NotificationOptions(tools_changed=True)
                 await mcp_server.run(
                     read_stream,
                     write_stream,
-                    mcp_server.create_initialization_options(),
+                    mcp_server.create_initialization_options(
+                        notification_options=notification_options
+                    ),
                 )
         else:
             raise ValueError(f"Unsupported transport: {transport}")
