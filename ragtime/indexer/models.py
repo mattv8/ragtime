@@ -1398,11 +1398,13 @@ class PdmIndexJob(BaseModel):
     tool_config_id: str
     status: PdmIndexStatus = PdmIndexStatus.PENDING
     index_name: str
+    current_step: Optional[str] = None  # Current processing step for UI display
 
     # Progress tracking
     total_documents: int = 0
     processed_documents: int = 0
     skipped_documents: int = 0  # Unchanged documents
+    extracted_documents: int = 0  # Documents extracted from PDM
     total_chunks: int = 0
     processed_chunks: int = 0
     error_message: Optional[str] = None
@@ -1429,10 +1431,12 @@ class PdmIndexJobResponse(BaseModel):
     tool_config_id: str
     status: PdmIndexStatus
     index_name: str
+    current_step: Optional[str] = None
     progress_percent: float
     total_documents: int
     processed_documents: int
     skipped_documents: int
+    extracted_documents: int = 0
     total_chunks: int
     processed_chunks: int
     error_message: Optional[str] = None
