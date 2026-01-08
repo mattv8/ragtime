@@ -1,6 +1,11 @@
 {
   "python.defaultInterpreterPath": "./.venv/bin/python",
   "python.languageServer": "Pylance",
+  "python.analysis.typeCheckingMode": "basic",
+  "python.analysis.diagnosticSeverityOverrides": {
+    "reportMissingImports": "warning",
+    "reportPrivateUsage": "none"
+  },
 
   // Editor
   "editor.quickSuggestions": {

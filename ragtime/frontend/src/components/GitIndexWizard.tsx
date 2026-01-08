@@ -1,10 +1,96 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '@/api';
-import type { IndexAnalysisResult, IndexJob, IndexInfo } from '@/types';
+import type { CommitHistoryInfo, IndexAnalysisResult, IndexJob, IndexInfo } from '@/types';
 import { DescriptionField } from './DescriptionField';
 
 type StatusType = 'info' | 'success' | 'error' | null;
 type WizardStep = 'input' | 'analyzing' | 'review' | 'indexing';
+
+/**
+ * Compute clone timeout from depth using exponential scaling.
+ * Matches backend logic in service.py: 5 min (shallow) -> 120 min (full).
+ * Grows slowly at first, then rapidly as depth increases.
+ */
+function computeCloneTimeout(depth: number): number {
+  const minTimeout = 5;
+  const maxTimeout = 120;
+
+  // depth=0 means full history
+  if (depth === 0) return maxTimeout;
+
+  // depth=1 means shallow clone
+  if (depth === 1) return minTimeout;
+
+  const maxDepth = 1001;  // Slider full + sentinel
+  const effectiveDepth = Math.min(depth, maxDepth);
+  // Use power curve (exponent > 1) for slow-then-fast growth
+  const factor = Math.pow(effectiveDepth / maxDepth, 2.5);
+  const timeout = minTimeout + (maxTimeout - minTimeout) * factor;
+
+  return Math.round(Math.max(minTimeout, Math.min(maxTimeout, timeout)));
+}
+
+/**
+ * Interpolates a date for a given depth from commit history samples.
+ * Returns a human-readable description like "~6 months of history".
+ */
+function getDepthDateEstimate(depth: number, commitHistory: CommitHistoryInfo | undefined): string | null {
+  if (!commitHistory?.samples || commitHistory.samples.length < 2) return null;
+  if (depth === 0) return null;  // Full history - use oldest_date directly
+  if (depth === 1) return null;  // Shallow - no history
+
+  const samples = commitHistory.samples;
+  const newest = samples.find((s) => s.depth === 0);
+  if (!newest) return null;
+
+  const newestDate = new Date(newest.date);
+  let estimatedDate: Date | null = null;
+
+  // Find the two samples that bracket the requested depth
+  for (let i = 0; i < samples.length - 1; i++) {
+    const lower = samples[i];
+    const upper = samples[i + 1];
+    if (depth >= lower.depth && depth <= upper.depth) {
+      // Linear interpolation between the two sample dates
+      const ratio = (depth - lower.depth) / (upper.depth - lower.depth);
+      const lowerDate = new Date(lower.date);
+      const upperDate = new Date(upper.date);
+      const interpolatedMs = lowerDate.getTime() + ratio * (upperDate.getTime() - lowerDate.getTime());
+      estimatedDate = new Date(interpolatedMs);
+      break;
+    }
+  }
+
+  // If depth is beyond our last sample, extrapolate or use oldest_date
+  if (!estimatedDate && depth > samples[samples.length - 1].depth) {
+    if (commitHistory.oldest_date) {
+      estimatedDate = new Date(commitHistory.oldest_date);
+    } else {
+      // Extrapolate from last two samples
+      const last = samples[samples.length - 1];
+      const prev = samples[samples.length - 2];
+      if (last && prev) {
+        const ratio = (depth - prev.depth) / (last.depth - prev.depth);
+        const prevDate = new Date(prev.date);
+        const lastDate = new Date(last.date);
+        const interpolatedMs = prevDate.getTime() + ratio * (lastDate.getTime() - prevDate.getTime());
+        estimatedDate = new Date(interpolatedMs);
+      }
+    }
+  }
+
+  if (!estimatedDate) return null;
+
+  // Calculate time difference and format nicely
+  const diffMs = newestDate.getTime() - estimatedDate.getTime();
+  const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
+
+  if (diffDays < 7) return `~${diffDays} days of history`;
+  if (diffDays < 30) return `~${Math.round(diffDays / 7)} weeks of history`;
+  if (diffDays < 365) return `~${Math.round(diffDays / 30)} months of history`;
+  const years = (diffDays / 365).toFixed(1);
+  return `~${years} years of history`;
+}
 
 interface GitIndexWizardProps {
   onJobCreated?: () => void;
@@ -57,9 +143,19 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
   const [maxFileSizeKb, setMaxFileSizeKb] = useState(configSnapshot?.max_file_size_kb || 500);
   const [enableOcr, setEnableOcr] = useState(configSnapshot?.enable_ocr || false);
   const [gitCloneTimeoutMinutes, setGitCloneTimeoutMinutes] = useState(configSnapshot?.git_clone_timeout_minutes || 5);
+  const [gitHistoryDepth, setGitHistoryDepth] = useState(configSnapshot?.git_history_depth || 1);
+  const [timeoutManuallySet, setTimeoutManuallySet] = useState(false);  // Track if user overrode timeout
   const [exclusionsApplied, setExclusionsApplied] = useState(false);
   const [patternsExpanded, setPatternsExpanded] = useState(isEditMode);  // Expand by default in edit mode
   const [description, setDescription] = useState(editIndex?.description || '');
+
+  // Auto-update timeout when depth changes (unless user manually overrode it)
+  useEffect(() => {
+    if (!timeoutManuallySet) {
+      const computed = computeCloneTimeout(gitHistoryDepth);
+      setGitCloneTimeoutMinutes(computed);
+    }
+  }, [gitHistoryDepth, timeoutManuallySet]);
 
   // Sync state when editIndex changes (for when modal reopens with different index)
   useEffect(() => {
@@ -77,7 +173,16 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         setChunkOverlap(snapshot.chunk_overlap || 200);
         setMaxFileSizeKb(snapshot.max_file_size_kb || 500);
         setEnableOcr(snapshot.enable_ocr || false);
-        setGitCloneTimeoutMinutes(snapshot.git_clone_timeout_minutes || 5);
+
+        // Use nullish coalescing - 0 is a valid depth (full history)
+        const loadedDepth = snapshot.git_history_depth ?? 1;
+        const loadedTimeout = snapshot.git_clone_timeout_minutes ?? 5;
+        const expectedTimeout = computeCloneTimeout(loadedDepth);
+
+        setGitHistoryDepth(loadedDepth);
+        setGitCloneTimeoutMinutes(loadedTimeout);
+        // If timeout differs from what would be auto-computed, mark as manually set
+        setTimeoutManuallySet(loadedTimeout !== expectedTimeout);
       } else {
         setFilePatterns(DEFAULT_FILE_PATTERNS);
         setExcludePatterns('');
@@ -86,6 +191,8 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         setMaxFileSizeKb(500);
         setEnableOcr(false);
         setGitCloneTimeoutMinutes(5);
+        setGitHistoryDepth(1);
+        setTimeoutManuallySet(false);
       }
       setPatternsExpanded(true);
     }
@@ -341,6 +448,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           max_file_size_kb: maxFileSizeKb,
           enable_ocr: enableOcr,
           git_clone_timeout_minutes: gitCloneTimeoutMinutes,
+          git_history_depth: gitHistoryDepth,
         },
       });
       const successMessage = `Job started - ID: ${job.id}`;
@@ -380,7 +488,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
       // Update description separately
       await api.updateIndexDescription(editIndex.name, description);
       // Update config
-      await api.updateIndexConfig(editIndex.name, {
+      const updated = await api.updateIndexConfig(editIndex.name, {
         git_branch: selectedBranch || undefined,
         file_patterns: filePatterns.split(',').map((s) => s.trim()).filter(Boolean),
         exclude_patterns: excludePatterns.split(',').map((s) => s.trim()).filter(Boolean),
@@ -389,7 +497,20 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         max_file_size_kb: maxFileSizeKb,
         enable_ocr: enableOcr,
         git_clone_timeout_minutes: gitCloneTimeoutMinutes,
+        git_history_depth: gitHistoryDepth,
       });
+      // Reflect saved config locally so the UI shows persisted values
+      const snap = updated?.config_snapshot;
+      if (snap) {
+        setGitHistoryDepth(snap.git_history_depth ?? gitHistoryDepth);
+        setGitCloneTimeoutMinutes(snap.git_clone_timeout_minutes ?? gitCloneTimeoutMinutes);
+        setFilePatterns(snap.file_patterns?.join(', ') || filePatterns);
+        setExcludePatterns(snap.exclude_patterns?.join(', ') || excludePatterns);
+        setChunkSize(snap.chunk_size ?? chunkSize);
+        setChunkOverlap(snap.chunk_overlap ?? chunkOverlap);
+        setMaxFileSizeKb(snap.max_file_size_kb ?? maxFileSizeKb);
+        setEnableOcr(snap.enable_ocr ?? enableOcr);
+      }
       setStatus({ type: 'success', message: 'Configuration saved. Click "Pull & Re-index" to apply changes.' });
       onConfigSaved?.();
     } catch (err) {
@@ -517,12 +638,15 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
             <input
               type="number"
               value={gitCloneTimeoutMinutes}
-              onChange={(e) => setGitCloneTimeoutMinutes(parseInt(e.target.value, 10) || 5)}
+              onChange={(e) => {
+                setGitCloneTimeoutMinutes(parseInt(e.target.value, 10) || 5);
+                setTimeoutManuallySet(true);  // User manually changed it
+              }}
               min={1}
               max={480}
               disabled={isLoading}
             />
-            <small style={{ color: '#888', fontSize: '0.8rem' }}>Shallow clone (latest commit only)</small>
+            <small style={{ color: '#888', fontSize: '0.8rem' }}>Auto-scales with history depth (override to customize)</small>
           </div>
         </div>
         <div className="form-group" style={{ marginTop: '12px' }}>
@@ -539,6 +663,35 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
             {enableOcr
               ? 'Image files (PNG, JPG, etc.) will be processed with Tesseract OCR to extract text.'
               : 'When disabled, image files will be skipped during indexing.'}
+          </small>
+        </div>
+
+        <div className="form-group" style={{ marginTop: '12px' }}>
+          <label>Git History Depth</label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <input
+              type="range"
+              min={1}
+              max={1001}
+              value={gitHistoryDepth === 0 ? 1001 : gitHistoryDepth}
+              onChange={(e) => {
+                const sliderVal = parseInt(e.target.value, 10);
+                // 1 = shallow (depth 1), 1000 = one step below full, 1001 = full history (depth 0)
+                setGitHistoryDepth(sliderVal === 1001 ? 0 : sliderVal);
+              }}
+              disabled={isLoading}
+              style={{ flex: 1 }}
+            />
+            <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'monospace' }}>
+              {gitHistoryDepth === 0 ? 'Full' : gitHistoryDepth === 1 ? '1 (shallow)' : `${gitHistoryDepth} commits`}
+            </span>
+          </div>
+          <small style={{ color: '#888', fontSize: '0.8rem' }}>
+            {gitHistoryDepth === 0
+              ? 'Full history: Indexes all commits. Large repos may take 30+ min to clone.'
+              : gitHistoryDepth === 1
+                ? 'Shallow clone: Only latest commit. Fastest, but no git history search.'
+                : `Indexes last ${gitHistoryDepth} commits. Clone time scales with depth.`}
           </small>
         </div>
 
@@ -747,12 +900,15 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
               <input
                 type="number"
                 value={gitCloneTimeoutMinutes}
-                onChange={(e) => setGitCloneTimeoutMinutes(parseInt(e.target.value, 10) || 5)}
+                onChange={(e) => {
+                  setGitCloneTimeoutMinutes(parseInt(e.target.value, 10) || 5);
+                  setTimeoutManuallySet(true);  // User manually changed it
+                }}
                 min={1}
                 max={480}
                 disabled={isLoading}
               />
-              <small style={{ color: '#888', fontSize: '0.8rem' }}>Shallow clone (latest commit only)</small>
+              <small style={{ color: '#888', fontSize: '0.8rem' }}>Auto-scales with history depth (override to customize)</small>
             </div>
           </div>
           <div className="form-group" style={{ marginTop: '12px' }}>
@@ -769,6 +925,35 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
               {enableOcr
                 ? 'Image files (PNG, JPG, etc.) will be processed with Tesseract OCR to extract text.'
                 : 'When disabled, image files will be skipped during indexing.'}
+            </small>
+          </div>
+
+          <div className="form-group" style={{ marginTop: '12px' }}>
+            <label>Git History Depth</label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <input
+                type="range"
+                min={1}
+                max={1001}
+                value={gitHistoryDepth === 0 ? 1001 : gitHistoryDepth}
+                onChange={(e) => {
+                  const sliderVal = parseInt(e.target.value, 10);
+                  // 1 = shallow (depth 1), 1000 = one step below full, 1001 = full history (depth 0)
+                  setGitHistoryDepth(sliderVal === 1001 ? 0 : sliderVal);
+                }}
+                disabled={isLoading}
+                style={{ flex: 1 }}
+              />
+              <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'monospace' }}>
+                {gitHistoryDepth === 0 ? 'Full' : gitHistoryDepth === 1 ? '1 (shallow)' : `${gitHistoryDepth} commits`}
+              </span>
+            </div>
+            <small style={{ color: '#888', fontSize: '0.8rem' }}>
+              {gitHistoryDepth === 0
+                ? 'Full history: Indexes all commits. Large repos may take 30+ min to clone.'
+                : gitHistoryDepth === 1
+                  ? 'Shallow clone: Only latest commit. Fastest, but no git history search.'
+                  : `Indexes last ${gitHistoryDepth} commits. Clone time scales with depth.`}
             </small>
           </div>
         </details>
@@ -848,6 +1033,14 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
             </div>
             <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Est. Index Size</div>
           </div>
+          {analysisResult.commit_history && analysisResult.commit_history.total_commits > 0 && (
+            <div style={{ background: 'var(--bg-tertiary)', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
+              <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--accent)' }}>
+                {analysisResult.commit_history.total_commits.toLocaleString()}
+              </div>
+              <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Total Commits</div>
+            </div>
+          )}
         </div>
 
         {analysisResult.file_type_stats.length > 0 && (
@@ -990,7 +1183,10 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
               <input
                 type="number"
                 value={gitCloneTimeoutMinutes}
-                onChange={(e) => setGitCloneTimeoutMinutes(parseInt(e.target.value, 10) || 5)}
+                onChange={(e) => {
+                  setGitCloneTimeoutMinutes(parseInt(e.target.value, 10) || 5);
+                  setTimeoutManuallySet(true);  // User manually changed it
+                }}
                 min={1}
                 max={480}
                 disabled={isLoading}
@@ -1013,6 +1209,41 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
                 : 'When disabled, image files will be skipped during indexing.'}
             </small>
           </div>
+
+          <div className="form-group" style={{ marginTop: '12px' }}>
+            <label>Git History Depth</label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <input
+                type="range"
+                min={1}
+                max={1001}
+                value={gitHistoryDepth === 0 ? 1001 : gitHistoryDepth}
+                onChange={(e) => {
+                  const sliderVal = parseInt(e.target.value, 10);
+                  // 1 = shallow (depth 1), 1000 = one step below full, 1001 = full history (depth 0)
+                  setGitHistoryDepth(sliderVal === 1001 ? 0 : sliderVal);
+                }}
+                disabled={isLoading}
+                style={{ flex: 1 }}
+              />
+              <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'monospace' }}>
+                {gitHistoryDepth === 0 ? 'Full' : gitHistoryDepth === 1 ? '1 (shallow)' : `${gitHistoryDepth} commits`}
+              </span>
+            </div>
+            <small style={{ color: '#888', fontSize: '0.8rem' }}>
+              {gitHistoryDepth === 0
+                ? `Full history: Indexes all commits.${analysisResult.commit_history?.total_commits ? ` (${analysisResult.commit_history.total_commits.toLocaleString()} commits)` : ''} Large repos may take 30+ min to clone.`
+                : gitHistoryDepth === 1
+                  ? 'Shallow clone: Only latest commit. Fastest, but no git history search.'
+                  : (() => {
+                      const dateEstimate = getDepthDateEstimate(gitHistoryDepth, analysisResult.commit_history);
+                      return dateEstimate
+                        ? `Indexes last ${gitHistoryDepth} commits (${dateEstimate}). Clone time scales with depth.`
+                        : `Indexes last ${gitHistoryDepth} commits. Clone time scales with depth.`;
+                    })()}
+            </small>
+          </div>
+
           <button type="button" className="btn btn-secondary" onClick={handleReanalyze} disabled={isLoading} style={{ marginTop: '8px' }}>
             {isLoading ? 'Re-analyzing...' : 'Re-analyze'}
           </button>

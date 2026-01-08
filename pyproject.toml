@@ -44,7 +44,10 @@ reportUnknownMemberType = "none"
 reportUnknownArgumentType = "none"
 reportUnknownVariableType = "none"
 reportUnknownParameterType = "none"
+reportPrivateUsage = "none"
 stubPath = "typings"
+# Optional dependencies that may not be installed in all environments
+ignore = ["**/smb/**", "**/pysmb/**"]
 
 [tool.ruff]
 line-length = 120

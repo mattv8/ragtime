@@ -510,6 +510,9 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
                                   {job.totalChunks > 0 && ` (${job.totalChunks} chunks)`}
                                   {job.skippedFiles > 0 && ` (${job.skippedFiles} unchanged)`}
                                 </>
+                              ) : job.type === 'pdm' ? (
+                                // PDM jobs: phase already shows doc progress, just show chunk count
+                                <>{job.totalChunks.toLocaleString()} chunks</>
                               ) : job.totalChunks > 0 ? (
                                 // Document jobs: show chunk progress
                                 <>{job.processedChunks}/{job.totalChunks} chunks</>

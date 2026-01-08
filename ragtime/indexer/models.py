@@ -53,6 +53,11 @@ class IndexConfig(BaseModel):
         le=480,
         description="Maximum time in minutes to wait for git clone to complete. Default 5 minutes (shallow clone).",
     )
+    git_history_depth: int = Field(
+        default=1,
+        ge=0,
+        description="Git clone depth. 1=latest commit only (fastest), 0=full history (slowest). Values >1 specify number of commits.",
+    )
 
 
 class IndexJob(BaseModel):
@@ -84,9 +89,18 @@ class IndexJob(BaseModel):
 
     @property
     def progress_percent(self) -> float:
-        if self.total_files == 0:
-            return 0.0
-        return (self.processed_files / self.total_files) * 100
+        """Calculate overall progress: 30% for file loading, 70% for embedding."""
+        file_progress = (
+            (self.processed_files / self.total_files) * 30
+            if self.total_files > 0
+            else 0.0
+        )
+        chunk_progress = (
+            (self.processed_chunks / self.total_chunks) * 70
+            if self.total_chunks > 0
+            else 0.0
+        )
+        return min(file_progress + chunk_progress, 99.0)  # Cap at 99 until completed
 
 
 class IndexConfigSnapshot(BaseModel):
@@ -99,6 +113,7 @@ class IndexConfigSnapshot(BaseModel):
     max_file_size_kb: int = Field(default=500)
     enable_ocr: bool = Field(default=False)
     git_clone_timeout_minutes: int = Field(default=5)
+    git_history_depth: int = Field(default=1)
 
 
 class IndexInfo(BaseModel):
@@ -158,6 +173,30 @@ class FileTypeStats(BaseModel):
     )
 
 
+class CommitHistorySample(BaseModel):
+    """A sample point from commit history for depth-to-date interpolation."""
+
+    depth: int = Field(description="Commit depth (0 = most recent)")
+    date: str = Field(description="ISO 8601 date of the commit")
+    hash: str = Field(description="Short commit hash (7 chars)")
+
+
+class CommitHistoryInfo(BaseModel):
+    """Commit history metadata for estimating depth-to-date mapping."""
+
+    total_commits: int = Field(description="Total number of commits in the repo")
+    samples: List[CommitHistorySample] = Field(
+        default_factory=list,
+        description="Sample commits at various depths for interpolation",
+    )
+    oldest_date: Optional[str] = Field(
+        default=None, description="Date of the oldest commit"
+    )
+    newest_date: Optional[str] = Field(
+        default=None, description="Date of the newest commit"
+    )
+
+
 class IndexAnalysisResult(BaseModel):
     """Results from pre-indexing analysis."""
 
@@ -196,6 +235,12 @@ class IndexAnalysisResult(BaseModel):
     # Config used for analysis
     chunk_size: int = Field(description="Chunk size used for estimation")
     chunk_overlap: int = Field(description="Chunk overlap used for estimation")
+
+    # Git commit history info (for depth-to-date interpolation)
+    commit_history: Optional[CommitHistoryInfo] = Field(
+        default=None,
+        description="Commit history samples for estimating date range at different depths",
+    )
 
 
 class AnalyzeIndexRequest(BaseModel):

@@ -295,4 +295,149 @@ def escape_shell_arg(value: str) -> str:
         Shell-escaped string.
     """
     return value.replace("'", "'\\''")
-    return value.replace("'", "'\\''")
+
+
+# =============================================================================
+# MSSQL CONNECTION UTILITIES
+# =============================================================================
+
+
+class MssqlConnectionError(Exception):
+    """Exception raised for MSSQL connection errors."""
+
+
+class MssqlConnection:
+    """
+    Context manager for MSSQL database connections.
+
+    Provides a clean interface for pymssql connections with proper
+    error handling and resource cleanup.
+
+    Example:
+        async with mssql_connect(host, port, user, password, database) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT TOP 10 * FROM table")
+            rows = cursor.fetchall()
+    """
+
+    def __init__(
+        self,
+        host: str,
+        port: int | str,
+        user: str,
+        password: str,
+        database: str,
+        login_timeout: int = 10,
+        timeout: int = 10,
+        as_dict: bool = True,
+    ):
+        self.host = host
+        self.port = str(port)
+        self.user = user
+        self.password = password
+        self.database = database
+        self.login_timeout = login_timeout
+        self.timeout = timeout
+        self.as_dict = as_dict
+        self._conn: Any = None
+        self._pymssql: Any = None
+
+    def _import_pymssql(self) -> Any:
+        """Import pymssql, raising a clear error if not available."""
+        try:
+            import pymssql  # type: ignore[import-untyped]
+
+            return pymssql
+        except ImportError as e:
+            raise MssqlConnectionError(
+                "pymssql package not installed. Install with: pip install pymssql"
+            ) from e
+
+    def connect(self) -> Any:
+        """Establish connection synchronously (for use in thread pool)."""
+        self._pymssql = self._import_pymssql()
+
+        try:
+            # pymssql is untyped - use getattr to avoid static type checker complaints
+            connect_fn = getattr(self._pymssql, "connect")
+            self._conn = connect_fn(
+                server=self.host,
+                port=self.port,
+                user=self.user,
+                password=self.password,
+                database=self.database,
+                login_timeout=self.login_timeout,
+                timeout=self.timeout,
+                as_dict=self.as_dict,
+            )
+            return self._conn
+        except Exception as e:
+            error_str = str(e)
+            if "Login failed" in error_str:
+                raise MssqlConnectionError(
+                    "Login failed - check username and password"
+                ) from e
+            if "Cannot open database" in error_str:
+                raise MssqlConnectionError(
+                    f"Cannot open database '{self.database}' - check database name"
+                ) from e
+            raise MssqlConnectionError(f"Connection error: {error_str}") from e
+
+    def close(self) -> None:
+        """Close the connection if open."""
+        if self._conn:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
+
+    def __enter__(self) -> Any:
+        return self.connect()
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
+
+
+def mssql_connect(
+    host: str,
+    port: int | str,
+    user: str,
+    password: str,
+    database: str,
+    login_timeout: int = 10,
+    timeout: int = 10,
+    as_dict: bool = True,
+) -> MssqlConnection:
+    """
+    Create an MSSQL connection context manager.
+
+    Args:
+        host: Database server hostname or IP.
+        port: Database server port.
+        user: Username for authentication.
+        password: Password for authentication.
+        database: Database name to connect to.
+        login_timeout: Login timeout in seconds.
+        timeout: Query timeout in seconds.
+        as_dict: Whether to return rows as dictionaries.
+
+    Returns:
+        MssqlConnection context manager.
+
+    Example:
+        with mssql_connect(host, port, user, password, database) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT TOP 10 * FROM table")
+            rows = cursor.fetchall()
+    """
+    return MssqlConnection(
+        host=host,
+        port=port,
+        user=user,
+        password=password,
+        database=database,
+        login_timeout=login_timeout,
+        timeout=timeout,
+        as_dict=as_dict,
+    )

@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit
 from ragtime.core.security import get_current_user, require_admin
+from ragtime.core.sql_utils import MssqlConnectionError, mssql_connect
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import (
@@ -514,6 +515,7 @@ async def reindex_from_git(
         max_file_size_kb=config_data.get("max_file_size_kb", 500),
         enable_ocr=config_data.get("enable_ocr", False),
         git_clone_timeout_minutes=config_data.get("git_clone_timeout_minutes", 5),
+        git_history_depth=config_data.get("git_history_depth", 1),
     )
 
     try:
@@ -728,6 +730,11 @@ class UpdateIndexConfigRequest(BaseModel):
         le=480,
         description="Git clone timeout in minutes (shallow clone)",
     )
+    git_history_depth: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Git history depth. 0=full history, 1=shallow (latest only), N=last N commits",
+    )
 
 
 @router.patch("/{name}/config")
@@ -768,6 +775,7 @@ async def update_index_config(
         "max_file_size_kb",
         "enable_ocr",
         "git_clone_timeout_minutes",
+        "git_history_depth",
     ]:
         if key in existing_config:
             new_config[key] = existing_config[key]
@@ -787,6 +795,8 @@ async def update_index_config(
         new_config["enable_ocr"] = request.enable_ocr
     if request.git_clone_timeout_minutes is not None:
         new_config["git_clone_timeout_minutes"] = request.git_clone_timeout_minutes
+    if request.git_history_depth is not None:
+        new_config["git_history_depth"] = request.git_history_depth
 
     success = await repository.update_index_config(
         name=name,
@@ -1293,14 +1303,6 @@ async def _test_pdm_connection(config: dict) -> ToolTestResponse:
     """Test SolidWorks PDM database connection."""
     import asyncio
 
-    try:
-        import pymssql  # type: ignore[import-untyped]
-    except ImportError:
-        return ToolTestResponse(
-            success=False,
-            message="pymssql package not installed. Install with: pip install pymssql",
-        )
-
     host = config.get("host", "")
     port = config.get("port", 1433)
     user = config.get("user", "")
@@ -1313,50 +1315,42 @@ async def _test_pdm_connection(config: dict) -> ToolTestResponse:
         )
 
     def test_connection() -> tuple[bool, str, dict | None]:
-        conn = None
         try:
-            conn = pymssql.connect(  # type: ignore[attr-defined]
-                server=host,
-                port=str(port),
+            with mssql_connect(
+                host=host,
+                port=port,
                 user=user,
                 password=password,
                 database=database,
                 login_timeout=10,
                 timeout=10,
-                as_dict=True,
-            )
-            cursor = conn.cursor()
+            ) as conn:
+                cursor = conn.cursor()
 
-            # Test query to count SolidWorks documents
-            cursor.execute(
+                # Test query to count SolidWorks documents
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) as doc_count FROM Documents
+                    WHERE Filename LIKE '%.SLDPRT' OR Filename LIKE '%.SLDASM' OR Filename LIKE '%.SLDDRW'
                 """
-                SELECT COUNT(*) as doc_count FROM Documents
-                WHERE Filename LIKE '%.SLDPRT' OR Filename LIKE '%.SLDASM' OR Filename LIKE '%.SLDDRW'
-            """
-            )
-            result = cursor.fetchone()
-            doc_count = result["doc_count"] if result else 0
-
-            return (
-                True,
-                f"Connected successfully. Found {doc_count} SolidWorks documents.",
-                {"document_count": doc_count},
-            )
-
-        except Exception as e:
-            error_str = str(e)
-            if "Login failed" in error_str:
-                return False, "Login failed - check username and password", None
-            if "Cannot open database" in error_str:
-                return (
-                    False,
-                    f"Cannot open database '{database}' - check database name",
-                    None,
                 )
-            return False, f"Connection error: {error_str}", None
-        finally:
-            if conn:
-                conn.close()
+                result = cursor.fetchone()
+                doc_count = 0
+                if isinstance(result, dict):
+                    doc_count = int(result.get("doc_count", 0))
+                elif result:
+                    doc_count = int(result[0])
+
+                return (
+                    True,
+                    f"Connected successfully. Found {doc_count} SolidWorks documents.",
+                    {"document_count": doc_count},
+                )
+
+        except MssqlConnectionError as e:
+            return False, str(e), None
+        except Exception as e:
+            return False, f"Connection error: {str(e)}", None
 
     try:
         success, message, details = await asyncio.to_thread(test_connection)
@@ -1409,7 +1403,7 @@ async def discover_postgres_databases(
 
         if process.returncode == 0:
             # Parse database names from output
-            output = stdout.decode("utf-8", errors="replace").strip()
+            output = _stdout.decode("utf-8", errors="replace").strip()
             databases = [db.strip() for db in output.split("\n") if db.strip()]
             return PostgresDiscoverResponse(success=True, databases=databases)
         else:
@@ -1444,50 +1438,44 @@ async def discover_mssql_databases(
     """
     import asyncio
 
-    try:
-        import pymssql  # type: ignore[import-untyped]
-    except ImportError:
-        return MssqlDiscoverResponse(
-            success=False,
-            databases=[],
-            error="pymssql package not installed",
-        )
-
     def discover_databases() -> tuple[bool, list[str], str | None]:
-        conn = None
         try:
-            conn = pymssql.connect(  # type: ignore[attr-defined]
-                server=request.host,
-                port=str(request.port),
+            with mssql_connect(
+                host=request.host,
+                port=request.port,
                 user=request.user,
                 password=request.password,
                 database="master",  # Connect to master to list databases
                 login_timeout=10,
                 timeout=10,
-                as_dict=True,
-            )
-            cursor = conn.cursor()
+            ) as conn:
+                cursor = conn.cursor()
 
-            # Query system databases
-            cursor.execute(
-                """
-                SELECT name FROM sys.databases
-                WHERE database_id > 4  -- Exclude system databases
-                ORDER BY name
-                """
-            )
-            rows = cursor.fetchall() or []
-            databases = [row["name"] for row in rows]  # type: ignore[index]
-            return True, databases, None
+                # Query system databases
+                cursor.execute(
+                    """
+                    SELECT name FROM sys.databases
+                    WHERE database_id > 4  -- Exclude system databases
+                    ORDER BY name
+                    """
+                )
+                rows = cursor.fetchall() or []
+                databases: list[str] = []
+                for row in rows:
+                    if isinstance(row, dict):
+                        name = row.get("name")
+                    elif row and len(row) > 0:
+                        name = row[0]
+                    else:
+                        name = None
+                    if name:
+                        databases.append(str(name))
+                return True, databases, None
 
+        except MssqlConnectionError as e:
+            return False, [], str(e)
         except Exception as e:
-            error_str = str(e)
-            if "Login failed" in error_str:
-                return False, [], "Login failed - check username and password"
-            return False, [], f"Connection error: {error_str}"
-        finally:
-            if conn:
-                conn.close()
+            return False, [], f"Connection error: {str(e)}"
 
     try:
         success, databases, error = await asyncio.to_thread(discover_databases)
@@ -1512,87 +1500,86 @@ async def discover_pdm_schema(
     """
     import asyncio
 
-    try:
-        import pymssql  # type: ignore[import-untyped]
-    except ImportError:
-        return PdmDiscoverResponse(
-            success=False,
-            error="pymssql package not installed",
-        )
-
     def discover_schema() -> tuple[bool, list[str], list[str], int, str | None]:
         """Returns (success, file_extensions, variable_names, doc_count, error)."""
-        conn = None
         try:
-            conn = pymssql.connect(  # type: ignore[attr-defined]
-                server=request.host,
-                port=str(request.port),
+            with mssql_connect(
+                host=request.host,
+                port=request.port,
                 user=request.user,
                 password=request.password,
                 database=request.database,
                 login_timeout=10,
                 timeout=30,
-                as_dict=True,
-            )
-            cursor = conn.cursor()
+            ) as conn:
+                cursor = conn.cursor()
 
-            # Get distinct file extensions from Documents table
-            # Use RIGHT() with CHARINDEX on reversed string to get extension from end
-            # Filter out configuration markers containing angle brackets
-            cursor.execute(
-                """
-                SELECT DISTINCT
-                    UPPER(RIGHT(Filename, CHARINDEX('.', REVERSE(Filename)))) AS Extension
-                FROM Documents
-                WHERE Filename LIKE '%.%'
-                    AND Deleted = 0
-                    AND CHARINDEX('.', REVERSE(Filename)) > 1
-                    AND CHARINDEX('.', REVERSE(Filename)) <= 10
-                    AND Filename NOT LIKE '%<%'
-                ORDER BY Extension
-                """
-            )
-            ext_rows = cursor.fetchall() or []
-            extensions = [
-                row["Extension"]  # type: ignore[index]
-                for row in ext_rows
-                if row["Extension"]  # type: ignore[index]
-            ]
+                # Get distinct file extensions from Documents table
+                # Use RIGHT() with CHARINDEX on reversed string to get extension from end
+                # Filter out configuration markers containing angle brackets
+                cursor.execute(
+                    """
+                    SELECT DISTINCT
+                        UPPER(RIGHT(Filename, CHARINDEX('.', REVERSE(Filename)))) AS Extension
+                    FROM Documents
+                    WHERE Filename LIKE '%.%'
+                        AND Deleted = 0
+                        AND CHARINDEX('.', REVERSE(Filename)) > 1
+                        AND CHARINDEX('.', REVERSE(Filename)) <= 10
+                        AND Filename NOT LIKE '%<%'
+                    ORDER BY Extension
+                    """
+                )
+                ext_rows = cursor.fetchall() or []
+                extensions = []
+                for row in ext_rows:
+                    ext_value = None
+                    if isinstance(row, dict):
+                        ext_value = row.get("Extension")
+                    elif row and len(row) > 0:
+                        ext_value = row[0]
+                    if ext_value:
+                        extensions.append(str(ext_value))
 
-            # Get all variable names from Variable table
-            # Filter out GUID-like names (patterns like {xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx})
-            cursor.execute(
-                """
-                SELECT VariableName FROM Variable
-                WHERE VariableName NOT LIKE '{________-____-____-____-____________}'
-                    AND VariableName NOT LIKE '{%-%-%-%-%}'
-                ORDER BY VariableName
-                """
-            )
-            var_rows = cursor.fetchall() or []
-            variables = [
-                row["VariableName"]  # type: ignore[index]
-                for row in var_rows
-                if row["VariableName"]  # type: ignore[index]
-            ]
+                # Get all variable names from Variable table
+                # Filter out GUID-like names (patterns like {xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx})
+                cursor.execute(
+                    """
+                    SELECT VariableName FROM Variable
+                    WHERE VariableName NOT LIKE '{________-____-____-____-____________}'
+                        AND VariableName NOT LIKE '{%-%-%-%-%}'
+                    ORDER BY VariableName
+                    """
+                )
+                var_rows = cursor.fetchall() or []
+                variables = []
+                for row in var_rows:
+                    var_value = None
+                    if isinstance(row, dict):
+                        var_value = row.get("VariableName")
+                    elif row and len(row) > 0:
+                        var_value = row[0]
+                    if var_value:
+                        variables.append(str(var_value))
 
-            # Get total document count
-            cursor.execute("SELECT COUNT(*) as cnt FROM Documents WHERE Deleted = 0")
-            result = cursor.fetchone()
-            doc_count = result["cnt"] if result else 0  # type: ignore[index]
+                # Get total document count
+                cursor.execute(
+                    "SELECT COUNT(*) as cnt FROM Documents WHERE Deleted = 0"
+                )
+                result = cursor.fetchone()
+                if isinstance(result, dict):
+                    doc_count = int(result.get("cnt", 0))
+                elif result:
+                    doc_count = int(result[0])
+                else:
+                    doc_count = 0
 
-            return True, extensions, variables, doc_count, None
+                return True, extensions, variables, doc_count, None
 
+        except MssqlConnectionError as e:
+            return False, [], [], 0, str(e)
         except Exception as e:
-            error_str = str(e)
-            if "Login failed" in error_str:
-                return False, [], [], 0, "Login failed - check username and password"
-            if "Cannot open database" in error_str:
-                return False, [], [], 0, f"Cannot open database '{request.database}'"
-            return False, [], [], 0, f"Connection error: {error_str}"
-        finally:
-            if conn:
-                conn.close()
+            return False, [], [], 0, f"Connection error: {str(e)}"
 
     try:
         success, extensions, variables, doc_count, error = await asyncio.to_thread(
@@ -1983,8 +1970,6 @@ async def _heartbeat_ssh(config: dict) -> ToolTestResponse:
 
 async def _heartbeat_filesystem(config: dict) -> ToolTestResponse:
     """Quick filesystem indexer heartbeat check - verify base path is accessible."""
-    from pathlib import Path
-
     base_path = config.get("base_path", "")
 
     if not base_path:
@@ -2018,11 +2003,6 @@ async def _heartbeat_pdm(config: dict) -> ToolTestResponse:
     """Quick SolidWorks PDM database heartbeat check."""
     import asyncio
 
-    try:
-        import pymssql  # type: ignore[import-untyped]
-    except ImportError:
-        return ToolTestResponse(success=False, message="pymssql not installed")
-
     host = config.get("host", "")
     port = config.get("port", 1433)
     user = config.get("user", "")
@@ -2033,25 +2013,24 @@ async def _heartbeat_pdm(config: dict) -> ToolTestResponse:
         return ToolTestResponse(success=False, message="PDM connection not configured")
 
     def check_connection() -> tuple[bool, str]:
-        conn = None
         try:
-            conn = pymssql.connect(  # type: ignore[attr-defined]
-                server=host,
-                port=str(port),
+            with mssql_connect(
+                host=host,
+                port=port,
                 user=user,
                 password=password,
                 database=database,
                 login_timeout=5,
                 timeout=5,
-            )
-            cursor = conn.cursor()
-            cursor.execute("SELECT 1")
-            return True, "OK"
+                as_dict=False,
+            ) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")
+                return True, "OK"
+        except MssqlConnectionError as e:
+            return False, str(e)[:80]
         except Exception as e:
             return False, str(e)[:80]
-        finally:
-            if conn:
-                conn.close()
 
     try:
         success, message = await asyncio.wait_for(
@@ -2177,9 +2156,6 @@ async def _test_mssql_connection(config: dict) -> ToolTestResponse:
 
 async def _test_odoo_connection(config: dict) -> ToolTestResponse:
     """Test Odoo shell connection (Docker or SSH mode)."""
-    import asyncio
-    import subprocess
-
     mode = config.get("mode", "docker")
 
     if mode == "ssh":
@@ -2255,7 +2231,7 @@ async def _test_odoo_ssh_connection(config: dict) -> ToolTestResponse:
         if "ODOO_TEST_SUCCESS" in odoo_result.output:
             return ToolTestResponse(
                 success=True,
-                message=f"Odoo shell accessible via SSH",
+                message="Odoo shell accessible via SSH",
                 details={"host": ssh_host, "database": database, "mode": "ssh"},
             )
         else:
@@ -2516,8 +2492,6 @@ async def discover_docker_resources():
 
     try:
         # Get our own container name by querying Docker
-        import os
-
         hostname = os.environ.get("HOSTNAME", "")
         if hostname:
             # The hostname in Docker is typically the container ID
@@ -2676,7 +2650,6 @@ async def connect_to_network(network_name: str):
     This enables container-to-container communication with services on that network.
     """
     import asyncio
-    import os
     import subprocess
 
     # Get current container name
@@ -2739,7 +2712,6 @@ async def disconnect_from_network(network_name: str):
     Used for cleanup when removing tools that required network access.
     """
     import asyncio
-    import os
     import subprocess
 
     # Get current container name
@@ -2853,7 +2825,6 @@ async def discover_mounts(_user: User = Depends(require_admin)):
     Returns mounted paths and example docker-compose configuration for adding new mounts.
     """
     import asyncio
-    import os
     import subprocess
 
     mounts = []
@@ -2944,8 +2915,6 @@ async def browse_filesystem(path: str = "/mnt", _: User = Depends(require_admin)
     Used to explore mounted volumes and select paths for indexing.
     Only allows browsing under /mnt or other mounted paths for security.
     """
-    from pathlib import Path
-
     # Security: only allow browsing under /mnt or specific safe prefixes
     allowed_prefixes = ["/mnt", "/data", "/shared"]
     path_obj = Path(path).resolve()
@@ -3139,7 +3108,7 @@ async def discover_smb_shares(
         try:
             from smb.SMBConnection import (
                 SMBConnection,
-            )  # pyright: ignore[reportMissingImports]
+            )  # type: ignore[import-not-found,import-untyped]
 
             # Resolve hostname to IP
             try:
@@ -3353,7 +3322,9 @@ async def browse_smb_share(
 
     def _browse_smb() -> BrowseResponse:
         try:
-            from smb.SMBConnection import SMBConnection
+            from smb.SMBConnection import (
+                SMBConnection,
+            )  # type: ignore[import-not-found,import-untyped]
 
             # Resolve hostname to IP for SMB
             try:
@@ -3443,10 +3414,7 @@ async def browse_smb_share(
 
 from ragtime.indexer.models import (
     FilesystemAnalysisJobResponse,
-    FilesystemAnalysisResult,
-    FilesystemAnalysisStatus,
     FilesystemIndexJobResponse,
-    FilesystemIndexStatus,
     TriggerFilesystemIndexRequest,
 )
 
@@ -4725,9 +4693,15 @@ async def send_message_stream(
         """Generate streaming response tokens."""
         chunk_id = f"chatcmpl-{int(time.time())}"
         full_response = ""
-        tool_calls_collected = []  # Collect tool calls for storage (deprecated)
-        chronological_events = []  # Collect events in order (content and tools)
-        current_tool_call = None  # Track current tool call being built
+        tool_calls_collected: list[dict[str, Any]] = (
+            []
+        )  # Collect tool calls for storage (deprecated)
+        chronological_events: list[dict[str, Any]] = (
+            []
+        )  # Collect events in order (content and tools)
+        current_tool_call: dict[str, Any] | None = (
+            None  # Track current tool call being built
+        )
 
         try:
             async for event in rag.process_query_stream(user_message, chat_history):
@@ -4763,7 +4737,7 @@ async def send_message_stream(
                         yield f"data: {json.dumps(tool_chunk)}\n\n"
                     elif event_type == "tool_end":
                         # Complete the current tool call and save it
-                        if current_tool_call:
+                        if current_tool_call is not None:
                             current_tool_call["output"] = event.get("output")
                             chronological_events.append(current_tool_call)
                             # Also keep deprecated tool_calls format for backward compatibility
@@ -4879,7 +4853,7 @@ async def send_message_stream(
                 friendly_error = f"Stopped after reaching the max_iterations limit{limit_text}. Please narrow the request or retry."
 
             # Include any in-progress tool call that didn't complete
-            if current_tool_call:
+            if current_tool_call is not None:
                 current_tool_call["output"] = "(interrupted)"
                 chronological_events.append(current_tool_call)
                 # Also add to deprecated format
@@ -4934,7 +4908,7 @@ async def send_message_stream(
 # Background Chat Task Endpoints
 # =============================================================================
 
-from ragtime.indexer.models import ChatTask, ChatTaskResponse, ChatTaskStatus
+from ragtime.indexer.models import ChatTaskResponse, ChatTaskStatus
 
 
 @router.post(
@@ -5159,8 +5133,6 @@ async def trigger_schema_index(
     The embeddings enable semantic search of the database schema, helping
     the AI write better queries by understanding the database structure.
     """
-    from ragtime.indexer.models import ToolType
-
     # Get the tool config
     tool_config = await repository.get_tool_config(tool_id)
     if not tool_config:
@@ -5182,7 +5154,9 @@ async def trigger_schema_index(
         )
 
     # Validate pgvector is available
-    if not await schema_indexer._ensure_pgvector():
+    if (
+        not await schema_indexer._ensure_pgvector()
+    ):  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]  # type: ignore[attr-defined]
         raise HTTPException(
             status_code=503,
             detail="pgvector extension not available. Please install it: CREATE EXTENSION IF NOT EXISTS vector;",
@@ -5405,8 +5379,6 @@ async def trigger_pdm_index(
     and create embeddings for semantic search over parts, assemblies, drawings,
     materials, BOMs, and other PDM properties.
     """
-    from ragtime.indexer.models import ToolType
-
     # Get the tool config
     tool_config = await repository.get_tool_config(tool_id)
     if not tool_config:
@@ -5421,7 +5393,9 @@ async def trigger_pdm_index(
         )
 
     # Validate pgvector is available
-    if not await pdm_indexer._ensure_pgvector():
+    if (
+        not await pdm_indexer._ensure_pgvector()
+    ):  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]  # type: ignore[attr-defined]
         raise HTTPException(
             status_code=503,
             detail="pgvector extension not available. Please install it: CREATE EXTENSION IF NOT EXISTS vector;",
