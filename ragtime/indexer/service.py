@@ -354,7 +354,7 @@ class IndexerService:
         Recover jobs that were interrupted by a server restart.
 
         Called during application startup. Finds jobs in 'pending' or 'processing'
-        state and resumes them.
+        state and resumes them. Also cleans up orphaned directories.
 
         Returns:
             Number of jobs recovered
@@ -364,25 +364,24 @@ class IndexerService:
             j for j in jobs if j.status in (IndexStatus.PENDING, IndexStatus.PROCESSING)
         ]
 
-        if not interrupted:
-            return 0
-
-        logger.info(f"Found {len(interrupted)} interrupted job(s) to recover")
-
         recovered = 0
-        for job in interrupted:
-            try:
-                await self._resume_job(job)
-                recovered += 1
-            except Exception as e:
-                logger.error(f"Failed to recover job {job.id}: {e}")
-                job.status = IndexStatus.FAILED
-                job.error_message = f"Recovery failed: {e}"
-                job.completed_at = datetime.utcnow()
-                await repository.update_job(job)
+        if interrupted:
+            logger.info(f"Found {len(interrupted)} interrupted job(s) to recover")
 
-        # Clean up orphaned tmp directories (from deleted jobs)
+            for job in interrupted:
+                try:
+                    await self._resume_job(job)
+                    recovered += 1
+                except Exception as e:
+                    logger.error(f"Failed to recover job {job.id}: {e}")
+                    job.status = IndexStatus.FAILED
+                    job.error_message = f"Recovery failed: {e}"
+                    job.completed_at = datetime.utcnow()
+                    await repository.update_job(job)
+
+        # Clean up orphaned directories (always run, after job recovery)
         await self._cleanup_orphaned_tmp_dirs()
+        await self._cleanup_orphaned_git_repos()
 
         return recovered
 
@@ -402,6 +401,57 @@ class IndexerService:
             if tmp_path.is_dir() and tmp_path.name not in active_job_ids:
                 logger.info(f"Cleaning orphaned tmp directory: {tmp_path.name}")
                 shutil.rmtree(tmp_path, ignore_errors=True)
+
+    async def _cleanup_orphaned_git_repos(self) -> None:
+        """Remove .git_repo directories for indexes that have no FAISS index.
+
+        An orphaned git repo occurs when:
+        1. A git clone completed but indexing failed
+        2. There's no active (pending/processing) job that might complete
+
+        This is safe to run on startup after job recovery has been attempted.
+        """
+        if not self.index_base_path.exists():
+            return
+
+        # Get active jobs that might still complete
+        jobs = await repository.list_jobs()
+        active_index_names = {
+            j.name
+            for j in jobs
+            if j.status in (IndexStatus.PENDING, IndexStatus.PROCESSING)
+        }
+
+        for index_dir in self.index_base_path.iterdir():
+            if not index_dir.is_dir() or index_dir.name.startswith("_"):
+                continue
+
+            git_repo = index_dir / ".git_repo"
+            faiss_index = index_dir / "index.faiss"
+
+            # If there's a git repo but no FAISS index, it might be orphaned
+            if git_repo.exists() and not faiss_index.exists():
+                # Don't delete if there's an active job for this index
+                if index_dir.name in active_index_names:
+                    logger.debug(
+                        f"Keeping .git_repo for {index_dir.name}: active job exists"
+                    )
+                    continue
+
+                # Safe to clean up
+                logger.info(
+                    f"Cleaning orphaned git repo: {index_dir.name}/.git_repo "
+                    "(no FAISS index, no active job)"
+                )
+                shutil.rmtree(git_repo, ignore_errors=True)
+
+                # If the directory is now empty, remove it too
+                try:
+                    if index_dir.exists() and not any(index_dir.iterdir()):
+                        index_dir.rmdir()
+                        logger.info(f"Removed empty index directory: {index_dir.name}")
+                except OSError:
+                    pass  # Directory not empty or other issue
 
     async def discover_orphan_indexes(self) -> int:
         """
@@ -1954,66 +2004,125 @@ class IndexerService:
         documents: List[LangChainDocument] = []
 
         try:
-            # Build git log command
-            # Format: hash|author|date|subject|body
-            log_format = "%H|%an|%aI|%s|%b"
-            cmd = ["git", "log", f"--format={log_format}"]
+            # Build git log command with stats and filenames
+            # Use a unique separator to split commits reliably
+            commit_sep = "---COMMIT_SEPARATOR---"
+            # Format: hash|author|date|subject, followed by body
+            # --stat gives per-file stats AND summary line with totals
+            # Format: " filename | +N -M" per file, then " N files changed, X insertions(+), Y deletions(-)"
+            log_format = f"{commit_sep}%H|%an|%aI|%s%n%b"
+            cmd = ["git", "log", f"--format={log_format}", "--stat"]
             if depth > 0:
                 cmd.extend(["-n", str(depth)])
 
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=str(repo_dir),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            stdout, stderr = await process.communicate()
+            # Run git log in thread pool to avoid blocking event loop
+            def run_git_log():
+                result = subprocess.run(
+                    cmd,
+                    cwd=str(repo_dir),
+                    capture_output=True,
+                    text=True,
+                    timeout=300,  # 5 minute timeout for large histories
+                )
+                return result.returncode, result.stdout, result.stderr
 
-            if process.returncode != 0:
-                logger.warning(f"Git log failed: {stderr.decode()}")
+            returncode, stdout, stderr = await asyncio.to_thread(run_git_log)
+
+            if returncode != 0:
+                logger.warning(f"Git log failed: {stderr}")
                 return documents
 
-            # Parse commits
-            log_output = stdout.decode("utf-8", errors="replace")
-            commits: List[str] = []
-            current_commit: List[str] = []
+            # Parse commits in thread pool for large histories
+            def parse_commits(log_output: str) -> List[LangChainDocument]:
+                parsed_docs: List[LangChainDocument] = []
+                commit_blocks = log_output.split(commit_sep)
 
-            for line in log_output.split("\n"):
-                if "|" in line and len(line.split("|")) >= 4:
-                    # This looks like a commit header line
-                    if current_commit:
-                        commits.append("\n".join(current_commit))
-                    current_commit = [line]
-                else:
-                    # This is a continuation (part of body)
-                    if current_commit:
-                        current_commit.append(line)
+                for block in commit_blocks:
+                    block = block.strip()
+                    if not block:
+                        continue
 
-            if current_commit:
-                commits.append("\n".join(current_commit))
+                    lines = block.split("\n")
+                    if not lines:
+                        continue
 
-            # Create documents from commits
-            for commit_text in commits:
-                if not commit_text.strip():
-                    continue
+                    # First line is the header: hash|author|date|subject
+                    header_parts = lines[0].split("|")
+                    if len(header_parts) < 4:
+                        continue
 
-                lines = commit_text.split("\n")
-                header_parts = lines[0].split("|")
-
-                if len(header_parts) >= 4:
                     commit_hash = header_parts[0]
                     author = header_parts[1]
                     date = header_parts[2]
-                    subject = header_parts[3]
-                    body = "|".join(header_parts[4:]) if len(header_parts) > 4 else ""
+                    subject = "|".join(header_parts[3:])  # Subject may contain |
 
-                    # Add any continuation lines to body
-                    if len(lines) > 1:
-                        body = body + "\n" + "\n".join(lines[1:])
-                    body = body.strip()
+                    # Parse remaining lines for --stat format:
+                    # - Body lines (commit message after subject)
+                    # - File stat lines: " filename | N +/-" or " filename | Bin X -> Y"
+                    # - Summary line: " N files changed, X insertions(+), Y deletions(-)"
+                    body_lines: List[str] = []
+                    file_names: List[str] = []
+                    total_additions = 0
+                    total_deletions = 0
+                    files_changed = 0
+                    in_stat_section = False
 
-                    # Create a searchable document
-                    content = f"Git Commit: {subject}\n\nAuthor: {author}\nDate: {date}\nCommit: {commit_hash[:8]}\n\n{body}"
+                    for line in lines[1:]:
+                        # Check for file stat line: " filename | N +/-" pattern
+                        # Example: " README.md | 2 +-"
+                        if " | " in line and not in_stat_section:
+                            in_stat_section = True
+
+                        if in_stat_section:
+                            # Summary line: " 3 files changed, 45 insertions(+), 12 deletions(-)"
+                            if "files changed" in line or "file changed" in line:
+                                parts = line.split(",")
+                                for part in parts:
+                                    part = part.strip()
+                                    if "file" in part:
+                                        try:
+                                            files_changed = int(part.split()[0])
+                                        except (ValueError, IndexError):
+                                            pass
+                                    elif "insertion" in part:
+                                        try:
+                                            total_additions = int(part.split()[0])
+                                        except (ValueError, IndexError):
+                                            pass
+                                    elif "deletion" in part:
+                                        try:
+                                            total_deletions = int(part.split()[0])
+                                        except (ValueError, IndexError):
+                                            pass
+                            elif " | " in line:
+                                # File stat line: extract just the filename
+                                # Format: " path/to/file.ext | 42 ++++---"
+                                file_part = line.split(" | ")[0].strip()
+                                if file_part:
+                                    file_names.append(file_part)
+                        elif line.strip():
+                            # Before stat section, it's part of the commit body
+                            body_lines.append(line)
+
+                    body = "\n".join(body_lines).strip()
+
+                    # Create a searchable document with compact formatting
+                    content = f"[Commit {commit_hash[:8]}] {subject}\nAuthor: {author}\nDate: {date}"
+
+                    # Add stats summary
+                    if files_changed > 0:
+                        content += f"\nChanges: +{total_additions}/-{total_deletions} in {files_changed} file(s)"
+
+                    # Add file list on same line or next line (no blank line)
+                    if file_names:
+                        if len(file_names) <= 10:
+                            content += f"\nFiles: {', '.join(file_names)}"
+                        else:
+                            content += f"\nFiles: {', '.join(file_names[:10])}, +{len(file_names) - 10} more"
+
+                    # Add body if present
+                    if body and body.strip() != "":
+                        content += f"\nMessage:\n{body}"
 
                     doc = LangChainDocument(
                         page_content=content,
@@ -2024,12 +2133,20 @@ class IndexerService:
                             "commit_hash": commit_hash,
                             "author": author,
                             "date": date,
+                            "additions": total_additions,
+                            "deletions": total_deletions,
+                            "files_changed": files_changed,
                         },
                     )
-                    documents.append(doc)
+                    parsed_docs.append(doc)
 
+                return parsed_docs
+
+            documents = await asyncio.to_thread(parse_commits, stdout)
             logger.info(f"Extracted {len(documents)} commits from git history")
 
+        except subprocess.TimeoutExpired:
+            logger.warning("Git log timed out - repository may have very large history")
         except Exception as e:
             logger.warning(f"Failed to index git history: {e}")
 

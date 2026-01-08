@@ -453,6 +453,11 @@ class RAGComponents:
                 tools.extend(knowledge_tools)
                 logger.info(f"Added {len(knowledge_tools)} per-index search tools")
 
+        # Add git history search tool(s) if we have git repos
+        git_history_tools = await self._create_git_history_tools()
+        if git_history_tools:
+            tools.extend(git_history_tools)
+
         # Get tools from the new ToolConfig system
         if self._tool_configs:
             config_tools = await self._build_tools_from_configs(
@@ -738,6 +743,74 @@ class RAGComponents:
             description=description,
             args_schema=KnowledgeSearchInput,
         )
+
+    async def _create_git_history_tools(self) -> List[Any]:
+        """Create git history search tool(s) for git-based indexes.
+
+        When aggregate_search is enabled: creates a single search_git_history tool
+        When aggregate_search is disabled: creates search_git_history_<name> per index
+        """
+        from ragtime.tools.git_history import (
+            create_per_index_git_history_tool,
+            git_history_tool,
+        )
+
+        tools: List[Any] = []
+        index_base = Path(settings.index_data_path)
+
+        # Find all git repos and match them with index metadata
+        # Only include repos where git_history_depth != 1 (shallow clone has no history)
+        git_repos: List[tuple[str, Path, str]] = []  # (name, path, description)
+
+        if index_base.exists():
+            for index_dir in index_base.iterdir():
+                if not index_dir.is_dir():
+                    continue
+
+                git_repo = index_dir / ".git_repo"
+                if git_repo.exists() and (git_repo / ".git").exists():
+                    # Get metadata including config_snapshot to check git_history_depth
+                    description = ""
+                    git_history_depth = 0  # Default to full history
+                    for idx in self._index_metadata or []:
+                        if idx.get("name") == index_dir.name:
+                            description = idx.get("description", "")
+                            # Get git_history_depth from config_snapshot
+                            config = idx.get("config_snapshot") or {}
+                            git_history_depth = config.get("git_history_depth", 0)
+                            break
+
+                    # Only expose git history tool if depth != 1
+                    # depth=0 means full history, depth>1 means we have commits to search
+                    # depth=1 is a shallow clone with only the latest commit (not useful)
+                    if git_history_depth != 1:
+                        git_repos.append((index_dir.name, git_repo, description))
+                    else:
+                        logger.debug(
+                            f"Skipping git history tool for {index_dir.name}: "
+                            "shallow clone (depth=1)"
+                        )
+
+        if not git_repos:
+            return []
+
+        aggregate_search = (self._app_settings or {}).get("aggregate_search", True)
+
+        if aggregate_search:
+            # Single tool for all git repos
+            tools.append(git_history_tool)
+            repo_names = [name for name, _, _ in git_repos]
+            logger.info(
+                f"Added search_git_history tool for {len(git_repos)} repo(s): {repo_names}"
+            )
+        else:
+            # Separate tool per repo
+            for name, repo_path, description in git_repos:
+                tool = create_per_index_git_history_tool(name, repo_path, description)
+                tools.append(tool)
+            logger.info(f"Added {len(tools)} per-index git history search tools")
+
+        return tools
 
     def _create_per_index_search_tools(self) -> List[Any]:
         """Create separate search tools for each index.
