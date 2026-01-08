@@ -378,11 +378,13 @@ model PdmIndexJob {
 
   status       PdmIndexStatus @default(pending)
   indexName    String         @map("index_name")
+  currentStep  String?        @map("current_step")  // Current processing step for UI display
 
   // Progress tracking
   totalDocuments     Int      @default(0) @map("total_documents")
   processedDocuments Int      @default(0) @map("processed_documents")
   skippedDocuments   Int      @default(0) @map("skipped_documents")  // Unchanged documents
+  extractedDocuments Int      @default(0) @map("extracted_documents")  // Documents extracted from PDM
   totalChunks        Int      @default(0) @map("total_chunks")
   processedChunks    Int      @default(0) @map("processed_chunks")
   errorMessage       String?  @map("error_message")

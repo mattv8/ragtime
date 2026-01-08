@@ -118,10 +118,12 @@ class PdmIndexerService:
                 tool_config_id=job.tool_config_id,
                 status=job.status,
                 index_name=job.index_name,
+                current_step=job.current_step,
                 progress_percent=job.progress_percent,
                 total_documents=job.total_documents,
                 processed_documents=job.processed_documents,
                 skipped_documents=job.skipped_documents,
+                extracted_documents=job.extracted_documents,
                 total_chunks=job.total_chunks,
                 processed_chunks=job.processed_chunks,
                 error_message=job.error_message,
@@ -175,10 +177,12 @@ class PdmIndexerService:
                     tool_config_id=job.tool_config_id,
                     status=job.status,
                     index_name=job.index_name,
+                    current_step=job.current_step,
                     progress_percent=job.progress_percent,
                     total_documents=job.total_documents,
                     processed_documents=job.processed_documents,
                     skipped_documents=job.skipped_documents,
+                    extracted_documents=job.extracted_documents,
                     total_chunks=job.total_chunks,
                     processed_chunks=job.processed_chunks,
                     error_message=job.error_message,
@@ -233,10 +237,12 @@ class PdmIndexerService:
                             tool_config_id=job.tool_config_id,
                             status=job.status,
                             index_name=job.index_name,
+                            current_step=job.current_step,
                             progress_percent=job.progress_percent,
                             total_documents=job.total_documents,
                             processed_documents=job.processed_documents,
                             skipped_documents=job.skipped_documents,
+                            extracted_documents=job.extracted_documents,
                             total_chunks=job.total_chunks,
                             processed_chunks=job.processed_chunks,
                             error_message=job.error_message,
@@ -255,10 +261,12 @@ class PdmIndexerService:
                             tool_config_id=job.tool_config_id,
                             status=job.status,
                             index_name=job.index_name,
+                            current_step=job.current_step,
                             progress_percent=job.progress_percent,
                             total_documents=job.total_documents,
                             processed_documents=job.processed_documents,
                             skipped_documents=job.skipped_documents,
+                            extracted_documents=job.extracted_documents,
                             total_chunks=job.total_chunks,
                             processed_chunks=job.processed_chunks,
                             error_message=job.error_message,
@@ -402,12 +410,33 @@ class PdmIndexerService:
     # PDM Data Extraction
     # =========================================================================
 
-    async def extract_documents(
+    async def extract_documents_batched(
         self,
         config: SolidworksPdmConnectionConfig,
+        variable_map: Dict[int, str],
         max_documents: int | None = None,
-    ) -> AsyncIterator[PdmDocumentInfo]:
-        """Extract documents with metadata from PDM database."""
+        batch_size: int = 1000,
+        on_batch_extracted: Callable[[int, int], None] | None = None,
+    ) -> AsyncIterator[List[PdmDocumentInfo]]:
+        """
+        Extract documents with metadata from PDM database in batches.
+
+        Uses optimized bulk queries instead of N+1 pattern:
+        1. Fetch documents in batches with OFFSET/FETCH
+        2. Bulk fetch all variables for the batch in one query
+        3. Bulk fetch all configurations for the batch in one query
+        4. Bulk fetch all BOM components for assemblies in one query
+
+        Args:
+            config: PDM connection configuration
+            variable_map: Mapping of variable ID to variable name
+            max_documents: Optional limit on total documents
+            batch_size: Number of documents per batch (default 1000)
+            on_batch_extracted: Optional callback(extracted_count, total_count)
+
+        Yields:
+            Lists of PdmDocumentInfo objects (one list per batch)
+        """
         try:
             import pymssql  # type: ignore[import-untyped]
 
@@ -415,47 +444,48 @@ class PdmIndexerService:
             connect_fn = cast(Any, getattr(pymssql, "connect", None))
             if not callable(connect_fn):
                 raise RuntimeError("pymssql.connect is not available")
-            connect_fn = cast(Callable[..., Any], connect_fn)
         except ImportError as exc:
             raise RuntimeError("pymssql not installed for PDM database access") from exc
 
-        connect_fn_callable: Callable[..., Any] = cast(Callable[..., Any], connect_fn)
+        # Build file extension filter
+        ext_filter = " OR ".join(
+            [f"d.Filename LIKE '%{ext}'" for ext in (config.file_extensions or [])]
+        )
+        if not ext_filter:
+            ext_filter = "1=1"
 
-        # Get variable IDs for the configured variable names
-        variable_map = await self._get_variable_map(config)
+        deleted_filter = "AND d.Deleted = 0" if config.exclude_deleted else ""
+        dip_deleted_filter = (
+            "AND (dip.Deleted IS NULL OR dip.Deleted = 0)"
+            if config.exclude_deleted
+            else ""
+        )
 
-        def run_extraction() -> List[PdmDocumentInfo]:
-            conn: Any = cast(Callable[..., Any], connect_fn_callable)(
+        # Get total count first
+        total_count = await self._count_documents(config)
+        if max_documents:
+            total_count = min(total_count, max_documents)
+
+        var_ids = list(variable_map.keys())
+        var_ids_str = ",".join(str(v) for v in var_ids) if var_ids else "0"
+
+        def extract_batch(offset: int, limit: int) -> List[PdmDocumentInfo]:
+            """Extract a single batch of documents with all related data."""
+            conn: Any = connect_fn(
                 server=config.host,
                 port=str(config.port or 1433),
                 user=config.user,
                 password=config.password,
                 database=config.database,
                 login_timeout=30,
-                timeout=300,  # Longer timeout for large queries
+                timeout=300,
             )
             cursor: Any = conn.cursor(as_dict=True)
 
-            # Build file extension filter
-            # Extensions may already include the dot (e.g., '.SLDPRT'), so use them as-is
-            ext_filter = " OR ".join(
-                [f"d.Filename LIKE '%{ext}'" for ext in (config.file_extensions or [])]
-            )
-            if not ext_filter:
-                ext_filter = "1=1"  # No filter
-
-            # Query documents
-            deleted_filter = "AND d.Deleted = 0" if config.exclude_deleted else ""
-            dip_deleted_filter = (
-                "AND (dip.Deleted IS NULL OR dip.Deleted = 0)"
-                if config.exclude_deleted
-                else ""
-            )
-            limit_clause = f"TOP {max_documents}" if max_documents else ""
-
+            # Step 1: Get batch of documents
             cursor.execute(
                 f"""
-                SELECT {limit_clause}
+                SELECT
                     d.DocumentID,
                     d.Filename,
                     d.LatestRevisionNo,
@@ -467,87 +497,101 @@ class PdmIndexerService:
                 WHERE ({ext_filter})
                     {deleted_filter}
                 ORDER BY d.DocumentID
+                OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY
             """
             )
+            doc_rows = cursor.fetchall()
+            if not doc_rows:
+                conn.close()
+                return []
 
-            documents = []
-            for row in cursor.fetchall():
-                doc_id = row["DocumentID"]
-                filename = row["Filename"]
-                revision = row["LatestRevisionNo"] or 1
-                folder_path = row["FolderPath"]
+            # Build document ID list and revision map
+            doc_ids = [row["DocumentID"] for row in doc_rows]
+            doc_ids_str = ",".join(str(d) for d in doc_ids)
+            revision_map = {
+                row["DocumentID"]: row["LatestRevisionNo"] or 1 for row in doc_rows
+            }
 
-                # Determine document type from extension
-                doc_type = "UNKNOWN"
-                if "." in filename:
-                    doc_type = filename.rsplit(".", 1)[-1].upper()
+            # Step 2: Bulk fetch all variables for this batch
+            variables_by_doc: Dict[int, Dict[str, str]] = {
+                doc_id: {} for doc_id in doc_ids
+            }
+            if var_ids:
+                cursor.execute(
+                    f"""
+                    SELECT DISTINCT
+                        vv.DocumentID,
+                        vv.VariableID,
+                        vv.ValueText
+                    FROM VariableValue vv
+                    WHERE vv.DocumentID IN ({doc_ids_str})
+                        AND vv.VariableID IN ({var_ids_str})
+                        AND vv.ValueText IS NOT NULL
+                        AND vv.ValueText != ''
+                """
+                )
+                for var_row in cursor.fetchall():
+                    doc_id = var_row["DocumentID"]
+                    var_id = var_row["VariableID"]
+                    var_name = variable_map.get(var_id)
+                    if var_name and var_row["ValueText"] and doc_id in variables_by_doc:
+                        # Only use value if revision matches or we don't have one yet
+                        variables_by_doc[doc_id][var_name] = var_row["ValueText"]
 
-                # Get variables for this document
-                # Get variables from all configurations, preferring latest revision
-                variables = {}
-                if variable_map:
-                    var_ids = list(variable_map.keys())
-                    var_ids_str = ",".join(str(v) for v in var_ids)
+            # Step 3: Bulk fetch configurations if enabled
+            configs_by_doc: Dict[int, List[dict]] = {doc_id: [] for doc_id in doc_ids}
+            if config.include_configurations:
+                cursor.execute(
+                    f"""
+                    SELECT DISTINCT
+                        vv.DocumentID,
+                        dc.ConfigurationName,
+                        vv_pn.ValueText AS PartNumber,
+                        vv_desc.ValueText AS Description
+                    FROM VariableValue vv
+                    INNER JOIN DocumentConfiguration dc
+                        ON vv.ConfigurationID = dc.ConfigurationID
+                    LEFT JOIN VariableValue vv_pn
+                        ON vv.DocumentID = vv_pn.DocumentID
+                        AND vv.ConfigurationID = vv_pn.ConfigurationID
+                        AND vv.RevisionNo = vv_pn.RevisionNo
+                        AND vv_pn.VariableID = 122
+                    LEFT JOIN VariableValue vv_desc
+                        ON vv.DocumentID = vv_desc.DocumentID
+                        AND vv.ConfigurationID = vv_desc.ConfigurationID
+                        AND vv.RevisionNo = vv_desc.RevisionNo
+                        AND vv_desc.VariableID = 58
+                    WHERE vv.DocumentID IN ({doc_ids_str})
+                """
+                )
+                for cfg_row in cursor.fetchall():
+                    doc_id = cfg_row["DocumentID"]
+                    config_name = cfg_row["ConfigurationName"]
+                    if config_name and doc_id in configs_by_doc:
+                        configs_by_doc[doc_id].append(
+                            {
+                                "name": config_name,
+                                "part_number": cfg_row["PartNumber"] or "",
+                                "description": cfg_row["Description"] or "",
+                            }
+                        )
+
+            # Step 4: Bulk fetch BOM components for assemblies if enabled
+            bom_by_doc: Dict[int, List[dict]] = {doc_id: [] for doc_id in doc_ids}
+            if config.include_bom:
+                # Find assembly doc IDs
+                assembly_ids = [
+                    row["DocumentID"]
+                    for row in doc_rows
+                    if "." in row["Filename"]
+                    and row["Filename"].rsplit(".", 1)[-1].upper() == "SLDASM"
+                ]
+                if assembly_ids:
+                    assembly_ids_str = ",".join(str(d) for d in assembly_ids)
                     cursor.execute(
                         f"""
-                        SELECT DISTINCT vv.VariableID, vv.ValueText
-                        FROM VariableValue vv
-                        WHERE vv.DocumentID = {doc_id}
-                            AND vv.VariableID IN ({var_ids_str})
-                            AND vv.RevisionNo = {revision}
-                            AND vv.ValueText IS NOT NULL
-                            AND vv.ValueText != ''
-                    """
-                    )
-                    for var_row in cursor.fetchall():
-                        var_id = var_row["VariableID"]
-                        var_name = variable_map.get(var_id)
-                        if var_name and var_row["ValueText"]:
-                            variables[var_name] = var_row["ValueText"]
-
-                # Get configurations if enabled
-                configurations = []
-                if config.include_configurations:
-                    cursor.execute(
-                        f"""
-                        SELECT DISTINCT
-                            dc.ConfigurationName,
-                            vv_pn.ValueText AS PartNumber,
-                            vv_desc.ValueText AS Description
-                        FROM VariableValue vv
-                        INNER JOIN DocumentConfiguration dc
-                            ON vv.ConfigurationID = dc.ConfigurationID
-                        LEFT JOIN VariableValue vv_pn
-                            ON vv.DocumentID = vv_pn.DocumentID
-                            AND vv.ConfigurationID = vv_pn.ConfigurationID
-                            AND vv.RevisionNo = vv_pn.RevisionNo
-                            AND vv_pn.VariableID = 122  -- Part Number
-                        LEFT JOIN VariableValue vv_desc
-                            ON vv.DocumentID = vv_desc.DocumentID
-                            AND vv.ConfigurationID = vv_desc.ConfigurationID
-                            AND vv.RevisionNo = vv_desc.RevisionNo
-                            AND vv_desc.VariableID = 58  -- Description
-                        WHERE vv.DocumentID = {doc_id}
-                            AND vv.RevisionNo = {revision}
-                    """
-                    )
-                    for cfg_row in cursor.fetchall():
-                        config_name = cfg_row["ConfigurationName"]
-                        if config_name:
-                            configurations.append(
-                                {
-                                    "name": config_name,
-                                    "part_number": cfg_row["PartNumber"] or "",
-                                    "description": cfg_row["Description"] or "",
-                                }
-                            )
-
-                # Get BOM components if assembly and enabled
-                bom_components = []
-                if config.include_bom and doc_type == "SLDASM":
-                    cursor.execute(
-                        f"""
-                        SELECT TOP 100
+                        SELECT
+                            bs.SourceDocumentID,
                             bsr.RowDocumentID AS ChildFileID,
                             d2.Filename AS ChildFilename,
                             dc.ConfigurationName AS ChildConfigName
@@ -555,18 +599,36 @@ class PdmIndexerService:
                         INNER JOIN BomSheetRow bsr ON bs.BomDocumentID = bsr.BomDocumentID
                         INNER JOIN Documents d2 ON bsr.RowDocumentID = d2.DocumentID
                         LEFT JOIN DocumentConfiguration dc ON bsr.RowConfigurationID = dc.ConfigurationID
-                        WHERE bs.SourceDocumentID = {doc_id}
+                        WHERE bs.SourceDocumentID IN ({assembly_ids_str})
                     """
                     )
                     for bom_row in cursor.fetchall():
-                        bom_components.append(
-                            {
-                                "document_id": bom_row["ChildFileID"],
-                                "filename": bom_row["ChildFilename"],
-                                "configuration": bom_row["ChildConfigName"] or "",
-                                "quantity": 1,  # PDM doesn't store quantity in BomSheetRow
-                            }
-                        )
+                        doc_id = bom_row["SourceDocumentID"]
+                        if doc_id in bom_by_doc:
+                            bom_by_doc[doc_id].append(
+                                {
+                                    "document_id": bom_row["ChildFileID"],
+                                    "filename": bom_row["ChildFilename"],
+                                    "configuration": bom_row["ChildConfigName"] or "",
+                                    "quantity": 1,
+                                }
+                            )
+
+            conn.close()
+
+            # Build document info objects
+            documents = []
+            for row in doc_rows:
+                doc_id = row["DocumentID"]
+                filename = row["Filename"]
+                revision = revision_map.get(doc_id, 1)
+                folder_path = row["FolderPath"]
+
+                doc_type = "UNKNOWN"
+                if "." in filename:
+                    doc_type = filename.rsplit(".", 1)[-1].upper()
+
+                variables = variables_by_doc.get(doc_id, {})
 
                 doc_info = PdmDocumentInfo(
                     document_id=doc_id,
@@ -580,18 +642,62 @@ class PdmIndexerService:
                     author=variables.get("Author"),
                     stocked_status=variables.get("Stocked Status"),
                     variables=variables,
-                    configurations=configurations,
-                    bom_components=bom_components,
+                    configurations=configs_by_doc.get(doc_id, []),
+                    bom_components=bom_by_doc.get(doc_id, []),
                 )
                 documents.append(doc_info)
 
-            conn.close()
             return documents
 
-        # Run in thread to avoid blocking
-        documents = await asyncio.to_thread(run_extraction)
-        for doc in documents:
-            yield doc
+        # Process in batches
+        offset = 0
+        total_extracted = 0
+        effective_limit = max_documents or total_count
+
+        while offset < effective_limit:
+            current_batch_size = min(batch_size, effective_limit - offset)
+
+            # Run extraction in thread to avoid blocking
+            batch_docs = await asyncio.to_thread(
+                extract_batch, offset, current_batch_size
+            )
+
+            if not batch_docs:
+                break
+
+            total_extracted += len(batch_docs)
+
+            # Call progress callback if provided
+            if on_batch_extracted:
+                on_batch_extracted(total_extracted, total_count)
+
+            yield batch_docs
+
+            offset += current_batch_size
+
+            # Small delay to allow other async tasks to run
+            await asyncio.sleep(0.01)
+
+    async def extract_documents(
+        self,
+        config: SolidworksPdmConnectionConfig,
+        max_documents: int | None = None,
+    ) -> AsyncIterator[PdmDocumentInfo]:
+        """Extract documents with metadata from PDM database.
+
+        This is a compatibility wrapper around extract_documents_batched
+        that yields individual documents instead of batches.
+        """
+        variable_map = await self._get_variable_map(config)
+
+        async for batch in self.extract_documents_batched(
+            config=config,
+            variable_map=variable_map,
+            max_documents=max_documents,
+            batch_size=500,
+        ):
+            for doc in batch:
+                yield doc
 
     async def _get_variable_map(
         self, config: SolidworksPdmConnectionConfig
@@ -646,11 +752,12 @@ class PdmIndexerService:
         connection_config: dict,
         full_reindex: bool,
     ):
-        """Main processing loop for PDM indexing."""
+        """Main processing loop for PDM indexing with step-by-step progress tracking."""
         try:
             # Update job status
             job.status = PdmIndexStatus.INDEXING
             job.started_at = datetime.now(timezone.utc)
+            job.current_step = "Initializing"
             await self._update_job(job)
 
             # Ensure pgvector is available
@@ -659,6 +766,9 @@ class PdmIndexerService:
 
             # Get app settings for embedding configuration
             from ragtime.core.app_settings import get_app_settings
+
+            job.current_step = "Checking embedding configuration"
+            await self._update_job(job)
 
             app_settings = await get_app_settings()
             settings = await repository.get_settings()
@@ -685,6 +795,9 @@ class PdmIndexerService:
                     tracking_needs_update = True
 
             # Get embeddings provider
+            job.current_step = "Initializing embedding provider"
+            await self._update_job(job)
+
             embeddings = await self._get_embeddings(app_settings)
             if embeddings is None:
                 raise RuntimeError(
@@ -714,6 +827,9 @@ class PdmIndexerService:
             config = SolidworksPdmConnectionConfig(**connection_config)
 
             # Count documents first
+            job.current_step = "Counting documents in PDM"
+            await self._update_job(job)
+
             doc_count = await self._count_documents(config)
             job.total_documents = doc_count
             await self._update_job(job)
@@ -721,67 +837,109 @@ class PdmIndexerService:
             if doc_count == 0:
                 job.status = PdmIndexStatus.COMPLETED
                 job.completed_at = datetime.now(timezone.utc)
+                job.current_step = "Completed"
                 job.error_message = "No documents found matching criteria"
                 await self._update_job(job)
                 return
+
+            logger.info(f"PDM indexing: Found {doc_count} documents to process")
 
             # Check for cancellation
             if self._cancellation_flags.get(job.id, False):
                 job.status = PdmIndexStatus.CANCELLED
                 job.completed_at = datetime.now(timezone.utc)
+                job.current_step = "Cancelled"
                 await self._update_job(job)
                 return
 
             # If full reindex, clear existing embeddings
             if full_reindex:
+                job.current_step = "Clearing existing embeddings"
+                await self._update_job(job)
                 await self._clear_embeddings(job.index_name)
 
-            # Process documents in batches
-            batch_size = 50
-            batch = []
+            # Get variable mapping
+            job.current_step = "Loading PDM variable mappings"
+            await self._update_job(job)
+            variable_map = await self._get_variable_map(config)
+            logger.info(f"PDM indexing: Loaded {len(variable_map)} variable mappings")
+
+            # Process documents in batches using optimized extraction
+            extraction_batch_size = 1000  # Documents per SQL batch
+            embedding_batch_size = 50  # Documents per embedding batch
             processed = 0
             skipped = 0
+            extracted = 0
+            embedding_batch: List[PdmDocumentInfo] = []
 
-            async for doc in self.extract_documents(config, config.max_documents):
-                # Check for cancellation periodically
+            job.current_step = f"Extracting documents from PDM (0/{doc_count})"
+            await self._update_job(job)
+
+            async for doc_batch in self.extract_documents_batched(
+                config=config,
+                variable_map=variable_map,
+                max_documents=config.max_documents,
+                batch_size=extraction_batch_size,
+            ):
+                # Check for cancellation at batch boundaries
                 if self._cancellation_flags.get(job.id, False):
                     job.status = PdmIndexStatus.CANCELLED
                     job.completed_at = datetime.now(timezone.utc)
+                    job.current_step = "Cancelled"
                     await self._update_job(job)
                     logger.info(f"PDM indexing cancelled for job {job.id}")
                     return
 
-                # Check if document has changed
-                if not full_reindex:
-                    current_hash = doc.compute_metadata_hash()
-                    stored_hash = await self._get_stored_hash(
-                        job.index_name, doc.document_id
-                    )
-                    if stored_hash == current_hash:
-                        skipped += 1
-                        job.skipped_documents = skipped
-                        if (processed + skipped) % 100 == 0:
-                            await self._update_job(job)
-                        continue
+                extracted += len(doc_batch)
+                job.extracted_documents = extracted
+                job.current_step = (
+                    f"Extracting documents from PDM ({extracted}/{doc_count})"
+                )
+                await self._update_job(job)
 
-                batch.append(doc)
+                # Process each document in the extraction batch
+                for doc in doc_batch:
+                    # Check if document has changed (skip if unchanged and not full reindex)
+                    if not full_reindex:
+                        current_hash = doc.compute_metadata_hash()
+                        stored_hash = await self._get_stored_hash(
+                            job.index_name, doc.document_id
+                        )
+                        if stored_hash == current_hash:
+                            skipped += 1
+                            job.skipped_documents = skipped
+                            continue
 
-                if len(batch) >= batch_size:
-                    await self._process_batch(job, batch, embeddings)
-                    processed += len(batch)
-                    job.processed_documents = processed
-                    await self._update_job(job)
-                    batch = []
+                    embedding_batch.append(doc)
 
-            # Process remaining batch
-            if batch:
-                await self._process_batch(job, batch, embeddings)
-                processed += len(batch)
+                    # Process embedding batch when full
+                    if len(embedding_batch) >= embedding_batch_size:
+                        job.current_step = (
+                            f"Generating embeddings ({processed}/{doc_count - skipped})"
+                        )
+                        await self._update_job(job)
+
+                        await self._process_batch(job, embedding_batch, embeddings)
+                        processed += len(embedding_batch)
+                        job.processed_documents = processed
+                        await self._update_job(job)
+                        embedding_batch = []
+
+            # Process remaining embedding batch
+            if embedding_batch:
+                job.current_step = (
+                    f"Generating embeddings ({processed}/{doc_count - skipped})"
+                )
+                await self._update_job(job)
+
+                await self._process_batch(job, embedding_batch, embeddings)
+                processed += len(embedding_batch)
                 job.processed_documents = processed
 
             # Mark completed
             job.status = PdmIndexStatus.COMPLETED
             job.completed_at = datetime.now(timezone.utc)
+            job.current_step = "Completed"
             await self._update_job(job)
 
             # Clean up
@@ -799,6 +957,7 @@ class PdmIndexerService:
             logger.exception(f"PDM indexing failed: {e}")
             job.status = PdmIndexStatus.FAILED
             job.completed_at = datetime.now(timezone.utc)
+            job.current_step = "Failed"
             job.error_message = str(e)[:500]
             await self._update_job(job)
 
@@ -1009,9 +1168,11 @@ class PdmIndexerService:
                 where={"id": job.id},
                 data={
                     "status": job.status.value,
+                    "currentStep": job.current_step,
                     "totalDocuments": job.total_documents,
                     "processedDocuments": job.processed_documents,
                     "skippedDocuments": job.skipped_documents,
+                    "extractedDocuments": job.extracted_documents,
                     "totalChunks": job.total_chunks,
                     "processedChunks": job.processed_chunks,
                     "errorMessage": job.error_message,
@@ -1034,10 +1195,12 @@ class PdmIndexerService:
                     tool_config_id=job.tool_config_id,
                     status=job.status,
                     index_name=job.index_name,
+                    current_step=job.current_step,
                     progress_percent=job.progress_percent,
                     total_documents=job.total_documents,
                     processed_documents=job.processed_documents,
                     skipped_documents=job.skipped_documents,
+                    extracted_documents=job.extracted_documents,
                     total_chunks=job.total_chunks,
                     processed_chunks=job.processed_chunks,
                     error_message=job.error_message,
@@ -1057,9 +1220,11 @@ class PdmIndexerService:
             tool_config_id=prisma_job.toolConfigId,
             status=PdmIndexStatus(str(prisma_job.status)),
             index_name=prisma_job.indexName,
+            current_step=getattr(prisma_job, "currentStep", None),
             total_documents=prisma_job.totalDocuments or 0,
             processed_documents=prisma_job.processedDocuments or 0,
             skipped_documents=prisma_job.skippedDocuments or 0,
+            extracted_documents=getattr(prisma_job, "extractedDocuments", 0) or 0,
             total_chunks=prisma_job.totalChunks or 0,
             processed_chunks=prisma_job.processedChunks or 0,
             error_message=prisma_job.errorMessage,
