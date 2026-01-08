@@ -1187,6 +1187,7 @@ except Exception as e:
 
         conn_config = config.get("connection_config", {})
         timeout = config.get("timeout", 30)
+        allow_write = config.get("allow_write", False)
         description = config.get("description", "")
 
         class SSHInput(BaseModel):
@@ -1199,7 +1200,7 @@ except Exception as e:
 
         async def execute_ssh(command: str = "", reason: str = "", **_: Any) -> str:
             """Execute SSH command using this tool's configuration."""
-            from ragtime.core.security import sanitize_output
+            from ragtime.core.security import sanitize_output, validate_ssh_command
             from ragtime.core.ssh import SSHConfig, execute_ssh_command
 
             # Validate required fields
@@ -1207,6 +1208,13 @@ except Exception as e:
                 return "Error: 'command' parameter is required. Provide a shell command to execute."
             if not reason:
                 reason = "SSH command"
+
+            # Validate command for dangerous patterns
+            is_safe, validation_reason = validate_ssh_command(
+                command, allow_write=allow_write
+            )
+            if not is_safe:
+                return f"Error: {validation_reason}"
 
             logger.info(f"[{tool_name}] SSH: {reason}")
 
@@ -1261,6 +1269,8 @@ except Exception as e:
         )
         if description:
             tool_description += f" This server provides access to: {description}"
+        if not allow_write:
+            tool_description += " Read-only mode: write operations are blocked."
 
         return StructuredTool.from_function(
             coroutine=execute_ssh,
@@ -1627,4 +1637,5 @@ except Exception as e:
 
 
 # Global RAG components instance
+rag = RAGComponents()
 rag = RAGComponents()
