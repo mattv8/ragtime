@@ -897,6 +897,7 @@ async def update_settings(
     existing filesystem indexes will need a full re-index.
     """
     from ragtime.core.app_settings import invalidate_settings_cache
+    from ragtime.mcp.server import notify_tools_changed
     from ragtime.rag import rag
 
     updates = request.model_dump(exclude_unset=True)
@@ -925,6 +926,9 @@ async def update_settings(
     # Invalidate cache and reinitialize RAG agent to pick up LLM/embedding changes
     invalidate_settings_cache()
     await rag.initialize()
+
+    # Notify MCP clients that tools may have changed (e.g., aggregate_search toggle)
+    notify_tools_changed()
 
     return UpdateSettingsResponse(settings=result, embedding_warning=embedding_warning)
 
