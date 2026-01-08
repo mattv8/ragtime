@@ -51,6 +51,8 @@ class PdmIndexerService:
     def __init__(self):
         self._active_jobs: Dict[str, PdmIndexJob] = {}
         self._cancellation_flags: Dict[str, bool] = {}  # job_id -> should_cancel
+        self._running_tasks: Dict[str, asyncio.Task] = {}  # job_id -> task
+        self._shutdown = False
 
     # =========================================================================
     # Public API
@@ -103,7 +105,10 @@ class PdmIndexerService:
         self._cancellation_flags[job_id] = False
 
         # Start background processing
-        asyncio.create_task(self._process_index(job, connection_config, full_reindex))
+        task = asyncio.create_task(
+            self._process_index(job, connection_config, full_reindex)
+        )
+        self._running_tasks[job_id] = task
 
         logger.info(f"Started PDM indexing job {job_id} for tool {tool_config_id}")
         return job
@@ -205,6 +210,25 @@ class PdmIndexerService:
             logger.info(f"Cancellation requested for PDM job {job_id}")
             return True
         return False
+
+    async def shutdown(self) -> None:
+        """Shutdown the service and cancel all running tasks."""
+        logger.info("PDM indexer service shutting down")
+        self._shutdown = True
+
+        # Cancel all running tasks
+        for job_id, task in list(self._running_tasks.items()):
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                logger.info(f"Cancelled PDM indexing task {job_id}")
+
+        self._running_tasks.clear()
+        self._active_jobs.clear()
+        self._cancellation_flags.clear()
 
     async def list_all_jobs(self, limit: int = 50) -> List[PdmIndexJobResponse]:
         """
@@ -943,28 +967,44 @@ class PdmIndexerService:
             await self._update_job(job)
 
             # Clean up
-            if job.id in self._active_jobs:
-                del self._active_jobs[job.id]
-            if job.id in self._cancellation_flags:
-                del self._cancellation_flags[job.id]
+            self._active_jobs.pop(job.id, None)
+            self._cancellation_flags.pop(job.id, None)
+            self._running_tasks.pop(job.id, None)
 
             logger.info(
                 f"PDM indexing completed for job {job.id}: "
                 f"{processed} processed, {skipped} skipped"
             )
 
+        except asyncio.CancelledError:
+            # Task was cancelled during shutdown - don't try to update DB
+            logger.info(f"PDM indexing task {job.id} cancelled")
+            self._active_jobs.pop(job.id, None)
+            self._cancellation_flags.pop(job.id, None)
+            self._running_tasks.pop(job.id, None)
+            raise
         except Exception as e:
             logger.exception(f"PDM indexing failed: {e}")
             job.status = PdmIndexStatus.FAILED
             job.completed_at = datetime.now(timezone.utc)
             job.current_step = "Failed"
             job.error_message = str(e)[:500]
-            await self._update_job(job)
 
-            if job.id in self._active_jobs:
-                del self._active_jobs[job.id]
-            if job.id in self._cancellation_flags:
-                del self._cancellation_flags[job.id]
+            # Only try to update DB if not shutting down
+            if not self._shutdown:
+                try:
+                    await self._update_job(job)
+                except RuntimeError as db_error:
+                    if "Database is not connected" in str(db_error):
+                        logger.warning(
+                            f"Cannot update job {job.id} - DB disconnected during shutdown"
+                        )
+                    else:
+                        raise
+
+            self._active_jobs.pop(job.id, None)
+            self._cancellation_flags.pop(job.id, None)
+            self._running_tasks.pop(job.id, None)
 
     async def _process_batch(
         self,

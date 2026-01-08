@@ -72,6 +72,8 @@ class FilesystemIndexerService:
     def __init__(self):
         self._active_jobs: Dict[str, FilesystemIndexJob] = {}
         self._cancellation_flags: Dict[str, bool] = {}  # job_id -> should_cancel
+        self._running_tasks: Dict[str, asyncio.Task] = {}  # job_id -> task
+        self._shutdown = False
         # Analysis job tracking (in-memory since analysis is fast)
         self._analysis_jobs: Dict[str, FilesystemAnalysisJob] = {}
         self._analysis_results: Dict[str, FilesystemAnalysisResult] = {}
@@ -662,7 +664,8 @@ class FilesystemIndexerService:
         self._active_jobs[job.id] = job
 
         # Start processing in background
-        asyncio.create_task(self._process_index(job, config, full_reindex))
+        task = asyncio.create_task(self._process_index(job, config, full_reindex))
+        self._running_tasks[job.id] = task
 
         return job
 
@@ -816,6 +819,25 @@ class FilesystemIndexerService:
             return True
 
         return False
+
+    async def shutdown(self) -> None:
+        """Shutdown the service and cancel all running tasks."""
+        logger.info("Filesystem indexer service shutting down")
+        self._shutdown = True
+
+        # Cancel all running tasks
+        for job_id, task in list(self._running_tasks.items()):
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                logger.info(f"Cancelled filesystem indexing task {job_id}")
+
+        self._running_tasks.clear()
+        self._active_jobs.clear()
+        self._cancellation_flags.clear()
 
     async def retry_job(self, job_id: str) -> Optional[FilesystemIndexJob]:
         """
@@ -1276,16 +1298,39 @@ class FilesystemIndexerService:
                 f"{job.skipped_files} skipped, {job.total_chunks} chunks"
             )
 
+        except asyncio.CancelledError:
+            # Task was cancelled during shutdown - don't try to update DB
+            logger.info(f"Filesystem indexing task {job.id} cancelled")
+            self._active_jobs.pop(job.id, None)
+            self._cancellation_flags.pop(job.id, None)
+            self._running_tasks.pop(job.id, None)
+            raise
         except Exception as e:
             logger.exception(f"Filesystem indexing failed: {e}")
             job.status = FilesystemIndexStatus.FAILED
             job.error_message = str(e)
             job.completed_at = datetime.utcnow()
 
-        finally:
+            # Only try to update DB if not shutting down
+            if not self._shutdown:
+                try:
+                    await self._update_job(job)
+                except RuntimeError as db_error:
+                    if "Database is not connected" in str(db_error):
+                        logger.warning(
+                            f"Cannot update job {job.id} - DB disconnected during shutdown"
+                        )
+                    else:
+                        raise
+            self._active_jobs.pop(job.id, None)
+            self._cancellation_flags.pop(job.id, None)
+            self._running_tasks.pop(job.id, None)
+        else:
+            # Success path - update DB and clean up
             await self._update_job(job)
             self._active_jobs.pop(job.id, None)
-            self._cancellation_flags.pop(job.id, None)  # Clean up cancellation flag
+            self._cancellation_flags.pop(job.id, None)
+            self._running_tasks.pop(job.id, None)
 
     async def _update_tool_config_last_indexed(self, tool_config_id: str) -> None:
         """Update the tool config with last indexed timestamp."""

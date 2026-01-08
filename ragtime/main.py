@@ -82,8 +82,16 @@ async def lifespan(app: FastAPI):
     else:
         yield
 
-    # Cleanup
+    # Cleanup - stop background services before disconnecting DB
     await background_task_service.stop()
+
+    # Stop PDM indexer tasks
+    from ragtime.indexer.pdm_service import pdm_indexer
+
+    await pdm_indexer.shutdown()
+
+    # Stop filesystem indexer tasks (filesystem_indexer imported above)
+    await filesystem_indexer.shutdown()
 
     await disconnect_db()
     logger.info("Shutting down RAG API")
