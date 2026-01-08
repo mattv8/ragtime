@@ -131,6 +131,54 @@ TOOL_INPUT_SCHEMAS: dict[str, dict] = {
         },
         "required": ["prompt"],
     },
+    # Git history search tool (for git-based filesystem indexes)
+    "git_history": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "description": (
+                    "The git action to perform. One of: "
+                    "'search_commits' - Search commit messages for keywords, "
+                    "'get_commit' - Get detailed info about a specific commit, "
+                    "'file_history' - Get commit history for a specific file, "
+                    "'blame' - Show who last modified each line of a file, "
+                    "'find_files' - Find files matching a pattern (use before file_history/blame if unsure of path)"
+                ),
+                "enum": [
+                    "search_commits",
+                    "get_commit",
+                    "file_history",
+                    "blame",
+                    "find_files",
+                ],
+            },
+            "query": {
+                "type": "string",
+                "description": "Search query for 'search_commits' action - keywords to find in commit messages",
+            },
+            "commit_hash": {
+                "type": "string",
+                "description": "Commit hash for 'get_commit' action (full or abbreviated)",
+            },
+            "file_path": {
+                "type": "string",
+                "description": "File path for 'file_history'/'blame' actions, or pattern for 'find_files' (e.g., 'index.php', '*.py')",
+            },
+            "index_name": {
+                "type": "string",
+                "description": "Optional: specific index/repo to search (searches all git repos if not specified)",
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Maximum number of results to return for search operations",
+                "default": 10,
+                "minimum": 1,
+                "maximum": 50,
+            },
+        },
+        "required": ["action"],
+    },
 }
 
 
@@ -239,6 +287,10 @@ class MCPToolAdapter:
             per_index_tools = await self._create_per_index_search_tools()
             tools.extend(per_index_tools)
 
+        # Add git history search tool(s) if we have git repos
+        git_history_tools = await self._create_git_history_tools(aggregate_search)
+        tools.extend(git_history_tools)
+
         return tools
 
     async def execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> str:
@@ -293,6 +345,18 @@ class MCPToolAdapter:
         if tool_name.startswith("search_") and not tool_name.endswith("_schema"):
             per_index_tools = await self._create_per_index_search_tools()
             for tool_def in per_index_tools:
+                if tool_def.name == tool_name:
+                    self._tool_executors[tool_name] = tool_def.execute_fn
+                    return await tool_def.execute_fn(**arguments)
+
+        # Check for git history tools
+        if tool_name == "search_git_history" or tool_name.startswith(
+            "search_git_history_"
+        ):
+            app_settings = await get_app_settings()
+            aggregate_search = app_settings.get("aggregate_search", True)
+            git_tools = await self._create_git_history_tools(aggregate_search)
+            for tool_def in git_tools:
                 if tool_def.name == tool_name:
                     self._tool_executors[tool_name] = tool_def.execute_fn
                     return await tool_def.execute_fn(**arguments)
@@ -778,6 +842,148 @@ class MCPToolAdapter:
                     execute_fn=make_search_func(index_name, retriever),
                 )
             )
+
+        return tools
+
+    async def _create_git_history_tools(
+        self, aggregate_search: bool
+    ) -> list[MCPToolDefinition]:
+        """Create git history search tool(s) for git-based indexes.
+
+        When aggregate_search is enabled: creates a single search_git_history tool
+        When aggregate_search is disabled: creates search_git_history_<name> per index
+        """
+        from pathlib import Path
+
+        from ragtime.config.settings import settings
+        from ragtime.rag import rag
+        from ragtime.tools.git_history import (
+            create_per_index_git_history_tool,
+            search_git_history,
+        )
+
+        tools: list[MCPToolDefinition] = []
+        index_base = Path(settings.index_data_path)
+
+        # Find all git repos and match them with index metadata
+        # Only include repos where git_history_depth != 1 (shallow clone has no history)
+        git_repos: list[tuple[str, Path, str]] = []  # (name, path, description)
+
+        if index_base.exists():
+            for index_dir in index_base.iterdir():
+                if not index_dir.is_dir():
+                    continue
+
+                git_repo = index_dir / ".git_repo"
+                if git_repo.exists() and (git_repo / ".git").exists():
+                    # Get metadata including config_snapshot to check git_history_depth
+                    description = ""
+                    git_history_depth = 0  # Default to full history
+                    for idx in rag._index_metadata or []:
+                        if idx.get("name") == index_dir.name:
+                            description = idx.get("description", "")
+                            # Get git_history_depth from config_snapshot
+                            config = idx.get("config_snapshot") or {}
+                            git_history_depth = config.get("git_history_depth", 0)
+                            break
+
+                    # Only expose git history tool if depth != 1
+                    # depth=0 means full history, depth>1 means we have commits to search
+                    # depth=1 is a shallow clone with only the latest commit (not useful)
+                    if git_history_depth != 1:
+                        git_repos.append((index_dir.name, git_repo, description))
+                    else:
+                        logger.debug(
+                            f"Skipping git history tool for {index_dir.name}: "
+                            "shallow clone (depth=1)"
+                        )
+
+        if not git_repos:
+            return []
+
+        if aggregate_search:
+            # Single tool for all git repos
+            repo_names = [name for name, _, _ in git_repos]
+
+            async def execute_aggregate(**kwargs: Any) -> str:
+                return await search_git_history(**kwargs)
+
+            tools.append(
+                MCPToolDefinition(
+                    name="search_git_history",
+                    description=(
+                        "Search git repository history for detailed commit information. "
+                        "Actions: 'search_commits' (find commits by message keywords), "
+                        "'get_commit' (show full commit details), "
+                        "'file_history' (show commits that modified a file), "
+                        "'blame' (show who last modified each line), "
+                        "'find_files' (find files matching a pattern - use before file_history/blame if unsure of path). "
+                        f"Available repos: {', '.join(repo_names)}. "
+                        "Use this to understand code evolution, find when bugs were introduced, "
+                        "or identify who worked on specific features."
+                    ),
+                    input_schema=TOOL_INPUT_SCHEMAS["git_history"],
+                    tool_config={"tool_type": "git_history", "name": "aggregate"},
+                    execute_fn=execute_aggregate,
+                )
+            )
+            logger.info(
+                f"MCP: Added search_git_history tool for {len(git_repos)} repo(s)"
+            )
+        else:
+            # Separate tool per repo
+            for name, repo_path, description in git_repos:
+                # Create per-index schema (no index_name param needed)
+                per_index_schema = {
+                    "type": "object",
+                    "properties": {
+                        "action": TOOL_INPUT_SCHEMAS["git_history"]["properties"][
+                            "action"
+                        ],
+                        "query": TOOL_INPUT_SCHEMAS["git_history"]["properties"][
+                            "query"
+                        ],
+                        "commit_hash": TOOL_INPUT_SCHEMAS["git_history"]["properties"][
+                            "commit_hash"
+                        ],
+                        "file_path": TOOL_INPUT_SCHEMAS["git_history"]["properties"][
+                            "file_path"
+                        ],
+                        "max_results": TOOL_INPUT_SCHEMAS["git_history"]["properties"][
+                            "max_results"
+                        ],
+                    },
+                    "required": ["action"],
+                }
+
+                safe_name = re.sub(r"[^a-zA-Z0-9]+", "_", name).strip("_").lower()
+                tool_name = f"search_git_history_{safe_name}"
+
+                tool_description = f"Search git history for the '{name}' repository. "
+                if description:
+                    tool_description += f"{description} "
+                tool_description += "Actions: 'search_commits', 'get_commit', 'file_history', 'blame', 'find_files'."
+
+                # Create executor for this specific repo
+                def make_git_search_func(idx_name: str, idx_repo_path: Path):
+                    async def search_repo(**kwargs: Any) -> str:
+                        # Force index_name to this repo
+                        kwargs["index_name"] = idx_name
+                        return await search_git_history(**kwargs)
+
+                    return search_repo
+
+                tools.append(
+                    MCPToolDefinition(
+                        name=tool_name,
+                        description=tool_description,
+                        input_schema=per_index_schema,
+                        tool_config={"tool_type": "git_history", "name": name},
+                        execute_fn=make_git_search_func(name, repo_path),
+                    )
+                )
+
+            logger.info(f"MCP: Added {len(tools)} per-index git history search tools")
 
         return tools
 
