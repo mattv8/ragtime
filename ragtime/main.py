@@ -31,7 +31,7 @@ from ragtime.indexer.routes import ASSETS_DIR as INDEXER_ASSETS_DIR
 from ragtime.indexer.routes import router as indexer_router
 
 # Import MCP routes and transport for HTTP API access
-from ragtime.mcp.routes import mcp_lifespan_manager, mcp_transport_router
+from ragtime.mcp.routes import mcp_lifespan_manager, mcp_transport_route
 from ragtime.mcp.routes import router as mcp_router
 from ragtime.rag import rag
 
@@ -130,7 +130,7 @@ logger.info("Indexer API enabled at /indexes, UI served at root (/)")
 # Include MCP routes
 if settings.mcp_enabled:
     app.include_router(mcp_router)  # Debug endpoints at /mcp-debug/*
-    app.include_router(mcp_transport_router)  # MCP protocol at /mcp
+    app.routes.append(mcp_transport_route)  # MCP protocol at /mcp (raw ASGI)
     logger.info("MCP enabled: HTTP transport at /mcp, debug API at /mcp-debug")
 
 

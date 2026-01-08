@@ -14,6 +14,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, Request
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from starlette.routing import Route
+from starlette.types import Receive, Scope, Send
 
 from ragtime.core.logging import get_logger
 from ragtime.mcp.server import mcp_server
@@ -54,28 +56,28 @@ async def mcp_lifespan_manager() -> AsyncIterator[None]:
             logger.info("MCP StreamableHTTP session manager stopped")
 
 
-# MCP Transport Router - handles the actual MCP protocol at /mcp
-mcp_transport_router = APIRouter(tags=["MCP Transport"])
+class MCPTransportEndpoint:
+    """
+    ASGI endpoint for MCP Streamable HTTP transport.
+
+    This wraps the StreamableHTTPSessionManager as a proper ASGI app
+    to avoid double-response issues with FastAPI's api_route decorator.
+    """
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Handle MCP protocol request by delegating to session manager."""
+        session_manager = get_session_manager()
+        await session_manager.handle_request(scope, receive, send)
 
 
-async def _handle_mcp_request(request: Request) -> None:
-    """Handle MCP protocol request by delegating to session manager."""
-    session_manager = get_session_manager()
-    await session_manager.handle_request(request.scope, request.receive, request._send)
-
-
-@mcp_transport_router.api_route(
+# MCP Transport Route - uses ASGI app directly to avoid double response
+# This is mounted as a Route instead of using APIRouter to properly handle
+# the session manager's direct ASGI response
+mcp_transport_route = Route(
     "/mcp",
+    endpoint=MCPTransportEndpoint(),
     methods=["GET", "POST", "DELETE", "OPTIONS"],
-    include_in_schema=False,
 )
-async def mcp_endpoint(request: Request):
-    """Handle MCP Streamable HTTP protocol requests."""
-    from starlette.responses import Response
-
-    await _handle_mcp_request(request)
-    # Return empty response - session manager already sent the response
-    return Response()
 
 
 @router.get("/tools")
