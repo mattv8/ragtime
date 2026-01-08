@@ -101,7 +101,8 @@ export interface IndexConfig {
   max_file_size_kb?: number;  // Max file size in KB (default 500)
   embedding_model?: string;
   enable_ocr?: boolean;  // Enable OCR for images (default false)
-  git_clone_timeout_minutes?: number;  // Max time for git clone (default 60 min)
+  git_clone_timeout_minutes?: number;  // Max time for git clone (default 5 min)
+  git_history_depth?: number;  // 1=shallow (default), 0=full history
 }
 
 export interface IndexJob {
@@ -127,6 +128,7 @@ export interface IndexConfigSnapshot {
   max_file_size_kb: number;
   enable_ocr: boolean;
   git_clone_timeout_minutes?: number;  // May be absent for older indexes
+  git_history_depth?: number;  // 1=shallow (default), 0=full history
 }
 
 export interface IndexInfo {
@@ -155,6 +157,7 @@ export interface UpdateIndexConfigRequest {
   max_file_size_kb?: number;
   enable_ocr?: boolean;
   git_clone_timeout_minutes?: number;
+  git_history_depth?: number;
 }
 
 export interface CreateIndexRequest {
@@ -174,6 +177,19 @@ export interface FileTypeStats {
   sample_files: string[];
 }
 
+export interface CommitHistorySample {
+  depth: number;
+  date: string;
+  hash: string;
+}
+
+export interface CommitHistoryInfo {
+  total_commits: number;
+  samples: CommitHistorySample[];
+  oldest_date: string | null;
+  newest_date: string | null;
+}
+
 export interface IndexAnalysisResult {
   total_files: number;
   total_size_bytes: number;
@@ -186,6 +202,7 @@ export interface IndexAnalysisResult {
   warnings: string[];
   chunk_size: number;
   chunk_overlap: number;
+  commit_history?: CommitHistoryInfo;
 }
 
 export interface AnalyzeIndexRequest {

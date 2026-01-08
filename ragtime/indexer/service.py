@@ -34,6 +34,8 @@ from ragtime.indexer.llm_exclusions import get_smart_exclusion_suggestions
 from ragtime.indexer.models import (
     AnalyzeIndexRequest,
     AppSettings,
+    CommitHistoryInfo,
+    CommitHistorySample,
     FileTypeStats,
     IndexAnalysisResult,
     IndexConfig,
@@ -47,6 +49,15 @@ logger = get_logger(__name__)
 
 # Persistent storage for uploaded files
 UPLOAD_TMP_DIR = Path(settings.index_data_path) / "_tmp"
+
+# Always exclude these directories regardless of user config
+HARDCODED_EXCLUDES = [
+    ".git/**",
+    "__pycache__/**",
+    "node_modules/**",
+    ".venv/**",
+    "venv/**",
+]
 
 
 # =============================================================================
@@ -158,7 +169,9 @@ async def generate_index_description(
 
         if provider == "ollama":
             try:
-                from langchain_ollama import ChatOllama
+                from langchain_ollama import (
+                    ChatOllama,
+                )  # type: ignore  # pyright: ignore[reportMissingImports]
 
                 base_url = app_settings.get("ollama_base_url", "http://localhost:11434")
                 model = app_settings.get("llm_model", "llama3.2")
@@ -171,11 +184,17 @@ async def generate_index_description(
             api_key = app_settings.get("anthropic_api_key", "")
             if api_key:
                 try:
-                    from langchain_anthropic import ChatAnthropic
+                    from langchain_anthropic import (
+                        ChatAnthropic,
+                    )  # type: ignore[import-untyped]
 
                     model = app_settings.get("llm_model", "claude-sonnet-4-20250514")
                     llm = ChatAnthropic(
-                        model=model, temperature=0.3, anthropic_api_key=api_key
+                        model_name=model,
+                        temperature=0.3,
+                        api_key=api_key,
+                        timeout=None,
+                        stop=None,
                     )
                     logger.debug(f"Using Anthropic for description generation: {model}")
                 except ImportError:
@@ -260,6 +279,36 @@ class IndexerService:
         self._active_jobs: Dict[str, IndexJob] = {}
         # Cancellation flags for cooperative cancellation
         self._cancellation_flags: Dict[str, bool] = {}
+
+    def _compute_clone_timeout_minutes(self, config: IndexConfig) -> int:
+        """Derive clone timeout from depth unless explicitly overridden by user."""
+
+        default_timeout = IndexConfig.model_fields["git_clone_timeout_minutes"].default
+        user_timeout = getattr(config, "git_clone_timeout_minutes", default_timeout)
+
+        # Respect explicit override
+        if user_timeout != default_timeout:
+            return user_timeout
+
+        min_timeout = default_timeout or 5
+        max_timeout = 120  # 2 hours cap for full history
+        depth = getattr(config, "git_history_depth", 1)
+
+        # depth=0 means full history
+        if depth == 0:
+            return max_timeout
+
+        # Shallow or unset depth stays at minimum
+        if depth <= 1:
+            return min_timeout
+
+        # Power curve (exponent > 1) for slow-then-fast growth
+        max_depth = 1001  # Slider full + sentinel
+        effective_depth = min(depth, max_depth)
+        factor = (effective_depth / max_depth) ** 2.5
+        timeout = min_timeout + (max_timeout - min_timeout) * factor
+
+        return int(round(max(min_timeout, min(max_timeout, timeout))))
 
     async def _reinitialize_rag_components(self) -> None:
         """
@@ -400,9 +449,8 @@ class IndexerService:
                     if isinstance(data, tuple) and len(data) >= 2:
                         docstore, idx_to_id = data[0], data[1]
                         if hasattr(docstore, "_dict"):
-                            doc_count = len(
-                                docstore._dict
-                            )  # noqa: SLF001  # type: ignore[union-attr]
+                            docstore_dict = getattr(docstore, "_dict", {})
+                            doc_count = len(docstore_dict)  # noqa: SLF001
                             chunk_count = doc_count  # chunks == documents for FAISS
                         elif isinstance(idx_to_id, dict):
                             doc_count = len(idx_to_id)
@@ -464,19 +512,21 @@ class IndexerService:
         self._active_jobs[job.id] = job
 
         if job.source_type == "git":
-            # Check if the cloned repo still exists in _tmp from a previous attempt
-            tmp_path = UPLOAD_TMP_DIR / job.id
-            clone_dir = tmp_path / "repo"
-            clone_complete_marker = tmp_path / ".clone_complete"
+            # Check if clone was completed before restart using temp marker
+            temp_marker_dir = UPLOAD_TMP_DIR / job.id
+            clone_complete_marker = temp_marker_dir / ".clone_complete"
+            repo_dir = self.index_base_path / job.name / ".git_repo"
 
-            if clone_dir.exists() and clone_complete_marker.exists():
+            if repo_dir.exists() and clone_complete_marker.exists():
                 # Clone completed previously, skip directly to indexing
                 logger.info(f"Found existing clone for job {job.id}, resuming indexing")
                 asyncio.create_task(self._process_git(job, skip_clone=True))
             else:
                 # Need to re-clone - clean up any partial clone first
-                if tmp_path.exists():
-                    shutil.rmtree(tmp_path, ignore_errors=True)
+                if repo_dir.exists():
+                    shutil.rmtree(repo_dir, ignore_errors=True)
+                if temp_marker_dir.exists():
+                    shutil.rmtree(temp_marker_dir, ignore_errors=True)
                 asyncio.create_task(self._process_git(job))
         elif job.source_type == "upload":
             # Check if tmp file still exists
@@ -518,7 +568,7 @@ class IndexerService:
         if provider == "ollama":
             from langchain_ollama import (
                 OllamaEmbeddings,
-            )  # type: ignore[import-not-found]
+            )  # type: ignore  # pyright: ignore[reportMissingImports]
 
             return OllamaEmbeddings(
                 model=model,
@@ -585,15 +635,15 @@ class IndexerService:
     async def _append_embedding_dimension_warning(self, warnings: List[str]) -> None:
         """Warn when configured embeddings exceed pgvector's 2000-dim index limit."""
         try:
-            settings = await repository.get_settings()
+            app_settings = await repository.get_settings()
         except Exception as e:
             logger.debug(f"Could not load settings for embedding warning: {e}")
             return
 
-        provider = settings.embedding_provider.lower()
-        model = settings.embedding_model
-        configured_dim = getattr(settings, "embedding_dimensions", None)
-        tracked_dim = settings.embedding_dimension
+        provider = app_settings.embedding_provider.lower()
+        model = app_settings.embedding_model
+        configured_dim = getattr(app_settings, "embedding_dimensions", None)
+        tracked_dim = app_settings.embedding_dimension
 
         # Prefer explicit configuration, otherwise use tracked dimension from previous runs
         dimension = configured_dim or tracked_dim
@@ -728,6 +778,12 @@ class IndexerService:
                                 "max_file_size_kb", 500
                             ),
                             enable_ocr=config_snapshot_data.get("enable_ocr", False),
+                            git_clone_timeout_minutes=config_snapshot_data.get(
+                                "git_clone_timeout_minutes", 5
+                            ),
+                            git_history_depth=config_snapshot_data.get(
+                                "git_history_depth", 1
+                            ),
                         )
 
                     indexes.append(
@@ -768,6 +824,159 @@ class IndexerService:
             logger.info(f"Deleted index metadata without files present: {name}")
 
         return deleted_files or metadata_deleted
+
+    async def _sample_commit_history(
+        self,
+        repo_dir: Path,
+        git_url: str,
+        git_branch: str,
+        git_token: Optional[str] = None,
+    ) -> Optional[CommitHistoryInfo]:
+        """
+        Sample commit history at various depths for depth-to-date interpolation.
+
+        Uses remote refs to get total commit count and samples commits at
+        logarithmically distributed depths (1, 10, 50, 100, 500, 1000, etc).
+        """
+        try:
+            # Get total commit count from remote (fast, uses refs)
+            clone_url = _build_authenticated_git_url(git_url, git_token)
+
+            # Fetch commit count from remote
+            count_result = subprocess.run(
+                ["git", "rev-list", "--count", f"origin/{git_branch}"],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+
+            if count_result.returncode != 0:
+                # Fallback: try to get count from ls-remote
+                ls_result = subprocess.run(
+                    [
+                        "git",
+                        "ls-remote",
+                        "--refs",
+                        clone_url,
+                        f"refs/heads/{git_branch}",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                )
+                if ls_result.returncode != 0:
+                    logger.warning("Could not get remote commit count")
+                    return None
+                # Can't get count from ls-remote, but we tried
+                total_commits = 0
+            else:
+                total_commits = int(count_result.stdout.strip())
+
+            if total_commits == 0:
+                # Try fetching just enough history to sample
+                # Fetch 1001 commits to sample at various depths
+                fetch_result = subprocess.run(
+                    ["git", "fetch", "--deepen=1000", "origin", git_branch],
+                    cwd=repo_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    check=False,
+                )
+                if fetch_result.returncode != 0:
+                    logger.warning(f"Could not deepen fetch: {fetch_result.stderr}")
+
+                # Now count local commits
+                count_result = subprocess.run(
+                    ["git", "rev-list", "--count", f"origin/{git_branch}"],
+                    cwd=repo_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                )
+                if count_result.returncode == 0:
+                    total_commits = int(count_result.stdout.strip())
+
+            # Define sample depths (logarithmically distributed)
+            sample_depths = [0, 10, 50, 100, 500, 1000, 5000, 10000]
+            # Filter to only depths within our available commits
+            available_depths = [d for d in sample_depths if d < total_commits or d == 0]
+
+            samples: List[CommitHistorySample] = []
+            oldest_date: Optional[str] = None
+            newest_date: Optional[str] = None
+
+            for depth in available_depths:
+                # Get commit at this depth: git log --skip=N -1 --format="%H %aI"
+                log_result = subprocess.run(
+                    [
+                        "git",
+                        "log",
+                        f"--skip={depth}",
+                        "-1",
+                        "--format=%H %aI",
+                        f"origin/{git_branch}",
+                    ],
+                    cwd=repo_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                )
+
+                if log_result.returncode == 0 and log_result.stdout.strip():
+                    parts = log_result.stdout.strip().split(" ", 1)
+                    if len(parts) == 2:
+                        commit_hash, date = parts
+                        samples.append(
+                            CommitHistorySample(
+                                depth=depth,
+                                date=date,
+                                hash=commit_hash[:7],
+                            )
+                        )
+
+                        if depth == 0:
+                            newest_date = date
+                        oldest_date = date  # Keep updating to get the oldest
+
+            # If we have samples, also try to get the actual oldest commit
+            if total_commits > 0 and total_commits > sample_depths[-1]:
+                # Get the very last commit
+                log_result = subprocess.run(
+                    [
+                        "git",
+                        "log",
+                        "--reverse",
+                        "-1",
+                        "--format=%H %aI",
+                        f"origin/{git_branch}",
+                    ],
+                    cwd=repo_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                )
+                if log_result.returncode == 0 and log_result.stdout.strip():
+                    parts = log_result.stdout.strip().split(" ", 1)
+                    if len(parts) == 2:
+                        oldest_date = parts[1]
+
+            return CommitHistoryInfo(
+                total_commits=total_commits,
+                samples=samples,
+                oldest_date=oldest_date,
+                newest_date=newest_date,
+            )
+
+        except Exception as e:
+            logger.warning(f"Failed to sample commit history: {e}")
+            return None
 
     async def analyze_git_repository(
         self, request: AnalyzeIndexRequest
@@ -815,8 +1024,16 @@ class IndexerService:
 
             repo_dir = temp_dir / "repo"
 
+            # Sample commit history for depth-to-date interpolation
+            commit_history = await self._sample_commit_history(
+                repo_dir,
+                request.git_url,
+                request.git_branch,
+                request.git_token,
+            )
+
             # Scan and analyze files
-            return await self._analyze_directory(
+            analysis_result = await self._analyze_directory(
                 repo_dir,
                 file_patterns=request.file_patterns,
                 exclude_patterns=request.exclude_patterns,
@@ -825,6 +1042,11 @@ class IndexerService:
                 max_file_size_kb=request.max_file_size_kb,
                 enable_ocr=request.enable_ocr,
             )
+
+            # Add commit history to the result
+            analysis_result.commit_history = commit_history
+
+            return analysis_result
 
         finally:
             # Cleanup
@@ -916,6 +1138,9 @@ class IndexerService:
         # Use centralized constants from file_constants module
         # BINARY_EXTENSIONS and MINIFIED_PATTERNS are imported at module level
 
+        # Combine user patterns with hardcoded excludes
+        all_excludes = list(exclude_patterns) + HARDCODED_EXCLUDES
+
         total_files = 0
         total_size = 0
         skipped_oversized = 0  # Files exceeding max_file_size_kb
@@ -928,7 +1153,7 @@ class IndexerService:
         # Compile exclude patterns
         def is_excluded(file_path: Path) -> bool:
             rel_path = str(file_path.relative_to(source_dir))
-            for pattern in exclude_patterns:
+            for pattern in all_excludes:
                 if fnmatch.fnmatch(rel_path, pattern):
                     return True
                 # Also check just the filename
@@ -1286,15 +1511,20 @@ class IndexerService:
     async def _process_git(self, job: IndexJob, skip_clone: bool = False):
         """Process a git repository.
 
+        Git repos are stored persistently in the index directory for efficient re-indexing.
+        On re-index, we use `git fetch` to get latest changes instead of a full re-clone.
+
         Args:
             job: The index job to process
             skip_clone: If True, skip cloning (repo already exists from previous attempt)
         """
-        # Use persistent _tmp directory so cloned repos survive restarts
-        temp_dir = UPLOAD_TMP_DIR / job.id
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        clone_dir = temp_dir / "repo"
-        clone_complete_marker = temp_dir / ".clone_complete"
+        # Persistent location for git repo (survives re-indexing)
+        index_dir = self.index_base_path / job.name
+        repo_dir = index_dir / ".git_repo"
+
+        # Temp marker for job recovery (if server restarts mid-clone)
+        temp_marker_dir = UPLOAD_TMP_DIR / job.id
+        clone_complete_marker = temp_marker_dir / ".clone_complete"
 
         try:
             job.status = IndexStatus.PROCESSING
@@ -1309,88 +1539,22 @@ class IndexerService:
             # Preserve token for metadata storage before clearing from job object
             stored_token = job.git_token
 
-            if skip_clone:
-                # Repo already cloned from previous attempt
-                logger.info(
-                    f"Skipping clone for job {job.id}, using existing repo at {clone_dir}"
-                )
-            else:
-                # Clone repository
-                logger.info(f"Cloning {job.git_url} branch {job.git_branch}")
+            # Determine if we have an existing repo to update
+            existing_repo = repo_dir.exists() and (repo_dir / ".git").exists()
 
-                # Update job to show cloning phase
-                job.error_message = (
-                    "Cloning repository..."  # Use error_message as status hint
-                )
-                await repository.update_job(job)
-
-                if not job.git_url:
-                    raise ValueError("Git URL is required for git source type")
-
-                # Build clone URL with token authentication
-                clone_url = _build_authenticated_git_url(job.git_url, job.git_token)
-
-                # Set environment to prevent git from prompting for credentials
-                env = {
-                    **os.environ,
-                    "GIT_TERMINAL_PROMPT": "0",  # Disable credential prompting
-                }
-
-                # Get timeout from config (default 60 minutes, converted to seconds)
-                clone_timeout_minutes = getattr(
-                    job.config, "git_clone_timeout_minutes", 60
-                )
-                clone_timeout_seconds = clone_timeout_minutes * 60
-                logger.info(f"Clone timeout set to {clone_timeout_minutes} minutes")
-
-                try:
-                    process = await asyncio.create_subprocess_exec(
-                        "git",
-                        "clone",
-                        "--depth",
-                        "1",
-                        "--branch",
-                        job.git_branch or "main",
-                        clone_url,
-                        str(clone_dir),
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        env=env,
-                    )
-                    _, stderr = await asyncio.wait_for(
-                        process.communicate(), timeout=clone_timeout_seconds
-                    )
-                except TimeoutError as exc:
-                    # Ensure process is killed and update job status before raising
-                    try:
-                        process.kill()
-                        await process.wait()  # Ensure process is fully terminated
-                    except Exception:
-                        pass  # Process may already be dead
-                    error_msg = (
-                        f"Git clone timed out after {clone_timeout_minutes} minutes. "
-                        "The repository may be too large or the network connection is slow. "
-                        "Try increasing the clone timeout in Advanced Options."
-                    )
-                    logger.error(f"Job {job.id}: {error_msg}")
-                    raise RuntimeError(error_msg) from exc
-
-                if process.returncode != 0:
-                    error_msg = stderr.decode()
-                    # Provide clearer error for authentication failures
-                    if (
-                        "could not read Username" in error_msg
-                        or "Authentication failed" in error_msg
-                    ):
-                        raise RuntimeError(
-                            "Git clone failed: Authentication required. "
-                            "This is a private repository - please provide a valid access token."
-                        )
-                    raise RuntimeError(f"Git clone failed: {error_msg}")
-
-                # Mark clone as complete so we can resume from here if interrupted
+            if skip_clone and clone_complete_marker.exists():
+                # Resuming from a previous attempt - repo should be ready
+                logger.info(f"Resuming job {job.id}, using existing repo at {repo_dir}")
+            elif existing_repo:
+                # Re-indexing: fetch updates instead of full clone
+                await self._fetch_git_updates(job, repo_dir)
+                clone_complete_marker.parent.mkdir(parents=True, exist_ok=True)
                 clone_complete_marker.touch()
-                logger.info("Clone complete, scanning files...")
+            else:
+                # Fresh clone
+                await self._clone_git_repo(job, repo_dir)
+                clone_complete_marker.parent.mkdir(parents=True, exist_ok=True)
+                clone_complete_marker.touch()
 
             # Clear token from job object (not needed in memory after we have stored_token)
             job.git_token = None
@@ -1399,13 +1563,13 @@ class IndexerService:
             job.error_message = None
             await repository.update_job(job)
 
-            # Check for cancellation after clone
+            # Check for cancellation after clone/fetch
             if self._is_cancelled(job.id):
                 logger.info(f"Job {job.id} was cancelled after cloning")
                 return
 
             # Create the index, passing the token for storage in metadata
-            await self._create_faiss_index(job, clone_dir, git_token=stored_token)
+            await self._create_faiss_index(job, repo_dir, git_token=stored_token)
 
             # Only mark completed if not cancelled
             if not self._is_cancelled(job.id):
@@ -1423,16 +1587,233 @@ class IndexerService:
                 job.error_message = str(e)
 
         finally:
-            # Only clean up temp_dir if job completed (success or failure)
-            # If job is still pending/processing (e.g., server shutdown), leave files for resume
+            # Clean up temp marker directory
             if job.status in (IndexStatus.COMPLETED, IndexStatus.FAILED):
-                shutil.rmtree(temp_dir, ignore_errors=True)
+                shutil.rmtree(temp_marker_dir, ignore_errors=True)
             self._cancellation_flags.pop(job.id, None)
             await repository.update_job(job)
             self._active_jobs.pop(job.id, None)
 
             # Reinitialize RAG components if job completed successfully
             await self._maybe_reinitialize_rag(job)
+
+    async def _clone_git_repo(self, job: IndexJob, repo_dir: Path) -> None:
+        """Clone a git repository to the specified directory.
+
+        Args:
+            job: The index job with git configuration
+            repo_dir: Target directory for the clone
+        """
+        logger.info(f"Cloning {job.git_url} branch {job.git_branch}")
+
+        job.error_message = "Cloning repository..."
+        await repository.update_job(job)
+
+        if not job.git_url:
+            raise ValueError("Git URL is required for git source type")
+
+        # Ensure parent directory exists and target is clean
+        repo_dir.parent.mkdir(parents=True, exist_ok=True)
+        if repo_dir.exists():
+            shutil.rmtree(repo_dir)
+
+        clone_url = _build_authenticated_git_url(job.git_url, job.git_token)
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+
+        clone_timeout_minutes = self._compute_clone_timeout_minutes(job.config)
+        clone_timeout_seconds = clone_timeout_minutes * 60
+        history_depth = getattr(job.config, "git_history_depth", 1)
+
+        # Build git clone command based on depth setting
+        git_args = ["git", "clone", "--progress"]
+        if history_depth == 0:
+            logger.info(
+                "Cloning with full history (may take a long time for large repos)"
+            )
+        elif history_depth == 1:
+            git_args.extend(["--depth", "1"])
+            logger.info("Shallow clone (latest commit only)")
+        else:
+            git_args.extend(["--depth", str(history_depth)])
+            logger.info(f"Cloning with depth {history_depth} commits")
+
+        git_args.extend(
+            [
+                "--branch",
+                job.git_branch or "main",
+                clone_url,
+                str(repo_dir),
+            ]
+        )
+
+        logger.info(f"Clone timeout set to {clone_timeout_minutes} minutes")
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *git_args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            stderr_output = await self._stream_clone_progress(
+                process, job, clone_timeout_seconds
+            )
+        except TimeoutError as exc:
+            try:
+                process.kill()
+                await process.wait()
+            except Exception:
+                pass
+            # Clean up partial clone on timeout
+            shutil.rmtree(repo_dir, ignore_errors=True)
+            error_msg = (
+                f"Git clone timed out after {clone_timeout_minutes} minutes. "
+                "The repository may be too large or the network connection is slow. "
+                "Try increasing the clone timeout in Advanced Options."
+            )
+            logger.error(f"Job {job.id}: {error_msg}")
+            raise RuntimeError(error_msg) from exc
+
+        if process.returncode != 0:
+            # Clean up failed clone
+            shutil.rmtree(repo_dir, ignore_errors=True)
+            error_msg = stderr_output
+            if (
+                "could not read Username" in error_msg
+                or "Authentication failed" in error_msg
+            ):
+                raise RuntimeError(
+                    "Git clone failed: Authentication required. "
+                    "This is a private repository - please provide a valid access token."
+                )
+            raise RuntimeError(f"Git clone failed: {error_msg}")
+
+        logger.info("Clone complete")
+
+    async def _fetch_git_updates(self, job: IndexJob, repo_dir: Path) -> None:
+        """Fetch updates from remote and reset to latest.
+
+        Handles depth changes:
+        - If requesting more history than we have, uses --deepen
+        - If requesting full history from shallow, uses --unshallow
+        - Otherwise just fetches latest commits
+
+        Args:
+            job: The index job with git configuration
+            repo_dir: Existing git repository directory
+        """
+        if not job.git_url:
+            raise ValueError("Git URL is required for git source type")
+
+        logger.info(f"Fetching updates for {job.git_url} branch {job.git_branch}")
+        job.error_message = "Fetching latest changes..."
+        await repository.update_job(job)
+
+        # Update remote URL with current token (in case token changed)
+        fetch_url = _build_authenticated_git_url(job.git_url, job.git_token)
+        subprocess.run(
+            ["git", "remote", "set-url", "origin", fetch_url],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+        clone_timeout_minutes = self._compute_clone_timeout_minutes(job.config)
+        clone_timeout_seconds = clone_timeout_minutes * 60
+        history_depth = getattr(job.config, "git_history_depth", 1)
+
+        # Check current depth of repo
+        depth_result = subprocess.run(
+            ["git", "rev-list", "--count", "HEAD"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        current_depth = (
+            int(depth_result.stdout.strip()) if depth_result.returncode == 0 else 1
+        )
+
+        # Check if repo is shallow
+        is_shallow = (repo_dir / ".git" / "shallow").exists()
+
+        # Determine fetch strategy
+        branch = job.git_branch or "main"
+        if history_depth == 0 and is_shallow:
+            logger.info("Unshallowing repo for full history")
+            fetch_args = ["git", "fetch", "--unshallow", "--progress", "origin", branch]
+        elif history_depth > current_depth and is_shallow:
+            deepen_amount = history_depth - current_depth
+            logger.info(
+                f"Deepening repo from {current_depth} to {history_depth} commits (+{deepen_amount})"
+            )
+            fetch_args = [
+                "git",
+                "fetch",
+                f"--deepen={deepen_amount}",
+                "--progress",
+                "origin",
+                branch,
+            ]
+        else:
+            logger.info(
+                f"Fetching latest changes (depth: {current_depth} -> {history_depth})"
+            )
+            fetch_args = ["git", "fetch", "--progress", "origin", branch]
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *fetch_args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=repo_dir,
+                env=env,
+            )
+            stderr_output = await self._stream_clone_progress(
+                process, job, clone_timeout_seconds
+            )
+        except TimeoutError as exc:
+            try:
+                process.kill()
+                await process.wait()
+            except Exception:
+                pass
+            error_msg = (
+                f"Git fetch timed out after {clone_timeout_minutes} minutes. "
+                "Try increasing the clone timeout in Advanced Options."
+            )
+            logger.error(f"Job {job.id}: {error_msg}")
+            raise RuntimeError(error_msg) from exc
+
+        if process.returncode != 0:
+            error_msg = stderr_output
+            if (
+                "could not read Username" in error_msg
+                or "Authentication failed" in error_msg
+            ):
+                raise RuntimeError(
+                    "Git fetch failed: Authentication required. "
+                    "This is a private repository - please provide a valid access token."
+                )
+            raise RuntimeError(f"Git fetch failed: {error_msg}")
+
+        # Reset to the fetched branch
+        reset_result = subprocess.run(
+            ["git", "reset", "--hard", f"origin/{branch}"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if reset_result.returncode != 0:
+            raise RuntimeError(f"Git reset failed: {reset_result.stderr}")
+
+        logger.info("Fetch complete")
 
     def _extract_archive(self, archive_path: Path, extract_dir: Path) -> None:
         """Extract an archive file (zip, tar, tar.gz, tar.bz2) to a directory."""
@@ -1477,6 +1858,183 @@ class IndexerService:
 
         return False
 
+    async def _stream_clone_progress(
+        self, process: Any, job: IndexJob, timeout_seconds: int
+    ) -> str:
+        """Stream git clone progress and update job status.
+
+        Args:
+            process: The git clone subprocess
+            job: The index job to update
+            timeout_seconds: Timeout for the entire operation
+
+        Returns:
+            The complete stderr output as a string
+        """
+        stderr_chunks: List[str] = []
+        last_update_time = asyncio.get_event_loop().time()
+        update_interval = 1.0  # Update job status at most once per second
+
+        # Pattern to match git progress output like:
+        # "Receiving objects:  45% (12345/27000), 156.00 MiB | 5.23 MiB/s"
+        progress_pattern = re.compile(
+            r"(Receiving objects|Resolving deltas|Updating files):\s+(\d+)%"
+        )
+
+        async def read_with_timeout():
+            start_time = asyncio.get_event_loop().time()
+            nonlocal last_update_time
+            last_update_time = start_time
+
+            while True:
+                elapsed = asyncio.get_event_loop().time() - start_time
+                remaining = timeout_seconds - elapsed
+
+                if remaining <= 0:
+                    raise TimeoutError("Clone operation timed out")
+
+                try:
+                    # Read a chunk of stderr (git progress uses \r for updates)
+                    chunk = await asyncio.wait_for(
+                        process.stderr.read(1024),  # type: ignore[union-attr]
+                        timeout=min(remaining, 5.0),  # Check every 5 seconds max
+                    )
+
+                    if not chunk:
+                        break  # EOF
+
+                    text = chunk.decode("utf-8", errors="replace")
+                    stderr_chunks.append(text)
+
+                    # Parse progress and update job
+                    current_time = asyncio.get_event_loop().time()
+
+                    if current_time - last_update_time >= update_interval:
+                        # Find the latest progress percentage
+                        match = progress_pattern.search(text)
+                        if match:
+                            phase = match.group(1)
+                            percent = match.group(2)
+                            job.error_message = f"Cloning: {phase} {percent}%"
+                            await repository.update_job(job)
+                            last_update_time = current_time
+
+                except asyncio.TimeoutError:
+                    # Just a read timeout, check if process is still running
+                    if process.returncode is not None:
+                        break
+                    continue
+
+            # Wait for process to complete
+            await process.wait()
+
+        await read_with_timeout()
+
+        # Clear the cloning message
+        job.error_message = None
+        await repository.update_job(job)
+
+        return "".join(stderr_chunks)
+
+    async def _index_git_history(
+        self, repo_dir: Path, index_name: str, depth: int
+    ) -> List:
+        """Extract git commit history as documents for indexing.
+
+        Args:
+            repo_dir: Path to the git repository
+            index_name: Name of the index for metadata
+            depth: Number of commits to index (0 = all)
+
+        Returns:
+            List of LangChain Document objects with commit information
+        """
+        from langchain_core.documents import Document as LangChainDocument
+
+        documents: List[LangChainDocument] = []
+
+        try:
+            # Build git log command
+            # Format: hash|author|date|subject|body
+            log_format = "%H|%an|%aI|%s|%b"
+            cmd = ["git", "log", f"--format={log_format}"]
+            if depth > 0:
+                cmd.extend(["-n", str(depth)])
+
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=str(repo_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            stdout, stderr = await process.communicate()
+
+            if process.returncode != 0:
+                logger.warning(f"Git log failed: {stderr.decode()}")
+                return documents
+
+            # Parse commits
+            log_output = stdout.decode("utf-8", errors="replace")
+            commits: List[str] = []
+            current_commit: List[str] = []
+
+            for line in log_output.split("\n"):
+                if "|" in line and len(line.split("|")) >= 4:
+                    # This looks like a commit header line
+                    if current_commit:
+                        commits.append("\n".join(current_commit))
+                    current_commit = [line]
+                else:
+                    # This is a continuation (part of body)
+                    if current_commit:
+                        current_commit.append(line)
+
+            if current_commit:
+                commits.append("\n".join(current_commit))
+
+            # Create documents from commits
+            for commit_text in commits:
+                if not commit_text.strip():
+                    continue
+
+                lines = commit_text.split("\n")
+                header_parts = lines[0].split("|")
+
+                if len(header_parts) >= 4:
+                    commit_hash = header_parts[0]
+                    author = header_parts[1]
+                    date = header_parts[2]
+                    subject = header_parts[3]
+                    body = "|".join(header_parts[4:]) if len(header_parts) > 4 else ""
+
+                    # Add any continuation lines to body
+                    if len(lines) > 1:
+                        body = body + "\n" + "\n".join(lines[1:])
+                    body = body.strip()
+
+                    # Create a searchable document
+                    content = f"Git Commit: {subject}\n\nAuthor: {author}\nDate: {date}\nCommit: {commit_hash[:8]}\n\n{body}"
+
+                    doc = LangChainDocument(
+                        page_content=content,
+                        metadata={
+                            "source": f"git:commit:{commit_hash[:8]}",
+                            "index_name": index_name,
+                            "type": "git_commit",
+                            "commit_hash": commit_hash,
+                            "author": author,
+                            "date": date,
+                        },
+                    )
+                    documents.append(doc)
+
+            logger.info(f"Extracted {len(documents)} commits from git history")
+
+        except Exception as e:
+            logger.warning(f"Failed to index git history: {e}")
+
+        return documents
+
     async def _create_faiss_index(
         self, job: IndexJob, source_dir: Path, git_token: Optional[str] = None
     ):
@@ -1494,19 +2052,10 @@ class IndexerService:
         job.error_message = "Scanning files..."
         await repository.update_job(job)
 
-        # Always exclude these directories regardless of user config
-        HARDCODED_EXCLUDES = [
-            ".git/**",
-            "__pycache__/**",
-            "node_modules/**",
-            ".venv/**",
-            "venv/**",
-        ]
-
         def collect_files_sync() -> List[Path]:
             """Synchronous file collection - runs in thread pool."""
             files = []
-            # Combine user patterns with hardcoded excludes
+            # Combine user patterns with hardcoded excludes (module-level constant)
             all_excludes = list(config.exclude_patterns) + HARDCODED_EXCLUDES
 
             for pattern in config.file_patterns:
@@ -1619,6 +2168,16 @@ class IndexerService:
 
         if skipped_binary > 0:
             logger.info(f"Skipped {skipped_binary} binary files")
+
+        # Index git commit history if depth > 1
+        history_depth = getattr(config, "git_history_depth", 1)
+        if history_depth != 1:
+            commit_docs = await self._index_git_history(
+                source_dir, job.name, history_depth
+            )
+            if commit_docs:
+                documents.extend(commit_docs)
+                logger.info(f"Added {len(commit_docs)} commit history documents")
 
         if not documents:
             raise ValueError("No documents were loaded")
