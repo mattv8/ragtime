@@ -228,6 +228,62 @@ DANGEROUS_ODOO_PATTERNS = [
     r"__subclasses__",
 ]
 
+# =============================================================================
+# SSH COMMAND SECURITY PATTERNS
+# =============================================================================
+
+# Shell commands that modify system state
+SSH_DANGEROUS_SHELL_PATTERNS = [
+    # File system modifications
+    r"\brm\s+(-[rf]+\s+)?/",  # rm with absolute paths
+    r"\brm\s+-[rf]*\s+\*",  # rm with wildcards
+    r"\brmdir\b",
+    r"\bmkdir\b",
+    r"\bmv\s+",
+    r"\bcp\s+",
+    r"\bchmod\b",
+    r"\bchown\b",
+    r"\bln\s+",  # symlinks
+    # Package management
+    r"\bapt(-get)?\s+(install|remove|purge)\b",
+    r"\byum\s+(install|remove|erase)\b",
+    r"\bdnf\s+(install|remove)\b",
+    r"\bpip\s+install\b",
+    r"\bpip3\s+install\b",
+    # Service management
+    r"\bsystemctl\s+(start|stop|restart|enable|disable)\b",
+    r"\bservice\s+\w+\s+(start|stop|restart)\b",
+    # Process control
+    r"\bkill\b",
+    r"\bpkill\b",
+    r"\bkillall\b",
+    # User/group management
+    r"\buseradd\b",
+    r"\buserdel\b",
+    r"\busermod\b",
+    r"\bgroupadd\b",
+    r"\bpasswd\b",
+    # Dangerous redirections
+    r">\s*/",  # Redirect to absolute path
+    r">>\s*/",  # Append to absolute path
+    r"\btee\s+/",  # tee to absolute path
+    # Dangerous system commands
+    r"\bshutdown\b",
+    r"\breboot\b",
+    r"\binit\s+[0-6]\b",
+    # Docker write operations
+    r"\bdocker\s+(rm|rmi|stop|kill|pause|unpause)\b",
+    r"\bdocker\s+container\s+(rm|stop|kill|prune)\b",
+    r"\bdocker\s+image\s+(rm|prune)\b",
+    r"\bdocker\s+volume\s+(rm|prune)\b",
+    r"\bdocker\s+network\s+(rm|prune)\b",
+    r"\bdocker\s+system\s+prune\b",
+    r"\bdocker-compose\s+(down|rm|stop)\b",
+    # Database CLI write detection (psql, mysql, etc.)
+    r"\bpsql\b.*-c\s*['\"].*\b(UPDATE|INSERT|DELETE|DROP|TRUNCATE|ALTER|CREATE|GRANT|REVOKE)\b",
+    r"\bmysql\b.*-e\s*['\"].*\b(UPDATE|INSERT|DELETE|DROP|TRUNCATE|ALTER|CREATE|GRANT|REVOKE)\b",
+]
+
 
 def validate_sql_query(query: str, enable_write: bool = False) -> Tuple[bool, str]:
     """
@@ -328,6 +384,51 @@ def validate_odoo_code(code: str, enable_write_ops: bool = False) -> Tuple[bool,
         return False, "Code must contain valid ORM read operations"
 
     return True, "Code is safe"
+
+
+def validate_ssh_command(command: str, allow_write: bool = False) -> Tuple[bool, str]:
+    """
+    Validate SSH shell command for safety. Returns (is_safe, reason).
+    Blocks commands that modify system state unless write ops are enabled.
+
+    Args:
+        command: The shell command to validate.
+        allow_write: Whether write operations are allowed.
+
+    Returns:
+        Tuple of (is_safe, reason_message).
+    """
+    if not command or not command.strip():
+        return False, "Empty command"
+
+    if allow_write:
+        # When writes are allowed, only log but don't block
+        logger.debug(f"SSH command allowed (write mode enabled): {command[:100]}...")
+        return True, "Command allowed (write mode enabled)"
+
+    # Check for embedded SQL write operations using existing patterns (case-insensitive)
+    for pattern in DANGEROUS_SQL_PATTERNS:
+        if re.search(pattern, command, re.IGNORECASE):
+            logger.warning(
+                f"SSH command blocked - SQL write pattern detected: {pattern}"
+            )
+            return (
+                False,
+                "Command contains SQL write operation. Enable 'Allow Write Operations' to permit this.",
+            )
+
+    # Check for dangerous shell patterns (case-insensitive for commands)
+    for pattern in SSH_DANGEROUS_SHELL_PATTERNS:
+        if re.search(pattern, command, re.IGNORECASE):
+            logger.warning(
+                f"SSH command blocked - dangerous pattern detected: {pattern}"
+            )
+            return (
+                False,
+                "Command contains write/modify operation. Enable 'Allow Write Operations' to permit this.",
+            )
+
+    return True, "Command is safe"
 
 
 def sanitize_output(output: str, max_length: int = 50000) -> str:
