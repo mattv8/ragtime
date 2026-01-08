@@ -60,23 +60,31 @@ function getProcessingPhase(job: IndexJob): string {
   if (job.error_message?.includes('Cloning')) {
     return 'Cloning repository';
   }
+  // Check for scanning phase
+  if (job.error_message?.includes('Scanning')) {
+    return 'Scanning files';
+  }
   // If no files found yet, we're still scanning
   if (job.total_files === 0) {
     return 'Scanning files';
-  }
-  // If we have chunks and are embedding
-  if (job.total_chunks > 0 && job.processed_chunks < job.total_chunks) {
-    return 'Embedding';
   }
   // If we're still loading files
   if (job.processed_files < job.total_files) {
     return 'Loading files';
   }
-  // If files are loaded but no chunks yet
-  if (job.processed_files === job.total_files && job.total_chunks === 0) {
+  // If files are loaded but no chunks yet, we're chunking
+  if (job.total_chunks === 0) {
     return 'Chunking';
   }
-  return 'Processing';
+  // If we have chunks but haven't started embedding yet
+  if (job.processed_chunks === 0) {
+    return 'Preparing embeddings';
+  }
+  // Actively embedding
+  if (job.processed_chunks < job.total_chunks) {
+    return 'Embedding';
+  }
+  return 'Finalizing';
 }
 
 /**
@@ -141,28 +149,46 @@ function toUnifiedFilesystemJob(job: FilesystemIndexJob): UnifiedJob {
     if (job.cancel_requested) {
       phase = 'Cancelling...';
       progress = Math.max(progress, 5);
-    }
-    // Check if still in collection phase (total_files is 0 but files_scanned > 0)
-    if (job.total_files === 0 && job.files_scanned > 0) {
-      phase = `Scanning: ${job.files_scanned} files found`;
+    } else if (job.total_files === 0 && job.files_scanned === 0) {
+      // Haven't started scanning yet
+      phase = 'Starting...';
+      progress = 0;
+    } else if (job.total_files === 0 && job.files_scanned > 0) {
+      // Still scanning for files
+      phase = `Scanning: ${job.files_scanned.toLocaleString()} files found`;
       if (job.current_directory) {
-        // Truncate long paths
         const dir = job.current_directory.length > 30
           ? '...' + job.current_directory.slice(-30)
           : job.current_directory;
         phase += ` (${dir})`;
       }
-      // Show indeterminate-ish progress during scan (pulse between 5-15%)
       progress = 5 + (job.files_scanned % 10);
     } else if (job.total_files > 0) {
-      // File processing phase
       const processedTotal = job.processed_files + job.skipped_files;
-      progress = Math.round((processedTotal / job.total_files) * 100);
-      phase = job.cancel_requested
-        ? 'Cancelling...'
-        : `Indexing: ${processedTotal}/${job.total_files}`;
-      if (job.skipped_files > 0) {
-        phase += ` (${job.skipped_files} unchanged)`;
+      // Check what sub-phase we're in
+      if (processedTotal < job.total_files) {
+        // Still processing files
+        progress = Math.round((processedTotal / job.total_files) * 70); // Files = 0-70%
+        phase = `Loading files: ${processedTotal.toLocaleString()}/${job.total_files.toLocaleString()}`;
+        if (job.skipped_files > 0) {
+          phase += ` (${job.skipped_files.toLocaleString()} unchanged)`;
+        }
+      } else if (job.total_chunks === 0) {
+        // Files done, chunking
+        phase = 'Chunking documents';
+        progress = 75;
+      } else if (job.processed_chunks === 0) {
+        // Chunks created, preparing to embed
+        phase = 'Preparing embeddings';
+        progress = 80;
+      } else if (job.processed_chunks < job.total_chunks) {
+        // Embedding in progress
+        progress = 80 + Math.round((job.processed_chunks / job.total_chunks) * 19);
+        phase = `Embedding: ${job.processed_chunks.toLocaleString()}/${job.total_chunks.toLocaleString()}`;
+      } else {
+        // All done, finalizing
+        phase = 'Finalizing index';
+        progress = 99;
       }
     } else {
       phase = 'Starting...';
@@ -214,9 +240,26 @@ function toUnifiedSchemaJob(job: SchemaIndexJob): UnifiedJob {
     } else if (job.total_tables === 0) {
       phase = 'Introspecting schema...';
       progress = 5;
+    } else if (job.processed_tables < job.total_tables) {
+      // Still processing tables
+      progress = Math.round((job.processed_tables / job.total_tables) * 70);
+      phase = `Reading tables: ${job.processed_tables}/${job.total_tables}`;
+    } else if (job.total_chunks === 0) {
+      // Tables done, chunking
+      phase = 'Chunking schema';
+      progress = 75;
+    } else if (job.processed_chunks === 0) {
+      // Chunks created, preparing to embed
+      phase = 'Preparing embeddings';
+      progress = 80;
+    } else if (job.processed_chunks < job.total_chunks) {
+      // Embedding in progress
+      progress = 80 + Math.round((job.processed_chunks / job.total_chunks) * 19);
+      phase = `Embedding: ${job.processed_chunks}/${job.total_chunks}`;
     } else {
-      progress = Math.round((job.processed_tables / job.total_tables) * 100);
-      phase = `Indexing: ${job.processed_tables}/${job.total_tables} tables`;
+      // All done, finalizing
+      phase = 'Finalizing index';
+      progress = 99;
     }
   }
 
@@ -500,26 +543,43 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
                             <span className="progress-phase">{job.phase}</span>
                             <span className="progress-stats">
                               {job.type === 'schema' ? (
-                                // Schema jobs: show table progress
-                                <>{job.processedTables}/{job.totalTables} tables
-                                  {job.totalChunks > 0 && ` (${job.totalChunks} chunks)`}
-                                </>
+                                // Schema jobs: show appropriate progress based on phase
+                                job.phase.startsWith('Embedding') ? (
+                                  <>{job.processedChunks.toLocaleString()}/{job.totalChunks.toLocaleString()} chunks</>
+                                ) : job.phase.startsWith('Reading') || job.phase === 'Introspecting schema...' ? (
+                                  <>{job.processedTables}/{job.totalTables} tables</>
+                                ) : job.totalChunks > 0 ? (
+                                  <>{job.totalChunks.toLocaleString()} chunks</>
+                                ) : (
+                                  <>{job.processedTables}/{job.totalTables} tables</>
+                                )
                               ) : job.type === 'filesystem' ? (
-                                // Filesystem jobs: show file progress (total is known upfront)
-                                <>{job.processedFiles}/{job.totalFiles} files
-                                  {job.totalChunks > 0 && ` (${job.totalChunks} chunks)`}
-                                  {job.skippedFiles > 0 && ` (${job.skippedFiles} unchanged)`}
-                                </>
+                                // Filesystem jobs: show appropriate progress based on phase
+                                job.phase.startsWith('Embedding') ? (
+                                  <>{job.processedChunks.toLocaleString()}/{job.totalChunks.toLocaleString()} chunks</>
+                                ) : job.phase.startsWith('Loading') || job.phase.startsWith('Scanning') ? (
+                                  <>{(job.processedFiles + job.skippedFiles).toLocaleString()}/{job.totalFiles.toLocaleString()} files
+                                    {job.skippedFiles > 0 && ` (${job.skippedFiles.toLocaleString()} unchanged)`}
+                                  </>
+                                ) : job.totalChunks > 0 ? (
+                                  <>{job.totalChunks.toLocaleString()} chunks</>
+                                ) : (
+                                  <>{job.processedFiles.toLocaleString()}/{job.totalFiles.toLocaleString()} files</>
+                                )
                               ) : job.type === 'pdm' ? (
                                 // PDM jobs: phase already shows doc progress, just show chunk count
                                 <>{job.totalChunks.toLocaleString()} chunks</>
-                              ) : job.totalChunks > 0 ? (
-                                // Document jobs: show chunk progress
-                                <>{job.processedChunks}/{job.totalChunks} chunks</>
                               ) : (
-                                <>{job.processedFiles}/{job.totalFiles} files
-                                  {job.skippedFiles > 0 && ` (${job.skippedFiles} skipped)`}
-                                </>
+                                // Document jobs: show appropriate progress based on phase
+                                job.phase === 'Embedding' ? (
+                                  <>{job.processedChunks.toLocaleString()}/{job.totalChunks.toLocaleString()} chunks</>
+                                ) : job.phase === 'Loading files' ? (
+                                  <>{job.processedFiles.toLocaleString()}/{job.totalFiles.toLocaleString()} files</>
+                                ) : job.totalChunks > 0 ? (
+                                  <>{job.totalChunks.toLocaleString()} chunks</>
+                                ) : job.totalFiles > 0 ? (
+                                  <>{job.processedFiles.toLocaleString()}/{job.totalFiles.toLocaleString()} files</>
+                                ) : null
                               )}
                             </span>
                           </div>
