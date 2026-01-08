@@ -56,6 +56,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
   const [chunkOverlap, setChunkOverlap] = useState(configSnapshot?.chunk_overlap || 200);
   const [maxFileSizeKb, setMaxFileSizeKb] = useState(configSnapshot?.max_file_size_kb || 500);
   const [enableOcr, setEnableOcr] = useState(configSnapshot?.enable_ocr || false);
+  const [gitCloneTimeoutMinutes, setGitCloneTimeoutMinutes] = useState(configSnapshot?.git_clone_timeout_minutes || 5);
   const [exclusionsApplied, setExclusionsApplied] = useState(false);
   const [patternsExpanded, setPatternsExpanded] = useState(isEditMode);  // Expand by default in edit mode
   const [description, setDescription] = useState(editIndex?.description || '');
@@ -76,6 +77,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         setChunkOverlap(snapshot.chunk_overlap || 200);
         setMaxFileSizeKb(snapshot.max_file_size_kb || 500);
         setEnableOcr(snapshot.enable_ocr || false);
+        setGitCloneTimeoutMinutes(snapshot.git_clone_timeout_minutes || 5);
       } else {
         setFilePatterns(DEFAULT_FILE_PATTERNS);
         setExcludePatterns('');
@@ -83,6 +85,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         setChunkOverlap(200);
         setMaxFileSizeKb(500);
         setEnableOcr(false);
+        setGitCloneTimeoutMinutes(5);
       }
       setPatternsExpanded(true);
     }
@@ -337,6 +340,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           chunk_overlap: chunkOverlap,
           max_file_size_kb: maxFileSizeKb,
           enable_ocr: enableOcr,
+          git_clone_timeout_minutes: gitCloneTimeoutMinutes,
         },
       });
       const successMessage = `Job started - ID: ${job.id}`;
@@ -384,6 +388,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         chunk_overlap: chunkOverlap,
         max_file_size_kb: maxFileSizeKb,
         enable_ocr: enableOcr,
+        git_clone_timeout_minutes: gitCloneTimeoutMinutes,
       });
       setStatus({ type: 'success', message: 'Configuration saved. Click "Pull & Re-index" to apply changes.' });
       onConfigSaved?.();
@@ -506,6 +511,18 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
               disabled={isLoading}
             />
             <small style={{ color: '#888', fontSize: '0.8rem' }}>Files larger than this are skipped</small>
+          </div>
+          <div className="form-group">
+            <label>Clone Timeout (min)</label>
+            <input
+              type="number"
+              value={gitCloneTimeoutMinutes}
+              onChange={(e) => setGitCloneTimeoutMinutes(parseInt(e.target.value, 10) || 5)}
+              min={1}
+              max={480}
+              disabled={isLoading}
+            />
+            <small style={{ color: '#888', fontSize: '0.8rem' }}>Shallow clone (latest commit only)</small>
           </div>
         </div>
         <div className="form-group" style={{ marginTop: '12px' }}>
@@ -724,6 +741,18 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
                 disabled={isLoading}
               />
               <small style={{ color: '#888', fontSize: '0.8rem' }}>Files larger than this are skipped</small>
+            </div>
+            <div className="form-group">
+              <label>Clone Timeout (min)</label>
+              <input
+                type="number"
+                value={gitCloneTimeoutMinutes}
+                onChange={(e) => setGitCloneTimeoutMinutes(parseInt(e.target.value, 10) || 5)}
+                min={1}
+                max={480}
+                disabled={isLoading}
+              />
+              <small style={{ color: '#888', fontSize: '0.8rem' }}>Shallow clone (latest commit only)</small>
             </div>
           </div>
           <div className="form-group" style={{ marginTop: '12px' }}>
@@ -953,6 +982,17 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
                 onChange={(e) => setMaxFileSizeKb(parseInt(e.target.value, 10) || 500)}
                 min={10}
                 max={10000}
+                disabled={isLoading}
+              />
+            </div>
+            <div className="form-group">
+              <label>Clone Timeout (min)</label>
+              <input
+                type="number"
+                value={gitCloneTimeoutMinutes}
+                onChange={(e) => setGitCloneTimeoutMinutes(parseInt(e.target.value, 10) || 5)}
+                min={1}
+                max={480}
                 disabled={isLoading}
               />
             </div>

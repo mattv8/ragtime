@@ -511,6 +511,9 @@ async def reindex_from_git(
         ),
         chunk_size=config_data.get("chunk_size", 1000),
         chunk_overlap=config_data.get("chunk_overlap", 200),
+        max_file_size_kb=config_data.get("max_file_size_kb", 500),
+        enable_ocr=config_data.get("enable_ocr", False),
+        git_clone_timeout_minutes=config_data.get("git_clone_timeout_minutes", 5),
     )
 
     try:
@@ -719,6 +722,12 @@ class UpdateIndexConfigRequest(BaseModel):
     enable_ocr: Optional[bool] = Field(
         default=None, description="Enable OCR for images"
     )
+    git_clone_timeout_minutes: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=480,
+        description="Git clone timeout in minutes (shallow clone)",
+    )
 
 
 @router.patch("/{name}/config")
@@ -758,6 +767,7 @@ async def update_index_config(
         "chunk_overlap",
         "max_file_size_kb",
         "enable_ocr",
+        "git_clone_timeout_minutes",
     ]:
         if key in existing_config:
             new_config[key] = existing_config[key]
@@ -775,6 +785,8 @@ async def update_index_config(
         new_config["max_file_size_kb"] = request.max_file_size_kb
     if request.enable_ocr is not None:
         new_config["enable_ocr"] = request.enable_ocr
+    if request.git_clone_timeout_minutes is not None:
+        new_config["git_clone_timeout_minutes"] = request.git_clone_timeout_minutes
 
     success = await repository.update_index_config(
         name=name,
