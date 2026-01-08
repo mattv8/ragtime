@@ -332,7 +332,17 @@ def validate_sql_query(query: str, enable_write: bool = False) -> Tuple[bool, st
     Returns:
         Tuple of (is_safe, reason_message).
     """
-    query_upper = query.upper().strip()
+    # Strip ALL SQL comments for validation to prevent false positives
+    # and to catch patterns that might be obscured by comments
+    query_stripped = query.strip()
+    # Remove all block comments /* ... */
+    query_stripped = re.sub(r"/\*.*?\*/", " ", query_stripped, flags=re.DOTALL)
+    # Remove all single-line comments -- ...
+    query_stripped = re.sub(r"--[^\n]*", " ", query_stripped)
+    # Normalize whitespace
+    query_stripped = " ".join(query_stripped.split())
+
+    query_upper = query_stripped.upper()
 
     # If write operations are disabled, only allow SELECT/WITH
     if not enable_write:
