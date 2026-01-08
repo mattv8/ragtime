@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
-from ragtime.core.app_settings import get_tool_configs
+from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -225,10 +225,19 @@ class MCPToolAdapter:
             if schema_tool_def:
                 tools.append(schema_tool_def)
 
-        # Add knowledge search tool if indexes are available
-        knowledge_tool = await self._create_knowledge_search_tool()
-        if knowledge_tool:
-            tools.append(knowledge_tool)
+        # Add knowledge search tool(s) based on aggregate_search setting
+        app_settings = await get_app_settings()
+        aggregate_search = app_settings.get("aggregate_search", True)
+
+        if aggregate_search:
+            # Single aggregated search_knowledge tool
+            knowledge_tool = await self._create_knowledge_search_tool()
+            if knowledge_tool:
+                tools.append(knowledge_tool)
+        else:
+            # Separate search_<index_name> tools for each index
+            per_index_tools = await self._create_per_index_search_tools()
+            tools.extend(per_index_tools)
 
         return tools
 
@@ -278,6 +287,15 @@ class MCPToolAdapter:
                     if schema_tool_def:
                         self._tool_executors[tool_name] = schema_tool_def.execute_fn
                         return await schema_tool_def.execute_fn(**arguments)
+
+        # Check for per-index search tools (pattern: search_<index_name>)
+        # These are created when aggregate_search is disabled
+        if tool_name.startswith("search_") and not tool_name.endswith("_schema"):
+            per_index_tools = await self._create_per_index_search_tools()
+            for tool_def in per_index_tools:
+                if tool_def.name == tool_name:
+                    self._tool_executors[tool_name] = tool_def.execute_fn
+                    return await tool_def.execute_fn(**arguments)
 
         return f"Error: Unknown tool '{tool_name}'"
 
@@ -655,6 +673,113 @@ class MCPToolAdapter:
             tool_config={"tool_type": "knowledge_search", "name": "knowledge"},
             execute_fn=search_knowledge,
         )
+
+    async def _create_per_index_search_tools(self) -> list[MCPToolDefinition]:
+        """Create separate search tools for each index.
+
+        When aggregate_search is disabled, this creates search_<index_name>
+        tools that give the AI granular control over which index to search.
+        """
+        from ragtime.rag import rag
+
+        if not rag.is_ready or not rag.retrievers:
+            return []
+
+        tools: list[MCPToolDefinition] = []
+
+        # Get index metadata for descriptions
+        index_descriptions: dict[str, str] = {}
+        for idx in rag._index_metadata or []:
+            if idx.get("enabled", True):
+                name = idx.get("name", "")
+                index_descriptions[name] = idx.get("description", "")
+
+        # Create input schema for per-index search (no index_name param needed)
+        per_index_schema = {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query to find relevant documentation, code, or technical information",
+                },
+            },
+            "required": ["query"],
+        }
+
+        for index_name, retriever in rag.retrievers.items():
+            # Sanitize index name for tool name
+            safe_name = re.sub(r"[^a-zA-Z0-9]+", "_", index_name).strip("_").lower()
+            tool_name = f"search_{safe_name}"
+
+            # Build description
+            idx_desc = index_descriptions.get(index_name, "")
+            tool_description = (
+                f"Search the '{index_name}' index for relevant information."
+            )
+            if idx_desc:
+                tool_description += f" {idx_desc}"
+
+            # Create executor for this specific index
+            def make_search_func(idx_name: str, idx_retriever):
+                async def search_index(query: str, **_: Any) -> str:
+                    """Execute search on a specific index."""
+                    results = []
+
+                    logger.debug(
+                        f"MCP search_{idx_name} called with query='{query[:50] if query else ''}...'"
+                    )
+
+                    try:
+                        docs = idx_retriever.invoke(query)
+                        logger.debug(
+                            f"MCP index '{idx_name}' returned {len(docs)} documents"
+                        )
+                        for doc in docs:
+                            source = doc.metadata.get("source", "unknown")
+                            content = (
+                                doc.page_content[:500] + "..."
+                                if len(doc.page_content) > 500
+                                else doc.page_content
+                            )
+                            results.append(f"{source}:\n{content}")
+                    except Exception as e:
+                        error_msg = str(e)
+                        logger.warning(
+                            f"Error searching {idx_name}: {e}", exc_info=True
+                        )
+                        if (
+                            "ollama" in error_msg.lower()
+                            or "failed to connect" in error_msg.lower()
+                        ):
+                            return (
+                                "Embedding service unavailable - Cannot connect to Ollama. "
+                                "Check that Ollama is running and accessible."
+                            )
+                        return f"Search error: {error_msg}"
+
+                    if results:
+                        return (
+                            f"Found {len(results)} relevant documents:\n\n"
+                            + "\n\n---\n\n".join(results)
+                        )
+
+                    return (
+                        f"No relevant documents found in {idx_name} for query: {query}"
+                    )
+
+                return search_index
+
+            tools.append(
+                MCPToolDefinition(
+                    name=tool_name,
+                    description=tool_description,
+                    input_schema=per_index_schema,
+                    tool_config={"tool_type": "per_index_search", "name": index_name},
+                    execute_fn=make_search_func(index_name, retriever),
+                )
+            )
+
+        return tools
 
     def invalidate_cache(self) -> None:
         """Invalidate the heartbeat cache, forcing a fresh check on next call."""
