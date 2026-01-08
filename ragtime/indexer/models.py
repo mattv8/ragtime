@@ -47,6 +47,12 @@ class IndexConfig(BaseModel):
         default=False,
         description="Enable OCR to extract text from images (slower but captures text in screenshots, scanned docs, etc.)",
     )
+    git_clone_timeout_minutes: int = Field(
+        default=5,
+        ge=1,
+        le=480,
+        description="Maximum time in minutes to wait for git clone to complete. Default 5 minutes (shallow clone).",
+    )
 
 
 class IndexJob(BaseModel):
@@ -92,6 +98,7 @@ class IndexConfigSnapshot(BaseModel):
     chunk_overlap: int = Field(default=200)
     max_file_size_kb: int = Field(default=500)
     enable_ocr: bool = Field(default=False)
+    git_clone_timeout_minutes: int = Field(default=5)
 
 
 class IndexInfo(BaseModel):

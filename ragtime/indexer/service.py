@@ -1336,6 +1336,13 @@ class IndexerService:
                     "GIT_TERMINAL_PROMPT": "0",  # Disable credential prompting
                 }
 
+                # Get timeout from config (default 60 minutes, converted to seconds)
+                clone_timeout_minutes = getattr(
+                    job.config, "git_clone_timeout_minutes", 60
+                )
+                clone_timeout_seconds = clone_timeout_minutes * 60
+                logger.info(f"Clone timeout set to {clone_timeout_minutes} minutes")
+
                 try:
                     process = await asyncio.create_subprocess_exec(
                         "git",
@@ -1350,15 +1357,23 @@ class IndexerService:
                         stderr=subprocess.PIPE,
                         env=env,
                     )
-                    # Timeout after 5 minutes for clone
                     _, stderr = await asyncio.wait_for(
-                        process.communicate(), timeout=300
+                        process.communicate(), timeout=clone_timeout_seconds
                     )
-                except TimeoutError:
-                    process.kill()
-                    raise RuntimeError(
-                        "Git clone timed out after 5 minutes. The repository may be too large or unreachable."
+                except TimeoutError as exc:
+                    # Ensure process is killed and update job status before raising
+                    try:
+                        process.kill()
+                        await process.wait()  # Ensure process is fully terminated
+                    except Exception:
+                        pass  # Process may already be dead
+                    error_msg = (
+                        f"Git clone timed out after {clone_timeout_minutes} minutes. "
+                        "The repository may be too large or the network connection is slow. "
+                        "Try increasing the clone timeout in Advanced Options."
                     )
+                    logger.error(f"Job {job.id}: {error_msg}")
+                    raise RuntimeError(error_msg) from exc
 
                 if process.returncode != 0:
                     error_msg = stderr.decode()
@@ -1473,9 +1488,27 @@ class IndexerService:
         config = job.config
 
         # Collect all files to process (run in thread pool as rglob can be slow on large repos)
+        logger.info(
+            f"Job {job.id}: Scanning directory for matching files (this may take a while for large repos)..."
+        )
+        job.error_message = "Scanning files..."
+        await repository.update_job(job)
+
+        # Always exclude these directories regardless of user config
+        HARDCODED_EXCLUDES = [
+            ".git/**",
+            "__pycache__/**",
+            "node_modules/**",
+            ".venv/**",
+            "venv/**",
+        ]
+
         def collect_files_sync() -> List[Path]:
             """Synchronous file collection - runs in thread pool."""
             files = []
+            # Combine user patterns with hardcoded excludes
+            all_excludes = list(config.exclude_patterns) + HARDCODED_EXCLUDES
+
             for pattern in config.file_patterns:
                 # Use removeprefix instead of lstrip to avoid stripping too many characters
                 # lstrip("**/") on "**/*.py" incorrectly gives ".py", removeprefix gives "*.py"
@@ -1486,12 +1519,13 @@ class IndexerService:
                 for file_path in source_dir.rglob(glob_pattern):
                     if file_path.is_file():
                         rel_path = file_path.relative_to(source_dir)
+                        rel_path_str = str(rel_path)
 
                         # Check excludes - also use removeprefix instead of lstrip
                         skip = False
-                        for exc_pattern in config.exclude_patterns:
+                        for exc_pattern in all_excludes:
                             clean_exc = exc_pattern.removeprefix("**/")
-                            if fnmatch.fnmatch(str(rel_path), clean_exc):
+                            if fnmatch.fnmatch(rel_path_str, clean_exc):
                                 skip = True
                                 break
 
@@ -1502,6 +1536,7 @@ class IndexerService:
         all_files = await asyncio.to_thread(collect_files_sync)
 
         job.total_files = len(all_files)
+        job.error_message = None  # Clear "Scanning files..." message
         await repository.update_job(job)
         logger.info(f"Found {len(all_files)} files to index")
 

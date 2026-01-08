@@ -101,6 +101,7 @@ export interface IndexConfig {
   max_file_size_kb?: number;  // Max file size in KB (default 500)
   embedding_model?: string;
   enable_ocr?: boolean;  // Enable OCR for images (default false)
+  git_clone_timeout_minutes?: number;  // Max time for git clone (default 60 min)
 }
 
 export interface IndexJob {
@@ -125,6 +126,7 @@ export interface IndexConfigSnapshot {
   chunk_overlap: number;
   max_file_size_kb: number;
   enable_ocr: boolean;
+  git_clone_timeout_minutes?: number;  // May be absent for older indexes
 }
 
 export interface IndexInfo {
@@ -152,6 +154,7 @@ export interface UpdateIndexConfigRequest {
   chunk_overlap?: number;
   max_file_size_kb?: number;
   enable_ocr?: boolean;
+  git_clone_timeout_minutes?: number;
 }
 
 export interface CreateIndexRequest {
