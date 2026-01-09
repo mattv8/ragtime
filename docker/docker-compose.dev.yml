@@ -7,7 +7,7 @@
 services:
   # PostgreSQL database for Prisma persistence (with pgvector)
   ragtime-db:
-    image: pgvector/pgvector:pg17
+    image: pgvector/pgvector:pg18
     container_name: ragtime-db-dev
     ports:
       - "5434:5432"
