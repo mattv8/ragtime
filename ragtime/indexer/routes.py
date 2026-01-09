@@ -4,6 +4,7 @@ Indexer API routes.
 
 from __future__ import annotations
 
+import importlib
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional
@@ -42,6 +43,7 @@ from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer
 from ragtime.indexer.service import indexer
 from ragtime.indexer.utils import safe_tool_name
+from ragtime.indexer.vector_utils import ensure_pgvector_extension
 
 if TYPE_CHECKING:
     from prisma.models import User
@@ -811,6 +813,151 @@ async def update_index_config(
         "git_branch": request.git_branch or getattr(metadata, "gitBranch", None),
         "config_snapshot": new_config,
     }
+
+
+class RenameIndexRequest(BaseModel):
+    """Request to rename an index."""
+
+    new_name: str = Field(
+        min_length=1,
+        max_length=100,
+        description="New name for the index (will be converted to safe identifier)",
+    )
+
+
+class RenameIndexResponse(BaseModel):
+    """Response from renaming an index."""
+
+    old_name: str
+    new_name: str  # Safe tool name (lowercase, alphanumeric with underscores)
+    display_name: str  # Human-readable name (original user input)
+    message: str
+
+
+@router.patch("/{name}/rename", response_model=RenameIndexResponse)
+async def rename_index(
+    name: str,
+    request: RenameIndexRequest,
+    _user: User = Depends(require_admin),
+):
+    """Rename a git-based index. Admin only.
+
+    This renames both the database record and the FAISS index directory on disk.
+    The MCP server will automatically pick up the new name.
+
+    The user-provided name is automatically converted to a safe identifier using
+    safe_tool_name (lowercase, alphanumeric with underscores).
+    """
+    import shutil
+
+    # Convert user input to safe tool name
+    raw_name = request.new_name.strip()
+    if not raw_name:
+        raise HTTPException(status_code=400, detail="New name cannot be empty")
+
+    new_name = safe_tool_name(raw_name)
+    if not new_name:
+        raise HTTPException(
+            status_code=400,
+            detail="Name must contain at least one alphanumeric character",
+        )
+
+    # Check if names are the same
+    if name == new_name:
+        return RenameIndexResponse(
+            old_name=name,
+            new_name=new_name,
+            display_name=request.new_name.strip(),
+            message="Name unchanged",
+        )
+
+    # Get existing metadata
+    metadata = await repository.get_index_metadata(name)
+    if not metadata:
+        raise HTTPException(status_code=404, detail="Index not found")
+
+    # Check for active indexing jobs - block rename to prevent duplicate indexes
+    active_job = await repository.get_active_job_for_index(name)
+    if active_job:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot rename index while an indexing job is in progress. "
+                f"Job '{active_job.id}' (status: {active_job.status.value}) would create "
+                f"a duplicate index with the old name '{name}' when it completes. "
+                f"Please wait for the job to finish or cancel it first."
+            ),
+        )
+
+    # Check if new name already exists
+    existing = await repository.get_index_metadata(new_name)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"An index named '{new_name}' already exists",
+        )
+
+    # Rename the FAISS directory on disk first
+    old_path = indexer.index_base_path / name
+    new_path = indexer.index_base_path / new_name
+
+    if old_path.exists():
+        try:
+            shutil.move(str(old_path), str(new_path))
+            logger.info(f"Renamed index directory: {old_path} -> {new_path}")
+        except Exception as e:
+            logger.exception(f"Failed to rename index directory: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to rename index directory: {e}",
+            ) from e
+    else:
+        logger.warning(f"Index directory not found: {old_path}")
+
+    # Now rename in database (pass the original user input as display_name)
+    success = await repository.rename_index(name, new_name, display_name=raw_name)
+    if not success:
+        # Try to rollback the directory rename
+        if new_path.exists():
+            try:
+                shutil.move(str(new_path), str(old_path))
+            except Exception:
+                logger.error("Failed to rollback directory rename")
+        raise HTTPException(
+            status_code=500, detail="Failed to rename index in database"
+        )
+
+    # Invalidate caches so MCP and RAG pick up the new name
+    from ragtime.core.app_settings import invalidate_settings_cache
+    from ragtime.rag import rag
+
+    invalidate_settings_cache()
+
+    # Reinitialize RAG to pick up the renamed index
+    # This reloads the retrievers with the new index name
+    try:
+        await rag.initialize()
+    except Exception as e:
+        logger.warning(f"Failed to reinitialize RAG after rename: {e}")
+
+    # Notify MCP clients about tool changes
+    try:
+        from ragtime.mcp.server import notify_tools_changed
+
+        notify_tools_changed()  # This is a sync function that schedules an async notify
+    except Exception as e:
+        logger.warning(f"Failed to notify MCP about rename: {e}")
+
+    logger.info(
+        f"Successfully renamed index '{name}' to '{new_name}' (display: '{raw_name}')"
+    )
+
+    return RenameIndexResponse(
+        old_name=name,
+        new_name=new_name,
+        display_name=raw_name,
+        message=f"Index renamed from '{name}' to '{new_name}'",
+    )
 
 
 @router.get("/{name}/download")
@@ -3110,9 +3257,10 @@ async def discover_smb_shares(
 
     def _discover_smb() -> SMBDiscoveryResponse:
         try:
-            from smb.SMBConnection import (
-                SMBConnection,
-            )  # type: ignore[import-not-found,import-untyped]
+            smb_module = importlib.import_module(
+                "smb.SMBConnection"
+            )  # pyright: ignore[reportMissingImports]
+            SMBConnection = getattr(smb_module, "SMBConnection")
 
             # Resolve hostname to IP
             try:
@@ -3326,9 +3474,10 @@ async def browse_smb_share(
 
     def _browse_smb() -> BrowseResponse:
         try:
-            from smb.SMBConnection import (
-                SMBConnection,
-            )  # type: ignore[import-not-found,import-untyped]
+            smb_module = importlib.import_module(
+                "smb.SMBConnection"
+            )  # pyright: ignore[reportMissingImports]
+            SMBConnection = getattr(smb_module, "SMBConnection")
 
             # Resolve hostname to IP for SMB
             try:
@@ -5158,9 +5307,7 @@ async def trigger_schema_index(
         )
 
     # Validate pgvector is available
-    if (
-        not await schema_indexer._ensure_pgvector()
-    ):  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]  # type: ignore[attr-defined]
+    if not await ensure_pgvector_extension(logger_override=logger):
         raise HTTPException(
             status_code=503,
             detail="pgvector extension not available. Please install it: CREATE EXTENSION IF NOT EXISTS vector;",
@@ -5397,9 +5544,7 @@ async def trigger_pdm_index(
         )
 
     # Validate pgvector is available
-    if (
-        not await pdm_indexer._ensure_pgvector()
-    ):  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]  # type: ignore[attr-defined]
+    if not await ensure_pgvector_extension(logger_override=logger):
         raise HTTPException(
             status_code=503,
             detail="pgvector extension not available. Please install it: CREATE EXTENSION IF NOT EXISTS vector;",

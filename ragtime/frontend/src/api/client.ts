@@ -385,6 +385,18 @@ export const api = {
   },
 
   /**
+   * Rename a git-based index
+   */
+  async renameIndex(name: string, newName: string): Promise<import('@/types').RenameIndexResponse> {
+    const response = await apiFetch(`${API_BASE}/${encodeURIComponent(name)}/rename`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ new_name: newName }),
+    });
+    return handleResponse<import('@/types').RenameIndexResponse>(response);
+  },
+
+  /**
    * Re-index a git-based index by pulling latest changes
    */
   async reindexFromGit(name: string, gitToken?: string): Promise<IndexJob> {

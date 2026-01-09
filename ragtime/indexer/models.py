@@ -119,7 +119,8 @@ class IndexConfigSnapshot(BaseModel):
 class IndexInfo(BaseModel):
     """Information about an existing index."""
 
-    name: str
+    name: str  # Safe tool name (lowercase, alphanumeric with underscores)
+    display_name: Optional[str] = None  # Human-readable name for UI display
     path: str
     size_mb: float
     document_count: int
