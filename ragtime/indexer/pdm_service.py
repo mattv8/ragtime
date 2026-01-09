@@ -203,12 +203,37 @@ class PdmIndexerService:
 
     async def cancel_job(self, job_id: str) -> bool:
         """Request cancellation of an active job."""
+        # Check if job is active in memory
         if job_id in self._cancellation_flags:
             self._cancellation_flags[job_id] = True
             if job_id in self._active_jobs:
                 self._active_jobs[job_id].cancel_requested = True
             logger.info(f"Cancellation requested for PDM job {job_id}")
             return True
+
+        # Check database for orphaned jobs (running in DB but not in memory)
+        db: Any = await get_db()
+        prisma_job = await db.pdmindexjob.find_unique(where={"id": job_id})
+        if not prisma_job:
+            return False
+
+        # Can only cancel pending/indexing jobs
+        if prisma_job.status in ("pending", "indexing"):
+            # Job is not running in memory but stuck in DB - directly mark as cancelled
+            logger.info(
+                f"Directly cancelling orphaned PDM job {job_id} (not in active jobs)"
+            )
+            await db.pdmindexjob.update(
+                where={"id": job_id},
+                data={
+                    "status": "cancelled",
+                    "currentStep": "Cancelled (orphaned)",
+                    "errorMessage": "Job cancelled (was orphaned after restart)",
+                    "completedAt": datetime.now(timezone.utc),
+                },
+            )
+            return True
+
         return False
 
     async def shutdown(self) -> None:
