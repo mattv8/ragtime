@@ -488,7 +488,7 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
           </summary>
 
           <div className="form-group">
-            <label>Index Name *</label>
+            <label>Index Display Name *</label>
             <input
               type="text"
               value={indexName}

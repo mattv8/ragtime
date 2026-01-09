@@ -171,7 +171,7 @@ async def generate_index_description(
             try:
                 from langchain_ollama import (
                     ChatOllama,
-                )  # type: ignore  # pyright: ignore[reportMissingImports]
+                )  # type: ignore[reportMissingImports]
 
                 base_url = app_settings.get("ollama_base_url", "http://localhost:11434")
                 model = app_settings.get("llm_model", "llama3.2")
@@ -618,7 +618,7 @@ class IndexerService:
         if provider == "ollama":
             from langchain_ollama import (
                 OllamaEmbeddings,
-            )  # type: ignore  # pyright: ignore[reportMissingImports]
+            )  # type: ignore[reportMissingImports]
 
             return OllamaEmbeddings(
                 model=model,
@@ -777,6 +777,7 @@ class IndexerService:
                     source = None
                     git_branch = None
                     has_stored_token = False
+                    display_name = None
 
                     if path.name in metadata_by_name:
                         meta = metadata_by_name[path.name]
@@ -790,6 +791,7 @@ class IndexerService:
                         search_weight = getattr(meta, "searchWeight", 1.0)
                         config_snapshot_data = getattr(meta, "configSnapshot", None)
                         has_stored_token = bool(getattr(meta, "gitToken", None))
+                        display_name = getattr(meta, "displayName", None)
                     else:
                         search_weight = 1.0
                         config_snapshot_data = None
@@ -839,6 +841,7 @@ class IndexerService:
                     indexes.append(
                         IndexInfo(
                             name=path.name,
+                            display_name=display_name,
                             path=str(path),
                             size_mb=round(size_bytes / (1024 * 1024), 2),
                             document_count=doc_count,
@@ -2023,6 +2026,7 @@ class IndexerService:
                     capture_output=True,
                     text=True,
                     timeout=300,  # 5 minute timeout for large histories
+                    check=False,
                 )
                 return result.returncode, result.stdout, result.stderr
 

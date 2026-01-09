@@ -148,28 +148,27 @@ class IndexerRepository:
         }
 
         # Create job with nested config
-        await db.indexjob.create(
-            data={  # type: ignore[arg-type]
-                "id": job.id,
-                "name": job.name,
-                "status": _to_prisma_index_status(job.status),
-                "sourceType": job.source_type,
-                "sourcePath": job.source_path,
-                "gitUrl": job.git_url,
-                "gitBranch": job.git_branch,
-                "gitToken": job.git_token,
-                "totalFiles": job.total_files,
-                "processedFiles": job.processed_files,
-                "totalChunks": job.total_chunks,
-                "processedChunks": job.processed_chunks,
-                "errorMessage": job.error_message,
-                "createdAt": job.created_at,
-                "startedAt": job.started_at,
-                "completedAt": job.completed_at,
-                "config": {"create": config_data},
-            },
-            include={"config": True},
-        )
+        job_data: dict[str, Any] = {
+            "id": job.id,
+            "name": job.name,
+            "status": _to_prisma_index_status(job.status),
+            "sourceType": job.source_type,
+            "sourcePath": job.source_path,
+            "gitUrl": job.git_url,
+            "gitBranch": job.git_branch,
+            "gitToken": job.git_token,
+            "totalFiles": job.total_files,
+            "processedFiles": job.processed_files,
+            "totalChunks": job.total_chunks,
+            "processedChunks": job.processed_chunks,
+            "errorMessage": job.error_message,
+            "createdAt": job.created_at,
+            "startedAt": job.started_at,
+            "completedAt": job.completed_at,
+            "config": {"create": config_data},
+        }
+
+        await db.indexjob.create(data=cast(Any, job_data), include={"config": True})
 
         logger.debug(f"Created job {job.id} in database")
         return job
@@ -230,6 +229,30 @@ class IndexerRepository:
             logger.warning(f"Failed to delete job {job_id}: {e}")
             return False
 
+    async def get_active_job_for_index(self, name: str) -> Optional[IndexJob]:
+        """Get an active (pending/processing) job for the given index name.
+
+        Returns the first active job found, or None if no active jobs exist.
+        """
+        db = await self._get_db()
+
+        # Find any pending or processing job for this index
+        prisma_job = await db.indexjob.find_first(
+            where={  # type: ignore[arg-type]
+                "name": name,
+                "OR": [
+                    {"status": PrismaIndexStatus.pending},
+                    {"status": PrismaIndexStatus.processing},
+                ],
+            },
+            include={"config": True},
+            order={"createdAt": "desc"},
+        )
+
+        if prisma_job:
+            return self._prisma_job_to_model(prisma_job)
+        return None
+
     def _prisma_job_to_model(self, prisma_job: PrismaIndexJob) -> IndexJob:
         """Convert Prisma job to Pydantic model."""
         if prisma_job.config is None:
@@ -253,7 +276,7 @@ class IndexerRepository:
             source_path=prisma_job.sourcePath,
             git_url=prisma_job.gitUrl,
             git_branch=prisma_job.gitBranch,
-            git_token=prisma_job.gitToken,
+            git_token=getattr(prisma_job, "gitToken", None),
             total_files=prisma_job.totalFiles,
             processed_files=prisma_job.processedFiles,
             total_chunks=prisma_job.totalChunks,
@@ -281,6 +304,7 @@ class IndexerRepository:
         description: str = "",
         git_branch: Optional[str] = None,
         git_token: Optional[str] = None,
+        display_name: Optional[str] = None,
     ) -> None:
         """Create or update index metadata."""
         db = await self._get_db()
@@ -288,6 +312,7 @@ class IndexerRepository:
         # Build create/update data - only include configSnapshot if it has a value
         create_data: dict = {
             "name": name,
+            "displayName": display_name,
             "description": description,
             "path": path,
             "documentCount": document_count,
@@ -313,6 +338,10 @@ class IndexerRepository:
             "lastModified": datetime.utcnow(),
         }
 
+        # Only update displayName if provided (don't overwrite with None)
+        if display_name is not None:
+            update_data["displayName"] = display_name
+
         # Only include configSnapshot if we have actual data
         if config_snapshot is not None:
             create_data["configSnapshot"] = Json(config_snapshot)
@@ -320,10 +349,13 @@ class IndexerRepository:
 
         await db.indexmetadata.upsert(
             where={"name": name},
-            data={  # type: ignore[arg-type]
-                "create": create_data,
-                "update": update_data,
-            },
+            data=cast(
+                Any,
+                {
+                    "create": create_data,
+                    "update": update_data,
+                },
+            ),
         )
 
         logger.debug(f"Upserted metadata for index {name}")
@@ -387,7 +419,7 @@ class IndexerRepository:
 
         try:
             await db.indexmetadata.update(
-                where={"name": name}, data={"searchWeight": weight}
+                where={"name": name}, data=cast(Any, {"searchWeight": weight})
             )
             logger.debug(f"Updated search weight for index {name} to {weight}")
             return True
@@ -414,11 +446,94 @@ class IndexerRepository:
             return True  # Nothing to update
 
         try:
-            await db.indexmetadata.update(where={"name": name}, data=update_data)
+            await db.indexmetadata.update(
+                where={"name": name}, data=cast(Any, update_data)
+            )
             logger.debug(f"Updated config for index {name}")
             return True
         except Exception as e:
             logger.warning(f"Failed to update config for index {name}: {e}")
+            return False
+
+    async def rename_index(
+        self, old_name: str, new_name: str, display_name: Optional[str] = None
+    ) -> bool:
+        """
+        Rename an index in the database.
+
+        Updates the index_metadata name (primary key). The caller is responsible
+        for renaming the FAISS index directory on disk.
+
+        Args:
+            old_name: Current index name (safe tool name)
+            new_name: New index name (safe tool name)
+            display_name: Human-readable display name (original user input)
+
+        Returns:
+            True if rename succeeded, False otherwise
+        """
+        import os
+
+        db = await self._get_db()
+
+        try:
+            # Check if new name already exists
+            existing = await db.indexmetadata.find_unique(where={"name": new_name})
+            if existing:
+                logger.warning(f"Cannot rename index: name '{new_name}' already exists")
+                return False
+
+            # Get the existing metadata
+            metadata = await db.indexmetadata.find_unique(where={"name": old_name})
+            if not metadata:
+                logger.warning(f"Cannot rename index: '{old_name}' not found")
+                return False
+
+            # Update the path to reflect the new name
+            # Only replace the directory name at the end, not other occurrences
+            base_dir = os.path.dirname(metadata.path)
+            new_path = os.path.join(base_dir, new_name)
+
+            # Build create data - only include configSnapshot if it has a value
+            # Use new display_name if provided, otherwise preserve existing
+            metadata_any = cast(Any, metadata)
+            create_data: dict[str, Any] = {
+                "name": new_name,
+                "displayName": (
+                    display_name
+                    if display_name is not None
+                    else getattr(metadata_any, "displayName", None)
+                ),
+                "description": metadata.description,
+                "path": new_path,
+                "documentCount": metadata.documentCount,
+                "chunkCount": metadata.chunkCount,
+                "sizeBytes": metadata.sizeBytes,
+                "enabled": metadata.enabled,
+                "searchWeight": getattr(metadata_any, "searchWeight", 1.0),
+                "sourceType": metadata.sourceType,
+                "source": metadata.source,
+                "gitBranch": getattr(metadata_any, "gitBranch", None),
+                "gitToken": getattr(metadata_any, "gitToken", None),
+                "createdAt": metadata.createdAt,
+                "lastModified": metadata.lastModified,
+            }
+
+            # Only include configSnapshot if we have actual data
+            if metadata.configSnapshot is not None:
+                create_data["configSnapshot"] = Json(metadata.configSnapshot)
+
+            # Use a transaction to ensure atomicity - delete and create together
+            async with db.tx() as tx:
+                await tx.indexmetadata.delete(where={"name": old_name})
+                await tx.indexmetadata.create(data=cast(Any, create_data))
+
+            logger.info(f"Renamed index '{old_name}' to '{new_name}' in database")
+            return True
+        except Exception as e:
+            logger.exception(
+                f"Failed to rename index '{old_name}' to '{new_name}': {e}"
+            )
             return False
 
     # -------------------------------------------------------------------------
@@ -429,51 +544,57 @@ class IndexerRepository:
         """Get application settings, creating defaults if needed."""
         db = await self._get_db()
 
-        prisma_settings = await db.appsettings.find_unique(where={"id": "default"})
+        prisma_settings = cast(
+            Any, await db.appsettings.find_unique(where={"id": "default"})
+        )
 
         if prisma_settings is None:
             # Create default settings
-            prisma_settings = await db.appsettings.create(data={"id": "default"})
+            prisma_settings = cast(
+                Any, await db.appsettings.create(data={"id": "default"})
+            )
             logger.info("Created default application settings")
 
+        settings: Any = prisma_settings
+
         return AppSettings(
-            id=prisma_settings.id,
+            id=settings.id,
             # Server branding
-            server_name=prisma_settings.serverName,
+            server_name=getattr(settings, "serverName", "Ragtime"),
             # Embedding settings
-            embedding_provider=prisma_settings.embeddingProvider,
-            embedding_model=prisma_settings.embeddingModel,
-            embedding_dimensions=prisma_settings.embeddingDimensions,
-            ollama_protocol=prisma_settings.ollamaProtocol,
-            ollama_host=prisma_settings.ollamaHost,
-            ollama_port=prisma_settings.ollamaPort,
-            ollama_base_url=prisma_settings.ollamaBaseUrl,
+            embedding_provider=settings.embeddingProvider,
+            embedding_model=settings.embeddingModel,
+            embedding_dimensions=getattr(settings, "embeddingDimensions", None),
+            ollama_protocol=settings.ollamaProtocol,
+            ollama_host=settings.ollamaHost,
+            ollama_port=settings.ollamaPort,
+            ollama_base_url=settings.ollamaBaseUrl,
             # LLM settings
-            llm_provider=prisma_settings.llmProvider,
-            llm_model=prisma_settings.llmModel,
-            openai_api_key=prisma_settings.openaiApiKey,
-            anthropic_api_key=prisma_settings.anthropicApiKey,
-            allowed_chat_models=prisma_settings.allowedChatModels or [],
-            max_iterations=prisma_settings.maxIterations,
+            llm_provider=settings.llmProvider,
+            llm_model=settings.llmModel,
+            openai_api_key=settings.openaiApiKey,
+            anthropic_api_key=settings.anthropicApiKey,
+            allowed_chat_models=settings.allowedChatModels or [],
+            max_iterations=settings.maxIterations,
             # Tool settings
-            enabled_tools=prisma_settings.enabledTools,
-            odoo_container=prisma_settings.odooContainer,
-            postgres_container=prisma_settings.postgresContainer,
-            postgres_host=prisma_settings.postgresHost,
-            postgres_port=prisma_settings.postgresPort,
-            postgres_user=prisma_settings.postgresUser,
-            postgres_password=prisma_settings.postgresPassword,
-            postgres_database=prisma_settings.postgresDb,
-            max_query_results=prisma_settings.maxQueryResults,
-            query_timeout=prisma_settings.queryTimeout,
-            enable_write_ops=prisma_settings.enableWriteOps,
+            enabled_tools=settings.enabledTools,
+            odoo_container=settings.odooContainer,
+            postgres_container=settings.postgresContainer,
+            postgres_host=settings.postgresHost,
+            postgres_port=settings.postgresPort,
+            postgres_user=settings.postgresUser,
+            postgres_password=settings.postgresPassword,
+            postgres_database=settings.postgresDb,
+            max_query_results=settings.maxQueryResults,
+            query_timeout=settings.queryTimeout,
+            enable_write_ops=settings.enableWriteOps,
             # Search configuration
-            search_results_k=prisma_settings.searchResultsK,
-            aggregate_search=prisma_settings.aggregateSearch,
+            search_results_k=getattr(settings, "searchResultsK", 5),
+            aggregate_search=getattr(settings, "aggregateSearch", True),
             # Embedding dimension tracking
-            embedding_dimension=prisma_settings.embeddingDimension,
-            embedding_config_hash=prisma_settings.embeddingConfigHash,
-            updated_at=prisma_settings.updatedAt,
+            embedding_dimension=getattr(settings, "embeddingDimension", None),
+            embedding_config_hash=getattr(settings, "embeddingConfigHash", None),
+            updated_at=settings.updatedAt,
         )
 
     async def update_settings(self, updates: dict) -> AppSettings:
@@ -550,11 +671,14 @@ class IndexerRepository:
 
         await db.appsettings.update(
             where={"id": "default"},
-            data={
-                "embeddingDimension": dimension,
-                "embeddingConfigHash": config_hash,
-            },
-        )
+            data=cast(
+                Any,
+                {
+                    "embeddingDimension": dimension,
+                    "embeddingConfigHash": config_hash,
+                },
+            ),
+        )  # type: ignore[arg-type]
         logger.info(
             f"Updated embedding tracking: dimension={dimension}, hash={config_hash}"
         )
@@ -570,11 +694,14 @@ class IndexerRepository:
 
         await db.appsettings.update(
             where={"id": "default"},
-            data={
-                "embeddingDimension": None,
-                "embeddingConfigHash": None,
-            },
-        )
+            data=cast(
+                Any,
+                {
+                    "embeddingDimension": None,
+                    "embeddingConfigHash": None,
+                },
+            ),
+        )  # type: ignore[arg-type]
         logger.info("Cleared embedding tracking")
         return await self.get_settings()
 
@@ -1060,12 +1187,20 @@ class IndexerRepository:
         db = await self._get_db()
 
         prisma_task = await db.chattask.find_first(
-            where={  # type: ignore[arg-type]
-                "conversationId": conversation_id,
-                "status": {"in": ["pending", "running"]},
-            },
+            where=cast(
+                Any,
+                {
+                    "conversationId": conversation_id,
+                    "status": {
+                        "in": [
+                            PrismaChatTaskStatus.pending,
+                            PrismaChatTaskStatus.running,
+                        ]
+                    },
+                },
+            ),
             order={"createdAt": "desc"},
-        )
+        )  # type: ignore[arg-type]
 
         if prisma_task is None:
             return None
@@ -1229,11 +1364,19 @@ class IndexerRepository:
         try:
             # Find stale running tasks
             stale_tasks = await db.chattask.find_many(
-                where={  # type: ignore[arg-type]
-                    "status": {"in": ["pending", "running"]},
-                    "lastUpdateAt": {"lt": cutoff},
-                }
-            )
+                where=cast(
+                    Any,
+                    {
+                        "status": {
+                            "in": [
+                                PrismaChatTaskStatus.pending,
+                                PrismaChatTaskStatus.running,
+                            ]
+                        },
+                        "lastUpdateAt": {"lt": cutoff},
+                    },
+                )
+            )  # type: ignore[arg-type]
 
             count = 0
             for task in stale_tasks:

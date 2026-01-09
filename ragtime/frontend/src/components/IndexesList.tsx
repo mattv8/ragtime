@@ -443,7 +443,7 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
             </label>
           </div>
           <div className="index-info">
-            <h3>{idx.name}</h3>
+            <h3>{idx.display_name || idx.name}</h3>
             <div className="index-meta-pills">
               <span className="meta-pill documents">{idx.document_count} documents</span>
               <span className="meta-pill size">{idx.size_mb} MB</span>

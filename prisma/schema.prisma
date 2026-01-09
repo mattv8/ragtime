@@ -79,7 +79,8 @@ model IndexJob {
 /// Metadata for a FAISS index on disk
 model IndexMetadata {
   id            String   @id @default(uuid())
-  name          String   @unique
+  name          String   @unique // Safe tool name (lowercase, alphanumeric with underscores)
+  displayName   String?  @map("display_name") // Human-readable name for UI display
   description   String   @default("") // Description for LLM context
   path          String
   documentCount Int      @default(0) @map("document_count")

@@ -132,7 +132,8 @@ export interface IndexConfigSnapshot {
 }
 
 export interface IndexInfo {
-  name: string;
+  name: string;  // Safe tool name (lowercase, alphanumeric with underscores)
+  display_name: string | null;  // Human-readable name for UI display
   path: string;
   size_mb: number;
   document_count: number;
@@ -158,6 +159,17 @@ export interface UpdateIndexConfigRequest {
   enable_ocr?: boolean;
   git_clone_timeout_minutes?: number;
   git_history_depth?: number;
+}
+
+export interface RenameIndexRequest {
+  new_name: string;
+}
+
+export interface RenameIndexResponse {
+  old_name: string;
+  new_name: string;  // Safe tool name
+  display_name: string;  // Human-readable name
+  message: string;
 }
 
 export interface CreateIndexRequest {

@@ -148,6 +148,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
   const [exclusionsApplied, setExclusionsApplied] = useState(false);
   const [patternsExpanded, setPatternsExpanded] = useState(isEditMode);  // Expand by default in edit mode
   const [description, setDescription] = useState(editIndex?.description || '');
+  const [indexName, setIndexName] = useState(editIndex?.display_name || editIndex?.name || '');
 
   // Auto-update timeout when depth changes (unless user manually overrode it)
   useEffect(() => {
@@ -160,6 +161,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
   // Sync state when editIndex changes (for when modal reopens with different index)
   useEffect(() => {
     if (editIndex) {
+      setIndexName(editIndex.display_name || editIndex.name || '');
       setGitUrl(editIndex.source || '');
       setSelectedBranch(editIndex.git_branch || '');
       setDescription(editIndex.description || '');
@@ -485,10 +487,27 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
     setStatus({ type: 'info', message: 'Saving configuration...' });
 
     try {
-      // Update description separately
-      await api.updateIndexDescription(editIndex.name, description);
+      // Track the current name for API calls (may change if renamed)
+      let currentName = editIndex.name;
+
+      // If name has changed, rename the index first
+      // The backend will automatically convert the name to a safe identifier
+      // Compare against display_name (human-readable) not the safe tool name
+      const trimmedName = indexName.trim();
+      const originalDisplayName = editIndex.display_name || editIndex.name;
+      if (trimmedName && trimmedName !== originalDisplayName) {
+        setStatus({ type: 'info', message: 'Renaming index...' });
+        const renameResult = await api.renameIndex(editIndex.name, trimmedName);
+        currentName = renameResult.new_name;
+        // Update to display_name for the UI, not the safe tool name
+        setIndexName(renameResult.display_name);
+      }
+
+      // Update description (using the potentially new name)
+      await api.updateIndexDescription(currentName, description);
+
       // Update config
-      const updated = await api.updateIndexConfig(editIndex.name, {
+      const updated = await api.updateIndexConfig(currentName, {
         git_branch: selectedBranch || undefined,
         file_patterns: filePatterns.split(',').map((s) => s.trim()).filter(Boolean),
         exclude_patterns: excludePatterns.split(',').map((s) => s.trim()).filter(Boolean),
@@ -511,7 +530,12 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         setMaxFileSizeKb(snap.max_file_size_kb ?? maxFileSizeKb);
         setEnableOcr(snap.enable_ocr ?? enableOcr);
       }
-      setStatus({ type: 'success', message: 'Configuration saved. Click "Pull & Re-index" to apply changes.' });
+
+      const wasRenamed = currentName !== editIndex.name;
+      const savedMessage = wasRenamed
+        ? `Index renamed to "${indexName}" and configuration saved. Click "Pull & Re-index" to apply changes.`
+        : 'Configuration saved. Click "Pull & Re-index" to apply changes.';
+      setStatus({ type: 'success', message: savedMessage });
       onConfigSaved?.();
     } catch (err) {
       setStatus({ type: 'error', message: `Error: ${err instanceof Error ? err.message : 'Save failed'}` });
@@ -530,13 +554,27 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
   if (isEditMode && wizardStep === 'input') {
     return (
       <div>
-        <h4 style={{ marginBottom: '12px' }}>Edit Index Configuration: {editIndex.name}</h4>
+        <h4 style={{ marginBottom: '12px' }}>Edit Index Configuration</h4>
         <p className="field-help" style={{ marginBottom: '16px' }}>
           Update settings for the next time you click "Pull & Re-index". Changes will not take effect until you re-index.
         </p>
 
         <div style={{ marginBottom: '16px', padding: '12px', background: 'var(--bg-tertiary)', borderRadius: '8px', fontSize: '13px' }}>
           <div><strong>Source:</strong> {editIndex.source}</div>
+        </div>
+
+        <div className="form-group">
+          <label>Index Display Name</label>
+          <input
+            type="text"
+            value={indexName}
+            onChange={(e) => setIndexName(e.target.value)}
+            placeholder="e.g. my-project"
+            disabled={isLoading}
+          />
+          <small style={{ color: '#888', fontSize: '0.8rem' }}>
+            The display name used to identify this index in MCP and API calls. Display name will be converted to a tool-safe name.
+          </small>
         </div>
 
         <DescriptionField
