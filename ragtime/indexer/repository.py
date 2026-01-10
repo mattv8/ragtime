@@ -603,7 +603,11 @@ class IndexerRepository:
             postgres_host=settings.postgresHost,
             postgres_port=settings.postgresPort,
             postgres_user=settings.postgresUser,
-            postgres_password=settings.postgresPassword,
+            postgres_password=(
+                decrypt_secret(settings.postgresPassword)
+                if settings.postgresPassword
+                else ""
+            ),
             postgres_database=settings.postgresDb,
             max_query_results=settings.maxQueryResults,
             query_timeout=settings.queryTimeout,
@@ -674,9 +678,9 @@ class IndexerRepository:
             if snake_key in updates and updates[snake_key] is not None:
                 update_data[camel_key] = updates[snake_key]
 
-        # Encrypt API keys before storage
+        # Encrypt secret fields before storage
         # These need to be reversibly encrypted so we can show them in the UI
-        secret_fields = ["openai_api_key", "anthropic_api_key"]
+        secret_fields = ["openai_api_key", "anthropic_api_key", "postgres_password"]
         for field in secret_fields:
             if field in updates and updates[field]:
                 camel_key = field_mapping[field]

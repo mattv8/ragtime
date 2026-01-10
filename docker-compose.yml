@@ -1,5 +1,5 @@
 # =============================================================================
-# Ragtime - Production Docker Compose
+# Ragtime - Self-Hosted Docker Compose
 # =============================================================================
 # For self-hosted deployment. See README.md for setup instructions.
 #
@@ -42,7 +42,7 @@ services:
     environment:
       # Database connection (uses container network)
       DATABASE_URL: postgresql://ragtime:${POSTGRES_PASSWORD}@ragtime-db:5432/ragtime
-      # Production settings
+      # Recommended defaults
       DEBUG_MODE: "false"
       SESSION_COOKIE_SECURE: "${SESSION_COOKIE_SECURE:-false}"
     volumes:

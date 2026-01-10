@@ -1517,6 +1517,15 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
             </p>
           </div>
 
+          {/* Warning when auth is disabled */}
+          {!(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) && (
+            <div className="field-warning" style={{ marginTop: '0.5rem', padding: '0.75rem', backgroundColor: 'rgba(255, 193, 7, 0.15)', borderLeft: '3px solid #ffc107', borderRadius: '4px' }}>
+              <strong>Security Notice:</strong> The <code>/mcp</code> endpoint is currently open without authentication.
+              Anyone with network access can invoke your configured tools. Consider enabling authentication if this
+              server is accessible beyond localhost or a trusted network.
+            </div>
+          )}
+
           {/* Password for default MCP route */}
           {(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) && (
             <div className="form-group" style={{ marginTop: '1rem' }}>

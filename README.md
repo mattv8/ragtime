@@ -66,7 +66,7 @@ OpenAI-compatible RAG API with LangChain tool calling for business intelligence 
    LOCAL_ADMIN_PASSWORD=changeme_admin
 
    # JWT secret key for session tokens (auto-generated if not set)
-   # IMPORTANT: Set this in production to persist sessions across restarts
+   # IMPORTANT: Set this when deploying to persist sessions across restarts
    # JWT_SECRET_KEY=your-secret-key-here
 
    # -----------------------------------------------------------------------------
@@ -108,7 +108,7 @@ OpenAI-compatible RAG API with LangChain tool calling for business intelligence 
 
    ```yaml
    # =============================================================================
-   # Ragtime - Production Docker Compose
+   # Ragtime - Self-Hosted Docker Compose
    # =============================================================================
    # For self-hosted deployment. See README.md for setup instructions.
    #
@@ -151,7 +151,7 @@ OpenAI-compatible RAG API with LangChain tool calling for business intelligence 
        environment:
          # Database connection (uses container network)
          DATABASE_URL: postgresql://ragtime:${POSTGRES_PASSWORD}@ragtime-db:5432/ragtime
-         # Production settings
+         # Recommended defaults
          DEBUG_MODE: "false"
          SESSION_COOKIE_SECURE: "${SESSION_COOKIE_SECURE:-false}"
        volumes:
@@ -198,6 +198,31 @@ OpenAI-compatible RAG API with LangChain tool calling for business intelligence 
 
    Default credentials: `admin` / (set via `LOCAL_ADMIN_PASSWORD` in `.env`)
 
+## Security
+
+Ragtime is designed for self-hosted deployment on trusted networks. Review these recommendations before exposing it beyond localhost:
+
+### Network & Access
+- **Run behind a reverse proxy or firewall.** Avoid exposing port 8000 directly to the public internet.
+- **Set `API_KEY`** to protect the `/v1/chat/completions` endpoint. When unset (the default), anyone with network access can call the chat API and invoke your configured tools.
+- **Restrict `ALLOWED_ORIGINS`** to trusted domains. The default `*` with `allow_credentials=True` permits cross-site requests that carry session cookies, which may be exploitable if the server is publicly reachable.
+- **Enable MCP route authentication** via Settings UI if `/mcp` is network-accessible. By default the MCP endpoint is open without auth.
+- Set a strong `LOCAL_ADMIN_PASSWORD` and `JWT_SECRET_KEY` when deploying.
+
+### Debug Mode Warning
+**Do not use `DEBUG_MODE=true` outside local development.** When enabled, the `/auth/status` endpoint exposes your admin username and password in plaintext. This is intentional for self-hosted debugging but dangerous if the server is accessible to untrusted users.
+
+### SSH Connections
+The SSH tool uses Paramiko with `AutoAddPolicy`, which accepts any host key without verification. This makes SSH connections vulnerable to man-in-the-middle attacks on first connect. Only use the SSH tool on trusted networks or with hosts you have verified out-of-band.
+
+### Docker & Mounts
+- The default compose files include mounts for `docker.sock` and optional privileged flags to support advanced tool features (container exec, SSH tunnels, NFS/SMB mounts).
+- If you do not need these features, remove or comment out the corresponding lines in your compose file.
+- For NFS/SMB filesystem indexing, the container may require elevated privileges. Consider the security implications before enabling `privileged: true` or `SYS_ADMIN` capabilities.
+
+### Third-Party Data Relay
+Queries and tool calls may forward your data to external services you configure (OpenAI, Anthropic, Ollama, PostgreSQL, MSSQL, SSH hosts). Only connect to services you trust with your data.
+
 ### Updating
 
 To update to the latest version:
@@ -215,7 +240,7 @@ docker compose up -d
 ### Authentication
 - `LOCAL_ADMIN_USER` - Local admin username (default: `admin`)
 - `LOCAL_ADMIN_PASSWORD` - Local admin password (required for first setup)
-- `JWT_SECRET_KEY` - Secret key for JWT signing (auto-generated if not set, set in production)
+- `JWT_SECRET_KEY` - Secret key for JWT signing (auto-generated if not set; set explicitly when deploying)
 
 ### Server Configuration
 - `PORT` - API port (default: `8000`)

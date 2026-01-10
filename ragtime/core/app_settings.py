@@ -53,12 +53,15 @@ class SettingsCache:
             # Decrypt secrets that may be encrypted
             openai_key = prisma_settings.openaiApiKey or ""
             anthropic_key = prisma_settings.anthropicApiKey or ""
+            postgres_password = prisma_settings.postgresPassword or ""
             mcp_password = prisma_settings.mcpDefaultRoutePassword
 
             if openai_key:
                 openai_key = decrypt_secret(openai_key)
             if anthropic_key:
                 anthropic_key = decrypt_secret(anthropic_key)
+            if postgres_password:
+                postgres_password = decrypt_secret(postgres_password)
             # Note: mcp_default_route_password stays encrypted for auth verification
             # It's decrypted in the verification function
 
@@ -70,7 +73,7 @@ class SettingsCache:
                 "postgres_host": prisma_settings.postgresHost,
                 "postgres_port": prisma_settings.postgresPort,
                 "postgres_user": prisma_settings.postgresUser,
-                "postgres_password": prisma_settings.postgresPassword,
+                "postgres_password": postgres_password,
                 "postgres_db": prisma_settings.postgresDb,
                 "max_query_results": prisma_settings.maxQueryResults,
                 "query_timeout": prisma_settings.queryTimeout,
