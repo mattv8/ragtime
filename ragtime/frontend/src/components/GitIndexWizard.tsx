@@ -569,11 +569,11 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
             type="text"
             value={indexName}
             onChange={(e) => setIndexName(e.target.value)}
-            placeholder="e.g. my-project"
+            placeholder="e.g. My Project"
             disabled={isLoading}
           />
           <small style={{ color: '#888', fontSize: '0.8rem' }}>
-            The display name used to identify this index in MCP and API calls. Display name will be converted to a tool-safe name.
+            Display name for this index. Automatically converted to a safe identifier for MCP/API (e.g., "My Project" becomes "my_project").
           </small>
         </div>
 

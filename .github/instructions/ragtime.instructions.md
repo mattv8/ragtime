@@ -75,6 +75,15 @@ Schema changes require migrations for production deployment:
 - Local admin usernames stored with `local:` prefix in DB to avoid LDAP collision
 - LDAP config stored in `ldap_config` table (singleton, id="default")
 
+## Secrets Encryption
+
+- Sensitive fields (API keys, passwords) use Fernet symmetric encryption
+- Encryption key derived from `JWT_SECRET_KEY` via SHA256
+- Encrypted values prefixed with `enc::` in database
+- `JWT_SECRET_KEY` auto-generated if not set, persisted to `data/.jwt_secret`
+- **Production**: Set `JWT_SECRET_KEY` explicitly in `.env` for security
+- Password fields in `connection_config` JSON: `password`, `ssh_password`, `ssh_key_passphrase`, `key_passphrase`, `smb_password`, `key_content`, `ssh_key_content`
+
 ## Tool Configs
 
 Dynamic tool instances via `tool_configs` table:

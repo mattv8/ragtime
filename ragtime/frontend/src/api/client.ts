@@ -2,7 +2,7 @@
  * API client for Ragtime Indexer
  */
 
-import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse } from '@/types';
+import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse, McpRouteConfig, CreateMcpRouteRequest, UpdateMcpRouteRequest, McpRouteListResponse } from '@/types';
 
 const API_BASE = '/indexes';
 const AUTH_BASE = '/auth';
@@ -456,7 +456,9 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(settings),
     });
-    return handleResponse<AppSettings>(response);
+    // Backend returns {settings: AppSettings, embedding_warning: string | null}
+    const result = await handleResponse<{ settings: AppSettings; embedding_warning: string | null }>(response);
+    return result.settings;
   },
 
   /**
@@ -646,6 +648,79 @@ export const api = {
       : `${API_BASE}/tools/ssh/generate-keypair`;
     const response = await apiFetch(url, { method: 'POST' });
     return handleResponse<SSHKeyPairResponse>(response);
+  },
+
+  // =========================================================================
+  // MCP Routes API
+  // =========================================================================
+
+  /**
+   * List all MCP route configurations
+   */
+  async listMcpRoutes(): Promise<McpRouteListResponse> {
+    const response = await apiFetch('/mcp-routes');
+    return handleResponse<McpRouteListResponse>(response);
+  },
+
+  /**
+   * Get a specific MCP route configuration
+   */
+  async getMcpRoute(routeId: string): Promise<McpRouteConfig> {
+    const response = await apiFetch(`/mcp-routes/${routeId}`);
+    return handleResponse<McpRouteConfig>(response);
+  },
+
+  /**
+   * Create a new MCP route configuration
+   */
+  async createMcpRoute(config: CreateMcpRouteRequest): Promise<McpRouteConfig> {
+    const response = await apiFetch('/mcp-routes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    });
+    return handleResponse<McpRouteConfig>(response);
+  },
+
+  /**
+   * Update an MCP route configuration
+   */
+  async updateMcpRoute(routeId: string, updates: UpdateMcpRouteRequest): Promise<McpRouteConfig> {
+    const response = await apiFetch(`/mcp-routes/${routeId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    });
+    return handleResponse<McpRouteConfig>(response);
+  },
+
+  /**
+   * Delete an MCP route configuration
+   */
+  async deleteMcpRoute(routeId: string): Promise<void> {
+    const response = await apiFetch(`/mcp-routes/${routeId}`, {
+      method: 'DELETE',
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new ApiError(
+        data.detail || 'Delete failed',
+        response.status,
+        data.detail
+      );
+    }
+  },
+
+  /**
+   * Toggle an MCP route's enabled status
+   */
+  async toggleMcpRoute(routeId: string, enabled: boolean): Promise<McpRouteConfig> {
+    const response = await apiFetch(`/mcp-routes/${routeId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    });
+    return handleResponse<McpRouteConfig>(response);
   },
 
   // =========================================================================

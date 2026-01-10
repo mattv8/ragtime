@@ -8,6 +8,8 @@ Features:
 - Dynamic tool discovery from ToolConfig database
 - Heartbeat-based filtering (only exposes healthy tools)
 - Automatic tool refresh on config changes
+- Custom MCP routes with tool selection
+- Optional authorization for routes
 - Extensible architecture for adding new tool types
 """
 
@@ -19,12 +21,16 @@ from mcp.types import TextContent, Tool
 
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.logging import get_logger
-from ragtime.mcp.tools import mcp_tool_adapter
+from ragtime.mcp.tools import McpRouteFilter, MCPToolAdapter, mcp_tool_adapter
 
 logger = get_logger(__name__)
 
 # MCP server instance - created lazily with dynamic name
 _mcp_server: Server | None = None
+
+# Cache of custom route servers
+_custom_route_servers: dict[str, Server] = {}
+_custom_route_adapters: dict[str, MCPToolAdapter] = {}
 
 
 async def get_mcp_server() -> Server:
@@ -48,11 +54,24 @@ def notify_tools_changed() -> None:
     when they see listChanged: true in server capabilities.
     """
     mcp_tool_adapter.invalidate_cache()
+    # Also invalidate all custom route adapters
+    for adapter in _custom_route_adapters.values():
+        adapter.invalidate_cache()
+    # Clear custom route server cache (they'll be recreated with new config)
+    _custom_route_servers.clear()
+    _custom_route_adapters.clear()
     logger.info("MCP tool cache invalidated - tools list has changed")
 
 
-def _register_handlers(server: Server) -> None:
+def _register_handlers(
+    server: Server,
+    adapter: MCPToolAdapter | None = None,
+    route_filter: McpRouteFilter | None = None,
+) -> None:
     """Register MCP protocol handlers on the server instance."""
+
+    # Use provided adapter or default
+    tool_adapter = adapter if adapter else mcp_tool_adapter
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:
@@ -65,7 +84,9 @@ def _register_handlers(server: Server) -> None:
         tools: list[Tool] = []
 
         try:
-            tool_definitions = await mcp_tool_adapter.get_available_tools()
+            tool_definitions = await tool_adapter.get_available_tools(
+                route_filter=route_filter
+            )
 
             for tool_def in tool_definitions:
                 tools.append(
@@ -100,13 +121,87 @@ def _register_handlers(server: Server) -> None:
         logger.debug(f"MCP call_tool arguments: {arguments}")
 
         try:
-            result = await mcp_tool_adapter.execute_tool(name, arguments)
+            result = await tool_adapter.execute_tool(name, arguments)
 
             return [TextContent(type="text", text=result)]
 
         except Exception as e:
             logger.exception(f"MCP tool execution error: {e}")
             return [TextContent(type="text", text=f"Error: {str(e)}")]
+
+
+async def get_custom_route_server(
+    route_path: str,
+) -> tuple[Server, MCPToolAdapter, bool, str | None] | None:
+    """
+    Get or create an MCP server for a custom route.
+
+    Args:
+        route_path: The route path suffix (e.g., 'my_toolset')
+
+    Returns:
+        Tuple of (Server, MCPToolAdapter, require_auth, auth_password_hash) or None if route not found
+    """
+    from ragtime.core.database import get_db
+
+    # Check cache first
+    if route_path in _custom_route_servers:
+        adapter = _custom_route_adapters.get(route_path, mcp_tool_adapter)
+        # Need to fetch require_auth and authPassword from db
+        db = await get_db()
+        route = await db.mcprouteconfig.find_unique(where={"routePath": route_path})
+        if route:
+            return (
+                _custom_route_servers[route_path],
+                adapter,
+                route.requireAuth,
+                route.authPassword,
+            )
+        return None
+
+    db = await get_db()
+
+    # Find the route configuration
+    route = await db.mcprouteconfig.find_unique(
+        where={"routePath": route_path},
+        include={"toolSelections": True},
+    )
+
+    if not route or not route.enabled:
+        return None
+
+    # Get tool config IDs
+    tool_ids = (
+        [sel.toolConfigId for sel in route.toolSelections]
+        if route.toolSelections
+        else []
+    )
+
+    # Create route filter with index selections
+    route_filter = McpRouteFilter(
+        tool_config_ids=tool_ids,
+        include_knowledge_search=route.includeKnowledgeSearch,
+        include_git_history=route.includeGitHistory,
+        selected_document_indexes=route.selectedDocumentIndexes or None,
+        selected_filesystem_indexes=route.selectedFilesystemIndexes or None,
+        selected_schema_indexes=route.selectedSchemaIndexes or None,
+    )
+
+    # Create new adapter and server for this route
+    adapter = MCPToolAdapter()
+    _custom_route_adapters[route_path] = adapter
+
+    app_settings = await get_app_settings()
+    server_name = app_settings.get("server_name", "Ragtime")
+    route_server_name = f"{server_name.lower().replace(' ', '-')}-{route_path}"
+
+    server = Server(route_server_name)
+    _register_handlers(server, adapter, route_filter)
+    _custom_route_servers[route_path] = server
+
+    logger.info(f"Created custom MCP server for route: /mcp/{route_path}")
+
+    return server, adapter, route.requireAuth, route.authPassword
 
 
 # For backward compatibility - create a default instance with handlers

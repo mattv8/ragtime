@@ -155,6 +155,10 @@ model AppSettings {
   // Security
   enableWriteOps    Boolean  @default(false) @map("enable_write_ops")
 
+  // MCP Configuration
+  mcpDefaultRouteAuth     Boolean @default(false) @map("mcp_default_route_auth") // Require auth for default /mcp route
+  mcpDefaultRoutePassword String? @map("mcp_default_route_password") // Password hash for default /mcp route
+
   // Embedding dimension tracking (for detecting provider/model changes)
   // Stored dimension of embeddings in filesystem_embeddings table
   // null = not yet determined (first index will set it)
@@ -225,7 +229,59 @@ model ToolConfig {
   // Relation to filesystem index jobs
   filesystemIndexJobs FilesystemIndexJob[]
 
+  // Relation to MCP route tool selections
+  mcpRouteTools McpRouteToolSelection[]
+
   @@map("tool_configs")
+}
+
+// -----------------------------------------------------------------------------
+// MCP Route Configuration (custom routes with tool selection)
+// -----------------------------------------------------------------------------
+
+/// Custom MCP route configuration
+model McpRouteConfig {
+  id          String   @id @default(uuid())
+  name        String   // User-friendly name (e.g., "Production Tools")
+  routePath   String   @unique @map("route_path") // Route suffix (e.g., "my_toolset" for /mcp/my_toolset)
+  description String   @default("") // Description for documentation
+  enabled     Boolean  @default(true)
+
+  // Authorization settings
+  requireAuth  Boolean  @default(false) @map("require_auth") // Require authentication for this route
+  authPassword String?  @map("auth_password") // Password/API key for this route (stored hashed)
+
+  // Built-in tools configuration
+  includeKnowledgeSearch Boolean @default(true) @map("include_knowledge_search") // Include search_knowledge tool
+  includeGitHistory      Boolean @default(true) @map("include_git_history") // Include git history tools
+
+  // Index selections (for per-index control when aggregate_search is false)
+  selectedDocumentIndexes   String[] @default([]) @map("selected_document_indexes") // Document index names to include
+  selectedFilesystemIndexes String[] @default([]) @map("selected_filesystem_indexes") // Filesystem tool IDs to include
+  selectedSchemaIndexes     String[] @default([]) @map("selected_schema_indexes") // Schema index tool IDs to include
+
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  // Relation to tool selections
+  toolSelections McpRouteToolSelection[]
+
+  @@map("mcp_route_configs")
+}
+
+/// Junction table for MCP route to tool config many-to-many relationship
+model McpRouteToolSelection {
+  id           String @id @default(uuid())
+  mcpRouteId   String @map("mcp_route_id")
+  toolConfigId String @map("tool_config_id")
+
+  // Relations
+  mcpRoute   McpRouteConfig @relation(fields: [mcpRouteId], references: [id], onDelete: Cascade)
+  toolConfig ToolConfig     @relation(fields: [toolConfigId], references: [id], onDelete: Cascade)
+
+  @@unique([mcpRouteId, toolConfigId])
+  @@map("mcp_route_tool_selections")
 }
 
 // -----------------------------------------------------------------------------

@@ -49,13 +49,17 @@ docker exec ragtime-dev python -m prisma db push
 ```bash
 # Backup (streams to stdout)
 docker exec ragtime-dev backup > backup.tar.gz
+docker exec ragtime-dev backup --include-secret > backup.tar.gz  # Include encryption key
 docker exec ragtime-dev backup --db-only > db-only.tar.gz
 docker exec ragtime-dev backup --faiss-only > faiss-only.tar.gz
 
 # Restore (reads from stdin)
 cat backup.tar.gz | docker exec -i ragtime-dev restore
+cat backup.tar.gz | docker exec -i ragtime-dev restore --include-secret  # Restore encryption key
 cat backup.tar.gz | docker exec -i ragtime-dev restore --db-only
 ```
+
+> **Important:** Backups contain encrypted secrets (API keys, passwords). Use `--include-secret` to include the encryption key file in your backup. If not using `--include-secret`, the backup command prints the `JWT_SECRET_KEY` - save this! You must set the same key in `.env` before restoring on a new server, or re-enter all passwords after restore.
 
 ### Reset Database
 

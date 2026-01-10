@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '@/api';
-import type { AppSettings, UpdateSettingsRequest, OllamaModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig } from '@/types';
+import type { AppSettings, UpdateSettingsRequest, OllamaModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig } from '@/types';
+import { MCPRoutesPanel } from './MCPRoutesPanel';
 
 /**
  * Format a DN for display like Active Directory tree view.
@@ -73,6 +74,10 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
   const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set());
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelFilterText, setModelFilterText] = useState('');
+
+  // MCP Routes panel state
+  const [showMcpRoutesPanel, setShowMcpRoutesPanel] = useState(false);
+  const [mcpRoutes, setMcpRoutes] = useState<McpRouteConfig[]>([]);
 
   // LDAP configuration state
   const [ldapConfig, setLdapConfig] = useState<LdapConfig | null>(null);
@@ -307,6 +312,9 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
         // Search settings
         search_results_k: data.search_results_k,
         aggregate_search: data.aggregate_search,
+        // MCP settings
+        mcp_default_route_auth: data.mcp_default_route_auth,
+        mcp_default_route_password: data.mcp_default_route_password ?? '',
       });
       // Reset Ollama connection state
       setOllamaConnected(false);
@@ -326,6 +334,15 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
           data.ollama_host || 'localhost',
           data.ollama_port || 11434
         );
+      }
+
+      // Load MCP routes (for summary display)
+      try {
+        const routesRes = await api.listMcpRoutes();
+        setMcpRoutes(routesRes.routes);
+      } catch {
+        // MCP routes may fail silently
+        setMcpRoutes([]);
       }
 
       // Load LDAP configuration (non-blocking - don't await discovery)
@@ -568,6 +585,48 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
     }
   };
 
+  // Save MCP Configuration
+  const [mcpSaving, setMcpSaving] = useState(false);
+  const [mcpError, setMcpError] = useState<string | null>(null);
+  const [showMcpPassword, setShowMcpPassword] = useState(false);
+  const handleSaveMcp = async () => {
+    setMcpSaving(true);
+    setSuccess(null);
+    setMcpError(null);
+
+    // Validate password if provided (not empty string which clears, and not undefined which skips)
+    const pwd = formData.mcp_default_route_password;
+    if (pwd !== undefined && pwd !== '' && pwd.length < 8) {
+      setMcpError('MCP password must be at least 8 characters');
+      setMcpSaving(false);
+      return;
+    }
+
+    try {
+      const dataToSave: UpdateSettingsRequest = {
+        mcp_default_route_auth: formData.mcp_default_route_auth,
+      };
+      // Include password if it was modified
+      if (formData.mcp_default_route_password !== undefined) {
+        dataToSave.mcp_default_route_password = formData.mcp_default_route_password;
+      }
+      const updated = await api.updateSettings(dataToSave);
+      setSettings(updated);
+      // Update formData with the returned password (decrypted) or empty if cleared
+      setFormData(prev => ({
+        ...prev,
+        mcp_default_route_auth: updated.mcp_default_route_auth,
+        mcp_default_route_password: updated.mcp_default_route_password ?? '',
+      }));
+      setSuccess('MCP configuration saved.');
+      setTimeout(() => setSuccess(null), 5000);
+    } catch (err) {
+      setMcpError(err instanceof Error ? err.message : 'Failed to save MCP settings');
+    } finally {
+      setMcpSaving(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="card">
@@ -591,6 +650,46 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
         <p className="field-help" style={{ marginTop: '0.5rem' }}>
           Model: <code>{(formData.server_name || settings?.server_name || 'Ragtime').toLowerCase().replace(/\s+/g, '-')}</code>. The <code>/v1</code> path is required for OpenAI API compatibility.
         </p>
+      </div>
+
+      {/* MCP Routes Summary */}
+      <div className="api-info-box">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <strong>MCP (Model Context Protocol)</strong>
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => setShowMcpRoutesPanel(true)}
+          >
+            Manage Routes
+          </button>
+        </div>
+        <p style={{ marginTop: '0.5rem' }}>
+          Connect AI assistants (Claude Desktop, VS Code, etc.) using:
+        </p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', marginTop: '0.5rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <code>{`${window.location.protocol}//${window.location.hostname}:8000/mcp`}</code>
+            <span className="muted" style={{ fontSize: '0.85em' }}>(default - all tools)</span>
+            {settings?.mcp_default_route_auth && settings?.has_mcp_default_password && (
+              <span className="write-enabled" style={{ fontSize: '0.8em' }}>password protected</span>
+            )}
+          </div>
+          {mcpRoutes.filter(r => r.enabled).map(route => (
+            <div key={route.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <code>{`${window.location.protocol}//${window.location.hostname}:8000/mcp/${route.route_path}`}</code>
+              <span className="muted" style={{ fontSize: '0.85em' }}>({route.name})</span>
+              {route.require_auth && route.has_password && (
+                <span className="write-enabled" style={{ fontSize: '0.8em' }}>password protected</span>
+              )}
+            </div>
+          ))}
+        </div>
+        {mcpRoutes.filter(r => !r.enabled).length > 0 && (
+          <p className="field-help" style={{ marginTop: '0.5rem' }}>
+            {mcpRoutes.filter(r => !r.enabled).length} disabled route(s) not shown.
+          </p>
+        )}
       </div>
 
       {error && <div className="error-banner">{error}</div>}
@@ -1391,6 +1490,100 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
           </div>
         </fieldset>
 
+        {/* MCP Configuration */}
+        <fieldset>
+          <legend>MCP Configuration</legend>
+          <p className="fieldset-help">
+            Configure Model Context Protocol (MCP) access and authentication settings.
+          </p>
+
+          <div className="form-group">
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth ?? false}
+                onChange={(e) =>
+                  setFormData({ ...formData, mcp_default_route_auth: e.target.checked })
+                }
+                style={{ marginRight: '0.5rem' }}
+              />
+              <span>Require authentication for default /mcp route</span>
+            </label>
+            <p className="field-help">
+              When enabled, the default <code>/mcp</code> endpoint requires a Bearer token.
+              {settings?.has_mcp_default_password
+                ? ' A password is configured - MCP clients should use this password as the Bearer token.'
+                : ' Set a password below to enable password-based authentication.'}
+            </p>
+          </div>
+
+          {/* Password for default MCP route */}
+          {(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) && (
+            <div className="form-group" style={{ marginTop: '1rem' }}>
+              <label htmlFor="mcp-password">MCP Password</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <input
+                  type={showMcpPassword ? 'text' : 'password'}
+                  id="mcp-password"
+                  placeholder={settings?.has_mcp_default_password ? '••••••••' : 'Enter password (min 8 characters)'}
+                  value={formData.mcp_default_route_password ?? ''}
+                  onChange={(e) =>
+                    setFormData({ ...formData, mcp_default_route_password: e.target.value })
+                  }
+                  style={{ flex: 1, maxWidth: '400px' }}
+                />
+                <button
+                  type="button"
+                  className="btn btn-small"
+                  onClick={() => setShowMcpPassword(!showMcpPassword)}
+                  title={showMcpPassword ? 'Hide password' : 'Show password'}
+                >
+                  {showMcpPassword ? 'Hide' : 'Show'}
+                </button>
+                {settings?.has_mcp_default_password && (
+                  <button
+                    type="button"
+                    className="btn btn-small btn-secondary"
+                    onClick={() => setFormData({ ...formData, mcp_default_route_password: '' })}
+                    title="Clear password (submit empty to remove)"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              <p className="field-help">
+                {settings?.has_mcp_default_password
+                  ? 'Password is set. Leave blank to keep current password, or enter a new one to change it. Clear and save to remove password protection.'
+                  : 'Set a password that MCP clients will use as their Bearer token. Minimum 8 characters.'}
+              </p>
+              {mcpError && <p className="field-error">{mcpError}</p>}
+            </div>
+          )}
+
+          {/* Show MCP error when password field is not visible */}
+          {!(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) && mcpError && (
+            <p className="field-error" style={{ marginTop: '0.5rem' }}>{mcpError}</p>
+          )}
+
+          <div className="form-group" style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem' }}>
+            <button
+              type="button"
+              className="btn"
+              onClick={handleSaveMcp}
+              disabled={mcpSaving}
+            >
+              {mcpSaving ? 'Saving...' : 'Save MCP Configuration'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setShowMcpRoutesPanel(true)}
+            >
+              Manage Custom Routes
+            </button>
+          </div>
+        </fieldset>
+
       </form>
 
       {settings?.updated_at && (
@@ -1489,6 +1682,24 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
                 Save Filter
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* MCP Routes Panel Modal */}
+      {showMcpRoutesPanel && (
+        <div className="modal-overlay" onClick={() => setShowMcpRoutesPanel(false)}>
+          <div className="modal-content modal-large" onClick={(e) => e.stopPropagation()}>
+            <MCPRoutesPanel onClose={async () => {
+              setShowMcpRoutesPanel(false);
+              // Refresh routes list
+              try {
+                const routesRes = await api.listMcpRoutes();
+                setMcpRoutes(routesRes.routes);
+              } catch {
+                // Silent fail
+              }
+            }} />
           </div>
         </div>
       )}
