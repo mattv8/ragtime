@@ -64,6 +64,7 @@ venv.bak/
 *.swp
 *.swo
 *~
+.vscode/mcp.json
 
 # macOS
 .DS_Store

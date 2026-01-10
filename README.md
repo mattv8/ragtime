@@ -256,16 +256,21 @@ Ragtime exposes an MCP endpoint at `/mcp` that supports the Streamable HTTP tran
 
 ```json
 {
-  "mcpServers": {
-    "ragtime": {
-      "url": "http://localhost:8000/mcp",
-      "type": "http"
-    }
-  }
+	"servers": {
+		"ragtime": {
+			"url": "http://localhost:8000/mcp",
+			"type": "http",
+			// If you've enabled MCP authentication in the Ragtime Settings UI (Settings > MCP Configuration), add the `MCP-Password` header:
+			// "headers": {
+			//   "MCP-Password": "your-mcp-password-here"
+			// }
+		}
+	},
+	"inputs": []
 }
 ```
 
-For remote access, replace `localhost:8000` with your server URL.
+**NOTE:** For remote access, replace `localhost:8000` with your server URL.
 
 #### Stdio Transport (Alternative)
 

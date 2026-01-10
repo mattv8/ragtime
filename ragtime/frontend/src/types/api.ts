@@ -44,6 +44,67 @@ export interface AuthStatus {
   cookie_warning?: string;
 }
 
+// =============================================================================
+// MCP Route Configuration Types
+// =============================================================================
+
+export interface McpRouteConfig {
+  id: string;
+  name: string;
+  route_path: string;
+  description: string;
+  enabled: boolean;
+  require_auth: boolean;
+  has_password: boolean;
+  auth_password?: string;  // Decrypted password for admin display
+  include_knowledge_search: boolean;
+  include_git_history: boolean;
+  selected_document_indexes: string[];
+  selected_filesystem_indexes: string[];
+  selected_schema_indexes: string[];
+  tool_config_ids: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateMcpRouteRequest {
+  name: string;
+  route_path: string;
+  description?: string;
+  require_auth?: boolean;
+  auth_password?: string;
+  include_knowledge_search?: boolean;
+  include_git_history?: boolean;
+  selected_document_indexes?: string[];
+  selected_filesystem_indexes?: string[];
+  selected_schema_indexes?: string[];
+  tool_config_ids?: string[];
+}
+
+export interface UpdateMcpRouteRequest {
+  name?: string;
+  description?: string;
+  enabled?: boolean;
+  require_auth?: boolean;
+  auth_password?: string;
+  clear_password?: boolean;
+  include_knowledge_search?: boolean;
+  include_git_history?: boolean;
+  selected_document_indexes?: string[];
+  selected_filesystem_indexes?: string[];
+  selected_schema_indexes?: string[];
+  tool_config_ids?: string[];
+}
+
+export interface McpRouteListResponse {
+  routes: McpRouteConfig[];
+  count: number;
+}
+
+// =============================================================================
+// LDAP Configuration Types
+// =============================================================================
+
 export interface LdapConfig {
   server_url: string;
   bind_dn: string;
@@ -300,6 +361,10 @@ export interface AppSettings {
   // Search Configuration
   search_results_k: number;
   aggregate_search: boolean;
+  // MCP Configuration
+  mcp_default_route_auth: boolean;
+  has_mcp_default_password: boolean;
+  mcp_default_route_password?: string;
   // Tool Configuration
   enabled_tools: string[];
   odoo_container: string;
@@ -336,6 +401,9 @@ export interface UpdateSettingsRequest {
   // Search settings
   search_results_k?: number;
   aggregate_search?: boolean;
+  // MCP settings
+  mcp_default_route_auth?: boolean;
+  mcp_default_route_password?: string;
   // Tool settings
   enabled_tools?: string[];
   odoo_container?: string;

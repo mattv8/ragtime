@@ -431,6 +431,20 @@ class AppSettings(BaseModel):
         description="If True, provide a single search_knowledge tool that searches all indexes. If False, create separate search_<index_name> tools for granular control.",
     )
 
+    # MCP Configuration
+    mcp_default_route_auth: bool = Field(
+        default=False,
+        description="If True, require Bearer token authentication for the default /mcp route.",
+    )
+    mcp_default_route_password: Optional[str] = Field(
+        default=None,
+        description="Password for the default /mcp route (decrypted for display). Use this as Bearer token for MCP clients.",
+    )
+    has_mcp_default_password: bool = Field(
+        default=False,
+        description="Indicates if a password is set for the default MCP route (computed, never stored)",
+    )
+
     # Legacy tool configuration (deprecated - use ToolConfig)
     enabled_tools: List[str] = Field(
         default=[], description="Legacy: List of enabled tool names (deprecated)"
@@ -548,6 +562,12 @@ class UpdateSettingsRequest(BaseModel):
     # Search configuration
     search_results_k: Optional[int] = Field(default=None, ge=1, le=100)
     aggregate_search: Optional[bool] = None
+    # MCP configuration
+    mcp_default_route_auth: Optional[bool] = None
+    mcp_default_route_password: Optional[str] = Field(
+        default=None,
+        description="Password for the default /mcp route. Set to empty string to clear.",
+    )
 
 
 # -----------------------------------------------------------------------------

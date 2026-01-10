@@ -6,11 +6,17 @@ and configured via the Settings UI at http://localhost:8001/indexes/ui
 See: ragtime/core/app_settings.py and indexer/routes.py (GET/PUT /indexes/settings)
 """
 
+import os
 import secrets
+import sys
+from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
+
+# File to persist auto-generated JWT secret (in data volume)
+JWT_SECRET_FILE = Path(os.environ.get("INDEX_DATA_PATH", "/app/data")) / ".jwt_secret"
 
 SameSiteType = Literal["lax", "strict", "none"]
 
@@ -49,12 +55,62 @@ class Settings(BaseSettings):
 
     # JWT Configuration
     jwt_secret_key: str = Field(
-        default_factory=lambda: secrets.token_urlsafe(32),
+        default="",
         alias="JWT_SECRET_KEY",
         description="Secret key for JWT signing. Auto-generated if not set.",
     )
     jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")
     jwt_expire_hours: int = Field(default=24, alias="JWT_EXPIRE_HOURS")
+
+    @field_validator("jwt_secret_key", mode="after")
+    @classmethod
+    def generate_jwt_secret_if_empty(cls, v: str) -> str:
+        """
+        Auto-generate JWT secret if not provided or empty.
+
+        The secret is persisted to a file in the data volume so it survives
+        container restarts. This ensures encrypted secrets remain recoverable
+        and user sessions stay valid.
+        """
+        if v:
+            return v
+
+        # Try to load from persisted file first
+        if JWT_SECRET_FILE.exists():
+            try:
+                saved_key = JWT_SECRET_FILE.read_text().strip()
+                if saved_key:
+                    return saved_key
+            except OSError:
+                pass
+
+        # Generate new key
+        new_key = secrets.token_urlsafe(32)
+
+        # Persist to file for future restarts
+        try:
+            JWT_SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
+            JWT_SECRET_FILE.write_text(new_key)
+            # Log warning about auto-generation (to stderr since logging may not be set up yet)
+            print(
+                f"[WARNING] JWT_SECRET_KEY not set - auto-generated and saved to {JWT_SECRET_FILE}",
+                file=sys.stderr,
+            )
+            print(
+                "[WARNING] For production, set JWT_SECRET_KEY explicitly in .env",
+                file=sys.stderr,
+            )
+        except OSError as e:
+            print(
+                f"[WARNING] Could not persist JWT secret to {JWT_SECRET_FILE}: {e}",
+                file=sys.stderr,
+            )
+            print(
+                "[WARNING] Secret will be lost on container restart!",
+                file=sys.stderr,
+            )
+
+        return new_key
 
     # Session cookie settings
     session_cookie_name: str = Field(

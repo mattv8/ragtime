@@ -204,6 +204,22 @@ class MCPToolDefinition:
     execute_fn: Callable[..., Awaitable[str]]
 
 
+@dataclass
+class McpRouteFilter:
+    """Filter configuration for custom MCP routes."""
+
+    tool_config_ids: list[str]  # IDs of tool configs to include
+    include_knowledge_search: bool = True
+    include_git_history: bool = True
+    selected_document_indexes: list[str] | None = (
+        None  # None = all, [] = none, list = specific
+    )
+    selected_filesystem_indexes: list[str] | None = (
+        None  # Filter by filesystem tool IDs
+    )
+    selected_schema_indexes: list[str] | None = None  # Filter by schema tool IDs
+
+
 class MCPToolAdapter:
     """
     Adapter that converts Ragtime tools to MCP format.
@@ -213,6 +229,7 @@ class MCPToolAdapter:
     - Heartbeat-based filtering (unhealthy tools are hidden)
     - Caching with TTL for performance
     - Extensible tool type registration
+    - Support for filtered tool lists (custom MCP routes)
     """
 
     def __init__(self, heartbeat_cache_ttl: float = 30.0):
@@ -228,13 +245,16 @@ class MCPToolAdapter:
         self._tool_executors: dict[str, Callable[..., Awaitable[str]]] = {}
 
     async def get_available_tools(
-        self, include_unhealthy: bool = False
+        self,
+        include_unhealthy: bool = False,
+        route_filter: McpRouteFilter | None = None,
     ) -> list[MCPToolDefinition]:
         """
         Get all available tools as MCP definitions.
 
         Args:
             include_unhealthy: If True, include tools that failed heartbeat
+            route_filter: Optional filter for custom MCP routes
 
         Returns:
             List of MCP tool definitions ready for registration
@@ -244,11 +264,18 @@ class MCPToolAdapter:
         # Get tool configs from database
         tool_configs = await get_tool_configs()
 
+        # Apply route filter if provided
+        if route_filter is not None:
+            tool_configs = [
+                c for c in tool_configs if c.get("id") in route_filter.tool_config_ids
+            ]
+
         # Check heartbeat status
         health_status = await self._check_heartbeats(tool_configs)
 
         for config in tool_configs:
             tool_id = config.get("id", "")
+            tool_type = config.get("tool_type", "")
             enabled = config.get("enabled", True)
 
             # Skip disabled tools
@@ -263,33 +290,67 @@ class MCPToolAdapter:
                 )
                 continue
 
+            # For filesystem_indexer tools, check selected_filesystem_indexes filter
+            if tool_type == "filesystem_indexer" and route_filter is not None:
+                if route_filter.selected_filesystem_indexes is not None:
+                    if tool_id not in route_filter.selected_filesystem_indexes:
+                        continue
+
             # Create MCP tool definition
             tool_def = await self._create_tool_definition(config)
             if tool_def:
                 tools.append(tool_def)
 
             # Create schema search tool if schema indexing is enabled for this tool
+            # Apply selected_schema_indexes filter if provided
+            if (
+                route_filter is not None
+                and route_filter.selected_schema_indexes is not None
+            ):
+                if tool_id not in route_filter.selected_schema_indexes:
+                    continue
             schema_tool_def = await self._create_schema_search_tool_definition(config)
             if schema_tool_def:
                 tools.append(schema_tool_def)
 
         # Add knowledge search tool(s) based on aggregate_search setting
-        app_settings = await get_app_settings()
-        aggregate_search = app_settings.get("aggregate_search", True)
+        # Skip if route_filter explicitly excludes knowledge search
+        include_knowledge = (
+            route_filter is None or route_filter.include_knowledge_search
+        )
 
-        if aggregate_search:
-            # Single aggregated search_knowledge tool
-            knowledge_tool = await self._create_knowledge_search_tool()
-            if knowledge_tool:
-                tools.append(knowledge_tool)
+        if include_knowledge:
+            app_settings = await get_app_settings()
+            aggregate_search = app_settings.get("aggregate_search", True)
+
+            if aggregate_search:
+                # Single aggregated search_knowledge tool
+                # When aggregate_search is true, always include all indexes (don't filter)
+                knowledge_tool = await self._create_knowledge_search_tool(
+                    selected_indexes=None
+                )
+                if knowledge_tool:
+                    tools.append(knowledge_tool)
+            else:
+                # Separate search_<index_name> tools for each index
+                # Apply document index filter when in per-index mode
+                per_index_tools = await self._create_per_index_search_tools(
+                    selected_indexes=(
+                        route_filter.selected_document_indexes if route_filter else None
+                    )
+                )
+                tools.extend(per_index_tools)
         else:
-            # Separate search_<index_name> tools for each index
-            per_index_tools = await self._create_per_index_search_tools()
-            tools.extend(per_index_tools)
+            app_settings = await get_app_settings()
+            aggregate_search = app_settings.get("aggregate_search", True)
 
         # Add git history search tool(s) if we have git repos
-        git_history_tools = await self._create_git_history_tools(aggregate_search)
-        tools.extend(git_history_tools)
+        # Skip if route_filter explicitly excludes git history
+        include_git = route_filter is None or route_filter.include_git_history
+
+        if include_git:
+            git_history_tools = await self._create_git_history_tools(aggregate_search)
+            tools.extend(git_history_tools)
 
         return tools
 
@@ -648,20 +709,44 @@ class MCPToolAdapter:
 
         return executor
 
-    async def _create_knowledge_search_tool(self) -> MCPToolDefinition | None:
-        """Create the knowledge search tool if indexes are available."""
+    async def _create_knowledge_search_tool(
+        self, selected_indexes: list[str] | None = None
+    ) -> MCPToolDefinition | None:
+        """Create the knowledge search tool if indexes are available.
+
+        Args:
+            selected_indexes: Optional list of index names to include.
+                              None = all indexes, [] = no indexes, list = specific indexes
+        """
         from ragtime.rag import rag
 
         if not rag.is_ready or not rag.retrievers:
             return None
 
-        index_names = list(rag.retrievers.keys())
+        # Filter retrievers based on selected_indexes
+        if selected_indexes is not None:
+            if not selected_indexes:
+                return None  # Empty list means no document indexes selected
+            available_retrievers = {
+                name: retriever
+                for name, retriever in rag.retrievers.items()
+                if name in selected_indexes
+            }
+            if not available_retrievers:
+                return None
+        else:
+            available_retrievers = rag.retrievers
+
+        index_names = list(available_retrievers.keys())
 
         description = (
             "Search indexed documentation and codebase for relevant information. "
             f"Available indexes: {', '.join(index_names)}. "
             "Use for finding code examples, schema definitions, configuration details."
         )
+
+        # Capture available_retrievers in closure
+        retrievers_snapshot = available_retrievers
 
         async def search_knowledge(query: str, index_name: str = "", **_: Any) -> str:
             """Execute knowledge search."""
@@ -672,13 +757,13 @@ class MCPToolAdapter:
             logger.debug(
                 f"MCP search_knowledge called with query='{query[:50] if query else ''}...', index_name='{index_name}'"
             )
-            logger.debug(f"Available retrievers: {list(rag.retrievers.keys())}")
+            logger.debug(f"Available retrievers: {list(retrievers_snapshot.keys())}")
 
             # Determine which retrievers to search
-            if index_name and index_name in rag.retrievers:
-                retrievers_to_search = {index_name: rag.retrievers[index_name]}
+            if index_name and index_name in retrievers_snapshot:
+                retrievers_to_search = {index_name: retrievers_snapshot[index_name]}
             else:
-                retrievers_to_search = rag.retrievers
+                retrievers_to_search = retrievers_snapshot
 
             if not retrievers_to_search:
                 logger.warning("No retrievers available for MCP search_knowledge")
@@ -738,16 +823,36 @@ class MCPToolAdapter:
             execute_fn=search_knowledge,
         )
 
-    async def _create_per_index_search_tools(self) -> list[MCPToolDefinition]:
+    async def _create_per_index_search_tools(
+        self, selected_indexes: list[str] | None = None
+    ) -> list[MCPToolDefinition]:
         """Create separate search tools for each index.
 
         When aggregate_search is disabled, this creates search_<index_name>
         tools that give the AI granular control over which index to search.
+
+        Args:
+            selected_indexes: Optional list of index names to include.
+                              None = all indexes, [] = no indexes, list = specific indexes
         """
         from ragtime.rag import rag
 
         if not rag.is_ready or not rag.retrievers:
             return []
+
+        # Filter retrievers based on selected_indexes
+        if selected_indexes is not None:
+            if not selected_indexes:
+                return []  # Empty list means no document indexes selected
+            available_retrievers = {
+                name: retriever
+                for name, retriever in rag.retrievers.items()
+                if name in selected_indexes
+            }
+            if not available_retrievers:
+                return []
+        else:
+            available_retrievers = rag.retrievers
 
         tools: list[MCPToolDefinition] = []
 
@@ -770,7 +875,7 @@ class MCPToolAdapter:
             "required": ["query"],
         }
 
-        for index_name, retriever in rag.retrievers.items():
+        for index_name, retriever in available_retrievers.items():
             # Sanitize index name for tool name
             safe_name = re.sub(r"[^a-zA-Z0-9]+", "_", index_name).strip("_").lower()
             tool_name = f"search_{safe_name}"

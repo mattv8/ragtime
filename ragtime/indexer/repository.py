@@ -20,6 +20,13 @@ from prisma.models import IndexMetadata as PrismaIndexMetadata
 
 from prisma import Json, Prisma
 from ragtime.core.database import get_db
+from ragtime.core.encryption import (
+    CONNECTION_CONFIG_PASSWORD_FIELDS,
+    decrypt_json_passwords,
+    decrypt_secret,
+    encrypt_json_passwords,
+    encrypt_secret,
+)
 from ragtime.core.logging import get_logger
 from ragtime.indexer.models import (
     AppSettings,
@@ -557,6 +564,19 @@ class IndexerRepository:
 
         settings: Any = prisma_settings
 
+        # Decrypt secrets for API response
+        openai_key = settings.openaiApiKey or ""
+        anthropic_key = settings.anthropicApiKey or ""
+        mcp_password = getattr(settings, "mcpDefaultRoutePassword", None)
+
+        # Decrypt if encrypted (starts with 'enc::')
+        if openai_key:
+            openai_key = decrypt_secret(openai_key)
+        if anthropic_key:
+            anthropic_key = decrypt_secret(anthropic_key)
+        if mcp_password:
+            mcp_password = decrypt_secret(mcp_password)
+
         return AppSettings(
             id=settings.id,
             # Server branding
@@ -572,8 +592,8 @@ class IndexerRepository:
             # LLM settings
             llm_provider=settings.llmProvider,
             llm_model=settings.llmModel,
-            openai_api_key=settings.openaiApiKey,
-            anthropic_api_key=settings.anthropicApiKey,
+            openai_api_key=openai_key,
+            anthropic_api_key=anthropic_key,
             allowed_chat_models=settings.allowedChatModels or [],
             max_iterations=settings.maxIterations,
             # Tool settings
@@ -591,6 +611,11 @@ class IndexerRepository:
             # Search configuration
             search_results_k=getattr(settings, "searchResultsK", 5),
             aggregate_search=getattr(settings, "aggregateSearch", True),
+            # MCP configuration
+            mcp_default_route_auth=getattr(settings, "mcpDefaultRouteAuth", False),
+            mcp_default_route_password=mcp_password,
+            has_mcp_default_password=getattr(settings, "mcpDefaultRoutePassword", None)
+            is not None,
             # Embedding dimension tracking
             embedding_dimension=getattr(settings, "embeddingDimension", None),
             embedding_config_hash=getattr(settings, "embeddingConfigHash", None),
@@ -635,6 +660,9 @@ class IndexerRepository:
             # Search configuration
             "search_results_k": "searchResultsK",
             "aggregate_search": "aggregateSearch",
+            # MCP configuration
+            "mcp_default_route_auth": "mcpDefaultRouteAuth",
+            "mcp_default_route_password": "mcpDefaultRoutePassword",
             # Embedding dimension tracking (internal use)
             "embedding_dimension": "embeddingDimension",
             "embedding_config_hash": "embeddingConfigHash",
@@ -645,6 +673,26 @@ class IndexerRepository:
         for snake_key, camel_key in field_mapping.items():
             if snake_key in updates and updates[snake_key] is not None:
                 update_data[camel_key] = updates[snake_key]
+
+        # Encrypt API keys before storage
+        # These need to be reversibly encrypted so we can show them in the UI
+        secret_fields = ["openai_api_key", "anthropic_api_key"]
+        for field in secret_fields:
+            if field in updates and updates[field]:
+                camel_key = field_mapping[field]
+                update_data[camel_key] = encrypt_secret(updates[field])
+
+        # Special handling for mcp_default_route_password:
+        # - Empty string clears the password (set to None)
+        # - Non-empty string gets encrypted before storage
+        if "mcp_default_route_password" in updates:
+            pwd_value = updates["mcp_default_route_password"]
+            if pwd_value == "":
+                # Clear password
+                update_data["mcpDefaultRoutePassword"] = None
+            elif pwd_value is not None:
+                # Encrypt and store
+                update_data["mcpDefaultRoutePassword"] = encrypt_secret(pwd_value)
 
         if not update_data:
             return await self.get_settings()
@@ -713,13 +761,18 @@ class IndexerRepository:
         """Create a new tool configuration."""
         db = await self._get_db()
 
+        # Encrypt password fields in connection_config
+        encrypted_config = encrypt_json_passwords(
+            config.connection_config, CONNECTION_CONFIG_PASSWORD_FIELDS
+        )
+
         prisma_config = await db.toolconfig.create(
             data={  # type: ignore[arg-type]
                 "name": config.name,
                 "toolType": _to_prisma_tool_type(config.tool_type),
                 "enabled": config.enabled,
                 "description": config.description,
-                "connectionConfig": Json(config.connection_config),
+                "connectionConfig": Json(encrypted_config),
                 "maxResults": config.max_results,
                 "timeout": config.timeout,
                 "allowWrite": config.allow_write,
@@ -775,6 +828,10 @@ class IndexerRepository:
             if snake_key in updates and updates[snake_key] is not None:
                 value = updates[snake_key]
                 if snake_key == "connection_config":
+                    # Encrypt password fields
+                    value = encrypt_json_passwords(
+                        value, CONNECTION_CONFIG_PASSWORD_FIELDS
+                    )
                     value = Json(value)
                 update_data[camel_key] = value
 
@@ -823,13 +880,18 @@ class IndexerRepository:
 
     def _prisma_tool_config_to_model(self, prisma_config: Any) -> ToolConfig:
         """Convert Prisma ToolConfig to Pydantic model."""
+        # Decrypt password fields in connection_config
+        decrypted_config = decrypt_json_passwords(
+            prisma_config.connectionConfig, CONNECTION_CONFIG_PASSWORD_FIELDS
+        )
+
         return ToolConfig(
             id=prisma_config.id,
             name=prisma_config.name,
             tool_type=ToolType(prisma_config.toolType),
             enabled=prisma_config.enabled,
             description=prisma_config.description,
-            connection_config=prisma_config.connectionConfig,
+            connection_config=decrypted_config,
             max_results=prisma_config.maxResults,
             timeout=prisma_config.timeout,
             allow_write=prisma_config.allowWrite,

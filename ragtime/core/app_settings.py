@@ -8,6 +8,11 @@ replacing environment-based configuration for tool settings.
 from typing import List, Optional
 
 from ragtime.core.database import get_db
+from ragtime.core.encryption import (
+    CONNECTION_CONFIG_PASSWORD_FIELDS,
+    decrypt_json_passwords,
+    decrypt_secret,
+)
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -45,6 +50,18 @@ class SettingsCache:
                 prisma_settings = await db.appsettings.create(data={"id": "default"})
                 logger.info("Created default application settings")
 
+            # Decrypt secrets that may be encrypted
+            openai_key = prisma_settings.openaiApiKey or ""
+            anthropic_key = prisma_settings.anthropicApiKey or ""
+            mcp_password = prisma_settings.mcpDefaultRoutePassword
+
+            if openai_key:
+                openai_key = decrypt_secret(openai_key)
+            if anthropic_key:
+                anthropic_key = decrypt_secret(anthropic_key)
+            # Note: mcp_default_route_password stays encrypted for auth verification
+            # It's decrypted in the verification function
+
             self._settings = {
                 "server_name": prisma_settings.serverName,
                 "enabled_tools": prisma_settings.enabledTools,
@@ -64,8 +81,8 @@ class SettingsCache:
                 # LLM settings
                 "llm_provider": prisma_settings.llmProvider,
                 "llm_model": prisma_settings.llmModel,
-                "openai_api_key": prisma_settings.openaiApiKey,
-                "anthropic_api_key": prisma_settings.anthropicApiKey,
+                "openai_api_key": openai_key,
+                "anthropic_api_key": anthropic_key,
                 "allowed_chat_models": prisma_settings.allowedChatModels or [],
                 "max_iterations": prisma_settings.maxIterations,
                 # Embedding settings
@@ -73,6 +90,9 @@ class SettingsCache:
                 "embedding_model": prisma_settings.embeddingModel,
                 "embedding_dimensions": prisma_settings.embeddingDimensions,
                 "ollama_base_url": prisma_settings.ollamaBaseUrl,
+                # MCP settings
+                "mcp_default_route_auth": prisma_settings.mcpDefaultRouteAuth,
+                "mcp_default_route_password": mcp_password,  # Kept encrypted
             }
             return self._settings
 
@@ -107,6 +127,9 @@ class SettingsCache:
                 "embedding_provider": "ollama",
                 "embedding_model": "nomic-embed-text",
                 "ollama_base_url": "http://localhost:11434",
+                # MCP settings
+                "mcp_default_route_auth": False,
+                "mcp_default_route_password": None,
             }
 
     async def get_tool_configs(self) -> List[dict]:
@@ -126,7 +149,9 @@ class SettingsCache:
                     "name": cfg.name,
                     "tool_type": cfg.toolType,
                     "description": cfg.description,
-                    "connection_config": cfg.connectionConfig,
+                    "connection_config": decrypt_json_passwords(
+                        dict(cfg.connectionConfig), CONNECTION_CONFIG_PASSWORD_FIELDS
+                    ),
                     "max_results": cfg.maxResults,
                     "timeout": cfg.timeout,
                     "allow_write": cfg.allowWrite,

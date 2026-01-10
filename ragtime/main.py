@@ -29,9 +29,10 @@ from ragtime.core.logging import get_logger, setup_logging
 # Import indexer routes (always available now that it's part of ragtime)
 from ragtime.indexer.routes import ASSETS_DIR as INDEXER_ASSETS_DIR
 from ragtime.indexer.routes import router as indexer_router
+from ragtime.mcp.config_routes import router as mcp_config_router
 
 # Import MCP routes and transport for HTTP API access
-from ragtime.mcp.routes import mcp_lifespan_manager, mcp_transport_route
+from ragtime.mcp.routes import get_mcp_routes, mcp_lifespan_manager, mcp_transport_route
 from ragtime.mcp.routes import router as mcp_router
 from ragtime.rag import rag
 
@@ -138,8 +139,29 @@ logger.info("Indexer API enabled at /indexes, UI served at root (/)")
 # Include MCP routes
 if settings.mcp_enabled:
     app.include_router(mcp_router)  # Debug endpoints at /mcp-debug/*
-    app.routes.append(mcp_transport_route)  # MCP protocol at /mcp (raw ASGI)
-    logger.info("MCP enabled: HTTP transport at /mcp, debug API at /mcp-debug")
+    app.include_router(mcp_config_router)  # MCP route configuration at /mcp-routes/*
+    # Add all MCP routes (default /mcp and custom /mcp/{route_path})
+    for route in get_mcp_routes():
+        app.routes.append(route)
+    logger.info(
+        "MCP enabled: HTTP transport at /mcp, custom routes at /mcp/<name>, debug API at /mcp-debug"
+    )
+
+
+# OAuth discovery endpoint - explicitly reject to prevent client prompts
+@app.get("/.well-known/oauth-authorization-server", include_in_schema=False)
+async def oauth_discovery():
+    """
+    OAuth Authorization Server Metadata endpoint.
+
+    Returns 404 to indicate OAuth is not supported.
+    MCP clients should use Bearer token in Authorization header instead.
+    """
+    from fastapi import HTTPException
+
+    raise HTTPException(
+        status_code=404, detail="OAuth not supported. Use Bearer token authentication."
+    )
 
 
 # Root endpoint - serve Indexer UI or API info
