@@ -120,7 +120,7 @@ OpenAI-compatible RAG API with LangChain tool calling for business intelligence 
    services:
      # PostgreSQL database for Prisma persistence
      ragtime-db:
-       image: pgvector/pgvector:pg17
+       image: pgvector/pgvector:pg18
        container_name: ragtime-db
        restart: unless-stopped
        environment:
