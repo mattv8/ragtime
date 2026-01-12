@@ -3,12 +3,14 @@ Pydantic models for API requests and responses.
 OpenAI API compatible schemas.
 """
 
-from typing import Optional, List
+from typing import List, Optional
+
 from pydantic import BaseModel, Field, field_validator
 
 
 class Message(BaseModel):
     """A single message in the conversation."""
+
     role: str = Field(description="Role: 'user', 'assistant', or 'system'")
     content: str = Field(description="Message content")
 
@@ -22,6 +24,7 @@ class Message(BaseModel):
 
 class ChatCompletionRequest(BaseModel):
     """OpenAI-compatible chat completion request."""
+
     messages: List[Message]
     model: str = Field(default="ragtime")
     stream: bool = Field(default=False)
@@ -35,6 +38,7 @@ class ChatCompletionRequest(BaseModel):
 
 class ChatChoice(BaseModel):
     """A single choice in the completion response."""
+
     index: int
     message: Message
     finish_reason: str
@@ -42,6 +46,7 @@ class ChatChoice(BaseModel):
 
 class Usage(BaseModel):
     """Token usage statistics."""
+
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
@@ -49,6 +54,7 @@ class Usage(BaseModel):
 
 class ChatCompletionResponse(BaseModel):
     """OpenAI-compatible chat completion response."""
+
     id: str
     object: str = "chat.completion"
     created: int
@@ -59,6 +65,7 @@ class ChatCompletionResponse(BaseModel):
 
 class StreamChoice(BaseModel):
     """A single choice in a streaming response chunk."""
+
     index: int
     delta: dict
     finish_reason: Optional[str] = None
@@ -66,6 +73,7 @@ class StreamChoice(BaseModel):
 
 class ChatCompletionChunk(BaseModel):
     """OpenAI-compatible streaming chunk."""
+
     id: str
     object: str = "chat.completion.chunk"
     created: int
@@ -75,6 +83,7 @@ class ChatCompletionChunk(BaseModel):
 
 class ModelInfo(BaseModel):
     """Information about an available model."""
+
     id: str
     object: str = "model"
     created: int
@@ -86,14 +95,22 @@ class ModelInfo(BaseModel):
 
 class ModelsResponse(BaseModel):
     """Response for listing available models."""
+
     object: str = "list"
     data: List[ModelInfo]
 
 
 class HealthResponse(BaseModel):
     """Health check response."""
+
     status: str
     version: str
     indexes_loaded: List[str]
     model: str
     llm_provider: str
+    # Progressive loading status
+    indexes_ready: Optional[bool] = None
+    indexes_loading: Optional[bool] = None
+    indexes_total: Optional[int] = None
+    indexes_loaded_count: Optional[int] = None
+    indexes_loaded_count: Optional[int] = None

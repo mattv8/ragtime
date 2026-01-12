@@ -51,6 +51,8 @@ services:
     volumes:
       # Mount source code for hot reload
       - ../ragtime:/ragtime/ragtime
+      # Mount node_modules as named volume (prevents overwrite by source mount)
+      - ragtime-node-modules:/ragtime/ragtime/frontend/node_modules
       # Mount requirements for runtime install
       - ../requirements.txt:/ragtime/requirements.txt:ro
       # Mount Prisma schema for client generation
@@ -83,3 +85,4 @@ networks:
 
 volumes:
   ragtime-db-data:
+  ragtime-node-modules:  # Persist frontend node_modules across rebuilds

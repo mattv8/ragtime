@@ -51,6 +51,14 @@ if [ "$DEBUG_MODE" = "true" ]; then
     # Development mode with hot-reload
     # Start uvicorn (Python backend) on PORT (8000)
     # Start Vite (UI) on API_PORT (8001)
+
+    # Install frontend dependencies if missing (node_modules is a named volume)
+    if [ ! -d "/ragtime/ragtime/frontend/node_modules/.bin" ]; then
+        echo "Installing frontend dependencies..."
+        cd /ragtime/ragtime/frontend
+        npm ci --loglevel=error
+    fi
+
     cd /ragtime
     uvicorn ragtime.main:app --host 0.0.0.0 --port $PORT --reload --reload-dir /ragtime/ragtime &
     sleep 2

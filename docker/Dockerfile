@@ -113,7 +113,8 @@ RUN cd /ragtime && python -m prisma generate
 COPY ragtime/ /ragtime/ragtime/
 
 # Copy built frontend from the builder stage
-COPY --from=frontend-builder /frontend/dist /ragtime/ragtime/indexer/static/dist/
+# Code expects it at ragtime/frontend/dist (see indexer/routes.py DIST_DIR)
+COPY --from=frontend-builder /frontend/dist /ragtime/ragtime/frontend/dist/
 
 # Copy entrypoint and scripts
 COPY docker/entrypoint.sh /entrypoint.sh

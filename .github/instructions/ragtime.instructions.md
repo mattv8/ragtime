@@ -11,6 +11,12 @@ applyTo: '**'
 | ragtime (Vite) | 8001 | Indexer UI with hot-reload (dev only) |
 | ragtime-db | 5434 | PostgreSQL (Prisma ORM) |
 
+## Development Setup
+
+- Dev stack runs in Docker: `ragtime` (8000/8001), `ragtime-db` (5434)
+- Frontend `node_modules` persists in named volume, auto-installs on missing
+- After `package.json` changes: `docker exec ragtime-dev sh -c "cd /ragtime/ragtime/frontend && npm ci"`
+
 ## Tool Pattern
 
 Tools auto-discovered from `ragtime/tools/`. Must export `<filename>_tool`:

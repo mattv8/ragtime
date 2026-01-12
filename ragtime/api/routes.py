@@ -45,14 +45,32 @@ async def verify_api_key(authorization: Optional[str] = Header(None)):
 
 @router.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Health check endpoint."""
+    """Health check endpoint.
+
+    Returns progressive loading status:
+    - status: "healthy" when core is ready (LLM/settings loaded)
+    - indexes_loading: True while FAISS indexes are loading in background
+    - indexes_ready: True when all indexes are loaded
+    """
     app_settings = await get_app_settings()
+    loading_status = rag.loading_status
+
+    # Determine overall status
+    if rag.is_ready:
+        status = "healthy"
+    else:
+        status = "initializing"
+
     return HealthResponse(
-        status="healthy" if rag.is_ready else "initializing",
+        status=status,
         version=__version__,
-        indexes_loaded=list(rag.retrievers.keys()),
+        indexes_loaded=loading_status["retrievers_available"],
         model=app_settings.get("llm_model", "gpt-4-turbo"),
         llm_provider=app_settings.get("llm_provider", "openai"),
+        indexes_ready=loading_status["indexes_ready"],
+        indexes_loading=loading_status["indexes_loading"],
+        indexes_total=loading_status["indexes_total"],
+        indexes_loaded_count=loading_status["indexes_loaded"],
     )
 
 

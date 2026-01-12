@@ -180,19 +180,57 @@ If the user's question refers to a specific system, use the tool that connects t
 
 
 class RAGComponents:
-    """Container for RAG components initialized at startup."""
+    """Container for RAG components initialized at startup.
+
+    Supports progressive initialization with background FAISS loading:
+    - core_ready: LLM and settings loaded, can serve non-indexed queries
+    - indexes_ready: All FAISS indexes loaded, full knowledge search available
+    - is_ready: Alias for core_ready (API can serve requests)
+    """
 
     def __init__(self):
         self.retrievers: dict[str, Any] = {}
         self.agent_executor: Optional[AgentExecutor] = None
         self.llm: Optional[Any] = None  # ChatOpenAI, ChatAnthropic, or ChatOllama
-        self.is_ready: bool = False
+        self._core_ready: bool = False  # LLM/settings ready
+        self._indexes_ready: bool = False  # All FAISS indexes loaded
+        self._indexes_loading: bool = False  # Background loading in progress
+        self._indexes_total: int = 0  # Total indexes to load
+        self._indexes_loaded: int = 0  # Indexes loaded so far
         self._app_settings: Optional[dict] = None
         self._tool_configs: Optional[List[dict]] = None
         self._index_metadata: Optional[List[dict]] = None
         self._system_prompt: str = BASE_SYSTEM_PROMPT
         self._init_lock: asyncio.Lock = asyncio.Lock()
         self._init_in_progress: bool = False
+        self._embedding_model: Optional[Any] = None  # Cached for background loading
+
+    @property
+    def is_ready(self) -> bool:
+        """API can serve requests when core is ready."""
+        return self._core_ready
+
+    @is_ready.setter
+    def is_ready(self, value: bool):
+        """Setter for backwards compatibility."""
+        self._core_ready = value
+
+    @property
+    def indexes_ready(self) -> bool:
+        """All FAISS indexes are loaded."""
+        return self._indexes_ready
+
+    @property
+    def loading_status(self) -> dict:
+        """Get current loading status for health endpoint."""
+        return {
+            "core_ready": self._core_ready,
+            "indexes_ready": self._indexes_ready,
+            "indexes_loading": self._indexes_loading,
+            "indexes_total": self._indexes_total,
+            "indexes_loaded": self._indexes_loaded,
+            "retrievers_available": list(self.retrievers.keys()),
+        }
 
     async def initialize(self):
         """Initialize all RAG components.
@@ -221,8 +259,18 @@ class RAGComponents:
                 self._init_in_progress = False
 
     async def _do_initialize(self):
-        """Perform the actual RAG initialization."""
-        logger.info("Initializing RAG components...")
+        """Perform the actual RAG initialization.
+
+        Uses a two-phase approach:
+        1. Core init (blocking): Load settings, LLM, tools - marks core_ready
+        2. Index loading (background): Load FAISS indexes in parallel - marks indexes_ready
+
+        This allows the API to serve requests immediately while indexes load.
+        """
+        import time
+
+        start_time = time.time()
+        logger.info("Initializing RAG components (core)...")
 
         # Load settings from database
         self._app_settings = await get_app_settings()
@@ -239,17 +287,58 @@ class RAGComponents:
         # Initialize LLM based on provider from database settings
         await self._init_llm()
 
-        # Load embedding model based on database settings
-        embedding_model = await self._get_embedding_model()
+        # Load embedding model (needed for FAISS loading)
+        self._embedding_model = await self._get_embedding_model()
 
-        # Load FAISS indexes from configured paths
-        await self._load_faiss_indexes(embedding_model)
-
-        # Create the agent with tools
+        # Create the agent with tools (without FAISS retrievers for now)
+        # This allows non-indexed queries to work immediately
         await self._create_agent()
 
-        self.is_ready = True
-        logger.info("RAG components initialized successfully")
+        # Mark core as ready - API can now serve requests
+        self._core_ready = True
+        core_time = time.time() - start_time
+        logger.info(
+            f"RAG core initialized in {core_time:.1f}s - API ready (indexes loading in background)"
+        )
+
+        # Start background FAISS loading
+        asyncio.create_task(self._load_faiss_indexes_background())
+
+    async def _load_faiss_indexes_background(self):
+        """Load FAISS indexes in background with parallel loading.
+
+        This runs after core init completes, loading indexes without blocking
+        the API. Uses asyncio.to_thread for parallel I/O.
+        """
+        import time
+
+        start_time = time.time()
+
+        if not self._embedding_model:
+            logger.warning("No embedding model available for FAISS loading")
+            self._indexes_ready = True
+            return
+
+        try:
+            self._indexes_loading = True
+            await self._load_faiss_indexes_parallel(self._embedding_model)
+        except Exception as e:
+            logger.error(f"Error in background FAISS loading: {e}")
+        finally:
+            self._indexes_loading = False
+            self._indexes_ready = True
+
+            # Rebuild agent with updated retrievers
+            try:
+                await self._create_agent()
+            except Exception as e:
+                logger.error(f"Failed to rebuild agent after index loading: {e}")
+
+            elapsed = time.time() - start_time
+            logger.info(
+                f"FAISS indexes loaded in background ({elapsed:.1f}s): "
+                f"{len(self.retrievers)} index(es) ready"
+            )
 
     async def _init_llm(self):
         """Initialize LLM based on database settings."""
@@ -345,11 +434,13 @@ class RAGComponents:
             raise ValueError(f"Unknown embedding provider: {provider}")
 
     async def _load_faiss_indexes(self, embedding_model):
-        """Load FAISS indexes from database metadata.
+        """Load FAISS indexes from database metadata (sequential, for backwards compat).
 
         Uses the index_metadata table to discover available indexes and loads
         only those that are enabled. The path is read directly from the database
         metadata, which was saved by the indexer service.
+
+        For parallel loading, use _load_faiss_indexes_parallel instead.
         """
         assert self._app_settings is not None  # Set by initialize()
         # Try to load from database metadata (preferred)
@@ -405,6 +496,90 @@ class RAGComponents:
                 logger.info("No indexes found in database metadata")
         else:
             logger.info("No index metadata available (database not initialized)")
+
+    async def _load_faiss_indexes_parallel(self, embedding_model):
+        """Load FAISS indexes in parallel using asyncio.to_thread.
+
+        This offloads the blocking FAISS.load_local calls to a thread pool,
+        allowing multiple indexes to load concurrently and not blocking the
+        event loop.
+        """
+        import time
+
+        assert self._app_settings is not None
+
+        if not self._index_metadata:
+            logger.info("No index metadata available for parallel loading")
+            return
+
+        enabled_indexes = [
+            idx for idx in self._index_metadata if idx.get("enabled", True)
+        ]
+
+        if not enabled_indexes:
+            logger.info("No enabled indexes to load")
+            return
+
+        self._indexes_total = len(enabled_indexes)
+        self._indexes_loaded = 0
+        search_k = self._app_settings.get("search_results_k", 5)
+
+        async def load_single_index(idx: dict) -> tuple[str, Any] | None:
+            """Load a single FAISS index in a thread."""
+            index_name = idx.get("name")
+            if not index_name:
+                return None
+
+            index_path_str = idx.get("path")
+            if not index_path_str:
+                logger.warning(f"Index {index_name} has no path in metadata, skipping")
+                return None
+
+            index_path = Path(index_path_str)
+            if not index_path.exists():
+                logger.warning(f"FAISS index path not found: {index_path}")
+                return None
+
+            try:
+                start = time.time()
+                # Offload blocking I/O to thread pool
+                db = await asyncio.to_thread(
+                    FAISS.load_local,
+                    str(index_path),
+                    embedding_model,
+                    allow_dangerous_deserialization=True,
+                )
+                elapsed = time.time() - start
+                retriever = db.as_retriever(search_kwargs={"k": search_k})
+                logger.info(
+                    f"Loaded FAISS index: {index_name} from {index_path} "
+                    f"(k={search_k}, {elapsed:.1f}s)"
+                )
+                return (index_name, retriever)
+            except Exception as e:
+                logger.warning(f"Failed to load FAISS index {index_name}: {e}")
+                return None
+
+        # Load all indexes in parallel
+        logger.info(f"Loading {len(enabled_indexes)} FAISS index(es) in parallel...")
+        results = await asyncio.gather(
+            *[load_single_index(idx) for idx in enabled_indexes],
+            return_exceptions=True,
+        )
+
+        # Process results
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning(f"Index loading exception: {result}")
+            elif result is not None:
+                index_name, retriever = result
+                self.retrievers[index_name] = retriever
+                self._indexes_loaded += 1
+
+        if self.retrievers:
+            logger.info(
+                f"Loaded {len(self.retrievers)} FAISS index(es) from database metadata"
+            )
 
     async def _load_index_metadata(self) -> list[dict]:
         """Load index metadata from database for system prompt."""
@@ -681,6 +856,14 @@ class RAGComponents:
                 retrievers_to_search = self.retrievers
 
             if not retrievers_to_search:
+                # Check if indexes are still loading
+                if self._indexes_loading:
+                    logger.info("Knowledge search called while indexes still loading")
+                    return (
+                        "Knowledge indexes are currently loading in the background. "
+                        f"Progress: {self._indexes_loaded}/{self._indexes_total} loaded. "
+                        "Please try again in a moment, or use other available tools."
+                    )
                 logger.warning("No retrievers available for search_knowledge")
                 return "No knowledge indexes are currently loaded. Please index some documents first."
 

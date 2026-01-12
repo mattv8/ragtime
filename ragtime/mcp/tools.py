@@ -720,7 +720,14 @@ class MCPToolAdapter:
         """
         from ragtime.rag import rag
 
-        if not rag.is_ready or not rag.retrievers:
+        # Allow partial availability - core ready is enough, indexes may still be loading
+        if not rag.is_ready:
+            return None
+
+        # If indexes are still loading but none available yet, skip for now
+        if not rag.retrievers:
+            if rag._indexes_loading:  # pyright: ignore[reportPrivateUsage]
+                logger.debug("Knowledge search tool skipped - indexes still loading")
             return None
 
         # Filter retrievers based on selected_indexes
@@ -837,7 +844,14 @@ class MCPToolAdapter:
         """
         from ragtime.rag import rag
 
-        if not rag.is_ready or not rag.retrievers:
+        # Allow partial availability - core ready is enough
+        if not rag.is_ready:
+            return []
+
+        # If indexes are still loading but none available yet, skip for now
+        if not rag.retrievers:
+            if rag._indexes_loading:  # pyright: ignore[reportPrivateUsage]
+                logger.debug("Per-index search tools skipped - indexes still loading")
             return []
 
         # Filter retrievers based on selected_indexes
