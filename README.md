@@ -159,7 +159,7 @@ OpenAI-compatible RAG API and MCP server with LangChain tool calling for busines
      ragtime:
        # For older CPUs without X86_V2 support, use the legacy tag:
        # image: hub.docker.visnovsky.us/library/ragtime:legacy
-       image: hub.docker.visnovsky.us/library/ragtime:main
+       image: hub.docker.visnovsky.us/library/ragtime:fix-problems
        container_name: ragtime
        restart: unless-stopped
        ports:
