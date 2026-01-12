@@ -1612,6 +1612,30 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
   const [fsExclusionsApplied, setFsExclusionsApplied] = useState(false);
   const [fsAdvancedOpen, setFsAdvancedOpen] = useState(false);
 
+  // Container capabilities state (for showing/hiding SMB/NFS options)
+  const [containerCapabilities, setContainerCapabilities] = useState<import('@/types').ContainerCapabilitiesResponse | null>(null);
+  const [loadingCapabilities, setLoadingCapabilities] = useState(false);
+
+  // Fetch container capabilities on mount (only for filesystem indexer)
+  useEffect(() => {
+    if (toolType === 'filesystem_indexer' || defaultToolType === 'filesystem_indexer') {
+      setLoadingCapabilities(true);
+      api.checkContainerCapabilities()
+        .then(setContainerCapabilities)
+        .catch((err) => {
+          console.warn('Failed to check container capabilities:', err);
+          // Default to no mount capability if check fails
+          setContainerCapabilities({
+            privileged: false,
+            has_sys_admin: false,
+            can_mount: false,
+            message: 'Failed to check container capabilities',
+          });
+        })
+        .finally(() => setLoadingCapabilities(false));
+    }
+  }, [toolType, defaultToolType]);
+
   // SSH Key management state
   const [sshKeyMode, setSshKeyMode] = useState<'generate' | 'upload' | 'path' | 'password'>(
     (() => {
@@ -3227,13 +3251,29 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
     </div>
   );
 
-  const renderFilesystemConnection = () => (
+  const renderFilesystemConnection = () => {
+    // Filter mount types based on container capabilities
+    // SMB and NFS require privileged mode or CAP_SYS_ADMIN
+    const availableMountTypes = (Object.keys(MOUNT_TYPE_INFO) as FilesystemMountType[]).filter((type) => {
+      if (type === 'smb' || type === 'nfs') {
+        // Show SMB/NFS only if container has mount capabilities
+        return containerCapabilities?.can_mount ?? false;
+      }
+      return true; // Always show docker_volume
+    });
+
+    return (
     <div className="connection-panel">
       {/* Mount Type Selection */}
       <div className="form-group">
         <label>Mount Type</label>
+        {loadingCapabilities ? (
+          <div className="mount-type-tabs">
+            <span className="loading-text">Checking container capabilities...</span>
+          </div>
+        ) : (
         <div className="mount-type-tabs">
-          {(Object.keys(MOUNT_TYPE_INFO) as FilesystemMountType[]).map((type) => (
+          {availableMountTypes.map((type) => (
             <button
               key={type}
               type="button"
@@ -3262,7 +3302,15 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
             </button>
           ))}
         </div>
+        )}
         <p className="field-help">{MOUNT_TYPE_INFO[filesystemConfig.mount_type].description}</p>
+        {/* Show message when SMB/NFS are not available */}
+        {!loadingCapabilities && containerCapabilities && !containerCapabilities.can_mount && (
+          <p className="field-help info-message" style={{ marginTop: '0.5rem', color: 'var(--text-muted)' }}>
+            SMB/NFS options are hidden because the container lacks mount privileges.
+            To enable, uncomment <code>privileged: true</code> and <code>cap_add: SYS_ADMIN</code> in docker-compose.yml and restart.
+          </p>
+        )}
       </div>
 
       {/* Docker Volume Settings */}
@@ -3605,6 +3653,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
       </div>
     </div>
   );
+  };
 
   const renderConnectionConfig = () => {
     const content = (() => {

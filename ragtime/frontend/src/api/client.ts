@@ -812,6 +812,15 @@ export const api = {
   },
 
   /**
+   * Check container capabilities for mounting filesystems (SMB/NFS)
+   * Returns whether the container has sufficient privileges for mount operations.
+   */
+  async checkContainerCapabilities(): Promise<import('@/types').ContainerCapabilitiesResponse> {
+    const response = await apiFetch(`${API_BASE}/filesystem/capabilities`);
+    return handleResponse<import('@/types').ContainerCapabilitiesResponse>(response);
+  },
+
+  /**
    * Browse a directory in the container filesystem
    */
   async browseFilesystem(path: string): Promise<import('@/types').BrowseResponse> {

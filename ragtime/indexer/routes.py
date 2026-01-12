@@ -2926,6 +2926,111 @@ async def disconnect_from_network(network_name: str):
 
 
 # -----------------------------------------------------------------------------
+# Container Capabilities Detection
+# -----------------------------------------------------------------------------
+
+
+class ContainerCapabilitiesResponse(BaseModel):
+    """Response from container capabilities check."""
+
+    privileged: bool = Field(
+        description="Whether the container is running in privileged mode"
+    )
+    has_sys_admin: bool = Field(
+        description="Whether the container has CAP_SYS_ADMIN capability"
+    )
+    can_mount: bool = Field(
+        description="Whether the container can perform mount operations (SMB/NFS)"
+    )
+    message: str = Field(
+        description="Human-readable explanation of the capabilities status"
+    )
+
+
+def _check_container_capabilities() -> ContainerCapabilitiesResponse:
+    """
+    Check if the container has sufficient privileges for mounting filesystems.
+
+    This checks for either privileged mode or CAP_SYS_ADMIN capability by:
+    1. Reading /proc/self/status for capability flags
+    2. Checking if we can read the raw effective capabilities bitmask
+
+    CAP_SYS_ADMIN (bit 21) is required for mount operations.
+    In privileged mode, all capabilities are granted.
+    """
+    privileged = False
+    has_sys_admin = False
+
+    try:
+        # Read the capabilities from /proc/self/status
+        with open("/proc/self/status", "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("CapEff:"):
+                    # CapEff is a hex bitmask of effective capabilities
+                    cap_hex = line.split(":")[1].strip()
+                    cap_int = int(cap_hex, 16)
+
+                    # CAP_SYS_ADMIN is bit 21 (value 2097152 = 0x200000)
+                    # In privileged mode, typically all bits are set
+                    cap_sys_admin_bit = 1 << 21
+
+                    has_sys_admin = bool(cap_int & cap_sys_admin_bit)
+
+                    # Check if privileged (typically all caps = 0x3fffffffff or similar)
+                    # A good heuristic: if many high-level caps are set, likely privileged
+                    # CAP_MKNOD (bit 27), CAP_SYS_RAWIO (bit 17), CAP_SYS_PTRACE (bit 19)
+                    high_privilege_bits = (1 << 27) | (1 << 17) | (1 << 19) | (1 << 21)
+                    if (cap_int & high_privilege_bits) == high_privilege_bits:
+                        privileged = True
+
+                    break
+    except Exception as e:
+        logger.debug(f"Failed to read capabilities from /proc/self/status: {e}")
+
+    can_mount = privileged or has_sys_admin
+
+    if privileged:
+        message = (
+            "Container is running in privileged mode. SMB/NFS mounts are available."
+        )
+    elif has_sys_admin:
+        message = (
+            "Container has CAP_SYS_ADMIN capability. SMB/NFS mounts are available."
+        )
+    else:
+        message = (
+            "Container lacks mount privileges. To enable SMB/NFS mounting, "
+            "uncomment 'privileged: true' and 'cap_add: SYS_ADMIN' in docker-compose.yml "
+            "and restart the container."
+        )
+
+    return ContainerCapabilitiesResponse(
+        privileged=privileged,
+        has_sys_admin=has_sys_admin,
+        can_mount=can_mount,
+        message=message,
+    )
+
+
+@router.get(
+    "/filesystem/capabilities",
+    response_model=ContainerCapabilitiesResponse,
+    tags=["Filesystem Indexer"],
+)
+async def check_container_capabilities(_user: User = Depends(require_admin)):
+    """
+    Check if the container has sufficient privileges for mounting SMB/NFS filesystems.
+
+    Returns whether the container is running in privileged mode or has CAP_SYS_ADMIN,
+    which are required for mounting network filesystems inside the container.
+
+    This endpoint helps the UI determine whether to show SMB/NFS options in the
+    filesystem indexer wizard.
+    """
+    return _check_container_capabilities()
+
+
+# -----------------------------------------------------------------------------
 # Host Filesystem Browser (for volume mount discovery)
 # -----------------------------------------------------------------------------
 

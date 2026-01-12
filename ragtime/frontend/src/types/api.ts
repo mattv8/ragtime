@@ -897,6 +897,18 @@ export interface MountDiscoveryResponse {
   docker_compose_example: string;
 }
 
+// Container Capabilities Response
+export interface ContainerCapabilitiesResponse {
+  /** Whether the container is running in privileged mode */
+  privileged: boolean;
+  /** Whether the container has CAP_SYS_ADMIN capability */
+  has_sys_admin: boolean;
+  /** Whether the container can perform mount operations (SMB/NFS) */
+  can_mount: boolean;
+  /** Human-readable explanation of the capabilities status */
+  message: string;
+}
+
 // NFS Discovery Types
 export interface NFSExport {
   export_path: string;
