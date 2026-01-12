@@ -1,22 +1,22 @@
 # Ragtime
 
-OpenAI-compatible RAG API with LangChain tool calling for business intelligence queries.
+OpenAI-compatible RAG API and MCP server with LangChain tool calling for business intelligence queries.
 
-🚀 **[Live Demo](https://ragtime.dev.visnovsky.us)**
+🚀 **[Live Demo (coming soon)](https://ragtime.dev.visnovsky.us)**
 📄 **[Contributing Guide](CONTRIBUTING.md)**
 
 ## Table of Contents
 
 - [Features](#features)
 - [Quick Start](#quick-start)
-- [Environment Variables](#environment-variables)
-- [Connecting to OpenWebUI](#connecting-to-openwebui)
+- [Security](#security)
+- [Tool Configuration](#tool-configuration)
 - [Model Context Protocol (MCP) Integration](#model-context-protocol-mcp-integration)
   - [MCP Server Setup](#mcp-server-setup)
     - [HTTP Transport (Recommended)](#http-transport-recommended)
     - [Stdio Transport (Alternative)](#stdio-transport-alternative)
-  - [Tool Configuration](#tool-configuration)
 - [Creating FAISS Indexes](#creating-faiss-indexes)
+- [Connecting to OpenWebUI](#connecting-to-openwebui)
 - [License](#license)
 - [Updating](#updating)
 - [Troubleshooting](#troubleshooting)
@@ -28,7 +28,6 @@ OpenAI-compatible RAG API with LangChain tool calling for business intelligence 
 - **RAG with FAISS**: Vector search over your codebase documentation
 - **Tool Calling**: Execute Odoo ORM queries and PostgreSQL queries via natural language
 - **Security**: Read-only by default with SQL injection and command injection prevention
-- **Async**: Non-blocking execution for better performance
 
 ## Quick Start
 
@@ -41,7 +40,7 @@ OpenAI-compatible RAG API with LangChain tool calling for business intelligence 
 
 1. **Create environment file:**
 
-   Create a file named `.env` with the following content:
+  Create a file named [.env](.env) with the following content (you can also copy from the full example in [.env.example](.env.example)):
 
    <details>
    <summary>Click to expand .env template</summary>
@@ -97,7 +96,7 @@ OpenAI-compatible RAG API with LangChain tool calling for business intelligence 
 
    </details>
 
-2. **Edit `.env`** and configure your specific values (see [Environment Variables](#environment-variables) section)
+2. **Edit .env** and configure your specific values (see [.env.example](.env.example) for the complete sample file)
 
 3. **Create docker-compose.yml:**
 
@@ -183,7 +182,7 @@ OpenAI-compatible RAG API with LangChain tool calling for business intelligence 
      ragtime-db-data:
    ```
 
-   **Note:** All configuration variables are loaded from the `.env` file via `env_file`. The `environment` section only overrides `DATABASE_URL` to use the container network.
+   > **Note:** All configuration variables are loaded from the `.env` file via `env_file`. The `environment` section only overrides `DATABASE_URL` to use the container network.
 
    </details>
 
@@ -227,33 +226,17 @@ The SSH tool uses Paramiko with `AutoAddPolicy`, which accepts any host key with
 ### Third-Party Data Relay
 Queries and tool calls may forward your data to external services you configure (OpenAI, Anthropic, Ollama, PostgreSQL, MSSQL, SSH hosts). Only connect to services you trust with your data.
 
-### Updating
+## Tool Configuration
 
-To update to the latest version:
+Before you connect Ragtime to MCP clients, configure tools in the Ragtime web UI so they are ready for use:
 
-```bash
-docker compose pull
-docker compose up -d
-```
+1. Open the web UI at http://localhost:8000 and log in with your admin account.
+2. Navigate to the **Tools** tab.
+3. Click **Add Tool** and select the tool type (PostgreSQL, Odoo, SSH, filesystem indexer, etc.).
+4. Fill in connection details (hostnames, credentials, database names, paths) for each tool.
+5. Use the built-in test button to verify each tool connection.
 
-## Environment Variables
-
-### Database Configuration
-- `POSTGRES_PASSWORD` - PostgreSQL password (required, used by both containers)
-
-### Authentication
-- `LOCAL_ADMIN_USER` - Local admin username (default: `admin`)
-- `LOCAL_ADMIN_PASSWORD` - Local admin password (required for first setup)
-- `JWT_SECRET_KEY` - Secret key for JWT signing (auto-generated if not set; set explicitly when deploying)
-
-### Server Configuration
-- `PORT` - API port (default: `8000`)
-- `API_KEY` - Optional API key for external authentication
-- `ALLOWED_ORIGINS` - CORS allowed origins (default: `*`)
-- `SESSION_COOKIE_SECURE` - Set to `true` if behind HTTPS reverse proxy
-
-### Debug
-- `DEBUG_MODE` - Enable debug logging (default: `false`)
+Only tools that pass their health checks are exposed to chat and MCP clients. Configure and verify your tools here before following the MCP Integration section below.
 
 ## Connecting to OpenWebUI
 
@@ -299,7 +282,7 @@ Ragtime exposes an MCP endpoint at `/mcp` that supports the Streamable HTTP tran
 }
 ```
 
-**NOTE:** For remote access, replace `localhost:8000` with your server URL.
+> **NOTE:** For remote access, replace `localhost:8000` with your server URL.
 
 #### Stdio Transport (Alternative)
 
@@ -324,18 +307,6 @@ Replace `ragtime` with your container name if different (find it with `docker ps
 - **Cursor**: `.cursor/mcp.json`
 - **Windsurf**: `~/.codeium/windsurf/mcp_config.json`
 
-### Tool Configuration
-
-Before tools appear in your MCP client, configure them in the Ragtime UI:
-
-1. Navigate to the **Tools** tab at http://localhost:8000
-2. Click **Add Tool** and select the tool type
-3. Configure connection details (hostname, credentials, etc.)
-4. Test the connection to verify it works
-5. The tool will automatically appear in your MCP client
-
-**Tool Health Monitoring**: Ragtime only exposes tools that pass a heartbeat check. Offline or unreachable tools are automatically hidden from MCP clients.
-
 ## Creating FAISS Indexes
 
 The Indexer UI provides an easy way to create FAISS indexes from your codebases.
@@ -354,6 +325,15 @@ The UI provides:
 ## License
 
 MIT
+
+## Updating
+
+To update to the latest version:
+
+```bash
+docker compose pull
+docker compose up -d
+```
 
 ## Troubleshooting
 
