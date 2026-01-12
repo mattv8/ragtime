@@ -2,8 +2,27 @@
 
 OpenAI-compatible RAG API and MCP server with LangChain tool calling for business intelligence queries.
 
-🚀 **[Live Demo (coming soon)](https://ragtime.dev.visnovsky.us)**
-📄 **[Contributing Guide](CONTRIBUTING.md)**
+<p align="center">
+  <a href="https://ragtime.dev.visnovsky.us"><strong>🚀 Live Demo (coming soon)</strong></a><br />
+  <a href="CONTRIBUTING.md"><strong>📄 Contributing Guide</strong></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/mattv8/ragtime/actions/workflows/build-container.yml">
+    <img src="https://github.com/mattv8/ragtime/actions/workflows/build-container.yml/badge.svg?branch=main" alt="Build" />
+  </a>
+  <a href="https://github.com/mattv8/ragtime/actions/workflows/build-container.yml">
+    <img src="https://img.shields.io/badge/Container-signed%20with%20Cosign-0a7cff" alt="Container Signed" />
+  </a>
+  <a href="https://github.com/mattv8/ragtime/actions/workflows/build-container.yml?query=branch%3Amain+event%3Apush">
+    <img src="https://img.shields.io/badge/SBOM-SPDX%20artifact-4c1" alt="SBOM" />
+  </a>
+</p>
+
+<div align="center">
+  <img src=".github/images/2026-01-12.png" alt="Screenshot 1" height="360" />
+  <img src=".github/images/Screenshot%202026-01-12%20110434.png" alt="Screenshot 2" height="360" />
+</div>
 
 ## Table of Contents
 
@@ -200,6 +219,8 @@ OpenAI-compatible RAG API and MCP server with LangChain tool calling for busines
 ## Security
 
 Ragtime is designed for self-hosted deployment on trusted networks. Review these recommendations before exposing it beyond localhost:
+
+CI builds each push; main-branch images are Cosign-signed and ship with an SPDX SBOM artifact (linked from the badges above and workflow runs) so you can verify what you pull from the registry.
 
 ### Network & Access
 - **Run behind a reverse proxy or firewall.** Avoid exposing port 8000 directly to the public internet.
