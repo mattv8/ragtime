@@ -52,9 +52,9 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/indexes", tags=["Indexer"])
 
-# Path to static files - React build lives under dist
-STATIC_DIR = Path(__file__).parent / "static"
-DIST_DIR = STATIC_DIR / "dist"
+# Path to static files - React build lives under frontend/dist
+FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
+DIST_DIR = FRONTEND_DIR / "dist"
 ASSETS_DIR = DIST_DIR / "assets"
 
 # Check if running in development mode

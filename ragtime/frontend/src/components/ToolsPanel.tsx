@@ -3,6 +3,7 @@ import { api } from '@/api';
 import type { ToolConfig, HeartbeatStatus } from '@/types';
 import { TOOL_TYPE_INFO } from '@/types';
 import { ToolWizard } from './ToolWizard';
+import { Icon, getToolIconType } from './Icon';
 
 // Confirmation modal state
 interface ConfirmationState {
@@ -85,7 +86,7 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
   return (
     <div className={`tool-card ${!tool.enabled ? 'disabled' : ''}`}>
       <div className="tool-card-header">
-        <div className="tool-card-icon">{typeInfo?.icon === 'database' ? '🗄️' : typeInfo?.icon === 'terminal' ? '💻' : '🖥️'}</div>
+        <div className="tool-card-icon"><Icon name={getToolIconType(typeInfo?.icon)} size={24} /></div>
         <div className="tool-card-title">
           <h3>{tool.name}</h3>
           <span className="tool-card-type">{typeInfo?.name || tool.tool_type}</span>
@@ -426,7 +427,7 @@ export function ToolsPanel() {
             {Object.entries(TOOL_TYPE_INFO).map(([type, info]) => (
               <div key={type} className="tool-type-info">
                 <span className="tool-type-icon">
-                  {info.icon === 'database' ? '🗄️' : info.icon === 'terminal' ? '💻' : '🖥️'}
+                  <Icon name={getToolIconType(info.icon)} size={20} />
                 </span>
                 <div>
                   <strong>{info.name}</strong>

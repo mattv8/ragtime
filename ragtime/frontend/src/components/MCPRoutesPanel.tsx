@@ -8,6 +8,7 @@ import type {
   IndexInfo,
   AppSettings,
 } from '@/types';
+import { Icon } from './Icon';
 
 interface MCPRoutesPanelProps {
   onClose?: () => void;
@@ -28,7 +29,7 @@ function RouteCard({ route, tools, onEdit, onDelete, onToggle }: RouteCardProps)
   return (
     <div className={`tool-card ${!route.enabled ? 'disabled' : ''}`}>
       <div className="tool-card-header">
-        <div className="tool-card-icon">🔌</div>
+        <div className="tool-card-icon"><Icon name="plug" size={24} /></div>
         <div className="tool-card-title">
           <h3>{route.name}</h3>
           <span className="tool-card-type">/mcp/{route.route_path}</span>
@@ -270,7 +271,7 @@ function RouteWizard({
     <div className="wizard-panel">
       <div className="wizard-header">
         <h3>{editingRoute ? 'Edit MCP Route' : 'Create MCP Route'}</h3>
-        <button type="button" className="close-btn" onClick={onCancel}>✕</button>
+        <button type="button" className="close-btn" onClick={onCancel}><Icon name="close" size={18} /></button>
       </div>
 
       <form onSubmit={handleSubmit} className="wizard-form">
@@ -700,7 +701,7 @@ export function MCPRoutesPanel({ onClose }: MCPRoutesPanelProps) {
       <>
         <div className="modal-header">
           <h3>MCP Routes</h3>
-          {onClose && <button type="button" className="close-btn" onClick={onClose}>✕</button>}
+          {onClose && <button type="button" className="close-btn" onClick={onClose}><Icon name="close" size={18} /></button>}
         </div>
         <div className="modal-body">
           <p className="muted">Loading routes...</p>
@@ -713,7 +714,7 @@ export function MCPRoutesPanel({ onClose }: MCPRoutesPanelProps) {
     <>
       <div className="modal-header">
         <h3>MCP Routes</h3>
-        {onClose && <button type="button" className="close-btn" onClick={onClose}>✕</button>}
+        {onClose && <button type="button" className="close-btn" onClick={onClose}><Icon name="close" size={18} /></button>}
       </div>
 
       <div className="modal-body">
@@ -780,7 +781,7 @@ export function MCPRoutesPanel({ onClose }: MCPRoutesPanelProps) {
           <div className="modal-content modal-small" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h3>Confirm Delete</h3>
-              <button type="button" className="close-btn" onClick={() => setDeleteConfirm(null)}>✕</button>
+              <button type="button" className="close-btn" onClick={() => setDeleteConfirm(null)}><Icon name="close" size={18} /></button>
             </div>
             <div className="modal-body">
               <p>Are you sure you want to delete this MCP route?</p>

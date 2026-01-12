@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Copy, Check } from 'lucide-react';
+import { Copy, Check, Loader2, Pencil, Trash2 } from 'lucide-react';
 import { api } from '@/api';
 import type { Conversation, ChatMessage, AvailableModel, ChatTask, User } from '@/types';
 
@@ -74,7 +74,7 @@ const ToolCallDisplay = memo(function ToolCallDisplay({ toolCall, defaultExpande
         onClick={() => setExpanded(!expanded)}
       >
         <span className="tool-call-icon">
-          {toolCall.status === 'running' ? '⏳' : '✓'}
+          {toolCall.status === 'running' ? <Loader2 size={14} className="spinning" /> : <Check size={14} />}
         </span>
         <span className="tool-call-name">{toolCall.tool}</span>
         <span className="tool-call-toggle">{expanded ? '▼' : '▶'}</span>
@@ -921,7 +921,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
             <div className="chat-conversation-title">
               {conv.active_task_id && (
                 <span className="chat-task-indicator" title="Processing in background">
-                  ⏳
+                  <Loader2 size={12} className="spinning" />
                 </span>
               )}
               {conv.title}
@@ -939,7 +939,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
                 onClick={(e) => confirmDeleteConversation(conv.id, e)}
                 title="Confirm delete"
               >
-                ✓
+                <Check size={14} />
               </button>
               <button
                 className="chat-action-btn cancel-delete"
@@ -959,14 +959,14 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
                 onClick={(e) => startEditingTitle(conv, e)}
                 title="Rename"
               >
-                ✏️
+                <Pencil size={14} />
               </button>
               <button
                 className="chat-action-btn"
                 onClick={(e) => deleteConversation(conv.id, e)}
                 title="Delete"
               >
-                🗑️
+                <Trash2 size={14} />
               </button>
             </>
           )}
@@ -1212,7 +1212,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
                                   onClick={() => startEditMessage(idx, msg.content)}
                                   title="Edit and resend"
                                 >
-                                  ✏️
+                                  <Pencil size={12} />
                                 </button>
                               )}
                             </div>

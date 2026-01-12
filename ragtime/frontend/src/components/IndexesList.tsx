@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { X } from 'lucide-react';
 import { api } from '@/api';
 import type { IndexInfo, RepoVisibilityResponse } from '@/types';
 import { GitIndexWizard } from './GitIndexWizard';
@@ -332,7 +333,7 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
             className="close-btn"
             onClick={() => setShowCreateWizard(false)}
           >
-            ✕
+            <X size={18} />
           </button>
         ) : (
           <button

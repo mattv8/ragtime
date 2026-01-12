@@ -19,6 +19,7 @@ import type {
 } from '@/types';
 import { TOOL_TYPE_INFO, MOUNT_TYPE_INFO } from '@/types';
 import { DisabledPopover } from './Popover';
+import { Icon, getToolIconType } from './Icon';
 
 // System mounts to filter out from the "Available Mounts" display
 // These are internal container mounts not useful for user filesystem indexing
@@ -173,13 +174,13 @@ function DirectoryBrowser({ currentPath, entries, loading, error, onNavigate, on
               className="browser-entry"
               onClick={() => onNavigate(entry.path)}
             >
-              <span className="entry-icon">📁</span>
+              <span className="entry-icon"><Icon name="folder" size={16} /></span>
               <span className="entry-name">{entry.name}</span>
             </button>
           ))}
           {filteredEntries.filter(e => !e.is_dir).slice(0, 3).map((entry) => (
             <div key={entry.path} className="browser-entry file">
-              <span className="entry-icon">📄</span>
+              <span className="entry-icon"><Icon name="file" size={16} /></span>
               <span className="entry-name">{entry.name}</span>
             </div>
           ))}
@@ -505,13 +506,13 @@ function FilesystemBrowser({ currentPath, onSelectPath }: FilesystemBrowserProps
                           className="browser-entry"
                           onClick={() => handleNavigate(entry.path)}
                         >
-                          <span className="entry-icon">📁</span>
+                          <span className="entry-icon"><Icon name="folder" size={16} /></span>
                           <span className="entry-name">{entry.name}</span>
                         </button>
                       ))}
                       {filteredEntries.filter(e => !e.is_dir).slice(0, 3).map((entry) => (
                         <div key={entry.path} className="browser-entry file">
-                          <span className="entry-icon">📄</span>
+                          <span className="entry-icon"><Icon name="file" size={16} /></span>
                           <span className="entry-name">{entry.name}</span>
                         </div>
                       ))}
@@ -684,7 +685,6 @@ function NFSBrowser({ host, selectedExport, selectedPath, onHostChange, onSelect
           onChange={(e) => setHostInput(e.target.value)}
           placeholder="nfs-server.local"
           onKeyDown={(e) => e.key === 'Enter' && handleDiscover()}
-          style={{ flex: 1 }}
         />
         <button
           type="button"
@@ -900,7 +900,7 @@ function SMBBrowser({
 
   return (
     <div className="filesystem-browser">
-      {/* Connection inputs */}
+      {/* Connection inputs - Row 1: Host, Username */}
       <div className="form-row" style={{ marginBottom: '0.5rem' }}>
         <div className="form-group" style={{ flex: 2, marginBottom: 0 }}>
           <input
@@ -918,6 +918,9 @@ function SMBBrowser({
             placeholder="Username"
           />
         </div>
+      </div>
+      {/* Row 2: Password, Domain */}
+      <div className="form-row" style={{ marginBottom: '0.5rem' }}>
         <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
           <input
             type="password"
@@ -926,15 +929,17 @@ function SMBBrowser({
             placeholder="Password"
           />
         </div>
+        <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
+          <input
+            type="text"
+            value={domainInput}
+            onChange={(e) => setDomainInput(e.target.value)}
+            placeholder="Domain (optional)"
+          />
+        </div>
       </div>
-      <div className="connection-test-row" style={{ marginBottom: '1rem' }}>
-        <input
-          type="text"
-          value={domainInput}
-          onChange={(e) => setDomainInput(e.target.value)}
-          placeholder="Domain (optional)"
-          style={{ flex: 1 }}
-        />
+      {/* Row 3: Discover button */}
+      <div style={{ marginBottom: '1rem' }}>
         <button
           type="button"
           className="btn btn-secondary"
@@ -1302,7 +1307,7 @@ function SSHAuthPanel({
                     title="Copy to clipboard"
                     style={keyCopied ? { backgroundColor: '#28a745', borderColor: '#28a745', color: 'white' } : undefined}
                   >
-                    {keyCopied ? '✓ Copied!' : 'Copy'}
+                    {keyCopied ? <><Icon name="check" size={14} /> Copied!</> : 'Copy'}
                   </button>
                 </div>
               </div>
@@ -1349,7 +1354,7 @@ function SSHAuthPanel({
                     onClick={onCopyPublicKey}
                     style={keyCopied ? { backgroundColor: '#28a745', borderColor: '#28a745', color: 'white' } : undefined}
                   >
-                    {keyCopied ? '✓ Copied!' : 'Copy'}
+                    {keyCopied ? <><Icon name="check" size={14} /> Copied!</> : 'Copy'}
                   </button>
                 </div>
               </div>
@@ -2100,7 +2105,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
               onClick={() => setToolType(type)}
             >
               <span className="tool-type-option-icon">
-                {info.icon === 'database' ? '🗄️' : info.icon === 'terminal' ? '💻' : info.icon === 'folder' ? '📁' : '🖥️'}
+                <Icon name={getToolIconType(info.icon)} size={24} />
               </span>
               <span className="tool-type-option-name">{info.name}</span>
               <span className="tool-type-option-desc">{info.description}</span>
@@ -3773,7 +3778,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
           <h4>Tool Type</h4>
           <p>
             <span className="review-icon">
-              {typeInfo?.icon === 'database' ? '🗄️' : typeInfo?.icon === 'terminal' ? '💻' : '🖥️'}
+              <Icon name={getToolIconType(typeInfo?.icon)} size={20} />
             </span>
             {typeInfo?.name}
           </p>
@@ -3832,7 +3837,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
       <div className="wizard-header">
         <h2>{isEditing ? 'Edit Tool' : 'Add Tool'}</h2>
         <button type="button" className="close-btn" onClick={onClose}>
-          ✕
+          <Icon name="close" size={18} />
         </button>
       </div>
 
