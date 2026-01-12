@@ -367,6 +367,7 @@ export interface AppSettings {
   search_results_k: number;
   aggregate_search: boolean;
   // MCP Configuration
+  mcp_enabled: boolean;
   mcp_default_route_auth: boolean;
   has_mcp_default_password: boolean;
   mcp_default_route_password?: string;
@@ -412,6 +413,7 @@ export interface UpdateSettingsRequest {
   search_results_k?: number;
   aggregate_search?: boolean;
   // MCP settings
+  mcp_enabled?: boolean;
   mcp_default_route_auth?: boolean;
   mcp_default_route_password?: string;
   // Tool settings

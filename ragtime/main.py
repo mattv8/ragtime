@@ -79,11 +79,8 @@ async def lifespan(app: FastAPI):
 
     await background_task_service.start()
 
-    # Start MCP session manager if enabled
-    if settings.mcp_enabled:
-        async with mcp_lifespan_manager():
-            yield
-    else:
+    # Start MCP session manager (enable/disable checked at request time)
+    async with mcp_lifespan_manager():
         yield
 
     # Cleanup - stop background services before disconnecting DB
@@ -143,16 +140,13 @@ if INDEXER_ASSETS_DIR.exists():
     )
 logger.info("Indexer API enabled at /indexes, UI served at root (/)")
 
-# Include MCP routes
-if settings.mcp_enabled:
-    app.include_router(mcp_router)  # Debug endpoints at /mcp-debug/*
-    app.include_router(mcp_config_router)  # MCP route configuration at /mcp-routes/*
-    # Add all MCP routes (default /mcp and custom /mcp/{route_path})
-    for route in get_mcp_routes():
-        app.routes.append(route)
-    logger.info(
-        "MCP enabled: HTTP transport at /mcp, custom routes at /mcp/<name>, debug API at /mcp-debug"
-    )
+# Include MCP routes (enabled/disabled controlled via database setting)
+app.include_router(mcp_router)  # Debug endpoints at /mcp-debug/*
+app.include_router(mcp_config_router)  # MCP route configuration at /mcp-routes/*
+# Add all MCP routes (default /mcp and custom /mcp/{route_path})
+for route in get_mcp_routes():
+    app.routes.append(route)
+logger.info("MCP routes registered (enable/disable via Settings UI)")
 
 
 # OAuth discovery endpoint - explicitly reject to prevent client prompts

@@ -192,6 +192,12 @@ async def _check_default_route_auth() -> tuple[bool, str | None]:
     return require_auth, encrypted_password
 
 
+async def _check_mcp_enabled() -> bool:
+    """Check if MCP server is enabled in database settings."""
+    app_settings = await get_app_settings()
+    return app_settings.get("mcp_enabled", False)
+
+
 class MCPTransportEndpoint:
     """
     ASGI endpoint for MCP Streamable HTTP transport.
@@ -202,6 +208,23 @@ class MCPTransportEndpoint:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Handle MCP protocol request by delegating to session manager."""
+        # Check if MCP is enabled
+        if not await _check_mcp_enabled():
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 503,
+                    "headers": [[b"content-type", b"application/json"]],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": b'{"error": "MCP server is disabled. Enable it in Settings."}',
+                }
+            )
+            return
+
         # Check if default route requires auth and get password
         require_auth, encrypted_password = await _check_default_route_auth()
 
@@ -252,6 +275,23 @@ class MCPCustomRouteEndpoint:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Handle MCP protocol request for a custom route."""
+        # Check if MCP is enabled
+        if not await _check_mcp_enabled():
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 503,
+                    "headers": [[b"content-type", b"application/json"]],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": b'{"error": "MCP server is disabled. Enable it in Settings."}',
+                }
+            )
+            return
+
         # Extract route_path from path
         path = scope.get("path", "")
         # Path format: /mcp/{route_path}

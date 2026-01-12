@@ -616,6 +616,7 @@ class IndexerRepository:
             search_results_k=getattr(settings, "searchResultsK", 5),
             aggregate_search=getattr(settings, "aggregateSearch", True),
             # MCP configuration
+            mcp_enabled=getattr(settings, "mcpEnabled", False),
             mcp_default_route_auth=getattr(settings, "mcpDefaultRouteAuth", False),
             mcp_default_route_password=mcp_password,
             has_mcp_default_password=getattr(settings, "mcpDefaultRoutePassword", None)
@@ -665,6 +666,7 @@ class IndexerRepository:
             "search_results_k": "searchResultsK",
             "aggregate_search": "aggregateSearch",
             # MCP configuration
+            "mcp_enabled": "mcpEnabled",
             "mcp_default_route_auth": "mcpDefaultRouteAuth",
             "mcp_default_route_password": "mcpDefaultRoutePassword",
             # Embedding dimension tracking (internal use)

@@ -134,7 +134,6 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # MCP Server Settings
     # -------------------------------------------------------------------------
-    mcp_enabled: bool = Field(default=True, alias="MCP_ENABLED")
     mcp_heartbeat_cache_ttl: int = Field(
         default=30,
         alias="MCP_HEARTBEAT_CACHE_TTL",

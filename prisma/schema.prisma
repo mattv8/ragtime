@@ -156,6 +156,7 @@ model AppSettings {
   enableWriteOps    Boolean  @default(false) @map("enable_write_ops")
 
   // MCP Configuration
+  mcpEnabled              Boolean @default(false) @map("mcp_enabled") // Enable/disable MCP server
   mcpDefaultRouteAuth     Boolean @default(false) @map("mcp_default_route_auth") // Require auth for default /mcp route
   mcpDefaultRoutePassword String? @map("mcp_default_route_password") // Password hash for default /mcp route
 

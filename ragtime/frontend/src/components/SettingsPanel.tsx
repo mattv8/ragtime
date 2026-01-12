@@ -359,6 +359,7 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
         search_results_k: data.search_results_k,
         aggregate_search: data.aggregate_search,
         // MCP settings
+        mcp_enabled: data.mcp_enabled,
         mcp_default_route_auth: data.mcp_default_route_auth,
         mcp_default_route_password: data.mcp_default_route_password ?? '',
       });
@@ -671,6 +672,7 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
 
     try {
       const dataToSave: UpdateSettingsRequest = {
+        mcp_enabled: formData.mcp_enabled,
         mcp_default_route_auth: formData.mcp_default_route_auth,
       };
       // Include password if it was modified
@@ -679,9 +681,10 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
       }
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
-      // Update formData with the returned password (decrypted) or empty if cleared
+      // Update formData with the returned values
       setFormData(prev => ({
         ...prev,
+        mcp_enabled: updated.mcp_enabled,
         mcp_default_route_auth: updated.mcp_default_route_auth,
         mcp_default_route_password: updated.mcp_default_route_password ?? '',
       }));
@@ -1697,46 +1700,69 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
           </p>
 
           <div className="form-group">
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth ?? false}
-                onChange={(e) =>
-                  setFormData({ ...formData, mcp_default_route_auth: e.target.checked })
-                }
-                style={{ marginRight: '0.5rem' }}
-              />
-              <span>Require authentication for default /mcp route</span>
+            <label className="chat-toggle-control" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <label className="toggle-switch">
+                <input
+                  type="checkbox"
+                  checked={formData.mcp_enabled ?? settings?.mcp_enabled ?? false}
+                  onChange={(e) =>
+                    setFormData({ ...formData, mcp_enabled: e.target.checked })
+                  }
+                />
+                <span className="toggle-slider"></span>
+              </label>
+              <span>Enable MCP Server</span>
             </label>
             <p className="field-help">
-              When enabled, the default <code>/mcp</code> endpoint requires a Bearer token.
-              {settings?.has_mcp_default_password
-                ? ' A password is configured - MCP clients should use this password as the Bearer token.'
-                : ' Set a password below to enable password-based authentication.'}
+              When enabled, the MCP server endpoints (<code>/mcp</code> and custom routes) will be active.
+              Disable to prevent all MCP access.
             </p>
           </div>
 
-          {/* Warning when auth is disabled */}
-          {!(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) && (
-            <div className="field-warning" style={{ marginTop: '0.5rem', padding: '0.75rem', backgroundColor: 'rgba(255, 193, 7, 0.15)', borderLeft: '3px solid #ffc107', borderRadius: '4px' }}>
-              <strong>Security Notice:</strong> The <code>/mcp</code> endpoint is currently open without authentication.
-              Anyone with network access can invoke your configured tools. Consider enabling authentication if this
-              server is accessible beyond localhost or a trusted network.
-            </div>
-          )}
+          {/* Only show other MCP settings when enabled */}
+          {(formData.mcp_enabled ?? settings?.mcp_enabled ?? false) && (
+            <>
+              <div className="form-group">
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth ?? false}
+                    onChange={(e) =>
+                      setFormData({ ...formData, mcp_default_route_auth: e.target.checked })
+                    }
+                    style={{ marginRight: '0.5rem' }}
+                  />
+                  <span>Require authentication for default /mcp route</span>
+                </label>
+                <p className="field-help">
+                  When enabled, the default <code>/mcp</code> endpoint requires a Bearer token.
+                  {settings?.has_mcp_default_password
+                    ? ' A password is configured - MCP clients should use this password as the Bearer token.'
+                    : ' Set a password below to enable password-based authentication.'}
+                </p>
+              </div>
 
-          {/* Password for default MCP route */}
-          {(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) && (
-            <div className="form-group" style={{ marginTop: '1rem' }}>
-              <label htmlFor="mcp-password">MCP Password</label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <input
-                  type={showMcpPassword ? 'text' : 'password'}
-                  id="mcp-password"
-                  placeholder={settings?.has_mcp_default_password ? '••••••••' : 'Enter password (min 8 characters)'}
-                  value={formData.mcp_default_route_password ?? ''}
-                  onChange={(e) =>
-                    setFormData({ ...formData, mcp_default_route_password: e.target.value })
+              {/* Warning when auth is disabled */}
+              {!(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) && (
+                <div className="field-warning" style={{ marginTop: '0.5rem', padding: '0.75rem', backgroundColor: 'rgba(255, 193, 7, 0.15)', borderLeft: '3px solid #ffc107', borderRadius: '4px' }}>
+                  <strong>Security Notice:</strong> The <code>/mcp</code> endpoint is currently open without authentication.
+                  Anyone with network access can invoke your configured tools. Consider enabling authentication if this
+                  server is accessible beyond localhost or a trusted network.
+                </div>
+              )}
+
+              {/* Password for default MCP route */}
+              {(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) && (
+                <div className="form-group" style={{ marginTop: '1rem' }}>
+                  <label htmlFor="mcp-password">MCP Password</label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <input
+                      type={showMcpPassword ? 'text' : 'password'}
+                      id="mcp-password"
+                      placeholder={settings?.has_mcp_default_password ? '••••••••' : 'Enter password (min 8 characters)'}
+                      value={formData.mcp_default_route_password ?? ''}
+                      onChange={(e) =>
+                        setFormData({ ...formData, mcp_default_route_password: e.target.value })
                   }
                   style={{ flex: 1, maxWidth: '400px' }}
                 />
@@ -1772,6 +1798,8 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
           {!(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) && mcpError && (
             <p className="field-error" style={{ marginTop: '0.5rem' }}>{mcpError}</p>
           )}
+            </>
+          )}
 
           <div className="form-group" style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem' }}>
             <button
@@ -1782,13 +1810,15 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
             >
               {mcpSaving ? 'Saving...' : 'Save MCP Configuration'}
             </button>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={() => setShowMcpRoutesPanel(true)}
-            >
-              Manage Custom Routes
-            </button>
+            {(formData.mcp_enabled ?? settings?.mcp_enabled ?? false) && (
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setShowMcpRoutesPanel(true)}
+              >
+                Manage Custom Routes
+              </button>
+            )}
           </div>
         </fieldset>
 

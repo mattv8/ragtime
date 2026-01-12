@@ -94,6 +94,7 @@ class SettingsCache:
                 "embedding_dimensions": prisma_settings.embeddingDimensions,
                 "ollama_base_url": prisma_settings.ollamaBaseUrl,
                 # MCP settings
+                "mcp_enabled": prisma_settings.mcpEnabled,
                 "mcp_default_route_auth": prisma_settings.mcpDefaultRouteAuth,
                 "mcp_default_route_password": mcp_password,  # Kept encrypted
             }
@@ -131,6 +132,7 @@ class SettingsCache:
                 "embedding_model": "nomic-embed-text",
                 "ollama_base_url": "http://localhost:11434",
                 # MCP settings
+                "mcp_enabled": False,
                 "mcp_default_route_auth": False,
                 "mcp_default_route_password": None,
             }

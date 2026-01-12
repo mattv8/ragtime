@@ -448,6 +448,10 @@ class AppSettings(BaseModel):
     )
 
     # MCP Configuration
+    mcp_enabled: bool = Field(
+        default=False,
+        description="If True, enable the MCP (Model Context Protocol) server endpoints.",
+    )
     mcp_default_route_auth: bool = Field(
         default=False,
         description="If True, require Bearer token authentication for the default /mcp route.",
@@ -579,6 +583,7 @@ class UpdateSettingsRequest(BaseModel):
     search_results_k: Optional[int] = Field(default=None, ge=1, le=100)
     aggregate_search: Optional[bool] = None
     # MCP configuration
+    mcp_enabled: Optional[bool] = None
     mcp_default_route_auth: Optional[bool] = None
     mcp_default_route_password: Optional[str] = Field(
         default=None,
