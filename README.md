@@ -65,9 +65,9 @@ OpenAI-compatible RAG API with LangChain tool calling for business intelligence 
    LOCAL_ADMIN_USER=admin
    LOCAL_ADMIN_PASSWORD=changeme_admin
 
-   # JWT secret key for session tokens (auto-generated if not set)
-   # IMPORTANT: Set this in production to persist sessions across restarts
-   # JWT_SECRET_KEY=your-secret-key-here
+   # JWT secret key for session tokens
+   # REQUIRED unless DEBUG=true. Generate with: openssl rand -base64 32
+   JWT_SECRET_KEY=changeme_jwt_secret
 
    # -----------------------------------------------------------------------------
    # Server Configuration
