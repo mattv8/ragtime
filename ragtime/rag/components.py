@@ -348,9 +348,8 @@ class RAGComponents:
 
         if provider == "ollama":
             try:
-                from langchain_ollama import (
-                    ChatOllama,
-                )  # type: ignore[import-untyped,import-not-found]  # pyright: ignore[reportMissingImports]
+                from langchain_ollama import \
+                    ChatOllama  # type: ignore[import-untyped,import-not-found]  # pyright: ignore[reportMissingImports]
 
                 # Use LLM-specific Ollama settings if available, otherwise fall back to embedding settings
                 base_url = self._app_settings.get(
@@ -413,9 +412,8 @@ class RAGComponents:
         model = self._app_settings.get("embedding_model", "nomic-embed-text")
 
         if provider == "ollama":
-            from langchain_ollama import (
-                OllamaEmbeddings,
-            )  # type: ignore[import-untyped,import-not-found]  # pyright: ignore[reportMissingImports]
+            from langchain_ollama import \
+                OllamaEmbeddings  # type: ignore[import-untyped,import-not-found]  # pyright: ignore[reportMissingImports]
 
             base_url = self._app_settings.get(
                 "ollama_base_url", "http://localhost:11434"
@@ -936,9 +934,8 @@ class RAGComponents:
         When aggregate_search is disabled: creates search_git_history_<name> per index
         """
         from ragtime.tools.git_history import (
-            create_per_index_git_history_tool,
-            git_history_tool,
-        )
+            _is_shallow_repository, create_per_index_git_history_tool,
+            git_history_tool)
 
         tools: List[Any] = []
         index_base = Path(settings.index_data_path)
@@ -968,13 +965,23 @@ class RAGComponents:
                     # Only expose git history tool if depth != 1
                     # depth=0 means full history, depth>1 means we have commits to search
                     # depth=1 is a shallow clone with only the latest commit (not useful)
-                    if git_history_depth != 1:
-                        git_repos.append((index_dir.name, git_repo, description))
-                    else:
+                    if git_history_depth == 1:
                         logger.debug(
                             f"Skipping git history tool for {index_dir.name}: "
-                            "shallow clone (depth=1)"
+                            "shallow clone (depth=1 in config)"
                         )
+                        continue
+
+                    # Also check actual repo state - it may have been cloned externally
+                    # with --depth=1 even if our config doesn't reflect this
+                    if await _is_shallow_repository(git_repo):
+                        logger.debug(
+                            f"Skipping git history tool for {index_dir.name}: "
+                            "shallow repository detected (no history available)"
+                        )
+                        continue
+
+                    git_repos.append((index_dir.name, git_repo, description))
 
         if not git_repos:
             return []
@@ -1126,7 +1133,8 @@ class RAGComponents:
 
         async def execute_query(query: str = "", reason: str = "", **_: Any) -> str:
             """Execute PostgreSQL query using this tool's configuration."""
-            from ragtime.core.security import sanitize_output, validate_sql_query
+            from ragtime.core.security import (sanitize_output,
+                                               validate_sql_query)
 
             # Validate required fields
             if not query or not query.strip():
@@ -1296,7 +1304,8 @@ class RAGComponents:
 
         async def execute_odoo(code: str = "", reason: str = "", **_: Any) -> str:
             """Execute Odoo shell command using this tool's configuration."""
-            from ragtime.core.security import sanitize_output, validate_odoo_code
+            from ragtime.core.security import (sanitize_output,
+                                               validate_odoo_code)
 
             # Validate required fields
             if not code or not code.strip():
@@ -1458,7 +1467,8 @@ except Exception as e:
 
         async def execute_ssh(command: str = "", reason: str = "", **_: Any) -> str:
             """Execute SSH command using this tool's configuration."""
-            from ragtime.core.security import sanitize_output, validate_ssh_command
+            from ragtime.core.security import (sanitize_output,
+                                               validate_ssh_command)
             from ragtime.core.ssh import SSHConfig, execute_ssh_command
 
             # Validate required fields

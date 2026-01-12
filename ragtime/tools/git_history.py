@@ -83,10 +83,32 @@ async def _run_git_command(
         return -1, "", str(e)
 
 
+async def _is_shallow_repository(repo_path: Path) -> bool:
+    """Check if a git repository is a shallow clone.
+
+    Returns True if the repo was cloned with --depth=1 or similar,
+    meaning it has no meaningful git history to search.
+    """
+    # Check for .git/shallow file (indicates shallow clone)
+    shallow_file = repo_path / ".git" / "shallow"
+    if shallow_file.exists():
+        return True
+
+    # Also verify with git command for robustness
+    returncode, stdout, _ = await _run_git_command(
+        repo_path, ["rev-parse", "--is-shallow-repository"], timeout=5
+    )
+    if returncode == 0 and stdout.strip().lower() == "true":
+        return True
+
+    return False
+
+
 async def _find_git_repos(index_name: Optional[str] = None) -> List[tuple[str, Path]]:
     """Find all git repos in the index base path.
 
     Returns list of (index_name, repo_path) tuples.
+    Excludes shallow clones (--depth=1) which have no useful history.
     """
     index_base = Path(settings.index_data_path)
     repos: List[tuple[str, Path]] = []
@@ -103,6 +125,14 @@ async def _find_git_repos(index_name: Optional[str] = None) -> List[tuple[str, P
             # Filter by index name if specified
             if index_name and index_dir.name != index_name:
                 continue
+
+            # Skip shallow clones - they have no meaningful history to search
+            if await _is_shallow_repository(git_repo):
+                logger.debug(
+                    f"Skipping shallow git repo for {index_dir.name}: no history available"
+                )
+                continue
+
             repos.append((index_dir.name, git_repo))
 
     return repos
