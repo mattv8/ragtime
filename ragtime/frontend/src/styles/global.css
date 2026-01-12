@@ -1173,9 +1173,36 @@ input[type="password"]:focus {
   align-items: end;
 }
 
+.form-row-4 {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  gap: 12px;
+  align-items: end;
+}
+
 .form-group-small {
-  min-width: 100px;
+  min-width: 80px;
   max-width: 120px;
+}
+
+.form-group-button {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-self: end;
+  padding-bottom: 1px;
+}
+
+.form-group-button label {
+  visibility: hidden;
+  margin-bottom: 6px;
+  height: 0;
+  overflow: hidden;
+}
+
+.form-group-button .btn {
+  white-space: nowrap;
+  height: 42px;
 }
 
 .form-group-small input[type="number"] {
@@ -4199,7 +4226,8 @@ textarea:focus {
   /* Form layouts - Stack grid columns */
   .row,
   .form-row,
-  .form-row-3 {
+  .form-row-3,
+  .form-row-4 {
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -4207,6 +4235,10 @@ textarea:focus {
 
   .form-group-small {
     max-width: none;
+  }
+
+  .form-group-button label {
+    display: none;
   }
 
   /* Buttons */

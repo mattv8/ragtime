@@ -387,16 +387,32 @@ class AppSettings(BaseModel):
     )
     ollama_base_url: str = Field(
         default="http://localhost:11434",
-        description="Ollama server URL (computed from protocol/host/port)",
+        description="Ollama server URL for embeddings (computed from protocol/host/port)",
     )
 
     # LLM Configuration (for chat/RAG responses)
     llm_provider: str = Field(
-        default="openai", description="LLM provider: 'openai' or 'anthropic'"
+        default="openai",
+        description="LLM provider: 'openai', 'anthropic', or 'ollama'",
     )
     llm_model: str = Field(
         default="gpt-4-turbo",
-        description="LLM model name (e.g., 'gpt-4-turbo' for OpenAI, 'claude-3-sonnet-20240229' for Anthropic)",
+        description="LLM model name (e.g., 'gpt-4-turbo' for OpenAI, 'claude-3-sonnet-20240229' for Anthropic, 'llama3' for Ollama)",
+    )
+    # LLM Ollama connection settings (separate from embedding Ollama)
+    llm_ollama_protocol: str = Field(
+        default="http", description="Ollama LLM server protocol: 'http' or 'https'"
+    )
+    llm_ollama_host: str = Field(
+        default="localhost",
+        description="Ollama LLM server hostname or IP address",
+    )
+    llm_ollama_port: int = Field(
+        default=11434, ge=1, le=65535, description="Ollama LLM server port"
+    )
+    llm_ollama_base_url: str = Field(
+        default="http://localhost:11434",
+        description="Ollama LLM server URL (computed from protocol/host/port)",
     )
     openai_api_key: str = Field(
         default="",

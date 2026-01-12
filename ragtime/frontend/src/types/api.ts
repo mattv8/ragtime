@@ -346,14 +346,19 @@ export interface AppSettings {
   embedding_provider: 'ollama' | 'openai';
   embedding_model: string;
   embedding_dimensions?: number | null;
-  // Ollama connection settings (separate fields)
+  // Ollama connection settings for embeddings (separate fields)
   ollama_protocol: 'http' | 'https';
   ollama_host: string;
   ollama_port: number;
   ollama_base_url: string;
   // LLM Configuration (for chat/RAG responses)
-  llm_provider: 'openai' | 'anthropic';
+  llm_provider: 'openai' | 'anthropic' | 'ollama';
   llm_model: string;
+  // Ollama LLM connection settings (separate from embedding Ollama)
+  llm_ollama_protocol: 'http' | 'https';
+  llm_ollama_host: string;
+  llm_ollama_port: number;
+  llm_ollama_base_url: string;
   openai_api_key: string;
   anthropic_api_key: string;
   allowed_chat_models: string[];
@@ -392,8 +397,13 @@ export interface UpdateSettingsRequest {
   ollama_port?: number;
   ollama_base_url?: string;
   // LLM settings
-  llm_provider?: 'openai' | 'anthropic';
+  llm_provider?: 'openai' | 'anthropic' | 'ollama';
   llm_model?: string;
+  // LLM Ollama connection settings
+  llm_ollama_protocol?: 'http' | 'https';
+  llm_ollama_host?: string;
+  llm_ollama_port?: number;
+  llm_ollama_base_url?: string;
   openai_api_key?: string;
   anthropic_api_key?: string;
   allowed_chat_models?: string[];
@@ -1068,7 +1078,7 @@ export interface SendMessageResponse {
 export interface AvailableModel {
   id: string;
   name: string;
-  provider: 'openai' | 'anthropic';
+  provider: 'openai' | 'anthropic' | 'ollama';
   context_limit: number;  // Max context window tokens
 }
 

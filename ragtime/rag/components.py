@@ -263,8 +263,10 @@ class RAGComponents:
                     ChatOllama,
                 )  # type: ignore[import-untyped,import-not-found]  # pyright: ignore[reportMissingImports]
 
+                # Use LLM-specific Ollama settings if available, otherwise fall back to embedding settings
                 base_url = self._app_settings.get(
-                    "ollama_base_url", "http://localhost:11434"
+                    "llm_ollama_base_url",
+                    self._app_settings.get("ollama_base_url", "http://localhost:11434"),
                 )
                 self.llm = ChatOllama(
                     model=model,

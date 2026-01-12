@@ -4394,6 +4394,45 @@ async def _fetch_anthropic_models(api_key: str) -> LLMModelsResponse:
         )
 
 
+async def _fetch_ollama_llm_models(base_url: str) -> LLMModelsResponse:
+    """Fetch available models from Ollama server for LLM use."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{base_url}/api/tags")
+            response.raise_for_status()
+
+            data = response.json()
+            models = []
+
+            for model in data.get("models", []):
+                model_name = model.get("name", "")
+                if model_name:
+                    models.append(LLMModel(id=model_name, name=model_name))
+
+            return LLMModelsResponse(
+                success=True,
+                message=f"Found {len(models)} model(s).",
+                models=models,
+                default_model=models[0].id if models else None,
+            )
+
+    except httpx.ConnectError:
+        return LLMModelsResponse(
+            success=False,
+            message=f"Cannot connect to Ollama server at {base_url}. Is Ollama running?",
+        )
+    except httpx.TimeoutException:
+        return LLMModelsResponse(
+            success=False,
+            message=f"Connection to {base_url} timed out.",
+        )
+    except Exception as e:
+        return LLMModelsResponse(
+            success=False,
+            message=f"Failed to fetch Ollama models: {str(e)}",
+        )
+
+
 # =============================================================================
 # Conversation/Chat Endpoints
 # =============================================================================
@@ -4461,6 +4500,31 @@ async def get_available_chat_models():
         except Exception as e:
             logger.warning(f"Failed to fetch Anthropic models: {e}")
 
+    # Fetch Ollama models if LLM provider is Ollama and URL is configured
+    if app_settings.llm_provider == "ollama":
+        ollama_url = getattr(
+            app_settings,
+            "llm_ollama_base_url",
+            app_settings.ollama_base_url,
+        )
+        if ollama_url:
+            try:
+                result = await _fetch_ollama_llm_models(ollama_url)
+                if result.success:
+                    for m in result.models:
+                        all_models.append(
+                            AvailableModel(
+                                id=m.id,
+                                name=m.name,
+                                provider="ollama",
+                                context_limit=128000,  # Ollama models typically have large context
+                            )
+                        )
+                    if not default_model and result.default_model:
+                        default_model = result.default_model
+            except Exception as e:
+                logger.warning(f"Failed to fetch Ollama models: {e}")
+
     # Use current settings model as default if available
     current_model = app_settings.llm_model
     if current_model and any(m.id == current_model for m in all_models):
@@ -4525,6 +4589,29 @@ async def get_all_chat_models():
                     )
         except Exception as e:
             logger.warning(f"Failed to fetch Anthropic models: {e}")
+
+    # Fetch Ollama models if LLM provider is Ollama and URL is configured
+    if app_settings.llm_provider == "ollama":
+        ollama_url = getattr(
+            app_settings,
+            "llm_ollama_base_url",
+            app_settings.ollama_base_url,
+        )
+        if ollama_url:
+            try:
+                result = await _fetch_ollama_llm_models(ollama_url)
+                if result.success:
+                    for m in result.models:
+                        all_models.append(
+                            AvailableModel(
+                                id=m.id,
+                                name=m.name,
+                                provider="ollama",
+                                context_limit=128000,  # Ollama models typically have large context
+                            )
+                        )
+            except Exception as e:
+                logger.warning(f"Failed to fetch Ollama models: {e}")
 
     # Get currently allowed models from settings
     allowed_models = app_settings.allowed_chat_models or []

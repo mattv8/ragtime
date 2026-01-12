@@ -50,11 +50,17 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
   const [embeddingSaving, setEmbeddingSaving] = useState(false);
   const [llmSaving, setLlmSaving] = useState(false);
 
-  // Ollama connection state
+  // Ollama connection state (for embeddings)
   const [ollamaConnecting, setOllamaConnecting] = useState(false);
   const [ollamaConnected, setOllamaConnected] = useState(false);
   const [ollamaError, setOllamaError] = useState<string | null>(null);
   const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([]);
+
+  // LLM Ollama connection state (separate from embedding Ollama)
+  const [llmOllamaConnecting, setLlmOllamaConnecting] = useState(false);
+  const [llmOllamaConnected, setLlmOllamaConnected] = useState(false);
+  const [llmOllamaError, setLlmOllamaError] = useState<string | null>(null);
+  const [llmOllamaModels, setLlmOllamaModels] = useState<OllamaModel[]>([]);
 
   // LLM provider model fetching state
   const [llmModelsFetching, setLlmModelsFetching] = useState(false);
@@ -104,8 +110,9 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
 
   // Track if we've already auto-tested Ollama
   const hasAutoTestedOllama = useRef(false);
+  const hasAutoTestedLlmOllama = useRef(false);
 
-  // Test Ollama connection
+  // Test Ollama connection (for embeddings)
   const testOllamaConnection = useCallback(async (
     protocol: 'http' | 'https',
     host: string,
@@ -137,6 +144,41 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
       setOllamaError(err instanceof Error ? err.message : 'Connection test failed');
     } finally {
       setOllamaConnecting(false);
+    }
+  }, []);
+
+  // Test LLM Ollama connection (separate from embeddings)
+  const testLlmOllamaConnection = useCallback(async (
+    protocol: 'http' | 'https',
+    host: string,
+    port: number
+  ) => {
+    setLlmOllamaConnecting(true);
+    setLlmOllamaError(null);
+    setLlmOllamaConnected(false);
+    setLlmOllamaModels([]);
+
+    try {
+      const response = await api.testOllamaConnection({
+        protocol: protocol || 'http',
+        host: host || 'localhost',
+        port: port || 11434,
+      });
+
+      if (response.success) {
+        setLlmOllamaConnected(true);
+        setLlmOllamaModels(response.models);
+        setFormData((prev) => ({
+          ...prev,
+          llm_ollama_base_url: response.base_url,
+        }));
+      } else {
+        setLlmOllamaError(response.message);
+      }
+    } catch (err) {
+      setLlmOllamaError(err instanceof Error ? err.message : 'Connection test failed');
+    } finally {
+      setLlmOllamaConnecting(false);
     }
   }, []);
 
@@ -306,6 +348,10 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
         // LLM settings
         llm_provider: data.llm_provider,
         llm_model: data.llm_model,
+        llm_ollama_protocol: data.llm_ollama_protocol,
+        llm_ollama_host: data.llm_ollama_host,
+        llm_ollama_port: data.llm_ollama_port,
+        llm_ollama_base_url: data.llm_ollama_base_url,
         openai_api_key: data.openai_api_key,
         anthropic_api_key: data.anthropic_api_key,
         max_iterations: data.max_iterations,
@@ -316,10 +362,14 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
         mcp_default_route_auth: data.mcp_default_route_auth,
         mcp_default_route_password: data.mcp_default_route_password ?? '',
       });
-      // Reset Ollama connection state
+      // Reset Ollama connection state (for embeddings)
       setOllamaConnected(false);
       setOllamaError(null);
       setOllamaModels([]);
+      // Reset LLM Ollama connection state
+      setLlmOllamaConnected(false);
+      setLlmOllamaError(null);
+      setLlmOllamaModels([]);
       // Reset LLM models state
       setLlmModels([]);
       setLlmModelsError(null);
@@ -333,6 +383,16 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
           data.ollama_protocol || 'http',
           data.ollama_host || 'localhost',
           data.ollama_port || 11434
+        );
+      }
+
+      // Auto-test LLM Ollama if using ollama LLM provider
+      if (data.llm_provider === 'ollama' && !hasAutoTestedLlmOllama.current) {
+        hasAutoTestedLlmOllama.current = true;
+        testLlmOllamaConnection(
+          data.llm_ollama_protocol || 'http',
+          data.llm_ollama_host || 'localhost',
+          data.llm_ollama_port || 11434
         );
       }
 
@@ -543,7 +603,7 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
     setError(null);
 
     try {
-      const dataToSave = {
+      const dataToSave: Record<string, unknown> = {
         llm_provider: formData.llm_provider,
         llm_model: formData.llm_model,
         openai_api_key: formData.openai_api_key,
@@ -551,6 +611,13 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
         allowed_chat_models: formData.allowed_chat_models,
         max_iterations: formData.max_iterations,
       };
+      // Include LLM Ollama connection fields when using Ollama provider
+      if (formData.llm_provider === 'ollama') {
+        dataToSave.llm_ollama_protocol = formData.llm_ollama_protocol;
+        dataToSave.llm_ollama_host = formData.llm_ollama_host;
+        dataToSave.llm_ollama_port = formData.llm_ollama_port;
+        dataToSave.llm_ollama_base_url = `${formData.llm_ollama_protocol || 'http'}://${formData.llm_ollama_host || 'localhost'}:${formData.llm_ollama_port || 11434}`;
+      }
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
       setSuccess('LLM configuration saved');
@@ -737,25 +804,161 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
             <select
               value={formData.llm_provider || 'openai'}
               onChange={(e) => {
-                const newProvider = e.target.value as 'openai' | 'anthropic';
+                const newProvider = e.target.value as 'openai' | 'anthropic' | 'ollama';
                 setFormData({
                   ...formData,
                   llm_provider: newProvider,
                   llm_model:
                     newProvider === 'anthropic'
                       ? 'claude-sonnet-4-20250514'
-                      : 'gpt-4o',
+                      : newProvider === 'ollama'
+                        ? 'llama3'
+                        : 'gpt-4o',
                 });
                 // Reset LLM models when switching providers
                 setLlmModels([]);
                 setLlmModelsError(null);
                 setLlmModelsLoaded(false);
+                // Reset LLM Ollama state when switching away from Ollama
+                if (newProvider !== 'ollama') {
+                  setLlmOllamaConnected(false);
+                  setLlmOllamaError(null);
+                  setLlmOllamaModels([]);
+                }
               }}
             >
               <option value="openai">OpenAI</option>
               <option value="anthropic">Anthropic (Claude)</option>
+              <option value="ollama">Ollama</option>
             </select>
           </div>
+
+          {/* Ollama LLM Server Connection - only show when Ollama is selected */}
+          {formData.llm_provider === 'ollama' && (
+            <>
+              <div className="form-row form-row-4">
+                <div className="form-group form-group-small">
+                  <label>Protocol</label>
+                  <select
+                    value={formData.llm_ollama_protocol || 'http'}
+                    onChange={(e) => {
+                      setFormData({
+                        ...formData,
+                        llm_ollama_protocol: e.target.value as 'http' | 'https',
+                      });
+                      // Reset connection when server settings change
+                      setLlmOllamaConnected(false);
+                      setLlmOllamaError(null);
+                      setLlmOllamaModels([]);
+                    }}
+                  >
+                    <option value="http">http://</option>
+                    <option value="https">https://</option>
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>Host / IP</label>
+                  <input
+                    type="text"
+                    value={formData.llm_ollama_host || ''}
+                    onChange={(e) => {
+                      setFormData({ ...formData, llm_ollama_host: e.target.value });
+                      // Reset connection when server settings change
+                      setLlmOllamaConnected(false);
+                      setLlmOllamaError(null);
+                      setLlmOllamaModels([]);
+                    }}
+                    placeholder="localhost"
+                  />
+                </div>
+                <div className="form-group form-group-small">
+                  <label>Port</label>
+                  <input
+                    type="number"
+                    value={formData.llm_ollama_port || 11434}
+                    onChange={(e) => {
+                      setFormData({
+                        ...formData,
+                        llm_ollama_port: parseInt(e.target.value, 10) || 11434,
+                      });
+                      // Reset connection when server settings change
+                      setLlmOllamaConnected(false);
+                      setLlmOllamaError(null);
+                      setLlmOllamaModels([]);
+                    }}
+                    min={1}
+                    max={65535}
+                  />
+                </div>
+                <div className="form-group form-group-button">
+                  <button
+                    type="button"
+                    className={`btn btn-test ${llmOllamaConnected ? 'btn-connected' : ''}`}
+                    onClick={() => testLlmOllamaConnection(
+                      formData.llm_ollama_protocol || 'http',
+                      formData.llm_ollama_host || 'localhost',
+                      formData.llm_ollama_port || 11434
+                    )}
+                    disabled={llmOllamaConnecting}
+                  >
+                    {llmOllamaConnecting
+                      ? 'Connecting...'
+                      : llmOllamaConnected
+                        ? 'Connected'
+                        : 'Fetch Models'}
+                  </button>
+                </div>
+              </div>
+              {llmOllamaConnected && (
+                <p className="field-help" style={{ color: 'var(--success-color, #28a745)' }}>
+                  {llmOllamaModels.length} model(s) available
+                </p>
+              )}
+              {llmOllamaError && (
+                <p className="field-error">{llmOllamaError}</p>
+              )}
+              <p className="field-help">
+                When running in Docker, use <code>host.docker.internal</code> instead of <code>localhost</code>.
+              </p>
+
+              {/* Ollama Model Selection */}
+              <div className="form-group">
+                <label>Model</label>
+                {llmOllamaConnected && llmOllamaModels.length > 0 ? (
+                  <select
+                    value={formData.llm_model || ''}
+                    onChange={(e) =>
+                      setFormData({ ...formData, llm_model: e.target.value })
+                    }
+                  >
+                    <option value="">Select a model...</option>
+                    {llmOllamaModels.map((model) => (
+                      <option key={model.name} value={model.name}>
+                        {model.name}
+                        {model.size
+                          ? ` (${(model.size / 1024 / 1024 / 1024).toFixed(1)}GB)`
+                          : ''}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={formData.llm_model || ''}
+                    onChange={(e) =>
+                      setFormData({ ...formData, llm_model: e.target.value })
+                    }
+                    placeholder="llama3"
+                  />
+                )}
+                <p className="field-help">
+                  {llmOllamaConnected
+                    ? 'Select an LLM from your Ollama server.'
+                    : 'Click "Fetch Models" to see available models, or enter manually.'}
+                </p>
+              </div>
+            </>
+          )}
 
           {/* API Key - show appropriate one based on provider */}
           {formData.llm_provider === 'openai' || !formData.llm_provider ? (
@@ -794,7 +997,7 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
                 Required for OpenAI LLM and optionally for OpenAI embeddings.
               </p>
             </div>
-          ) : (
+          ) : formData.llm_provider === 'anthropic' ? (
             <div className="form-group">
               <label>Anthropic API Key</label>
               <div className="input-with-button">
@@ -823,48 +1026,50 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
                 <p className="field-error">{llmModelsError}</p>
               )}
             </div>
+          ) : null}
+
+          {/* Model Selection - for OpenAI and Anthropic only (Ollama has its own section above) */}
+          {formData.llm_provider !== 'ollama' && (
+            <div className="form-group">
+              <label>Model</label>
+              {llmModelsLoaded && llmModels.length > 0 ? (
+                <select
+                  value={formData.llm_model || ''}
+                  onChange={(e) =>
+                    setFormData({ ...formData, llm_model: e.target.value })
+                  }
+                >
+                  <option value="">Select a model...</option>
+                  {llmModels.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={formData.llm_model || ''}
+                  onChange={(e) =>
+                    setFormData({ ...formData, llm_model: e.target.value })
+                  }
+                  placeholder={
+                    formData.llm_provider === 'anthropic'
+                      ? 'claude-sonnet-4-20250514'
+                      : 'gpt-4o'
+                  }
+                />
+              )}
+              <p className="field-help">
+                {llmModelsLoaded
+                  ? 'Select the model that will be used for chat completions and RAG responses.'
+                  : 'This model ID is sent to the provider API for all chat/RAG requests. Click "Fetch Models" to see available options.'}
+              </p>
+            </div>
           )}
 
-          {/* Model Selection */}
-          <div className="form-group">
-            <label>Model</label>
-            {llmModelsLoaded && llmModels.length > 0 ? (
-              <select
-                value={formData.llm_model || ''}
-                onChange={(e) =>
-                  setFormData({ ...formData, llm_model: e.target.value })
-                }
-              >
-                <option value="">Select a model...</option>
-                {llmModels.map((model) => (
-                  <option key={model.id} value={model.id}>
-                    {model.name}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                type="text"
-                value={formData.llm_model || ''}
-                onChange={(e) =>
-                  setFormData({ ...formData, llm_model: e.target.value })
-                }
-                placeholder={
-                  formData.llm_provider === 'anthropic'
-                    ? 'claude-sonnet-4-20250514'
-                    : 'gpt-4o'
-                }
-              />
-            )}
-            <p className="field-help">
-              {llmModelsLoaded
-                ? 'Select the model that will be used for chat completions and RAG responses.'
-                : 'This model ID is sent to the provider API for all chat/RAG requests. Click "Fetch Models" to see available options.'}
-            </p>
-          </div>
-
-          {/* Show OpenAI key field for embeddings if using Anthropic for LLM */}
-          {formData.llm_provider === 'anthropic' && formData.embedding_provider === 'openai' && (
+          {/* Show OpenAI key field for embeddings if using Anthropic or Ollama for LLM */}
+          {(formData.llm_provider === 'anthropic' || formData.llm_provider === 'ollama') && formData.embedding_provider === 'openai' && (
             <div className="form-group">
               <label>OpenAI API Key (for embeddings)</label>
               <input
@@ -979,66 +1184,61 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
 
           {formData.embedding_provider === 'ollama' && (
             <>
-              {/* Ollama Server Connection */}
-              <div className="connection-section">
-                <h4>Ollama Server Connection</h4>
-                <div className="form-row form-row-3">
-                  <div className="form-group form-group-small">
-                    <label>Protocol</label>
-                    <select
-                      value={formData.ollama_protocol || 'http'}
-                      onChange={(e) => {
-                        setFormData({
-                          ...formData,
-                          ollama_protocol: e.target.value as 'http' | 'https',
-                        });
-                        // Reset connection when server settings change
-                        setOllamaConnected(false);
-                        setOllamaError(null);
-                        setOllamaModels([]);
-                      }}
-                    >
-                      <option value="http">http://</option>
-                      <option value="https">https://</option>
-                    </select>
-                  </div>
-                  <div className="form-group">
-                    <label>Host / IP</label>
-                    <input
-                      type="text"
-                      value={formData.ollama_host || ''}
-                      onChange={(e) => {
-                        setFormData({ ...formData, ollama_host: e.target.value });
-                        // Reset connection when server settings change
-                        setOllamaConnected(false);
-                        setOllamaError(null);
-                        setOllamaModels([]);
-                      }}
-                      placeholder="localhost"
-                    />
-                  </div>
-                  <div className="form-group form-group-small">
-                    <label>Port</label>
-                    <input
-                      type="number"
-                      value={formData.ollama_port || 11434}
-                      onChange={(e) => {
-                        setFormData({
-                          ...formData,
-                          ollama_port: parseInt(e.target.value, 10) || 11434,
-                        });
-                        // Reset connection when server settings change
-                        setOllamaConnected(false);
-                        setOllamaError(null);
-                        setOllamaModels([]);
-                      }}
-                      min={1}
-                      max={65535}
-                    />
-                  </div>
+              <div className="form-row form-row-4">
+                <div className="form-group form-group-small">
+                  <label>Protocol</label>
+                  <select
+                    value={formData.ollama_protocol || 'http'}
+                    onChange={(e) => {
+                      setFormData({
+                        ...formData,
+                        ollama_protocol: e.target.value as 'http' | 'https',
+                      });
+                      // Reset connection when server settings change
+                      setOllamaConnected(false);
+                      setOllamaError(null);
+                      setOllamaModels([]);
+                    }}
+                  >
+                    <option value="http">http://</option>
+                    <option value="https">https://</option>
+                  </select>
                 </div>
-
-                <div className="connection-test-row">
+                <div className="form-group">
+                  <label>Host / IP</label>
+                  <input
+                    type="text"
+                    value={formData.ollama_host || ''}
+                    onChange={(e) => {
+                      setFormData({ ...formData, ollama_host: e.target.value });
+                      // Reset connection when server settings change
+                      setOllamaConnected(false);
+                      setOllamaError(null);
+                      setOllamaModels([]);
+                    }}
+                    placeholder="localhost"
+                  />
+                </div>
+                <div className="form-group form-group-small">
+                  <label>Port</label>
+                  <input
+                    type="number"
+                    value={formData.ollama_port || 11434}
+                    onChange={(e) => {
+                      setFormData({
+                        ...formData,
+                        ollama_port: parseInt(e.target.value, 10) || 11434,
+                      });
+                      // Reset connection when server settings change
+                      setOllamaConnected(false);
+                      setOllamaError(null);
+                      setOllamaModels([]);
+                    }}
+                    min={1}
+                    max={65535}
+                  />
+                </div>
+                <div className="form-group form-group-button">
                   <button
                     type="button"
                     className={`btn btn-test ${ollamaConnected ? 'btn-connected' : ''}`}
@@ -1049,22 +1249,21 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
                       ? 'Connecting...'
                       : ollamaConnected
                         ? 'Connected'
-                        : 'Test Connection'}
+                        : 'Fetch Models'}
                   </button>
-                  {ollamaConnected && (
-                    <span className="connection-status success">
-                      {ollamaModels.length} model(s) available
-                    </span>
-                  )}
-                  {ollamaError && (
-                    <span className="connection-status error">{ollamaError}</span>
-                  )}
                 </div>
-                <p className="field-help" style={{ marginTop: '0.5rem' }}>
-                  <strong>Important:</strong> This URL must be accessible from the server for FAISS index searches to work.
-                  When running in Docker, use <code>host.docker.internal</code> instead of <code>localhost</code> to reach Ollama on your host machine.
-                </p>
               </div>
+              {ollamaConnected && (
+                <p className="field-help" style={{ color: 'var(--success-color, #28a745)' }}>
+                  {ollamaModels.length} model(s) available
+                </p>
+              )}
+              {ollamaError && (
+                <p className="field-error">{ollamaError}</p>
+              )}
+              <p className="field-help">
+                When running in Docker, use <code>host.docker.internal</code> instead of <code>localhost</code>.
+              </p>
 
               {/* Model Selection */}
               <div className="form-group">
@@ -1099,7 +1298,7 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
                 <p className="field-help">
                   {ollamaConnected
                     ? 'Select an embedding model from your Ollama server.'
-                    : 'Test the connection above to see available models, or enter manually.'}
+                    : 'Click "Fetch Models" to see available models, or enter manually.'}
                 </p>
               </div>
             </>
