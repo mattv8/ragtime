@@ -17,6 +17,17 @@ if [ "$DEBUG_MODE" = "true" ]; then
     echo ""
 fi
 
+# Security check: Require explicit JWT_SECRET_KEY in production
+if [ "$DEBUG_MODE" != "true" ] && [ -z "$JWT_SECRET_KEY" ]; then
+    echo "ERROR: JWT_SECRET_KEY must be set in production mode."
+    echo ""
+    echo "Generate a secure key with: openssl rand -base64 32"
+    echo "Add to your .env file: JWT_SECRET_KEY=<your-key>"
+    echo ""
+    echo "Or set DEBUG_MODE=true for development (not recommended for production)."
+    exit 1
+fi
+
 # Generate Prisma client and run migrations
 cd /ragtime
 if [ "$DEBUG_MODE" = "true" ]; then

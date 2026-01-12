@@ -24,6 +24,7 @@ from ragtime.core.auth import (
 )
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
+from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, limiter
 from ragtime.core.security import get_current_user, get_session_token, require_admin
 
 logger = get_logger(__name__)
@@ -208,6 +209,7 @@ async def get_auth_status(request: Request):
 
 
 @router.post("/login", response_model=LoginResponse)
+@limiter.limit(LOGIN_RATE_LIMIT)
 async def login(
     request: Request,
     response: Response,
@@ -218,6 +220,8 @@ async def login(
 
     Tries LDAP first (if enabled), then falls back to local admin.
     Sets httpOnly cookie with JWT token.
+
+    Rate limited to 5 attempts per minute per IP to prevent brute-force attacks.
     """
     result = await authenticate(body.username, body.password)
 

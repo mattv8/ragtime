@@ -209,6 +209,10 @@ Ragtime is designed for self-hosted deployment on trusted networks. Review these
 - **Enable MCP route authentication** via Settings UI if `/mcp` is network-accessible. By default the MCP endpoint is open without auth.
 - Set a strong `LOCAL_ADMIN_PASSWORD` and `JWT_SECRET_KEY` when deploying.
 
+### Authentication Security
+- **JWT_SECRET_KEY is required** The container will refuse to start without an explicit key when `DEBUG_MODE=false`. Generate one with `openssl rand -base64 32`.
+- **Rate limiting** protects the login endpoint (5 attempts/minute per IP) to prevent brute-force attacks.
+
 ### Debug Mode Warning
 **Do not use `DEBUG_MODE=true` outside local development.** When enabled, the `/auth/status` endpoint exposes your admin username and password in plaintext. This is intentional for self-hosted debugging but dangerous if the server is accessible to untrusted users.
 

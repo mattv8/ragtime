@@ -18,6 +18,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from ragtime import __version__
 from ragtime.api import router
@@ -25,6 +27,7 @@ from ragtime.api.auth import router as auth_router
 from ragtime.config import settings
 from ragtime.core.database import connect_db, disconnect_db
 from ragtime.core.logging import get_logger, setup_logging
+from ragtime.core.rate_limit import limiter
 
 # Import indexer routes (always available now that it's part of ragtime)
 from ragtime.indexer.routes import ASSETS_DIR as INDEXER_ASSETS_DIR
@@ -120,6 +123,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Rate limiting
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Include API routes
 app.include_router(router)
