@@ -19,14 +19,14 @@ Each table becomes one embedding chunk containing:
 import asyncio
 import hashlib
 import json
+import subprocess
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 from ragtime.indexer.models import (
-    SchemaIndexConfig,
     SchemaIndexJob,
     SchemaIndexJobResponse,
     SchemaIndexStatus,
@@ -316,9 +316,16 @@ class SchemaIndexerService:
                 )
                 return None
 
+            tool_config_id = tool_config.id
+            if tool_config_id is None:
+                logger.warning(
+                    f"Cannot retry: tool config {db_job.toolConfigId} has no id"
+                )
+                return None
+
             # Trigger a new indexing job
             return await self.trigger_index(
-                tool_config_id=tool_config.id,
+                tool_config_id=tool_config_id,
                 tool_type=tool_config.tool_type.value,
                 connection_config=tool_config.connection_config or {},
                 full_reindex=True,  # Force full reindex on retry
@@ -432,8 +439,6 @@ class SchemaIndexerService:
         self, connection_config: dict
     ) -> List[TableSchemaInfo]:
         """Introspect PostgreSQL database schema."""
-        import subprocess
-
         host = connection_config.get("host", "")
         port = connection_config.get("port", 5432)
         user = connection_config.get("user", "")
@@ -528,8 +533,6 @@ class SchemaIndexerService:
         container: str,
     ) -> List[dict]:
         """Execute a PostgreSQL query and return results as list of dicts."""
-        import subprocess
-
         # Escape the query for shell
         escaped_query = query.replace("'", "'\\''")
 
@@ -573,7 +576,7 @@ class SchemaIndexerService:
             raise RuntimeError(f"PostgreSQL query failed: {result.stderr}")
 
         # Parse tab-separated output
-        rows = []
+        rows: List[dict[str, str | None]] = []
         output = result.stdout.strip()
         if not output:
             return rows
@@ -768,8 +771,6 @@ class SchemaIndexerService:
         container: str,
     ) -> List[dict]:
         """Execute a simple PostgreSQL query with known columns."""
-        import subprocess
-
         escaped_query = query.replace("'", "'\\''")
 
         if host:
@@ -829,8 +830,10 @@ class SchemaIndexerService:
         """Introspect MSSQL/SQL Server database schema."""
         try:
             import pymssql
-        except ImportError:
-            raise RuntimeError("pymssql not installed for MSSQL schema introspection")
+        except ImportError as exc:
+            raise RuntimeError(
+                "pymssql not installed for MSSQL schema introspection"
+            ) from exc
 
         host = connection_config.get("host", "")
         port = connection_config.get("port", 1433)
@@ -1413,7 +1416,12 @@ async def search_schema_index(
 
         # Get embedding model
         settings = await repository.get_settings()
-        embeddings = await schema_indexer._get_embeddings(settings)
+        embeddings = await get_embeddings_model(
+            settings,
+            allow_missing_api_key=True,
+            return_none_on_error=True,
+            logger_override=logger,
+        )
 
         if embeddings is None:
             return "Error: No embedding provider configured"

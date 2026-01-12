@@ -8,7 +8,8 @@ from ragtime.core.logging import get_logger
 logger = get_logger(__name__)
 
 PGVECTOR_MAX_INDEX_DIM = 2000
-_PGVECTOR_VALIDATED = False
+# Track validation state without needing a global statement
+_PGVECTOR_VALIDATED = {"ready": False}
 
 
 def _get_setting(settings: Any, key: str, default: Any = None) -> Any:
@@ -20,10 +21,9 @@ def _get_setting(settings: Any, key: str, default: Any = None) -> Any:
 
 async def ensure_pgvector_extension(logger_override=None) -> bool:
     """Ensure the pgvector extension exists (cached after first success)."""
-    global _PGVECTOR_VALIDATED
     log = logger_override or logger
 
-    if _PGVECTOR_VALIDATED:
+    if _PGVECTOR_VALIDATED["ready"]:
         return True
 
     try:
@@ -36,7 +36,7 @@ async def ensure_pgvector_extension(logger_override=None) -> bool:
             log.info("pgvector extension not found, attempting to create...")
             await db.execute_raw("CREATE EXTENSION IF NOT EXISTS vector")
 
-        _PGVECTOR_VALIDATED = True
+        _PGVECTOR_VALIDATED["ready"] = True
         return True
     except Exception as exc:  # pragma: no cover - defensive logging
         log.error(

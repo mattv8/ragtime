@@ -18,7 +18,7 @@ import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, BinaryIO, Dict, List, Optional
+from typing import Any, BinaryIO, Dict, List, Optional, cast
 
 from ragtime.config import settings
 from ragtime.core.app_settings import invalidate_settings_cache
@@ -169,9 +169,7 @@ async def generate_index_description(
 
         if provider == "ollama":
             try:
-                from langchain_ollama import (
-                    ChatOllama,
-                )  # type: ignore[reportMissingImports]
+                from langchain_ollama import ChatOllama
 
                 base_url = app_settings.get("ollama_base_url", "http://localhost:11434")
                 model = app_settings.get("llm_model", "llama3.2")
@@ -184,9 +182,7 @@ async def generate_index_description(
             api_key = app_settings.get("anthropic_api_key", "")
             if api_key:
                 try:
-                    from langchain_anthropic import (
-                        ChatAnthropic,
-                    )  # type: ignore[import-untyped]
+                    from langchain_anthropic import ChatAnthropic
 
                     model = app_settings.get("llm_model", "claude-sonnet-4-20250514")
                     llm = ChatAnthropic(
@@ -284,7 +280,12 @@ class IndexerService:
         """Derive clone timeout from depth unless explicitly overridden by user."""
 
         default_timeout = IndexConfig.model_fields["git_clone_timeout_minutes"].default
-        user_timeout = getattr(config, "git_clone_timeout_minutes", default_timeout)
+        user_timeout_raw = getattr(config, "git_clone_timeout_minutes", default_timeout)
+        user_timeout = (
+            int(user_timeout_raw)
+            if user_timeout_raw is not None
+            else int(default_timeout or 0)
+        )
 
         # Respect explicit override
         if user_timeout != default_timeout:
@@ -616,9 +617,7 @@ class IndexerService:
         )
 
         if provider == "ollama":
-            from langchain_ollama import (
-                OllamaEmbeddings,
-            )  # type: ignore[reportMissingImports]
+            from langchain_ollama import OllamaEmbeddings
 
             return OllamaEmbeddings(
                 model=model,
@@ -634,7 +633,7 @@ class IndexerService:
             # Pass dimensions for text-embedding-3-* models (supports MRL)
             kwargs: dict = {
                 "model": model,
-                "api_key": app_settings.openai_api_key,  # type: ignore[arg-type]
+                "api_key": app_settings.openai_api_key,
             }
             if dimensions and model.startswith("text-embedding-3"):
                 kwargs["dimensions"] = dimensions
@@ -680,7 +679,8 @@ class IndexerService:
             except (TypeError, ValueError):
                 pass
 
-        return min(30.0, base_delay * (2**attempt))
+        backoff = float(base_delay) * (2.0 ** float(attempt))
+        return float(min(30.0, backoff))
 
     async def _append_embedding_dimension_warning(self, warnings: List[str]) -> None:
         """Warn when configured embeddings exceed pgvector's 2000-dim index limit."""
@@ -1939,6 +1939,9 @@ class IndexerService:
             nonlocal last_update_time
             last_update_time = start_time
 
+            if process.stderr is None:
+                return ""
+
             while True:
                 elapsed = asyncio.get_event_loop().time() - start_time
                 remaining = timeout_seconds - elapsed
@@ -1949,7 +1952,7 @@ class IndexerService:
                 try:
                     # Read a chunk of stderr (git progress uses \r for updates)
                     chunk = await asyncio.wait_for(
-                        process.stderr.read(1024),  # type: ignore[union-attr]
+                        process.stderr.read(1024),
                         timeout=min(remaining, 5.0),  # Check every 5 seconds max
                     )
 
@@ -2216,11 +2219,11 @@ class IndexerService:
         # Note: TextLoader.load() is synchronous and can block the event loop,
         # especially with autodetect_encoding=True which uses chardet. We run
         # it in a thread pool to avoid blocking other async operations.
-        documents = []
+        documents: List[Any] = []
         skipped_binary = 0
         enable_ocr = config.enable_ocr
 
-        def load_file_sync(file_path: Path) -> List:
+        def load_file_sync(file_path: Path) -> List[Any]:
             """Synchronous file loading - runs in thread pool."""
             from langchain_core.documents import Document as LangChainDocument
 
@@ -2237,7 +2240,7 @@ class IndexerService:
 
             # Use TextLoader for plain text files
             loader = TextLoader(str(file_path), autodetect_encoding=True)
-            return loader.load()
+            return cast(List[Any], loader.load())
 
         for file_path in all_files:
             # Check for cancellation
