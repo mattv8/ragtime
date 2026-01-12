@@ -74,6 +74,14 @@ async def lifespan(app: FastAPI):
     if discovered > 0:
         logger.info(f"Discovered {discovered} orphan index(es) on disk")
 
+    # Garbage collect orphaned pgvector embeddings
+    from ragtime.indexer.repository import repository
+
+    gc_results = await repository.cleanup_orphaned_embeddings()
+    gc_total = sum(gc_results.values())
+    if gc_total > 0:
+        logger.info(f"Garbage collected {gc_total} orphaned embedding(s)")
+
     # Start background task service for chat
     from ragtime.indexer.background_tasks import background_task_service
 

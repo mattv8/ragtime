@@ -113,4 +113,3 @@ class HealthResponse(BaseModel):
     indexes_loading: Optional[bool] = None
     indexes_total: Optional[int] = None
     indexes_loaded_count: Optional[int] = None
-    indexes_loaded_count: Optional[int] = None

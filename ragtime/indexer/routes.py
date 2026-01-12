@@ -1311,34 +1311,72 @@ async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin))
     """
     Delete a tool configuration. Admin only.
 
-    For Odoo tools, also disconnects from the Docker network if no other
-    tools are using it.
-    For filesystem indexer tools, unmounts any SMB/NFS shares.
+    Cleans up associated data:
+    - For filesystem indexer tools: embeddings, file metadata, and unmounts shares
+    - For postgres/mssql tools: schema embeddings
+    - For SolidWorks PDM tools: PDM embeddings and document metadata
+    - For Odoo tools: disconnects from Docker network if no other tools use it
     """
     from ragtime.core.app_settings import invalidate_settings_cache
     from ragtime.mcp.server import notify_tools_changed
     from ragtime.rag import rag
 
-    # Get the tool config before deleting to check for network cleanup
+    # Get the tool config before deleting to check for cleanup
     tool = await repository.get_tool_config(tool_id)
     if tool is None:
         raise HTTPException(status_code=404, detail="Tool configuration not found")
+
+    tool_name = safe_tool_name(tool.name)
 
     # Check if this is an Odoo tool with a docker network
     docker_network = None
     if tool.tool_type == "odoo_shell" and tool.connection_config:
         docker_network = tool.connection_config.get("docker_network")
 
-    # Check if this is a filesystem indexer tool (needs mount cleanup)
-    is_filesystem_tool = tool.tool_type == "filesystem_indexer"
+    # Cleanup embeddings BEFORE deleting tool config (while we still have the config)
+    if tool.tool_type == "filesystem_indexer":
+        try:
+            # Get index name from connection config
+            index_name = (
+                tool.connection_config.get("index_name")
+                if tool.connection_config
+                else None
+            )
+            if index_name:
+                deleted = await filesystem_indexer.delete_index(index_name)
+                logger.info(
+                    f"Cleaned up {deleted} filesystem embeddings for tool {tool_id}"
+                )
+        except Exception as e:
+            logger.warning(
+                f"Failed to cleanup filesystem embeddings for tool {tool_id}: {e}"
+            )
 
-    # Delete the tool
+    elif tool.tool_type in ("postgres", "mssql"):
+        try:
+            success, msg = await schema_indexer.delete_index(tool_id, tool_name)
+            if success:
+                logger.info(f"Cleaned up schema embeddings for tool {tool_id}: {msg}")
+        except Exception as e:
+            logger.warning(
+                f"Failed to cleanup schema embeddings for tool {tool_id}: {e}"
+            )
+
+    elif tool.tool_type == "solidworks_pdm":
+        try:
+            success, msg = await pdm_indexer.delete_index(tool_id)
+            if success:
+                logger.info(f"Cleaned up PDM embeddings for tool {tool_id}: {msg}")
+        except Exception as e:
+            logger.warning(f"Failed to cleanup PDM embeddings for tool {tool_id}: {e}")
+
+    # Delete the tool (cascade deletes jobs)
     success = await repository.delete_tool_config(tool_id)
     if not success:
         raise HTTPException(status_code=404, detail="Tool configuration not found")
 
     # Cleanup: unmount filesystem for filesystem indexer tools
-    if is_filesystem_tool:
+    if tool.tool_type == "filesystem_indexer":
         try:
             await filesystem_indexer.unmount_tool(tool_id)
         except Exception as e:
@@ -4055,6 +4093,32 @@ async def check_pgvector_status(_user: User = Depends(require_admin)):
             "pgvector extension is installed"
             if is_available
             else "pgvector extension not available"
+        ),
+    }
+
+
+@router.post("/garbage-collect", tags=["Admin"])
+async def run_garbage_collection(_user: User = Depends(require_admin)):
+    """
+    Manually trigger garbage collection for orphaned embeddings. Admin only.
+
+    Removes embeddings from pgvector tables that no longer have a corresponding
+    tool configuration. This can happen when:
+    - Tool configs were deleted before the embedding cleanup was added
+    - The server crashed during a tool deletion
+
+    This runs automatically at startup, but can also be triggered manually.
+    """
+    gc_results = await repository.cleanup_orphaned_embeddings()
+    gc_total = sum(gc_results.values())
+    return {
+        "success": True,
+        "total_deleted": gc_total,
+        "details": gc_results,
+        "message": (
+            f"Garbage collected {gc_total} orphaned embedding(s)"
+            if gc_total > 0
+            else "No orphaned embeddings found"
         ),
     }
 

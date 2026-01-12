@@ -1498,6 +1498,130 @@ class IndexerRepository:
             last_update_at=prisma_task.lastUpdateAt,
         )
 
+    async def cleanup_orphaned_embeddings(self) -> dict[str, int]:
+        """
+        Remove orphaned embeddings from pgvector tables.
+
+        Orphaned embeddings are those whose index_name doesn't match any
+        existing tool configuration. This can happen when:
+        - Tool configs were deleted before the embedding cleanup fix
+        - The server crashed during a tool deletion
+
+        Returns a dict with counts of deleted embeddings per table.
+        """
+        db = await self._get_db()
+        deleted: dict[str, int] = {
+            "filesystem_embeddings": 0,
+            "filesystem_file_metadata": 0,
+            "schema_embeddings": 0,
+            "pdm_embeddings": 0,
+            "pdm_document_metadata": 0,
+        }
+
+        try:
+            # Get all tool configs to build valid index name lists
+            all_tools = await self.list_tool_configs()
+
+            # Build valid index names for each tool type
+            valid_filesystem_indexes: set[str] = set()
+            valid_schema_indexes: set[str] = set()
+            valid_pdm_indexes: set[str] = set()
+
+            from ragtime.indexer.utils import safe_tool_name
+
+            for tool in all_tools:
+                tool_safe_name = safe_tool_name(tool.name)
+
+                if tool.tool_type == ToolType.FILESYSTEM_INDEXER:
+                    # Filesystem index name comes from connection_config
+                    if tool.connection_config:
+                        index_name = tool.connection_config.get("index_name")
+                        if index_name:
+                            valid_filesystem_indexes.add(index_name)
+
+                elif tool.tool_type in (ToolType.POSTGRES, ToolType.MSSQL):
+                    # Schema indexes use format: schema_{tool_name} or schema_{tool_id}
+                    if tool_safe_name:
+                        valid_schema_indexes.add(f"schema_{tool_safe_name}")
+                    valid_schema_indexes.add(f"schema_{tool.id}")
+
+                elif tool.tool_type == ToolType.SOLIDWORKS_PDM:
+                    # PDM indexes use format: pdm_{tool_name} or pdm_{tool_id}
+                    if tool_safe_name:
+                        valid_pdm_indexes.add(f"pdm_{tool_safe_name}")
+                    valid_pdm_indexes.add(f"pdm_{tool.id}")
+
+            # Clean up orphaned filesystem embeddings
+            if valid_filesystem_indexes:
+                valid_list = ", ".join(f"'{n}'" for n in valid_filesystem_indexes)
+                result = await db.execute_raw(
+                    f"DELETE FROM filesystem_embeddings WHERE index_name NOT IN ({valid_list})"
+                )
+                deleted["filesystem_embeddings"] = (
+                    result if isinstance(result, int) else 0
+                )
+
+                result = await db.execute_raw(
+                    f"DELETE FROM filesystem_file_metadata WHERE index_name NOT IN ({valid_list})"
+                )
+                deleted["filesystem_file_metadata"] = (
+                    result if isinstance(result, int) else 0
+                )
+            else:
+                # No valid indexes - delete all orphans (only if tables have data)
+                result = await db.execute_raw("DELETE FROM filesystem_embeddings")
+                deleted["filesystem_embeddings"] = (
+                    result if isinstance(result, int) else 0
+                )
+                result = await db.execute_raw("DELETE FROM filesystem_file_metadata")
+                deleted["filesystem_file_metadata"] = (
+                    result if isinstance(result, int) else 0
+                )
+
+            # Clean up orphaned schema embeddings
+            if valid_schema_indexes:
+                valid_list = ", ".join(f"'{n}'" for n in valid_schema_indexes)
+                result = await db.execute_raw(
+                    f"DELETE FROM schema_embeddings WHERE index_name NOT IN ({valid_list})"
+                )
+                deleted["schema_embeddings"] = result if isinstance(result, int) else 0
+            else:
+                result = await db.execute_raw("DELETE FROM schema_embeddings")
+                deleted["schema_embeddings"] = result if isinstance(result, int) else 0
+
+            # Clean up orphaned PDM embeddings
+            if valid_pdm_indexes:
+                valid_list = ", ".join(f"'{n}'" for n in valid_pdm_indexes)
+                result = await db.execute_raw(
+                    f"DELETE FROM pdm_embeddings WHERE index_name NOT IN ({valid_list})"
+                )
+                deleted["pdm_embeddings"] = result if isinstance(result, int) else 0
+
+                result = await db.execute_raw(
+                    f"DELETE FROM pdm_document_metadata WHERE index_name NOT IN ({valid_list})"
+                )
+                deleted["pdm_document_metadata"] = (
+                    result if isinstance(result, int) else 0
+                )
+            else:
+                result = await db.execute_raw("DELETE FROM pdm_embeddings")
+                deleted["pdm_embeddings"] = result if isinstance(result, int) else 0
+                result = await db.execute_raw("DELETE FROM pdm_document_metadata")
+                deleted["pdm_document_metadata"] = (
+                    result if isinstance(result, int) else 0
+                )
+
+            total = sum(deleted.values())
+            if total > 0:
+                logger.info(
+                    f"Garbage collection: removed {total} orphaned embedding(s): {deleted}"
+                )
+            return deleted
+
+        except Exception as e:
+            logger.warning(f"Failed to cleanup orphaned embeddings: {e}")
+            return deleted
+
 
 # Global repository instance
 repository = IndexerRepository()

@@ -348,8 +348,9 @@ class RAGComponents:
 
         if provider == "ollama":
             try:
-                from langchain_ollama import \
-                    ChatOllama  # type: ignore[import-untyped,import-not-found]  # pyright: ignore[reportMissingImports]
+                from langchain_ollama import (
+                    ChatOllama,
+                )  # type: ignore[import-untyped,import-not-found]  # pyright: ignore[reportMissingImports]
 
                 # Use LLM-specific Ollama settings if available, otherwise fall back to embedding settings
                 base_url = self._app_settings.get(
@@ -412,8 +413,9 @@ class RAGComponents:
         model = self._app_settings.get("embedding_model", "nomic-embed-text")
 
         if provider == "ollama":
-            from langchain_ollama import \
-                OllamaEmbeddings  # type: ignore[import-untyped,import-not-found]  # pyright: ignore[reportMissingImports]
+            from langchain_ollama import (
+                OllamaEmbeddings,
+            )  # type: ignore[import-untyped,import-not-found]  # pyright: ignore[reportMissingImports]
 
             base_url = self._app_settings.get(
                 "ollama_base_url", "http://localhost:11434"
@@ -567,7 +569,7 @@ class RAGComponents:
 
         # Process results
         for result in results:
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.warning(f"Index loading exception: {result}")
             elif result is not None:
                 index_name, retriever = result
@@ -934,8 +936,10 @@ class RAGComponents:
         When aggregate_search is disabled: creates search_git_history_<name> per index
         """
         from ragtime.tools.git_history import (
-            _is_shallow_repository, create_per_index_git_history_tool,
-            git_history_tool)
+            _is_shallow_repository,
+            create_per_index_git_history_tool,
+            git_history_tool,
+        )
 
         tools: List[Any] = []
         index_base = Path(settings.index_data_path)
@@ -1133,8 +1137,7 @@ class RAGComponents:
 
         async def execute_query(query: str = "", reason: str = "", **_: Any) -> str:
             """Execute PostgreSQL query using this tool's configuration."""
-            from ragtime.core.security import (sanitize_output,
-                                               validate_sql_query)
+            from ragtime.core.security import sanitize_output, validate_sql_query
 
             # Validate required fields
             if not query or not query.strip():
@@ -1304,8 +1307,7 @@ class RAGComponents:
 
         async def execute_odoo(code: str = "", reason: str = "", **_: Any) -> str:
             """Execute Odoo shell command using this tool's configuration."""
-            from ragtime.core.security import (sanitize_output,
-                                               validate_odoo_code)
+            from ragtime.core.security import sanitize_output, validate_odoo_code
 
             # Validate required fields
             if not code or not code.strip():
@@ -1467,8 +1469,7 @@ except Exception as e:
 
         async def execute_ssh(command: str = "", reason: str = "", **_: Any) -> str:
             """Execute SSH command using this tool's configuration."""
-            from ragtime.core.security import (sanitize_output,
-                                               validate_ssh_command)
+            from ragtime.core.security import sanitize_output, validate_ssh_command
             from ragtime.core.ssh import SSHConfig, execute_ssh_command
 
             # Validate required fields
