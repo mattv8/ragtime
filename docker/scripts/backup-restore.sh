@@ -29,7 +29,7 @@ NC='\033[0m' # No Color
 
 # Current schema version (update when adding migrations)
 # Format: YYYYMMDDHHMMSS of latest migration
-CURRENT_SCHEMA_VERSION="20251231180000"
+CURRENT_SCHEMA_VERSION="20260111000000"
 
 log() {
     echo -e "${GREEN}[BACKUP]${NC} $1"
@@ -114,10 +114,10 @@ run_migrations() {
 
 # Show usage for backup
 show_backup_usage() {
-    echo "Usage: backup [OPTIONS] [OUTPUT_FILE]"
+    echo "Usage: backup [OPTIONS]"
     echo ""
     echo "Create a backup archive containing database and FAISS indexes."
-    echo "By default, streams to stdout for easy piping to local file."
+    echo "Streams to stdout - redirect to a file on the host."
     echo ""
     echo "Options:"
     echo "  --db-only         Backup database only (no FAISS indexes)"
@@ -126,14 +126,10 @@ show_backup_usage() {
     echo "                    (required to decrypt secrets on restore)"
     echo "  -h, --help        Show this help message"
     echo ""
-    echo "Arguments:"
-    echo "  OUTPUT_FILE    Output file path inside container (rarely needed)"
-    echo ""
     echo "Examples:"
-    echo "  backup > backup.tar.gz                       # Full backup (default: stdout)"
-    echo "  backup --include-secret > backup.tar.gz      # Full backup with encryption key"
-    echo "  backup --db-only > db.tar.gz                 # Database only"
-    echo "  backup --faiss-only > faiss.tar.gz           # FAISS indexes only"
+    echo "  docker exec ragtime backup > backup.tar.gz"
+    echo "  docker exec ragtime backup --include-secret > backup.tar.gz"
+    echo "  docker exec ragtime backup --db-only > db.tar.gz"
     echo ""
     echo "Environment variables required:"
     echo "  POSTGRES_USER     - Database user"
@@ -143,10 +139,10 @@ show_backup_usage() {
 
 # Show usage for restore
 show_restore_usage() {
-    echo "Usage: restore [OPTIONS] [ARCHIVE_FILE]"
+    echo "Usage: restore [OPTIONS] ARCHIVE_FILE"
     echo ""
     echo "Restore from a backup archive."
-    echo "By default, reads from stdin for easy piping."
+    echo "Copy the backup file into the container first, then run restore."
     echo ""
     echo "Options:"
     echo "  --db-only          Restore database only (skip FAISS indexes)"
@@ -158,7 +154,7 @@ show_restore_usage() {
     echo "  -h, --help         Show this help message"
     echo ""
     echo "Arguments:"
-    echo "  ARCHIVE_FILE   Path to backup archive inside container (rarely needed)"
+    echo "  ARCHIVE_FILE   Path to backup archive inside container (required)"
     echo ""
     echo "Schema Migration:"
     echo "  After restoring a database backup, Prisma migrations are automatically"
@@ -166,9 +162,10 @@ show_restore_usage() {
     echo "  from older Ragtime versions that may have an outdated schema."
     echo ""
     echo "Examples:"
-    echo "  cat backup.tar.gz | restore            # Full restore (default: stdin)"
-    echo "  cat backup.tar.gz | restore --db-only  # Database only"
-    echo "  cat backup.tar.gz | restore --skip-migrations  # Skip auto-migration"
+    echo "  docker cp backup.tar.gz ragtime:/tmp/backup.tar.gz"
+    echo "  docker exec ragtime restore /tmp/backup.tar.gz"
+    echo "  docker exec ragtime restore --include-secret /tmp/backup.tar.gz"
+    echo "  docker exec ragtime restore --db-only /tmp/backup.tar.gz"
     echo ""
     echo "Environment variables required:"
     echo "  POSTGRES_USER     - Database user"
@@ -387,7 +384,6 @@ EOF
 do_restore() {
     local db_only=false
     local faiss_only=false
-    local from_stdin=true
     local archive_file=""
     local skip_migrations=false
     local data_only=false
@@ -427,7 +423,6 @@ do_restore() {
                 ;;
             *)
                 archive_file="$1"
-                from_stdin=false
                 shift
                 ;;
         esac
@@ -439,7 +434,16 @@ do_restore() {
         exit 1
     fi
 
-    if [ "$from_stdin" = false ] && [ ! -f "$archive_file" ]; then
+    # Archive file is required
+    if [ -z "$archive_file" ]; then
+        error "Archive file is required"
+        info "Copy the backup into the container first:"
+        info "  docker cp backup.tar.gz ragtime:/tmp/backup.tar.gz"
+        info "  docker exec ragtime restore /tmp/backup.tar.gz"
+        exit 1
+    fi
+
+    if [ ! -f "$archive_file" ]; then
         error "Archive file not found: $archive_file"
         exit 1
     fi
@@ -454,12 +458,11 @@ do_restore() {
     TEMP_DIR="${TEMP_BASE}_restore_$(date +%s)_$$"
     mkdir -p "$TEMP_DIR"
 
-    log "Extracting archive..."
+    log "Extracting archive: $archive_file"
 
-    if [ "$from_stdin" = true ]; then
-        tar -xzf - -C "$TEMP_DIR"
-    else
-        tar -xzf "$archive_file" -C "$TEMP_DIR"
+    if ! tar -xzf "$archive_file" -C "$TEMP_DIR"; then
+        error "Failed to extract archive: $archive_file"
+        exit 1
     fi
 
     # Verify archive structure
@@ -503,25 +506,55 @@ do_restore() {
             fi
         else
             # Full restore with schema
+            # Note: pg_restore may report errors for objects that don't exist yet,
+            # which is normal for --clean --if-exists. We capture stderr to a temp file
+            # to avoid hiding real errors while suppressing expected ones.
+            local restore_errors=$(mktemp)
             if ! PGPASSWORD="$POSTGRES_PASSWORD" pg_restore -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-                --clean --if-exists "$TEMP_DIR/database.dump" 2>/dev/null; then
-                warn "Some restore errors occurred (this is normal if objects don't exist yet)"
+                --clean --if-exists "$TEMP_DIR/database.dump" 2>"$restore_errors"; then
+                # Check if errors are just "does not exist" warnings
+                if grep -qE "(does not exist|no matching)" "$restore_errors" && ! grep -qE "FATAL|PANIC" "$restore_errors"; then
+                    warn "Some restore warnings occurred (objects didn't exist yet - this is normal)"
+                else
+                    warn "Some restore errors occurred:"
+                    cat "$restore_errors" | head -20 >&2
+                fi
             fi
+            rm -f "$restore_errors"
         fi
 
-        info "Database restored successfully"
+        # Verify restore actually worked by checking a table exists and has data
+        local table_check
+        table_check=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -c \
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name NOT LIKE '_prisma%'" 2>/dev/null | tr -d '[:space:]')
+        if [ -z "$table_check" ] || [ "$table_check" -lt 5 ]; then
+            error "Database restore verification failed - expected tables not found"
+            error "The pg_restore command may have failed silently. Check connection settings."
+            exit 1
+        fi
+
+        info "Database restored successfully (verified $table_check tables)"
 
         # Run migrations if not skipped and not faiss-only
         if [ "$skip_migrations" = true ]; then
             info "Skipping automatic schema migration (--skip-migrations)"
             warn "You may need to run 'python -m prisma migrate deploy' manually"
         else
-            # Check if we need migrations
+            # Check if _prisma_migrations table exists and has data
+            local migrations_exist
+            migrations_exist=$(check_migrations_table)
             local restored_version
             restored_version=$(get_db_schema_version)
-            if [ -n "$restored_version" ] && [ "$restored_version" != "$CURRENT_SCHEMA_VERSION" ]; then
-                info "Detected older schema version ($restored_version), applying migrations..."
-                run_migrations
+
+            if [ "$migrations_exist" = "t" ] && [ -n "$restored_version" ]; then
+                # Backup included migration history - schema was fully restored
+                # Only run migrations if there are newer ones available
+                if [ "$restored_version" \< "$CURRENT_SCHEMA_VERSION" ]; then
+                    info "Detected older schema version ($restored_version), applying newer migrations..."
+                    run_migrations
+                else
+                    info "Schema restored from backup is up to date ($restored_version)"
+                fi
             elif [ -z "$restored_version" ]; then
                 # No migrations table or empty - this might be a very old backup
                 warn "No migration history found in restored database"
