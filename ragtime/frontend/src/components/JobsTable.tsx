@@ -619,7 +619,8 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
                       )}
                     </td>
                     <td data-label="Created">{formatDate(job.createdAt)}</td>
-                    <td data-label="Actions" className="actions-cell">
+                    <td data-label="Actions">
+                      <div className="actions-cell">
                       {actionLoading === job.id ? (
                         <span className="action-loading">...</span>
                       ) : (
@@ -710,6 +711,7 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
                           )}
                         </>
                       )}
+                      </div>
                     </td>
                   </tr>
                 );

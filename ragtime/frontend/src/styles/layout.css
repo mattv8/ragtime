@@ -215,7 +215,8 @@ body {
 
 .jobs-table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   min-width: 1000px;
 }
 
@@ -247,6 +248,10 @@ body {
   z-index: 1;
 }
 
+.jobs-table tbody tr:hover td:last-child {
+  background: var(--color-surface-hover);
+}
+
 .jobs-table th:last-child {
   z-index: 2;
 }
@@ -255,6 +260,7 @@ body {
   white-space: nowrap;
   display: flex;
   gap: var(--space-xs);
+  align-items: center;
 }
 
 .progress-cell {
