@@ -19,6 +19,8 @@ from ragtime.models import (
     ChatCompletionRequest,
     ChatCompletionResponse,
     HealthResponse,
+    IndexLoadingDetail,
+    MemoryStats,
     Message,
     ModelInfo,
     ModelsResponse,
@@ -51,7 +53,11 @@ async def health_check():
     - status: "healthy" when core is ready (LLM/settings loaded)
     - indexes_loading: True while FAISS indexes are loading in background
     - indexes_ready: True when all indexes are loaded
+    - memory: Real-time process memory statistics
+    - index_details: Per-index loading status with timing info
     """
+    import psutil
+
     app_settings = await get_app_settings()
     loading_status = rag.loading_status
 
@@ -60,6 +66,32 @@ async def health_check():
         status = "healthy"
     else:
         status = "initializing"
+
+    # Get real-time memory stats
+    process = psutil.Process()
+    mem_info = process.memory_info()
+    virtual_mem = psutil.virtual_memory()
+
+    memory = MemoryStats(
+        rss_mb=mem_info.rss / (1024 * 1024),
+        vms_mb=mem_info.vms / (1024 * 1024),
+        percent=process.memory_percent(),
+        available_mb=virtual_mem.available / (1024 * 1024),
+        total_mb=virtual_mem.total / (1024 * 1024),
+    )
+
+    # Convert index details to response format
+    index_details = [
+        IndexLoadingDetail(
+            name=d["name"],
+            status=d["status"],
+            size_mb=d.get("size_mb"),
+            chunk_count=d.get("chunk_count"),
+            load_time_seconds=d.get("load_time_seconds"),
+            error=d.get("error"),
+        )
+        for d in loading_status.get("index_details", [])
+    ]
 
     return HealthResponse(
         status=status,
@@ -71,6 +103,10 @@ async def health_check():
         indexes_loading=loading_status["indexes_loading"],
         indexes_total=loading_status["indexes_total"],
         indexes_loaded_count=loading_status["indexes_loaded"],
+        memory=memory,
+        index_details=index_details if index_details else None,
+        sequential_loading=loading_status.get("sequential_loading", False),
+        loading_index=loading_status.get("loading_index"),
     )
 
 

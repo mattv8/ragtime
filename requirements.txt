@@ -67,3 +67,6 @@ mcp>=1.0.0,<2.0.0
 
 # Network filesystem browsing (userspace, no mount required)
 pysmb>=1.2.9,<2.0.0
+
+# Process monitoring
+psutil>=5.9.0,<6.0.0

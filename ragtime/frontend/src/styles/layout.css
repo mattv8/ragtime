@@ -607,6 +607,63 @@ body {
   line-height: var(--leading-relaxed);
 }
 
+/* Review Section (Confirmation Screen) */
+.review-section {
+  margin-bottom: var(--space-lg);
+  padding: var(--space-md);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.review-section h4 {
+  margin: 0 0 var(--space-sm) 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.review-section p {
+  margin: 0;
+  word-break: break-word;
+}
+
+.review-description {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.review-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-right: var(--space-sm);
+  background: var(--color-primary-light);
+  border-radius: var(--radius-md);
+  color: var(--color-primary);
+}
+
+.review-config {
+  margin: var(--space-sm) 0 0 0;
+  padding: var(--space-md);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--color-text-secondary);
+  overflow-x: auto;
+  overflow-y: auto;
+  max-height: 300px;
+  white-space: pre;
+  word-wrap: normal;
+}
+
 .wizard-footer {
   display: flex;
   justify-content: space-between;

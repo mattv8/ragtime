@@ -14,3 +14,4 @@ export { Popover, DisabledPopover } from './Popover';
 export { DescriptionField } from './DescriptionField';
 export { AnalysisStats } from './AnalysisStats';
 export { OllamaConnectionForm } from './OllamaConnectionForm';
+export { MemoryStatus } from './MemoryStatus';

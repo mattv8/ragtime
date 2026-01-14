@@ -100,6 +100,27 @@ class ModelsResponse(BaseModel):
     data: List[ModelInfo]
 
 
+class MemoryStats(BaseModel):
+    """Process memory statistics."""
+
+    rss_mb: float  # Resident Set Size (actual RAM used)
+    vms_mb: float  # Virtual Memory Size
+    percent: float  # Percentage of total system RAM
+    available_mb: float  # Available system RAM
+    total_mb: float  # Total system RAM
+
+
+class IndexLoadingDetail(BaseModel):
+    """Detail about a single index being loaded."""
+
+    name: str
+    status: str  # 'pending', 'loading', 'loaded', 'error'
+    size_mb: Optional[float] = None
+    chunk_count: Optional[int] = None
+    load_time_seconds: Optional[float] = None
+    error: Optional[str] = None
+
+
 class HealthResponse(BaseModel):
     """Health check response."""
 
@@ -113,3 +134,8 @@ class HealthResponse(BaseModel):
     indexes_loading: Optional[bool] = None
     indexes_total: Optional[int] = None
     indexes_loaded_count: Optional[int] = None
+    # Real-time memory stats
+    memory: Optional[MemoryStats] = None
+    index_details: Optional[List[IndexLoadingDetail]] = None
+    sequential_loading: Optional[bool] = None
+    loading_index: Optional[str] = None  # Currently loading index name

@@ -198,6 +198,7 @@ export interface IndexInfo {
   path: string;
   size_mb: number;
   document_count: number;
+  chunk_count: number;  // Number of chunks/vectors for memory calculation
   description: string;
   enabled: boolean;
   search_weight: number;  // 0.0-10.0, default 1.0
@@ -1126,6 +1127,45 @@ export interface AvailableModelsResponse {
 
 // =============================================================================
 // Background Chat Task Types
+// =============================================================================
+// Health Check / Memory Monitoring Types
+// =============================================================================
+
+export interface MemoryStats {
+  rss_mb: number;  // Resident Set Size (actual RAM used)
+  vms_mb: number;  // Virtual Memory Size
+  percent: number;  // Percentage of total system RAM
+  available_mb: number;  // Available system RAM
+  total_mb: number;  // Total system RAM
+}
+
+export interface IndexLoadingDetail {
+  name: string;
+  status: 'pending' | 'loading' | 'loaded' | 'error';
+  size_mb?: number | null;
+  chunk_count?: number | null;
+  load_time_seconds?: number | null;
+  error?: string | null;
+}
+
+export interface HealthResponse {
+  status: string;
+  version: string;
+  indexes_loaded: string[];
+  model: string;
+  llm_provider: string;
+  indexes_ready?: boolean;
+  indexes_loading?: boolean;
+  indexes_total?: number;
+  indexes_loaded_count?: number;
+  memory?: MemoryStats;
+  index_details?: IndexLoadingDetail[];
+  sequential_loading?: boolean;
+  loading_index?: string | null;
+}
+
+// =============================================================================
+// Chat Task Types
 // =============================================================================
 
 export type ChatTaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';

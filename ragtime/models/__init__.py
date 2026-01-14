@@ -1,14 +1,16 @@
 """Request and response models."""
 
 from .schemas import (
-    Message,
+    ChatChoice,
     ChatCompletionRequest,
     ChatCompletionResponse,
-    ChatChoice,
-    Usage,
+    HealthResponse,
+    IndexLoadingDetail,
+    MemoryStats,
+    Message,
     ModelInfo,
     ModelsResponse,
-    HealthResponse,
+    Usage,
 )
 
 __all__ = [
@@ -20,4 +22,6 @@ __all__ = [
     "ModelInfo",
     "ModelsResponse",
     "HealthResponse",
+    "MemoryStats",
+    "IndexLoadingDetail",
 ]

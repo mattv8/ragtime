@@ -777,6 +777,7 @@ class IndexerService:
 
                     # Try to get document count from database metadata first
                     doc_count = 0
+                    chunk_count = 0
                     created_at = None
                     enabled = True  # Default to enabled
                     description = ""
@@ -789,6 +790,7 @@ class IndexerService:
                     if path.name in metadata_by_name:
                         meta = metadata_by_name[path.name]
                         doc_count = meta.documentCount
+                        chunk_count = getattr(meta, "chunkCount", 0)
                         created_at = meta.createdAt
                         enabled = meta.enabled
                         description = getattr(meta, "description", "")
@@ -852,6 +854,7 @@ class IndexerService:
                             path=str(path),
                             size_mb=round(size_bytes / (1024 * 1024), 2),
                             document_count=doc_count,
+                            chunk_count=chunk_count,
                             description=description,
                             enabled=enabled,
                             search_weight=search_weight,

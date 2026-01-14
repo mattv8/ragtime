@@ -124,6 +124,7 @@ class IndexInfo(BaseModel):
     path: str
     size_mb: float
     document_count: int
+    chunk_count: int = 0  # Number of chunks/vectors for memory calculation
     description: str = ""
     enabled: bool = True
     search_weight: float = Field(

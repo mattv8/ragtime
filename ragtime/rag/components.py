@@ -230,6 +230,11 @@ class RAGComponents:
         self._init_lock: asyncio.Lock = asyncio.Lock()
         self._init_in_progress: bool = False
         self._embedding_model: Optional[Any] = None  # Cached for background loading
+        # Detailed index loading tracking
+        self._index_details: dict[str, dict] = (
+            {}
+        )  # name -> {status, size_mb, chunk_count, load_time, error}
+        self._loading_index: Optional[str] = None  # Currently loading index name
 
     @property
     def is_ready(self) -> bool:
@@ -256,6 +261,13 @@ class RAGComponents:
             "indexes_total": self._indexes_total,
             "indexes_loaded": self._indexes_loaded,
             "retrievers_available": list(self.retrievers.keys()),
+            "index_details": list(self._index_details.values()),
+            "loading_index": self._loading_index,
+            "sequential_loading": (
+                self._app_settings.get("sequential_index_loading", False)
+                if self._app_settings
+                else False
+            ),
         }
 
     async def initialize(self):
@@ -557,6 +569,23 @@ class RAGComponents:
         self._indexes_loaded = 0
         search_k = self._app_settings.get("search_results_k", 5)
 
+        # Initialize index details for all indexes
+        for idx in enabled_indexes:
+            index_name = idx.get("name")
+            if index_name:
+                self._index_details[index_name] = {
+                    "name": index_name,
+                    "status": "pending",
+                    "size_mb": (
+                        idx.get("size_bytes", 0) / (1024 * 1024)
+                        if idx.get("size_bytes")
+                        else None
+                    ),
+                    "chunk_count": idx.get("chunk_count"),
+                    "load_time_seconds": None,
+                    "error": None,
+                }
+
         async def load_single_index(
             idx: dict,
         ) -> tuple[str, Any, dict] | None:
@@ -565,14 +594,24 @@ class RAGComponents:
             if not index_name:
                 return None
 
+            # Mark as loading
+            if index_name in self._index_details:
+                self._index_details[index_name]["status"] = "loading"
+
             index_path_str = idx.get("path")
             if not index_path_str:
                 logger.warning(f"Index {index_name} has no path in metadata, skipping")
+                if index_name in self._index_details:
+                    self._index_details[index_name]["status"] = "error"
+                    self._index_details[index_name]["error"] = "No path in metadata"
                 return None
 
             index_path = Path(index_path_str)
             if not index_path.exists():
                 logger.warning(f"FAISS index path not found: {index_path}")
+                if index_name in self._index_details:
+                    self._index_details[index_name]["status"] = "error"
+                    self._index_details[index_name]["error"] = "Path not found"
                 return None
 
             try:
@@ -602,6 +641,11 @@ class RAGComponents:
                     f"(k={search_k}, {elapsed:.1f}s, ~{steady_mem / 1024**3:.2f}GB)"
                 )
 
+                # Update index detail
+                if index_name in self._index_details:
+                    self._index_details[index_name]["status"] = "loaded"
+                    self._index_details[index_name]["load_time_seconds"] = elapsed
+
                 memory_stats = {
                     "embedding_dimension": embedding_dim,
                     "steady_memory_bytes": steady_mem,
@@ -611,6 +655,9 @@ class RAGComponents:
                 return (index_name, retriever, memory_stats)
             except Exception as e:
                 logger.warning(f"Failed to load FAISS index {index_name}: {e}")
+                if index_name in self._index_details:
+                    self._index_details[index_name]["status"] = "error"
+                    self._index_details[index_name]["error"] = str(e)
                 return None
 
         # Load all indexes in parallel
@@ -672,6 +719,23 @@ class RAGComponents:
         self._indexes_loaded = 0
         search_k = self._app_settings.get("search_results_k", 5)
 
+        # Initialize index details for all indexes
+        for idx in enabled_indexes:
+            index_name = idx.get("name")
+            if index_name:
+                self._index_details[index_name] = {
+                    "name": index_name,
+                    "status": "pending",
+                    "size_mb": (
+                        idx.get("size_bytes", 0) / (1024 * 1024)
+                        if idx.get("size_bytes")
+                        else None
+                    ),
+                    "chunk_count": idx.get("chunk_count"),
+                    "load_time_seconds": None,
+                    "error": None,
+                }
+
         logger.info(
             f"Loading {len(enabled_indexes)} FAISS index(es) sequentially "
             "(smallest first)..."
@@ -682,14 +746,25 @@ class RAGComponents:
             if not index_name:
                 continue
 
+            # Mark as currently loading
+            self._loading_index = index_name
+            if index_name in self._index_details:
+                self._index_details[index_name]["status"] = "loading"
+
             index_path_str = idx.get("path")
             if not index_path_str:
                 logger.warning(f"Index {index_name} has no path in metadata, skipping")
+                if index_name in self._index_details:
+                    self._index_details[index_name]["status"] = "error"
+                    self._index_details[index_name]["error"] = "No path in metadata"
                 continue
 
             index_path = Path(index_path_str)
             if not index_path.exists():
                 logger.warning(f"FAISS index path not found: {index_path}")
+                if index_name in self._index_details:
+                    self._index_details[index_name]["status"] = "error"
+                    self._index_details[index_name]["error"] = "Path not found"
                 continue
 
             try:
@@ -727,6 +802,11 @@ class RAGComponents:
                 self.retrievers[index_name] = retriever
                 self._indexes_loaded += 1
 
+                # Update index detail
+                if index_name in self._index_details:
+                    self._index_details[index_name]["status"] = "loaded"
+                    self._index_details[index_name]["load_time_seconds"] = elapsed
+
                 logger.info(
                     f"Loaded FAISS index: {index_name} from {index_path} "
                     f"(k={search_k}, {elapsed:.1f}s, ~{steady_mem / 1024**3:.2f}GB)"
@@ -748,6 +828,12 @@ class RAGComponents:
 
             except Exception as e:
                 logger.warning(f"Failed to load FAISS index {index_name}: {e}")
+                if index_name in self._index_details:
+                    self._index_details[index_name]["status"] = "error"
+                    self._index_details[index_name]["error"] = str(e)
+
+        # Clear loading index indicator
+        self._loading_index = None
 
         if self.retrievers:
             logger.info(

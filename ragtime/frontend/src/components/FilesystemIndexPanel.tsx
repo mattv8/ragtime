@@ -9,6 +9,8 @@ const ACTIVE_JOB_POLL_INTERVAL = 2000;
 interface FilesystemIndexPanelProps {
   onToolsChanged?: () => void;
   onJobsChanged?: () => void;
+  /** Embedding dimensions for memory calculation (from app settings) */
+  embeddingDimensions?: number | null;
 }
 
 interface FilesystemIndexCardProps {
@@ -160,7 +162,7 @@ function FilesystemIndexCard({
   );
 }
 
-export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged }: FilesystemIndexPanelProps) {
+export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged, embeddingDimensions }: FilesystemIndexPanelProps) {
   const [tools, setTools] = useState<ToolConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -181,6 +183,34 @@ export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged }: Filesyst
     message: string;
     onConfirm: () => void;
   } | null>(null);
+
+  // Calculate total memory for enabled filesystem indexes
+  const calculateTotalMemory = (): { total: number; enabled: number } | null => {
+    if (!embeddingDimensions || embeddingDimensions <= 0) return null;
+
+    let totalEmbeddings = 0;
+    let enabledEmbeddings = 0;
+
+    for (const tool of tools) {
+      const stats = filesystemStats[tool.id];
+      if (stats) {
+        totalEmbeddings += stats.embedding_count;
+        if (tool.enabled) {
+          enabledEmbeddings += stats.embedding_count;
+        }
+      }
+    }
+
+    // Memory formula for pgvector: embeddings * dimensions * 4 bytes (float32)
+    // pgvector uses slightly different overhead, estimate 1.15x
+    const bytesPerEmbedding = embeddingDimensions * 4 * 1.15;
+    const totalMb = (totalEmbeddings * bytesPerEmbedding) / (1024 * 1024);
+    const enabledMb = (enabledEmbeddings * bytesPerEmbedding) / (1024 * 1024);
+
+    return { total: totalMb, enabled: enabledMb };
+  };
+
+  const memoryEstimate = calculateTotalMemory();
 
   // Load filesystem indexer tools
   const loadTools = useCallback(async () => {
@@ -381,7 +411,17 @@ export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged }: Filesyst
       )}
 
       <div className="section-header">
-        <h2>Filesystem Indexes</h2>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+          <h2>Filesystem Indexes</h2>
+          {memoryEstimate && tools.length > 0 && (
+            <span className="memory-badge" title={`${memoryEstimate.enabled.toFixed(1)} MB active / ${memoryEstimate.total.toFixed(1)} MB total (pgvector)`}>
+              {memoryEstimate.enabled.toFixed(0)} MB
+              {memoryEstimate.enabled !== memoryEstimate.total && (
+                <span className="memory-total"> / {memoryEstimate.total.toFixed(0)}</span>
+              )}
+            </span>
+          )}
+        </div>
         <button type="button" className="btn" onClick={handleAddNew}>
           Add Filesystem Index
         </button>

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { X } from 'lucide-react';
+import { X, HardDrive, MemoryStick } from 'lucide-react';
 import { api } from '@/api';
-import type { IndexInfo, RepoVisibilityResponse } from '@/types';
+import type { IndexInfo, RepoVisibilityResponse, IndexLoadingDetail } from '@/types';
 import { GitIndexWizard } from './GitIndexWizard';
 import { UploadForm } from './UploadForm';
 import { DescriptionField } from './DescriptionField';
@@ -16,6 +16,8 @@ interface IndexesListProps {
   onJobCreated?: () => void;
   /** When true, hide search weight controls (not used in aggregate mode) */
   aggregateSearch?: boolean;
+  /** Embedding dimensions for memory calculation (from app settings) */
+  embeddingDimensions?: number | null;
   /** Called when user wants to navigate to settings */
   onNavigateToSettings?: () => void;
 }
@@ -154,13 +156,16 @@ function EditDescriptionModal({ index, onSave, onClose, saving }: EditModalProps
   );
 }
 
-export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDescriptionUpdate, onJobCreated, aggregateSearch = true, onNavigateToSettings }: IndexesListProps) {
+export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDescriptionUpdate, onJobCreated, aggregateSearch = true, embeddingDimensions, onNavigateToSettings }: IndexesListProps) {
   const [deleting, setDeleting] = useState<string | null>(null);
   const [toggling, setToggling] = useState<string | null>(null);
   const [editingIndex, setEditingIndex] = useState<IndexInfo | null>(null);
   const [savingDescription, setSavingDescription] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [deleteConfirmName, setDeleteConfirmName] = useState<string | null>(null);
+
+  // Index memory info from health endpoint
+  const [indexMemoryMap, setIndexMemoryMap] = useState<Map<string, IndexLoadingDetail>>(new Map());
 
   // Weight modal state
   const [weightEditIndex, setWeightEditIndex] = useState<IndexInfo | null>(null);
@@ -183,6 +188,73 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
   // Git index edit state
   const [editingGitIndex, setEditingGitIndex] = useState<IndexInfo | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+
+  // Fetch index memory info from health endpoint
+  useEffect(() => {
+    const fetchIndexMemory = async () => {
+      try {
+        const health = await api.getHealth();
+        if (health.index_details) {
+          const map = new Map<string, IndexLoadingDetail>();
+          for (const detail of health.index_details) {
+            map.set(detail.name, detail);
+          }
+          setIndexMemoryMap(map);
+        }
+      } catch {
+        // Silently ignore - memory info is supplementary
+      }
+    };
+    fetchIndexMemory();
+    // Re-fetch when indexes change
+  }, [indexes]);
+
+  // Calculate total memory for enabled indexes using health data
+  const calculateTotalMemory = (): { total: number; enabled: number } | null => {
+    if (indexMemoryMap.size === 0) {
+      // Fallback to embedding dimensions calculation if no health data
+      if (!embeddingDimensions || embeddingDimensions <= 0) return null;
+
+      let totalChunks = 0;
+      let enabledChunks = 0;
+
+      for (const idx of indexes) {
+        totalChunks += idx.chunk_count;
+        if (idx.enabled) {
+          enabledChunks += idx.chunk_count;
+        }
+      }
+
+      const bytesPerChunk = embeddingDimensions * 4 * 1.1;
+      const totalMb = (totalChunks * bytesPerChunk) / (1024 * 1024);
+      const enabledMb = (enabledChunks * bytesPerChunk) / (1024 * 1024);
+
+      return { total: totalMb, enabled: enabledMb };
+    }
+
+    // Use actual memory from health endpoint
+    let totalMb = 0;
+    let enabledMb = 0;
+
+    for (const idx of indexes) {
+      const detail = indexMemoryMap.get(idx.name);
+      const sizeMb = detail?.size_mb ?? 0;
+      totalMb += sizeMb;
+      if (idx.enabled) {
+        enabledMb += sizeMb;
+      }
+    }
+
+    return { total: totalMb, enabled: enabledMb };
+  };
+
+  // Get per-index memory from health endpoint
+  const getIndexMemory = (indexName: string): number | null => {
+    const detail = indexMemoryMap.get(indexName);
+    return detail?.size_mb ?? null;
+  };
+
+  const memoryEstimate = calculateTotalMemory();
 
   // Check repo visibility when reindex modal opens
   useEffect(() => {
@@ -328,7 +400,17 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
   return (
     <div className="card">
       <div className="section-header">
-        <h2>Document Indexes</h2>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+          <h2>Document Indexes</h2>
+          {memoryEstimate && indexes.length > 0 && (
+            <span className="memory-badge" title={`${memoryEstimate.enabled.toFixed(1)} MB loaded / ${memoryEstimate.total.toFixed(1)} MB total`}>
+              {memoryEstimate.enabled.toFixed(0)} MB
+              {memoryEstimate.enabled !== memoryEstimate.total && (
+                <span className="memory-total"> / {memoryEstimate.total.toFixed(0)}</span>
+              )}
+            </span>
+          )}
+        </div>
         {showCreateWizard ? (
           <button
             type="button"
@@ -451,7 +533,27 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
             <h3>{idx.display_name || idx.name}</h3>
             <div className="index-meta-pills">
               <span className="meta-pill documents">{idx.document_count} documents</span>
-              <span className="meta-pill size">{idx.size_mb} MB</span>
+              {(() => {
+                const ramMb = getIndexMemory(idx.name);
+                if (ramMb !== null) {
+                  return (
+                    <span
+                      className={`meta-pill ram ${idx.enabled ? 'ram-loaded' : 'ram-unloaded'}`}
+                      title={`${idx.enabled ? 'Loaded in RAM' : 'Not loaded (disabled)'}: ${ramMb.toFixed(2)} MB (${idx.chunk_count.toLocaleString()} chunks)`}
+                    >
+                      <MemoryStick size={12} />
+                      {ramMb.toFixed(2)} MB
+                    </span>
+                  );
+                }
+                // Fallback to disk size when RAM info not available
+                return (
+                  <span className="meta-pill size" title={`Size on disk: ${idx.size_mb} MB`}>
+                    <HardDrive size={12} />
+                    {idx.size_mb} MB
+                  </span>
+                );
+              })()}
               {idx.source_type === 'git' && idx.source && (
                 <span className="meta-pill git" title={`Git: ${idx.source}${idx.git_branch ? ` (${idx.git_branch})` : ''}`}>
                   Git

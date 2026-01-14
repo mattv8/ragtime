@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '@/api';
-import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, LoginPage } from '@/components';
+import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, LoginPage, MemoryStatus } from '@/components';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob, ToolConfig, AppSettings } from '@/types';
 import '@/styles/global.css';
@@ -43,6 +43,7 @@ export function App() {
   const [filesystemJobs, setFilesystemJobs] = useState<FilesystemIndexJob[]>([]);
   const filesystemPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [aggregateSearch, setAggregateSearch] = useState(true);
+  const [embeddingDimensions, setEmbeddingDimensions] = useState<number | null>(null);
 
   // Schema indexer state
   const [schemaJobs, setSchemaJobs] = useState<SchemaIndexJob[]>([]);
@@ -52,9 +53,9 @@ export function App() {
   const [pdmJobs, setPdmJobs] = useState<PdmIndexJob[]>([]);
   const pdmPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Load server name from settings
+  // Load server name and embedding dimensions from settings
   useEffect(() => {
-    const loadServerName = async () => {
+    const loadSettings = async () => {
       try {
         const settings: AppSettings = await api.getSettings();
         if (settings.server_name) {
@@ -63,11 +64,13 @@ export function App() {
         }
         // Also load aggregate_search setting
         setAggregateSearch(settings.aggregate_search ?? true);
+        // Load embedding dimensions for memory calculation
+        setEmbeddingDimensions(settings.embedding_dimensions ?? null);
       } catch {
         // Ignore errors, use default name
       }
     };
-    loadServerName();
+    loadSettings();
   }, []);
 
   // Callback to update server name from SettingsPanel
@@ -380,6 +383,7 @@ export function App() {
           )}
         </div>
         <div className="topnav-actions">
+          <MemoryStatus />
           <ThemeToggle />
           <div className="topnav-user">
             <span className="topnav-username">
@@ -416,6 +420,7 @@ export function App() {
             onDescriptionUpdate={loadIndexes}
             onJobCreated={handleJobCreated}
             aggregateSearch={aggregateSearch}
+            embeddingDimensions={embeddingDimensions}
             onNavigateToSettings={() => {
               setHighlightSetting('sequential_index_loading');
               setActiveView('settings');
@@ -423,7 +428,10 @@ export function App() {
           />
 
           {/* Filesystem Indexes (pgvector) */}
-          <FilesystemIndexPanel onJobsChanged={loadFilesystemJobs} />
+          <FilesystemIndexPanel
+            onJobsChanged={loadFilesystemJobs}
+            embeddingDimensions={embeddingDimensions}
+          />
 
           {/* Jobs Table */}
           <JobsTable

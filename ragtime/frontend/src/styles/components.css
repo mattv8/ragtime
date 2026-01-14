@@ -514,6 +514,24 @@ textarea {
   color: var(--color-warning);
 }
 
+.meta-pill.ram {
+  background: var(--color-accent-light);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.meta-pill.ram-loaded {
+  background: var(--color-accent-light);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.meta-pill.ram-unloaded {
+  background: var(--color-surface-hover);
+  border-color: var(--color-border);
+  color: var(--color-text-muted);
+}
+
 .meta-pill.embeddings {
   background: rgba(168, 85, 247, 0.15);
   border-color: rgba(168, 85, 247, 0.3);
@@ -1123,6 +1141,29 @@ fieldset legend {
 }
 
 /* =============================================================================
+   MEMORY BADGE - Shows RAM usage for index sections
+   ============================================================================= */
+
+.memory-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  padding: 0.25rem 0.625rem;
+  cursor: help;
+}
+
+.memory-badge .memory-total {
+  color: var(--color-text-muted);
+  font-weight: 400;
+}
+
+/* =============================================================================
    HIGHLIGHT ANIMATION - For deep-linking to specific settings
    ============================================================================= */
 
@@ -1142,4 +1183,214 @@ fieldset legend {
   animation: highlight-pulse 0.8s ease-out 2;
   border-color: var(--color-accent) !important;
   transition: border-color 0.3s ease-out, box-shadow 0.3s ease-out;
+}
+
+/* =============================================================================
+   MEMORY STATUS - Real-time memory monitoring widget
+   ============================================================================= */
+
+.memory-status {
+  position: relative;
+}
+
+.memory-status-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  padding: 0.25rem 0.625rem;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.memory-status-toggle:hover {
+  background: var(--color-surface-hover);
+  border-color: var(--color-border-strong);
+}
+
+.memory-status-loading .memory-status-toggle {
+  border-color: var(--color-accent);
+  animation: memory-pulse 2s ease-in-out infinite;
+}
+
+@keyframes memory-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+.memory-status-icon {
+  font-size: var(--text-sm);
+}
+
+.memory-status-text {
+  white-space: nowrap;
+}
+
+.memory-status-progress {
+  color: var(--color-text-muted);
+}
+
+.memory-status-bar {
+  width: 40px;
+  height: 4px;
+  background: var(--color-bg-primary);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.memory-status-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--color-accent);
+  border-radius: 2px;
+  transition: width 0.3s ease-out;
+}
+
+.memory-status-dropdown {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  min-width: 280px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  z-index: 100;
+  padding: 0.75rem;
+}
+
+.memory-status-section {
+  margin-bottom: 0.75rem;
+}
+
+.memory-status-section:last-child {
+  margin-bottom: 0;
+}
+
+.memory-status-section h4 {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 0 0 0.5rem 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.memory-status-badge {
+  font-size: 0.65rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  padding: 0.125rem 0.375rem;
+  background: var(--color-accent-light);
+  color: var(--color-accent);
+  border-radius: var(--radius-sm);
+}
+
+.memory-status-current {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  margin-bottom: 0.5rem;
+  padding: 0.375rem 0.5rem;
+  background: var(--color-accent-light);
+  border-radius: var(--radius-sm);
+}
+
+.memory-status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: var(--text-sm);
+  padding: 0.25rem 0;
+  color: var(--color-text-secondary);
+}
+
+.memory-status-row.muted {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.memory-status-value {
+  font-weight: 500;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.memory-status-index {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: var(--text-sm);
+  padding: 0.25rem 0.375rem;
+  border-radius: var(--radius-sm);
+  margin: 0.125rem 0;
+}
+
+.memory-status-index-pending {
+  color: var(--color-text-muted);
+}
+
+.memory-status-index-loading {
+  background: var(--color-accent-light);
+  color: var(--color-accent);
+}
+
+.memory-status-index-loaded {
+  color: var(--color-success);
+}
+
+.memory-status-index-error {
+  color: var(--color-error);
+}
+
+.memory-status-index-icon {
+  flex-shrink: 0;
+  width: 1rem;
+  text-align: center;
+}
+
+.memory-status-index-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memory-status-index-size {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+  padding: 0.125rem 0.375rem;
+  background: var(--color-bg-tertiary);
+  border-radius: var(--radius-sm);
+}
+
+.memory-status-index-chunks {
+  font-size: 0.65rem;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.memory-status-index-time {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.memory-status-index-error {
+  font-size: var(--text-xs);
+  color: var(--color-error);
+  cursor: help;
+}
+
+.memory-status-error {
+  color: var(--color-warning);
 }
