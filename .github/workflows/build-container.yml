@@ -4,6 +4,20 @@ on:
   push:
     branches:
       - '**'
+    paths:
+      # Docker build files
+      - 'docker/**'
+      - 'docker-compose.yml'
+      # Application code
+      - 'ragtime/**'
+      # Dependencies and build config
+      - 'pyproject.toml'
+      - 'requirements.txt'
+      # Database schema (requires container rebuild for migrations)
+      - 'prisma/**'
+      # CI workflow itself
+      - '.github/workflows/build-container.yml'
+      - '.github/actions/**'
   workflow_dispatch:
 
 env:
