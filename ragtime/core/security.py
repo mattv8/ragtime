@@ -267,9 +267,9 @@ SSH_DANGEROUS_SHELL_PATTERNS = [
     r"\bgroupadd\b",
     r"\bpasswd\b",
     # Dangerous redirections
-    r">\s*/",  # Redirect to absolute path
-    r">>\s*/",  # Append to absolute path
-    r"\btee\s+/",  # tee to absolute path
+    r">\s*/(?!dev/null\b)",  # Redirect to absolute path (allow /dev/null)
+    r">>\s*/(?!dev/null\b)",  # Append to absolute path (allow /dev/null)
+    r"\btee\s+/(?!dev/null\b)",  # tee to absolute path (allow /dev/null)
     # Dangerous system commands
     r"\bshutdown\b",
     r"\breboot\b",
