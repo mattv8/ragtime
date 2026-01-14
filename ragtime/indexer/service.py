@@ -22,6 +22,7 @@ from typing import Any, BinaryIO, Dict, List, Optional
 
 from ragtime.config import settings
 from ragtime.core.app_settings import invalidate_settings_cache
+from ragtime.core.embedding_models import get_embedding_models
 from ragtime.core.file_constants import (
     BINARY_EXTENSIONS,
     MINIFIED_PATTERNS,
@@ -31,6 +32,11 @@ from ragtime.core.file_constants import (
 from ragtime.core.logging import get_logger
 from ragtime.indexer.document_parser import OCR_EXTENSIONS, extract_text_from_file
 from ragtime.indexer.llm_exclusions import get_smart_exclusion_suggestions
+from ragtime.indexer.memory_utils import (
+    estimate_index_memory,
+    estimate_memory_at_dimensions,
+    get_embedding_dimension,
+)
 from ragtime.indexer.models import (
     AnalyzeIndexRequest,
     AppSettings,
@@ -42,6 +48,7 @@ from ragtime.indexer.models import (
     IndexInfo,
     IndexJob,
     IndexStatus,
+    MemoryEstimate,
 )
 from ragtime.indexer.repository import repository
 
@@ -1406,12 +1413,74 @@ class IndexerService:
         # Warn if embedding dimensions exceed pgvector's index limit (applies to filesystem + doc indexing)
         await self._append_embedding_dimension_warning(warnings)
 
+        # Calculate memory estimates
+        memory_estimate = None
+        total_memory_with_existing_mb = None
+
+        try:
+            app_settings = await repository.get_settings()
+            embedding_models = await get_embedding_models()
+
+            embedding_dim = get_embedding_dimension(
+                model=app_settings.embedding_model,
+                embedding_models=embedding_models,
+                tracked_dim=getattr(app_settings, "embedding_dimension", None),
+            )
+
+            if embedding_dim:
+                # Estimate memory for this index
+                mem_est = estimate_index_memory(
+                    num_chunks=total_estimated_chunks,
+                    embedding_dim=embedding_dim,
+                    avg_chunk_chars=chunk_size,
+                )
+
+                # Generate dimension comparison table
+                dim_breakdown = estimate_memory_at_dimensions(
+                    num_chunks=total_estimated_chunks,
+                    embedding_models=embedding_models,
+                    avg_chunk_chars=chunk_size,
+                )
+
+                memory_estimate = MemoryEstimate(
+                    embedding_dimension=embedding_dim,
+                    steady_memory_mb=round(
+                        mem_est["steady_memory_bytes"] / (1024 * 1024), 1
+                    ),
+                    peak_memory_mb=round(
+                        mem_est["peak_memory_bytes"] / (1024 * 1024), 1
+                    ),
+                    dimension_breakdown=dim_breakdown,
+                )
+
+                # Calculate total memory with existing indexes
+                existing_indexes = await repository.list_index_metadata()
+                existing_memory = sum(
+                    (idx.steadyMemoryBytes or 0) for idx in existing_indexes
+                )
+                total_memory_with_existing_mb = round(
+                    (existing_memory + mem_est["steady_memory_bytes"]) / (1024 * 1024),
+                    1,
+                )
+
+                # Add memory warning if total is high
+                if total_memory_with_existing_mb > 8000:  # > 8GB
+                    warnings.append(
+                        f"Total RAM after adding this index: ~{total_memory_with_existing_mb / 1024:.1f}GB. "
+                        "Consider using sequential index loading in Settings to reduce peak memory."
+                    )
+
+        except Exception as e:
+            logger.debug(f"Could not calculate memory estimate: {e}")
+
         return IndexAnalysisResult(
             total_files=total_files,
             total_size_bytes=total_size,
             total_size_mb=round(total_size / (1024 * 1024), 2),
             estimated_chunks=total_estimated_chunks,
             estimated_index_size_mb=round(estimated_index_size_mb, 2),
+            memory_estimate=memory_estimate,
+            total_memory_with_existing_mb=total_memory_with_existing_mb,
             file_type_stats=file_type_list,
             suggested_exclusions=list(set(suggested_exclusions)),
             matched_file_patterns=list(matched_patterns),

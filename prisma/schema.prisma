@@ -89,6 +89,12 @@ model IndexMetadata {
   enabled       Boolean  @default(true) // Include in RAG context
   searchWeight  Float    @default(1.0) @map("search_weight") // Weighting for search prioritization (0.0-10.0)
 
+  // Memory tracking (observed during loading)
+  embeddingDimension  Int?    @map("embedding_dimension") // Dimension of vectors in this index
+  steadyMemoryBytes   BigInt? @map("steady_memory_bytes") // RAM usage after loading (observed)
+  peakMemoryBytes     BigInt? @map("peak_memory_bytes") // Peak RAM during loading (observed)
+  loadTimeSeconds     Float?  @map("load_time_seconds") // Time to load this index
+
   // Source info
   sourceType String  @map("source_type")
   source     String?
@@ -151,6 +157,9 @@ model AppSettings {
   // Search Configuration
   searchResultsK    Int      @default(5) @map("search_results_k") // Number of results per vector search (k)
   aggregateSearch   Boolean  @default(true) @map("aggregate_search") // If true, use single search_knowledge; if false, create per-index tools
+
+  // Performance / Memory Configuration
+  sequentialIndexLoading Boolean @default(false) @map("sequential_index_loading") // Load indexes one-by-one (lower peak RAM) vs parallel (faster)
 
   // Security
   enableWriteOps    Boolean  @default(false) @map("enable_write_ops")

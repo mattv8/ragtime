@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '@/api';
 import type { CommitHistoryInfo, IndexAnalysisResult, IndexJob, IndexInfo } from '@/types';
+import { AnalysisStats } from './AnalysisStats';
 import { DescriptionField } from './DescriptionField';
 
 type StatusType = 'info' | 'success' | 'error' | null;
@@ -101,6 +102,8 @@ interface GitIndexWizardProps {
   editIndex?: IndexInfo;
   /** Called when config is saved in edit mode (without triggering re-index) */
   onConfigSaved?: () => void;
+  /** Called when user wants to navigate to settings */
+  onNavigateToSettings?: () => void;
 }
 
 // Default file patterns to include all files, and placeholder hints for UI
@@ -108,7 +111,7 @@ const DEFAULT_FILE_PATTERNS = '**/*';
 const PLACEHOLDER_FILE_PATTERNS = 'e.g. **/*.py, **/*.md (default: all files)';
 const PLACEHOLDER_EXCLUDE_PATTERNS = 'e.g. **/node_modules/**, **/__pycache__/**';
 
-export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnalysisComplete, editIndex, onConfigSaved }: GitIndexWizardProps) {
+export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnalysisComplete, editIndex, onConfigSaved, onNavigateToSettings }: GitIndexWizardProps) {
   const isEditMode = !!editIndex;
 
   const [isLoading, setIsLoading] = useState(false);
@@ -1040,46 +1043,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           </div>
         )}
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '16px' }}>
-          <div style={{ background: 'var(--bg-tertiary)', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-            <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--accent)' }}>
-              {analysisResult.total_files.toLocaleString()}
-            </div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Files</div>
-          </div>
-          <div style={{ background: 'var(--bg-tertiary)', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-            <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--accent)' }}>
-              {analysisResult.total_size_mb.toLocaleString()} MB
-            </div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Source Size</div>
-          </div>
-          <div style={{ background: 'var(--bg-tertiary)', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-            <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--accent)' }}>
-              {analysisResult.estimated_chunks.toLocaleString()}
-            </div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Est. Chunks</div>
-          </div>
-          <div style={{ background: 'var(--bg-tertiary)', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-            <div
-              style={{
-                fontSize: '1.5rem',
-                fontWeight: 'bold',
-                color: analysisResult.estimated_index_size_mb > 500 ? '#f87171' : 'var(--accent)',
-              }}
-            >
-              {analysisResult.estimated_index_size_mb.toLocaleString()} MB
-            </div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Est. Index Size</div>
-          </div>
-          {analysisResult.commit_history && analysisResult.commit_history.total_commits > 0 && (
-            <div style={{ background: 'var(--bg-tertiary)', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-              <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--accent)' }}>
-                {analysisResult.commit_history.total_commits.toLocaleString()}
-              </div>
-              <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Total Commits</div>
-            </div>
-          )}
-        </div>
+        <AnalysisStats result={analysisResult} onNavigateToSettings={onNavigateToSettings} />
 
         {analysisResult.file_type_stats.length > 0 && (
           <div style={{ marginBottom: '16px' }}>

@@ -434,6 +434,45 @@ class IndexerRepository:
             logger.warning(f"Failed to update search weight for index {name}: {e}")
             return False
 
+    async def update_index_memory_stats(self, name: str, stats: dict[str, Any]) -> bool:
+        """Update the observed memory statistics for an index.
+
+        Args:
+            name: Index name
+            stats: Dictionary with keys:
+                - embedding_dimension: int (dimension of vectors)
+                - steady_memory_bytes: int (RAM after loading)
+                - peak_memory_bytes: int (peak RAM during loading)
+                - load_time_seconds: float (time to load)
+
+        Returns:
+            True if update succeeded, False otherwise
+        """
+        db = await self._get_db()
+
+        update_data: dict[str, Any] = {}
+        if "embedding_dimension" in stats and stats["embedding_dimension"] is not None:
+            update_data["embeddingDimension"] = stats["embedding_dimension"]
+        if "steady_memory_bytes" in stats and stats["steady_memory_bytes"] is not None:
+            update_data["steadyMemoryBytes"] = stats["steady_memory_bytes"]
+        if "peak_memory_bytes" in stats and stats["peak_memory_bytes"] is not None:
+            update_data["peakMemoryBytes"] = stats["peak_memory_bytes"]
+        if "load_time_seconds" in stats and stats["load_time_seconds"] is not None:
+            update_data["loadTimeSeconds"] = stats["load_time_seconds"]
+
+        if not update_data:
+            return True  # Nothing to update
+
+        try:
+            await db.indexmetadata.update(
+                where={"name": name}, data=cast(Any, update_data)
+            )
+            logger.debug(f"Updated memory stats for index {name}")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to update memory stats for index {name}: {e}")
+            return False
+
     async def update_index_config(
         self,
         name: str,
@@ -615,6 +654,8 @@ class IndexerRepository:
             # Search configuration
             search_results_k=getattr(settings, "searchResultsK", 5),
             aggregate_search=getattr(settings, "aggregateSearch", True),
+            # Performance configuration
+            sequential_index_loading=getattr(settings, "sequentialIndexLoading", False),
             # MCP configuration
             mcp_enabled=getattr(settings, "mcpEnabled", False),
             mcp_default_route_auth=getattr(settings, "mcpDefaultRouteAuth", False),
@@ -665,6 +706,8 @@ class IndexerRepository:
             # Search configuration
             "search_results_k": "searchResultsK",
             "aggregate_search": "aggregateSearch",
+            # Performance configuration
+            "sequential_index_loading": "sequentialIndexLoading",
             # MCP configuration
             "mcp_enabled": "mcpEnabled",
             "mcp_default_route_auth": "mcpDefaultRouteAuth",

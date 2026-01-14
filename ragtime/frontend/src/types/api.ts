@@ -263,12 +263,28 @@ export interface CommitHistoryInfo {
   newest_date: string | null;
 }
 
+export interface MemoryDimensionBreakdown {
+  dimension: number;
+  steady_memory_mb: number;
+  peak_memory_mb: number;
+  examples: string[];
+}
+
+export interface MemoryEstimate {
+  embedding_dimension: number;
+  steady_memory_mb: number;
+  peak_memory_mb: number;
+  dimension_breakdown?: MemoryDimensionBreakdown[];
+}
+
 export interface IndexAnalysisResult {
   total_files: number;
   total_size_bytes: number;
   total_size_mb: number;
   estimated_chunks: number;
   estimated_index_size_mb: number;
+  memory_estimate?: MemoryEstimate;
+  total_memory_with_existing_mb?: number;
   file_type_stats: FileTypeStats[];
   suggested_exclusions: string[];
   matched_file_patterns: string[];
@@ -366,6 +382,8 @@ export interface AppSettings {
   // Search Configuration
   search_results_k: number;
   aggregate_search: boolean;
+  // Performance / Memory Configuration
+  sequential_index_loading: boolean;
   // MCP Configuration
   mcp_enabled: boolean;
   mcp_default_route_auth: boolean;
@@ -412,6 +430,8 @@ export interface UpdateSettingsRequest {
   // Search settings
   search_results_k?: number;
   aggregate_search?: boolean;
+  // Performance / Memory settings
+  sequential_index_loading?: boolean;
   // MCP settings
   mcp_enabled?: boolean;
   mcp_default_route_auth?: boolean;

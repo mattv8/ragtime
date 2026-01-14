@@ -81,6 +81,8 @@ class SettingsCache:
                 # Search configuration
                 "search_results_k": prisma_settings.searchResultsK,
                 "aggregate_search": prisma_settings.aggregateSearch,
+                # Performance / Memory configuration
+                "sequential_index_loading": prisma_settings.sequentialIndexLoading,
                 # LLM settings
                 "llm_provider": prisma_settings.llmProvider,
                 "llm_model": prisma_settings.llmModel,
@@ -120,6 +122,8 @@ class SettingsCache:
                 # Search configuration
                 "search_results_k": 5,
                 "aggregate_search": True,
+                # Performance / Memory configuration
+                "sequential_index_loading": False,
                 # LLM settings
                 "llm_provider": "openai",
                 "llm_model": "gpt-4-turbo",

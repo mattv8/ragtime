@@ -1121,3 +1121,25 @@ fieldset legend {
   font-size: var(--text-sm);
   color: var(--color-accent);
 }
+
+/* =============================================================================
+   HIGHLIGHT ANIMATION - For deep-linking to specific settings
+   ============================================================================= */
+
+@keyframes highlight-pulse {
+  0% {
+    box-shadow: 0 0 0 0 var(--color-accent);
+  }
+  50% {
+    box-shadow: 0 0 12px 4px var(--color-accent-light);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.highlight-setting {
+  animation: highlight-pulse 0.8s ease-out 2;
+  border-color: var(--color-accent) !important;
+  transition: border-color 0.3s ease-out, box-shadow 0.3s ease-out;
+}

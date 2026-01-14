@@ -16,6 +16,11 @@ function getInitialView(): ViewType {
   return 'chat';
 }
 
+function getInitialHighlight(): string | null {
+  const params = new URLSearchParams(window.location.search);
+  return params.get('highlight');
+}
+
 export function App() {
   // Auth state
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
@@ -24,6 +29,7 @@ export function App() {
 
   // App state
   const [activeView, setActiveView] = useState<ViewType>(getInitialView);
+  const [highlightSetting, setHighlightSetting] = useState<string | null>(getInitialHighlight);
   const [serverName, setServerName] = useState<string>('Ragtime');
   const [jobs, setJobs] = useState<IndexJob[]>([]);
   const [indexes, setIndexes] = useState<IndexInfo[]>([]);
@@ -123,9 +129,12 @@ export function App() {
   useEffect(() => {
     const params = new URLSearchParams();
     params.set('view', activeView);
+    if (highlightSetting) {
+      params.set('highlight', highlightSetting);
+    }
     const newUrl = `${window.location.pathname}?${params.toString()}`;
     window.history.replaceState({}, '', newUrl);
-  }, [activeView]);
+  }, [activeView, highlightSetting]);
 
   const loadJobs = useCallback(async () => {
     try {
@@ -388,7 +397,11 @@ export function App() {
       {activeView === 'chat' ? (
         <ChatPanel currentUser={currentUser} />
       ) : activeView === 'settings' ? (
-        <SettingsPanel onServerNameChange={handleServerNameChange} />
+        <SettingsPanel
+          onServerNameChange={handleServerNameChange}
+          highlightSetting={highlightSetting}
+          onHighlightComplete={() => setHighlightSetting(null)}
+        />
       ) : activeView === 'tools' ? (
         <ToolsPanel />
       ) : (
@@ -403,6 +416,10 @@ export function App() {
             onDescriptionUpdate={loadIndexes}
             onJobCreated={handleJobCreated}
             aggregateSearch={aggregateSearch}
+            onNavigateToSettings={() => {
+              setHighlightSetting('sequential_index_loading');
+              setActiveView('settings');
+            }}
           />
 
           {/* Filesystem Indexes (pgvector) */}

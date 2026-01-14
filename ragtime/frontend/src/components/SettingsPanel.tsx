@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '@/api';
 import type { AppSettings, UpdateSettingsRequest, OllamaModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig } from '@/types';
 import { MCPRoutesPanel } from './MCPRoutesPanel';
+import { OllamaConnectionForm } from './OllamaConnectionForm';
 
 /**
  * Format a DN for display like Active Directory tree view.
@@ -38,9 +39,13 @@ function formatDnForDisplay(dn: string, baseDn: string): string {
 
 interface SettingsPanelProps {
   onServerNameChange?: (name: string) => void;
+  /** Setting ID to highlight and scroll to (e.g., 'sequential_index_loading') */
+  highlightSetting?: string | null;
+  /** Called after highlight animation completes to clear the param */
+  onHighlightComplete?: () => void;
 }
 
-export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
+export function SettingsPanel({ onServerNameChange, highlightSetting, onHighlightComplete }: SettingsPanelProps) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -49,6 +54,22 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
   // Section-specific saving states
   const [embeddingSaving, setEmbeddingSaving] = useState(false);
   const [llmSaving, setLlmSaving] = useState(false);
+
+  // Scroll to and highlight setting when highlightSetting changes
+  useEffect(() => {
+    if (highlightSetting && !loading) {
+      const element = document.getElementById(`setting-${highlightSetting}`);
+      if (element) {
+        // Scroll into view with some padding
+        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        // Clear the highlight after animation
+        const timer = setTimeout(() => {
+          onHighlightComplete?.();
+        }, 2000);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [highlightSetting, loading, onHighlightComplete]);
 
   // Ollama connection state (for embeddings)
   const [ollamaConnecting, setOllamaConnecting] = useState(false);
@@ -697,6 +718,32 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
     }
   };
 
+  // Save Performance Configuration
+  const [performanceSaving, setPerformanceSaving] = useState(false);
+  const handleSavePerformance = async () => {
+    setPerformanceSaving(true);
+    setSuccess(null);
+    setError(null);
+
+    try {
+      const dataToSave: UpdateSettingsRequest = {
+        sequential_index_loading: formData.sequential_index_loading,
+      };
+      const updated = await api.updateSettings(dataToSave);
+      setSettings(updated);
+      setFormData(prev => ({
+        ...prev,
+        sequential_index_loading: updated.sequential_index_loading,
+      }));
+      setSuccess('Performance settings saved. Changes take effect on next server restart.');
+      setTimeout(() => setSuccess(null), 5000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save performance settings');
+    } finally {
+      setPerformanceSaving(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="card">
@@ -838,129 +885,44 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
 
           {/* Ollama LLM Server Connection - only show when Ollama is selected */}
           {formData.llm_provider === 'ollama' && (
-            <>
-              <div className="form-row form-row-4">
-                <div className="form-group form-group-small">
-                  <label>Protocol</label>
-                  <select
-                    value={formData.llm_ollama_protocol || 'http'}
-                    onChange={(e) => {
-                      setFormData({
-                        ...formData,
-                        llm_ollama_protocol: e.target.value as 'http' | 'https',
-                      });
-                      // Reset connection when server settings change
-                      setLlmOllamaConnected(false);
-                      setLlmOllamaError(null);
-                      setLlmOllamaModels([]);
-                    }}
-                  >
-                    <option value="http">http://</option>
-                    <option value="https">https://</option>
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label>Host / IP</label>
-                  <input
-                    type="text"
-                    value={formData.llm_ollama_host || ''}
-                    onChange={(e) => {
-                      setFormData({ ...formData, llm_ollama_host: e.target.value });
-                      // Reset connection when server settings change
-                      setLlmOllamaConnected(false);
-                      setLlmOllamaError(null);
-                      setLlmOllamaModels([]);
-                    }}
-                    placeholder="localhost"
-                  />
-                </div>
-                <div className="form-group form-group-small">
-                  <label>Port</label>
-                  <input
-                    type="number"
-                    value={formData.llm_ollama_port || 11434}
-                    onChange={(e) => {
-                      setFormData({
-                        ...formData,
-                        llm_ollama_port: parseInt(e.target.value, 10) || 11434,
-                      });
-                      // Reset connection when server settings change
-                      setLlmOllamaConnected(false);
-                      setLlmOllamaError(null);
-                      setLlmOllamaModels([]);
-                    }}
-                    min={1}
-                    max={65535}
-                  />
-                </div>
-                <div className="form-group form-group-button">
-                  <button
-                    type="button"
-                    className={`btn btn-test ${llmOllamaConnected ? 'btn-connected' : ''}`}
-                    onClick={() => testLlmOllamaConnection(
-                      formData.llm_ollama_protocol || 'http',
-                      formData.llm_ollama_host || 'localhost',
-                      formData.llm_ollama_port || 11434
-                    )}
-                    disabled={llmOllamaConnecting}
-                  >
-                    {llmOllamaConnecting
-                      ? 'Connecting...'
-                      : llmOllamaConnected
-                        ? 'Connected'
-                        : 'Fetch Models'}
-                  </button>
-                </div>
-              </div>
-              {llmOllamaConnected && (
-                <p className="field-help" style={{ color: 'var(--success-color, #28a745)' }}>
-                  {llmOllamaModels.length} model(s) available
-                </p>
+            <OllamaConnectionForm
+              protocol={formData.llm_ollama_protocol || 'http'}
+              host={formData.llm_ollama_host || ''}
+              port={formData.llm_ollama_port || 11434}
+              model={formData.llm_model || ''}
+              connected={llmOllamaConnected}
+              connecting={llmOllamaConnecting}
+              error={llmOllamaError}
+              models={llmOllamaModels}
+              modelLabel="Model"
+              modelPlaceholder="llama3"
+              connectedHelpText="Select an LLM from your Ollama server."
+              disconnectedHelpText="Click &quot;Fetch Models&quot; to see available models, or enter manually."
+              onProtocolChange={(protocol) => {
+                setFormData({ ...formData, llm_ollama_protocol: protocol });
+                setLlmOllamaConnected(false);
+                setLlmOllamaError(null);
+                setLlmOllamaModels([]);
+              }}
+              onHostChange={(host) => {
+                setFormData({ ...formData, llm_ollama_host: host });
+                setLlmOllamaConnected(false);
+                setLlmOllamaError(null);
+                setLlmOllamaModels([]);
+              }}
+              onPortChange={(port) => {
+                setFormData({ ...formData, llm_ollama_port: port });
+                setLlmOllamaConnected(false);
+                setLlmOllamaError(null);
+                setLlmOllamaModels([]);
+              }}
+              onModelChange={(model) => setFormData({ ...formData, llm_model: model })}
+              onFetchModels={() => testLlmOllamaConnection(
+                formData.llm_ollama_protocol || 'http',
+                formData.llm_ollama_host || 'localhost',
+                formData.llm_ollama_port || 11434
               )}
-              {llmOllamaError && (
-                <p className="field-error">{llmOllamaError}</p>
-              )}
-              <p className="field-help">
-                When running in Docker, use <code>host.docker.internal</code> instead of <code>localhost</code>.
-              </p>
-
-              {/* Ollama Model Selection */}
-              <div className="form-group">
-                <label>Model</label>
-                {llmOllamaConnected && llmOllamaModels.length > 0 ? (
-                  <select
-                    value={formData.llm_model || ''}
-                    onChange={(e) =>
-                      setFormData({ ...formData, llm_model: e.target.value })
-                    }
-                  >
-                    <option value="">Select a model...</option>
-                    {llmOllamaModels.map((model) => (
-                      <option key={model.name} value={model.name}>
-                        {model.name}
-                        {model.size
-                          ? ` (${(model.size / 1024 / 1024 / 1024).toFixed(1)}GB)`
-                          : ''}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    type="text"
-                    value={formData.llm_model || ''}
-                    onChange={(e) =>
-                      setFormData({ ...formData, llm_model: e.target.value })
-                    }
-                    placeholder="llama3"
-                  />
-                )}
-                <p className="field-help">
-                  {llmOllamaConnected
-                    ? 'Select an LLM from your Ollama server.'
-                    : 'Click "Fetch Models" to see available models, or enter manually.'}
-                </p>
-              </div>
-            </>
+            />
           )}
 
           {/* API Key - show appropriate one based on provider */}
@@ -1186,125 +1148,40 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
           </div>
 
           {formData.embedding_provider === 'ollama' && (
-            <>
-              <div className="form-row form-row-4">
-                <div className="form-group form-group-small">
-                  <label>Protocol</label>
-                  <select
-                    value={formData.ollama_protocol || 'http'}
-                    onChange={(e) => {
-                      setFormData({
-                        ...formData,
-                        ollama_protocol: e.target.value as 'http' | 'https',
-                      });
-                      // Reset connection when server settings change
-                      setOllamaConnected(false);
-                      setOllamaError(null);
-                      setOllamaModels([]);
-                    }}
-                  >
-                    <option value="http">http://</option>
-                    <option value="https">https://</option>
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label>Host / IP</label>
-                  <input
-                    type="text"
-                    value={formData.ollama_host || ''}
-                    onChange={(e) => {
-                      setFormData({ ...formData, ollama_host: e.target.value });
-                      // Reset connection when server settings change
-                      setOllamaConnected(false);
-                      setOllamaError(null);
-                      setOllamaModels([]);
-                    }}
-                    placeholder="localhost"
-                  />
-                </div>
-                <div className="form-group form-group-small">
-                  <label>Port</label>
-                  <input
-                    type="number"
-                    value={formData.ollama_port || 11434}
-                    onChange={(e) => {
-                      setFormData({
-                        ...formData,
-                        ollama_port: parseInt(e.target.value, 10) || 11434,
-                      });
-                      // Reset connection when server settings change
-                      setOllamaConnected(false);
-                      setOllamaError(null);
-                      setOllamaModels([]);
-                    }}
-                    min={1}
-                    max={65535}
-                  />
-                </div>
-                <div className="form-group form-group-button">
-                  <button
-                    type="button"
-                    className={`btn btn-test ${ollamaConnected ? 'btn-connected' : ''}`}
-                    onClick={handleTestOllamaConnection}
-                    disabled={ollamaConnecting}
-                  >
-                    {ollamaConnecting
-                      ? 'Connecting...'
-                      : ollamaConnected
-                        ? 'Connected'
-                        : 'Fetch Models'}
-                  </button>
-                </div>
-              </div>
-              {ollamaConnected && (
-                <p className="field-help" style={{ color: 'var(--success-color, #28a745)' }}>
-                  {ollamaModels.length} model(s) available
-                </p>
-              )}
-              {ollamaError && (
-                <p className="field-error">{ollamaError}</p>
-              )}
-              <p className="field-help">
-                When running in Docker, use <code>host.docker.internal</code> instead of <code>localhost</code>.
-              </p>
-
-              {/* Model Selection */}
-              <div className="form-group">
-                <label>Embedding Model</label>
-                {ollamaConnected && ollamaModels.length > 0 ? (
-                  <select
-                    value={formData.embedding_model || ''}
-                    onChange={(e) =>
-                      setFormData({ ...formData, embedding_model: e.target.value })
-                    }
-                  >
-                    <option value="">Select a model...</option>
-                    {ollamaModels.map((model) => (
-                      <option key={model.name} value={model.name}>
-                        {model.name}
-                        {model.size
-                          ? ` (${(model.size / 1024 / 1024 / 1024).toFixed(1)}GB)`
-                          : ''}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    type="text"
-                    value={formData.embedding_model || ''}
-                    onChange={(e) =>
-                      setFormData({ ...formData, embedding_model: e.target.value })
-                    }
-                    placeholder="nomic-embed-text"
-                  />
-                )}
-                <p className="field-help">
-                  {ollamaConnected
-                    ? 'Select an embedding model from your Ollama server.'
-                    : 'Click "Fetch Models" to see available models, or enter manually.'}
-                </p>
-              </div>
-            </>
+            <OllamaConnectionForm
+              protocol={formData.ollama_protocol || 'http'}
+              host={formData.ollama_host || ''}
+              port={formData.ollama_port || 11434}
+              model={formData.embedding_model || ''}
+              connected={ollamaConnected}
+              connecting={ollamaConnecting}
+              error={ollamaError}
+              models={ollamaModels}
+              modelLabel="Embedding Model"
+              modelPlaceholder="nomic-embed-text"
+              connectedHelpText="Select an embedding model from your Ollama server."
+              disconnectedHelpText="Click &quot;Fetch Models&quot; to see available models, or enter manually."
+              onProtocolChange={(protocol) => {
+                setFormData({ ...formData, ollama_protocol: protocol });
+                setOllamaConnected(false);
+                setOllamaError(null);
+                setOllamaModels([]);
+              }}
+              onHostChange={(host) => {
+                setFormData({ ...formData, ollama_host: host });
+                setOllamaConnected(false);
+                setOllamaError(null);
+                setOllamaModels([]);
+              }}
+              onPortChange={(port) => {
+                setFormData({ ...formData, ollama_port: port });
+                setOllamaConnected(false);
+                setOllamaError(null);
+                setOllamaModels([]);
+              }}
+              onModelChange={(model) => setFormData({ ...formData, embedding_model: model })}
+              onFetchModels={handleTestOllamaConnection}
+            />
           )}
 
           {formData.embedding_provider === 'openai' && (
@@ -1819,6 +1696,52 @@ export function SettingsPanel({ onServerNameChange }: SettingsPanelProps) {
                 Manage Custom Routes
               </button>
             )}
+          </div>
+        </fieldset>
+
+        {/* Performance Configuration */}
+        <fieldset
+          id="setting-sequential_index_loading"
+          className={highlightSetting === 'sequential_index_loading' ? 'highlight-setting' : ''}
+        >
+          <legend>Performance</legend>
+          <p className="fieldset-help">
+            Configure memory and loading behavior for FAISS indexes.
+          </p>
+
+          <div className="form-group">
+            <label className="chat-toggle-control" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <label className="toggle-switch">
+                <input
+                  type="checkbox"
+                  checked={formData.sequential_index_loading ?? settings?.sequential_index_loading ?? false}
+                  onChange={(e) =>
+                    setFormData({ ...formData, sequential_index_loading: e.target.checked })
+                  }
+                />
+                <span className="toggle-slider"></span>
+              </label>
+              <span>Sequential Index Loading</span>
+            </label>
+            <p className="field-help">
+              <strong>Parallel (default):</strong> All indexes load simultaneously for faster startup,
+              but peak RAM is ~1.8x total index size during deserialization.
+            </p>
+            <p className="field-help">
+              <strong>Sequential:</strong> Indexes load one at a time (smallest first), reducing peak
+              memory to ~1.8x the largest index. Useful when RAM is limited or OOM errors occur on startup.
+            </p>
+          </div>
+
+          <div className="form-actions">
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={handleSavePerformance}
+              disabled={performanceSaving}
+            >
+              {performanceSaving ? 'Saving...' : 'Save Performance Settings'}
+            </button>
           </div>
         </fieldset>
 

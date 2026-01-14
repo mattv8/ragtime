@@ -16,6 +16,8 @@ interface IndexesListProps {
   onJobCreated?: () => void;
   /** When true, hide search weight controls (not used in aggregate mode) */
   aggregateSearch?: boolean;
+  /** Called when user wants to navigate to settings */
+  onNavigateToSettings?: () => void;
 }
 
 type SourceType = 'upload' | 'git';
@@ -152,7 +154,7 @@ function EditDescriptionModal({ index, onSave, onClose, saving }: EditModalProps
   );
 }
 
-export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDescriptionUpdate, onJobCreated, aggregateSearch = true }: IndexesListProps) {
+export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDescriptionUpdate, onJobCreated, aggregateSearch = true, onNavigateToSettings }: IndexesListProps) {
   const [deleting, setDeleting] = useState<string | null>(null);
   const [toggling, setToggling] = useState<string | null>(null);
   const [editingIndex, setEditingIndex] = useState<IndexInfo | null>(null);
@@ -394,6 +396,7 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
               onCancel={handleCancelWizard}
               onAnalysisStart={() => setIsAnalyzing(true)}
               onAnalysisComplete={() => setIsAnalyzing(false)}
+              onNavigateToSettings={onNavigateToSettings}
             />
           ) : (
             <UploadForm
@@ -401,6 +404,7 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
               onCancel={handleCancelWizard}
               onAnalysisStart={() => setIsAnalyzing(true)}
               onAnalysisComplete={() => setIsAnalyzing(false)}
+              onNavigateToSettings={onNavigateToSettings}
             />
           )}
         </div>
@@ -674,6 +678,7 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
                       setEditingGitIndex(null);
                       onToggle?.();  // Refresh the list to show updated config
                     }}
+                    onNavigateToSettings={onNavigateToSettings}
                   />
                 </div>
               </div>

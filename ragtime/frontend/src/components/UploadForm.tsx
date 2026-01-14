@@ -2,12 +2,15 @@ import { useState, useCallback, type DragEvent, type ChangeEvent } from 'react';
 import { api } from '@/api';
 import type { IndexJob, IndexAnalysisResult } from '@/types';
 import { DescriptionField } from './DescriptionField';
+import { AnalysisStats } from './AnalysisStats';
 
 interface UploadFormProps {
   onJobCreated: () => void;
   onCancel?: () => void;
   onAnalysisStart?: () => void;
   onAnalysisComplete?: () => void;
+  /** Called when user wants to navigate to settings */
+  onNavigateToSettings?: () => void;
 }
 
 type StatusType = 'info' | 'success' | 'error' | null;
@@ -26,7 +29,7 @@ function getIndexNameFromFile(filename: string): string {
     .toLowerCase();
 }
 
-export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysisComplete }: UploadFormProps) {
+export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysisComplete, onNavigateToSettings }: UploadFormProps) {
   const [file, setFile] = useState<File | null>(null);
   const [indexName, setIndexName] = useState('');
   const [description, setDescription] = useState('');
@@ -367,32 +370,7 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
           </div>
         )}
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '16px' }}>
-          <div style={{ background: 'var(--bg-tertiary)', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-            <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--accent)' }}>
-              {analysisResult.total_files.toLocaleString()}
-            </div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Files</div>
-          </div>
-          <div style={{ background: 'var(--bg-tertiary)', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-            <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--accent)' }}>
-              {analysisResult.total_size_mb.toLocaleString()} MB
-            </div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Source Size</div>
-          </div>
-          <div style={{ background: 'var(--bg-tertiary)', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-            <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--accent)' }}>
-              {analysisResult.estimated_chunks.toLocaleString()}
-            </div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Est. Chunks</div>
-          </div>
-          <div style={{ background: 'var(--bg-tertiary)', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-            <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--accent)' }}>
-              {analysisResult.estimated_index_size_mb.toLocaleString()} MB
-            </div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Est. Index Size</div>
-          </div>
-        </div>
+        <AnalysisStats result={analysisResult} onNavigateToSettings={onNavigateToSettings} />
 
         {/* Suggested exclusions */}
         {analysisResult.suggested_exclusions.length > 0 && !exclusionsApplied && (

@@ -3,7 +3,9 @@ RAG Components - FAISS Vector Store and LangChain Agent setup.
 """
 
 import asyncio
+import os
 import re
+import resource
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -20,6 +22,30 @@ from ragtime.tools import get_all_tools, get_enabled_tools
 from ragtime.tools.odoo_shell import filter_odoo_output
 
 logger = get_logger(__name__)
+
+
+def get_process_memory_bytes() -> int:
+    """Get current process RSS memory in bytes."""
+    try:
+        # Try reading from /proc for more accurate Linux stats
+        with open("/proc/self/status", "r") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    # VmRSS is in kB
+                    return int(line.split()[1]) * 1024
+    except (FileNotFoundError, PermissionError, IndexError):
+        pass
+
+    # Fallback to resource module (less accurate on some systems)
+    try:
+        rusage = resource.getrusage(resource.RUSAGE_SELF)
+        # ru_maxrss is in KB on Linux, bytes on macOS
+        if os.uname().sysname == "Darwin":
+            return rusage.ru_maxrss
+        return rusage.ru_maxrss * 1024
+    except Exception:
+        return 0
+
 
 # Base system prompt template - tool and index descriptions will be appended
 BASE_SYSTEM_PROMPT = """You are an intelligent AI assistant with access to indexed documentation and live system connections.
@@ -305,10 +331,11 @@ class RAGComponents:
         asyncio.create_task(self._load_faiss_indexes_background())
 
     async def _load_faiss_indexes_background(self):
-        """Load FAISS indexes in background with parallel loading.
+        """Load FAISS indexes in background.
 
         This runs after core init completes, loading indexes without blocking
-        the API. Uses asyncio.to_thread for parallel I/O.
+        the API. Supports both parallel loading (faster, higher peak RAM) and
+        sequential loading (slower, lower peak RAM - loads smallest first).
         """
         import time
 
@@ -321,7 +348,11 @@ class RAGComponents:
 
         try:
             self._indexes_loading = True
-            await self._load_faiss_indexes_parallel(self._embedding_model)
+            sequential = self._app_settings.get("sequential_index_loading", False)
+            if sequential:
+                await self._load_faiss_indexes_sequential(self._embedding_model)
+            else:
+                await self._load_faiss_indexes_parallel(self._embedding_model)
         except Exception as e:
             logger.error(f"Error in background FAISS loading: {e}")
         finally:
@@ -502,9 +533,11 @@ class RAGComponents:
 
         This offloads the blocking FAISS.load_local calls to a thread pool,
         allowing multiple indexes to load concurrently and not blocking the
-        event loop.
+        event loop. Tracks memory usage for each index.
         """
         import time
+
+        from ragtime.indexer.repository import repository
 
         assert self._app_settings is not None
 
@@ -524,8 +557,10 @@ class RAGComponents:
         self._indexes_loaded = 0
         search_k = self._app_settings.get("search_results_k", 5)
 
-        async def load_single_index(idx: dict) -> tuple[str, Any] | None:
-            """Load a single FAISS index in a thread."""
+        async def load_single_index(
+            idx: dict,
+        ) -> tuple[str, Any, dict] | None:
+            """Load a single FAISS index in a thread and measure memory."""
             index_name = idx.get("name")
             if not index_name:
                 return None
@@ -542,6 +577,8 @@ class RAGComponents:
 
             try:
                 start = time.time()
+                mem_before = get_process_memory_bytes()
+
                 # Offload blocking I/O to thread pool
                 db = await asyncio.to_thread(
                     FAISS.load_local,
@@ -549,13 +586,29 @@ class RAGComponents:
                     embedding_model,
                     allow_dangerous_deserialization=True,
                 )
+
                 elapsed = time.time() - start
+                mem_after = get_process_memory_bytes()
+
+                # Get embedding dimension from the loaded index
+                embedding_dim = db.index.d if hasattr(db, "index") else None
+
+                # Memory used by this index (approximate - may include GC overhead)
+                steady_mem = max(0, mem_after - mem_before)
+
                 retriever = db.as_retriever(search_kwargs={"k": search_k})
                 logger.info(
                     f"Loaded FAISS index: {index_name} from {index_path} "
-                    f"(k={search_k}, {elapsed:.1f}s)"
+                    f"(k={search_k}, {elapsed:.1f}s, ~{steady_mem / 1024**3:.2f}GB)"
                 )
-                return (index_name, retriever)
+
+                memory_stats = {
+                    "embedding_dimension": embedding_dim,
+                    "steady_memory_bytes": steady_mem,
+                    "load_time_seconds": elapsed,
+                }
+
+                return (index_name, retriever, memory_stats)
             except Exception as e:
                 logger.warning(f"Failed to load FAISS index {index_name}: {e}")
                 return None
@@ -567,14 +620,134 @@ class RAGComponents:
             return_exceptions=True,
         )
 
-        # Process results
+        # Process results and update memory stats in database
         for result in results:
             if isinstance(result, BaseException):
                 logger.warning(f"Index loading exception: {result}")
             elif result is not None:
-                index_name, retriever = result
+                index_name, retriever, memory_stats = result
                 self.retrievers[index_name] = retriever
                 self._indexes_loaded += 1
+
+                # Update memory stats in database (best effort)
+                try:
+                    await repository.update_index_memory_stats(index_name, memory_stats)
+                except Exception as e:
+                    logger.debug(f"Failed to update memory stats for {index_name}: {e}")
+
+        if self.retrievers:
+            logger.info(
+                f"Loaded {len(self.retrievers)} FAISS index(es) from database metadata"
+            )
+
+    async def _load_faiss_indexes_sequential(self, embedding_model):
+        """Load FAISS indexes sequentially, smallest first.
+
+        This reduces peak memory usage compared to parallel loading by loading
+        one index at a time. Indexes are sorted by size (smallest first) so
+        the system becomes partially functional faster.
+        """
+        import time
+
+        from ragtime.indexer.repository import repository
+
+        assert self._app_settings is not None
+
+        if not self._index_metadata:
+            logger.info("No index metadata available for sequential loading")
+            return
+
+        enabled_indexes = [
+            idx for idx in self._index_metadata if idx.get("enabled", True)
+        ]
+
+        if not enabled_indexes:
+            logger.info("No enabled indexes to load")
+            return
+
+        # Sort by size_bytes (smallest first) for faster initial availability
+        enabled_indexes.sort(key=lambda x: x.get("size_bytes", 0))
+
+        self._indexes_total = len(enabled_indexes)
+        self._indexes_loaded = 0
+        search_k = self._app_settings.get("search_results_k", 5)
+
+        logger.info(
+            f"Loading {len(enabled_indexes)} FAISS index(es) sequentially "
+            "(smallest first)..."
+        )
+
+        for idx in enabled_indexes:
+            index_name = idx.get("name")
+            if not index_name:
+                continue
+
+            index_path_str = idx.get("path")
+            if not index_path_str:
+                logger.warning(f"Index {index_name} has no path in metadata, skipping")
+                continue
+
+            index_path = Path(index_path_str)
+            if not index_path.exists():
+                logger.warning(f"FAISS index path not found: {index_path}")
+                continue
+
+            try:
+                start = time.time()
+                mem_before = get_process_memory_bytes()
+
+                # Track peak memory during loading
+                peak_mem = mem_before
+
+                def load_and_track_peak():
+                    nonlocal peak_mem
+                    db = FAISS.load_local(
+                        str(index_path),
+                        embedding_model,
+                        allow_dangerous_deserialization=True,
+                    )
+                    # Check memory after loading (this is approximate)
+                    current_mem = get_process_memory_bytes()
+                    peak_mem = max(peak_mem, current_mem)
+                    return db
+
+                db = await asyncio.to_thread(load_and_track_peak)
+
+                elapsed = time.time() - start
+                mem_after = get_process_memory_bytes()
+
+                # Get embedding dimension from the loaded index
+                embedding_dim = db.index.d if hasattr(db, "index") else None
+
+                # Calculate memory stats
+                steady_mem = max(0, mem_after - mem_before)
+                observed_peak = max(0, peak_mem - mem_before)
+
+                retriever = db.as_retriever(search_kwargs={"k": search_k})
+                self.retrievers[index_name] = retriever
+                self._indexes_loaded += 1
+
+                logger.info(
+                    f"Loaded FAISS index: {index_name} from {index_path} "
+                    f"(k={search_k}, {elapsed:.1f}s, ~{steady_mem / 1024**3:.2f}GB)"
+                )
+
+                # Update memory stats in database
+                try:
+                    await repository.update_index_memory_stats(
+                        index_name,
+                        {
+                            "embedding_dimension": embedding_dim,
+                            "steady_memory_bytes": steady_mem,
+                            "peak_memory_bytes": observed_peak,
+                            "load_time_seconds": elapsed,
+                        },
+                    )
+                except Exception as e:
+                    logger.debug(f"Failed to update memory stats for {index_name}: {e}")
+
+            except Exception as e:
+                logger.warning(f"Failed to load FAISS index {index_name}: {e}")
 
         if self.retrievers:
             logger.info(
@@ -597,6 +770,10 @@ class RAGComponents:
                     "document_count": m.documentCount,
                     "chunk_count": m.chunkCount,
                     "source_type": m.sourceType,
+                    "size_bytes": m.sizeBytes,
+                    "embedding_dimension": getattr(m, "embeddingDimension", None),
+                    "steady_memory_bytes": getattr(m, "steadyMemoryBytes", None),
+                    "peak_memory_bytes": getattr(m, "peakMemoryBytes", None),
                 }
                 for m in metadata_list
             ]

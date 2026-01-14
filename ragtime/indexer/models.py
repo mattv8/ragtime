@@ -198,6 +198,21 @@ class CommitHistoryInfo(BaseModel):
     )
 
 
+class MemoryEstimate(BaseModel):
+    """Memory estimates for an index."""
+
+    embedding_dimension: int = Field(description="Embedding vector dimension")
+    steady_memory_mb: float = Field(
+        description="Estimated RAM after loading (steady-state)"
+    )
+    peak_memory_mb: float = Field(description="Estimated peak RAM during loading")
+    # Per-index estimates for comparison table
+    dimension_breakdown: Optional[List[dict]] = Field(
+        default=None,
+        description="Memory estimates at different embedding dimensions",
+    )
+
+
 class IndexAnalysisResult(BaseModel):
     """Results from pre-indexing analysis."""
 
@@ -210,6 +225,16 @@ class IndexAnalysisResult(BaseModel):
     )
     estimated_index_size_mb: float = Field(
         description="Estimated FAISS index size in MB"
+    )
+
+    # Memory estimates
+    memory_estimate: Optional[MemoryEstimate] = Field(
+        default=None,
+        description="RAM requirements for this index",
+    )
+    total_memory_with_existing_mb: Optional[float] = Field(
+        default=None,
+        description="Total RAM needed including all existing indexes",
     )
 
     # Breakdown by file type
@@ -447,6 +472,12 @@ class AppSettings(BaseModel):
         description="If True, provide a single search_knowledge tool that searches all indexes. If False, create separate search_<index_name> tools for granular control.",
     )
 
+    # Performance configuration
+    sequential_index_loading: bool = Field(
+        default=False,
+        description="If True, load FAISS indexes one at a time (smallest first) to reduce peak memory. If False (default), load all indexes in parallel for faster startup.",
+    )
+
     # MCP Configuration
     mcp_enabled: bool = Field(
         default=False,
@@ -582,6 +613,8 @@ class UpdateSettingsRequest(BaseModel):
     # Search configuration
     search_results_k: Optional[int] = Field(default=None, ge=1, le=100)
     aggregate_search: Optional[bool] = None
+    # Performance / Memory configuration
+    sequential_index_loading: Optional[bool] = None
     # MCP configuration
     mcp_enabled: Optional[bool] = None
     mcp_default_route_auth: Optional[bool] = None
