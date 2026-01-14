@@ -44,6 +44,7 @@ OpenAI-compatible RAG API and MCP server with LangChain tool calling for busines
 ## Features
 
 - **OpenAI API Compatible**: Works with OpenWebUI, ChatGPT clients, and any OpenAI-compatible interface
+- **MCP Server**: Integrates with Claude and other MCP-compatible clients
 - **RAG with FAISS**: Vector search over your codebase documentation
 - **Tool Calling**: Execute Odoo ORM queries and PostgreSQL queries via natural language
 - **Security**: Read-only by default with SQL injection and command injection prevention
