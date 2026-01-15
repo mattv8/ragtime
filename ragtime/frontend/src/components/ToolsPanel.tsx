@@ -25,10 +25,16 @@ interface ToolCardProps {
   testing: boolean;
   onPdmReindex?: (toolId: string, fullReindex: boolean) => void;
   pdmIndexing?: boolean;
+  onSchemaReindex?: (toolId: string, fullReindex: boolean) => void;
+  schemaIndexing?: boolean;
 }
 
-function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing, onPdmReindex, pdmIndexing }: ToolCardProps) {
+function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing, onPdmReindex, pdmIndexing, onSchemaReindex, schemaIndexing }: ToolCardProps) {
   const typeInfo = TOOL_TYPE_INFO[tool.tool_type];
+
+  // Check if schema indexing is enabled for this tool
+  const hasSchemaIndexing = (tool.tool_type === 'postgres' || tool.tool_type === 'mssql') &&
+    (tool.connection_config as { schema_index_enabled?: boolean })?.schema_index_enabled === true;
 
   const getConnectionSummary = (): string => {
     const config = tool.connection_config;
@@ -165,6 +171,17 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
             </button>
           </>
         )}
+        {hasSchemaIndexing && onSchemaReindex && (
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => onSchemaReindex(tool.id, true)}
+            disabled={schemaIndexing}
+            title="Re-index database schema"
+          >
+            {schemaIndexing ? 'Indexing...' : 'Re-index Schema'}
+          </button>
+        )}
         <button
           type="button"
           className="btn btn-sm"
@@ -184,7 +201,11 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
   );
 }
 
-export function ToolsPanel() {
+interface ToolsPanelProps {
+  onSchemaJobTriggered?: () => void;
+}
+
+export function ToolsPanel({ onSchemaJobTriggered }: ToolsPanelProps) {
   const [tools, setTools] = useState<ToolConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -193,6 +214,7 @@ export function ToolsPanel() {
   const [editingTool, setEditingTool] = useState<ToolConfig | null>(null);
   const [testingToolId, setTestingToolId] = useState<string | null>(null);
   const [pdmIndexingToolId, setPdmIndexingToolId] = useState<string | null>(null);
+  const [schemaIndexingToolId, setSchemaIndexingToolId] = useState<string | null>(null);
   const [heartbeats, setHeartbeats] = useState<Record<string, HeartbeatStatus>>({});
   const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [confirmation, setConfirmation] = useState<ConfirmationState | null>(null);
@@ -335,6 +357,23 @@ export function ToolsPanel() {
     }
   };
 
+  const handleSchemaReindex = async (toolId: string, fullReindex: boolean) => {
+    try {
+      setSchemaIndexingToolId(toolId);
+      setSuccess('Starting schema re-index...');
+      await api.triggerSchemaIndex(toolId, fullReindex);
+      setSuccess('Schema re-index started');
+      // Notify parent to refresh schema jobs list
+      onSchemaJobTriggered?.();
+      setTimeout(() => setSuccess(null), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to trigger schema index');
+      setTimeout(() => setError(null), 5000);
+    } finally {
+      setSchemaIndexingToolId(null);
+    }
+  };
+
   if (showWizard) {
     return (
       <ToolWizard
@@ -409,6 +448,8 @@ export function ToolsPanel() {
                 testing={testingToolId === tool.id}
                 onPdmReindex={handlePdmReindex}
                 pdmIndexing={pdmIndexingToolId === tool.id}
+                onSchemaReindex={handleSchemaReindex}
+                schemaIndexing={schemaIndexingToolId === tool.id}
               />
             ))}
           </div>

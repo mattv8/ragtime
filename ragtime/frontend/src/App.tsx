@@ -416,7 +416,7 @@ export function App() {
           onHighlightComplete={() => setHighlightSetting(null)}
         />
       ) : activeView === 'tools' ? (
-        <ToolsPanel />
+        <ToolsPanel onSchemaJobTriggered={loadSchemaJobs} />
       ) : (
         <>
           {/* Document Indexes (FAISS) */}

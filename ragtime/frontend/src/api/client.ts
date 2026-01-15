@@ -923,11 +923,11 @@ export const api = {
   /**
    * Trigger schema indexing for a SQL database tool
    */
-  async triggerSchemaIndex(toolId: string, forceReindex?: boolean): Promise<import('@/types').SchemaIndexJob> {
+  async triggerSchemaIndex(toolId: string, fullReindex?: boolean): Promise<import('@/types').SchemaIndexJob> {
     const response = await apiFetch(`${API_BASE}/tools/${toolId}/schema/index`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ force_reindex: forceReindex ?? false }),
+      body: JSON.stringify({ full_reindex: fullReindex ?? false }),
     });
     return handleResponse<import('@/types').SchemaIndexJob>(response);
   },
