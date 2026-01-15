@@ -1291,15 +1291,61 @@ async def get_tool_config(tool_id: str, _user: User = Depends(require_admin)):
 async def update_tool_config(
     tool_id: str, request: UpdateToolConfigRequest, _user: User = Depends(require_admin)
 ):
-    """Update an existing tool configuration. Admin only."""
+    """Update an existing tool configuration. Admin only.
+
+    If the name is changed, this also updates all associated index names in
+    embedding tables (schema_embeddings, pdm_embeddings, filesystem_embeddings, etc.)
+    to maintain consistency.
+    """
     from ragtime.core.app_settings import invalidate_settings_cache
     from ragtime.mcp.server import notify_tools_changed
     from ragtime.rag import rag
 
     updates = request.model_dump(exclude_unset=True)
-    config = await repository.update_tool_config(tool_id, updates)
-    if config is None:
-        raise HTTPException(status_code=404, detail="Tool configuration not found")
+
+    # Check if name is being changed - if so, use rename_tool_config for consistency
+    if "name" in updates and updates["name"] is not None:
+        # Get current tool to check if name actually changed
+        current_tool = await repository.get_tool_config(tool_id)
+        if current_tool is None:
+            raise HTTPException(status_code=404, detail="Tool configuration not found")
+
+        new_name = updates.pop("name")
+        if new_name != current_tool.name:
+            # Use rename_tool_config for comprehensive name updates
+            config, update_counts = await repository.rename_tool_config(
+                tool_id, new_name
+            )
+            if config is None:
+                raise HTTPException(
+                    status_code=500, detail="Failed to rename tool configuration"
+                )
+
+            # Log any embedding updates
+            total_updates = sum(update_counts.values())
+            if total_updates > 0:
+                logger.info(
+                    f"Tool rename updated {total_updates} embedding records: {update_counts}"
+                )
+
+            # Apply any remaining updates
+            if updates:
+                config = await repository.update_tool_config(tool_id, updates)
+                if config is None:
+                    raise HTTPException(
+                        status_code=404, detail="Tool configuration not found"
+                    )
+        else:
+            # Name unchanged, just apply other updates
+            config = await repository.update_tool_config(tool_id, updates)
+            if config is None:
+                raise HTTPException(
+                    status_code=404, detail="Tool configuration not found"
+                )
+    else:
+        config = await repository.update_tool_config(tool_id, updates)
+        if config is None:
+            raise HTTPException(status_code=404, detail="Tool configuration not found")
 
     # Reinitialize RAG agent to pick up the tool changes
     invalidate_settings_cache()

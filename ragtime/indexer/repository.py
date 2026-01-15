@@ -20,15 +20,28 @@ from prisma.models import IndexMetadata as PrismaIndexMetadata
 
 from prisma import Json, Prisma
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
-                                     decrypt_json_passwords, decrypt_secret,
-                                     encrypt_json_passwords, encrypt_secret)
+from ragtime.core.encryption import (
+    CONNECTION_CONFIG_PASSWORD_FIELDS,
+    decrypt_json_passwords,
+    decrypt_secret,
+    encrypt_json_passwords,
+    encrypt_secret,
+)
 from ragtime.core.logging import get_logger
-from ragtime.indexer.models import (AppSettings, ChatMessage, ChatTask,
-                                    ChatTaskStatus, ChatTaskStreamingState,
-                                    Conversation, IndexConfig, IndexJob,
-                                    IndexStatus, ToolCallRecord, ToolConfig,
-                                    ToolType)
+from ragtime.indexer.models import (
+    AppSettings,
+    ChatMessage,
+    ChatTask,
+    ChatTaskStatus,
+    ChatTaskStreamingState,
+    Conversation,
+    IndexConfig,
+    IndexJob,
+    IndexStatus,
+    ToolCallRecord,
+    ToolConfig,
+    ToolType,
+)
 
 logger = get_logger(__name__)
 
@@ -501,8 +514,8 @@ class IndexerRepository:
         """
         Rename an index in the database.
 
-        Updates the index_metadata name (primary key). The caller is responsible
-        for renaming the FAISS index directory on disk.
+        Updates the index_metadata name (primary key) and associated index_jobs.
+        The caller is responsible for renaming the FAISS index directory on disk.
 
         Args:
             old_name: Current index name (safe tool name)
@@ -565,7 +578,12 @@ class IndexerRepository:
                 create_data["configSnapshot"] = Json(metadata.configSnapshot)
 
             # Use a transaction to ensure atomicity - delete and create together
+            # Also update index_jobs that reference this index name
             async with db.tx() as tx:
+                # Update index_jobs.name to new name
+                await tx.indexjob.update_many(
+                    where={"name": old_name}, data={"name": new_name}
+                )
                 await tx.indexmetadata.delete(where={"name": old_name})
                 await tx.indexmetadata.create(data=cast(Any, create_data))
 
@@ -903,6 +921,166 @@ class IndexerRepository:
         except Exception as e:
             logger.warning(f"Failed to delete tool config {config_id}: {e}")
             return False
+
+    async def rename_tool_config(
+        self, config_id: str, new_name: str
+    ) -> tuple[Optional[ToolConfig], dict[str, int]]:
+        """
+        Rename a tool configuration and update all associated index names.
+
+        This method ensures consistency across:
+        - tool_configs.name
+        - schema_embeddings.index_name (for postgres/mssql tools)
+        - pdm_embeddings.index_name (for solidworks_pdm tools)
+        - pdm_document_metadata.index_name (for solidworks_pdm tools)
+        - filesystem_embeddings.index_name (for filesystem_indexer tools)
+        - filesystem_file_metadata.index_name (for filesystem_indexer tools)
+        - schema_index_jobs.index_name (for postgres/mssql tools)
+        - pdm_index_jobs.index_name (for solidworks_pdm tools)
+        - connection_config.index_name (for filesystem_indexer tools)
+
+        Args:
+            config_id: The tool configuration ID to rename
+            new_name: The new display name for the tool
+
+        Returns:
+            Tuple of (updated ToolConfig or None, dict of update counts)
+        """
+        from ragtime.indexer.utils import safe_tool_name
+
+        db = await self._get_db()
+        update_counts: dict[str, int] = {
+            "schema_embeddings": 0,
+            "schema_index_jobs": 0,
+            "pdm_embeddings": 0,
+            "pdm_document_metadata": 0,
+            "pdm_index_jobs": 0,
+            "filesystem_embeddings": 0,
+            "filesystem_file_metadata": 0,
+        }
+
+        # Get current tool config
+        tool = await self.get_tool_config(config_id)
+        if not tool:
+            logger.warning(f"Cannot rename tool: config {config_id} not found")
+            return None, update_counts
+
+        old_safe_name = safe_tool_name(tool.name)
+        new_safe_name = safe_tool_name(new_name)
+
+        # If safe names are the same, just update the display name
+        if old_safe_name == new_safe_name:
+            updated = await self.update_tool_config(config_id, {"name": new_name})
+            return updated, update_counts
+
+        try:
+            # Update based on tool type
+            if tool.tool_type in (ToolType.POSTGRES, ToolType.MSSQL):
+                # Schema embeddings: schema_{old_safe_name} -> schema_{new_safe_name}
+                old_index_name = f"schema_{old_safe_name}"
+                new_index_name = f"schema_{new_safe_name}"
+
+                result = await db.execute_raw(
+                    f"UPDATE schema_embeddings SET index_name = '{new_index_name}' "
+                    f"WHERE index_name = '{old_index_name}'"
+                )
+                update_counts["schema_embeddings"] = (
+                    result if isinstance(result, int) else 0
+                )
+
+                # Also update schema_index_jobs.index_name
+                result = await db.execute_raw(
+                    f"UPDATE schema_index_jobs SET index_name = '{new_index_name}' "
+                    f"WHERE tool_config_id = '{config_id}'"
+                )
+                update_counts["schema_index_jobs"] = (
+                    result if isinstance(result, int) else 0
+                )
+
+            elif tool.tool_type == ToolType.SOLIDWORKS_PDM:
+                # PDM embeddings: pdm_{old_safe_name} -> pdm_{new_safe_name}
+                old_index_name = f"pdm_{old_safe_name}"
+                new_index_name = f"pdm_{new_safe_name}"
+
+                result = await db.execute_raw(
+                    f"UPDATE pdm_embeddings SET index_name = '{new_index_name}' "
+                    f"WHERE index_name = '{old_index_name}'"
+                )
+                update_counts["pdm_embeddings"] = (
+                    result if isinstance(result, int) else 0
+                )
+
+                result = await db.execute_raw(
+                    f"UPDATE pdm_document_metadata SET index_name = '{new_index_name}' "
+                    f"WHERE index_name = '{old_index_name}'"
+                )
+                update_counts["pdm_document_metadata"] = (
+                    result if isinstance(result, int) else 0
+                )
+
+                # Also update pdm_index_jobs.index_name
+                result = await db.execute_raw(
+                    f"UPDATE pdm_index_jobs SET index_name = '{new_index_name}' "
+                    f"WHERE tool_config_id = '{config_id}'"
+                )
+                update_counts["pdm_index_jobs"] = (
+                    result if isinstance(result, int) else 0
+                )
+
+            elif tool.tool_type == ToolType.FILESYSTEM_INDEXER:
+                # Filesystem embeddings use connection_config.index_name
+                fs_old_index_name = (
+                    tool.connection_config.get("index_name")
+                    if tool.connection_config
+                    else None
+                )
+                fs_new_index_name = new_safe_name
+
+                if fs_old_index_name and fs_old_index_name != fs_new_index_name:
+                    # Update embeddings table
+                    result = await db.execute_raw(
+                        f"UPDATE filesystem_embeddings SET index_name = '{fs_new_index_name}' "
+                        f"WHERE index_name = '{fs_old_index_name}'"
+                    )
+                    update_counts["filesystem_embeddings"] = (
+                        result if isinstance(result, int) else 0
+                    )
+
+                    # Update file metadata table
+                    result = await db.execute_raw(
+                        f"UPDATE filesystem_file_metadata SET index_name = '{fs_new_index_name}' "
+                        f"WHERE index_name = '{fs_old_index_name}'"
+                    )
+                    update_counts["filesystem_file_metadata"] = (
+                        result if isinstance(result, int) else 0
+                    )
+
+                    # Update connection_config.index_name
+                    updated_config = dict(tool.connection_config)
+                    updated_config["index_name"] = fs_new_index_name
+                    await self.update_tool_config(
+                        config_id, {"connection_config": updated_config}
+                    )
+
+            # Update the tool name
+            updated = await self.update_tool_config(config_id, {"name": new_name})
+
+            total_updates = sum(update_counts.values())
+            if total_updates > 0:
+                logger.info(
+                    f"Renamed tool '{tool.name}' to '{new_name}' "
+                    f"(safe: '{old_safe_name}' -> '{new_safe_name}'): {update_counts}"
+                )
+            else:
+                logger.info(
+                    f"Renamed tool '{tool.name}' to '{new_name}' (no embeddings)"
+                )
+
+            return updated, update_counts
+
+        except Exception as e:
+            logger.error(f"Failed to rename tool config {config_id}: {e}")
+            return None, update_counts
 
     async def update_tool_test_result(
         self, config_id: str, success: bool, error: Optional[str] = None
