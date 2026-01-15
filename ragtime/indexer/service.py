@@ -847,6 +847,22 @@ class IndexerService:
                             ),
                         )
 
+                    # Check for git repo directory (git history)
+                    git_repo_path = path / ".git_repo"
+                    git_repo_size_mb = None
+                    has_git_history = False
+                    if git_repo_path.exists() and git_repo_path.is_dir():
+                        # Check if it has meaningful history (not shallow)
+                        shallow_file = git_repo_path / ".git" / "shallow"
+                        has_git_history = not shallow_file.exists()
+                        if has_git_history:
+                            git_repo_size = sum(
+                                f.stat().st_size
+                                for f in git_repo_path.rglob("*")
+                                if f.is_file()
+                            )
+                            git_repo_size_mb = round(git_repo_size / (1024 * 1024), 2)
+
                     indexes.append(
                         IndexInfo(
                             name=path.name,
@@ -865,6 +881,8 @@ class IndexerService:
                             config_snapshot=config_snapshot,
                             created_at=created_at,
                             last_modified=datetime.fromtimestamp(path.stat().st_mtime),
+                            git_repo_size_mb=git_repo_size_mb,
+                            has_git_history=has_git_history,
                         )
                     )
 

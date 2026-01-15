@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { HardDrive, Loader, Check, X, Pause, AlertTriangle } from 'lucide-react';
 import { api } from '@/api';
+import { formatSizeMB } from '@/utils';
 import type { HealthResponse, IndexLoadingDetail } from '@/types';
 
 interface MemoryStatusProps {
@@ -10,16 +11,6 @@ interface MemoryStatusProps {
   pollInterval?: number;
   /** Callback when loading completes */
   onLoadingComplete?: () => void;
-}
-
-/**
- * Formats bytes into human-readable string with appropriate unit
- */
-function formatMemory(mb: number): string {
-  if (mb >= 1024) {
-    return `${(mb / 1024).toFixed(2)} GB`;
-  }
-  return `${mb.toFixed(0)} MB`;
 }
 
 /**
@@ -75,7 +66,15 @@ export function MemoryStatus({ active = true, pollInterval, onLoadingComplete }:
         </div>
       );
     }
-    return null;
+    // Show loading state while fetching initial health
+    return (
+      <div className="memory-status">
+        <span className="memory-status-toggle">
+          <span className="memory-status-icon"><Loader size={14} className="spinning" /></span>
+          <span className="memory-status-text">...</span>
+        </span>
+      </div>
+    );
   }
 
   const { memory, indexes_loading, indexes_ready, indexes_loaded_count, indexes_total, index_details, sequential_loading, loading_index } = health;
@@ -99,13 +98,13 @@ export function MemoryStatus({ active = true, pollInterval, onLoadingComplete }:
         type="button"
         className="memory-status-toggle"
         onClick={() => setExpanded(!expanded)}
-        title={`Process RAM: ${formatMemory(memory.rss_mb)} / System: ${formatMemory(memory.total_mb)}`}
+        title={`Process RAM: ${formatSizeMB(memory.rss_mb)} / System: ${formatSizeMB(memory.total_mb)}`}
       >
         <span className="memory-status-icon">
           {isLoading ? <Loader size={14} className="spinning" /> : <HardDrive size={14} />}
         </span>
         <span className="memory-status-text">
-          {formatMemory(memory.rss_mb)}
+          {formatSizeMB(memory.rss_mb)}
           {isLoading && indexes_total && indexes_total > 0 && (
             <span className="memory-status-progress">
               {' '}({indexes_loaded_count}/{indexes_total})
@@ -128,17 +127,17 @@ export function MemoryStatus({ active = true, pollInterval, onLoadingComplete }:
             <h4>Process Memory</h4>
             <div className="memory-status-row">
               <span>RAM Used</span>
-              <span className="memory-status-value">{formatMemory(memory.rss_mb)}</span>
+              <span className="memory-status-value">{formatSizeMB(memory.rss_mb)}</span>
             </div>
             <div className="memory-status-row">
               <span>System RAM</span>
               <span className="memory-status-value">
-                {formatMemory(memory.total_mb - memory.available_mb)} / {formatMemory(memory.total_mb)}
+                {formatSizeMB(memory.total_mb - memory.available_mb)} / {formatSizeMB(memory.total_mb)}
               </span>
             </div>
             <div className="memory-status-row">
               <span>Available</span>
-              <span className="memory-status-value">{formatMemory(memory.available_mb)}</span>
+              <span className="memory-status-value">{formatSizeMB(memory.available_mb)}</span>
             </div>
           </div>
 
@@ -191,7 +190,7 @@ function IndexLoadingItem({ detail, isLoading }: IndexLoadingItemProps) {
       <span className="memory-status-index-icon">{statusIcon[detail.status] || '?'}</span>
       <span className="memory-status-index-name">{detail.name}</span>
       {detail.size_mb !== null && detail.size_mb !== undefined && (
-        <span className="memory-status-index-size">{formatMemory(detail.size_mb)}</span>
+        <span className="memory-status-index-size">{formatSizeMB(detail.size_mb)}</span>
       )}
       {detail.chunk_count !== null && detail.chunk_count !== undefined && !isLoading && (
         <span className="memory-status-index-chunks">{detail.chunk_count.toLocaleString()} chunks</span>

@@ -209,6 +209,9 @@ export interface IndexInfo {
   config_snapshot: IndexConfigSnapshot | null;  // Configuration used for indexing
   created_at: string | null;
   last_modified: string | null;
+  // Git history info
+  git_repo_size_mb: number | null;  // Size of .git_repo directory (disk)
+  has_git_history: boolean;  // True if .git_repo exists with history
 }
 
 export interface UpdateIndexConfigRequest {

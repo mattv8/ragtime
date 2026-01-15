@@ -142,6 +142,9 @@ class IndexInfo(BaseModel):
     )
     created_at: Optional[datetime] = None
     last_modified: Optional[datetime] = None
+    # Git history info (for git-sourced indexes)
+    git_repo_size_mb: Optional[float] = None  # Size of .git_repo directory (disk)
+    has_git_history: bool = False  # True if .git_repo exists with history
 
 
 class CreateIndexRequest(BaseModel):

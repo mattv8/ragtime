@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { X, HardDrive, MemoryStick } from 'lucide-react';
+import { X, HardDrive, MemoryStick, GitCommitHorizontal } from 'lucide-react';
 import { api } from '@/api';
+import { formatSizeMB } from '@/utils';
 import type { IndexInfo, RepoVisibilityResponse, IndexLoadingDetail } from '@/types';
 import { GitIndexWizard } from './GitIndexWizard';
 import { UploadForm } from './UploadForm';
@@ -403,10 +404,10 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
           <h2>Document Indexes</h2>
           {memoryEstimate && indexes.length > 0 && (
-            <span className="memory-badge" title={`${memoryEstimate.enabled.toFixed(1)} MB loaded / ${memoryEstimate.total.toFixed(1)} MB total`}>
-              {memoryEstimate.enabled.toFixed(0)} MB
+            <span className="memory-badge" title={`${formatSizeMB(memoryEstimate.enabled)} loaded / ${formatSizeMB(memoryEstimate.total)} total`}>
+              {formatSizeMB(memoryEstimate.enabled)}
               {memoryEstimate.enabled !== memoryEstimate.total && (
-                <span className="memory-total"> / {memoryEstimate.total.toFixed(0)}</span>
+                <span className="memory-total"> / {formatSizeMB(memoryEstimate.total)}</span>
               )}
             </span>
           )}
@@ -535,28 +536,48 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
               <span className="meta-pill documents">{idx.document_count} documents</span>
               {(() => {
                 const ramMb = getIndexMemory(idx.name);
+                const diskMb = idx.size_mb;
+                const showBoth = ramMb !== null && Math.abs(ramMb - diskMb) > 1; // Show both if >1MB difference
+
                 if (ramMb !== null) {
                   return (
-                    <span
-                      className={`meta-pill ram ${idx.enabled ? 'ram-loaded' : 'ram-unloaded'}`}
-                      title={`${idx.enabled ? 'Loaded in RAM' : 'Not loaded (disabled)'}: ${ramMb.toFixed(2)} MB (${idx.chunk_count.toLocaleString()} chunks)`}
-                    >
-                      <MemoryStick size={12} />
-                      {ramMb.toFixed(2)} MB
-                    </span>
+                    <>
+                      <span
+                        className={`meta-pill ram ${idx.enabled ? 'ram-loaded' : 'ram-unloaded'}`}
+                        title={`${idx.enabled ? 'Loaded in RAM' : 'Not loaded (disabled)'}: ${formatSizeMB(ramMb)} (${idx.chunk_count.toLocaleString()} chunks)`}
+                      >
+                        <MemoryStick size={12} />
+                        {formatSizeMB(ramMb)}
+                      </span>
+                      {showBoth && (
+                        <span className="meta-pill size" title={`Size on disk: ${formatSizeMB(diskMb)}`}>
+                          <HardDrive size={12} />
+                          {formatSizeMB(diskMb)}
+                        </span>
+                      )}
+                    </>
                   );
                 }
                 // Fallback to disk size when RAM info not available
                 return (
-                  <span className="meta-pill size" title={`Size on disk: ${idx.size_mb} MB`}>
+                  <span className="meta-pill size" title={`Size on disk: ${formatSizeMB(diskMb)}`}>
                     <HardDrive size={12} />
-                    {idx.size_mb} MB
+                    {formatSizeMB(diskMb)}
                   </span>
                 );
               })()}
               {idx.source_type === 'git' && idx.source && (
                 <span className="meta-pill git" title={`Git: ${idx.source}${idx.git_branch ? ` (${idx.git_branch})` : ''}`}>
                   Git
+                </span>
+              )}
+              {idx.has_git_history && idx.git_repo_size_mb !== null && (
+                <span
+                  className="meta-pill git-history"
+                  title={`Git history available: ${formatSizeMB(idx.git_repo_size_mb)} on disk (searchable via git_history tool)`}
+                >
+                  <GitCommitHorizontal size={12} />
+                  {formatSizeMB(idx.git_repo_size_mb)}
                 </span>
               )}
               {idx.last_modified && (
