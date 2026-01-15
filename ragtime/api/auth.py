@@ -160,6 +160,7 @@ class AuthStatusResponse(BaseModel):
     # Security status for UI banner
     api_key_configured: bool = False
     session_cookie_secure: bool = False
+    allowed_origins_open: bool = False  # True if ALLOWED_ORIGINS=*
 
 
 # =============================================================================
@@ -210,6 +211,7 @@ async def get_auth_status(request: Request):
         cookie_warning=cookie_warning,
         api_key_configured=bool(settings.api_key),
         session_cookie_secure=settings.session_cookie_secure,
+        allowed_origins_open=settings.allowed_origins == "*",
     )
 
 

@@ -45,6 +45,7 @@ export interface AuthStatus {
   // Security status for UI banner
   api_key_configured: boolean;
   session_cookie_secure: boolean;
+  allowed_origins_open: boolean;  // True if ALLOWED_ORIGINS=*
 }
 
 // =============================================================================

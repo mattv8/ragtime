@@ -61,7 +61,7 @@ def _log_security_warnings() -> None:
     if settings.allowed_origins == "*":
         warnings.append(
             "ALLOWED_ORIGINS=* allows requests from any origin. "
-            "Consider restricting to specific domains in production."
+            "Consider restricting to specific domains."
         )
 
     # Check for HTTP without HTTPS or reverse proxy

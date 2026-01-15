@@ -121,13 +121,27 @@ body {
 
 .security-banner-content {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   flex-wrap: wrap;
   gap: var(--space-sm);
 }
 
 .security-banner-content strong {
   color: #b8860b;
+}
+
+.security-banner-content code {
+  background: rgba(0, 0, 0, 0.1);
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+.security-banner-actions {
+  display: flex;
+  gap: var(--space-md);
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 .security-banner-link {
@@ -139,11 +153,25 @@ body {
   cursor: pointer;
   text-decoration: underline;
   padding: 0;
-  margin-left: auto;
 }
 
 .security-banner-link:hover {
   color: var(--color-primary-dark);
+}
+
+.security-banner-dismiss {
+  background: transparent;
+  border: none;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  padding: 0;
+  opacity: 0.7;
+}
+
+.security-banner-dismiss:hover {
+  opacity: 1;
+  color: var(--color-text-primary);
 }
 
 .topnav-username {

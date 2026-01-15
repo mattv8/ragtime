@@ -102,6 +102,9 @@ export function App() {
           ldap_configured: false,
           local_admin_enabled: true,
           debug_mode: false,
+          api_key_configured: false,
+          session_cookie_secure: false,
+          allowed_origins_open: true,
         });
       } finally {
         setAuthLoading(false);
@@ -340,7 +343,15 @@ export function App() {
   if (!currentUser) {
     return (
       <LoginPage
-        authStatus={authStatus || { authenticated: false, ldap_configured: false, local_admin_enabled: true, debug_mode: false }}
+        authStatus={authStatus || {
+          authenticated: false,
+          ldap_configured: false,
+          local_admin_enabled: true,
+          debug_mode: false,
+          api_key_configured: false,
+          session_cookie_secure: false,
+          allowed_origins_open: true,
+        }}
         onLoginSuccess={handleLoginSuccess}
         serverName={serverName}
       />

@@ -758,7 +758,10 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       <h2>Settings</h2>
 
       {/* API Endpoint Info */}
-      <div className="api-info-box" id="api_key_info">
+      <div
+        className={`api-info-box ${highlightSetting === 'api_key_info' ? 'highlight-setting' : ''}`}
+        id="setting-api_key_info"
+      >
         <strong>OpenAI-Compatible API</strong>
         <p>
           Connect external clients (e.g., Open WebUI) using:
@@ -772,7 +775,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           Without an API key, anyone with network access can use your LLM and tools.
           {window.location.protocol === 'http:' && (
             <span> Additionally, you are currently accessing over HTTP - API keys and credentials will be transmitted in plaintext.
-            Consider using HTTPS via a reverse proxy.</span>
+            Consider using HTTPS via a reverse proxy or setting <code>ENABLE_HTTPS=true</code>.</span>
           )}
         </div>
       </div>
