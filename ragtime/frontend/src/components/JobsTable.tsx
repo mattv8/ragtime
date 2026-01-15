@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Copy, Check } from 'lucide-react';
 import { api } from '@/api';
 import type { IndexJob, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob } from '@/types';
 
@@ -347,6 +348,17 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
   const [cancelConfirmId, setCancelConfirmId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [retryConfirmId, setRetryConfirmId] = useState<string | null>(null);
+  const [copiedErrorId, setCopiedErrorId] = useState<string | null>(null);
+
+  const copyErrorMessage = async (text: string, jobId: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedErrorId(jobId);
+      setTimeout(() => setCopiedErrorId(null), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  };
 
   const formatDate = (dateStr: string) => {
     return new Date(dateStr).toLocaleString();
@@ -751,9 +763,23 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
               <p><strong>Name:</strong> {selectedJob.name}</p>
               <p><strong>Type:</strong> <span className={`badge type-${selectedJob.type}`}>{selectedJob.type}</span></p>
               <p><strong>Status:</strong> <span className={`badge ${selectedJob.status}`}>{selectedJob.status}</span></p>
-              <div className="error-details">
-                <strong>Error Message:</strong>
-                <pre>{selectedJob.errorMessage}</pre>
+
+              <div className="error-message-section">
+                <div className="error-message-header">
+                  <h4>Error Message</h4>
+                  <button
+                    className="copy-error-btn"
+                    onClick={() => copyErrorMessage(selectedJob.errorMessage ?? '', selectedJob.id)}
+                    title="Copy error message"
+                  >
+                    {copiedErrorId === selectedJob.id ? (
+                      <Check size={16} />
+                    ) : (
+                      <Copy size={16} />
+                    )}
+                  </button>
+                </div>
+                <pre className="error-message-text">{selectedJob.errorMessage}</pre>
               </div>
             </div>
           </div>

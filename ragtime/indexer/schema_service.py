@@ -843,7 +843,7 @@ class SchemaIndexerService:
         def run_introspection() -> List[TableSchemaInfo]:
             conn = pymssql.connect(
                 server=host,
-                port=port,
+                port=str(port),
                 user=user,
                 password=password,
                 database=database,
