@@ -90,13 +90,22 @@ OpenAI-compatible RAG API and MCP server with LangChain tool calling for busines
    # API port (default: 8000)
    PORT=8000
 
-   # API Key for OpenAI-compatible endpoint authentication (leave empty to disable)
-   # API_KEY=
-
    # CORS allowed origins (comma-separated, or * for all)
    ALLOWED_ORIGINS=*
 
-   # Set to true if running behind HTTPS reverse proxy
+   # -----------------------------------------------------------------------------
+   # Security Configuration
+   # -----------------------------------------------------------------------------
+   # API Key for OpenAI-compatible endpoint authentication (REQUIRED)
+   # Generate with: openssl rand -base64 32
+   API_KEY=
+
+   # HTTPS: Enable built-in TLS with self-signed certificate (auto-generated on first run)
+   # To use your own certs, place them at ./data/ssl/server.crt and ./data/ssl/server.key
+   # ENABLE_HTTPS=true
+
+   # Set to true if behind an HTTPS reverse proxy (nginx, Caddy, Traefik)
+   # This marks cookies as Secure. Auto-enabled when ENABLE_HTTPS=true.
    SESSION_COOKIE_SECURE=false
 
    ############################################################
@@ -168,10 +177,9 @@ OpenAI-compatible RAG API and MCP server with LangChain tool calling for busines
          DATABASE_URL: postgresql://ragtime:${POSTGRES_PASSWORD}@ragtime-db:5432/ragtime
          # Recommended defaults
          DEBUG_MODE: "false"
-         SESSION_COOKIE_SECURE: "${SESSION_COOKIE_SECURE:-false}"
        volumes:
-         # FAISS index data persistence
-         - ./data:/app/data
+         # Data persistence (indexes, SSL certs, etc.)
+         - ./data:/data
          # Docker socket for container exec (optional, for tool execution)
          - /var/run/docker.sock:/var/run/docker.sock:ro
        # Uncomment below if using SMB/NFS mounting inside container (consider mounting via docker volume instead)
@@ -184,7 +192,8 @@ OpenAI-compatible RAG API and MCP server with LangChain tool calling for busines
          ragtime-db:
            condition: service_healthy
        healthcheck:
-         test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+         # -k allows self-signed certs; checks http first, falls back gracefully
+         test: ["CMD", "sh", "-c", "curl -fsk https://localhost:8000/health 2>/dev/null || curl -fs http://localhost:8000/health"]
          interval: 30s
          timeout: 10s
          retries: 3
