@@ -84,10 +84,6 @@ OpenAI-compatible RAG API and MCP server with LangChain tool calling for busines
    LOCAL_ADMIN_USER=admin
    LOCAL_ADMIN_PASSWORD=changeme_admin
 
-   # JWT secret key for session tokens
-   # REQUIRED unless DEBUG=true. Generate with: openssl rand -base64 32
-   JWT_SECRET_KEY=changeme_jwt_secret
-
    # -----------------------------------------------------------------------------
    # Server Configuration
    # -----------------------------------------------------------------------------
@@ -228,10 +224,10 @@ CI builds each push; main-branch images are Cosign-signed and ship with an SPDX 
 - **Set `API_KEY`** to protect the `/v1/chat/completions` endpoint. When unset (the default), anyone with network access can call the chat API and invoke your configured tools.
 - **Restrict `ALLOWED_ORIGINS`** to trusted domains. The default `*` with `allow_credentials=True` permits cross-site requests that carry session cookies, which may be exploitable if the server is publicly reachable.
 - **Enable MCP route authentication** via Settings UI if `/mcp` is network-accessible. By default the MCP endpoint is open without auth.
-- Set a strong `LOCAL_ADMIN_PASSWORD` and `JWT_SECRET_KEY` when deploying.
+- Set a strong `LOCAL_ADMIN_PASSWORD` when deploying.
 
 ### Authentication Security
-- **JWT_SECRET_KEY is required** The container will refuse to start without an explicit key when `DEBUG_MODE=false`. Generate one with `openssl rand -base64 32`.
+- **Encryption key is auto-generated** on first startup and stored at `data/.encryption_key`. Include this file in your backups using `backup --include-secret` or your encrypted secrets will be unrecoverable.
 - **Rate limiting** protects the login endpoint (5 attempts/minute per IP) to prevent brute-force attacks.
 
 ### Debug Mode Warning

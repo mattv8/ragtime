@@ -60,7 +60,7 @@ docker exec ragtime-dev restore --include-secret /tmp/backup.tar.gz  # Restore e
 docker exec ragtime-dev restore --db-only /tmp/backup.tar.gz
 ```
 
-> **Important:** Backups contain encrypted secrets (API keys, passwords). Use `--include-secret` to include the encryption key file in your backup. If not using `--include-secret`, the backup command prints the `JWT_SECRET_KEY` - save this! You must set the same key in `.env` before restoring on a new server, or re-enter all passwords after restore.
+> **Important:** Backups contain encrypted secrets (API keys, passwords). Use `--include-secret` to include the encryption key file in your backup. Without the encryption key, you will need to re-enter all passwords after restore.
 
 ### Reset Database
 

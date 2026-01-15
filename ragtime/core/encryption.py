@@ -1,15 +1,14 @@
 """
 Reversible encryption utilities for storing secrets.
 
-Uses Fernet symmetric encryption with a key derived from JWT_SECRET_KEY.
+Uses Fernet symmetric encryption with a key derived from ENCRYPTION_KEY.
 This allows secrets to be decrypted for display in the frontend or for
 backup/restore operations.
 
-IMPORTANT: The encryption key is derived from JWT_SECRET_KEY. If this key
-changes or is lost, all encrypted secrets become unrecoverable. For backup
-purposes, either:
-1. Set JWT_SECRET_KEY explicitly in .env (recommended for production)
-2. Include the generated key in your backup process
+IMPORTANT: The encryption key is auto-generated on first startup and persisted
+to data/.encryption_key. If this file is lost, all encrypted secrets become
+unrecoverable. Always include the encryption key in backups using the
+--include-secret flag.
 """
 
 import base64
@@ -30,13 +29,13 @@ ENCRYPTED_PREFIX = "enc::"
 @lru_cache(maxsize=1)
 def _get_fernet() -> Fernet:
     """
-    Get a Fernet instance using a key derived from JWT_SECRET_KEY.
+    Get a Fernet instance using a key derived from ENCRYPTION_KEY.
 
     Fernet requires a 32-byte base64-encoded key. We derive this from
-    JWT_SECRET_KEY using SHA256 to ensure consistent key length.
+    ENCRYPTION_KEY using SHA256 to ensure consistent key length.
     """
-    # Use SHA256 to get exactly 32 bytes from JWT_SECRET_KEY
-    key_bytes = hashlib.sha256(settings.jwt_secret_key.encode()).digest()
+    # Use SHA256 to get exactly 32 bytes from ENCRYPTION_KEY
+    key_bytes = hashlib.sha256(settings.encryption_key.encode()).digest()
     # Fernet requires base64-encoded key
     fernet_key = base64.urlsafe_b64encode(key_bytes)
     return Fernet(fernet_key)

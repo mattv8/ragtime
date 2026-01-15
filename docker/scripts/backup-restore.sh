@@ -8,17 +8,15 @@ set -e
 # IMPORTANT: Secrets Encryption
 # -----------------------------
 # Ragtime encrypts sensitive data (API keys, passwords) using Fernet symmetric
-# encryption. The encryption key is derived from JWT_SECRET_KEY.
-#
-# If JWT_SECRET_KEY is not explicitly set in .env, it is auto-generated on first
-# startup and will be DIFFERENT on each new container/restart.
+# encryption. The encryption key is auto-generated on first startup and stored
+# at data/.encryption_key.
 #
 # To ensure backups can be restored with working secrets:
-#   1. Set JWT_SECRET_KEY explicitly in your .env file (recommended)
-#   2. Or backup the generated key from the running container
+#   1. Use --include-secret flag to include the encryption key in backups
+#   2. Or manually backup the .encryption_key file
 #   3. Or re-enter all passwords/API keys after restore
 #
-# Without the same JWT_SECRET_KEY, encrypted secrets become unrecoverable.
+# Without the same encryption key, encrypted secrets become unrecoverable.
 
 # Colors for output
 RED='\033[0;31m'
@@ -122,7 +120,7 @@ show_backup_usage() {
     echo "Options:"
     echo "  --db-only         Backup database only (no FAISS indexes)"
     echo "  --faiss-only      Backup FAISS indexes only (no database)"
-    echo "  --include-secret  Include the .jwt_secret encryption key file in backup"
+    echo "  --include-secret  Include the .encryption_key file in backup"
     echo "                    (required to decrypt secrets on restore)"
     echo "  -h, --help        Show this help message"
     echo ""
@@ -149,7 +147,7 @@ show_restore_usage() {
     echo "  --faiss-only       Restore FAISS indexes only (skip database)"
     echo "  --skip-migrations  Skip automatic schema migration after restore"
     echo "  --data-only        Restore data only (no schema), then run migrations"
-    echo "  --include-secret   Restore the .jwt_secret encryption key file if present"
+    echo "  --include-secret   Restore the .encryption_key file if present"
     echo "                     (overwrites existing key - use with caution!)"
     echo "  -h, --help         Show this help message"
     echo ""
@@ -258,12 +256,12 @@ do_backup() {
     # Include encryption key if requested (after log_msg is defined)
     local includes_secret=false
     if [ "$include_secret" = true ]; then
-        if [ -f "${FAISS_DIR}/.jwt_secret" ]; then
+        if [ -f "${FAISS_DIR}/.encryption_key" ]; then
             includes_secret=true
             log_msg "${GREEN}[BACKUP]${NC} Including encryption key file..."
         else
-            log_msg "${YELLOW}[WARNING]${NC} --include-secret specified but no .jwt_secret file found"
-            log_msg "${BLUE}[INFO]${NC} JWT_SECRET_KEY may be set via environment variable instead"
+            log_msg "${YELLOW}[WARNING]${NC} --include-secret specified but no .encryption_key file found"
+            log_msg "${BLUE}[INFO]${NC} Encryption key may not have been generated yet"
         fi
     fi
 
@@ -330,9 +328,9 @@ do_backup() {
 }
 EOF
 
-    # Copy .jwt_secret file if requested and exists
+    # Copy .encryption_key file if requested and exists
     if [ "$includes_secret" = true ]; then
-        cp "${FAISS_DIR}/.jwt_secret" "$TEMP_DIR/.jwt_secret"
+        cp "${FAISS_DIR}/.encryption_key" "$TEMP_DIR/.encryption_key"
         log_msg "${BLUE}[INFO]${NC} Encryption key file included in backup"
     fi
 
@@ -348,35 +346,29 @@ EOF
         log "Backup complete: $output_file ($archive_size)"
     fi
 
-    # Print JWT_SECRET_KEY for user to save (required to decrypt secrets on restore)
-    # Try to get it from Python settings (where it's auto-generated if not set)
-    local jwt_key=""
+    # Print encryption key for user to save if not included in backup
+    # Try to get it from Python settings
+    local enc_key=""
     if command -v python &> /dev/null; then
-        jwt_key=$(python -c "from ragtime.config import settings; print(settings.jwt_secret_key)" 2>/dev/null || echo "")
+        enc_key=$(python -c "from ragtime.config import settings; print(settings.encryption_key)" 2>/dev/null || echo "")
     fi
     # Fall back to persisted file
-    if [ -z "$jwt_key" ] && [ -f "${FAISS_DIR}/.jwt_secret" ]; then
-        jwt_key=$(cat "${FAISS_DIR}/.jwt_secret" 2>/dev/null || echo "")
-    fi
-    # Fall back to environment variable
-    if [ -z "$jwt_key" ]; then
-        jwt_key="$JWT_SECRET_KEY"
+    if [ -z "$enc_key" ] && [ -f "${FAISS_DIR}/.encryption_key" ]; then
+        enc_key=$(cat "${FAISS_DIR}/.encryption_key" 2>/dev/null || echo "")
     fi
 
     if [ "$includes_secret" = true ]; then
         log_msg ""
         log_msg "${GREEN}[INFO]${NC} Encryption key included in backup."
         log_msg "${BLUE}[INFO]${NC} Use 'restore --include-secret' to restore the key file."
-    elif [ -n "$jwt_key" ]; then
+    elif [ -n "$enc_key" ]; then
         log_msg ""
-        log_msg "${YELLOW}[IMPORTANT]${NC} Save this encryption key to restore encrypted secrets:"
-        log_msg "${YELLOW}[IMPORTANT]${NC} JWT_SECRET_KEY=${jwt_key}"
-        log_msg ""
-        log_msg "${BLUE}[INFO]${NC} Add this to your .env file before restoring on a new server."
-        log_msg "${BLUE}[INFO]${NC} Or use 'backup --include-secret' to include the key file in future backups."
+        log_msg "${YELLOW}[IMPORTANT]${NC} Backup does not include encryption key."
+        log_msg "${YELLOW}[IMPORTANT]${NC} Use 'backup --include-secret' to include the key file in future backups."
+        log_msg "${BLUE}[INFO]${NC} Or manually backup: ${FAISS_DIR}/.encryption_key"
     else
         log_msg ""
-        log_msg "${YELLOW}[WARNING]${NC} Could not determine JWT_SECRET_KEY - secrets may not be recoverable."
+        log_msg "${YELLOW}[WARNING]${NC} Could not determine encryption key - secrets may not be recoverable."
     fi
 }
 
@@ -587,32 +579,41 @@ do_restore() {
         warn "No FAISS indexes found in backup, skipping FAISS restore"
     fi
 
-    # Step 3: Restore .jwt_secret file if present and requested
+    # Step 3: Restore .encryption_key file if present and requested
+    # Support both old (.jwt_secret) and new (.encryption_key) file names for backwards compatibility
+    local backup_key_file=""
+    if [ -f "$TEMP_DIR/.encryption_key" ]; then
+        backup_key_file="$TEMP_DIR/.encryption_key"
+    elif [ -f "$TEMP_DIR/.jwt_secret" ]; then
+        backup_key_file="$TEMP_DIR/.jwt_secret"
+        info "Found legacy .jwt_secret file in backup (will restore as .encryption_key)"
+    fi
+
     if [ "$include_secret" = true ]; then
-        if [ -f "$TEMP_DIR/.jwt_secret" ]; then
-            if [ -f "${FAISS_DIR}/.jwt_secret" ]; then
-                warn "Overwriting existing .jwt_secret file with backup version"
+        if [ -n "$backup_key_file" ]; then
+            if [ -f "${FAISS_DIR}/.encryption_key" ]; then
+                warn "Overwriting existing .encryption_key file with backup version"
             fi
             mkdir -p "$FAISS_DIR"
-            cp "$TEMP_DIR/.jwt_secret" "${FAISS_DIR}/.jwt_secret"
-            chmod 600 "${FAISS_DIR}/.jwt_secret"
+            cp "$backup_key_file" "${FAISS_DIR}/.encryption_key"
+            chmod 600 "${FAISS_DIR}/.encryption_key"
             info "Encryption key file restored"
             info "Restart the container to use the restored encryption key"
         else
-            warn "--include-secret specified but no .jwt_secret file in backup"
+            warn "--include-secret specified but no encryption key file in backup"
             warn "The backup may not have been created with --include-secret"
         fi
-    elif [ -f "$TEMP_DIR/.jwt_secret" ]; then
-        info "Backup contains .jwt_secret file but --include-secret not specified"
+    elif [ -n "$backup_key_file" ]; then
+        info "Backup contains encryption key file but --include-secret not specified"
         info "Use 'restore --include-secret' to restore the encryption key"
     fi
 
     log "Restore complete!"
 
     # Warn about encryption keys (only if secret wasn't restored)
-    if [ "$include_secret" != true ] || [ ! -f "$TEMP_DIR/.jwt_secret" ]; then
-        warn "IMPORTANT: Encrypted secrets (API keys, passwords) require the same JWT_SECRET_KEY"
-        warn "that was used when the backup was created. If JWT_SECRET_KEY has changed,"
+    if [ "$include_secret" != true ] || [ -z "$backup_key_file" ]; then
+        warn "IMPORTANT: Encrypted secrets (API keys, passwords) require the same encryption key"
+        warn "that was used when the backup was created. If the encryption key has changed,"
         warn "you will need to re-enter all API keys and passwords in the Settings UI."
     fi
 }

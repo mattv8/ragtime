@@ -81,7 +81,7 @@ def create_access_token(user_id: str, username: str, role: str) -> str:
         "exp": expire,
     }
     return jwt.encode(
-        payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm
+        payload, settings.encryption_key, algorithm=settings.jwt_algorithm
     )
 
 
@@ -89,7 +89,7 @@ def decode_access_token(token: str) -> Optional[TokenData]:
     """Decode and validate a JWT access token."""
     try:
         payload = jwt.decode(
-            token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm]
+            token, settings.encryption_key, algorithms=[settings.jwt_algorithm]
         )
         return TokenData(
             user_id=payload["sub"],

@@ -84,10 +84,10 @@ Schema changes require migrations for production deployment:
 ## Secrets Encryption
 
 - Sensitive fields (API keys, passwords) use Fernet symmetric encryption
-- Encryption key derived from `JWT_SECRET_KEY` via SHA256
+- Encryption key auto-generated on first startup, persisted to `data/.encryption_key`
+- Encryption key derived from `ENCRYPTION_KEY` setting via SHA256
 - Encrypted values prefixed with `enc::` in database
-- `JWT_SECRET_KEY` auto-generated if not set, persisted to `data/.jwt_secret`
-- **Production**: Set `JWT_SECRET_KEY` explicitly in `.env` for security
+- **Backups**: Use `--include-secret` flag to include the encryption key file
 - Password fields in `connection_config` JSON: `password`, `ssh_password`, `ssh_key_passphrase`, `key_passphrase`, `smb_password`, `key_content`, `ssh_key_content`
 
 ## Tool Configs
