@@ -682,6 +682,33 @@ body {
   color: var(--color-error);
 }
 
+.tool-card-schema-stats {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--color-surface-hover);
+  border-radius: var(--radius-sm);
+}
+
+.schema-stats-label {
+  color: var(--color-text-secondary);
+}
+
+.schema-stats-value {
+  color: var(--color-primary);
+  font-weight: 500;
+}
+
+.schema-stats-memory {
+  color: var(--color-text-muted);
+  font-weight: normal;
+  margin-left: var(--space-xs);
+}
+
 .tool-card-actions {
   display: flex;
   flex-wrap: wrap;

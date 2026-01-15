@@ -5736,6 +5736,54 @@ class SchemaStatsResponse(BaseModel):
     schema_hash: Optional[str] = Field(
         default=None, description="Hash of indexed schema for change detection"
     )
+    # Memory estimation for the schema index stored in pgvector
+    embedding_dimension: Optional[int] = Field(
+        default=None, description="Dimension of embedding vectors"
+    )
+    estimated_memory_mb: Optional[float] = Field(
+        default=None,
+        description="Estimated memory size in MB (pgvector storage, not process RAM)",
+    )
+
+
+def _estimate_schema_index_memory_mb(
+    embedding_count: int,
+    embedding_dimension: int | None,
+    avg_content_chars: int = 1500,
+) -> float | None:
+    """
+    Estimate memory footprint for a schema index stored in pgvector.
+
+    This is the storage footprint in PostgreSQL, not process RAM
+    (schema indexes use pgvector, not FAISS in-memory indexes).
+
+    Args:
+        embedding_count: Number of embeddings
+        embedding_dimension: Dimension of embedding vectors
+        avg_content_chars: Average characters per schema entry (table definitions)
+
+    Returns:
+        Estimated size in MB, or None if dimension is unknown
+    """
+    if embedding_count == 0 or embedding_dimension is None:
+        return None
+
+    # Vector storage: embedding_count * dimensions * 4 bytes (float32)
+    vector_bytes = embedding_count * embedding_dimension * 4
+
+    # Content storage: schema text (table definitions are typically 1-3KB)
+    content_bytes = embedding_count * avg_content_chars
+
+    # Metadata overhead: ~200 bytes per embedding (uuid, index_name, table_name, etc.)
+    metadata_bytes = embedding_count * 200
+
+    # PostgreSQL row overhead: ~23 bytes per row + ~4 bytes tuple header
+    pg_overhead_bytes = embedding_count * 27
+
+    total_bytes = vector_bytes + content_bytes + metadata_bytes + pg_overhead_bytes
+
+    # Convert to MB with 10% overhead for indexes
+    return round(total_bytes * 1.1 / (1024 * 1024), 2)
 
 
 @router.get(
@@ -5745,11 +5793,12 @@ class SchemaStatsResponse(BaseModel):
 )
 async def get_schema_index_stats(tool_id: str, _user: User = Depends(require_admin)):
     """Get schema index statistics for a tool. Admin only."""
-    # Get embedding count
-    embedding_count = await schema_indexer.get_embedding_count(tool_id)
-
-    # Get last indexed timestamp and hash from tool config
+    # Get tool config first to get the name
     tool_config = await repository.get_tool_config(tool_id)
+
+    # Get embedding count - pass both tool_id and safe tool name
+    tool_name = safe_tool_name(tool_config.name) if tool_config else None
+    embedding_count = await schema_indexer.get_embedding_count(tool_id, tool_name)
     last_indexed_at = None
     schema_hash = None
 
@@ -5758,10 +5807,21 @@ async def get_schema_index_stats(tool_id: str, _user: User = Depends(require_adm
         last_indexed_at = conn_config.get("last_schema_indexed_at")
         schema_hash = conn_config.get("schema_hash")
 
+    # Get embedding dimension from app settings
+    settings = await repository.get_settings()
+    embedding_dimension = settings.embedding_dimension if settings else None
+
+    # Estimate memory size
+    estimated_memory_mb = _estimate_schema_index_memory_mb(
+        embedding_count, embedding_dimension
+    )
+
     return SchemaStatsResponse(
         embedding_count=embedding_count,
         last_indexed_at=last_indexed_at,
         schema_hash=schema_hash,
+        embedding_dimension=embedding_dimension,
+        estimated_memory_mb=estimated_memory_mb,
     )
 
 

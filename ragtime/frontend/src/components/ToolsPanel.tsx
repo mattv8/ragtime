@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '@/api';
-import type { ToolConfig, HeartbeatStatus } from '@/types';
+import type { ToolConfig, HeartbeatStatus, SchemaIndexStats } from '@/types';
 import { TOOL_TYPE_INFO } from '@/types';
 import { ToolWizard } from './ToolWizard';
 import { Icon, getToolIconType } from './Icon';
@@ -27,14 +27,22 @@ interface ToolCardProps {
   pdmIndexing?: boolean;
   onSchemaReindex?: (toolId: string, fullReindex: boolean) => void;
   schemaIndexing?: boolean;
+  schemaStats?: SchemaIndexStats | null;
 }
 
-function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing, onPdmReindex, pdmIndexing, onSchemaReindex, schemaIndexing }: ToolCardProps) {
+function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing, onPdmReindex, pdmIndexing, onSchemaReindex, schemaIndexing, schemaStats }: ToolCardProps) {
   const typeInfo = TOOL_TYPE_INFO[tool.tool_type];
 
   // Check if schema indexing is enabled for this tool
   const hasSchemaIndexing = (tool.tool_type === 'postgres' || tool.tool_type === 'mssql') &&
     (tool.connection_config as { schema_index_enabled?: boolean })?.schema_index_enabled === true;
+
+  // Format memory size for display
+  const formatMemory = (mb: number): string => {
+    if (mb < 1) return `${Math.round(mb * 1024)} KB`;
+    if (mb < 1024) return `${mb.toFixed(1)} MB`;
+    return `${(mb / 1024).toFixed(2)} GB`;
+  };
 
   const getConnectionSummary = (): string => {
     const config = tool.connection_config;
@@ -140,6 +148,21 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
         {tool.allow_write && <span className="write-enabled">Write enabled</span>}
       </div>
 
+      {/* Schema index stats */}
+      {hasSchemaIndexing && schemaStats && schemaStats.embedding_count > 0 && (
+        <div className="tool-card-schema-stats">
+          <span className="schema-stats-label">Schema Index:</span>
+          <span className="schema-stats-value">
+            {schemaStats.embedding_count} tables
+            {schemaStats.estimated_memory_mb != null && (
+              <span className="schema-stats-memory" title="Estimated pgvector storage size">
+                ({formatMemory(schemaStats.estimated_memory_mb)})
+              </span>
+            )}
+          </span>
+        </div>
+      )}
+
       <div className="tool-card-actions">
         <button
           type="button"
@@ -216,6 +239,7 @@ export function ToolsPanel({ onSchemaJobTriggered }: ToolsPanelProps) {
   const [pdmIndexingToolId, setPdmIndexingToolId] = useState<string | null>(null);
   const [schemaIndexingToolId, setSchemaIndexingToolId] = useState<string | null>(null);
   const [heartbeats, setHeartbeats] = useState<Record<string, HeartbeatStatus>>({});
+  const [schemaStats, setSchemaStats] = useState<Record<string, SchemaIndexStats>>({});
   const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [confirmation, setConfirmation] = useState<ConfirmationState | null>(null);
 
@@ -234,6 +258,29 @@ export function ToolsPanel({ onSchemaJobTriggered }: ToolsPanelProps) {
     }
   }, []);
 
+  // Load schema stats for tools with schema indexing enabled
+  const loadSchemaStats = useCallback(async (toolList: ToolConfig[]) => {
+    const schemaTools = toolList.filter(t =>
+      (t.tool_type === 'postgres' || t.tool_type === 'mssql') &&
+      (t.connection_config as { schema_index_enabled?: boolean })?.schema_index_enabled === true
+    );
+
+    if (schemaTools.length === 0) return;
+
+    const statsMap: Record<string, SchemaIndexStats> = {};
+    await Promise.all(
+      schemaTools.map(async (tool) => {
+        try {
+          const stats = await api.getSchemaIndexStats(tool.id);
+          statsMap[tool.id] = stats;
+        } catch (err) {
+          console.warn(`Failed to load schema stats for ${tool.name}:`, err);
+        }
+      })
+    );
+    setSchemaStats(statsMap);
+  }, []);
+
   // Fetch heartbeat status for all enabled tools
   const fetchHeartbeats = useCallback(async () => {
     try {
@@ -249,6 +296,13 @@ export function ToolsPanel({ onSchemaJobTriggered }: ToolsPanelProps) {
   useEffect(() => {
     loadTools();
   }, [loadTools]);
+
+  // Load schema stats when tools change
+  useEffect(() => {
+    if (tools.length > 0) {
+      loadSchemaStats(tools);
+    }
+  }, [tools, loadSchemaStats]);
 
   // Heartbeat polling
   useEffect(() => {
@@ -365,6 +419,8 @@ export function ToolsPanel({ onSchemaJobTriggered }: ToolsPanelProps) {
       setSuccess('Schema re-index started');
       // Notify parent to refresh schema jobs list
       onSchemaJobTriggered?.();
+      // Refresh schema stats after a short delay to allow job to start
+      setTimeout(() => loadSchemaStats(tools), 2000);
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to trigger schema index');
@@ -450,6 +506,7 @@ export function ToolsPanel({ onSchemaJobTriggered }: ToolsPanelProps) {
                 pdmIndexing={pdmIndexingToolId === tool.id}
                 onSchemaReindex={handleSchemaReindex}
                 schemaIndexing={schemaIndexingToolId === tool.id}
+                schemaStats={schemaStats[tool.id] || null}
               />
             ))}
           </div>
