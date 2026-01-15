@@ -658,10 +658,27 @@ class UpdateIndexWeightRequest(BaseModel):
 async def toggle_index(
     name: str, request: ToggleIndexRequest, _user: User = Depends(require_admin)
 ):
-    """Toggle an index's enabled status for RAG context. Admin only."""
+    """Toggle an index's enabled status for RAG context. Admin only.
+
+    When enabling an index, this will reinitialize RAG components to attempt
+    loading the index (useful for retrying failed loads).
+    """
     success = await repository.set_index_enabled(name, request.enabled)
     if not success:
         raise HTTPException(status_code=404, detail="Index not found")
+
+    # Reinitialize RAG when enabling to attempt loading the index
+    # This allows retrying failed loads when user toggles an errored index back on
+    if request.enabled:
+        from ragtime.rag import rag
+
+        try:
+            await rag.initialize()
+        except Exception as e:
+            logger.warning(
+                f"Failed to reinitialize RAG after enabling index {name}: {e}"
+            )
+
     return {
         "message": f"Index '{name}' {'enabled' if request.enabled else 'disabled'}",
         "enabled": request.enabled,

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { X, HardDrive, MemoryStick, GitCommitHorizontal } from 'lucide-react';
+import { X, HardDrive, MemoryStick, GitCommitHorizontal, AlertTriangle } from 'lucide-react';
 import { api } from '@/api';
 import { formatSizeMB } from '@/utils';
 import type { IndexInfo, RepoVisibilityResponse, IndexLoadingDetail } from '@/types';
@@ -255,6 +255,20 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
     return detail?.size_mb ?? null;
   };
 
+  // Get per-index load error from health endpoint
+  const getIndexLoadError = (indexName: string): string | null => {
+    const detail = indexMemoryMap.get(indexName);
+    if (detail?.status === 'error' && detail?.error) {
+      return detail.error;
+    }
+    return null;
+  };
+
+  // Check if index has a load error (for toggle state)
+  const hasIndexLoadError = (indexName: string): boolean => {
+    return getIndexLoadError(indexName) !== null;
+  };
+
   const memoryEstimate = calculateTotalMemory();
 
   // Check repo visibility when reindex modal opens
@@ -322,10 +336,28 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
     }
   };
 
-  const handleToggle = async (name: string, currentEnabled: boolean) => {
+  const handleToggle = async (name: string, currentEnabled: boolean, hasError: boolean) => {
     setToggling(name);
     try {
-      await api.toggleIndex(name, !currentEnabled);
+      // If index has error, we're retrying load - always enable it
+      const newEnabled = hasError ? true : !currentEnabled;
+      await api.toggleIndex(name, newEnabled);
+
+      // Refetch health data to get updated load status
+      // This is important after retrying a failed load
+      try {
+        const health = await api.getHealth();
+        if (health.index_details) {
+          const map = new Map<string, IndexLoadingDetail>();
+          for (const detail of health.index_details) {
+            map.set(detail.name, detail);
+          }
+          setIndexMemoryMap(map);
+        }
+      } catch {
+        // Silently ignore - will be updated on next poll
+      }
+
       onToggle?.();
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : 'Toggle failed');
@@ -517,14 +549,24 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
             <div className="empty-state">No indexes created yet</div>
           )}
 
-          {indexes.map((idx) => (
-            <div key={idx.name} className={`index-item ${!idx.enabled ? 'index-disabled' : ''}`}>
+          {indexes.map((idx) => {
+            // Check if this index has a load error
+            const loadError = getIndexLoadError(idx.name);
+            const hasError = loadError !== null;
+            // Show toggle as off if disabled OR if has load error
+            const effectiveEnabled = idx.enabled && !hasError;
+
+            return (
+            <div key={idx.name} className={`index-item ${!effectiveEnabled ? 'index-disabled' : ''}`}>
               <div className="index-toggle">
-                <label className="toggle-switch" title={idx.enabled ? 'Enabled for RAG' : 'Disabled from RAG'}>
+                <label
+                  className="toggle-switch"
+                  title={hasError ? `Load error - click to retry: ${loadError}` : (idx.enabled ? 'Enabled for RAG' : 'Disabled from RAG')}
+                >
                   <input
                 type="checkbox"
-                checked={idx.enabled}
-                onChange={() => handleToggle(idx.name, idx.enabled)}
+                checked={effectiveEnabled}
+                onChange={() => handleToggle(idx.name, idx.enabled, hasError)}
                 disabled={toggling === idx.name}
               />
               <span className="toggle-slider"></span>
@@ -596,6 +638,18 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
                 </span>
               )}
               {!idx.enabled && <span className="meta-pill disabled">Excluded from RAG</span>}
+              {(() => {
+                const loadError = getIndexLoadError(idx.name);
+                if (loadError) {
+                  return (
+                    <span className="meta-pill error" title={loadError}>
+                      <AlertTriangle size={12} />
+                      Load Error
+                    </span>
+                  );
+                }
+                return null;
+              })()}
             </div>
           </div>
           <div style={{ display: 'flex', gap: '8px' }}>
@@ -662,7 +716,8 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
             )}
           </div>
         </div>
-      ))}
+      );
+      })}
 
           {editingIndex && (
             <EditDescriptionModal

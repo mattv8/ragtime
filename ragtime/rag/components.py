@@ -611,7 +611,9 @@ class RAGComponents:
                 logger.warning(f"FAISS index path not found: {index_path}")
                 if index_name in self._index_details:
                     self._index_details[index_name]["status"] = "error"
-                    self._index_details[index_name]["error"] = "Path not found"
+                    self._index_details[index_name][
+                        "error"
+                    ] = f"Index files missing: {index_path} - re-index required"
                 return None
 
             try:
@@ -764,7 +766,9 @@ class RAGComponents:
                 logger.warning(f"FAISS index path not found: {index_path}")
                 if index_name in self._index_details:
                     self._index_details[index_name]["status"] = "error"
-                    self._index_details[index_name]["error"] = "Path not found"
+                    self._index_details[index_name][
+                        "error"
+                    ] = f"Index files missing: {index_path} - re-index required"
                 continue
 
             try:

@@ -555,6 +555,13 @@ textarea {
   color: #c084fc;
 }
 
+.meta-pill.error {
+  background: var(--color-error-light);
+  border-color: var(--color-error-border);
+  color: var(--color-error);
+  cursor: help;
+}
+
 /* =============================================================================
    MODALS
    ============================================================================= */
