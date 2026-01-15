@@ -94,6 +94,42 @@ RESPONSE FORMAT:
 - Be concise but thorough"""
 
 
+# Additional system prompt section for UI-only features (charts, tables)
+# This is appended only for requests from the chat UI, not API/MCP
+UI_SYSTEM_PROMPT_ADDITION = """
+
+DATA VISUALIZATION:
+
+You have access to visualization tools that render rich, interactive displays:
+
+**create_chart** - Create Chart.js visualizations
+**create_datatable** - Create interactive DataTables with sorting/searching
+
+RULES:
+1. NEVER write markdown tables in your response text. ALWAYS use create_datatable instead.
+2. Proactively use these tools AFTER you retrieve data. Don't wait to be asked.
+3. You can (and should) use BOTH tools together - a chart for visualization AND a datatable for the raw data.
+
+AUTO-VISUALIZE when:
+- Query returns numeric data that can be compared -> USE create_chart (bar/line)
+- Query returns counts, totals, or aggregations -> USE create_chart + create_datatable
+- Query returns percentages or proportions -> USE create_chart (pie/doughnut)
+- Query returns tabular data -> USE create_datatable (NEVER markdown tables)
+- Data has trends over time -> USE create_chart (line)
+- Comparing categories or groups -> USE create_chart (bar)
+
+Chart type selection:
+- Bar: Category comparisons (sales by region, counts by status, totals by type)
+- Line: Time series, trends, sequential data (daily counts, monthly growth)
+- Pie/Doughnut: Parts of whole, market share, distribution (<7 segments)
+
+The tools accept full Chart.js/DataTables configuration objects, giving you
+complete control over styling, axes, legends, tooltips, and interactivity.
+
+REMEMBER: create_datatable renders beautiful interactive tables. Markdown tables are ugly.
+"""
+
+
 def build_index_system_prompt(index_metadata: List[dict]) -> str:
     """
     Build system prompt section describing available knowledge indexes.
@@ -212,11 +248,18 @@ class RAGComponents:
     - core_ready: LLM and settings loaded, can serve non-indexed queries
     - indexes_ready: All FAISS indexes loaded, full knowledge search available
     - is_ready: Alias for core_ready (API can serve requests)
+
+    UI vs API/MCP:
+    - agent_executor: Standard agent for API/MCP requests
+    - agent_executor_ui: Agent with UI-only tools (charts) for chat UI requests
     """
 
     def __init__(self):
         self.retrievers: dict[str, Any] = {}
         self.agent_executor: Optional[AgentExecutor] = None
+        self.agent_executor_ui: Optional[AgentExecutor] = (
+            None  # UI-only agent with chart tool
+        )
         self.llm: Optional[Any] = None  # ChatOpenAI, ChatAnthropic, or ChatOllama
         self._core_ready: bool = False  # LLM/settings ready
         self._indexes_ready: bool = False  # All FAISS indexes loaded
@@ -227,6 +270,7 @@ class RAGComponents:
         self._tool_configs: Optional[List[dict]] = None
         self._index_metadata: Optional[List[dict]] = None
         self._system_prompt: str = BASE_SYSTEM_PROMPT
+        self._system_prompt_ui: str = BASE_SYSTEM_PROMPT  # Includes UI additions
         self._init_lock: asyncio.Lock = asyncio.Lock()
         self._init_in_progress: bool = False
         self._embedding_model: Optional[Any] = None  # Cached for background loading
@@ -315,11 +359,21 @@ class RAGComponents:
         self._tool_configs = await get_tool_configs()
         self._index_metadata = await self._load_index_metadata()
 
-        # Build system prompt with tool and index descriptions
+        # Build system prompts with tool and index descriptions
         tool_prompt_section = build_tool_system_prompt(self._tool_configs)
         index_prompt_section = build_index_system_prompt(self._index_metadata)
+
+        # Base system prompt (for API/MCP)
         self._system_prompt = (
             BASE_SYSTEM_PROMPT + index_prompt_section + tool_prompt_section
+        )
+
+        # UI system prompt (includes chart visualization instructions)
+        self._system_prompt_ui = (
+            BASE_SYSTEM_PROMPT
+            + index_prompt_section
+            + tool_prompt_section
+            + UI_SYSTEM_PROMPT_ADDITION
         )
 
         # Initialize LLM based on provider from database settings
@@ -872,12 +926,18 @@ class RAGComponents:
             return []
 
     async def _create_agent(self):
-        """Create the LangChain agent with tools."""
+        """Create the LangChain agents with tools.
+
+        Creates two agents:
+        - agent_executor: Standard agent for API/MCP requests
+        - agent_executor_ui: Agent with UI-only tools (charts) for chat UI requests
+        """
         assert self._app_settings is not None  # Set by initialize()
         # Skip agent creation if LLM is not configured
         if self.llm is None:
             logger.warning("Skipping agent creation - no LLM configured")
             self.agent_executor = None
+            self.agent_executor_ui = None
             return
 
         tools = []
@@ -925,6 +985,15 @@ class RAGComponents:
                 f"Configure via Tools tab at /indexes/ui?view=tools"
             )
 
+        # Respect admin-configured iteration limit; fall back to 15 if invalid
+        try:
+            max_iterations = int(self._app_settings.get("max_iterations", 15))
+            if max_iterations < 1:
+                max_iterations = 1
+        except (TypeError, ValueError):
+            max_iterations = 15
+
+        # Create standard agent (for API/MCP)
         prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", self._system_prompt),
@@ -934,14 +1003,6 @@ class RAGComponents:
             ]
         )
 
-        # Respect admin-configured iteration limit; fall back to 15 if invalid
-        try:
-            max_iterations = int(self._app_settings.get("max_iterations", 15))
-            if max_iterations < 1:
-                max_iterations = 1
-        except (TypeError, ValueError):
-            max_iterations = 15
-
         if tools:
             # Use create_tool_calling_agent which works with both OpenAI and Anthropic
             agent = create_tool_calling_agent(self.llm, tools, prompt)
@@ -950,12 +1011,40 @@ class RAGComponents:
                 tools=tools,
                 verbose=settings.debug_mode,
                 handle_parsing_errors=True,
-                max_iterations=max_iterations,  # Allow enough iterations for query refinement
+                max_iterations=max_iterations,
                 return_intermediate_steps=settings.debug_mode,
             )
         else:
-            # No tools - agent_executor stays None
             self.agent_executor = None
+
+        # Create UI agent (with visualization tools and UI prompt)
+        from ragtime.tools.chart import create_chart_tool
+        from ragtime.tools.datatable import create_datatable_tool
+
+        ui_tools = tools + [create_chart_tool, create_datatable_tool]
+
+        prompt_ui = ChatPromptTemplate.from_messages(
+            [
+                ("system", self._system_prompt_ui),
+                MessagesPlaceholder(variable_name="chat_history", optional=True),
+                ("human", "{input}"),
+                MessagesPlaceholder(variable_name="agent_scratchpad"),
+            ]
+        )
+
+        if ui_tools:
+            agent_ui = create_tool_calling_agent(self.llm, ui_tools, prompt_ui)
+            self.agent_executor_ui = AgentExecutor(
+                agent=agent_ui,
+                tools=ui_tools,
+                verbose=settings.debug_mode,
+                handle_parsing_errors=True,
+                max_iterations=max_iterations,
+                return_intermediate_steps=settings.debug_mode,
+            )
+            logger.info("Created UI agent with chart and datatable tools")
+        else:
+            self.agent_executor_ui = None
 
     async def _build_tools_from_configs(
         self, skip_knowledge_tool: bool = False
@@ -1481,11 +1570,18 @@ class RAGComponents:
                     return f"Error: {stderr.decode('utf-8', errors='replace').strip()}"
 
                 output = stdout.decode("utf-8", errors="replace").strip()
-                return (
-                    sanitize_output(output)
-                    if output
-                    else "Query executed successfully (no results)"
-                )
+                if not output:
+                    return "Query executed successfully (no results)"
+
+                # Add table metadata for UI rendering BEFORE sanitizing
+                # so metadata is extracted from complete data
+                from ragtime.core.sql_utils import add_table_metadata_to_psql_output
+
+                output = add_table_metadata_to_psql_output(output)
+
+                # Now sanitize the combined output
+                output = sanitize_output(output)
+                return output
 
             except asyncio.TimeoutError:
                 return f"Error: Query timed out after {timeout}s"
@@ -2039,13 +2135,22 @@ except Exception as e:
             return f"I encountered an error processing your request: {str(e)}"
 
     async def process_query_stream(
-        self, user_message: str, chat_history: Optional[List[Any]] = None
+        self,
+        user_message: str,
+        chat_history: Optional[List[Any]] = None,
+        is_ui: bool = False,
     ):
         """
         Process a user query with true token-by-token streaming.
 
         For agent with tools: executes tool calls first, then streams the final response.
         For direct LLM: streams tokens directly from the LLM.
+
+        Args:
+            user_message: The user's question or request.
+            chat_history: Previous messages in the conversation.
+            is_ui: If True, use the UI agent with chart tool and enhanced prompt.
+                   If False (default), use the standard agent for API/MCP.
 
         Yields:
             dict or str: Structured events for tool calls, or text tokens for content.
@@ -2060,14 +2165,18 @@ except Exception as e:
         # Agent will use search_knowledge tool on-demand
         augmented_input = self._build_augmented_input(user_message)
 
+        # Select the appropriate agent executor
+        executor = self.agent_executor_ui if is_ui else self.agent_executor
+        system_prompt = self._system_prompt_ui if is_ui else self._system_prompt
+
         try:
-            if self.agent_executor:
+            if executor:
                 # Agent with tools: use astream_events for true streaming
                 # This streams tool calls and final response tokens
                 # Track tool runs to avoid duplicates from nested events
                 active_tool_runs: set[str] = set()
 
-                async for event in self.agent_executor.astream_events(
+                async for event in executor.astream_events(
                     {"input": augmented_input, "chat_history": chat_history},
                     version="v2",
                 ):
@@ -2152,9 +2261,7 @@ except Exception as e:
                     yield "Error: No LLM configured. Please configure an LLM in Settings."
                     return
 
-                messages: List[BaseMessage] = [
-                    SystemMessage(content=self._system_prompt)
-                ]
+                messages: List[BaseMessage] = [SystemMessage(content=system_prompt)]
                 messages.extend(chat_history)
                 messages.append(HumanMessage(content=augmented_input))
 
@@ -2181,5 +2288,4 @@ except Exception as e:
 
 
 # Global RAG components instance
-rag = RAGComponents()
 rag = RAGComponents()

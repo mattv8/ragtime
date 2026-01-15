@@ -863,6 +863,17 @@ body {
   word-break: break-word;
 }
 
+.review-section ul {
+  margin: 0;
+  padding-left: 1.5rem;
+  list-style: disc;
+}
+
+.review-section li {
+  margin: var(--space-xs) 0;
+  color: var(--color-text-primary);
+}
+
 .review-description {
   white-space: pre-wrap;
   word-wrap: break-word;

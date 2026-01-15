@@ -640,6 +640,107 @@ textarea {
   border-top: 1px solid var(--color-border);
 }
 
+/* Modal Size Variants */
+.modal-small {
+  max-width: 400px;
+}
+
+.modal-medium {
+  max-width: 700px;
+}
+
+.modal-large {
+  max-width: 900px;
+}
+
+/* Model Filter Styles */
+.model-filter-search {
+  margin-bottom: var(--space-md);
+}
+
+.model-filter-search input {
+  width: 100%;
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  transition: all var(--transition-fast);
+}
+
+.model-filter-search input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(var(--color-primary-rgb), 0.1);
+}
+
+.model-filter-actions {
+  display: flex;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.model-filter-actions .btn {
+  white-space: nowrap;
+}
+
+.model-filter-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  max-height: 400px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm);
+  background: var(--color-surface-secondary);
+}
+
+.model-filter-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  background: var(--color-surface);
+  border: 1px solid transparent;
+}
+
+.model-filter-item:hover {
+  background: var(--color-surface-hover);
+  border-color: var(--color-border);
+}
+
+.model-filter-item input[type="checkbox"] {
+  cursor: pointer;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.model-filter-name {
+  font-weight: 500;
+  color: var(--color-text-primary);
+  flex: 1;
+  word-break: break-word;
+}
+
+.model-filter-provider {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  background: var(--color-surface-secondary);
+  padding: 2px var(--space-xs);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 /* =============================================================================
    ALERTS & STATUS MESSAGES
    ============================================================================= */

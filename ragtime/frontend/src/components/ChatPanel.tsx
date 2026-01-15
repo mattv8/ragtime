@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Copy, Check, Loader2, Pencil, Trash2 } from 'lucide-react';
+import { Copy, Check, Loader2, Pencil, Trash2, Maximize2 } from 'lucide-react';
 import { api } from '@/api';
 import type { Conversation, ChatMessage, AvailableModel, ChatTask, User } from '@/types';
 
@@ -31,12 +31,400 @@ type StreamingRenderEvent =
   | { type: 'content'; content: string }
   | { type: 'tool'; toolCall: ActiveToolCall };
 
+// Parse table metadata from SQL tool output
+// Format: <!--TABLEDATA:{"columns":[...],"rows":[...]}-->
+interface TableData {
+  columns: string[];
+  rows: (string | number | null)[][];
+}
+
+function parseTableMetadata(output: string): { tableData: TableData | null; displayText: string } {
+  // Debug: check if TABLEDATA marker exists at all
+  const hasMarker = output.includes('<!--TABLEDATA:');
+  const hasEndMarker = output.includes('-->');
+
+  const tableMatch = output.match(/<!--TABLEDATA:(\{.*?\})-->/);
+  if (!tableMatch) {
+    // Debug: log first 100 chars to see if metadata is present but regex failed
+    if (hasMarker) {
+      console.warn('TABLEDATA marker found but regex failed. hasEndMarker:', hasEndMarker);
+      console.warn('First 300 chars:', output.substring(0, 300));
+    }
+    return { tableData: null, displayText: output };
+  }
+
+  try {
+    const tableData = JSON.parse(tableMatch[1]) as TableData;
+    // Remove the metadata from display text
+    const displayText = output.replace(/<!--TABLEDATA:\{.*?\}-->\n?/, '');
+    console.log('Parsed table metadata:', tableData.columns, 'rows:', tableData.rows.length);
+    return { tableData, displayText };
+  } catch (e) {
+    console.error('Failed to parse table metadata JSON:', e, 'Raw:', tableMatch[1]);
+    return { tableData: null, displayText: output };
+  }
+}
+
+// Parse chart data from create_chart tool output
+interface ChartConfig {
+  type: 'bar' | 'line' | 'pie' | 'doughnut' | 'scatter' | 'radar' | 'polarArea';
+  data: {
+    labels: string[];
+    datasets: {
+      label: string;
+      data: number[];
+      backgroundColor?: string | string[];
+      borderColor?: string;
+      borderWidth?: number;
+    }[];
+  };
+  options?: Record<string, unknown>;
+}
+
+interface ChartData {
+  __chart__: true;
+  config: ChartConfig;
+  description?: string;
+}
+
+// Parse datatable data from create_datatable tool output
+interface DataTableConfig {
+  columns: { title: string }[];
+  data: unknown[][];
+  pageLength?: number;
+  searching?: boolean;
+  ordering?: boolean;
+  paging?: boolean;
+  info?: boolean;
+  [key: string]: unknown;  // Allow additional DataTables options
+}
+
+interface DataTableData {
+  __datatable__: true;
+  title: string;
+  config: DataTableConfig;
+  description?: string;
+}
+
+function parseChartData(output: string): ChartData | null {
+  try {
+    const parsed = JSON.parse(output);
+    if (parsed && parsed.__chart__ === true && parsed.config) {
+      return parsed as ChartData;
+    }
+  } catch {
+    // Not JSON or not chart data
+  }
+  return null;
+}
+
+function parseDataTableData(output: string): DataTableData | null {
+  try {
+    const parsed = JSON.parse(output);
+    if (parsed && parsed.__datatable__ === true && parsed.config) {
+      return parsed as DataTableData;
+    }
+  } catch {
+    // Not JSON or not datatable data
+  }
+  return null;
+}
+
+// Component to render a simple data table (for SQL results with table metadata)
+const DataTable = memo(function DataTable({ data }: { data: TableData }) {
+  return (
+    <div className="tool-result-table-wrapper">
+      <table className="tool-result-table">
+        <thead>
+          <tr>
+            {data.columns.map((col, i) => (
+              <th key={i}>{col}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {data.rows.map((row, rowIdx) => (
+            <tr key={rowIdx}>
+              {row.map((cell, cellIdx) => (
+                <td key={cellIdx}>{cell === null ? <span className="null-value">NULL</span> : String(cell)}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="tool-result-row-count">({data.rows.length} row{data.rows.length !== 1 ? 's' : ''})</div>
+    </div>
+  );
+});
+
+// Component to render a Chart.js chart
+const ChartDisplay = memo(function ChartDisplay({ chartData }: { chartData: ChartData }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const chartInstanceRef = useRef<unknown>(null);
+  const [resizeKey, setResizeKey] = useState(0);
+
+  // Get theme colors from CSS variables
+  const getThemeColors = useCallback(() => {
+    const root = document.documentElement;
+    const styles = getComputedStyle(root);
+    return {
+      textColor: styles.getPropertyValue('--color-text-secondary').trim() || '#9ca3af',
+      textMuted: styles.getPropertyValue('--color-text-muted').trim() || '#6b7280',
+      gridColor: styles.getPropertyValue('--color-border').trim() || '#374151',
+    };
+  }, []);
+
+  const createChart = useCallback(() => {
+    try {
+      // @ts-expect-error Chart.js is loaded from CDN
+      const Chart = window.Chart;
+      if (!Chart) {
+        console.error('Chart.js not loaded');
+        return;
+      }
+
+      if (canvasRef.current && containerRef.current) {
+        // Destroy previous chart if exists
+        if (chartInstanceRef.current) {
+          (chartInstanceRef.current as { destroy: () => void }).destroy();
+        }
+
+        const colors = getThemeColors();
+        const dpr = window.devicePixelRatio || 1;
+
+        // Calculate display size
+        const containerWidth = containerRef.current.clientWidth - 32;
+        const displayHeight = Math.min(350, containerWidth * 0.6);
+
+        // Set canvas backing store size (scaled for DPI)
+        canvasRef.current.width = containerWidth * dpr;
+        canvasRef.current.height = displayHeight * dpr;
+
+        // Set CSS display size
+        canvasRef.current.style.width = containerWidth + 'px';
+        canvasRef.current.style.height = displayHeight + 'px';
+
+        // Theme-aware options for axes and legends
+        const themeOptions = {
+          color: colors.textColor,
+          plugins: {
+            legend: {
+              labels: {
+                color: colors.textColor,
+              },
+            },
+            title: {
+              color: colors.textColor,
+            },
+          },
+          scales: {
+            x: {
+              ticks: { color: colors.textColor },
+              grid: { color: colors.gridColor },
+            },
+            y: {
+              ticks: { color: colors.textColor },
+              grid: { color: colors.gridColor },
+            },
+          },
+        };
+
+        // Deep merge theme options with user config
+        const config = {
+          ...chartData.config,
+          options: {
+            responsive: false,
+            maintainAspectRatio: false,
+            devicePixelRatio: dpr,
+            animation: { duration: 400 },
+            ...themeOptions,
+            ...chartData.config.options,
+            plugins: {
+              ...Object(themeOptions.plugins),
+              ...Object(chartData.config.options?.plugins),
+            },
+            scales: {
+              ...Object(themeOptions.scales),
+              ...Object(chartData.config.options?.scales),
+            },
+          },
+        };
+
+        chartInstanceRef.current = new Chart(canvasRef.current, config);
+      }
+    } catch (err) {
+      console.error('Failed to create chart:', err);
+    }
+  }, [chartData, getThemeColors]);
+
+  useEffect(() => {
+    // Small delay to ensure container is sized
+    const timeoutId = setTimeout(createChart, 50);
+
+    return () => {
+      clearTimeout(timeoutId);
+      if (chartInstanceRef.current) {
+        (chartInstanceRef.current as { destroy: () => void }).destroy();
+      }
+    };
+  }, [chartData, resizeKey, createChart]);
+
+  const handleResize = () => {
+    setResizeKey(k => k + 1);
+  };
+
+  return (
+    <div className="chart-container" ref={containerRef}>
+      <button
+        className="chart-resize-btn"
+        onClick={handleResize}
+        title="Resize chart"
+      >
+        <Maximize2 size={14} />
+      </button>
+      <canvas ref={canvasRef}></canvas>
+      {chartData.description && (
+        <p className="chart-description">{chartData.description}</p>
+      )}
+    </div>
+  );
+});
+
+// Component to render an interactive DataTable using DataTables.js
+const DataTableDisplay = memo(function DataTableDisplay({ tableData }: { tableData: DataTableData }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const tableInstanceRef = useRef<unknown>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Small delay to ensure DOM is ready
+    const timeoutId = setTimeout(() => {
+      try {
+        // @ts-expect-error jQuery is loaded from CDN
+        const $ = window.jQuery;
+        if (!$) {
+          setError('jQuery not loaded');
+          return;
+        }
+        if (!$.fn.DataTable) {
+          setError('DataTables.js not loaded');
+          return;
+        }
+
+        if (containerRef.current) {
+          // Find or create the table element
+          let tableEl = containerRef.current.querySelector('table');
+          if (!tableEl) {
+            tableEl = document.createElement('table');
+            tableEl.className = 'display';
+            tableEl.style.width = '100%';
+            containerRef.current.querySelector('.datatable-table-wrapper')?.appendChild(tableEl);
+          }
+
+          // Destroy previous instance if exists
+          if (tableInstanceRef.current) {
+            try {
+              (tableInstanceRef.current as { destroy: () => void }).destroy();
+            } catch {
+              // Ignore destroy errors
+            }
+          }
+
+          // Initialize DataTable
+          tableInstanceRef.current = $(tableEl).DataTable({
+            ...tableData.config,
+            destroy: true, // Allow re-initialization
+          });
+        }
+      } catch (err) {
+        console.error('Failed to create datatable:', err);
+        setError(String(err));
+      }
+    }, 100);
+
+    return () => {
+      clearTimeout(timeoutId);
+      if (tableInstanceRef.current) {
+        try {
+          (tableInstanceRef.current as { destroy: () => void }).destroy();
+        } catch {
+          // Ignore destroy errors
+        }
+      }
+    };
+  }, [tableData]);
+
+  if (error) {
+    // Fallback to simple table if DataTables fails
+    return (
+      <div className="datatable-container">
+        {tableData.title && <h4 className="datatable-title">{tableData.title}</h4>}
+        <div className="tool-result-table-wrapper">
+          <table className="tool-result-table">
+            <thead>
+              <tr>
+                {tableData.config.columns.map((col, i) => (
+                  <th key={i}>{typeof col === 'string' ? col : col.title}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {tableData.config.data.map((row, rowIdx) => (
+                <tr key={rowIdx}>
+                  {(row as unknown[]).map((cell, cellIdx) => (
+                    <td key={cellIdx}>{cell === null ? 'NULL' : String(cell)}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="datatable-container" ref={containerRef}>
+      {tableData.title && <h4 className="datatable-title">{tableData.title}</h4>}
+      <div className="datatable-table-wrapper">
+        <table className="display" style={{ width: '100%' }}></table>
+      </div>
+      {tableData.description && (
+        <p className="datatable-description">{tableData.description}</p>
+      )}
+    </div>
+  );
+});
+
 // Component to display a tool call with collapsible details
 // Memoized to prevent re-renders when tool call data hasn't changed
 const ToolCallDisplay = memo(function ToolCallDisplay({ toolCall, defaultExpanded = false }: { toolCall: ActiveToolCall; defaultExpanded?: boolean }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [copiedQuery, setCopiedQuery] = useState(false);
   const [copiedResult, setCopiedResult] = useState(false);
+
+  // Check if this is a chart tool
+  const chartData = useMemo(() => {
+    if (toolCall.tool === 'create_chart' && toolCall.output) {
+      return parseChartData(toolCall.output);
+    }
+    return null;
+  }, [toolCall.tool, toolCall.output]);
+
+  // Check if this is a datatable tool
+  const datatableData = useMemo(() => {
+    if (toolCall.tool === 'create_datatable' && toolCall.output) {
+      return parseDataTableData(toolCall.output);
+    }
+    return null;
+  }, [toolCall.tool, toolCall.output]);
+
+  // Parse table metadata from output if present (for SQL results)
+  const { tableData, displayText } = useMemo(() => {
+    if (!toolCall.output) return { tableData: null, displayText: '' };
+    return parseTableMetadata(toolCall.output);
+  }, [toolCall.output]);
 
   // Memoize formatted input to avoid recalculating on every render
   const inputDisplay = useMemo(() => {
@@ -66,6 +454,24 @@ const ToolCallDisplay = memo(function ToolCallDisplay({ toolCall, defaultExpande
       console.error('Failed to copy:', err);
     }
   }, []);
+
+  // Special rendering for chart tool - show chart inline without collapsible
+  if (chartData) {
+    return (
+      <div className="tool-call tool-call-chart tool-call-complete">
+        <ChartDisplay chartData={chartData} />
+      </div>
+    );
+  }
+
+  // Special rendering for datatable tool - show table inline without collapsible
+  if (datatableData) {
+    return (
+      <div className="tool-call tool-call-datatable tool-call-complete">
+        <DataTableDisplay tableData={datatableData} />
+      </div>
+    );
+  }
 
   return (
     <div className={`tool-call tool-call-${toolCall.status}`}>
@@ -102,13 +508,17 @@ const ToolCallDisplay = memo(function ToolCallDisplay({ toolCall, defaultExpande
                 <span className="tool-call-section-label">Result:</span>
                 <button
                   className="tool-call-copy-btn"
-                  onClick={() => copyToClipboard(toolCall.output!, 'result')}
+                  onClick={() => copyToClipboard(displayText || toolCall.output!, 'result')}
                   title="Copy result"
                 >
                   {copiedResult ? <Check size={12} /> : <Copy size={12} />}
                 </button>
               </div>
-              <pre className="tool-call-code">{toolCall.output}</pre>
+              {tableData ? (
+                <DataTable data={tableData} />
+              ) : (
+                <pre className="tool-call-code">{displayText}</pre>
+              )}
             </div>
           )}
         </div>
@@ -806,6 +1216,10 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
 
     const userMessage = inputValue.trim();
     setInputValue('');
+
+    // Auto-collapse sidebar when user starts chatting
+    setShowSidebar(false);
+
     sendMessageDirect(userMessage);
   };
 

@@ -1413,10 +1413,13 @@ async def search_schema_index(
 
         # Get embedding model
         settings = await repository.get_settings()
+        if settings is None:
+            return "Error: Application settings not configured"
+
         embeddings = await schema_indexer._get_embeddings(settings)
 
         if embeddings is None:
-            return "Error: No embedding provider configured"
+            return "Error: No embedding provider configured. Please configure OpenAI, Anthropic, or Ollama in Settings."
 
         # Generate query embedding
         query_embedding = await asyncio.to_thread(embeddings.embed_documents, [query])
@@ -1441,9 +1444,9 @@ async def search_schema_index(
 
         output_parts = []
         for result in results:
-            similarity = result.get("similarity", 0)
-            content = result.get("content", "")
-            table_name = result.get("table_name", "")
+            similarity = result.get("similarity") or 0.0
+            content = result.get("content") or ""
+            table_name = result.get("table_name") or "unknown"
 
             output_parts.append(
                 f"[{table_name}] (similarity: {similarity:.3f})\n{content}"

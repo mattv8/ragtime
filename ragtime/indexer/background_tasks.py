@@ -412,7 +412,10 @@ class BackgroundTaskService:
                 last_update = datetime.utcnow()
                 current_version = 0  # Version counter for efficient client polling
 
-                async for event in rag.process_query_stream(user_message, chat_history):
+                # Use UI agent (with chart tool and enhanced prompt)
+                async for event in rag.process_query_stream(
+                    user_message, chat_history, is_ui=True
+                ):
                     if self._shutdown:
                         await repository.cancel_chat_task(task_id)
                         return

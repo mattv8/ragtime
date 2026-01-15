@@ -115,6 +115,13 @@ def validate_sql_query(
                     "SELECT queries must include TOP n or OFFSET/FETCH clause to limit results",
                 )
 
+            # Reject PostgreSQL-style LIMIT clause (not valid in MSSQL)
+            if re.search(r"\bLIMIT\s+\d+", query_upper):
+                return (
+                    False,
+                    "MSSQL does not support LIMIT clause. Use TOP n instead (e.g., SELECT TOP 10 * FROM table)",
+                )
+
         return True, "Query is safe"
 
     # For PostgreSQL and others, use core validation
@@ -216,13 +223,59 @@ def enforce_max_results(
     return query
 
 
+def _serialize_value(value: Any) -> Any:
+    """
+    Serialize a value to be JSON-compatible.
+
+    Handles datetime, date, Decimal, bytes, and other non-JSON types.
+    """
+    from datetime import date, datetime
+    from decimal import Decimal
+
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        # Convert to float for JSON, preserving reasonable precision
+        return float(value)
+    if isinstance(value, bytes):
+        # Try to decode as UTF-8, otherwise return hex representation
+        try:
+            return value.decode("utf-8")
+        except UnicodeDecodeError:
+            return value.hex()
+    if isinstance(value, (list, tuple)):
+        return [_serialize_value(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _serialize_value(v) for k, v in value.items()}
+    # Fallback: convert to string
+    return str(value)
+
+
 def format_query_result(
     rows: list[dict[str, Any]] | list[tuple[Any, ...]],
     columns: list[str] | None = None,
     max_output_length: int = 50000,
 ) -> str:
     """
-    Format query results as a readable table string.
+    Format query results as a readable table string with embedded metadata.
+
+    The output includes a hidden JSON metadata block that UI clients can parse
+    to render proper HTML tables. The ASCII table serves as fallback for
+    non-UI clients (MCP, API).
+
+    Format:
+        <!--TABLEDATA:{"columns":[...],"rows":[...]}-->
+        column_a | column_b
+        ---------+---------
+        value1   | value2
+
+        (N rows)
 
     Args:
         rows: Query result rows (list of dicts or tuples).
@@ -230,8 +283,10 @@ def format_query_result(
         max_output_length: Maximum output string length.
 
     Returns:
-        Formatted table string.
+        Formatted table string with embedded metadata.
     """
+    import json
+
     if not rows:
         return "Query executed successfully (no results)"
 
@@ -250,7 +305,26 @@ def format_query_result(
     if not columns:
         return "Query executed successfully (no results)"
 
-    # Build ASCII table
+    # Build table metadata for UI clients
+    # Serialize rows as list of lists (more compact than list of dicts)
+    serialized_rows = [
+        [_serialize_value(row.get(col)) for col in columns] for row in row_dicts
+    ]
+    table_metadata = {"columns": columns, "rows": serialized_rows}
+
+    # Limit metadata size to avoid bloating output
+    try:
+        metadata_json = json.dumps(table_metadata, separators=(",", ":"))
+        # If metadata is too large, skip it (ASCII table is still readable)
+        if len(metadata_json) > 30000:
+            metadata_line = ""
+        else:
+            metadata_line = f"<!--TABLEDATA:{metadata_json}-->\n"
+    except (TypeError, ValueError):
+        # JSON serialization failed, skip metadata
+        metadata_line = ""
+
+    # Build ASCII table (fallback display)
     lines = []
 
     # Calculate column widths
@@ -273,10 +347,106 @@ def format_query_result(
         )
         lines.append(row_str)
 
-    result = "\n".join(lines)
-    result += f"\n\n({len(row_dicts)} row{'s' if len(row_dicts) != 1 else ''})"
+    ascii_table = "\n".join(lines)
+    ascii_table += f"\n\n({len(row_dicts)} row{'s' if len(row_dicts) != 1 else ''})"
+
+    result = metadata_line + ascii_table
 
     return sanitize_output(result, max_output_length)
+
+
+def add_table_metadata_to_psql_output(psql_output: str) -> str:
+    """
+    Parse psql ASCII table output and add table metadata for UI rendering.
+
+    psql output format:
+        column_a | column_b | column_c
+        ---------+----------+---------
+        value1   | value2   | value3
+        value4   | value5   | value6
+        (N rows)
+
+    This function extracts the column names and data, then prepends the
+    <!--TABLEDATA:...}--> metadata for UI clients to render as HTML tables.
+
+    Args:
+        psql_output: Raw output from psql command.
+
+    Returns:
+        Original output with table metadata prepended (if parseable).
+    """
+    import json
+
+    if not psql_output or "Error" in psql_output[:50]:
+        return psql_output
+
+    lines = psql_output.strip().split("\n")
+    if len(lines) < 3:  # Need at least header, separator, and one row
+        return psql_output
+
+    # Find the separator line (dashes with optional + for multi-column)
+    # Single column: "-----" or " ----- "
+    # Multi column: "---+---+---"
+    separator_idx = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        # Match line that is only dashes and plus signs (with possible spaces)
+        if stripped and re.match(r"^[-+]+$", stripped.replace(" ", "")):
+            separator_idx = i
+            break
+
+    if separator_idx is None or separator_idx < 1:
+        return psql_output
+
+    # Parse header (line before separator)
+    header_line = lines[separator_idx - 1]
+    # For single-column tables, there's no pipe delimiter
+    if "|" in header_line:
+        columns = [col.strip() for col in header_line.split("|")]
+    else:
+        columns = [header_line.strip()]
+
+    # Parse data rows (lines after separator, excluding footer)
+    rows = []
+    for line in lines[separator_idx + 1 :]:
+        # Stop at row count line or empty line
+        if line.strip().startswith("(") or not line.strip():
+            break
+        # Parse row values - handle single vs multi-column
+        if "|" in line:
+            values = [val.strip() for val in line.split("|")]
+        else:
+            values = [line.strip()]
+        # Convert numeric strings to numbers
+        parsed_values: list[str | int | float | None] = []
+        for val in values:
+            if val == "" or val.lower() == "null":
+                parsed_values.append(None)
+            else:
+                # Try to convert to int or float
+                try:
+                    if "." in val:
+                        parsed_values.append(float(val))
+                    else:
+                        parsed_values.append(int(val))
+                except ValueError:
+                    parsed_values.append(val)
+        rows.append(parsed_values)
+
+    if not rows:
+        return psql_output
+
+    # Build metadata JSON
+    try:
+        table_metadata = {"columns": columns, "rows": rows}
+        metadata_json = json.dumps(table_metadata, separators=(",", ":"))
+        # Skip if metadata is too large
+        if len(metadata_json) > 30000:
+            return psql_output
+        metadata_line = f"<!--TABLEDATA:{metadata_json}-->\n"
+        return metadata_line + psql_output
+    except (TypeError, ValueError):
+        return psql_output
 
 
 # =============================================================================

@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.logging import get_logger
 from ragtime.core.security import sanitize_output, validate_sql_query
+from ragtime.core.sql_utils import add_table_metadata_to_psql_output
 
 logger = get_logger(__name__)
 
@@ -125,11 +126,11 @@ async def execute_postgres_query(query: str, description: str) -> str:
             return f"Error executing query: {errors}"
 
         logger.debug(f"Result rows: {output.count(chr(10))}")
-        return (
-            sanitize_output(output)
-            if output
-            else "Query executed successfully (no results)"
-        )
+        if output:
+            # Add table metadata for UI rendering, then sanitize
+            output_with_metadata = add_table_metadata_to_psql_output(output)
+            return sanitize_output(output_with_metadata)
+        return "Query executed successfully (no results)"
 
     except asyncio.TimeoutError:
         logger.error(f"PostgreSQL query timed out after {query_timeout}s")

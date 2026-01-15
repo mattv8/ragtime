@@ -5181,7 +5181,10 @@ async def send_message_stream(
         )
 
         try:
-            async for event in rag.process_query_stream(user_message, chat_history):
+            # Use UI agent (with chart tool and enhanced prompt)
+            async for event in rag.process_query_stream(
+                user_message, chat_history, is_ui=True
+            ):
                 # Handle structured tool events
                 if isinstance(event, dict):
                     event_type = event.get("type")
