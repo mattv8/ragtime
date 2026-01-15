@@ -1517,6 +1517,11 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
   const [discoveringDatabases, setDiscoveringDatabases] = useState(false);
   const [databaseDiscoveryError, setDatabaseDiscoveryError] = useState<string | null>(null);
 
+  // MSSQL database discovery state
+  const [mssqlDiscoveredDatabases, setMssqlDiscoveredDatabases] = useState<string[]>([]);
+  const [mssqlDiscoveringDatabases, setMssqlDiscoveringDatabases] = useState(false);
+  const [mssqlDatabaseDiscoveryError, setMssqlDatabaseDiscoveryError] = useState<string | null>(null);
+
   const [sshConfig, setSshConfig] = useState<SSHShellConnectionConfig>(
     existingTool?.tool_type === 'ssh_shell'
       ? (existingTool.connection_config as SSHShellConnectionConfig)
@@ -1767,6 +1772,41 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
       setDatabaseDiscoveryError(err instanceof Error ? err.message : 'Discovery failed');
     } finally {
       setDiscoveringDatabases(false);
+    }
+  };
+
+  // MSSQL database discovery handler
+  const handleDiscoverMssqlDatabases = async () => {
+    if (!mssqlConfig.host || !mssqlConfig.user || !mssqlConfig.password) {
+      setMssqlDatabaseDiscoveryError('Host, user, and password are required to discover databases');
+      return;
+    }
+
+    setMssqlDiscoveringDatabases(true);
+    setMssqlDatabaseDiscoveryError(null);
+    setMssqlDiscoveredDatabases([]);
+
+    try {
+      const result = await api.discoverMssqlDatabases({
+        host: mssqlConfig.host,
+        port: mssqlConfig.port || 1433,
+        user: mssqlConfig.user,
+        password: mssqlConfig.password,
+      });
+
+      if (result.success) {
+        setMssqlDiscoveredDatabases(result.databases);
+        // Auto-select first database if none selected
+        if (result.databases.length > 0 && !mssqlConfig.database) {
+          setMssqlConfig({ ...mssqlConfig, database: result.databases[0] });
+        }
+      } else {
+        setMssqlDatabaseDiscoveryError(result.error || 'Discovery failed');
+      }
+    } catch (err) {
+      setMssqlDatabaseDiscoveryError(err instanceof Error ? err.message : 'Discovery failed');
+    } finally {
+      setMssqlDiscoveringDatabases(false);
     }
   };
 
@@ -2349,7 +2389,10 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
               <input
                 type="text"
                 value={mssqlConfig.host || ''}
-                onChange={(e) => setMssqlConfig({ ...mssqlConfig, host: e.target.value })}
+                onChange={(e) => {
+                  setMssqlConfig({ ...mssqlConfig, host: e.target.value });
+                  setMssqlDiscoveredDatabases([]);
+                }}
                 placeholder="server.database.windows.net"
               />
             </div>
@@ -2370,7 +2413,10 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
               <input
                 type="text"
                 value={mssqlConfig.user || ''}
-                onChange={(e) => setMssqlConfig({ ...mssqlConfig, user: e.target.value })}
+                onChange={(e) => {
+                  setMssqlConfig({ ...mssqlConfig, user: e.target.value });
+                  setMssqlDiscoveredDatabases([]);
+                }}
                 placeholder="sa or domain\\user"
               />
             </div>
@@ -2379,21 +2425,55 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
               <input
                 type="password"
                 value={mssqlConfig.password || ''}
-                onChange={(e) => setMssqlConfig({ ...mssqlConfig, password: e.target.value })}
+                onChange={(e) => {
+                  setMssqlConfig({ ...mssqlConfig, password: e.target.value });
+                  setMssqlDiscoveredDatabases([]);
+                }}
                 placeholder="********"
               />
             </div>
           </div>
           <div className="form-group">
             <label>Database</label>
-            <input
-              type="text"
-              value={mssqlConfig.database || ''}
-              onChange={(e) => setMssqlConfig({ ...mssqlConfig, database: e.target.value })}
-              placeholder="master"
-            />
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              {mssqlDiscoveredDatabases.length > 0 ? (
+                <select
+                  value={mssqlConfig.database || ''}
+                  onChange={(e) => setMssqlConfig({ ...mssqlConfig, database: e.target.value })}
+                  style={{ flex: 1 }}
+                >
+                  <option value="">Select database...</option>
+                  {mssqlDiscoveredDatabases.map(db => (
+                    <option key={db} value={db}>{db}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={mssqlConfig.database || ''}
+                  onChange={(e) => setMssqlConfig({ ...mssqlConfig, database: e.target.value })}
+                  placeholder="master"
+                  style={{ flex: 1 }}
+                />
+              )}
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={handleDiscoverMssqlDatabases}
+                disabled={mssqlDiscoveringDatabases || !mssqlConfig.host || !mssqlConfig.user || !mssqlConfig.password}
+                title="Discover available databases"
+              >
+                {mssqlDiscoveringDatabases ? 'Discovering...' : 'Discover'}
+              </button>
+            </div>
             <p className="field-help">
-              The database name to connect to.
+              {mssqlDatabaseDiscoveryError ? (
+                <span style={{ color: '#dc3545' }}>{mssqlDatabaseDiscoveryError}</span>
+              ) : mssqlDiscoveredDatabases.length > 0 ? (
+                `Found ${mssqlDiscoveredDatabases.length} database(s). Select one or type manually.`
+              ) : (
+                'Enter host, user, and password, then click Discover to find available databases.'
+              )}
             </p>
           </div>
         </div>

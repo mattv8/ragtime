@@ -999,6 +999,9 @@ export interface SchemaIndexStats {
   table_count: number;
   last_indexed: string | null;
   schema_hash: string | null;
+  // Memory estimation for schema index (pgvector storage, not process RAM)
+  embedding_dimension?: number;
+  estimated_memory_mb?: number;
 }
 
 // =============================================================================
