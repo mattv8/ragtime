@@ -39,17 +39,8 @@ interface TableData {
 }
 
 function parseTableMetadata(output: string): { tableData: TableData | null; displayText: string } {
-  // Debug: check if TABLEDATA marker exists at all
-  const hasMarker = output.includes('<!--TABLEDATA:');
-  const hasEndMarker = output.includes('-->');
-
   const tableMatch = output.match(/<!--TABLEDATA:(\{.*?\})-->/);
   if (!tableMatch) {
-    // Debug: log first 100 chars to see if metadata is present but regex failed
-    if (hasMarker) {
-      console.warn('TABLEDATA marker found but regex failed. hasEndMarker:', hasEndMarker);
-      console.warn('First 300 chars:', output.substring(0, 300));
-    }
     return { tableData: null, displayText: output };
   }
 
@@ -57,10 +48,8 @@ function parseTableMetadata(output: string): { tableData: TableData | null; disp
     const tableData = JSON.parse(tableMatch[1]) as TableData;
     // Remove the metadata from display text
     const displayText = output.replace(/<!--TABLEDATA:\{.*?\}-->\n?/, '');
-    console.log('Parsed table metadata:', tableData.columns, 'rows:', tableData.rows.length);
     return { tableData, displayText };
-  } catch (e) {
-    console.error('Failed to parse table metadata JSON:', e, 'Raw:', tableMatch[1]);
+  } catch {
     return { tableData: null, displayText: output };
   }
 }

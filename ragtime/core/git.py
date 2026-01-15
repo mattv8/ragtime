@@ -296,7 +296,10 @@ async def fetch_branches(
         return [], "Invalid Git URL format"
 
     if parsed.provider == GitProvider.GENERIC:
-        return [], None  # Can't fetch branches for generic providers
+        return (
+            [],
+            "Cannot fetch branches for generic Git providers (only GitHub/GitLab supported)",
+        )
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -318,6 +321,7 @@ async def fetch_branches(
             else:
                 return [], None
 
+            logger.debug(f"Fetching branches from: {api_url}")
             response = await client.get(api_url, headers=headers)
 
             if response.status_code == 404:
@@ -329,7 +333,19 @@ async def fetch_branches(
             if response.status_code == 401:
                 return [], "Invalid or expired token"
 
+            if response.status_code == 403:
+                # 403 often means token lacks required scopes
+                error = "Access forbidden - token may lack required scopes"
+                if parsed.provider == GitProvider.GITLAB:
+                    error += (
+                        " (GitLab tokens need 'read_api' or 'read_repository' scope)"
+                    )
+                return [], error
+
             if response.status_code != 200:
+                logger.warning(
+                    f"Git API error {response.status_code}: {response.text[:200]}"
+                )
                 return [], f"API error: {response.status_code}"
 
             data = response.json()
