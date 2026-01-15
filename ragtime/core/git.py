@@ -259,9 +259,9 @@ async def _check_repo_access(
             headers["Authorization"] = f"token {token}"
 
     elif parsed.provider == GitProvider.GITLAB:
-        # GitLab API - check project endpoint
+        # GitLab API - check project endpoint (supports self-hosted)
         project_path = f"{parsed.owner}/{parsed.repo}".replace("/", "%2F")
-        api_url = f"https://gitlab.com/api/v4/projects/{project_path}"
+        api_url = f"https://{parsed.host}/api/v4/projects/{project_path}"
         if token:
             headers["PRIVATE-TOKEN"] = token
 
@@ -309,8 +309,9 @@ async def fetch_branches(
                     headers["Authorization"] = f"token {token}"
 
             elif parsed.provider == GitProvider.GITLAB:
+                # Supports self-hosted GitLab instances
                 project_path = f"{parsed.owner}/{parsed.repo}".replace("/", "%2F")
-                api_url = f"https://gitlab.com/api/v4/projects/{project_path}/repository/branches?per_page=100"
+                api_url = f"https://{parsed.host}/api/v4/projects/{project_path}/repository/branches?per_page=100"
                 if token:
                     headers["PRIVATE-TOKEN"] = token
 
