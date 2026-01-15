@@ -83,12 +83,17 @@ Schema changes require migrations for production deployment:
 
 ## Secrets Encryption
 
-- Sensitive fields (API keys, passwords) use Fernet symmetric encryption
+- Sensitive fields (API keys, passwords, tokens) use Fernet symmetric encryption
 - Encryption key auto-generated on first startup, persisted to `data/.encryption_key`
 - Encryption key derived from `ENCRYPTION_KEY` setting via SHA256
 - Encrypted values prefixed with `enc::` in database
 - **Backups**: Use `--include-secret` flag to include the encryption key file
-- Password fields in `connection_config` JSON: `password`, `ssh_password`, `ssh_key_passphrase`, `key_passphrase`, `smb_password`, `key_content`, `ssh_key_content`
+
+**Encrypted fields:**
+- `app_settings`: `openai_api_key`, `anthropic_api_key`, `postgres_password`, `mcp_default_route_password`
+- `tool_configs.connection_config`: `password`, `ssh_password`, `ssh_key_passphrase`, `key_passphrase`, `smb_password`, `key_content`, `ssh_key_content`
+- `mcp_route_configs`: `auth_password`
+- `index_jobs` / `index_metadata`: `git_token`
 
 ## Tool Configs
 

@@ -20,28 +20,15 @@ from prisma.models import IndexMetadata as PrismaIndexMetadata
 
 from prisma import Json, Prisma
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (
-    CONNECTION_CONFIG_PASSWORD_FIELDS,
-    decrypt_json_passwords,
-    decrypt_secret,
-    encrypt_json_passwords,
-    encrypt_secret,
-)
+from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
+                                     decrypt_json_passwords, decrypt_secret,
+                                     encrypt_json_passwords, encrypt_secret)
 from ragtime.core.logging import get_logger
-from ragtime.indexer.models import (
-    AppSettings,
-    ChatMessage,
-    ChatTask,
-    ChatTaskStatus,
-    ChatTaskStreamingState,
-    Conversation,
-    IndexConfig,
-    IndexJob,
-    IndexStatus,
-    ToolCallRecord,
-    ToolConfig,
-    ToolType,
-)
+from ragtime.indexer.models import (AppSettings, ChatMessage, ChatTask,
+                                    ChatTaskStatus, ChatTaskStreamingState,
+                                    Conversation, IndexConfig, IndexJob,
+                                    IndexStatus, ToolCallRecord, ToolConfig,
+                                    ToolType)
 
 logger = get_logger(__name__)
 
@@ -163,7 +150,7 @@ class IndexerRepository:
             "sourcePath": job.source_path,
             "gitUrl": job.git_url,
             "gitBranch": job.git_branch,
-            "gitToken": job.git_token,
+            "gitToken": encrypt_secret(job.git_token) if job.git_token else None,
             "totalFiles": job.total_files,
             "processedFiles": job.processed_files,
             "totalChunks": job.total_chunks,
@@ -283,7 +270,11 @@ class IndexerRepository:
             source_path=prisma_job.sourcePath,
             git_url=prisma_job.gitUrl,
             git_branch=prisma_job.gitBranch,
-            git_token=getattr(prisma_job, "gitToken", None),
+            git_token=(
+                decrypt_secret(prisma_job.gitToken)
+                if getattr(prisma_job, "gitToken", None)
+                else None
+            ),
             total_files=prisma_job.totalFiles,
             processed_files=prisma_job.processedFiles,
             total_chunks=prisma_job.totalChunks,
@@ -317,6 +308,9 @@ class IndexerRepository:
         db = await self._get_db()
 
         # Build create/update data - only include configSnapshot if it has a value
+        # Encrypt gitToken for secure storage
+        encrypted_git_token = encrypt_secret(git_token) if git_token else None
+
         create_data: dict = {
             "name": name,
             "displayName": display_name,
@@ -328,7 +322,7 @@ class IndexerRepository:
             "sourceType": source_type,
             "source": source,
             "gitBranch": git_branch,
-            "gitToken": git_token,
+            "gitToken": encrypted_git_token,
             "createdAt": datetime.utcnow(),
             "lastModified": datetime.utcnow(),
         }
@@ -341,7 +335,7 @@ class IndexerRepository:
             "sourceType": source_type,
             "source": source,
             "gitBranch": git_branch,
-            "gitToken": git_token,
+            "gitToken": encrypted_git_token,
             "lastModified": datetime.utcnow(),
         }
 
@@ -560,6 +554,7 @@ class IndexerRepository:
                 "sourceType": metadata.sourceType,
                 "source": metadata.source,
                 "gitBranch": getattr(metadata_any, "gitBranch", None),
+                # gitToken is already encrypted in the database, just copy it
                 "gitToken": getattr(metadata_any, "gitToken", None),
                 "createdAt": metadata.createdAt,
                 "lastModified": metadata.lastModified,

@@ -13,6 +13,7 @@ import httpx
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
+from ragtime.core.encryption import decrypt_secret
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit
 from ragtime.core.security import get_current_user, require_admin
@@ -188,7 +189,8 @@ async def check_repo_visibility(
     if request.index_name:
         try:
             metadata = await repository.get_index_metadata(request.index_name)
-            stored_token = getattr(metadata, "gitToken", None) if metadata else None
+            encrypted_token = getattr(metadata, "gitToken", None) if metadata else None
+            stored_token = decrypt_secret(encrypted_token) if encrypted_token else None
         except Exception:
             pass  # No stored token available
 
@@ -222,7 +224,8 @@ async def fetch_branches(
     if not token and request.index_name:
         try:
             metadata = await repository.get_index_metadata(request.index_name)
-            token = getattr(metadata, "gitToken", None) if metadata else None
+            encrypted_token = getattr(metadata, "gitToken", None) if metadata else None
+            token = decrypt_secret(encrypted_token) if encrypted_token else None
         except Exception:
             pass  # No stored token available
 
@@ -497,8 +500,10 @@ async def reindex_from_git(
             detail="Git URL not found in index metadata. Cannot re-index.",
         )
 
-    # Use provided token, or fall back to stored token
-    git_token = request.git_token or getattr(metadata, "gitToken", None)
+    # Use provided token, or fall back to stored token (decrypt if encrypted)
+    encrypted_token = getattr(metadata, "gitToken", None)
+    stored_token = decrypt_secret(encrypted_token) if encrypted_token else None
+    git_token = request.git_token or stored_token
 
     # Get config from snapshot or use defaults
     config_snapshot = getattr(metadata, "configSnapshot", None)
