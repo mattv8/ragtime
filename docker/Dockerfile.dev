@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libmagic1 \
     ca-certificates \
     gnupg \
+    openssl \
     openssh-client \
     nfs-common \
     cifs-utils \

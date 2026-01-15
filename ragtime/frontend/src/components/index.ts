@@ -16,3 +16,4 @@ export { AnalysisStats } from './AnalysisStats';
 export { OllamaConnectionForm } from './OllamaConnectionForm';
 export { MemoryStatus } from './MemoryStatus';
 export { UserMenu } from './UserMenu';
+export { SecurityBanner } from './SecurityBanner';

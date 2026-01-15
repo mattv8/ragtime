@@ -758,7 +758,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       <h2>Settings</h2>
 
       {/* API Endpoint Info */}
-      <div className="api-info-box">
+      <div className="api-info-box" id="api_key_info">
         <strong>OpenAI-Compatible API</strong>
         <p>
           Connect external clients (e.g., Open WebUI) using:
@@ -767,6 +767,14 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         <p className="field-help" style={{ marginTop: '0.5rem' }}>
           Model: <code>{(formData.server_name || settings?.server_name || 'Ragtime').toLowerCase().replace(/\s+/g, '-')}</code>. The <code>/v1</code> path is required for OpenAI API compatibility.
         </p>
+        <div className="field-warning" style={{ marginTop: '0.75rem', padding: '0.75rem', backgroundColor: 'rgba(255, 193, 7, 0.15)', borderLeft: '3px solid #ffc107', borderRadius: '4px' }}>
+          <strong>Security:</strong> The API endpoint accepts an API Key for authentication (set via <code>API_KEY</code> environment variable).
+          Without an API key, anyone with network access can use your LLM and tools.
+          {window.location.protocol === 'http:' && (
+            <span> Additionally, you are currently accessing over HTTP - API keys and credentials will be transmitted in plaintext.
+            Consider using HTTPS via a reverse proxy.</span>
+          )}
+        </div>
       </div>
 
       {/* MCP Routes Summary */}
@@ -960,6 +968,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
               )}
               <p className="field-help">
                 Required for OpenAI LLM and optionally for OpenAI embeddings.
+                {window.location.protocol === 'http:' && (
+                  <span style={{ color: '#b8860b' }}> Warning: API keys are transmitted in plaintext over HTTP.</span>
+                )}
               </p>
             </div>
           ) : formData.llm_provider === 'anthropic' ? (
@@ -989,6 +1000,11 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
               </div>
               {llmModelsError && formData.llm_provider === 'anthropic' && (
                 <p className="field-error">{llmModelsError}</p>
+              )}
+              {window.location.protocol === 'http:' && (
+                <p className="field-help" style={{ color: '#b8860b' }}>
+                  Warning: API keys are transmitted in plaintext over HTTP.
+                </p>
               )}
             </div>
           ) : null}
@@ -1667,6 +1683,12 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                   ? 'Password is set. Leave blank to keep current password, or enter a new one to change it. Clear and save to remove password protection.'
                   : 'Set a password that MCP clients will use as their Bearer token. Minimum 8 characters.'}
               </p>
+              {window.location.protocol === 'http:' && (
+                <div className="field-warning" style={{ marginTop: '0.5rem', padding: '0.5rem', backgroundColor: 'rgba(255, 193, 7, 0.15)', borderLeft: '3px solid #ffc107', borderRadius: '4px', fontSize: '0.85em' }}>
+                  <strong>Security:</strong> You are accessing over HTTP. MCP passwords will be transmitted in plaintext.
+                  Consider using HTTPS via a reverse proxy for production deployments.
+                </div>
+              )}
               {mcpError && <p className="field-error">{mcpError}</p>}
             </div>
           )}

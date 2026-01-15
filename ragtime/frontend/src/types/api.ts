@@ -42,6 +42,9 @@ export interface AuthStatus {
   debug_username?: string;
   debug_password?: string;
   cookie_warning?: string;
+  // Security status for UI banner
+  api_key_configured: boolean;
+  session_cookie_secure: boolean;
 }
 
 // =============================================================================

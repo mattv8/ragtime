@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '@/api';
-import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, LoginPage, MemoryStatus, UserMenu } from '@/components';
+import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, LoginPage, MemoryStatus, UserMenu, SecurityBanner } from '@/components';
 import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob, ToolConfig, AppSettings } from '@/types';
 import '@/styles/global.css';
 
@@ -386,6 +386,14 @@ export function App() {
           <UserMenu user={currentUser} onLogout={handleLogout} />
         </div>
       </nav>
+      <SecurityBanner
+        authStatus={authStatus}
+        isAdmin={isAdmin}
+        onNavigateToSettings={() => {
+          setHighlightSetting('api_key_info');
+          setActiveView('settings');
+        }}
+      />
       <div className="container">
 
       {activeView === 'chat' ? (

@@ -104,6 +104,48 @@ body {
   gap: var(--space-md);
 }
 
+/* =============================================================================
+   SECURITY BANNER
+   ============================================================================= */
+
+.security-banner {
+  max-width: 900px;
+  margin: 0 auto var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  background: rgba(255, 193, 7, 0.15);
+  border: 1px solid rgba(255, 193, 7, 0.5);
+  border-radius: var(--radius-md);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+}
+
+.security-banner-content {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+.security-banner-content strong {
+  color: #b8860b;
+}
+
+.security-banner-link {
+  background: transparent;
+  border: none;
+  color: var(--color-primary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0;
+  margin-left: auto;
+}
+
+.security-banner-link:hover {
+  color: var(--color-primary-dark);
+}
+
 .topnav-username {
   display: flex;
   align-items: center;

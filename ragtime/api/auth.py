@@ -157,6 +157,9 @@ class AuthStatusResponse(BaseModel):
     debug_username: Optional[str] = None
     debug_password: Optional[str] = None
     cookie_warning: Optional[str] = None  # Warning about cookie/protocol mismatch
+    # Security status for UI banner
+    api_key_configured: bool = False
+    session_cookie_secure: bool = False
 
 
 # =============================================================================
@@ -205,6 +208,8 @@ async def get_auth_status(request: Request):
         debug_username=settings.local_admin_user if settings.debug_mode else None,
         debug_password=settings.local_admin_password if settings.debug_mode else None,
         cookie_warning=cookie_warning,
+        api_key_configured=bool(settings.api_key),
+        session_cookie_secure=settings.session_cookie_secure,
     )
 
 

@@ -78,6 +78,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     docker.io \
     libmagic1 \
+    openssl \
     openssh-client \
     nfs-common \
     cifs-utils \

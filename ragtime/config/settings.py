@@ -16,7 +16,7 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 # File to persist auto-generated JWT secret (in data volume)
-JWT_SECRET_FILE = Path(os.environ.get("INDEX_DATA_PATH", "/app/data")) / ".jwt_secret"
+JWT_SECRET_FILE = Path(os.environ.get("INDEX_DATA_PATH", "/data")) / ".jwt_secret"
 
 SameSiteType = Literal["lax", "strict", "none"]
 
@@ -35,14 +35,29 @@ class Settings(BaseSettings):
     )
 
     # Security
-    api_key: str = Field(default="", alias="API_KEY")  # Optional API key for auth
+    api_key: str = Field(default="", alias="API_KEY")  # API key for auth
     allowed_origins: str = Field(default="*", alias="ALLOWED_ORIGINS")
+    enable_https: bool = Field(
+        default=False,
+        alias="ENABLE_HTTPS",
+        description="Enable HTTPS with auto-generated self-signed certificate",
+    )
+    ssl_cert_file: str = Field(
+        default="",
+        alias="SSL_CERT_FILE",
+        description="Path to SSL certificate file (auto-generated if ENABLE_HTTPS=true)",
+    )
+    ssl_key_file: str = Field(
+        default="",
+        alias="SSL_KEY_FILE",
+        description="Path to SSL private key file (auto-generated if ENABLE_HTTPS=true)",
+    )
 
     # Debug mode
     debug_mode: bool = Field(default=False, alias="DEBUG_MODE")
 
     # Indexer settings
-    index_data_path: str = Field(default="/app/data", alias="INDEX_DATA_PATH")
+    index_data_path: str = Field(default="/data", alias="INDEX_DATA_PATH")
 
     # Server
     host: str = Field(default="0.0.0.0", alias="HOST")

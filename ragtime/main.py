@@ -46,10 +46,77 @@ load_dotenv()
 logger = setup_logging("rag_api")
 
 
+def _log_security_warnings() -> None:
+    """Log security warnings for potential plaintext credential transmission."""
+    warnings = []
+
+    # Check if API key is not set
+    if not settings.api_key:
+        warnings.append(
+            "API_KEY is not set. The OpenAI-compatible API endpoint is unprotected. "
+            "Anyone with network access can use your LLM, which may incur costs."
+        )
+
+    # Check for wildcard CORS origins
+    if settings.allowed_origins == "*":
+        warnings.append(
+            "ALLOWED_ORIGINS=* allows requests from any origin. "
+            "Consider restricting to specific domains in production."
+        )
+
+    # Check for HTTP without HTTPS or reverse proxy
+    if not settings.session_cookie_secure and not settings.enable_https:
+        warnings.append(
+            "SESSION_COOKIE_SECURE=false and ENABLE_HTTPS=false. "
+            "Credentials and API keys may be transmitted in plaintext. "
+            "Set ENABLE_HTTPS=true or use an HTTPS reverse proxy."
+        )
+
+    if warnings:
+        logger.warning("=" * 70)
+        logger.warning("SECURITY WARNINGS")
+        logger.warning("=" * 70)
+        for warning in warnings:
+            logger.warning(f"  - {warning}")
+        logger.warning("-" * 70)
+        logger.warning(
+            "If you have network-level protection (VPN, firewall, HTTPS proxy), "
+            "you can ignore these warnings."
+        )
+        logger.warning("=" * 70)
+
+
+def _validate_ssl_certificates() -> None:
+    """Validate SSL certificates if HTTPS is enabled."""
+    if not settings.enable_https:
+        return
+
+    from ragtime.core.ssl import setup_ssl
+
+    # Run SSL validation - this logs any errors/warnings
+    result = setup_ssl(
+        cert_file=settings.ssl_cert_file,
+        key_file=settings.ssl_key_file,
+        auto_generate=False,  # Don't generate - entrypoint.sh handles that
+    )
+
+    if result is None:
+        logger.warning(
+            "SSL validation failed - uvicorn may fail to start with HTTPS. "
+            "Check the SSL errors above."
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Async lifespan handler for startup/shutdown."""
     logger.info(f"Starting RAG API v{__version__}")
+
+    # Security warnings for plaintext credential transmission
+    _log_security_warnings()
+
+    # Validate SSL certificates if HTTPS is enabled
+    _validate_ssl_certificates()
 
     # Connect to database
     await connect_db()

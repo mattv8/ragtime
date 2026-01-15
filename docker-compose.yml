@@ -44,10 +44,9 @@ services:
       DATABASE_URL: postgresql://ragtime:${POSTGRES_PASSWORD}@ragtime-db:5432/ragtime
       # Recommended defaults
       DEBUG_MODE: "false"
-      SESSION_COOKIE_SECURE: "${SESSION_COOKIE_SECURE:-false}"
     volumes:
-      # FAISS index data persistence
-      - ./data:/app/data
+      # Data persistence (indexes, SSL certs, etc.)
+      - ./data:/data
       # Docker socket for container exec (optional, for tool execution)
       - /var/run/docker.sock:/var/run/docker.sock:ro
     # Uncomment below if using SMB/NFS mounting inside container (consider mounting via docker volume instead)
@@ -60,7 +59,8 @@ services:
       ragtime-db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      # -k allows self-signed certs; checks http first, falls back gracefully
+      test: ["CMD", "sh", "-c", "curl -fsk https://localhost:8000/health 2>/dev/null || curl -fs http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
