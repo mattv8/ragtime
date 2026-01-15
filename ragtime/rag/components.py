@@ -1096,13 +1096,21 @@ class RAGComponents:
         from langchain_core.tools import StructuredTool
         from pydantic import BaseModel, Field
 
+        # Build index_name description with available indexes
+        index_names = list(self.retrievers.keys())
+        index_name_desc = (
+            "Optional: specific index to search (leave empty to search all indexes)"
+        )
+        if index_names:
+            index_name_desc += f". Available indexes: {', '.join(index_names)}"
+
         class KnowledgeSearchInput(BaseModel):
             query: str = Field(
                 description="Search query to find relevant documentation, code, or technical information"
             )
             index_name: str = Field(
                 default="",
-                description="Optional: specific index to search (leave empty to search all indexes)",
+                description=index_name_desc,
             )
 
         def search_knowledge(query: str, index_name: str = "") -> str:
@@ -1204,8 +1212,8 @@ class RAGComponents:
         """
         from ragtime.tools.git_history import (
             _is_shallow_repository,
+            create_aggregate_git_history_tool,
             create_per_index_git_history_tool,
-            git_history_tool,
         )
 
         tools: List[Any] = []
@@ -1260,9 +1268,9 @@ class RAGComponents:
         aggregate_search = (self._app_settings or {}).get("aggregate_search", True)
 
         if aggregate_search:
-            # Single tool for all git repos
-            tools.append(git_history_tool)
+            # Single tool for all git repos - include available repos in description
             repo_names = [name for name, _, _ in git_repos]
+            tools.append(create_aggregate_git_history_tool(repo_names))
             logger.info(
                 f"Added search_git_history tool for {len(git_repos)} repo(s): {repo_names}"
             )

@@ -264,11 +264,6 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
     return null;
   };
 
-  // Check if index has a load error (for toggle state)
-  const hasIndexLoadError = (indexName: string): boolean => {
-    return getIndexLoadError(indexName) !== null;
-  };
-
   const memoryEstimate = calculateTotalMemory();
 
   // Check repo visibility when reindex modal opens

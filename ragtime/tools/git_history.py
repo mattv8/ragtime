@@ -22,41 +22,53 @@ from ragtime.core.logging import get_logger
 logger = get_logger(__name__)
 
 
-class GitHistorySearchInput(BaseModel):
-    """Input schema for git history search tool."""
+def _create_git_history_input_schema(available_repos: Optional[List[str]] = None):
+    """Create input schema with available repos in description."""
+    repo_desc = "Optional: specific index/repo name to search (searches all git repos if not specified)"
+    if available_repos:
+        repo_desc += f". Available repos: {', '.join(available_repos)}"
 
-    action: str = Field(
-        description=(
-            "The git action to perform. One of: "
-            "'search_commits' - Search commit messages for keywords, "
-            "'get_commit' - Get detailed info about a specific commit, "
-            "'file_history' - Get commit history for a specific file, "
-            "'blame' - Show who last modified each line of a file, "
-            "'find_files' - Find files matching a pattern (use before file_history/blame)"
+    class DynamicGitHistorySearchInput(BaseModel):
+        """Input schema for git history search tool."""
+
+        action: str = Field(
+            description=(
+                "The git action to perform. One of: "
+                "'search_commits' - Search commit messages for keywords, "
+                "'get_commit' - Get detailed info about a specific commit, "
+                "'file_history' - Get commit history for a specific file, "
+                "'blame' - Show who last modified each line of a file, "
+                "'find_files' - Find files matching a pattern (use before file_history/blame)"
+            )
         )
-    )
-    query: Optional[str] = Field(
-        default=None,
-        description="Search query for 'search_commits' action - keywords to find in commit messages",
-    )
-    commit_hash: Optional[str] = Field(
-        default=None,
-        description="Commit hash for 'get_commit' action (full or abbreviated)",
-    )
-    file_path: Optional[str] = Field(
-        default=None,
-        description="File path for 'file_history' or 'blame' actions (relative to repo root), or pattern for 'find_files' (e.g., '**/index.php', '*.py')",
-    )
-    index_name: Optional[str] = Field(
-        default=None,
-        description="Optional: specific index/repo to search (searches all git repos if not specified)",
-    )
-    max_results: int = Field(
-        default=10,
-        ge=1,
-        le=50,
-        description="Maximum number of results to return for search operations",
-    )
+        query: Optional[str] = Field(
+            default=None,
+            description="Search query for 'search_commits' action - keywords to find in commit messages",
+        )
+        commit_hash: Optional[str] = Field(
+            default=None,
+            description="Commit hash for 'get_commit' action (full or abbreviated)",
+        )
+        file_path: Optional[str] = Field(
+            default=None,
+            description="File path for 'file_history' or 'blame' actions (relative to repo root), or pattern for 'find_files' (e.g., '**/index.php', '*.py')",
+        )
+        index_name: Optional[str] = Field(
+            default=None,
+            description=repo_desc,
+        )
+        max_results: int = Field(
+            default=10,
+            ge=1,
+            le=50,
+            description="Maximum number of results to return for search operations",
+        )
+
+    return DynamicGitHistorySearchInput
+
+
+# Default schema (for backwards compatibility and static tool)
+GitHistorySearchInput = _create_git_history_input_schema()
 
 
 async def _run_git_command(
@@ -405,22 +417,43 @@ async def search_git_history(
     return "\n\n".join(all_results)
 
 
-# Create the tool for aggregate search mode (single tool for all repos)
-git_history_tool = StructuredTool.from_function(
-    coroutine=search_git_history,
-    name="search_git_history",
-    description=(
+def create_aggregate_git_history_tool(
+    available_repos: Optional[List[str]] = None,
+) -> StructuredTool:
+    """Create aggregate git history tool with available repos in description.
+
+    Args:
+        available_repos: List of available repo/index names to include in description.
+                        When None, searches all repos without listing them.
+    """
+    description = (
         "Search git repository history for detailed commit information. "
         "Actions: 'search_commits' (find commits by message keywords), "
         "'get_commit' (show full commit details), "
         "'file_history' (show commits that modified a file), "
         "'blame' (show who last modified each line), "
         "'find_files' (find files matching a pattern - use before file_history/blame if unsure of path). "
+    )
+    if available_repos:
+        description += f"Available repos: {', '.join(available_repos)}. "
+    description += (
         "Use this to understand code evolution, find when bugs were introduced, "
         "or identify who worked on specific features."
-    ),
-    args_schema=GitHistorySearchInput,
-)
+    )
+
+    # Create schema with available repos in field description
+    input_schema = _create_git_history_input_schema(available_repos)
+
+    return StructuredTool.from_function(
+        coroutine=search_git_history,
+        name="search_git_history",
+        description=description,
+        args_schema=input_schema,
+    )
+
+
+# Default tool for aggregate search mode (backwards compatibility)
+git_history_tool = create_aggregate_git_history_tool()
 
 
 def create_per_index_git_history_tool(

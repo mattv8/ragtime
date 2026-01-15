@@ -822,10 +822,27 @@ class MCPToolAdapter:
             logger.debug("MCP search_knowledge found no results")
             return "No relevant documentation found for this query."
 
+        # Create schema with available indexes in index_name description
+        knowledge_schema = {
+            "type": "object",
+            "properties": {
+                "query": TOOL_INPUT_SCHEMAS["knowledge_search"]["properties"]["query"],
+                "index_name": {
+                    "type": "string",
+                    "description": (
+                        "Optional: specific index to search (leave empty to search all indexes). "
+                        f"Available indexes: {', '.join(index_names)}"
+                    ),
+                    "default": "",
+                },
+            },
+            "required": ["query"],
+        }
+
         return MCPToolDefinition(
             name="search_knowledge",
             description=description,
-            input_schema=TOOL_INPUT_SCHEMAS["knowledge_search"],
+            input_schema=knowledge_schema,
             tool_config={"tool_type": "knowledge_search", "name": "knowledge"},
             execute_fn=search_knowledge,
         )
@@ -976,10 +993,7 @@ class MCPToolAdapter:
 
         from ragtime.config.settings import settings
         from ragtime.rag import rag
-        from ragtime.tools.git_history import (
-            create_per_index_git_history_tool,
-            search_git_history,
-        )
+        from ragtime.tools.git_history import search_git_history
 
         tools: list[MCPToolDefinition] = []
         index_base = Path(settings.index_data_path)
@@ -1027,6 +1041,23 @@ class MCPToolAdapter:
             async def execute_aggregate(**kwargs: Any) -> str:
                 return await search_git_history(**kwargs)
 
+            # Create schema with available repos in index_name description
+            git_history_schema = {
+                "type": "object",
+                "properties": {
+                    **TOOL_INPUT_SCHEMAS["git_history"]["properties"],
+                    "index_name": {
+                        "type": "string",
+                        "description": (
+                            "Optional: specific index/repo name to search "
+                            "(searches all git repos if not specified). "
+                            f"Available repos: {', '.join(repo_names)}"
+                        ),
+                    },
+                },
+                "required": ["action"],
+            }
+
             tools.append(
                 MCPToolDefinition(
                     name="search_git_history",
@@ -1041,7 +1072,7 @@ class MCPToolAdapter:
                         "Use this to understand code evolution, find when bugs were introduced, "
                         "or identify who worked on specific features."
                     ),
-                    input_schema=TOOL_INPUT_SCHEMAS["git_history"],
+                    input_schema=git_history_schema,
                     tool_config={"tool_type": "git_history", "name": "aggregate"},
                     execute_fn=execute_aggregate,
                 )
@@ -1084,7 +1115,7 @@ class MCPToolAdapter:
                 tool_description += "Actions: 'search_commits', 'get_commit', 'file_history', 'blame', 'find_files'."
 
                 # Create executor for this specific repo
-                def make_git_search_func(idx_name: str, idx_repo_path: Path):
+                def make_git_search_func(idx_name: str):
                     async def search_repo(**kwargs: Any) -> str:
                         # Force index_name to this repo
                         kwargs["index_name"] = idx_name
@@ -1098,7 +1129,7 @@ class MCPToolAdapter:
                         description=tool_description,
                         input_schema=per_index_schema,
                         tool_config={"tool_type": "git_history", "name": name},
-                        execute_fn=make_git_search_func(name, repo_path),
+                        execute_fn=make_git_search_func(name),
                     )
                 )
 
