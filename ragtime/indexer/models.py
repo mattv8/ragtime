@@ -1682,19 +1682,25 @@ class PdmDocumentInfo(BaseModel):
             for name, value in sorted(extra_vars.items()):
                 lines.append(f"- {name}: {value}")
 
-        # Configurations
+        # Configurations - only include if they have meaningful data
+        # Skip configs that only have a name (like "@" or "Default") with no PartNumber/Description
         if self.configurations:
-            lines.append("\n## Configurations")
+            config_lines = []
             for config in self.configurations:
                 config_name = config.get("name", "Default")
                 config_pn = config.get("part_number", "")
                 config_desc = config.get("description", "")
-                config_line = f"- {config_name}"
-                if config_pn:
-                    config_line += f": Part Number {config_pn}"
-                if config_desc:
-                    config_line += f', Description "{config_desc}"'
-                lines.append(config_line)
+                # Only include configurations with actual part number or description data
+                if config_pn or config_desc:
+                    config_line = f"- {config_name}"
+                    if config_pn:
+                        config_line += f": Part Number {config_pn}"
+                    if config_desc:
+                        config_line += f', Description "{config_desc}"'
+                    config_lines.append(config_line)
+            if config_lines:
+                lines.append("\n## Configurations")
+                lines.extend(config_lines)
 
         # BOM Components (for assemblies)
         if self.bom_components:
