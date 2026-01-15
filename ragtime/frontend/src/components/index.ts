@@ -15,3 +15,4 @@ export { DescriptionField } from './DescriptionField';
 export { AnalysisStats } from './AnalysisStats';
 export { OllamaConnectionForm } from './OllamaConnectionForm';
 export { MemoryStatus } from './MemoryStatus';
+export { UserMenu } from './UserMenu';

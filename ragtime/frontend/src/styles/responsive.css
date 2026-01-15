@@ -53,6 +53,15 @@
     padding: 2px 6px;
   }
 
+  /* User menu responsive */
+  .user-menu-name {
+    display: none;
+  }
+
+  .user-menu-trigger {
+    padding: var(--space-xs);
+  }
+
   /* Cards */
   .card {
     padding: var(--space-md);
@@ -464,7 +473,12 @@
     font-size: var(--text-xs);
   }
 
-  .topnav-username {
+  /* Hide username in dropdown trigger on very small screens */
+  .user-menu-name {
+    display: none;
+  }
+
+  .user-menu .admin-badge {
     display: none;
   }
 

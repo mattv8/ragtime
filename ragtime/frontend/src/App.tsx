@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '@/api';
-import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, LoginPage, MemoryStatus } from '@/components';
-import { ThemeToggle } from '@/components/ThemeToggle';
+import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, LoginPage, MemoryStatus, UserMenu } from '@/components';
 import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob, ToolConfig, AppSettings } from '@/types';
 import '@/styles/global.css';
 
@@ -384,16 +383,7 @@ export function App() {
         </div>
         <div className="topnav-actions">
           <MemoryStatus />
-          <ThemeToggle />
-          <div className="topnav-user">
-            <span className="topnav-username">
-              {currentUser.display_name || currentUser.username}
-              {isAdmin && <span className="admin-badge">Admin</span>}
-            </span>
-            <button className="topnav-link logout-btn" onClick={handleLogout}>
-              Logout
-            </button>
-          </div>
+          <UserMenu user={currentUser} onLogout={handleLogout} />
         </div>
       </nav>
       <div className="container">
