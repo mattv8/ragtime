@@ -63,9 +63,9 @@ class CreateChartInput(BaseModel):
     raw_config: dict[str, Any] | None = Field(
         default=None,
         description=(
-            "Optional raw Chart.js configuration object for advanced customization. "
-            "Allows full access to Chart.js options like scales, plugins, animations, etc. "
-            "When provided, this overrides the auto-generated config."
+            "Optional Chart.js options for advanced customization. "
+            "Use this to customize scales, tooltips, plugins, etc. "
+            "The options are merged with the auto-generated config (does not replace data)."
         ),
     )
 
@@ -92,6 +92,19 @@ CHART_BORDER_COLORS = [
     "rgba(199, 199, 199, 1)",
     "rgba(83, 102, 255, 1)",
 ]
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> None:
+    """
+    Recursively merge override dict into base dict (mutates base in-place).
+
+    For nested dicts, merges recursively. For other values, override replaces base.
+    """
+    for key, value in override.items():
+        if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = value
 
 
 def _apply_default_colors(
@@ -155,48 +168,77 @@ async def create_chart(
     """
     logger.info(f"Creating {chart_type} chart: {title}")
 
-    # If raw_config is provided, use it directly (full Chart.js control)
-    if raw_config:
-        chart_config = raw_config
-        # Ensure type is set
-        if "type" not in chart_config:
-            chart_config["type"] = chart_type
-    else:
-        # Apply default colors if not specified
-        colored_datasets = _apply_default_colors(datasets, chart_type)
+    # Validate that we have actual data
+    if not labels or len(labels) == 0:
+        return f"Error: Cannot create chart '{title}' - no labels provided. Charts require actual data from query results."
 
-        # Build Chart.js configuration
-        chart_config = {
-            "type": chart_type,
-            "data": {
-                "labels": labels,
-                "datasets": colored_datasets,
-            },
-            "options": {
-                "responsive": True,
-                "maintainAspectRatio": True,
-                "plugins": {
-                    "title": {
-                        "display": True,
-                        "text": title,
-                        "font": {"size": 16, "weight": "bold"},
-                    },
-                    "legend": {
-                        "display": len(colored_datasets) > 1
-                        or chart_type in ("pie", "doughnut", "polarArea"),
-                        "position": "bottom",
-                    },
+    if not datasets or len(datasets) == 0:
+        return f"Error: Cannot create chart '{title}' - no datasets provided. Charts require actual data from query results."
+
+    # Check if datasets have valid data points (not just empty arrays or placeholder values)
+    total_data_points = 0
+    for ds in datasets:
+        data = ds.get("data", [])
+        if not data:
+            continue
+        for point in data:
+            # For scatter charts, check if x/y objects have actual values
+            if isinstance(point, dict):
+                x_val = point.get("x")
+                y_val = point.get("y")
+                if x_val is not None and y_val is not None:
+                    total_data_points += 1
+            # For other chart types, count valid numeric values
+            elif isinstance(point, (int, float)):
+                total_data_points += 1
+
+    if total_data_points == 0:
+        return f"Error: Cannot create chart '{title}' - no valid data points found. Charts require actual numeric data from query results."
+
+    # Apply default colors if not specified
+    colored_datasets = _apply_default_colors(datasets, chart_type)
+
+    # Build Chart.js configuration
+    chart_config = {
+        "type": chart_type,
+        "data": {
+            "labels": labels,
+            "datasets": colored_datasets,
+        },
+        "options": {
+            "responsive": True,
+            "maintainAspectRatio": True,
+            "plugins": {
+                "title": {
+                    "display": True,
+                    "text": title,
+                    "font": {"size": 16, "weight": "bold"},
+                },
+                "legend": {
+                    "display": len(colored_datasets) > 1
+                    or chart_type in ("pie", "doughnut", "polarArea"),
+                    "position": "bottom",
                 },
             },
-        }
+        },
+    }
 
-        # Add axis labels for bar/line/scatter charts
-        if chart_type in ("bar", "line", "scatter"):
-            options = chart_config["options"]
-            if isinstance(options, dict):
-                options["scales"] = {
-                    "y": {"beginAtZero": True},
-                }
+    # Add axis labels for bar/line/scatter charts
+    if chart_type in ("bar", "line", "scatter"):
+        options = chart_config["options"]
+        if isinstance(options, dict):
+            options["scales"] = {
+                "y": {"beginAtZero": True},
+            }
+
+    # Merge raw_config options if provided (for custom axis labels, tooltips, etc.)
+    if raw_config:
+        # Deep merge the options - raw_config.options overrides/extends our defaults
+        if "options" in raw_config and isinstance(raw_config["options"], dict):
+            _deep_merge(chart_config["options"], raw_config["options"])
+        # Allow overriding data section if explicitly provided in raw_config
+        if "data" in raw_config and isinstance(raw_config["data"], dict):
+            _deep_merge(chart_config["data"], raw_config["data"])
 
     # Wrap in our marker format for frontend detection
     output = {

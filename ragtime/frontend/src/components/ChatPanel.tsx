@@ -1699,18 +1699,50 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
                     <div key={idx} className={`chat-message chat-message-${msg.role}`}>
                       <div className="chat-message-content">
                         {editingMessageIdx === idx ? (
-                          <div className="chat-message-edit">
-                            <textarea
-                              value={editMessageContent}
-                              onChange={(e) => setEditMessageContent(e.target.value)}
-                              className="chat-edit-input"
-                              autoFocus
+                          <>
+                            <div
+                              contentEditable
+                              suppressContentEditableWarning
+                              className="chat-message-text chat-message-user-text chat-edit-input"
+                              onInput={(e) => {
+                                // Convert innerHTML back to plain text with newlines
+                                const el = e.currentTarget;
+                                // Get text content but preserve line breaks
+                                const text = el.innerText || '';
+                                setEditMessageContent(text);
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' && !e.shiftKey) {
+                                  e.preventDefault();
+                                  submitEditMessage();
+                                } else if (e.key === 'Escape') {
+                                  cancelEditMessage();
+                                }
+                              }}
+                              ref={(el) => {
+                                if (el && el.innerHTML === '') {
+                                  // Convert newlines to <br> for display
+                                  el.innerHTML = editMessageContent
+                                    .replace(/&/g, '&amp;')
+                                    .replace(/</g, '&lt;')
+                                    .replace(/>/g, '&gt;')
+                                    .replace(/\n/g, '<br>');
+                                  // Move cursor to end
+                                  const range = document.createRange();
+                                  range.selectNodeContents(el);
+                                  range.collapse(false);
+                                  const sel = window.getSelection();
+                                  sel?.removeAllRanges();
+                                  sel?.addRange(range);
+                                  el.focus();
+                                }
+                              }}
                             />
                             <div className="chat-edit-actions">
                               <button className="btn btn-sm" onClick={submitEditMessage}>Resend</button>
                               <button className="btn btn-sm btn-secondary" onClick={cancelEditMessage}>Cancel</button>
                             </div>
-                          </div>
+                          </>
                         ) : (
                           <>
                             {/* Render chronological events if available */}
@@ -1757,9 +1789,15 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
                                     ))}
                                   </div>
                                 )}
-                                <div className="chat-message-text markdown-content">
-                                  <MemoizedMarkdown content={msg.content} />
-                                </div>
+                                {msg.role === 'user' ? (
+                                  <div className="chat-message-text chat-message-user-text">
+                                    {msg.content}
+                                  </div>
+                                ) : (
+                                  <div className="chat-message-text markdown-content">
+                                    <MemoizedMarkdown content={msg.content} />
+                                  </div>
+                                )}
                               </>
                             )}
                             <div className="chat-message-footer">

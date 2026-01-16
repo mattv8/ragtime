@@ -410,6 +410,10 @@
   word-break: break-word;
 }
 
+.chat-message-user-text {
+  white-space: pre-wrap;
+}
+
 .chat-message-footer {
   display: flex;
   align-items: center;
@@ -440,6 +444,19 @@
 
 .chat-message-edit-btn:hover {
   opacity: 1 !important;
+}
+
+/* Edit input inherits chat-message-text styling, just adds editability */
+.chat-edit-input {
+  outline: none;
+  cursor: text;
+}
+
+.chat-edit-actions {
+  display: flex;
+  gap: var(--space-xs);
+  justify-content: flex-end;
+  margin-top: var(--space-xs);
 }
 
 .chat-message-streaming {
@@ -808,6 +825,7 @@
   background: var(--color-bg-tertiary);
   border-radius: var(--radius-sm);
   padding: var(--space-xs);
+  padding-right: 24px;  /* Add end padding to prevent abrupt cutoff on scroll */
 }
 
 .tool-result-table {
@@ -929,12 +947,14 @@
   background: var(--color-bg-secondary);
   border-radius: var(--radius-md);
   padding: var(--space-sm) var(--space-md);
+  padding-right: calc(var(--space-md) + 24px);  /* Extra right padding for scroll breathing room */
   margin: var(--space-sm) 0;
   overflow-x: auto;
 }
 
 .datatable-table-wrapper {
   min-height: 50px;
+  padding-right: 24px;  /* Right padding so table doesn't abruptly stop when scrolled */
 }
 
 .datatable-title {
@@ -959,6 +979,7 @@
 .datatable-container .dt-container {
   color: var(--color-text-primary);
   font-size: var(--text-sm);
+  padding-right: 24px;  /* Right padding so table doesn't abruptly stop when scrolled */
 }
 
 /* Layout rows - flexbox for controls */
@@ -1035,9 +1056,15 @@
 /* Table styling - compact */
 .datatable-container table.dataTable {
   border-collapse: collapse;
-  width: 100% !important;
+  width: auto !important;  /* Let table size naturally instead of forcing 100% */
+  min-width: 100%;  /* But still fill container when content is small */
   font-size: var(--text-xs);
   margin: var(--space-xs) 0 !important;
+}
+
+/* Add right padding after table content for scroll breathing room */
+.datatable-container .dt-layout-cell:has(table.dataTable) {
+  padding-right: 24px;
 }
 
 .datatable-container table.dataTable thead th {
