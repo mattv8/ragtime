@@ -577,7 +577,15 @@ class BackgroundTaskService:
                     )
                     logger.info(f"Saved partial response for cancelled task {task_id}")
 
-                await repository.cancel_chat_task(task_id)
+                # If shutting down (hot-reload/restart), mark as interrupted
+                # so user sees "continue?" prompt. Otherwise mark as cancelled.
+                if self._shutdown:
+                    await repository.update_chat_task_status(
+                        task_id, ChatTaskStatus.interrupted
+                    )
+                    logger.info(f"Task {task_id} interrupted by shutdown")
+                else:
+                    await repository.cancel_chat_task(task_id)
                 raise
             except Exception as e:
                 logger.exception(f"Background task {task_id} failed")
