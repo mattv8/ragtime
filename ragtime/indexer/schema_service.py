@@ -248,12 +248,13 @@ class SchemaIndexerService:
             db: Any = await get_db()
 
             # Find all jobs stuck in pending or indexing state
+            # Note: Column names use snake_case as defined in Prisma @map() directives
             result = await db.execute_raw(
                 """
                 UPDATE schema_index_jobs
                 SET status = 'failed',
-                    "errorMessage" = 'Job interrupted by server restart',
-                    "completedAt" = NOW()
+                    error_message = 'Job interrupted by server restart',
+                    completed_at = NOW()
                 WHERE status IN ('pending', 'indexing')
                 RETURNING id
                 """
