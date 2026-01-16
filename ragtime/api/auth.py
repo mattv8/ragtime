@@ -4,9 +4,20 @@ Authentication API routes.
 Endpoints for login, logout, user info, and LDAP configuration.
 """
 
+import hashlib
+import time
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    Form,
+    HTTPException,
+    Request,
+    Response,
+    status,
+)
+from fastapi.responses import HTMLResponse, RedirectResponse
 from prisma.enums import UserRole
 from prisma.models import User
 from pydantic import BaseModel, Field
@@ -31,6 +42,94 @@ from ragtime.core.security import get_current_user, get_session_token, require_a
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+# In-memory storage for authorization codes (short-lived, 10 min expiry)
+# Format: {code: {"client_id": str, "redirect_uri": str, "code_challenge": str,
+#                 "user_id": str, "username": str, "role": str, "expires": float}}
+_auth_codes: dict[str, dict] = {}
+AUTH_CODE_EXPIRY = 600  # 10 minutes
+MAX_AUTH_CODES = 10000  # Prevent memory exhaustion from code accumulation
+
+
+def validate_redirect_uri(redirect_uri: str) -> bool:
+    """
+    Validate redirect_uri for OAuth2 security.
+
+    For MCP clients (VS Code, JetBrains, etc.), allow:
+    - Loopback addresses per RFC 8252 Section 7.3
+    - Trusted IDE redirect domains (vscode.dev, etc.)
+
+    This prevents open redirect attacks while supporting OAuth flows from
+    various development tools.
+
+    RFC 8252 Section 7.3: Loopback Interface Redirection
+    - http://127.0.0.1:<port>/<path>
+    - http://localhost:<port>/<path>
+    - http://[::1]:<port>/<path>
+    """
+    from urllib.parse import urlparse
+
+    from ragtime.config.settings import settings
+
+    try:
+        parsed = urlparse(redirect_uri)
+
+        # Must be http or https
+        if parsed.scheme not in ("http", "https"):
+            logger.warning(
+                f"OAuth2 redirect_uri rejected: scheme must be http or https, got {parsed.scheme}"
+            )
+            return False
+
+        # Extract hostname (remove port if present)
+        hostname = parsed.hostname
+        if hostname is None:
+            logger.warning("OAuth2 redirect_uri rejected: no hostname")
+            return False
+
+        # Allow loopback addresses (RFC 8252 for native apps)
+        loopback_hosts = {"127.0.0.1", "localhost", "::1", "[::1]"}
+
+        # Allow trusted IDE redirect domains
+        # These are official OAuth redirect endpoints for IDEs
+        trusted_domains = {
+            "vscode.dev",  # VS Code web/desktop OAuth callback
+            "insiders.vscode.dev",  # VS Code Insiders
+            "github.dev",  # GitHub Codespaces
+            "jetbrains.com",  # JetBrains IDEs
+            "account.jetbrains.com",
+        }
+
+        # Check if it's a loopback or trusted domain
+        is_loopback = hostname in loopback_hosts
+        is_trusted = hostname in trusted_domains or any(
+            hostname.endswith(f".{domain}") for domain in trusted_domains
+        )
+
+        if not is_loopback and not is_trusted:
+            logger.warning(
+                f"OAuth2 redirect_uri rejected: '{hostname}' is not a loopback address or trusted domain"
+            )
+            return False
+
+        # For loopback, port can be any valid port (MCP clients pick available ports)
+        if (
+            is_loopback
+            and parsed.port is not None
+            and (parsed.port < 1 or parsed.port > 65535)
+        ):
+            logger.warning(f"OAuth2 redirect_uri rejected: invalid port {parsed.port}")
+            return False
+
+        # In debug mode, log successful validation for troubleshooting
+        if settings.debug_mode:
+            logger.debug(f"OAuth2 redirect_uri validated: {redirect_uri}")
+
+        return True
+
+    except Exception as e:
+        logger.warning(f"OAuth2 redirect_uri validation error: {e}")
+        return False
 
 
 # =============================================================================
@@ -303,6 +402,39 @@ async def logout(
 
 
 # =============================================================================
+# OAuth2 Authorization Code Flow with PKCE (for VS Code MCP clients)
+# =============================================================================
+
+
+def _cleanup_expired_auth_codes():
+    """Remove expired authorization codes and enforce storage limit."""
+    now = time.time()
+    expired = [code for code, data in _auth_codes.items() if data["expires"] < now]
+    for code in expired:
+        del _auth_codes[code]
+
+    # Enforce max limit - evict oldest codes if over limit
+    if len(_auth_codes) > MAX_AUTH_CODES:
+        # Sort by expiry time and remove oldest
+        sorted_codes = sorted(_auth_codes.items(), key=lambda x: x[1]["expires"])
+        to_remove = len(_auth_codes) - MAX_AUTH_CODES
+        for code, _ in sorted_codes[:to_remove]:
+            del _auth_codes[code]
+        logger.warning(f"Auth code storage limit reached, evicted {to_remove} codes")
+
+
+def _verify_pkce(code_verifier: str, code_challenge: str) -> bool:
+    """Verify PKCE code_verifier against stored code_challenge (S256 method)."""
+    # S256: BASE64URL(SHA256(code_verifier)) == code_challenge
+    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+    # Base64url encoding without padding
+    import base64
+
+    computed = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return computed == code_challenge
+
+
+# =============================================================================
 # OAuth2 Token Endpoint (for MCP clients)
 # =============================================================================
 
@@ -343,91 +475,218 @@ class OAuth2ErrorResponse(BaseModel):
     },
     tags=["OAuth2"],
 )
+
 @limiter.limit(LOGIN_RATE_LIMIT)
 async def oauth2_token(
     request: Request,
-    grant_type: str = Form(..., description="Grant type (must be 'password')"),
-    username: str = Form(..., min_length=1, description="Username"),
-    password: str = Form(..., min_length=1, description="Password"),
+    grant_type: str = Form(
+        ..., description="Grant type ('password' or 'authorization_code')"
+    ),
+    username: Optional[str] = Form(
+        default=None, description="Username (for password grant)"
+    ),
+    password: Optional[str] = Form(
+        default=None, description="Password (for password grant)"
+    ),
+    code: Optional[str] = Form(
+        default=None, description="Authorization code (for authorization_code grant)"
+    ),
+    code_verifier: Optional[str] = Form(
+        default=None, description="PKCE code verifier (for authorization_code grant)"
+    ),
+    redirect_uri: Optional[str] = Form(
+        default=None, description="Redirect URI (for authorization_code grant)"
+    ),
+    client_id: Optional[str] = Form(
+        default=None, description="Client ID (for authorization_code grant)"
+    ),
     scope: Optional[str] = Form(
         default=None, description="Requested scopes (optional)"
     ),
 ):
     """
-    OAuth2 Token Endpoint (Resource Owner Password Credentials grant).
+    OAuth2 Token Endpoint.
 
-    This endpoint allows MCP clients to obtain access tokens using LDAP credentials.
-    The token can then be used as a Bearer token for MCP requests.
+    Supports two grant types:
+    - **password**: Resource Owner Password Credentials grant (direct username/password)
+    - **authorization_code**: Authorization Code grant with PKCE (for browser-based flows)
 
-    **Usage with MCP clients:**
+    **Usage with MCP clients (Authorization Code flow):**
+    1. Client redirects to /authorize with PKCE code_challenge
+    2. User authenticates, gets redirected back with authorization code
+    3. Client exchanges code for token at this endpoint with code_verifier
+
+    **Usage with direct clients (Password flow):**
     1. POST to /auth/oauth2/token with grant_type=password, username, and password
     2. Receive an access_token
-    3. Use the token as: Authorization: Bearer <access_token>
 
     Rate limited to prevent brute-force attacks.
     """
-    # Validate grant_type
-    if grant_type != "password":
+    # Handle authorization_code grant (PKCE flow)
+    if grant_type == "authorization_code":
+        if not code or not code_verifier:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "invalid_request",
+                    "error_description": "code and code_verifier are required for authorization_code grant",
+                },
+            )
+
+        # Cleanup expired codes
+        _cleanup_expired_auth_codes()
+
+        # Look up the authorization code
+        auth_data = _auth_codes.get(code)
+        if not auth_data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "invalid_grant",
+                    "error_description": "Invalid or expired authorization code",
+                },
+            )
+
+        # Verify PKCE
+        if not _verify_pkce(code_verifier, auth_data["code_challenge"]):
+            # Remove the code on PKCE failure (prevent replay)
+            del _auth_codes[code]
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "invalid_grant",
+                    "error_description": "PKCE verification failed",
+                },
+            )
+
+        # Verify client_id matches (if provided) - prevents code theft
+        if client_id and client_id != auth_data["client_id"]:
+            del _auth_codes[code]
+            logger.warning(
+                f"OAuth2 client_id mismatch: expected '{auth_data['client_id']}', got '{client_id}'"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "invalid_grant",
+                    "error_description": "client_id mismatch",
+                },
+            )
+
+        # Verify redirect_uri matches (if provided)
+        if redirect_uri and redirect_uri != auth_data["redirect_uri"]:
+            del _auth_codes[code]
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "invalid_grant",
+                    "error_description": "redirect_uri mismatch",
+                },
+            )
+
+        # Code is valid - consume it (one-time use)
+        del _auth_codes[code]
+
+        # Create access token
+        token = create_access_token(
+            auth_data["user_id"],
+            auth_data["username"],
+            auth_data["role"],
+        )
+
+        # Create session in database
+        await create_session(
+            user_id=auth_data["user_id"],
+            token=token,
+            user_agent=request.headers.get("User-Agent"),
+            ip_address=request.client.host if request.client else None,
+        )
+
+        logger.info(
+            f"OAuth2 token issued for '{auth_data['username']}' via authorization_code grant"
+        )
+
+        return OAuth2TokenResponse(
+            access_token=token,
+            token_type="Bearer",
+            expires_in=settings.jwt_expire_hours * 3600,
+            scope=scope,
+        )
+
+    # Handle password grant
+    elif grant_type == "password":
+        if not username or not password:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "invalid_request",
+                    "error_description": "username and password are required for password grant",
+                },
+            )
+
+        # Check if LDAP is configured (OAuth2 requires LDAP)
+        ldap_config = await get_ldap_config()
+        if not ldap_config.serverUrl or not ldap_config.bindDn:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "server_error",
+                    "error_description": "OAuth2 requires LDAP to be configured",
+                },
+            )
+
+        # Authenticate via LDAP
+        result = await authenticate(username, password)
+
+        if not result.success:
+            logger.warning(
+                f"OAuth2 token request failed for '{username}': {result.error}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={
+                    "error": "invalid_grant",
+                    "error_description": result.error or "Authentication failed",
+                },
+            )
+
+        if not result.user_id or not result.username:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "error": "server_error",
+                    "error_description": "Authentication succeeded but user data is missing",
+                },
+            )
+
+        # Create access token
+        token = create_access_token(result.user_id, result.username, result.role)
+
+        # Create session in database
+        await create_session(
+            user_id=result.user_id,
+            token=token,
+            user_agent=request.headers.get("User-Agent"),
+            ip_address=request.client.host if request.client else None,
+        )
+
+        logger.info(f"OAuth2 token issued for '{result.username}' via password grant")
+
+        return OAuth2TokenResponse(
+            access_token=token,
+            token_type="Bearer",
+            expires_in=settings.jwt_expire_hours * 3600,
+            scope=scope,
+        )
+
+    else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "error": "unsupported_grant_type",
-                "error_description": "Only 'password' grant type is supported",
+                "error_description": "Supported grant types: 'password', 'authorization_code'",
             },
         )
-
-    # Check if LDAP is configured (OAuth2 requires LDAP)
-    ldap_config = await get_ldap_config()
-    if not ldap_config.serverUrl or not ldap_config.bindDn:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "server_error",
-                "error_description": "OAuth2 requires LDAP to be configured",
-            },
-        )
-
-    # Authenticate via LDAP
-    result = await authenticate(username, password)
-
-    if not result.success:
-        logger.warning(f"OAuth2 token request failed for '{username}': {result.error}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={
-                "error": "invalid_grant",
-                "error_description": result.error or "Authentication failed",
-            },
-        )
-
-    if not result.user_id or not result.username:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "error": "server_error",
-                "error_description": "Authentication succeeded but user data is missing",
-            },
-        )
-
-    # Create access token (same as regular login)
-    token = create_access_token(result.user_id, result.username, result.role)
-
-    # Create session in database for token validation
-    await create_session(
-        user_id=result.user_id,
-        token=token,
-        user_agent=request.headers.get("User-Agent"),
-        ip_address=request.client.host if request.client else None,
-    )
-
-    logger.info(f"OAuth2 token issued for '{result.username}'")
-
-    return OAuth2TokenResponse(
-        access_token=token,
-        token_type="Bearer",
-        expires_in=settings.jwt_expire_hours * 3600,
-        scope=scope,
-    )
 
 
 # =============================================================================

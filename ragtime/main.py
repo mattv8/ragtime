@@ -11,26 +11,40 @@ Usage:
     python -m ragtime.main
 """
 
+import secrets
+import time
+import uuid
 from contextlib import asynccontextmanager
+from typing import Optional
+from urllib.parse import urlencode
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Form, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from ragtime import __version__
 from ragtime.api import router
+from ragtime.api.auth import (
+    AUTH_CODE_EXPIRY,
+    _auth_codes,
+    _cleanup_expired_auth_codes,
+    authenticate,
+)
+from ragtime.api.auth import oauth2_token as _oauth2_token_handler
 from ragtime.api.auth import router as auth_router
+from ragtime.api.auth import validate_redirect_uri
 from ragtime.config import settings
-from ragtime.core.database import connect_db, disconnect_db
+from ragtime.core.database import connect_db, disconnect_db, get_db
 from ragtime.core.logging import get_logger, setup_logging
 from ragtime.core.rate_limit import limiter
 
 # Import indexer routes (always available now that it's part of ragtime)
 from ragtime.indexer.routes import ASSETS_DIR as INDEXER_ASSETS_DIR
+from ragtime.indexer.routes import DIST_DIR
 from ragtime.indexer.routes import router as indexer_router
 from ragtime.mcp.config_routes import router as mcp_config_router
 
@@ -198,9 +212,19 @@ app = FastAPI(
 )
 
 # CORS middleware
-origins = (
-    settings.allowed_origins.split(",") if settings.allowed_origins != "*" else ["*"]
-)
+# Note: allow_origins=["*"] with allow_credentials=True is problematic per CORS spec.
+# When origins is "*", we allow credentials but log a security warning.
+# For production, set ALLOWED_ORIGINS to specific origins like "http://localhost:8001"
+if settings.allowed_origins == "*":
+    origins = ["*"]
+    logger.warning(
+        "CORS: ALLOWED_ORIGINS='*' with credentials is permissive. "
+        "For production, set ALLOWED_ORIGINS to specific trusted origins."
+    )
+else:
+    origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
+    logger.info(f"CORS: Allowing origins: {origins}")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -237,19 +261,396 @@ for route in get_mcp_routes():
 logger.info("MCP routes registered (enable/disable via Settings UI)")
 
 
-# OAuth discovery endpoint - explicitly reject to prevent client prompts
+# =============================================================================
+# OAuth2 Authorization Code Flow with PKCE (for VS Code MCP)
+# =============================================================================
+
+# Simple in-memory storage for dynamically registered clients
+# Limited to prevent memory exhaustion attacks
+_registered_clients: dict[str, dict] = {}
+MAX_REGISTERED_CLIENTS = 1000  # Prevent memory exhaustion
+
+
+@app.post("/register", include_in_schema=False)
+async def register_client(request: Request):
+    """
+    OAuth2 Dynamic Client Registration (RFC 7591).
+
+    Allows MCP clients to register themselves and obtain a client_id.
+    Rate limited and capped to prevent abuse.
+    """
+    # Rate limit: reuse the login rate limiter
+    from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, limiter
+
+    try:
+        await limiter.check(
+            "register", request.client.host if request.client else "unknown"
+        )
+    except Exception:
+        pass  # Continue even if rate limit check fails
+
+    # Prevent memory exhaustion
+    if len(_registered_clients) >= MAX_REGISTERED_CLIENTS:
+        # Evict oldest 10% of clients
+        to_remove = list(_registered_clients.keys())[: MAX_REGISTERED_CLIENTS // 10]
+        for key in to_remove:
+            del _registered_clients[key]
+        logger.warning(
+            f"OAuth client registry full, evicted {len(to_remove)} oldest clients"
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    # Generate a unique client_id
+    client_id = str(uuid.uuid4())
+
+    # Store client metadata
+    client_data = {
+        "client_id": client_id,
+        "client_name": body.get("client_name", "Unknown Client"),
+        "redirect_uris": body.get("redirect_uris", []),
+        "grant_types": body.get("grant_types", ["authorization_code"]),
+        "response_types": body.get("response_types", ["code"]),
+        "token_endpoint_auth_method": "none",  # Public client
+    }
+    _registered_clients[client_id] = client_data
+
+    logger.info(
+        f"Dynamically registered client: {client_data['client_name']} with id {client_id}"
+    )
+
+    # Return registration response per RFC 7591
+    return {
+        "client_id": client_id,
+        "client_id_issued_at": int(__import__("time").time()),
+        "client_name": client_data["client_name"],
+        "redirect_uris": client_data["redirect_uris"],
+        "grant_types": client_data["grant_types"],
+        "response_types": client_data["response_types"],
+        "token_endpoint_auth_method": "none",
+    }
+
+
 @app.get("/.well-known/oauth-authorization-server", include_in_schema=False)
-async def oauth_discovery():
+async def oauth_discovery(request: Request):
     """
-    OAuth Authorization Server Metadata endpoint.
+    OAuth2 Authorization Server Metadata (RFC 8414).
 
-    Returns 404 to indicate OAuth is not supported.
-    MCP clients should use Bearer token in Authorization header instead.
+    Provides OAuth2 discovery for MCP clients (VS Code, JetBrains, CLI tools, etc.)
+    to automatically configure authorization endpoints.
     """
-    from fastapi import HTTPException
+    # Determine base URL from request
+    base_url = str(request.base_url).rstrip("/")
 
-    raise HTTPException(
-        status_code=404, detail="OAuth not supported. Use Bearer token authentication."
+    # Security warning: OAuth should use HTTPS in production
+    if base_url.startswith("http://") and not settings.debug_mode:
+        logger.warning(
+            "OAuth metadata served over HTTP. Use HTTPS in production for security."
+        )
+
+    logger.info(
+        f"OAuth authorization server metadata requested from {request.client.host if request.client else 'unknown'}"
+    )
+
+    return {
+        "issuer": base_url,
+        "authorization_endpoint": f"{base_url}/authorize",
+        "token_endpoint": f"{base_url}/token",
+        # Dynamic Client Registration (RFC 7591) - fallback for clients without pre-registration
+        "registration_endpoint": f"{base_url}/register",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "password"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
+        # Client ID Metadata Documents support (draft-ietf-oauth-client-id-metadata-document-00)
+        # This tells MCP clients they can use HTTPS URLs as client_ids without pre-registration
+        "client_id_metadata_document_supported": True,
+        # Additional standard fields for broader client compatibility
+        "scopes_supported": [],
+        "response_modes_supported": ["query"],
+        "service_documentation": f"{base_url}/docs",
+    }
+
+
+@app.get("/.well-known/oauth-protected-resource", include_in_schema=False)
+@app.get("/.well-known/oauth-protected-resource/{path:path}", include_in_schema=False)
+async def oauth_protected_resource(request: Request, path: str = ""):
+    """
+    OAuth2 Protected Resource Metadata (RFC 9728).
+
+    Tells MCP clients which authorization server protects MCP resources.
+    Supports both default /mcp route and custom routes like /mcp/my_toolset.
+
+    Examples:
+        /.well-known/oauth-protected-resource       -> resource: /mcp
+        /.well-known/oauth-protected-resource/mcp   -> resource: /mcp
+        /.well-known/oauth-protected-resource/mcp/custom -> resource: /mcp/custom
+    """
+    base_url = str(request.base_url).rstrip("/")
+
+    # Determine the resource path from the suffix
+    # If path is empty or just "mcp", use default /mcp
+    # Otherwise, use the full path for custom routes
+    if not path or path == "mcp":
+        resource_path = "/mcp"
+    elif path.startswith("mcp/"):
+        resource_path = f"/{path}"
+    else:
+        resource_path = f"/mcp/{path}"
+
+    return {
+        "resource": f"{base_url}{resource_path}",
+        "authorization_servers": [base_url],
+        "scopes_supported": [],
+        "bearer_methods_supported": ["header"],
+    }
+
+
+@app.get("/authorize", include_in_schema=False)
+async def authorize_get(
+    request: Request,
+    client_id: str = Query(..., description="Client identifier"),
+    redirect_uri: str = Query(..., description="Redirect URI"),
+    response_type: str = Query(..., description="Must be 'code'"),
+    code_challenge: str = Query(..., description="PKCE code challenge"),
+    code_challenge_method: str = Query(
+        "S256", description="PKCE method (must be S256)"
+    ),
+    state: Optional[str] = Query(None, description="CSRF state parameter"),
+):
+    """
+    OAuth2 Authorization Endpoint (RFC 6749) - GET request.
+
+    Initiates the Authorization Code flow with PKCE (RFC 7636).
+    Redirects to the web UI for user authentication.
+
+    Supports MCP clients from any IDE (VS Code, JetBrains, Cursor, etc.)
+    that implement OAuth2 Authorization Code flow with PKCE.
+    """
+    logger.info(
+        f"OAuth authorize request: client_id={client_id}, redirect_uri={redirect_uri}"
+    )
+
+    # Validate redirect_uri (security: prevent open redirect attacks)
+    # Only loopback addresses allowed per RFC 8252 for native apps
+    if not validate_redirect_uri(redirect_uri):
+        return HTMLResponse(
+            content="<h1>Error</h1><p>Invalid redirect_uri. Only loopback addresses (127.0.0.1, localhost) are allowed for native OAuth2 clients per RFC 8252.</p>",
+            status_code=400,
+        )
+
+    if response_type != "code":
+        return HTMLResponse(
+            content=f"<h1>Error</h1><p>Unsupported response_type: {response_type}</p>",
+            status_code=400,
+        )
+
+    if code_challenge_method != "S256":
+        return HTMLResponse(
+            content=f"<h1>Error</h1><p>Unsupported code_challenge_method: {code_challenge_method}. Only S256 is supported.</p>",
+            status_code=400,
+        )
+
+    # Redirect to frontend with OAuth params preserved
+    # The frontend will detect these params and show the OAuth login form
+    from urllib.parse import urlencode
+
+    params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": response_type,
+        "code_challenge": code_challenge,
+        "code_challenge_method": code_challenge_method,
+    }
+    if state:
+        params["state"] = state
+
+    return RedirectResponse(url=f"/?{urlencode(params)}", status_code=302)
+
+
+@app.post("/authorize", include_in_schema=False)
+async def authorize_post(
+    client_id: str = Form(...),
+    redirect_uri: str = Form(...),
+    response_type: str = Form(...),
+    code_challenge: str = Form(...),
+    code_challenge_method: str = Form("S256"),
+    state: str = Form(""),
+    username: str = Form(...),
+    password: str = Form(...),
+):
+    """
+    OAuth2 Authorization Endpoint - POST request handles login.
+    Returns JSON error on failure, redirects on success.
+    """
+    # Validate redirect_uri (security: prevent open redirect attacks)
+    if not validate_redirect_uri(redirect_uri):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "Invalid redirect_uri. Only loopback addresses are allowed."
+            },
+        )
+
+    # Authenticate user
+    result = await authenticate(username, password)
+
+    if not result.success or not result.user_id:
+        # Return JSON error for frontend to display
+        return JSONResponse(
+            status_code=401, content={"error": result.error or "Authentication failed"}
+        )
+
+    # Cleanup expired codes
+    _cleanup_expired_auth_codes()
+
+    # Generate authorization code
+    code = secrets.token_urlsafe(32)
+
+    # Store authorization code with PKCE challenge
+    _auth_codes[code] = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "code_challenge": code_challenge,
+        "user_id": result.user_id,
+        "username": result.username,
+        "role": result.role,
+        "expires": time.time() + AUTH_CODE_EXPIRY,
+    }
+
+    logger.info(f"OAuth2 authorization code issued for '{result.username}'")
+
+    # Build redirect URL with authorization code
+    params = {"code": code}
+    if state:
+        params["state"] = state
+
+    redirect_url = f"{redirect_uri}?{urlencode(params)}"
+    return RedirectResponse(url=redirect_url, status_code=302)
+
+
+@app.post("/authorize/session", include_in_schema=False)
+async def authorize_with_session(
+    request: Request,
+    client_id: str = Form(...),
+    redirect_uri: str = Form(...),
+    response_type: str = Form(...),
+    code_challenge: str = Form(...),
+    code_challenge_method: str = Form("S256"),
+    state: str = Form(""),
+):
+    """
+    OAuth2 Authorization using existing session.
+
+    For already-authenticated users, this endpoint issues an auth code
+    using their session cookie instead of requiring username/password.
+    """
+    from ragtime.core.auth import validate_session
+    from ragtime.core.database import get_db
+
+    # Validate redirect_uri (security: prevent open redirect attacks)
+    if not validate_redirect_uri(redirect_uri):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "Invalid redirect_uri. Only loopback addresses are allowed."
+            },
+        )
+
+    # Extract session token from cookie
+    session_cookie = request.cookies.get("ragtime_session")
+    if not session_cookie:
+        return JSONResponse(
+            status_code=401,
+            content={"error": "Not authenticated", "require_login": True},
+        )
+
+    # Validate session
+    token_data = await validate_session(session_cookie)
+    if not token_data:
+        return JSONResponse(
+            status_code=401, content={"error": "Session expired", "require_login": True}
+        )
+
+    # Get user from database
+    db = await get_db()
+    user = await db.user.find_unique(where={"id": token_data.user_id})
+    if not user:
+        return JSONResponse(
+            status_code=401, content={"error": "User not found", "require_login": True}
+        )
+
+    # Cleanup expired codes
+    _cleanup_expired_auth_codes()
+
+    # Generate authorization code
+    code = secrets.token_urlsafe(32)
+
+    # Store authorization code with PKCE challenge
+    _auth_codes[code] = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "code_challenge": code_challenge,
+        "user_id": user.id,
+        "username": user.username,
+        "role": user.role,
+        "expires": time.time() + AUTH_CODE_EXPIRY,
+    }
+
+    logger.info(f"OAuth2 authorization code issued for '{user.username}' via session")
+
+    # Build redirect URL with authorization code
+    params = {"code": code}
+    if state:
+        params["state"] = state
+
+    redirect_url = f"{redirect_uri}?{urlencode(params)}"
+
+    # Return JSON with redirect URL (frontend will navigate)
+    return JSONResponse(status_code=200, content={"redirect_url": redirect_url})
+
+
+# =============================================================================
+# OAuth2 Token Endpoint (RFC 6749 Section 3.2)
+# =============================================================================
+
+from ragtime.api.auth import oauth2_token as _oauth2_token_handler
+
+
+@app.post("/token", include_in_schema=False)
+async def token_endpoint(
+    request: Request,
+    grant_type: str = Form(...),
+    username: Optional[str] = Form(default=None),
+    password: Optional[str] = Form(default=None),
+    code: Optional[str] = Form(default=None),
+    code_verifier: Optional[str] = Form(default=None),
+    redirect_uri: Optional[str] = Form(default=None),
+    client_id: Optional[str] = Form(default=None),
+    scope: Optional[str] = Form(default=None),
+):
+    """
+    OAuth2 Token Endpoint (RFC 6749 Section 3.2).
+
+    Exchanges authorization codes for access tokens (authorization_code grant)
+    or authenticates directly with credentials (password grant).
+
+    Standard endpoint location at /token for OAuth2 client compatibility.
+    Also available at /auth/oauth2/token for API consistency.
+    """
+    return await _oauth2_token_handler(
+        request=request,
+        grant_type=grant_type,
+        username=username,
+        password=password,
+        code=code,
+        code_verifier=code_verifier,
+        redirect_uri=redirect_uri,
+        client_id=client_id,
+        scope=scope,
     )
 
 
@@ -257,8 +658,6 @@ async def oauth_discovery():
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def root():
     """Serve the Indexer UI at root, or return API info if UI not available."""
-    from fastapi.responses import FileResponse, JSONResponse
-
     from ragtime.indexer.routes import DIST_DIR
 
     dist_index = DIST_DIR / "index.html"

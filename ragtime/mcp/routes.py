@@ -157,6 +157,11 @@ async def _validate_oauth2_token(
 
     Returns:
         True if valid and user is in allowed group (if specified), False otherwise
+
+    Note:
+        Local admin users bypass LDAP group restrictions since they don't have
+        LDAP group membership. Regular local users are denied if group restriction
+        is configured.
     """
     from ragtime.core.auth import validate_session
     from ragtime.core.database import get_db
@@ -186,9 +191,20 @@ async def _validate_oauth2_token(
             logger.debug(f"User {token_data.user_id} not found in database")
             return False
 
+        # Local admin users bypass LDAP group restrictions
+        # They are trusted and don't have LDAP group membership
+        if user.authProvider == "local" and user.role == "admin":
+            logger.debug(
+                f"Local admin '{user.username}' bypasses LDAP group restriction"
+            )
+            return True
+
         # Get user's LDAP DN and check group membership
         if not user.ldapDn:
-            logger.debug(f"User {user.username} has no LDAP DN - denying access")
+            # Non-admin local users cannot access group-restricted routes
+            logger.debug(
+                f"User {user.username} has no LDAP DN and is not local admin - denying access"
+            )
             return False
 
         # Re-check LDAP group membership for the user
@@ -402,9 +418,7 @@ class MCPTransportEndpoint:
                     }
                 )
                 if auth_method == "oauth2":
-                    detail = "OAuth2 Bearer token required (use /auth/oauth2/token to authenticate)"
-                    if allowed_group:
-                        detail += " - User must be member of allowed LDAP group"
+                    detail = "OAuth2 Bearer token required - token invalid, expired, or user not authorized"
                 elif encrypted_password:
                     detail = "Password required (use MCP-Password header or Authorization: Bearer)"
                 else:
@@ -540,9 +554,7 @@ class MCPCustomRouteEndpoint:
                     }
                 )
                 if auth_method == "oauth2":
-                    detail = "OAuth2 Bearer token required (use /auth/oauth2/token to authenticate)"
-                    if allowed_group:
-                        detail += " - User must be member of allowed LDAP group"
+                    detail = "OAuth2 Bearer token required - token invalid, expired, or user not authorized"
                 else:
                     detail = "Invalid password"
                 await send(

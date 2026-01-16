@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '@/api';
-import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, LoginPage, MemoryStatus, UserMenu, SecurityBanner } from '@/components';
+import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, LoginPage, OAuthLoginPage, MemoryStatus, UserMenu, SecurityBanner } from '@/components';
 import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob, ToolConfig, AppSettings } from '@/types';
+import type { OAuthParams } from '@/components';
 import '@/styles/global.css';
 
 type ViewType = 'chat' | 'indexer' | 'tools' | 'settings';
@@ -20,11 +21,45 @@ function getInitialHighlight(): string | null {
   return params.get('highlight');
 }
 
+/**
+ * Check if URL contains OAuth authorization parameters.
+ * Returns OAuthParams if this is an OAuth flow, null otherwise.
+ */
+function getOAuthParams(): OAuthParams | null {
+  const params = new URLSearchParams(window.location.search);
+  const client_id = params.get('client_id');
+  const redirect_uri = params.get('redirect_uri');
+  const response_type = params.get('response_type');
+  const code_challenge = params.get('code_challenge');
+
+  // All required OAuth params must be present
+  if (client_id && redirect_uri && response_type === 'code' && code_challenge) {
+    return {
+      client_id,
+      redirect_uri,
+      response_type,
+      code_challenge,
+      code_challenge_method: params.get('code_challenge_method') || 'S256',
+      state: params.get('state') || '',
+    };
+  }
+  return null;
+}
+
 export function App() {
   // Auth state
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+
+  // OAuth flow state - capture on mount
+  const [oauthParams] = useState<OAuthParams | null>(() => {
+    const params = getOAuthParams();
+    if (params) {
+      console.log('OAuth flow: Detected OAuth params on mount', params);
+    }
+    return params;
+  });
 
   // App state
   const [activeView, setActiveView] = useState<ViewType>(getInitialView);
@@ -122,6 +157,57 @@ export function App() {
     }
   };
 
+  // Auto-complete OAuth flow if user is already authenticated
+  useEffect(() => {
+    if (!oauthParams || !currentUser || authLoading) return;
+
+    console.log('OAuth flow: User authenticated, completing flow...', {
+      client_id: oauthParams.client_id,
+      redirect_uri: oauthParams.redirect_uri,
+    });
+
+    const completeOAuthFlow = async () => {
+      try {
+        const formData = new URLSearchParams();
+        formData.append('client_id', oauthParams.client_id);
+        formData.append('redirect_uri', oauthParams.redirect_uri);
+        formData.append('response_type', oauthParams.response_type);
+        formData.append('code_challenge', oauthParams.code_challenge);
+        formData.append('code_challenge_method', oauthParams.code_challenge_method);
+        formData.append('state', oauthParams.state);
+
+        console.log('OAuth flow: Requesting auth code from /authorize/session');
+        const response = await fetch('/authorize/session', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: formData.toString(),
+          credentials: 'include', // Include session cookie
+        });
+
+        const data = await response.json();
+        console.log('OAuth flow: Response from /authorize/session', { status: response.status, data });
+
+        if (response.ok && data.redirect_url) {
+          console.log('OAuth flow: Redirecting to', data.redirect_url);
+          window.location.href = data.redirect_url;
+        } else {
+          // Session invalid or error - user needs to re-login
+          console.error('OAuth flow: Session auth failed', data);
+          // Clear the user so login page shows
+          setCurrentUser(null);
+        }
+      } catch (err) {
+        console.error('OAuth flow: Failed to complete', err);
+        // Clear the user so login page shows
+        setCurrentUser(null);
+      }
+    };
+
+    completeOAuthFlow();
+  }, [oauthParams, currentUser, authLoading]);
+
   const handleLogout = async () => {
     try {
       await api.logout();
@@ -142,7 +228,11 @@ export function App() {
   }, [currentUser, isAdmin, activeView]);
 
   // Sync state to URL params (only sync valid views for user's role)
+  // Skip URL sync during OAuth flow - we need to preserve those params until redirect
   useEffect(() => {
+    // Don't modify URL during OAuth authorization flow
+    if (oauthParams) return;
+
     const params = new URLSearchParams();
     // Non-admins should only have 'chat' in URL
     const viewToSync = (!isAdmin && activeView !== 'chat') ? 'chat' : activeView;
@@ -152,7 +242,7 @@ export function App() {
     }
     const newUrl = `${window.location.pathname}?${params.toString()}`;
     window.history.replaceState({}, '', newUrl);
-  }, [activeView, highlightSetting]);
+  }, [activeView, highlightSetting, oauthParams, isAdmin]);
 
   const loadJobs = useCallback(async () => {
     try {
@@ -349,6 +439,26 @@ export function App() {
         <div className="spinner"></div>
         <p>Loading...</p>
       </div>
+    );
+  }
+
+  // Handle OAuth authorization flow
+  if (oauthParams) {
+    // If user is authenticated, show authorizing state (auto-completing)
+    if (currentUser) {
+      return (
+        <div className="auth-loading">
+          <div className="spinner"></div>
+          <p>Authorizing...</p>
+        </div>
+      );
+    }
+    // Not authenticated - show OAuth login page
+    return (
+      <OAuthLoginPage
+        params={oauthParams}
+        serverName={serverName}
+      />
     );
   }
 

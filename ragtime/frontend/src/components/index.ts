@@ -10,6 +10,8 @@ export { ToolWizard } from './ToolWizard';
 export { MCPRoutesPanel } from './MCPRoutesPanel';
 export { ChatPanel } from './ChatPanel';
 export { LoginPage } from './LoginPage';
+export { OAuthLoginPage } from './OAuthLoginPage';
+export type { OAuthParams } from './OAuthLoginPage';
 export { Popover, DisabledPopover } from './Popover';
 export { DescriptionField } from './DescriptionField';
 export { AnalysisStats } from './AnalysisStats';
