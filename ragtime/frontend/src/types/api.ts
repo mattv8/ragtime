@@ -1182,6 +1182,25 @@ export interface SendMessageResponse {
   conversation: Conversation;
 }
 
+// Retry visualization request/response
+export interface RetryVisualizationRequest {
+  tool_type: 'datatable' | 'chart';
+  source_data: {
+    columns?: string[];
+    rows?: unknown[][];
+    labels?: string[];
+    datasets?: unknown[];
+    chart_type?: string;
+  };
+  title?: string;
+}
+
+export interface RetryVisualizationResponse {
+  success: boolean;
+  output?: string;
+  error?: string;
+}
+
 // Available model for chat
 export interface AvailableModel {
   id: string;

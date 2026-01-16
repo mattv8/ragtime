@@ -369,6 +369,33 @@ def add_table_metadata_to_psql_output(psql_output: str) -> str:
     This function extracts the column names and data, then prepends the
     <!--TABLEDATA:...}--> metadata for UI clients to render as HTML tables.
 
+    TODO: MySQL/MariaDB Support
+    --------------------------
+    MySQL uses a different ASCII table format with box-drawing characters:
+
+        +----------+----------+----------+
+        | column_a | column_b | column_c |
+        +----------+----------+----------+
+        | value1   | value2   | value3   |
+        | value4   | value5   | value6   |
+        +----------+----------+----------+
+        2 rows in set (0.00 sec)
+
+    To add MySQL support:
+    1. Detect MySQL format: first line starts with "+-" and ends with "-+"
+    2. Header is on line 2 (between first two separator lines)
+    3. Data rows are between lines 3 and last separator
+    4. Use same position-based parsing (+ positions for column boundaries)
+    5. Test with: docker exec -i mysql-container mysql -u user -ppass db -e "SELECT..."
+
+    Test cases to verify:
+    - Basic multi-column: SELECT id, name, value FROM test LIMIT 5;
+    - Single column: SELECT name FROM test LIMIT 5;
+    - NULL values: SELECT id, nullable_col FROM test WHERE nullable_col IS NULL;
+    - Numeric types: SELECT int_col, decimal_col, float_col FROM test;
+    - Text with pipe: SELECT description FROM test WHERE description LIKE '%|%';
+    - JSON column: SELECT id, json_data FROM test; (MariaDB JSON or MySQL JSON)
+
     Args:
         psql_output: Raw output from psql command.
 
@@ -398,13 +425,48 @@ def add_table_metadata_to_psql_output(psql_output: str) -> str:
     if separator_idx is None or separator_idx < 1:
         return psql_output
 
-    # Parse header (line before separator)
+    # Get header and separator lines
     header_line = lines[separator_idx - 1]
-    # For single-column tables, there's no pipe delimiter
+    separator_line = lines[separator_idx]
+
+    # Parse header using split on | (simple and reliable for headers)
     if "|" in header_line:
-        columns = [col.strip() for col in header_line.split("|")]
+        columns = [col.strip() for col in header_line.split("|") if col.strip()]
     else:
         columns = [header_line.strip()]
+
+    # Get column positions from SEPARATOR line for parsing DATA rows
+    # Separator uses + at column boundaries: "---+---+---"
+    # Data rows use | at same positions: " a | b | c "
+    # This avoids issues with | appearing inside JSONB values
+    if "+" in separator_line:
+        # Multi-column: find positions of each +
+        data_col_positions = [-1]  # Start before first char
+        for i, char in enumerate(separator_line):
+            if char == "+":
+                data_col_positions.append(i)
+        data_col_positions.append(len(separator_line))  # End after last char
+    else:
+        # Single column - entire line is one column
+        data_col_positions = [-1, len(separator_line)]
+
+    def parse_row_by_positions(line: str, positions: list[int]) -> list[str]:
+        """Extract column values based on fixed positions from separator."""
+        values = []
+        for i in range(len(positions) - 1):
+            start = positions[i] + 1  # Skip the delimiter
+            end = positions[i + 1]
+            if end > len(line):
+                end = len(line)
+            if start < len(line):
+                val = line[start:end].strip()
+                # Remove trailing | if present (from lines shorter than separator)
+                if val.endswith("|"):
+                    val = val[:-1].strip()
+                values.append(val)
+            else:
+                values.append("")
+        return values
 
     # Parse data rows (lines after separator, excluding footer)
     rows = []
@@ -412,11 +474,13 @@ def add_table_metadata_to_psql_output(psql_output: str) -> str:
         # Stop at row count line or empty line
         if line.strip().startswith("(") or not line.strip():
             break
-        # Parse row values - handle single vs multi-column
-        if "|" in line:
-            values = [val.strip() for val in line.split("|")]
-        else:
-            values = [line.strip()]
+        # Parse row values using fixed positions from separator
+        values = parse_row_by_positions(line, data_col_positions)
+        # Filter to match column count
+        values = values[: len(columns)] if len(values) > len(columns) else values
+        # Pad if needed
+        while len(values) < len(columns):
+            values.append("")
         # Convert numeric strings to numbers
         parsed_values: list[str | int | float | None] = []
         for val in values:

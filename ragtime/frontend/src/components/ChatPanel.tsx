@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, X } from 'lucide-react';
+import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, X, AlertCircle, RefreshCw } from 'lucide-react';
 import { api } from '@/api';
 import type { Conversation, ChatMessage, AvailableModel, ChatTask, User } from '@/types';
 
@@ -32,15 +32,28 @@ interface TableData {
 }
 
 function parseTableMetadata(output: string): { tableData: TableData | null; displayText: string } {
-  const tableMatch = output.match(/<!--TABLEDATA:(\{.*?\})-->/);
-  if (!tableMatch) {
+  // Match from <!--TABLEDATA: to --> but use greedy .* since JSON may contain }
+  // The --> acts as a reliable terminator
+  const startMarker = '<!--TABLEDATA:';
+  const endMarker = '-->';
+  const startIdx = output.indexOf(startMarker);
+  if (startIdx === -1) {
     return { tableData: null, displayText: output };
   }
 
+  const jsonStart = startIdx + startMarker.length;
+  const endIdx = output.indexOf(endMarker, jsonStart);
+  if (endIdx === -1) {
+    return { tableData: null, displayText: output };
+  }
+
+  const jsonStr = output.substring(jsonStart, endIdx);
+
   try {
-    const tableData = JSON.parse(tableMatch[1]) as TableData;
+    const tableData = JSON.parse(jsonStr) as TableData;
     // Remove the metadata from display text
-    const displayText = output.replace(/<!--TABLEDATA:\{.*?\}-->\n?/, '');
+    const fullMarker = output.substring(startIdx, endIdx + endMarker.length);
+    const displayText = output.replace(fullMarker, '').replace(/^\n/, '');
     return { tableData, displayText };
   } catch {
     return { tableData: null, displayText: output };
@@ -106,8 +119,8 @@ function parseDataTableData(output: string): DataTableData | null {
     if (parsed && parsed.__datatable__ === true && parsed.config) {
       return parsed as DataTableData;
     }
-  } catch {
-    // Not JSON or not datatable data
+  } catch (e) {
+    // Failed to parse JSON as datatable data
   }
   return null;
 }
@@ -381,26 +394,73 @@ const DataTableDisplay = memo(function DataTableDisplay({ tableData }: { tableDa
 
 // Component to display a tool call with collapsible details
 // Memoized to prevent re-renders when tool call data hasn't changed
-const ToolCallDisplay = memo(function ToolCallDisplay({ toolCall, defaultExpanded = false }: { toolCall: ActiveToolCall; defaultExpanded?: boolean }) {
+interface ToolCallDisplayProps {
+  toolCall: ActiveToolCall;
+  defaultExpanded?: boolean;
+  conversationId?: string;
+  siblingEvents?: Array<{ type: string; tool?: string; output?: string }>;
+  onRetrySuccess?: (newOutput: string) => void;
+}
+
+const ToolCallDisplay = memo(function ToolCallDisplay({
+  toolCall,
+  defaultExpanded = false,
+  conversationId,
+  siblingEvents,
+  onRetrySuccess
+}: ToolCallDisplayProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [copiedQuery, setCopiedQuery] = useState(false);
   const [copiedResult, setCopiedResult] = useState(false);
+  const [isRetrying, setIsRetrying] = useState(false);
+  const [retryOutput, setRetryOutput] = useState<string | null>(null);
+  const [retryError, setRetryError] = useState<string | null>(null);
+
+  // Check if this is a visualization tool that can be retried
+  const isVisualizationTool = toolCall.tool === 'create_chart' || toolCall.tool === 'create_datatable';
+
+  // Check if this tool call failed based on output content
+  const hasErrorInOutput = useMemo(() => {
+    const output = retryOutput || toolCall.output;
+    if (!output) return false;
+    const outputLower = output.toLowerCase();
+    return outputLower.includes('error') ||
+           outputLower.includes('validation error') ||
+           outputLower.includes('failed') ||
+           outputLower.includes('exception');
+  }, [toolCall.output, retryOutput]);
+
+  // Effective output (use retry output if available)
+  const effectiveOutput = retryOutput || toolCall.output;
 
   // Check if this is a chart tool
   const chartData = useMemo(() => {
-    if (toolCall.tool === 'create_chart' && toolCall.output) {
-      return parseChartData(toolCall.output);
+    if (toolCall.tool === 'create_chart' && effectiveOutput && !hasErrorInOutput) {
+      return parseChartData(effectiveOutput);
     }
     return null;
-  }, [toolCall.tool, toolCall.output]);
+  }, [toolCall.tool, effectiveOutput, hasErrorInOutput]);
 
   // Check if this is a datatable tool
   const datatableData = useMemo(() => {
-    if (toolCall.tool === 'create_datatable' && toolCall.output) {
-      return parseDataTableData(toolCall.output);
+    if (toolCall.tool === 'create_datatable' && effectiveOutput && !hasErrorInOutput) {
+      const result = parseDataTableData(effectiveOutput);
+      return result;
     }
     return null;
-  }, [toolCall.tool, toolCall.output]);
+  }, [toolCall.tool, effectiveOutput, hasErrorInOutput]);
+
+  // Determine if this visualization tool call actually failed
+  // (either error in output OR parsing failed for visualization tools)
+  const isFailed = useMemo(() => {
+    if (hasErrorInOutput) return true;
+    // If it's a visualization tool with output but parsing failed, that's also a failure
+    if (isVisualizationTool && toolCall.output && toolCall.status === 'complete') {
+      if (toolCall.tool === 'create_chart' && !chartData) return true;
+      if (toolCall.tool === 'create_datatable' && !datatableData) return true;
+    }
+    return false;
+  }, [hasErrorInOutput, isVisualizationTool, toolCall.output, toolCall.status, toolCall.tool, chartData, datatableData]);
 
   // Parse table metadata from output if present (for SQL results)
   const { tableData, displayText } = useMemo(() => {
@@ -455,20 +515,129 @@ const ToolCallDisplay = memo(function ToolCallDisplay({ toolCall, defaultExpande
     );
   }
 
+  // Determine the status icon
+  const getStatusIcon = () => {
+    if (toolCall.status === 'running') {
+      return <Loader2 size={14} className="spinning" />;
+    }
+    if (isFailed && isVisualizationTool) {
+      return <AlertCircle size={14} className="tool-call-error-icon" />;
+    }
+    return <Check size={14} />;
+  };
+
+  // Handle retry for visualization tools
+  const handleRetry = useCallback(async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (!conversationId) {
+      setRetryError('Cannot retry: missing conversation context');
+      return;
+    }
+
+    // Find source data from sibling events (previous tool calls with TABLEDATA)
+    let sourceData: { columns: string[]; rows: unknown[][] } | null = null;
+
+    if (siblingEvents) {
+      for (const event of siblingEvents) {
+        if (event.type === 'tool' && event.output) {
+          // Check for TABLEDATA metadata in the output
+          const metadata = parseTableMetadata(event.output);
+          if (metadata.tableData) {
+            sourceData = {
+              columns: metadata.tableData.columns,
+              rows: metadata.tableData.rows
+            };
+            break;
+          }
+        }
+      }
+    }
+
+    if (!sourceData) {
+      setRetryError('Cannot retry: no table data found from previous queries');
+      setExpanded(true);
+      return;
+    }
+    setIsRetrying(true);
+    setRetryError(null);
+
+    try {
+      const toolType = toolCall.tool === 'create_chart' ? 'chart' : 'datatable';
+      const response = await fetch(`/indexes/conversations/${conversationId}/retry-visualization`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          tool_type: toolType,
+          source_data: sourceData,
+          title: 'Data'  // Default title
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const result = await response.json();
+
+      if (result.success && result.output) {
+        setRetryOutput(result.output);
+        onRetrySuccess?.(result.output);
+      } else {
+        setRetryError(result.error || 'Unknown error');
+        setExpanded(true);
+      }
+    } catch (err) {
+      setRetryError(err instanceof Error ? err.message : 'Request failed');
+      setExpanded(true);
+    } finally {
+      setIsRetrying(false);
+    }
+  }, [conversationId, siblingEvents, toolCall.tool, onRetrySuccess]);
+
   return (
-    <div className={`tool-call tool-call-${toolCall.status}`}>
-      <button
-        className="tool-call-header"
-        onClick={() => setExpanded(!expanded)}
-      >
-        <span className="tool-call-icon">
-          {toolCall.status === 'running' ? <Loader2 size={14} className="spinning" /> : <Check size={14} />}
-        </span>
-        <span className="tool-call-name">{toolCall.tool}</span>
-        <span className="tool-call-toggle">{expanded ? '▼' : '▶'}</span>
-      </button>
+    <div className={`tool-call tool-call-${toolCall.status}${isFailed ? ' tool-call-failed' : ''}`}>
+      <div className="tool-call-header-row">
+        <button
+          className="tool-call-header"
+          onClick={() => setExpanded(!expanded)}
+        >
+          <span className="tool-call-icon">
+            {getStatusIcon()}
+          </span>
+          <span className="tool-call-name">{toolCall.tool}</span>
+          <span className="tool-call-toggle">{expanded ? '▼' : '▶'}</span>
+        </button>
+        {isFailed && isVisualizationTool && !isRetrying && (
+          <button
+            type="button"
+            className="tool-call-retry-btn"
+            onClick={handleRetry}
+            title="Retry creating visualization from source data"
+          >
+            <RefreshCw size={12} />
+            <span>Retry</span>
+          </button>
+        )}
+        {isRetrying && (
+          <span className="tool-call-retrying">
+            <Loader2 size={12} className="spinning" />
+            <span>Retrying...</span>
+          </span>
+        )}
+      </div>
       {expanded && (
         <div className="tool-call-details">
+          {retryError && (
+            <div className="tool-call-section tool-call-error">
+              <div className="tool-call-section-header">
+                <span className="tool-call-section-label">Retry Error:</span>
+              </div>
+              <pre className="tool-call-code tool-call-error-text">{retryError}</pre>
+            </div>
+          )}
           {inputDisplay && (
             <div className="tool-call-section">
               <div className="tool-call-section-header">
@@ -1558,6 +1727,8 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
                                           status: 'complete'
                                         }}
                                         defaultExpanded={false}
+                                        conversationId={activeConversation.id}
+                                        siblingEvents={msg.events}
                                       />
                                     </div>
                                   ) : ev.type === 'content' ? (

@@ -34,6 +34,8 @@ from ragtime.indexer.models import (
     IndexStatus,
     PdmIndexJobResponse,
     RepoVisibilityResponse,
+    RetryVisualizationRequest,
+    RetryVisualizationResponse,
     SchemaIndexJobResponse,
     TriggerPdmIndexRequest,
     TriggerSchemaIndexRequest,
@@ -5362,6 +5364,94 @@ async def send_message_stream(
             yield "data: [DONE]\n\n"
 
     return StreamingResponse(stream_response(), media_type="text/event-stream")
+
+
+# =============================================================================
+# Retry Visualization Endpoint
+# =============================================================================
+
+
+@router.post("/conversations/{conversation_id}/retry-visualization")
+async def retry_visualization(
+    conversation_id: str,
+    request: RetryVisualizationRequest,
+    user: User = Depends(get_current_user),
+):
+    """
+    Retry a failed visualization tool call.
+
+    Directly invokes the create_datatable or create_chart tool with the provided
+    source data. No LLM call is needed since we have structured data.
+
+    For datatables, source_data should be: {"columns": [...], "rows": [...]}
+    For charts, source_data should be: {"labels": [...], "datasets": [...], "chart_type": "..."}
+    """
+    from ragtime.tools.chart import create_chart
+    from ragtime.tools.datatable import create_datatable
+
+    # Check access
+    has_access = await repository.check_conversation_access(
+        conversation_id, user.id, is_admin=(user.role == "admin")
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    try:
+        if request.tool_type == "datatable":
+            # Extract data from source_data
+            columns = request.source_data.get("columns", [])
+            rows = request.source_data.get("rows", [])
+
+            if not columns or not rows:
+                return RetryVisualizationResponse(
+                    success=False,
+                    error="Invalid source_data: must contain 'columns' and 'rows'",
+                )
+
+            title = request.title or "Data"
+
+            # Directly call the datatable tool
+            output = await create_datatable(
+                title=title,
+                columns=columns,
+                data=rows,
+                description=f"Table with {len(rows)} rows",
+            )
+
+            return RetryVisualizationResponse(success=True, output=output)
+
+        elif request.tool_type == "chart":
+            # Extract chart data
+            labels = request.source_data.get("labels", [])
+            datasets = request.source_data.get("datasets", [])
+            chart_type = request.source_data.get("chart_type", "bar")
+
+            if not labels or not datasets:
+                return RetryVisualizationResponse(
+                    success=False,
+                    error="Invalid source_data: must contain 'labels' and 'datasets'",
+                )
+
+            title = request.title or "Chart"
+
+            # Directly call the chart tool
+            output = await create_chart(
+                chart_type=chart_type,
+                title=title,
+                labels=labels,
+                datasets=datasets,
+                description=f"Chart with {len(labels)} data points",
+            )
+
+            return RetryVisualizationResponse(success=True, output=output)
+        else:
+            return RetryVisualizationResponse(
+                success=False, error=f"Unknown tool type: {request.tool_type}"
+            )
+
+    except Exception as e:
+        logger.exception(f"Error retrying visualization: {e}")
+        return RetryVisualizationResponse(success=False, error=str(e))
 
 
 # =============================================================================

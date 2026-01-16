@@ -4,7 +4,7 @@ Indexer data models and schemas.
 
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -1275,6 +1275,30 @@ class SendMessageRequest(BaseModel):
     background: bool = Field(
         default=False, description="Whether to run in background mode"
     )
+
+
+class RetryVisualizationRequest(BaseModel):
+    """Request to retry a failed visualization tool call."""
+
+    tool_type: Literal["datatable", "chart"] = Field(
+        description="Type of visualization to create: 'datatable' or 'chart'"
+    )
+    source_data: dict = Field(
+        description="Source data for the visualization. For datatable: {columns: [], rows: []}. For chart: raw data."
+    )
+    title: str | None = Field(
+        default=None, description="Optional title override for the visualization"
+    )
+
+
+class RetryVisualizationResponse(BaseModel):
+    """Response from a retry visualization request."""
+
+    success: bool = Field(description="Whether the retry was successful")
+    output: str | None = Field(
+        default=None, description="The visualization output JSON on success"
+    )
+    error: str | None = Field(default=None, description="Error message on failure")
 
 
 # =============================================================================

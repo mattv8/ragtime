@@ -2208,8 +2208,14 @@ except Exception as e:
 
                         tool_name = event.get("name", "unknown")
                         tool_output = event.get("data", {}).get("output", "")
-                        # Truncate very long outputs for display
-                        if isinstance(tool_output, str) and len(tool_output) > 2000:
+                        # Don't truncate UI visualization tools - their JSON must be complete
+                        # Truncate other long outputs for display
+                        ui_tools = {"create_chart", "create_datatable"}
+                        if (
+                            isinstance(tool_output, str)
+                            and len(tool_output) > 2000
+                            and tool_name not in ui_tools
+                        ):
                             tool_output = tool_output[:2000] + "... (truncated)"
                         yield {
                             "type": "tool_end",
