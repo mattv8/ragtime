@@ -101,6 +101,39 @@ def _log_security_warnings() -> None:
         logger.warning("=" * 70)
 
 
+def get_external_base_url(request: Request) -> str:
+    """
+    Get the external base URL for OAuth endpoints.
+
+    This considers reverse proxy headers (X-Forwarded-Proto, X-Forwarded-Host)
+    to ensure OAuth metadata returns correct URLs when behind a proxy.
+
+    Args:
+        request: The incoming request
+
+    Returns:
+        The external base URL (e.g., 'https://ragtime.example.com')
+    """
+    # Check for forwarded protocol (from reverse proxy)
+    proto = request.headers.get("x-forwarded-proto", "").lower()
+    if not proto:
+        # Fallback to request scheme
+        proto = request.url.scheme
+
+    # Check for forwarded host
+    host = request.headers.get("x-forwarded-host", "")
+    if not host:
+        # Fallback to Host header or request base URL
+        host = request.headers.get("host", "")
+        if not host:
+            # Last resort: extract from base_url
+            base = str(request.base_url).rstrip("/")
+            return base
+
+    # Build the URL
+    return f"{proto}://{host}"
+
+
 def _validate_ssl_certificates() -> None:
     """Validate SSL certificates if HTTPS is enabled."""
     if not settings.enable_https:
@@ -224,6 +257,12 @@ if settings.allowed_origins == "*":
     )
 else:
     origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
+    # Always allow loopback addresses for OAuth callbacks (RFC 8252)
+    # These are safe because they only allow requests from the local machine
+    loopback_origins = ["http://127.0.0.1", "http://localhost", "http://[::1]"]
+    for lb in loopback_origins:
+        if lb not in origins:
+            origins.append(lb)
     logger.info(f"CORS: Allowing origins: {origins}")
 
 app.add_middleware(
@@ -232,6 +271,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Allow any port on loopback for OAuth callbacks
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$",
 )
 
 # Rate limiting
@@ -346,8 +387,8 @@ async def oauth_discovery(request: Request):
     Provides OAuth2 discovery for MCP clients (VS Code, JetBrains, CLI tools, etc.)
     to automatically configure authorization endpoints.
     """
-    # Determine base URL from request
-    base_url = str(request.base_url).rstrip("/")
+    # Determine base URL from request, considering reverse proxy headers
+    base_url = get_external_base_url(request)
 
     # Security warning: OAuth should use HTTPS in production
     if base_url.startswith("http://") and not settings.debug_mode:
@@ -393,7 +434,8 @@ async def oauth_protected_resource(request: Request, path: str = ""):
         /.well-known/oauth-protected-resource/mcp   -> resource: /mcp
         /.well-known/oauth-protected-resource/mcp/custom -> resource: /mcp/custom
     """
-    base_url = str(request.base_url).rstrip("/")
+    # Determine base URL considering reverse proxy headers
+    base_url = get_external_base_url(request)
 
     # Determine the resource path from the suffix
     # If path is empty or just "mcp", use default /mcp
