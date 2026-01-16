@@ -293,7 +293,7 @@ SSH_DANGEROUS_SHELL_PATTERNS = [
     r"\btruncate\b[^\n]*\s/dev/(sd[a-z]|hd[a-z]|nvme\d+n\d+|vd[a-z])\b",
     r"\bswapoff\b",
     # Destructive Docker commands
-    r"\bdocker\s+(rm|rmi|stop|kill|pause|unpause)\b",
+    r"\bdocker\s+(rm|rmi|stop|start|restart|kill|pause|unpause)\b",
     r"\bdocker\s+container\s+(rm|stop|kill|prune)\b",
     r"\bdocker\s+image\s+(rm|prune)\b",
     r"\bdocker\s+image\s+prune\b.*\b-a\b",
