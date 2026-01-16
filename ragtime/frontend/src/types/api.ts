@@ -1241,7 +1241,7 @@ export interface HealthResponse {
 // Chat Task Types
 // =============================================================================
 
-export type ChatTaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type ChatTaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 
 export interface ChatTaskStreamingState {
   content: string;

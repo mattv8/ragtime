@@ -1290,6 +1290,7 @@ class ChatTaskStatus(str, Enum):
     completed = "completed"
     failed = "failed"
     cancelled = "cancelled"
+    interrupted = "interrupted"  # Task was running when server restarted
 
 
 class ChatTaskStreamingState(BaseModel):

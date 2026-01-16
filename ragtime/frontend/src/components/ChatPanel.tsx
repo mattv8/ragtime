@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Copy, Check, Loader2, Pencil, Trash2, Maximize2 } from 'lucide-react';
+import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, X } from 'lucide-react';
 import { api } from '@/api';
 import type { Conversation, ChatMessage, AvailableModel, ChatTask, User } from '@/types';
 
@@ -10,13 +10,6 @@ import type { Conversation, ChatMessage, AvailableModel, ChatTask, User } from '
 const MemoizedMarkdown = memo(function MemoizedMarkdown({ content }: { content: string }) {
   return <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>;
 });
-
-// Confirmation modal state
-interface ConfirmationState {
-  message: string;
-  onConfirm: () => void;
-  onCancel?: () => void;
-}
 
 // Tool call info for display during streaming
 interface ActiveToolCall {
@@ -649,14 +642,12 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const isAdmin = currentUser.role === 'admin';
 
-  // Confirmation modal state
-  const [confirmation, setConfirmation] = useState<ConfirmationState | null>(null);
-
   // Inline confirmation for delete (conversation ID waiting for confirmation)
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   // Background task state
   const [activeTask, setActiveTask] = useState<ChatTask | null>(null);
+  const [interruptedTask, setInterruptedTask] = useState<ChatTask | null>(null);  // Last interrupted task for continue
   const [_isPollingTask, setIsPollingTask] = useState(false);
   const taskPollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastSeenVersionRef = useRef<number>(0);  // Track last seen version for delta polling
@@ -932,30 +923,37 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
     }, 300);
   }, [pollTaskStatus, stopTaskPolling]);
 
-  // Check for active background task when conversation changes
+  // Check for active/interrupted background task when conversation changes
   useEffect(() => {
-    const checkActiveTask = async () => {
+    const checkTasks = async () => {
       if (!activeConversation) {
         stopTaskPolling();
         setActiveTask(null);
+        setInterruptedTask(null);
         return;
       }
 
       try {
-        const task = await api.getConversationActiveTask(activeConversation.id);
-        if (task && (task.status === 'pending' || task.status === 'running')) {
-          setActiveTask(task);
-          startTaskPolling(task.id);
+        // Check for active (running/pending) task first
+        const activeT = await api.getConversationActiveTask(activeConversation.id);
+        if (activeT && (activeT.status === 'pending' || activeT.status === 'running')) {
+          setActiveTask(activeT);
+          setInterruptedTask(null);
+          startTaskPolling(activeT.id);
         } else {
           setActiveTask(null);
           stopTaskPolling();
+
+          // Check for interrupted task (from server restart)
+          const interruptedT = await api.getConversationInterruptedTask(activeConversation.id);
+          setInterruptedTask(interruptedT);
         }
       } catch (err) {
-        console.error('Failed to check active task:', err);
+        console.error('Failed to check tasks:', err);
       }
     };
 
-    checkActiveTask();
+    checkTasks();
 
     // Cleanup on unmount or conversation change
     return () => {
@@ -1052,24 +1050,21 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
     }
   };
 
-  const clearConversation = async () => {
-    if (!activeConversation) return;
-
-    // Show modal confirmation
-    setConfirmation({
-      message: 'Clear all messages in this conversation?',
-      onConfirm: async () => {
-        setConfirmation(null);
-        try {
-          const updated = await api.clearConversation(activeConversation.id);
-          setActiveConversation(updated);
-          setConversations(prev => prev.map(c => c.id === updated.id ? updated : c));
-        } catch (err) {
-          setError(err instanceof Error ? err.message : 'Failed to clear conversation');
-        }
-      },
-      onCancel: () => setConfirmation(null)
-    });
+  const startFreshConversation = async () => {
+    // Start a fresh conversation (same behavior as New button)
+    // This replaces the old clearConversation which wiped messages
+    if (isStreaming) return;
+    try {
+      const conversation = await api.createConversation();
+      setConversations(prev => [conversation, ...prev]);
+      setActiveConversation(conversation);
+      setInterruptedTask(null);
+      setHitMaxIterations(false);
+      setIsConnectionError(false);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create conversation');
+    }
   };
 
   const stopStreaming = async () => {
@@ -1090,6 +1085,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
 
     stopTaskPolling();
     setActiveTask(null);
+    setInterruptedTask(null);
     setIsStreaming(false);
 
     // Refresh conversation to get current state (including partial messages)
@@ -1126,8 +1122,9 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
   const continueConversation = async () => {
     if (!activeConversation || isStreaming) return;
     setHitMaxIterations(false);
+    setInterruptedTask(null);
     // Directly send the continuation message
-    sendMessageDirect('Please continue from where you left off.');
+    sendMessageDirect('continue');
   };
 
   // Direct message send - bypasses inputValue state for programmatic sending
@@ -1352,7 +1349,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
                 }}
                 title="Cancel"
               >
-                ✗
+                <X size={14} />
               </button>
             </>
           ) : (
@@ -1380,29 +1377,6 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
 
   return (
     <div className="chat-panel">
-      {/* Confirmation Modal */}
-      {confirmation && (
-        <div className="modal-overlay" onClick={() => confirmation.onCancel?.()}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>Confirm Action</h3>
-              <button className="modal-close" onClick={() => confirmation.onCancel?.()}>×</button>
-            </div>
-            <div className="modal-body">
-              <p>{confirmation.message}</p>
-            </div>
-            <div className="modal-footer">
-              <button className="btn btn-secondary" onClick={() => confirmation.onCancel?.()}>
-                Cancel
-              </button>
-              <button className="btn btn-danger" onClick={confirmation.onConfirm}>
-                Confirm
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Conversations Sidebar */}
       <div className={`chat-sidebar ${showSidebar ? 'open' : ''}`}>
         <div className="chat-sidebar-header">
@@ -1525,8 +1499,8 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
                   />
                   <span className="chat-context-label">{contextUsagePercent}%</span>
                 </div>
-                <button className="btn btn-sm btn-secondary" onClick={clearConversation}>
-                  Clear
+                <button className="btn btn-sm btn-secondary" onClick={startFreshConversation} title="Start a new conversation">
+                  New Chat
                 </button>
               </div>
             </div>
@@ -1540,7 +1514,19 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
                 </div>
               ) : (
                 <>
-                  {activeConversation.messages.map((msg, idx) => (
+                  {activeConversation.messages.map((msg, idx) => {
+                    // Show separator for ANY "continue" message (continuation prompts)
+                    const isContinuationPrompt = msg.role === 'user' && msg.content === 'continue';
+
+                    if (isContinuationPrompt) {
+                      return (
+                        <div key={idx} className="chat-continuation-separator">
+                          <span>···</span>
+                        </div>
+                      );
+                    }
+
+                    return (
                     <div key={idx} className={`chat-message chat-message-${msg.role}`}>
                       <div className="chat-message-content">
                         {editingMessageIdx === idx ? (
@@ -1623,7 +1609,8 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
                         )}
                       </div>
                     </div>
-                  ))}
+                  );
+                  })}
 
                   {/* Streaming assistant message - uses consolidated segments for performance */}
                   {isStreaming && consolidatedSegments.length > 0 && (
@@ -1656,26 +1643,21 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
                 </>
               )}
 
-              {/* Continue Button - shows only when max iterations reached or connection error */}
-              {!isStreaming && activeConversation && activeConversation.messages.length > 0 &&
-               activeConversation.messages[activeConversation.messages.length - 1].role === 'assistant' &&
-               (hitMaxIterations || isConnectionError) && (
+              {/* Continue prompt - shows for max iterations, connection error, or interrupted task */}
+              {!isStreaming && activeConversation && (
+                // Show continue when:
+                // 1. Last message is assistant AND (hitMaxIterations OR isConnectionError)
+                // 2. OR there's an interrupted task (from server restart)
+                ((activeConversation.messages.length > 0 &&
+                  activeConversation.messages[activeConversation.messages.length - 1].role === 'assistant' &&
+                  (hitMaxIterations || isConnectionError)) ||
+                 interruptedTask) && (
                 <div className="chat-continue-inline">
-                  {hitMaxIterations && (
-                    <span className="chat-continue-reason">Max iterations reached</span>
-                  )}
-                  {isConnectionError && !hitMaxIterations && (
-                    <span className="chat-continue-reason">Connection interrupted</span>
-                  )}
-                  <button
-                    className="btn btn-continue-inline"
-                    onClick={continueConversation}
-                    title="Ask the assistant to continue its response"
-                  >
-                    Continue
-                  </button>
+                  <span className="chat-continue-text">
+                    Conversation interrupted, <button className="chat-continue-link" onClick={continueConversation}>continue?</button>
+                  </span>
                 </div>
-              )}
+              ))}
 
               <div ref={messagesEndRef} />
             </div>

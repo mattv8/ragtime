@@ -4990,26 +4990,6 @@ async def update_conversation_model(
 
 
 @router.post(
-    "/conversations/{conversation_id}/clear", response_model=ConversationResponse
-)
-async def clear_conversation(
-    conversation_id: str, user: User = Depends(get_current_user)
-):
-    """Clear all messages in a conversation. Users can only clear their own conversations."""
-    has_access = await repository.check_conversation_access(
-        conversation_id, user.id, is_admin=(user.role == "admin")
-    )
-    if not has_access:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-
-    conv = await repository.clear_conversation(conversation_id)
-    if not conv:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-
-    return _to_conversation_response(conv)
-
-
-@router.post(
     "/conversations/{conversation_id}/truncate", response_model=ConversationResponse
 )
 async def truncate_conversation(
@@ -5492,6 +5472,44 @@ async def get_conversation_active_task(
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     task = await repository.get_active_task_for_conversation(conversation_id)
+    if not task:
+        return None
+
+    return ChatTaskResponse(
+        id=task.id,
+        conversation_id=task.conversation_id,
+        status=task.status,
+        user_message=task.user_message,
+        streaming_state=task.streaming_state,
+        response_content=task.response_content,
+        error_message=task.error_message,
+        created_at=task.created_at,
+        started_at=task.started_at,
+        completed_at=task.completed_at,
+        last_update_at=task.last_update_at,
+    )
+
+
+@router.get(
+    "/conversations/{conversation_id}/interrupted-task",
+    response_model=Optional[ChatTaskResponse],
+)
+async def get_conversation_interrupted_task(
+    conversation_id: str, user: User = Depends(get_current_user)
+):
+    """
+    Get the last interrupted task for a conversation, if any.
+    Used to show Continue button after server restart.
+    Returns null if no interrupted task.
+    """
+    # Check access
+    has_access = await repository.check_conversation_access(
+        conversation_id, user.id, is_admin=(user.role == "admin")
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    task = await repository.get_last_interrupted_task_for_conversation(conversation_id)
     if not task:
         return None
 

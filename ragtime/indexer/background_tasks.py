@@ -72,7 +72,7 @@ class BackgroundTaskService:
                 pass
 
         # Cancel all running tasks
-        for task_id, task in list(self._running_tasks.items()):
+        for _, task in list(self._running_tasks.items()):
             if not task.done():
                 task.cancel()
                 try:
@@ -83,34 +83,44 @@ class BackgroundTaskService:
         self._running_tasks.clear()
 
     async def _resume_stale_tasks(self):
-        """Resume tasks that were running when server restarted."""
-        from ragtime.rag import rag
+        """Mark tasks that were running when server restarted as interrupted.
 
-        # Wait for RAG to be ready
-        for _ in range(30):  # Wait up to 30 seconds
-            if rag.is_ready:
-                break
-            await asyncio.sleep(1)
-
-        if not rag.is_ready:
-            logger.warning("RAG not ready, skipping task resume")
-            return
-
+        Instead of automatically resuming tasks (which could cause issues if the
+        conversation was modified or cleared), we mark them as 'interrupted' so
+        the frontend can show a Continue button to the user.
+        """
         try:
             db = await repository._get_db()
             stale_tasks = await db.chattask.find_many(
                 where={"status": {"in": ["pending", "running"]}}
             )
 
+            if not stale_tasks:
+                return
+
+            count = 0
             for prisma_task in stale_tasks:
-                task = repository._prisma_task_to_model(prisma_task)
-                logger.info(
-                    f"Resuming stale task {task.id} for conversation {task.conversation_id}"
+                # Mark as interrupted instead of resuming
+                await db.chattask.update(
+                    where={"id": prisma_task.id},
+                    data={
+                        "status": "interrupted",
+                        "completedAt": datetime.utcnow(),
+                        "lastUpdateAt": datetime.utcnow(),
+                    },
                 )
-                self.start_task(task.conversation_id, task.user_message, task.id)
+                # Clear the active task reference from the conversation
+                await db.conversation.update(
+                    where={"id": prisma_task.conversationId},
+                    data={"activeTaskId": None},
+                )
+                count += 1
+
+            if count > 0:
+                logger.info(f"Marked {count} stale task(s) as interrupted")
 
         except Exception as e:
-            logger.error(f"Failed to resume stale tasks: {e}")
+            logger.error(f"Failed to mark stale tasks as interrupted: {e}")
 
     async def _cleanup_loop(self):
         """Periodically clean up stale tasks."""

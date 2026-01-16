@@ -1344,16 +1344,6 @@ export const api = {
   },
 
   /**
-   * Clear all messages in a conversation
-   */
-  async clearConversation(conversationId: string): Promise<Conversation> {
-    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/clear`, {
-      method: 'POST',
-    });
-    return handleResponse<Conversation>(response);
-  },
-
-  /**
    * Truncate conversation messages to keep only the first N messages.
    * Used when editing/resending a message.
    */
@@ -1386,6 +1376,19 @@ export const api = {
    */
   async getConversationActiveTask(conversationId: string): Promise<import('@/types').ChatTask | null> {
     const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/task`);
+    if (response.status === 204 || response.status === 404) {
+      return null;
+    }
+    const data = await handleResponse<import('@/types').ChatTask | null>(response);
+    return data;
+  },
+
+  /**
+   * Get the last interrupted task for a conversation, if any.
+   * Used to show Continue button after server restart.
+   */
+  async getConversationInterruptedTask(conversationId: string): Promise<import('@/types').ChatTask | null> {
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/interrupted-task`);
     if (response.status === 204 || response.status === 404) {
       return null;
     }

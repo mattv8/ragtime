@@ -549,31 +549,42 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: var(--space-sm);
-  padding: var(--space-sm);
-  margin: var(--space-sm) 0;
+  gap: var(--space-xs);
+  padding: var(--space-xs) 0;
+  margin: 0;
 }
 
-.chat-continue-reason {
+.chat-continue-text {
   font-size: var(--text-sm);
   color: var(--color-text-secondary);
 }
 
-.btn-continue-inline {
-  padding: 6px var(--space-md);
-  background: transparent;
-  border: 1px solid var(--color-primary);
-  color: var(--color-primary);
-  font-weight: 500;
+.chat-continue-link {
+  background: none;
+  border: none;
+  padding: 0;
   font-size: var(--text-sm);
-  border-radius: var(--radius-md);
+  color: var(--color-primary);
+  text-decoration: underline;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  font-weight: 500;
+  transition: color var(--transition-fast);
 }
 
-.btn-continue-inline:hover {
-  background: var(--color-primary);
-  color: white;
+.chat-continue-link:hover {
+  color: var(--color-primary-hover, #3b82f6);
+  text-decoration: underline;
+}
+
+/* Continuation separator */
+.chat-continuation-separator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-xs) 0;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-sm);
+  letter-spacing: 0.3em;
 }
 
 /* No Conversation State */

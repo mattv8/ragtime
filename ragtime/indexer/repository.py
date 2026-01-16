@@ -1292,25 +1292,6 @@ class IndexerRepository:
             logger.warning(f"Failed to update conversation model: {e}")
             return None
 
-    async def clear_conversation(self, conversation_id: str) -> Optional[Conversation]:
-        """Clear all messages in a conversation."""
-        db = await self._get_db()
-
-        try:
-            updated = await db.conversation.update(
-                where={"id": conversation_id},
-                data={
-                    "messages": Json([]),
-                    "totalTokens": 0,
-                    "updatedAt": datetime.utcnow(),
-                },
-                include={"user": True},
-            )
-            return self._prisma_conversation_to_model(updated)
-        except Exception as e:
-            logger.warning(f"Failed to clear conversation: {e}")
-            return None
-
     async def truncate_messages(
         self, conversation_id: str, keep_count: int
     ) -> Optional[Conversation]:
@@ -1498,6 +1479,28 @@ class IndexerRepository:
                             PrismaChatTaskStatus.running,
                         ]
                     },
+                },
+            ),
+            order={"createdAt": "desc"},
+        )  # type: ignore[arg-type]
+
+        if prisma_task is None:
+            return None
+
+        return self._prisma_task_to_model(prisma_task)
+
+    async def get_last_interrupted_task_for_conversation(
+        self, conversation_id: str
+    ) -> Optional[ChatTask]:
+        """Get the last interrupted task for a conversation (if any)."""
+        db = await self._get_db()
+
+        prisma_task = await db.chattask.find_first(
+            where=cast(
+                Any,
+                {
+                    "conversationId": conversation_id,
+                    "status": PrismaChatTaskStatus.interrupted,
                 },
             ),
             order={"createdAt": "desc"},
