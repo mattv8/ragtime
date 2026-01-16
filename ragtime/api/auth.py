@@ -23,6 +23,7 @@ from ragtime.core.auth import (
     lookup_bind_dn,
 )
 from ragtime.core.database import get_db
+from ragtime.core.encryption import encrypt_secret
 from ragtime.core.logging import get_logger
 from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, limiter
 from ragtime.core.security import get_current_user, get_session_token, require_admin
@@ -446,7 +447,11 @@ async def update_ldap_configuration(
     # Merge with existing values for optional fields
     server_url = body.server_url if body.server_url is not None else existing.serverUrl
     bind_dn = body.bind_dn if body.bind_dn is not None else existing.bindDn
-    bind_password = body.bind_password if body.bind_password else existing.bindPassword
+    # Keep existing (encrypted) password if not provided, otherwise encrypt new password
+    if body.bind_password:
+        bind_password = encrypt_secret(body.bind_password)
+    else:
+        bind_password = existing.bindPassword
     allow_self_signed = (
         body.allow_self_signed
         if body.allow_self_signed is not None

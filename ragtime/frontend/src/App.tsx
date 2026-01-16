@@ -116,6 +116,10 @@ export function App() {
 
   const handleLoginSuccess = (user: User) => {
     setCurrentUser(user);
+    // If non-admin tried to access admin view via URL, redirect to chat
+    if (user.role !== 'admin' && activeView !== 'chat') {
+      setActiveView('chat');
+    }
   };
 
   const handleLogout = async () => {
@@ -130,10 +134,19 @@ export function App() {
   // Check if user is admin
   const isAdmin = currentUser?.role === 'admin';
 
-  // Sync state to URL params
+  // Enforce admin-only views - redirect non-admins to chat
+  useEffect(() => {
+    if (currentUser && !isAdmin && activeView !== 'chat') {
+      setActiveView('chat');
+    }
+  }, [currentUser, isAdmin, activeView]);
+
+  // Sync state to URL params (only sync valid views for user's role)
   useEffect(() => {
     const params = new URLSearchParams();
-    params.set('view', activeView);
+    // Non-admins should only have 'chat' in URL
+    const viewToSync = (!isAdmin && activeView !== 'chat') ? 'chat' : activeView;
+    params.set('view', viewToSync);
     if (highlightSetting) {
       params.set('highlight', highlightSetting);
     }
@@ -401,13 +414,16 @@ export function App() {
         authStatus={authStatus}
         isAdmin={isAdmin}
         onNavigateToSettings={() => {
-          setHighlightSetting('api_key_info');
-          setActiveView('settings');
+          if (isAdmin) {
+            setHighlightSetting('api_key_info');
+            setActiveView('settings');
+          }
         }}
       />
       <div className="container">
 
-      {activeView === 'chat' ? (
+      {/* Non-admins can only see chat - this is the final safeguard */}
+      {activeView === 'chat' || !isAdmin ? (
         <ChatPanel currentUser={currentUser} />
       ) : activeView === 'settings' ? (
         <SettingsPanel

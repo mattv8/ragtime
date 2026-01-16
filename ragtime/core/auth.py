@@ -26,6 +26,7 @@ from pydantic import BaseModel
 
 from ragtime.config.settings import settings
 from ragtime.core.database import get_db
+from ragtime.core.encryption import decrypt_secret
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -507,11 +508,14 @@ async def authenticate_ldap(username: str, password: str) -> AuthResult:
     if not ldap_config.serverUrl or not ldap_config.bindDn:
         return AuthResult(success=False, error="LDAP not configured")
 
+    # Decrypt bind password if encrypted
+    bind_password = decrypt_secret(ldap_config.bindPassword)
+
     # Connect with service account
     conn = _get_ldap_connection(
         ldap_config.serverUrl,
         ldap_config.bindDn,
-        ldap_config.bindPassword,
+        bind_password,
         ldap_config.allowSelfSigned,
     )
     if not conn:
@@ -536,6 +540,7 @@ async def authenticate_ldap(username: str, password: str) -> AuthResult:
                 "mail",
                 "displayName",
                 "memberOf",
+                "primaryGroupID",  # AD primary group (not in memberOf)
             ],
         )
 
@@ -579,10 +584,104 @@ async def authenticate_ldap(username: str, password: str) -> AuthResult:
             if hasattr(user_entry, "memberOf") and user_entry.memberOf:
                 member_of = [str(g) for g in user_entry.memberOf]
 
-            if ldap_config.adminGroupDn in member_of:
+            # Get primary group ID (AD doesn't include primary group in memberOf)
+            primary_group_id = None
+            if hasattr(user_entry, "primaryGroupID") and user_entry.primaryGroupID:
+                # Extract the value from the LDAP attribute object
+                primary_group_id = int(str(user_entry.primaryGroupID))
+
+            # Case-insensitive DN comparison helper
+            def dn_matches(dn1: str, dn2: str) -> bool:
+                """Case-insensitive DN comparison (AD DNs are case-insensitive)."""
+                return dn1.lower() == dn2.lower()
+
+            def get_group_rid(group_dn: str) -> int | None:
+                """Query a group and extract its RID from primaryGroupToken or objectSid."""
+                try:
+                    group_conn = _get_ldap_connection(
+                        ldap_config.serverUrl,
+                        ldap_config.bindDn,
+                        bind_password,
+                        ldap_config.allowSelfSigned,
+                    )
+                    if not group_conn:
+                        return None
+
+                    # Query primaryGroupToken (the RID) directly - simpler than parsing objectSid
+                    group_conn.search(
+                        search_base=group_dn,
+                        search_filter="(objectClass=*)",
+                        search_scope="BASE",
+                        attributes=["primaryGroupToken", "objectSid"],
+                    )
+
+                    if group_conn.entries:
+                        entry = group_conn.entries[0]
+
+                        # Try primaryGroupToken first (this is the RID directly)
+                        if (
+                            hasattr(entry, "primaryGroupToken")
+                            and entry.primaryGroupToken
+                        ):
+                            rid = int(str(entry.primaryGroupToken))
+                            group_conn.unbind()
+                            logger.debug(
+                                f"Got RID {rid} for group {group_dn} via primaryGroupToken"
+                            )
+                            return rid
+
+                        # Fall back to parsing objectSid
+                        if hasattr(entry, "objectSid") and entry.objectSid:
+                            sid_value = entry.objectSid.value
+                            if isinstance(sid_value, bytes) and len(sid_value) >= 4:
+                                rid = int.from_bytes(sid_value[-4:], byteorder="little")
+                                group_conn.unbind()
+                                logger.debug(
+                                    f"Got RID {rid} for group {group_dn} via objectSid"
+                                )
+                                return rid
+
+                    group_conn.unbind()
+                except LDAPException as e:
+                    logger.debug(f"Failed to get RID for group {group_dn}: {e}")
+                return None
+
+            def is_member_of_group(group_dn: str) -> bool:
+                """Check if user is member of group (case-insensitive, includes primary group)."""
+                # Check direct membership via memberOf (case-insensitive)
+                for member_dn in member_of:
+                    if dn_matches(member_dn, group_dn):
+                        return True
+
+                # Check if this group is the user's primary group
+                # AD stores primary group as RID in primaryGroupID, not in memberOf
+                if primary_group_id:
+                    group_rid = get_group_rid(group_dn)
+                    if group_rid and group_rid == primary_group_id:
+                        logger.debug(
+                            f"User's primary group (RID {primary_group_id}) matches {group_dn}"
+                        )
+                        return True
+
+                return False
+
+            logger.debug(
+                f"Group membership check for {ldap_username}: "
+                f"memberOf={member_of}, primaryGroupID={primary_group_id}, "
+                f"adminGroupDn={ldap_config.adminGroupDn}, userGroupDn={ldap_config.userGroupDn}"
+            )
+
+            if is_member_of_group(ldap_config.adminGroupDn):
                 role = UserRole.admin
-            elif ldap_config.userGroupDn and ldap_config.userGroupDn not in member_of:
+            elif ldap_config.userGroupDn and not is_member_of_group(
+                ldap_config.userGroupDn
+            ):
                 # If user group is specified, user must be a member
+                logger.warning(
+                    f"User {ldap_username} not in authorized group. "
+                    f"memberOf={member_of}, primaryGroupID={primary_group_id}, "
+                    f"required userGroupDn={ldap_config.userGroupDn}"
+                )
                 return AuthResult(success=False, error="User not in authorized group")
 
         # Sync user to database
