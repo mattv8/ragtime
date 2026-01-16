@@ -12,6 +12,8 @@ import { Icon } from './Icon';
 
 interface MCPRoutesPanelProps {
   onClose?: () => void;
+  ldapConfigured?: boolean;
+  ldapGroups?: { dn: string; name: string }[];
 }
 
 // Route card component
@@ -51,8 +53,9 @@ function RouteCard({ route, tools, onEdit, onDelete, onToggle }: RouteCardProps)
       )}
 
       <div className="tool-card-meta">
-        {route.require_auth && route.has_password && <span className="write-enabled">Password protected</span>}
-        {route.require_auth && !route.has_password && <span style={{ color: 'var(--color-warning, #f59e0b)' }}>Auth enabled (no password set)</span>}
+        {route.require_auth && route.auth_method === 'oauth2' && <span className="write-enabled">OAuth2 (LDAP)</span>}
+        {route.require_auth && route.auth_method === 'password' && route.has_password && <span className="write-enabled">Password protected</span>}
+        {route.require_auth && route.auth_method === 'password' && !route.has_password && <span style={{ color: 'var(--color-warning, #f59e0b)' }}>Auth enabled (no password set)</span>}
         {route.include_knowledge_search && <span>Knowledge search</span>}
         {route.include_git_history && <span>Git history</span>}
         <span>{selectedTools.length} tool(s)</span>
@@ -93,6 +96,8 @@ interface RouteWizardProps {
   filesystemTools: ToolConfig[];
   schemaTools: ToolConfig[];
   aggregateSearch: boolean;
+  ldapConfigured: boolean;
+  ldapGroups: { dn: string; name: string }[];
   onSave: (data: CreateMcpRouteRequest | UpdateMcpRouteRequest, routeId?: string) => Promise<void>;
   onCancel: () => void;
   saving: boolean;
@@ -105,6 +110,8 @@ function RouteWizard({
   filesystemTools,
   schemaTools,
   aggregateSearch,
+  ldapConfigured,
+  ldapGroups,
   onSave,
   onCancel,
   saving,
@@ -117,6 +124,10 @@ function RouteWizard({
   const [authPassword, setAuthPassword] = useState(editingRoute?.auth_password || '');
   const [showPassword, setShowPassword] = useState(false);
   const [clearPassword, setClearPassword] = useState(false);
+  // Auth method: password or oauth2 (LDAP)
+  const [authMethod, setAuthMethod] = useState<'password' | 'oauth2'>(editingRoute?.auth_method || 'password');
+  // Allowed LDAP group for OAuth2 auth
+  const [allowedLdapGroup, setAllowedLdapGroup] = useState(editingRoute?.allowed_ldap_group || '');
 
   // Document index selection (when aggregate is true, this is a single toggle; when false, per-index)
   const [includeKnowledgeSearch, setIncludeKnowledgeSearch] = useState(editingRoute?.include_knowledge_search ?? false);
@@ -165,13 +176,13 @@ function RouteWizard({
       return;
     }
 
-    // Validate password if auth is required and no existing password
-    if (requireAuth && !editingRoute?.has_password && !authPassword && !clearPassword) {
-      setError('Password is required when authentication is enabled');
+    // Validate password if auth is required and using password method
+    if (requireAuth && authMethod === 'password' && !editingRoute?.has_password && !authPassword && !clearPassword) {
+      setError('Password is required when password authentication is enabled');
       return;
     }
 
-    if (authPassword && authPassword.length < 8) {
+    if (authMethod === 'password' && authPassword && authPassword.length < 8) {
       setError('Password must be at least 8 characters');
       return;
     }
@@ -182,6 +193,9 @@ function RouteWizard({
           name: name.trim(),
           description: description.trim(),
           require_auth: requireAuth,
+          auth_method: authMethod,
+          allowed_ldap_group: allowedLdapGroup.trim() || undefined,
+          clear_allowed_ldap_group: !allowedLdapGroup.trim() && !!editingRoute.allowed_ldap_group,
           include_knowledge_search: includeKnowledgeSearch,
           include_git_history: includeGitHistory,
           selected_document_indexes: Array.from(selectedDocIndexes),
@@ -189,7 +203,7 @@ function RouteWizard({
           selected_schema_indexes: Array.from(selectedSchemaTools),
           tool_config_ids: Array.from(selectedToolIds),
         };
-        if (authPassword) {
+        if (authMethod === 'password' && authPassword) {
           updateData.auth_password = authPassword;
         }
         if (clearPassword) {
@@ -202,6 +216,8 @@ function RouteWizard({
           route_path: routePath.trim().toLowerCase(),
           description: description.trim(),
           require_auth: requireAuth,
+          auth_method: authMethod,
+          allowed_ldap_group: allowedLdapGroup.trim() || undefined,
           include_knowledge_search: includeKnowledgeSearch,
           include_git_history: includeGitHistory,
           selected_document_indexes: Array.from(selectedDocIndexes),
@@ -209,7 +225,7 @@ function RouteWizard({
           selected_schema_indexes: Array.from(selectedSchemaTools),
           tool_config_ids: Array.from(selectedToolIds),
         };
-        if (authPassword) {
+        if (authMethod === 'password' && authPassword) {
           createData.auth_password = authPassword;
         }
         await onSave(createData);
@@ -336,14 +352,68 @@ function RouteWizard({
                 }}
                 style={{ marginRight: '0.5rem' }}
               />
-              <span>Require password authentication</span>
+              <span>Require authentication</span>
             </label>
             <p className="field-help">
-              When enabled, clients must provide the password via Bearer authentication header.
+              When enabled, clients must authenticate to access this route.
             </p>
           </div>
 
-          {requireAuth && (
+          {/* Auth method selection - only show when LDAP is configured and auth is enabled */}
+          {requireAuth && ldapConfigured && (
+            <div className="form-group">
+              <label>Authentication Method</label>
+              <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem' }}>
+                <label className="radio-label">
+                  <input
+                    type="radio"
+                    name="route_auth_method"
+                    value="password"
+                    checked={authMethod === 'password'}
+                    onChange={() => setAuthMethod('password')}
+                  />
+                  <span>Password</span>
+                </label>
+                <label className="radio-label">
+                  <input
+                    type="radio"
+                    name="route_auth_method"
+                    value="oauth2"
+                    checked={authMethod === 'oauth2'}
+                    onChange={() => setAuthMethod('oauth2')}
+                  />
+                  <span>OAuth2 (LDAP)</span>
+                </label>
+              </div>
+              <p className="field-help">
+                {authMethod === 'oauth2'
+                  ? 'MCP clients authenticate with LDAP credentials via POST /auth/oauth2/token to get a Bearer token.'
+                  : 'MCP clients use a static password as the Bearer token or MCP-Password header.'}
+              </p>
+            </div>
+          )}
+
+          {/* LDAP Group restriction - only for OAuth2 auth method */}
+          {requireAuth && ldapConfigured && authMethod === 'oauth2' && (
+            <div className="form-group">
+              <label>Allowed LDAP Group (Optional)</label>
+              <select
+                value={allowedLdapGroup}
+                onChange={(e) => setAllowedLdapGroup(e.target.value)}
+              >
+                <option value="">Any authenticated LDAP user</option>
+                {ldapGroups.map((g) => (
+                  <option key={g.dn} value={g.dn}>{g.name}</option>
+                ))}
+              </select>
+              <p className="field-help">
+                Restrict access to members of a specific LDAP group. Leave empty to allow all authenticated LDAP users.
+              </p>
+            </div>
+          )}
+
+          {/* Password field - only for password auth method */}
+          {requireAuth && authMethod === 'password' && (
             <div className="form-group">
               <label>
                 Password
@@ -384,7 +454,7 @@ function RouteWizard({
                     value={authPassword}
                     onChange={(e) => setAuthPassword(e.target.value)}
                     placeholder="Enter password (min 8 characters)"
-                    required={requireAuth && !editingRoute?.has_password}
+                    required={requireAuth && authMethod === 'password' && !editingRoute?.has_password}
                     minLength={8}
                     style={{ flex: 1 }}
                   />
@@ -588,7 +658,7 @@ function RouteWizard({
 }
 
 // Main panel
-export function MCPRoutesPanel({ onClose }: MCPRoutesPanelProps) {
+export function MCPRoutesPanel({ onClose, ldapConfigured = false, ldapGroups = [] }: MCPRoutesPanelProps) {
   const [routes, setRoutes] = useState<McpRouteConfig[]>([]);
   const [tools, setTools] = useState<ToolConfig[]>([]);
   const [documentIndexes, setDocumentIndexes] = useState<IndexInfo[]>([]);
@@ -735,6 +805,8 @@ export function MCPRoutesPanel({ onClose }: MCPRoutesPanelProps) {
             filesystemTools={filesystemTools}
             schemaTools={schemaTools}
             aggregateSearch={settings?.aggregate_search ?? true}
+            ldapConfigured={ldapConfigured}
+            ldapGroups={ldapGroups}
             onSave={handleSave}
             onCancel={() => {
               setShowWizard(false);

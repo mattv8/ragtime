@@ -98,7 +98,9 @@ class SettingsCache:
                 # MCP settings
                 "mcp_enabled": prisma_settings.mcpEnabled,
                 "mcp_default_route_auth": prisma_settings.mcpDefaultRouteAuth,
+                "mcp_default_route_auth_method": prisma_settings.mcpDefaultRouteAuthMethod,
                 "mcp_default_route_password": mcp_password,  # Kept encrypted
+                "mcp_default_route_allowed_group": prisma_settings.mcpDefaultRouteAllowedGroup,
             }
             return self._settings
 
@@ -138,7 +140,9 @@ class SettingsCache:
                 # MCP settings
                 "mcp_enabled": False,
                 "mcp_default_route_auth": False,
+                "mcp_default_route_auth_method": "password",
                 "mcp_default_route_password": None,
+                "mcp_default_route_allowed_group": None,
             }
 
     async def get_tool_configs(self) -> List[dict]:

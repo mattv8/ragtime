@@ -6,7 +6,7 @@ Endpoints for login, logout, user info, and LDAP configuration.
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
 from prisma.enums import UserRole
 from prisma.models import User
 from pydantic import BaseModel, Field
@@ -23,7 +23,7 @@ from ragtime.core.auth import (
     lookup_bind_dn,
 )
 from ragtime.core.database import get_db
-from ragtime.core.encryption import encrypt_secret
+from ragtime.core.encryption import decrypt_secret, encrypt_secret
 from ragtime.core.logging import get_logger
 from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, limiter
 from ragtime.core.security import get_current_user, get_session_token, require_admin
@@ -303,6 +303,134 @@ async def logout(
 
 
 # =============================================================================
+# OAuth2 Token Endpoint (for MCP clients)
+# =============================================================================
+
+
+class OAuth2TokenRequest(BaseModel):
+    """OAuth2 token request (Resource Owner Password Credentials grant)."""
+
+    grant_type: str = Field(..., description="Grant type (must be 'password')")
+    username: str = Field(..., min_length=1, description="Username")
+    password: str = Field(..., min_length=1, description="Password")
+    scope: Optional[str] = Field(
+        default=None, description="Requested scopes (optional)"
+    )
+
+
+class OAuth2TokenResponse(BaseModel):
+    """OAuth2 token response."""
+
+    access_token: str
+    token_type: str = "Bearer"
+    expires_in: int  # Seconds until expiration
+    scope: Optional[str] = None
+
+
+class OAuth2ErrorResponse(BaseModel):
+    """OAuth2 error response per RFC 6749."""
+
+    error: str
+    error_description: Optional[str] = None
+
+
+@router.post(
+    "/oauth2/token",
+    response_model=OAuth2TokenResponse,
+    responses={
+        400: {"model": OAuth2ErrorResponse},
+        401: {"model": OAuth2ErrorResponse},
+    },
+    tags=["OAuth2"],
+)
+@limiter.limit(LOGIN_RATE_LIMIT)
+async def oauth2_token(
+    request: Request,
+    grant_type: str = Form(..., description="Grant type (must be 'password')"),
+    username: str = Form(..., min_length=1, description="Username"),
+    password: str = Form(..., min_length=1, description="Password"),
+    scope: Optional[str] = Form(
+        default=None, description="Requested scopes (optional)"
+    ),
+):
+    """
+    OAuth2 Token Endpoint (Resource Owner Password Credentials grant).
+
+    This endpoint allows MCP clients to obtain access tokens using LDAP credentials.
+    The token can then be used as a Bearer token for MCP requests.
+
+    **Usage with MCP clients:**
+    1. POST to /auth/oauth2/token with grant_type=password, username, and password
+    2. Receive an access_token
+    3. Use the token as: Authorization: Bearer <access_token>
+
+    Rate limited to prevent brute-force attacks.
+    """
+    # Validate grant_type
+    if grant_type != "password":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "unsupported_grant_type",
+                "error_description": "Only 'password' grant type is supported",
+            },
+        )
+
+    # Check if LDAP is configured (OAuth2 requires LDAP)
+    ldap_config = await get_ldap_config()
+    if not ldap_config.serverUrl or not ldap_config.bindDn:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "server_error",
+                "error_description": "OAuth2 requires LDAP to be configured",
+            },
+        )
+
+    # Authenticate via LDAP
+    result = await authenticate(username, password)
+
+    if not result.success:
+        logger.warning(f"OAuth2 token request failed for '{username}': {result.error}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "error": "invalid_grant",
+                "error_description": result.error or "Authentication failed",
+            },
+        )
+
+    if not result.user_id or not result.username:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error": "server_error",
+                "error_description": "Authentication succeeded but user data is missing",
+            },
+        )
+
+    # Create access token (same as regular login)
+    token = create_access_token(result.user_id, result.username, result.role)
+
+    # Create session in database for token validation
+    await create_session(
+        user_id=result.user_id,
+        token=token,
+        user_agent=request.headers.get("User-Agent"),
+        ip_address=request.client.host if request.client else None,
+    )
+
+    logger.info(f"OAuth2 token issued for '{result.username}'")
+
+    return OAuth2TokenResponse(
+        access_token=token,
+        token_type="Bearer",
+        expires_in=settings.jwt_expire_hours * 3600,
+        scope=scope,
+    )
+
+
+# =============================================================================
 # Authenticated Endpoints
 # =============================================================================
 
@@ -369,10 +497,13 @@ async def discover_ldap_with_stored_credentials(
             error="LDAP not fully configured. Please provide server URL, bind DN, and password.",
         )
 
+    # Decrypt bind password before using
+    bind_password = decrypt_secret(config.bindPassword)
+
     result = await discover_ldap_structure(
         server_url=config.serverUrl,
         bind_dn=config.bindDn,
-        bind_password=config.bindPassword,
+        bind_password=bind_password,
         allow_self_signed=config.allowSelfSigned,
     )
 
@@ -462,6 +593,7 @@ async def update_ldap_configuration(
         if body.user_search_filter is not None
         else existing.userSearchFilter
     )
+    # Empty string means "clear the value", None means "keep existing"
     admin_group_dn = (
         body.admin_group_dn
         if body.admin_group_dn is not None
@@ -470,6 +602,9 @@ async def update_ldap_configuration(
     user_group_dn = (
         body.user_group_dn if body.user_group_dn is not None else existing.userGroupDn
     )
+    # Normalize empty strings to empty (not None) for storage
+    admin_group_dn = admin_group_dn or ""
+    user_group_dn = user_group_dn or ""
 
     # Discover structure if user_search_base not provided and we have connection details
     discovery = None

@@ -672,7 +672,13 @@ class IndexerRepository:
             # MCP configuration
             mcp_enabled=getattr(settings, "mcpEnabled", False),
             mcp_default_route_auth=getattr(settings, "mcpDefaultRouteAuth", False),
+            mcp_default_route_auth_method=getattr(
+                settings, "mcpDefaultRouteAuthMethod", "password"
+            ),
             mcp_default_route_password=mcp_password,
+            mcp_default_route_allowed_group=getattr(
+                settings, "mcpDefaultRouteAllowedGroup", None
+            ),
             has_mcp_default_password=getattr(settings, "mcpDefaultRoutePassword", None)
             is not None,
             # Embedding dimension tracking
@@ -724,7 +730,9 @@ class IndexerRepository:
             # MCP configuration
             "mcp_enabled": "mcpEnabled",
             "mcp_default_route_auth": "mcpDefaultRouteAuth",
+            "mcp_default_route_auth_method": "mcpDefaultRouteAuthMethod",
             "mcp_default_route_password": "mcpDefaultRoutePassword",
+            "mcp_default_route_allowed_group": "mcpDefaultRouteAllowedGroup",
             # Embedding dimension tracking (internal use)
             "embedding_dimension": "embeddingDimension",
             "embedding_config_hash": "embeddingConfigHash",
@@ -755,6 +763,15 @@ class IndexerRepository:
             elif pwd_value is not None:
                 # Encrypt and store
                 update_data["mcpDefaultRoutePassword"] = encrypt_secret(pwd_value)
+
+        # Special handling for mcp_default_route_allowed_group:
+        # - Empty string clears the group (set to None/empty)
+        if "mcp_default_route_allowed_group" in updates:
+            group_value = updates["mcp_default_route_allowed_group"]
+            if group_value == "":
+                update_data["mcpDefaultRouteAllowedGroup"] = None
+            elif group_value is not None:
+                update_data["mcpDefaultRouteAllowedGroup"] = group_value
 
         if not update_data:
             return await self.get_settings()

@@ -61,6 +61,8 @@ export interface McpRouteConfig {
   require_auth: boolean;
   has_password: boolean;
   auth_password?: string;  // Decrypted password for admin display
+  auth_method: 'password' | 'oauth2';
+  allowed_ldap_group: string | null;
   include_knowledge_search: boolean;
   include_git_history: boolean;
   selected_document_indexes: string[];
@@ -77,6 +79,8 @@ export interface CreateMcpRouteRequest {
   description?: string;
   require_auth?: boolean;
   auth_password?: string;
+  auth_method?: 'password' | 'oauth2';
+  allowed_ldap_group?: string;
   include_knowledge_search?: boolean;
   include_git_history?: boolean;
   selected_document_indexes?: string[];
@@ -92,6 +96,9 @@ export interface UpdateMcpRouteRequest {
   require_auth?: boolean;
   auth_password?: string;
   clear_password?: boolean;
+  auth_method?: 'password' | 'oauth2';
+  allowed_ldap_group?: string;
+  clear_allowed_ldap_group?: boolean;
   include_knowledge_search?: boolean;
   include_git_history?: boolean;
   selected_document_indexes?: string[];
@@ -395,6 +402,8 @@ export interface AppSettings {
   // MCP Configuration
   mcp_enabled: boolean;
   mcp_default_route_auth: boolean;
+  mcp_default_route_auth_method: 'password' | 'oauth2';
+  mcp_default_route_allowed_group: string | null;
   has_mcp_default_password: boolean;
   mcp_default_route_password?: string;
   // Tool Configuration
@@ -443,6 +452,8 @@ export interface UpdateSettingsRequest {
   // MCP settings
   mcp_enabled?: boolean;
   mcp_default_route_auth?: boolean;
+  mcp_default_route_auth_method?: 'password' | 'oauth2';
+  mcp_default_route_allowed_group?: string | null;
   mcp_default_route_password?: string;
   // Tool settings
   enabled_tools?: string[];

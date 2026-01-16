@@ -37,6 +37,8 @@ class McpRouteConfig(BaseModel):
     require_auth: bool
     has_password: bool = False  # Whether a password is set
     auth_password: str | None = None  # Decrypted password (if requested)
+    auth_method: str = "password"  # "password" or "oauth2"
+    allowed_ldap_group: str | None = None  # LDAP group DN for OAuth2 auth
     include_knowledge_search: bool
     include_git_history: bool
     selected_document_indexes: List[str] = Field(default_factory=list)
@@ -70,6 +72,15 @@ class CreateMcpRouteRequest(BaseModel):
         min_length=8,
         max_length=128,
         description="Password/API key for authentication",
+    )
+    auth_method: str = Field(
+        default="password",
+        description="Authentication method: 'password' or 'oauth2'",
+    )
+    allowed_ldap_group: str | None = Field(
+        default=None,
+        max_length=500,
+        description="LDAP group DN for OAuth2 authorization (e.g., 'CN=MCP Users,OU=Groups,DC=example,DC=com')",
     )
     include_knowledge_search: bool = Field(
         default=True, description="Include search_knowledge tool"
@@ -106,6 +117,18 @@ class UpdateMcpRouteRequest(BaseModel):
     )
     clear_password: bool = Field(
         default=False, description="Set to true to clear the password"
+    )
+    auth_method: str | None = Field(
+        default=None,
+        description="Authentication method: 'password' or 'oauth2'",
+    )
+    allowed_ldap_group: str | None = Field(
+        default=None,
+        max_length=500,
+        description="LDAP group DN for OAuth2 authorization",
+    )
+    clear_allowed_ldap_group: bool = Field(
+        default=False, description="Set to true to clear the allowed LDAP group"
     )
     include_knowledge_search: bool | None = None
     include_git_history: bool | None = None
@@ -158,6 +181,8 @@ async def list_mcp_routes(_user=Depends(require_admin)):
                 require_auth=route.requireAuth,
                 has_password=bool(route.authPassword),
                 auth_password=decrypted_password,
+                auth_method=route.authMethod or "password",
+                allowed_ldap_group=route.allowedLdapGroup,
                 include_knowledge_search=route.includeKnowledgeSearch,
                 include_git_history=route.includeGitHistory,
                 selected_document_indexes=route.selectedDocumentIndexes or [],
@@ -205,6 +230,8 @@ async def get_mcp_route(route_id: str, _user=Depends(require_admin)):
         require_auth=route.requireAuth,
         has_password=bool(route.authPassword),
         auth_password=decrypted_password,
+        auth_method=route.authMethod or "password",
+        allowed_ldap_group=route.allowedLdapGroup,
         include_knowledge_search=route.includeKnowledgeSearch,
         include_git_history=route.includeGitHistory,
         selected_document_indexes=route.selectedDocumentIndexes or [],
@@ -249,6 +276,8 @@ async def create_mcp_route(
         "routePath": request.route_path,
         "description": request.description,
         "requireAuth": request.require_auth,
+        "authMethod": request.auth_method,
+        "allowedLdapGroup": request.allowed_ldap_group,
         "includeKnowledgeSearch": request.include_knowledge_search,
         "includeGitHistory": request.include_git_history,
         "selectedDocumentIndexes": request.selected_document_indexes,
@@ -288,6 +317,8 @@ async def create_mcp_route(
         require_auth=route.requireAuth,
         has_password=bool(route.authPassword),
         auth_password=decrypted_password,
+        auth_method=route.authMethod or "password",
+        allowed_ldap_group=route.allowedLdapGroup,
         include_knowledge_search=route.includeKnowledgeSearch,
         include_git_history=route.includeGitHistory,
         selected_document_indexes=route.selectedDocumentIndexes or [],
@@ -337,6 +368,16 @@ async def update_mcp_route(
         update_data["authPassword"] = None
     elif request.auth_password is not None:
         update_data["authPassword"] = encrypt_secret(request.auth_password)
+
+    # Handle auth method
+    if request.auth_method is not None:
+        update_data["authMethod"] = request.auth_method
+
+    # Handle allowed LDAP group
+    if request.clear_allowed_ldap_group:
+        update_data["allowedLdapGroup"] = None
+    elif request.allowed_ldap_group is not None:
+        update_data["allowedLdapGroup"] = request.allowed_ldap_group
 
     # Update route
     if update_data:
@@ -397,6 +438,8 @@ async def update_mcp_route(
         require_auth=route.requireAuth,
         has_password=bool(route.authPassword),
         auth_password=decrypted_password,
+        auth_method=route.authMethod or "password",
+        allowed_ldap_group=route.allowedLdapGroup,
         include_knowledge_search=route.includeKnowledgeSearch,
         include_git_history=route.includeGitHistory,
         selected_document_indexes=route.selectedDocumentIndexes or [],
@@ -459,8 +502,13 @@ async def get_mcp_route_by_path(route_path: str, _user=Depends(require_admin)):
         require_auth=route.requireAuth,
         has_password=bool(route.authPassword),
         auth_password=decrypted_password,
+        auth_method=route.authMethod or "password",
+        allowed_ldap_group=route.allowedLdapGroup,
         include_knowledge_search=route.includeKnowledgeSearch,
         include_git_history=route.includeGitHistory,
+        selected_document_indexes=route.selectedDocumentIndexes or [],
+        selected_filesystem_indexes=route.selectedFilesystemIndexes or [],
+        selected_schema_indexes=route.selectedSchemaIndexes or [],
         tool_config_ids=tool_ids,
         created_at=route.createdAt.isoformat(),
         updated_at=route.updatedAt.isoformat(),

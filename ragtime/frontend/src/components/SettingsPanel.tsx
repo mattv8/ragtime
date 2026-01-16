@@ -382,6 +382,8 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         // MCP settings
         mcp_enabled: data.mcp_enabled,
         mcp_default_route_auth: data.mcp_default_route_auth,
+        mcp_default_route_auth_method: data.mcp_default_route_auth_method,
+        mcp_default_route_allowed_group: data.mcp_default_route_allowed_group,
         mcp_default_route_password: data.mcp_default_route_password ?? '',
       });
       // Reset Ollama connection state (for embeddings)
@@ -548,8 +550,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         bind_password: ldapFormData.bind_password || undefined,
         user_search_base: ldapFormData.user_search_base || undefined,
         user_search_filter: ldapFormData.user_search_filter || undefined,
-        admin_group_dn: ldapFormData.admin_group_dn || undefined,
-        user_group_dn: ldapFormData.user_group_dn || undefined,
+        // Send empty string explicitly to clear these fields (don't convert to undefined)
+        admin_group_dn: ldapFormData.admin_group_dn,
+        user_group_dn: ldapFormData.user_group_dn,
       });
       setLdapConfig(updated);
       setSuccess('LDAP configuration saved successfully');
@@ -685,7 +688,8 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
 
     // Validate password if provided (not empty string which clears, and not undefined which skips)
     const pwd = formData.mcp_default_route_password;
-    if (pwd !== undefined && pwd !== '' && pwd.length < 8) {
+    const authMethod = formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'password';
+    if (authMethod === 'password' && pwd !== undefined && pwd !== '' && pwd.length < 8) {
       setMcpError('MCP password must be at least 8 characters');
       setMcpSaving(false);
       return;
@@ -695,6 +699,8 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       const dataToSave: UpdateSettingsRequest = {
         mcp_enabled: formData.mcp_enabled,
         mcp_default_route_auth: formData.mcp_default_route_auth,
+        mcp_default_route_auth_method: formData.mcp_default_route_auth_method,
+        mcp_default_route_allowed_group: formData.mcp_default_route_allowed_group,
       };
       // Include password if it was modified
       if (formData.mcp_default_route_password !== undefined) {
@@ -707,6 +713,8 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         ...prev,
         mcp_enabled: updated.mcp_enabled,
         mcp_default_route_auth: updated.mcp_default_route_auth,
+        mcp_default_route_auth_method: updated.mcp_default_route_auth_method,
+        mcp_default_route_allowed_group: updated.mcp_default_route_allowed_group,
         mcp_default_route_password: updated.mcp_default_route_password ?? '',
       }));
       setSuccess('MCP configuration saved.');
@@ -1631,12 +1639,73 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                   <span>Require authentication for default /mcp route</span>
                 </label>
                 <p className="field-help">
-                  When enabled, the default <code>/mcp</code> endpoint requires a Bearer token.
-                  {settings?.has_mcp_default_password
-                    ? ' A password is configured - MCP clients should use this password as the Bearer token.'
-                    : ' Set a password below to enable password-based authentication.'}
+                  When enabled, the default <code>/mcp</code> endpoint requires authentication.
+                  {(formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'password') === 'oauth2'
+                    ? ' MCP clients must authenticate via OAuth2 using the /auth/oauth2/token endpoint.'
+                    : settings?.has_mcp_default_password
+                      ? ' A password is configured - MCP clients should use this password as the Bearer token.'
+                      : ' Set a password below to enable password-based authentication.'}
                 </p>
               </div>
+
+              {/* Auth method selection - only show when LDAP is configured and auth is enabled */}
+              {(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) && ldapConfig?.server_url && (
+                <div className="form-group" style={{ marginTop: '1rem' }}>
+                  <label>Authentication Method</label>
+                  <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem' }}>
+                    <label className="radio-label">
+                      <input
+                        type="radio"
+                        name="mcp_auth_method"
+                        value="password"
+                        checked={(formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'password') === 'password'}
+                        onChange={() => setFormData({ ...formData, mcp_default_route_auth_method: 'password' })}
+                      />
+                      <span>Password</span>
+                    </label>
+                    <label className="radio-label">
+                      <input
+                        type="radio"
+                        name="mcp_auth_method"
+                        value="oauth2"
+                        checked={(formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'password') === 'oauth2'}
+                        onChange={() => setFormData({ ...formData, mcp_default_route_auth_method: 'oauth2' })}
+                      />
+                      <span>OAuth2 (LDAP)</span>
+                    </label>
+                  </div>
+                  <p className="field-help">
+                    {(formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'password') === 'oauth2'
+                      ? 'MCP clients authenticate with LDAP credentials via POST /auth/oauth2/token to get a Bearer token.'
+                      : 'MCP clients use a static password as the Bearer token or MCP-Password header.'}
+                  </p>
+                </div>
+              )}
+
+              {/* LDAP Group restriction - only for OAuth2 auth method */}
+              {(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) &&
+               ldapConfig?.server_url &&
+               (formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'password') === 'oauth2' && (
+                <div className="form-group" style={{ marginTop: '1rem' }}>
+                  <label htmlFor="mcp-allowed-group">Allowed LDAP Group (Optional)</label>
+                  <select
+                    id="mcp-allowed-group"
+                    value={formData.mcp_default_route_allowed_group ?? settings?.mcp_default_route_allowed_group ?? ''}
+                    onChange={(e) =>
+                      setFormData({ ...formData, mcp_default_route_allowed_group: e.target.value || null })
+                    }
+                    style={{ maxWidth: '500px' }}
+                  >
+                    <option value="">Any authenticated LDAP user</option>
+                    {ldapDiscoveredGroups.map((g) => (
+                      <option key={g.dn} value={g.dn}>{g.name}</option>
+                    ))}
+                  </select>
+                  <p className="field-help">
+                    Restrict access to members of a specific LDAP group. Leave empty to allow all authenticated LDAP users.
+                  </p>
+                </div>
+              )}
 
               {/* Warning when auth is disabled */}
               {!(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) && (
@@ -1647,8 +1716,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                 </div>
               )}
 
-              {/* Password for default MCP route */}
-              {(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) && (
+              {/* Password for default MCP route - only show for password auth method */}
+              {(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) &&
+               (formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'password') === 'password' && (
                 <div className="form-group" style={{ marginTop: '1rem' }}>
                   <label htmlFor="mcp-password">MCP Password</label>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -1876,7 +1946,10 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       {showMcpRoutesPanel && (
         <div className="modal-overlay" onClick={() => setShowMcpRoutesPanel(false)}>
           <div className="modal-content modal-large" onClick={(e) => e.stopPropagation()}>
-            <MCPRoutesPanel onClose={async () => {
+            <MCPRoutesPanel
+              ldapConfigured={!!ldapConfig?.server_url}
+              ldapGroups={ldapDiscoveredGroups}
+              onClose={async () => {
               setShowMcpRoutesPanel(false);
               // Refresh routes list
               try {

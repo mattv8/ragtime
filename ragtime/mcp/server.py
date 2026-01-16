@@ -132,7 +132,7 @@ def _register_handlers(
 
 async def get_custom_route_server(
     route_path: str,
-) -> tuple[Server, MCPToolAdapter, bool, str | None] | None:
+) -> tuple[Server, MCPToolAdapter, bool, str | None, str | None, str | None] | None:
     """
     Get or create an MCP server for a custom route.
 
@@ -140,14 +140,15 @@ async def get_custom_route_server(
         route_path: The route path suffix (e.g., 'my_toolset')
 
     Returns:
-        Tuple of (Server, MCPToolAdapter, require_auth, auth_password_hash) or None if route not found
+        Tuple of (Server, MCPToolAdapter, require_auth, auth_password, auth_method, allowed_group)
+        or None if route not found
     """
     from ragtime.core.database import get_db
 
     # Check cache first
     if route_path in _custom_route_servers:
         adapter = _custom_route_adapters.get(route_path, mcp_tool_adapter)
-        # Need to fetch require_auth and authPassword from db
+        # Need to fetch require_auth, authPassword, authMethod, allowedLdapGroup from db
         db = await get_db()
         route = await db.mcprouteconfig.find_unique(where={"routePath": route_path})
         if route:
@@ -156,6 +157,8 @@ async def get_custom_route_server(
                 adapter,
                 route.requireAuth,
                 route.authPassword,
+                route.authMethod,
+                route.allowedLdapGroup,
             )
         return None
 
@@ -201,7 +204,14 @@ async def get_custom_route_server(
 
     logger.info(f"Created custom MCP server for route: /mcp/{route_path}")
 
-    return server, adapter, route.requireAuth, route.authPassword
+    return (
+        server,
+        adapter,
+        route.requireAuth,
+        route.authPassword,
+        route.authMethod,
+        route.allowedLdapGroup,
+    )
 
 
 # For backward compatibility - create a default instance with handlers

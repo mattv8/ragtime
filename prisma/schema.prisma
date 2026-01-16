@@ -165,9 +165,11 @@ model AppSettings {
   enableWriteOps    Boolean  @default(false) @map("enable_write_ops")
 
   // MCP Configuration
-  mcpEnabled              Boolean @default(false) @map("mcp_enabled") // Enable/disable MCP server
-  mcpDefaultRouteAuth     Boolean @default(false) @map("mcp_default_route_auth") // Require auth for default /mcp route
-  mcpDefaultRoutePassword String? @map("mcp_default_route_password") // Password hash for default /mcp route
+  mcpEnabled                  Boolean        @default(false) @map("mcp_enabled") // Enable/disable MCP server
+  mcpDefaultRouteAuth         Boolean        @default(false) @map("mcp_default_route_auth") // Require auth for default /mcp route
+  mcpDefaultRouteAuthMethod   McpAuthMethod  @default(password) @map("mcp_default_route_auth_method") // Auth method for default route
+  mcpDefaultRoutePassword     String?        @map("mcp_default_route_password") // Password for default /mcp route (encrypted)
+  mcpDefaultRouteAllowedGroup String?        @map("mcp_default_route_allowed_group") // LDAP group DN for OAuth2 access (optional)
 
   // Embedding dimension tracking (for detecting provider/model changes)
   // Stored dimension of embeddings in filesystem_embeddings table
@@ -249,6 +251,12 @@ model ToolConfig {
 // MCP Route Configuration (custom routes with tool selection)
 // -----------------------------------------------------------------------------
 
+/// Authentication method for MCP routes
+enum McpAuthMethod {
+  password // Static password/API key
+  oauth2   // OAuth2 via LDAP authentication
+}
+
 /// Custom MCP route configuration
 model McpRouteConfig {
   id          String   @id @default(uuid())
@@ -258,8 +266,10 @@ model McpRouteConfig {
   enabled     Boolean  @default(true)
 
   // Authorization settings
-  requireAuth  Boolean  @default(false) @map("require_auth") // Require authentication for this route
-  authPassword String?  @map("auth_password") // Password/API key for this route (stored hashed)
+  requireAuth    Boolean        @default(false) @map("require_auth") // Require authentication for this route
+  authMethod     McpAuthMethod  @default(password) @map("auth_method") // Authentication method
+  authPassword   String?        @map("auth_password") // Password/API key for this route (stored encrypted)
+  allowedLdapGroup String?      @map("allowed_ldap_group") // LDAP group DN required for OAuth2 access (optional)
 
   // Built-in tools configuration
   includeKnowledgeSearch Boolean @default(true) @map("include_knowledge_search") // Include search_knowledge tool

@@ -52,7 +52,9 @@ def get_session_manager() -> StreamableHTTPSessionManager:
 
 async def get_custom_session_manager(
     route_path: str,
-) -> tuple[StreamableHTTPSessionManager, bool, str | None] | None:
+) -> (
+    tuple[StreamableHTTPSessionManager, bool, str | None, str | None, str | None] | None
+):
     """
     Get or create a session manager for a custom route.
 
@@ -60,15 +62,22 @@ async def get_custom_session_manager(
         route_path: The route path suffix
 
     Returns:
-        Tuple of (session_manager, require_auth, auth_password_hash) or None if route not found
+        Tuple of (session_manager, require_auth, auth_password, auth_method, allowed_group)
+        or None if route not found
     """
     # Check cache
     if route_path in _custom_session_managers:
-        # Get require_auth and password from route config
+        # Get require_auth, password, auth_method, allowed_group from route config
         result = await get_custom_route_server(route_path)
         if result:
-            _, _, require_auth, auth_password = result
-            return _custom_session_managers[route_path], require_auth, auth_password
+            _, _, require_auth, auth_password, auth_method, allowed_group = result
+            return (
+                _custom_session_managers[route_path],
+                require_auth,
+                auth_password,
+                auth_method,
+                allowed_group,
+            )
         return None
 
     # Get or create the server
@@ -76,7 +85,7 @@ async def get_custom_session_manager(
     if not result:
         return None
 
-    server, _, require_auth, auth_password = result
+    server, _, require_auth, auth_password, auth_method, allowed_group = result
 
     # Create session manager
     manager = StreamableHTTPSessionManager(
@@ -88,7 +97,7 @@ async def get_custom_session_manager(
     _custom_session_managers[route_path] = manager
     logger.info(f"Created custom MCP session manager for route: /mcp/{route_path}")
 
-    return manager, require_auth, auth_password
+    return manager, require_auth, auth_password, auth_method, allowed_group
 
 
 @asynccontextmanager
@@ -136,6 +145,141 @@ async def _validate_bearer_token(scope: Scope) -> bool:
         return False
 
 
+async def _validate_oauth2_token(
+    scope: Scope, allowed_group_dn: str | None = None
+) -> bool:
+    """
+    Validate OAuth2 Bearer token and optionally check LDAP group membership.
+
+    Args:
+        scope: ASGI scope
+        allowed_group_dn: Optional LDAP group DN that user must be a member of
+
+    Returns:
+        True if valid and user is in allowed group (if specified), False otherwise
+    """
+    from ragtime.core.auth import validate_session
+    from ragtime.core.database import get_db
+
+    # Get Authorization header
+    headers = dict(scope.get("headers", []))
+    auth_header = headers.get(b"authorization", b"").decode()
+
+    if not auth_header.startswith("Bearer "):
+        return False
+
+    token = auth_header[7:]  # Remove "Bearer " prefix
+
+    try:
+        token_data = await validate_session(token)
+        if token_data is None:
+            return False
+
+        # If no group restriction, token is valid
+        if not allowed_group_dn:
+            return True
+
+        # Check if user is in the allowed LDAP group
+        db = await get_db()
+        user = await db.user.find_unique(where={"id": token_data.user_id})
+        if not user:
+            logger.debug(f"User {token_data.user_id} not found in database")
+            return False
+
+        # Get user's LDAP DN and check group membership
+        if not user.ldapDn:
+            logger.debug(f"User {user.username} has no LDAP DN - denying access")
+            return False
+
+        # Re-check LDAP group membership for the user
+        from ragtime.core.auth import _get_ldap_connection, get_ldap_config
+        from ragtime.core.encryption import decrypt_secret
+
+        ldap_config = await get_ldap_config()
+        if not ldap_config.serverUrl:
+            logger.debug("LDAP not configured - denying OAuth2 access")
+            return False
+
+        bind_password = decrypt_secret(ldap_config.bindPassword)
+        conn = _get_ldap_connection(
+            ldap_config.serverUrl,
+            ldap_config.bindDn,
+            bind_password,
+            ldap_config.allowSelfSigned,
+        )
+        if not conn:
+            logger.warning("Failed to connect to LDAP for group membership check")
+            return False
+
+        try:
+            # Get user's memberOf and primaryGroupID
+            conn.search(
+                search_base=user.ldapDn,
+                search_filter="(objectClass=*)",
+                search_scope="BASE",
+                attributes=["memberOf", "primaryGroupID"],
+            )
+
+            if not conn.entries:
+                conn.unbind()
+                return False
+
+            entry = conn.entries[0]
+            member_of = []
+            if hasattr(entry, "memberOf") and entry.memberOf:
+                member_of = [str(g).lower() for g in entry.memberOf]
+
+            primary_group_id = None
+            if hasattr(entry, "primaryGroupID") and entry.primaryGroupID:
+                primary_group_id = int(str(entry.primaryGroupID))
+
+            # Case-insensitive DN comparison
+            allowed_group_lower = allowed_group_dn.lower()
+
+            # Check direct membership
+            if allowed_group_lower in member_of:
+                conn.unbind()
+                logger.debug(f"User {user.username} is member of {allowed_group_dn}")
+                return True
+
+            # Check primary group
+            if primary_group_id:
+                conn.search(
+                    search_base=allowed_group_dn,
+                    search_filter="(objectClass=*)",
+                    search_scope="BASE",
+                    attributes=["primaryGroupToken"],
+                )
+                if conn.entries:
+                    group_entry = conn.entries[0]
+                    if (
+                        hasattr(group_entry, "primaryGroupToken")
+                        and group_entry.primaryGroupToken
+                    ):
+                        group_rid = int(str(group_entry.primaryGroupToken))
+                        if group_rid == primary_group_id:
+                            conn.unbind()
+                            logger.debug(
+                                f"User {user.username}'s primary group (RID {primary_group_id}) "
+                                f"matches {allowed_group_dn}"
+                            )
+                            return True
+
+            conn.unbind()
+            logger.debug(f"User {user.username} is NOT a member of {allowed_group_dn}")
+            return False
+
+        except Exception as e:
+            logger.debug(f"LDAP group check failed: {e}")
+            if conn.bound:
+                conn.unbind()
+            return False
+
+    except Exception as e:
+        logger.debug(f"OAuth2 token validation failed: {e}")
+        return False
+
+
 async def _validate_route_password(scope: Scope, encrypted_password: str) -> bool:
     """
     Validate password from Authorization header or MCP-Password header.
@@ -179,17 +323,19 @@ async def _validate_route_password(scope: Scope, encrypted_password: str) -> boo
     return provided_password == stored_password
 
 
-async def _check_default_route_auth() -> tuple[bool, str | None]:
+async def _check_default_route_auth() -> tuple[bool, str, str | None, str | None]:
     """
-    Check if default /mcp route requires authentication and get the encrypted password.
+    Check if default /mcp route requires authentication and get auth configuration.
 
     Returns:
-        Tuple of (require_auth, encrypted_password)
+        Tuple of (require_auth, auth_method, encrypted_password, allowed_group_dn)
     """
     app_settings = await get_app_settings()
     require_auth = app_settings.get("mcp_default_route_auth", False)
+    auth_method = app_settings.get("mcp_default_route_auth_method", "password")
     encrypted_password = app_settings.get("mcp_default_route_password")
-    return require_auth, encrypted_password
+    allowed_group = app_settings.get("mcp_default_route_allowed_group")
+    return require_auth, auth_method, encrypted_password, allowed_group
 
 
 async def _check_mcp_enabled() -> bool:
@@ -225,13 +371,19 @@ class MCPTransportEndpoint:
             )
             return
 
-        # Check if default route requires auth and get password
-        require_auth, encrypted_password = await _check_default_route_auth()
+        # Check if default route requires auth and get auth config
+        require_auth, auth_method, encrypted_password, allowed_group = (
+            await _check_default_route_auth()
+        )
 
         if require_auth:
-            # Determine auth method - password or session token
-            if encrypted_password:
-                # Use password-based auth
+            is_valid = False
+
+            if auth_method == "oauth2":
+                # OAuth2 with LDAP - validate token and check group membership
+                is_valid = await _validate_oauth2_token(scope, allowed_group)
+            elif encrypted_password:
+                # Password-based auth
                 is_valid = await _validate_route_password(scope, encrypted_password)
             else:
                 # Fall back to session token validation
@@ -249,11 +401,14 @@ class MCPTransportEndpoint:
                         ],
                     }
                 )
-                detail = (
-                    "Password required (use MCP-Password header or Authorization: Bearer)"
-                    if encrypted_password
-                    else "Bearer token required"
-                )
+                if auth_method == "oauth2":
+                    detail = "OAuth2 Bearer token required (use /auth/oauth2/token to authenticate)"
+                    if allowed_group:
+                        detail += " - User must be member of allowed LDAP group"
+                elif encrypted_password:
+                    detail = "Password required (use MCP-Password header or Authorization: Bearer)"
+                else:
+                    detail = "Bearer token required"
                 await send(
                     {
                         "type": "http.response.body",
@@ -339,13 +494,22 @@ class MCPCustomRouteEndpoint:
             )
             return
 
-        session_manager, require_auth, auth_password = result
+        session_manager, require_auth, auth_password, auth_method, allowed_group = (
+            result
+        )
 
         # Check authentication if required
         if require_auth:
-            # Validate against the route's password
-            if not auth_password:
-                # Auth required but no password set - deny access
+            is_valid = False
+
+            if auth_method == "oauth2":
+                # OAuth2 with LDAP - validate token and check group membership
+                is_valid = await _validate_oauth2_token(scope, allowed_group)
+            elif auth_password:
+                # Password-based auth
+                is_valid = await _validate_route_password(scope, auth_password)
+            else:
+                # Auth required but no method configured
                 await send(
                     {
                         "type": "http.response.start",
@@ -364,7 +528,7 @@ class MCPCustomRouteEndpoint:
                 )
                 return
 
-            if not await _validate_route_password(scope, auth_password):
+            if not is_valid:
                 await send(
                     {
                         "type": "http.response.start",
@@ -375,10 +539,16 @@ class MCPCustomRouteEndpoint:
                         ],
                     }
                 )
+                if auth_method == "oauth2":
+                    detail = "OAuth2 Bearer token required (use /auth/oauth2/token to authenticate)"
+                    if allowed_group:
+                        detail += " - User must be member of allowed LDAP group"
+                else:
+                    detail = "Invalid password"
                 await send(
                     {
                         "type": "http.response.body",
-                        "body": b'{"error": "Unauthorized", "detail": "Invalid password"}',
+                        "body": f'{{"error": "Unauthorized", "detail": "{detail}"}}'.encode(),
                     }
                 )
                 return

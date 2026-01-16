@@ -491,9 +491,17 @@ class AppSettings(BaseModel):
         default=False,
         description="If True, require Bearer token authentication for the default /mcp route.",
     )
+    mcp_default_route_auth_method: str = Field(
+        default="password",
+        description="Authentication method for default MCP route: 'password' for Bearer token, 'oauth2' for LDAP OAuth2 flow.",
+    )
     mcp_default_route_password: Optional[str] = Field(
         default=None,
         description="Password for the default /mcp route (decrypted for display). Use this as Bearer token for MCP clients.",
+    )
+    mcp_default_route_allowed_group: Optional[str] = Field(
+        default=None,
+        description="LDAP group DN required for OAuth2 access. If empty, any authenticated LDAP user can access.",
     )
     has_mcp_default_password: bool = Field(
         default=False,
@@ -622,9 +630,17 @@ class UpdateSettingsRequest(BaseModel):
     # MCP configuration
     mcp_enabled: Optional[bool] = None
     mcp_default_route_auth: Optional[bool] = None
+    mcp_default_route_auth_method: Optional[str] = Field(
+        default=None,
+        description="Authentication method for default MCP route: 'password' or 'oauth2'.",
+    )
     mcp_default_route_password: Optional[str] = Field(
         default=None,
         description="Password for the default /mcp route. Set to empty string to clear.",
+    )
+    mcp_default_route_allowed_group: Optional[str] = Field(
+        default=None,
+        description="LDAP group DN required for OAuth2 access. Set to empty string to clear.",
     )
 
 
