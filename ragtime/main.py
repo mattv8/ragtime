@@ -136,6 +136,16 @@ async def lifespan(app: FastAPI):
 
     await filesystem_indexer._cleanup_stale_jobs()
 
+    # Clean up any orphaned schema indexing jobs from previous runs
+    from ragtime.indexer.schema_service import schema_indexer
+
+    await schema_indexer._cleanup_stale_jobs()
+
+    # Clean up any orphaned PDM indexing jobs from previous runs
+    from ragtime.indexer.pdm_service import pdm_indexer
+
+    await pdm_indexer._cleanup_stale_jobs()
+
     # Discover orphan indexes (FAISS files without database metadata)
     discovered = await indexer.discover_orphan_indexes()
     if discovered > 0:
@@ -165,6 +175,9 @@ async def lifespan(app: FastAPI):
     from ragtime.indexer.pdm_service import pdm_indexer
 
     await pdm_indexer.shutdown()
+
+    # Stop schema indexer (schema_indexer imported above)
+    await schema_indexer.shutdown()
 
     # Stop filesystem indexer tasks (filesystem_indexer imported above)
     await filesystem_indexer.shutdown()

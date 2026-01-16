@@ -203,13 +203,77 @@ class SchemaIndexerService:
 
     async def cancel_job(self, job_id: str) -> bool:
         """Request cancellation of an active job."""
+        # Check if job is active in memory
         if job_id in self._cancellation_flags:
             self._cancellation_flags[job_id] = True
             if job_id in self._active_jobs:
                 self._active_jobs[job_id].cancel_requested = True
             logger.info(f"Cancellation requested for schema job {job_id}")
             return True
+
+        # Check database for orphaned jobs (running in DB but not in memory)
+        db: Any = await get_db()
+        prisma_job = await db.schemaindexjob.find_unique(where={"id": job_id})
+        if not prisma_job:
+            return False
+
+        # Can only cancel pending/indexing jobs
+        if prisma_job.status in ("pending", "indexing"):
+            # Job is not running in memory but stuck in DB - directly mark as cancelled
+            logger.info(
+                f"Directly cancelling orphaned schema job {job_id} (not in active jobs)"
+            )
+            await db.schemaindexjob.update(
+                where={"id": job_id},
+                data={
+                    "status": "cancelled",
+                    "errorMessage": "Job cancelled (was orphaned after restart)",
+                    "completedAt": datetime.now(timezone.utc),
+                },
+            )
+            return True
+
         return False
+
+    async def _cleanup_stale_jobs(self) -> int:
+        """
+        Clean up any jobs left in pending/indexing state from a previous run.
+
+        This handles cases where the server was restarted while indexing was
+        in progress. Those jobs will never complete, so mark them as failed.
+
+        Returns the number of orphaned jobs cleaned up.
+        """
+        try:
+            db: Any = await get_db()
+
+            # Find all jobs stuck in pending or indexing state
+            result = await db.execute_raw(
+                """
+                UPDATE schema_index_jobs
+                SET status = 'failed',
+                    "errorMessage" = 'Job interrupted by server restart',
+                    "completedAt" = NOW()
+                WHERE status IN ('pending', 'indexing')
+                RETURNING id
+                """
+            )
+
+            # result is the count of updated rows
+            count = result if isinstance(result, int) else 0
+            if count > 0:
+                logger.info(f"Cleaned up {count} orphaned schema indexing job(s)")
+            return count
+
+        except Exception as e:
+            logger.warning(f"Failed to clean up orphaned schema jobs: {e}")
+            return 0
+
+    async def shutdown(self) -> None:
+        """Shutdown the service and clear active job tracking."""
+        logger.info("Schema indexer service shutting down")
+        self._active_jobs.clear()
+        self._cancellation_flags.clear()
 
     async def list_all_jobs(self, limit: int = 50) -> List[SchemaIndexJobResponse]:
         """

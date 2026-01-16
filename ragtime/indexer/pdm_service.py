@@ -236,6 +236,41 @@ class PdmIndexerService:
 
         return False
 
+    async def _cleanup_stale_jobs(self) -> int:
+        """
+        Clean up any jobs left in pending/indexing state from a previous run.
+
+        This handles cases where the server was restarted while indexing was
+        in progress. Those jobs will never complete, so mark them as failed.
+
+        Returns the number of orphaned jobs cleaned up.
+        """
+        try:
+            db: Any = await get_db()
+
+            # Find all jobs stuck in pending or indexing state
+            result = await db.execute_raw(
+                """
+                UPDATE pdm_index_jobs
+                SET status = 'failed',
+                    "currentStep" = 'Failed (server restart)',
+                    "errorMessage" = 'Job interrupted by server restart',
+                    "completedAt" = NOW()
+                WHERE status IN ('pending', 'indexing')
+                RETURNING id
+                """
+            )
+
+            # result is the count of updated rows
+            count = result if isinstance(result, int) else 0
+            if count > 0:
+                logger.info(f"Cleaned up {count} orphaned PDM indexing job(s)")
+            return count
+
+        except Exception as e:
+            logger.warning(f"Failed to clean up orphaned PDM jobs: {e}")
+            return 0
+
     async def shutdown(self) -> None:
         """Shutdown the service and cancel all running tasks."""
         logger.info("PDM indexer service shutting down")
