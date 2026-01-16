@@ -63,6 +63,13 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
         }
         return 'MSSQL connection';
       case 'odoo_shell':
+        if ('mode' in config && config.mode === 'ssh') {
+          if ('ssh_host' in config && 'ssh_user' in config) {
+            const port = 'ssh_port' in config ? config.ssh_port : 22;
+            return `${config.ssh_user}@${config.ssh_host}:${port}`;
+          }
+          return 'SSH connection';
+        }
         return `Container: ${'container' in config ? config.container : 'N/A'}`;
       case 'ssh_shell':
         if ('host' in config && 'user' in config) {
