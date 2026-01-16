@@ -46,8 +46,10 @@ router = APIRouter(prefix="/mcp-debug", tags=["MCP Debug"])
 # Stateless mode with JSON responses for maximum compatibility
 _session_manager: StreamableHTTPSessionManager | None = None
 
-# Session managers for custom routes (created on demand)
-_custom_session_managers: dict[str, StreamableHTTPSessionManager] = {}
+# Cached custom route MCP servers (keyed by route path)
+# We use the low-level server directly since StreamableHTTPSessionManager
+# requires run() to be called before handling requests
+_custom_route_servers: dict[str, MCPServer[Any, Any]] = {}
 
 # Cached filtered MCP servers (keyed by filter ID)
 # We use the low-level server directly for filtered requests since
@@ -154,54 +156,40 @@ async def handle_filtered_request(
         tg.cancel_scope.cancel()
 
 
-async def get_custom_session_manager(
+async def get_custom_route_server_cached(
     route_path: str,
-) -> (
-    tuple[StreamableHTTPSessionManager, bool, str | None, str | None, str | None] | None
-):
+) -> tuple[MCPServer[Any, Any], bool, str | None, str | None, str | None] | None:
     """
-    Get or create a session manager for a custom route.
+    Get or create an MCP server for a custom route.
 
     Args:
         route_path: The route path suffix
 
     Returns:
-        Tuple of (session_manager, require_auth, auth_password, auth_method, allowed_group)
+        Tuple of (server, require_auth, auth_password, auth_method, allowed_group)
         or None if route not found
     """
-    # Check cache
-    if route_path in _custom_session_managers:
-        # Get require_auth, password, auth_method, allowed_group from route config
-        result = await get_custom_route_server(route_path)
-        if result:
-            _, _, require_auth, auth_password, auth_method, allowed_group = result
-            return (
-                _custom_session_managers[route_path],
-                require_auth,
-                auth_password,
-                auth_method,
-                allowed_group,
-            )
-        return None
+    global _custom_route_servers
 
-    # Get or create the server
+    # Get route config (always need fresh auth info)
     result = await get_custom_route_server(route_path)
     if not result:
         return None
 
     server, _, require_auth, auth_password, auth_method, allowed_group = result
 
-    # Create session manager
-    manager = StreamableHTTPSessionManager(
-        app=server,
-        event_store=None,
-        json_response=True,
-        stateless=True,
-    )
-    _custom_session_managers[route_path] = manager
-    logger.info(f"Created custom MCP session manager for route: /mcp/{route_path}")
+    # Cache the server if not already cached
+    if route_path not in _custom_route_servers:
+        _custom_route_servers[route_path] = server
+        logger.info(f"Cached MCP server for custom route: /mcp/{route_path}")
 
-    return manager, require_auth, auth_password, auth_method, allowed_group
+    return (
+        _custom_route_servers[route_path],
+        require_auth,
+        auth_password,
+        auth_method,
+        allowed_group,
+    )
 
 
 @asynccontextmanager
@@ -213,10 +201,10 @@ async def mcp_lifespan_manager() -> AsyncIterator[None]:
         try:
             yield
         finally:
-            # Also stop custom session managers
-            for path in _custom_session_managers:
-                logger.debug(f"Stopping custom session manager: {path}")
-            _custom_session_managers.clear()
+            # Clear custom route server cache
+            for path in _custom_route_servers:
+                logger.debug(f"Clearing custom route server cache: {path}")
+            _custom_route_servers.clear()
             # Clear default filter server cache
             for filter_id in _default_filter_servers:
                 logger.debug(f"Clearing filter server cache: {filter_id}")
@@ -782,8 +770,8 @@ class MCPCustomRouteEndpoint:
             )
             return
 
-        # Get session manager for this route
-        result = await get_custom_session_manager(route_path)
+        # Get server for this route
+        result = await get_custom_route_server_cached(route_path)
         if not result:
             await send(
                 {
@@ -800,9 +788,7 @@ class MCPCustomRouteEndpoint:
             )
             return
 
-        session_manager, require_auth, auth_password, auth_method, allowed_group = (
-            result
-        )
+        server, require_auth, auth_password, auth_method, allowed_group = result
 
         # Check authentication if required
         if require_auth:
@@ -857,7 +843,8 @@ class MCPCustomRouteEndpoint:
                 )
                 return
 
-        await session_manager.handle_request(scope, receive, send)
+        # Handle request directly with the server (bypasses session manager)
+        await handle_filtered_request(server, scope, receive, send)
 
 
 # MCP Transport Route - uses ASGI app directly to avoid double response
@@ -939,8 +926,8 @@ async def invalidate_mcp_cache():
     Useful after adding/modifying tool configurations.
     """
     mcp_tool_adapter.invalidate_cache()
-    # Also clear custom session managers so they're recreated
-    _custom_session_managers.clear()
+    # Clear custom route server cache
+    _custom_route_servers.clear()
     # Clear default filter server cache
     _default_filter_servers.clear()
     return {"status": "cache_invalidated"}
