@@ -1128,9 +1128,17 @@ class SchemaIndexerService:
                 )
 
             # Check embedding dimension and ensure column matches
-            test_embedding = await asyncio.to_thread(
-                embeddings.embed_documents, ["test"]
-            )
+            # Timeout after 60 seconds to prevent indefinite hangs
+            try:
+                test_embedding = await asyncio.wait_for(
+                    asyncio.to_thread(embeddings.embed_documents, ["test"]),
+                    timeout=60.0,
+                )
+            except asyncio.TimeoutError:
+                raise RuntimeError(
+                    "Embedding provider timed out after 60 seconds. "
+                    "Check that the embedding service is running and responsive."
+                )
             embedding_dim = len(test_embedding[0])
             await self._ensure_embedding_column(embedding_dim)
 
@@ -1196,10 +1204,17 @@ class SchemaIndexerService:
                     # Convert table to embedding text
                     content = table.to_embedding_text()
 
-                    # Generate embedding
-                    embedding = await asyncio.to_thread(
-                        embeddings.embed_documents, [content]
-                    )
+                    # Generate embedding with 120s timeout per table
+                    try:
+                        embedding = await asyncio.wait_for(
+                            asyncio.to_thread(embeddings.embed_documents, [content]),
+                            timeout=120.0,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            f"Embedding timed out for table {table.full_name}, skipping"
+                        )
+                        continue
 
                     # Store in database
                     await self._insert_embedding(
