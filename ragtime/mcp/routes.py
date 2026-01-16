@@ -9,19 +9,33 @@ This allows MCP clients to connect via URL configuration like:
 
 Supports both SSE streaming responses and JSON responses for stateless operation.
 Custom routes support optional Bearer token authentication.
+
+Default route supports LDAP group-based tool filtering when OAuth2 auth is enabled:
+- Filters are configured via McpDefaultRouteFilter in the database
+- Users see tools based on their LDAP group membership
+- Higher priority filters take precedence when user is in multiple groups
 """
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
+import anyio
+from anyio.abc import TaskStatus
 from fastapi import APIRouter, Request
+from mcp.server.lowlevel.server import Server as MCPServer
+from mcp.server.streamable_http import StreamableHTTPServerTransport
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.logging import get_logger
-from ragtime.mcp.server import get_custom_route_server, mcp_server
+from ragtime.mcp.server import (
+    get_custom_route_server,
+    get_default_route_filtered_server,
+    mcp_server,
+)
 from ragtime.mcp.tools import mcp_tool_adapter
 
 logger = get_logger(__name__)
@@ -34,6 +48,11 @@ _session_manager: StreamableHTTPSessionManager | None = None
 
 # Session managers for custom routes (created on demand)
 _custom_session_managers: dict[str, StreamableHTTPSessionManager] = {}
+
+# Cached filtered MCP servers (keyed by filter ID)
+# We use the low-level server directly for filtered requests since
+# StreamableHTTPSessionManager requires run() to be called before handling requests
+_default_filter_servers: dict[str, MCPServer[Any, Any]] = {}
 
 
 def get_session_manager() -> StreamableHTTPSessionManager:
@@ -48,6 +67,91 @@ def get_session_manager() -> StreamableHTTPSessionManager:
         )
         logger.info("Created MCP StreamableHTTP session manager (stateless mode)")
     return _session_manager
+
+
+async def get_filtered_server(
+    filter_id: str,
+) -> MCPServer[Any, Any] | None:
+    """
+    Get or create an MCP server for a default route filter.
+
+    Args:
+        filter_id: The filter ID
+
+    Returns:
+        MCP server configured with the filter's tool restrictions, or None
+    """
+    global _default_filter_servers
+
+    # Check cache
+    if filter_id in _default_filter_servers:
+        return _default_filter_servers[filter_id]
+
+    # Get filtered server
+    result = await get_default_route_filtered_server(filter_id)
+    if not result:
+        return None
+
+    server, _ = result
+    _default_filter_servers[filter_id] = server
+    logger.info(f"Cached filtered MCP server for default route filter: {filter_id}")
+
+    return server
+
+
+async def handle_filtered_request(
+    server: MCPServer[Any, Any],
+    scope: Scope,
+    receive: Receive,
+    send: Send,
+) -> None:
+    """
+    Handle a filtered MCP request using the low-level server directly.
+
+    This bypasses StreamableHTTPSessionManager since filtered servers are
+    created on-demand and the session manager requires run() to be called first.
+    We use stateless mode with a fresh transport per request.
+    """
+    logger.debug("Handling filtered request with direct server")
+
+    # Create transport for this request
+    http_transport = StreamableHTTPServerTransport(
+        mcp_session_id=None,  # No session tracking in stateless mode
+        is_json_response_enabled=True,
+        event_store=None,
+        security_settings=None,
+    )
+
+    # Run the server and handle the request
+    async with anyio.create_task_group() as tg:
+
+        async def run_stateless_server(
+            *, task_status: TaskStatus[None] = anyio.TASK_STATUS_IGNORED
+        ) -> None:
+            async with http_transport.connect() as streams:
+                read_stream, write_stream = streams
+                task_status.started()
+                try:
+                    await server.run(
+                        read_stream,
+                        write_stream,
+                        server.create_initialization_options(),
+                        stateless=True,
+                    )
+                except Exception:
+                    logger.exception("Filtered stateless session crashed")
+
+        # Start the server task
+        await tg.start(run_stateless_server)
+
+        # Handle the HTTP request
+        await http_transport.handle_request(scope, receive, send)
+
+        # Terminate transport to clean up
+        await http_transport.terminate()
+
+        # Cancel task group to clean up
+        tg.cancel_scope.cancel()
 
 
 async def get_custom_session_manager(
@@ -113,6 +217,10 @@ async def mcp_lifespan_manager() -> AsyncIterator[None]:
             for path in _custom_session_managers:
                 logger.debug(f"Stopping custom session manager: {path}")
             _custom_session_managers.clear()
+            # Clear default filter server cache
+            for filter_id in _default_filter_servers:
+                logger.debug(f"Clearing filter server cache: {filter_id}")
+            _default_filter_servers.clear()
             logger.info("MCP StreamableHTTP session manager stopped")
 
 
@@ -296,6 +404,178 @@ async def _validate_oauth2_token(
         return False
 
 
+async def _get_user_matching_filter(scope: Scope) -> str | None:
+    """
+    Get the ID of the highest-priority default route filter matching the user's LDAP groups.
+
+    This function:
+    1. Validates the OAuth2 Bearer token to get the user
+    2. Queries the user's LDAP group memberships
+    3. Finds enabled default route filters whose LDAP group matches
+    4. Returns the ID of the highest priority matching filter
+
+    Args:
+        scope: ASGI scope containing the Authorization header
+
+    Returns:
+        Filter ID if a matching filter is found, None otherwise (show all tools)
+    """
+    from ragtime.core.auth import validate_session
+    from ragtime.core.database import get_db
+
+    logger.debug("_get_user_matching_filter: Starting filter check")
+
+    # Get Authorization header
+    headers = dict(scope.get("headers", []))
+    auth_header = headers.get(b"authorization", b"").decode()
+
+    if not auth_header.startswith("Bearer "):
+        logger.debug("_get_user_matching_filter: No Bearer token found")
+        return None
+
+    token = auth_header[7:]  # Remove "Bearer " prefix
+
+    try:
+        token_data = await validate_session(token)
+        if token_data is None:
+            logger.debug("_get_user_matching_filter: Token validation failed")
+            return None
+
+        db = await get_db()
+        user = await db.user.find_unique(where={"id": token_data.user_id})
+        if not user:
+            logger.debug("_get_user_matching_filter: User not found in database")
+            return None
+
+        logger.debug(
+            f"_get_user_matching_filter: User={user.username}, provider={user.authProvider}, role={user.role}"
+        )
+
+        # Local admin users bypass filtering - see all tools
+        if user.authProvider == "local" and user.role == "admin":
+            logger.debug(
+                f"Local admin '{user.username}' bypasses default route filtering"
+            )
+            return None
+
+        # Get user's LDAP groups
+        if not user.ldapDn:
+            logger.debug(
+                f"_get_user_matching_filter: User {user.username} has no LDAP DN"
+            )
+            # Non-LDAP users see all tools (no filtering)
+            return None
+
+        logger.debug(f"_get_user_matching_filter: User LDAP DN={user.ldapDn}")
+
+        # Get all enabled default route filters, ordered by priority descending
+        filters = await db.mcpdefaultroutefilter.find_many(
+            where={"enabled": True},
+            order={"priority": "desc"},
+        )
+
+        logger.debug(f"_get_user_matching_filter: Found {len(filters)} enabled filters")
+
+        if not filters:
+            # No filters configured - show all tools
+            return None
+
+        # Get LDAP connection to check group membership
+        from ragtime.core.auth import _get_ldap_connection, get_ldap_config
+        from ragtime.core.encryption import decrypt_secret
+
+        ldap_config = await get_ldap_config()
+        if not ldap_config.serverUrl:
+            logger.debug("_get_user_matching_filter: No LDAP server URL configured")
+            return None
+
+        bind_password = decrypt_secret(ldap_config.bindPassword)
+        conn = _get_ldap_connection(
+            ldap_config.serverUrl,
+            ldap_config.bindDn,
+            bind_password,
+            ldap_config.allowSelfSigned,
+        )
+        if not conn:
+            return None
+
+        try:
+            # Get user's memberOf and primaryGroupID
+            conn.search(
+                search_base=user.ldapDn,
+                search_filter="(objectClass=*)",
+                search_scope="BASE",
+                attributes=["memberOf", "primaryGroupID"],
+            )
+
+            if not conn.entries:
+                conn.unbind()
+                return None
+
+            entry = conn.entries[0]
+            user_groups: set[str] = set()
+            if hasattr(entry, "memberOf") and entry.memberOf:
+                user_groups = {str(g).lower() for g in entry.memberOf}
+
+            primary_group_id = None
+            if hasattr(entry, "primaryGroupID") and entry.primaryGroupID:
+                primary_group_id = int(str(entry.primaryGroupID))
+
+            # Check each filter in priority order
+            for f in filters:
+                filter_group_dn = f.ldapGroupDn.lower()
+
+                # Check direct membership
+                if filter_group_dn in user_groups:
+                    conn.unbind()
+                    logger.debug(
+                        f"User {user.username} matches filter '{f.name}' "
+                        f"via group {f.ldapGroupDn}"
+                    )
+                    return f.id
+
+                # Check primary group
+                if primary_group_id:
+                    try:
+                        conn.search(
+                            search_base=f.ldapGroupDn,
+                            search_filter="(objectClass=*)",
+                            search_scope="BASE",
+                            attributes=["primaryGroupToken"],
+                        )
+                        if conn.entries:
+                            group_entry = conn.entries[0]
+                            if (
+                                hasattr(group_entry, "primaryGroupToken")
+                                and group_entry.primaryGroupToken
+                            ):
+                                group_rid = int(str(group_entry.primaryGroupToken))
+                                if group_rid == primary_group_id:
+                                    conn.unbind()
+                                    logger.debug(
+                                        f"User {user.username} matches filter '{f.name}' "
+                                        f"via primary group"
+                                    )
+                                    return f.id
+                    except Exception:
+                        # Continue to next filter if this one fails
+                        pass
+
+            conn.unbind()
+            logger.debug(f"User {user.username} has no matching default route filter")
+            return None
+
+        except Exception as e:
+            logger.debug(f"LDAP group check for filter matching failed: {e}")
+            if conn.bound:
+                conn.unbind()
+            return None
+
+    except Exception as e:
+        logger.debug(f"Failed to get matching filter for user: {e}")
+        return None
+
+
 async def _validate_route_password(scope: Scope, encrypted_password: str) -> bool:
     """
     Validate password from Authorization header or MCP-Password header.
@@ -431,8 +711,20 @@ class MCPTransportEndpoint:
                 )
                 return
 
-        session_manager = get_session_manager()
-        await session_manager.handle_request(scope, receive, send)
+        # If using OAuth2 auth, check for LDAP group-based tool filtering
+        if require_auth and auth_method == "oauth2":
+            # Try to find a matching default route filter for this user
+            matching_filter_id = await _get_user_matching_filter(scope)
+            if matching_filter_id:
+                # Use filtered server directly (bypasses session manager issue)
+                filtered_server = await get_filtered_server(matching_filter_id)
+                if filtered_server:
+                    await handle_filtered_request(filtered_server, scope, receive, send)
+                    return
+                # Filter found but couldn't create server - fall back to default
+
+        # Use the default session manager
+        await get_session_manager().handle_request(scope, receive, send)
 
 
 class MCPCustomRouteEndpoint:
@@ -649,6 +941,8 @@ async def invalidate_mcp_cache():
     mcp_tool_adapter.invalidate_cache()
     # Also clear custom session managers so they're recreated
     _custom_session_managers.clear()
+    # Clear default filter server cache
+    _default_filter_servers.clear()
     return {"status": "cache_invalidated"}
 
 

@@ -741,6 +741,84 @@ export const api = {
   },
 
   // =========================================================================
+  // MCP Default Route Filters API (LDAP group-based tool filtering)
+  // =========================================================================
+
+  /**
+   * List all default route filters
+   */
+  async listMcpDefaultFilters(): Promise<import('@/types').McpDefaultRouteFilterListResponse> {
+    const response = await apiFetch('/mcp-routes/default-filters');
+    return handleResponse<import('@/types').McpDefaultRouteFilterListResponse>(response);
+  },
+
+  /**
+   * Get a specific default route filter
+   */
+  async getMcpDefaultFilter(filterId: string): Promise<import('@/types').McpDefaultRouteFilter> {
+    const response = await apiFetch(`/mcp-routes/default-filters/${filterId}`);
+    return handleResponse<import('@/types').McpDefaultRouteFilter>(response);
+  },
+
+  /**
+   * Create a new default route filter
+   */
+  async createMcpDefaultFilter(config: import('@/types').CreateMcpDefaultRouteFilterRequest): Promise<import('@/types').McpDefaultRouteFilter> {
+    const response = await apiFetch('/mcp-routes/default-filters', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    });
+    return handleResponse<import('@/types').McpDefaultRouteFilter>(response);
+  },
+
+  /**
+   * Update a default route filter
+   */
+  async updateMcpDefaultFilter(filterId: string, updates: import('@/types').UpdateMcpDefaultRouteFilterRequest): Promise<import('@/types').McpDefaultRouteFilter> {
+    const response = await apiFetch(`/mcp-routes/default-filters/${filterId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    });
+    return handleResponse<import('@/types').McpDefaultRouteFilter>(response);
+  },
+
+  /**
+   * Delete a default route filter
+   */
+  async deleteMcpDefaultFilter(filterId: string): Promise<void> {
+    const response = await apiFetch(`/mcp-routes/default-filters/${filterId}`, {
+      method: 'DELETE',
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new ApiError(
+        data.detail || 'Delete failed',
+        response.status,
+        data.detail
+      );
+    }
+  },
+
+  /**
+   * Toggle a default route filter's enabled status
+   */
+  async toggleMcpDefaultFilter(filterId: string, enabled: boolean): Promise<void> {
+    const response = await apiFetch(`/mcp-routes/default-filters/${filterId}/toggle?enabled=${enabled}`, {
+      method: 'POST',
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new ApiError(
+        data.detail || 'Toggle failed',
+        response.status,
+        data.detail
+      );
+    }
+  },
+
+  // =========================================================================
   // Filesystem Indexer API
   // =========================================================================
 

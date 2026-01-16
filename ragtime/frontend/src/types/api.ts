@@ -113,6 +113,58 @@ export interface McpRouteListResponse {
 }
 
 // =============================================================================
+// MCP Default Route Filter Types (LDAP group-based tool filtering)
+// =============================================================================
+
+export interface McpDefaultRouteFilter {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  priority: number;
+  ldap_group_dn: string;
+  include_knowledge_search: boolean;
+  include_git_history: boolean;
+  selected_document_indexes: string[];
+  selected_filesystem_indexes: string[];
+  selected_schema_indexes: string[];
+  tool_config_ids: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateMcpDefaultRouteFilterRequest {
+  name: string;
+  ldap_group_dn: string;
+  description?: string;
+  priority?: number;
+  include_knowledge_search?: boolean;
+  include_git_history?: boolean;
+  selected_document_indexes?: string[];
+  selected_filesystem_indexes?: string[];
+  selected_schema_indexes?: string[];
+  tool_config_ids?: string[];
+}
+
+export interface UpdateMcpDefaultRouteFilterRequest {
+  name?: string;
+  description?: string;
+  enabled?: boolean;
+  priority?: number;
+  include_knowledge_search?: boolean;
+  include_git_history?: boolean;
+  selected_document_indexes?: string[];
+  selected_filesystem_indexes?: string[];
+  selected_schema_indexes?: string[];
+  tool_config_ids?: string[];
+}
+
+export interface McpDefaultRouteFilterListResponse {
+  filters: McpDefaultRouteFilter[];
+  count: number;
+}
+
+// =============================================================================
 // LDAP Configuration Types
 // =============================================================================
 

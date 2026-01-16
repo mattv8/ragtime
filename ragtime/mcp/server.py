@@ -32,6 +32,10 @@ _mcp_server: Server | None = None
 _custom_route_servers: dict[str, Server] = {}
 _custom_route_adapters: dict[str, MCPToolAdapter] = {}
 
+# Cache of default route filter servers (keyed by filter ID)
+_default_filter_servers: dict[str, Server] = {}
+_default_filter_adapters: dict[str, MCPToolAdapter] = {}
+
 
 async def get_mcp_server() -> Server:
     """Get or create MCP server with dynamic name from settings."""
@@ -57,9 +61,14 @@ def notify_tools_changed() -> None:
     # Also invalidate all custom route adapters
     for adapter in _custom_route_adapters.values():
         adapter.invalidate_cache()
-    # Clear custom route server cache (they'll be recreated with new config)
+    # Invalidate default filter adapters
+    for adapter in _default_filter_adapters.values():
+        adapter.invalidate_cache()
+    # Clear all server caches (they'll be recreated with new config)
     _custom_route_servers.clear()
     _custom_route_adapters.clear()
+    _default_filter_servers.clear()
+    _default_filter_adapters.clear()
     logger.info("MCP tool cache invalidated - tools list has changed")
 
 
@@ -121,6 +130,21 @@ def _register_handlers(
         logger.debug(f"MCP call_tool arguments: {arguments}")
 
         try:
+            # If a route filter is active, validate the tool is allowed
+            if route_filter is not None:
+                allowed_tools = await tool_adapter.get_available_tools(
+                    route_filter=route_filter
+                )
+                allowed_names = {t.name for t in allowed_tools}
+                if name not in allowed_names:
+                    logger.warning(f"Tool '{name}' not allowed by route filter")
+                    return [
+                        TextContent(
+                            type="text",
+                            text=f"Error: Tool '{name}' is not available",
+                        )
+                    ]
+
             result = await tool_adapter.execute_tool(name, arguments)
 
             return [TextContent(type="text", text=result)]
@@ -212,6 +236,73 @@ async def get_custom_route_server(
         route.authMethod,
         route.allowedLdapGroup,
     )
+
+
+async def get_default_route_filtered_server(
+    filter_id: str,
+) -> tuple[Server, MCPToolAdapter] | None:
+    """
+    Get or create an MCP server for a default route filter.
+
+    This is used when OAuth2 auth is enabled on the default route and the user
+    is a member of an LDAP group that has a configured filter.
+
+    Args:
+        filter_id: The filter ID
+
+    Returns:
+        Tuple of (Server, MCPToolAdapter) or None if filter not found
+    """
+    from ragtime.core.database import get_db
+
+    # Check cache first
+    if filter_id in _default_filter_servers:
+        adapter = _default_filter_adapters.get(filter_id, mcp_tool_adapter)
+        return (_default_filter_servers[filter_id], adapter)
+
+    db = await get_db()
+
+    # Find the filter configuration
+    f = await db.mcpdefaultroutefilter.find_unique(
+        where={"id": filter_id},
+        include={"toolSelections": True},
+    )
+
+    if not f or not f.enabled:
+        return None
+
+    # Get tool config IDs
+    tool_ids = (
+        [sel.toolConfigId for sel in f.toolSelections] if f.toolSelections else []
+    )
+
+    # Create route filter with index selections
+    route_filter = McpRouteFilter(
+        tool_config_ids=tool_ids,
+        include_knowledge_search=f.includeKnowledgeSearch,
+        include_git_history=f.includeGitHistory,
+        selected_document_indexes=f.selectedDocumentIndexes or None,
+        selected_filesystem_indexes=f.selectedFilesystemIndexes or None,
+        selected_schema_indexes=f.selectedSchemaIndexes or None,
+    )
+
+    # Create new adapter and server for this filter
+    adapter = MCPToolAdapter()
+    _default_filter_adapters[filter_id] = adapter
+
+    app_settings = await get_app_settings()
+    server_name = app_settings.get("server_name", "Ragtime")
+    filter_server_name = (
+        f"{server_name.lower().replace(' ', '-')}-filter-{filter_id[:8]}"
+    )
+
+    server = Server(filter_server_name)
+    _register_handlers(server, adapter, route_filter)
+    _default_filter_servers[filter_id] = server
+
+    logger.info(f"Created filtered MCP server for default route filter: {f.name}")
+
+    return (server, adapter)
 
 
 # For backward compatibility - create a default instance with handlers

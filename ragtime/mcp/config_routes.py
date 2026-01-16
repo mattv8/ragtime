@@ -19,6 +19,9 @@ from ragtime.mcp.server import notify_tools_changed
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/mcp-routes", tags=["MCP Routes"])
+default_filter_router = APIRouter(
+    prefix="/mcp-routes/default-filters", tags=["MCP Default Route Filters"]
+)
 
 
 # =============================================================================
@@ -513,3 +516,374 @@ async def get_mcp_route_by_path(route_path: str, _user=Depends(require_admin)):
         created_at=route.createdAt.isoformat(),
         updated_at=route.updatedAt.isoformat(),
     )
+
+
+# =============================================================================
+# Default Route Filter Models
+# =============================================================================
+
+
+class McpDefaultRouteFilter(BaseModel):
+    """Default route filter configuration response model."""
+
+    id: str
+    name: str
+    description: str
+    enabled: bool
+    priority: int
+    ldap_group_dn: str
+    include_knowledge_search: bool
+    include_git_history: bool
+    selected_document_indexes: List[str] = Field(default_factory=list)
+    selected_filesystem_indexes: List[str] = Field(default_factory=list)
+    selected_schema_indexes: List[str] = Field(default_factory=list)
+    tool_config_ids: List[str] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+
+
+class CreateMcpDefaultRouteFilterRequest(BaseModel):
+    """Request model for creating a default route filter."""
+
+    name: str = Field(
+        min_length=1, max_length=100, description="User-friendly name for the filter"
+    )
+    description: str = Field(
+        default="", max_length=500, description="Description for documentation"
+    )
+    priority: int = Field(
+        default=0, ge=0, le=100, description="Priority (higher = checked first)"
+    )
+    ldap_group_dn: str = Field(
+        min_length=1,
+        max_length=500,
+        description="LDAP group DN that users must be a member of",
+    )
+    include_knowledge_search: bool = Field(
+        default=True, description="Include search_knowledge tool"
+    )
+    include_git_history: bool = Field(
+        default=True, description="Include git history tools"
+    )
+    selected_document_indexes: List[str] = Field(
+        default_factory=list, description="Document index names to include"
+    )
+    selected_filesystem_indexes: List[str] = Field(
+        default_factory=list, description="Filesystem tool IDs to include"
+    )
+    selected_schema_indexes: List[str] = Field(
+        default_factory=list, description="Schema index tool IDs to include"
+    )
+    tool_config_ids: List[str] = Field(
+        default_factory=list, description="IDs of tool configs to include"
+    )
+
+
+class UpdateMcpDefaultRouteFilterRequest(BaseModel):
+    """Request model for updating a default route filter."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=500)
+    enabled: bool | None = None
+    priority: int | None = Field(default=None, ge=0, le=100)
+    include_knowledge_search: bool | None = None
+    include_git_history: bool | None = None
+    selected_document_indexes: List[str] | None = None
+    selected_filesystem_indexes: List[str] | None = None
+    selected_schema_indexes: List[str] | None = None
+    tool_config_ids: List[str] | None = None
+
+
+class McpDefaultRouteFilterListResponse(BaseModel):
+    """Response model for listing default route filters."""
+
+    filters: List[McpDefaultRouteFilter]
+    count: int
+
+
+# =============================================================================
+# Default Route Filter API Routes
+# =============================================================================
+
+
+@default_filter_router.get("", response_model=McpDefaultRouteFilterListResponse)
+async def list_default_route_filters(_user=Depends(require_admin)):
+    """List all default route filters. Admin only."""
+    db = await get_db()
+
+    filters = await db.mcpdefaultroutefilter.find_many(
+        order={"priority": "desc"},
+        include={"toolSelections": True},
+    )
+
+    result = []
+    for f in filters:
+        tool_ids = (
+            [sel.toolConfigId for sel in f.toolSelections] if f.toolSelections else []
+        )
+        result.append(
+            McpDefaultRouteFilter(
+                id=f.id,
+                name=f.name,
+                description=f.description,
+                enabled=f.enabled,
+                priority=f.priority,
+                ldap_group_dn=f.ldapGroupDn,
+                include_knowledge_search=f.includeKnowledgeSearch,
+                include_git_history=f.includeGitHistory,
+                selected_document_indexes=f.selectedDocumentIndexes or [],
+                selected_filesystem_indexes=f.selectedFilesystemIndexes or [],
+                selected_schema_indexes=f.selectedSchemaIndexes or [],
+                tool_config_ids=tool_ids,
+                created_at=f.createdAt.isoformat(),
+                updated_at=f.updatedAt.isoformat(),
+            )
+        )
+
+    return McpDefaultRouteFilterListResponse(filters=result, count=len(result))
+
+
+@default_filter_router.get("/{filter_id}", response_model=McpDefaultRouteFilter)
+async def get_default_route_filter(filter_id: str, _user=Depends(require_admin)):
+    """Get a specific default route filter by ID. Admin only."""
+    db = await get_db()
+
+    f = await db.mcpdefaultroutefilter.find_unique(
+        where={"id": filter_id},
+        include={"toolSelections": True},
+    )
+
+    if not f:
+        raise HTTPException(status_code=404, detail="Default route filter not found")
+
+    tool_ids = (
+        [sel.toolConfigId for sel in f.toolSelections] if f.toolSelections else []
+    )
+
+    return McpDefaultRouteFilter(
+        id=f.id,
+        name=f.name,
+        description=f.description,
+        enabled=f.enabled,
+        priority=f.priority,
+        ldap_group_dn=f.ldapGroupDn,
+        include_knowledge_search=f.includeKnowledgeSearch,
+        include_git_history=f.includeGitHistory,
+        selected_document_indexes=f.selectedDocumentIndexes or [],
+        selected_filesystem_indexes=f.selectedFilesystemIndexes or [],
+        selected_schema_indexes=f.selectedSchemaIndexes or [],
+        tool_config_ids=tool_ids,
+        created_at=f.createdAt.isoformat(),
+        updated_at=f.updatedAt.isoformat(),
+    )
+
+
+@default_filter_router.post("", response_model=McpDefaultRouteFilter)
+async def create_default_route_filter(
+    request: CreateMcpDefaultRouteFilterRequest, _user=Depends(require_admin)
+):
+    """Create a new default route filter. Admin only."""
+    db = await get_db()
+
+    # Check if ldap_group_dn already exists
+    existing = await db.mcpdefaultroutefilter.find_unique(
+        where={"ldapGroupDn": request.ldap_group_dn}
+    )
+    if existing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"A filter for LDAP group '{request.ldap_group_dn}' already exists",
+        )
+
+    # Validate tool config IDs exist
+    if request.tool_config_ids:
+        for tool_id in request.tool_config_ids:
+            tool = await db.toolconfig.find_unique(where={"id": tool_id})
+            if not tool:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Tool config '{tool_id}' not found",
+                )
+
+    # Create the filter
+    create_data = {
+        "name": request.name,
+        "description": request.description,
+        "priority": request.priority,
+        "ldapGroupDn": request.ldap_group_dn,
+        "includeKnowledgeSearch": request.include_knowledge_search,
+        "includeGitHistory": request.include_git_history,
+        "selectedDocumentIndexes": request.selected_document_indexes,
+        "selectedFilesystemIndexes": request.selected_filesystem_indexes,
+        "selectedSchemaIndexes": request.selected_schema_indexes,
+    }
+
+    f = await db.mcpdefaultroutefilter.create(data=create_data)
+
+    # Add tool selections
+    for tool_id in request.tool_config_ids:
+        await db.mcpdefaultroutefiltertoolselection.create(
+            data={
+                "filterId": f.id,
+                "toolConfigId": tool_id,
+            }
+        )
+
+    logger.info(f"Created default route filter: {f.name} for group {f.ldapGroupDn}")
+    notify_tools_changed()
+
+    return McpDefaultRouteFilter(
+        id=f.id,
+        name=f.name,
+        description=f.description,
+        enabled=f.enabled,
+        priority=f.priority,
+        ldap_group_dn=f.ldapGroupDn,
+        include_knowledge_search=f.includeKnowledgeSearch,
+        include_git_history=f.includeGitHistory,
+        selected_document_indexes=f.selectedDocumentIndexes or [],
+        selected_filesystem_indexes=f.selectedFilesystemIndexes or [],
+        selected_schema_indexes=f.selectedSchemaIndexes or [],
+        tool_config_ids=request.tool_config_ids,
+        created_at=f.createdAt.isoformat(),
+        updated_at=f.updatedAt.isoformat(),
+    )
+
+
+@default_filter_router.put("/{filter_id}", response_model=McpDefaultRouteFilter)
+async def update_default_route_filter(
+    filter_id: str,
+    request: UpdateMcpDefaultRouteFilterRequest,
+    _user=Depends(require_admin),
+):
+    """Update an existing default route filter. Admin only."""
+    db = await get_db()
+
+    # Check filter exists
+    existing = await db.mcpdefaultroutefilter.find_unique(where={"id": filter_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Default route filter not found")
+
+    # Build update data
+    update_data: dict = {}
+    if request.name is not None:
+        update_data["name"] = request.name
+    if request.description is not None:
+        update_data["description"] = request.description
+    if request.enabled is not None:
+        update_data["enabled"] = request.enabled
+    if request.priority is not None:
+        update_data["priority"] = request.priority
+    if request.include_knowledge_search is not None:
+        update_data["includeKnowledgeSearch"] = request.include_knowledge_search
+    if request.include_git_history is not None:
+        update_data["includeGitHistory"] = request.include_git_history
+    if request.selected_document_indexes is not None:
+        update_data["selectedDocumentIndexes"] = request.selected_document_indexes
+    if request.selected_filesystem_indexes is not None:
+        update_data["selectedFilesystemIndexes"] = request.selected_filesystem_indexes
+    if request.selected_schema_indexes is not None:
+        update_data["selectedSchemaIndexes"] = request.selected_schema_indexes
+
+    # Update filter
+    if update_data:
+        await db.mcpdefaultroutefilter.update(where={"id": filter_id}, data=update_data)
+
+    # Update tool selections if provided
+    if request.tool_config_ids is not None:
+        # Validate tool config IDs exist
+        for tool_id in request.tool_config_ids:
+            tool = await db.toolconfig.find_unique(where={"id": tool_id})
+            if not tool:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Tool config '{tool_id}' not found",
+                )
+
+        # Delete existing selections
+        await db.mcpdefaultroutefiltertoolselection.delete_many(
+            where={"filterId": filter_id}
+        )
+
+        # Add new selections
+        for tool_id in request.tool_config_ids:
+            await db.mcpdefaultroutefiltertoolselection.create(
+                data={
+                    "filterId": filter_id,
+                    "toolConfigId": tool_id,
+                }
+            )
+
+    # Fetch updated filter
+    f = await db.mcpdefaultroutefilter.find_unique(
+        where={"id": filter_id},
+        include={"toolSelections": True},
+    )
+
+    if not f:
+        raise HTTPException(status_code=404, detail="Default route filter not found")
+
+    tool_ids = (
+        [sel.toolConfigId for sel in f.toolSelections] if f.toolSelections else []
+    )
+
+    logger.info(f"Updated default route filter: {f.name}")
+    notify_tools_changed()
+
+    return McpDefaultRouteFilter(
+        id=f.id,
+        name=f.name,
+        description=f.description,
+        enabled=f.enabled,
+        priority=f.priority,
+        ldap_group_dn=f.ldapGroupDn,
+        include_knowledge_search=f.includeKnowledgeSearch,
+        include_git_history=f.includeGitHistory,
+        selected_document_indexes=f.selectedDocumentIndexes or [],
+        selected_filesystem_indexes=f.selectedFilesystemIndexes or [],
+        selected_schema_indexes=f.selectedSchemaIndexes or [],
+        tool_config_ids=tool_ids,
+        created_at=f.createdAt.isoformat(),
+        updated_at=f.updatedAt.isoformat(),
+    )
+
+
+@default_filter_router.delete("/{filter_id}")
+async def delete_default_route_filter(filter_id: str, _user=Depends(require_admin)):
+    """Delete a default route filter. Admin only."""
+    db = await get_db()
+
+    # Check filter exists
+    existing = await db.mcpdefaultroutefilter.find_unique(where={"id": filter_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Default route filter not found")
+
+    await db.mcpdefaultroutefilter.delete(where={"id": filter_id})
+
+    logger.info(
+        f"Deleted default route filter: {existing.name} for group {existing.ldapGroupDn}"
+    )
+    notify_tools_changed()
+
+    return {"status": "deleted", "id": filter_id}
+
+
+@default_filter_router.post("/{filter_id}/toggle")
+async def toggle_default_route_filter(
+    filter_id: str, enabled: bool, _user=Depends(require_admin)
+):
+    """Toggle a default route filter's enabled state. Admin only."""
+    db = await get_db()
+
+    existing = await db.mcpdefaultroutefilter.find_unique(where={"id": filter_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Default route filter not found")
+
+    await db.mcpdefaultroutefilter.update(
+        where={"id": filter_id}, data={"enabled": enabled}
+    )
+
+    logger.info(f"Toggled default route filter {existing.name}: enabled={enabled}")
+    notify_tools_changed()
+
+    return {"status": "updated", "id": filter_id, "enabled": enabled}

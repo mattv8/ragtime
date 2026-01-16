@@ -46,6 +46,7 @@ from ragtime.core.rate_limit import limiter
 from ragtime.indexer.routes import ASSETS_DIR as INDEXER_ASSETS_DIR
 from ragtime.indexer.routes import DIST_DIR
 from ragtime.indexer.routes import router as indexer_router
+from ragtime.mcp.config_routes import default_filter_router as mcp_default_filter_router
 from ragtime.mcp.config_routes import router as mcp_config_router
 
 # Import MCP routes and transport for HTTP API access
@@ -254,6 +255,9 @@ logger.info("Indexer API enabled at /indexes, UI served at root (/)")
 
 # Include MCP routes (enabled/disabled controlled via database setting)
 app.include_router(mcp_router)  # Debug endpoints at /mcp-debug/*
+app.include_router(
+    mcp_default_filter_router
+)  # Default route filters at /mcp-routes/default-filters/*
 app.include_router(mcp_config_router)  # MCP route configuration at /mcp-routes/*
 # Add all MCP routes (default /mcp and custom /mcp/{route_path})
 for route in get_mcp_routes():

@@ -1,7 +1,7 @@
-import { Database, Terminal, Monitor, Folder, File, Plug, Loader2, Check, Pencil, Trash2, X, HardDrive } from 'lucide-react';
+import { Database, Terminal, Monitor, Folder, File, Plug, Loader2, Check, Pencil, Trash2, X, HardDrive, Users } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
-export type IconType = 'database' | 'terminal' | 'server' | 'folder' | 'file' | 'plug' | 'loader' | 'check' | 'pencil' | 'trash' | 'close' | 'harddrive';
+export type IconType = 'database' | 'terminal' | 'server' | 'folder' | 'file' | 'plug' | 'loader' | 'check' | 'pencil' | 'trash' | 'close' | 'harddrive' | 'users';
 
 const iconMap: Record<IconType, LucideIcon> = {
   database: Database,
@@ -16,6 +16,7 @@ const iconMap: Record<IconType, LucideIcon> = {
   trash: Trash2,
   close: X,
   harddrive: HardDrive,
+  users: Users,
 };
 
 interface IconProps {

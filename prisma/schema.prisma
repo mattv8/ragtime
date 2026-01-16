@@ -244,6 +244,9 @@ model ToolConfig {
   // Relation to MCP route tool selections
   mcpRouteTools McpRouteToolSelection[]
 
+  // Relation to MCP default route filter tool selections
+  mcpDefaultRouteFilterTools McpDefaultRouteFilterToolSelection[]
+
   @@map("tool_configs")
 }
 
@@ -302,6 +305,54 @@ model McpRouteToolSelection {
 
   @@unique([mcpRouteId, toolConfigId])
   @@map("mcp_route_tool_selections")
+}
+
+/// Default MCP route filter - maps LDAP groups to tool subsets
+/// When a user authenticates to the default /mcp route, the system checks their
+/// LDAP group membership and filters available tools based on these configurations.
+/// If no filter matches, all tools are shown (default behavior).
+model McpDefaultRouteFilter {
+  id          String   @id @default(uuid())
+  name        String   // User-friendly name (e.g., "Engineering Tools")
+  description String   @default("") // Description for documentation
+  enabled     Boolean  @default(true)
+  priority    Int      @default(0) // Higher priority filters take precedence
+
+  // LDAP group requirement - user must be member of this group
+  ldapGroupDn String   @map("ldap_group_dn") // e.g., "CN=Engineers,OU=Groups,DC=example,DC=com"
+
+  // Built-in tools configuration
+  includeKnowledgeSearch Boolean @default(true) @map("include_knowledge_search")
+  includeGitHistory      Boolean @default(true) @map("include_git_history")
+
+  // Index selections (for per-index control when aggregate_search is false)
+  selectedDocumentIndexes   String[] @default([]) @map("selected_document_indexes")
+  selectedFilesystemIndexes String[] @default([]) @map("selected_filesystem_indexes")
+  selectedSchemaIndexes     String[] @default([]) @map("selected_schema_indexes")
+
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  // Relation to tool selections
+  toolSelections McpDefaultRouteFilterToolSelection[]
+
+  @@unique([ldapGroupDn])
+  @@map("mcp_default_route_filters")
+}
+
+/// Junction table for default route filter to tool config many-to-many relationship
+model McpDefaultRouteFilterToolSelection {
+  id           String @id @default(uuid())
+  filterId     String @map("filter_id")
+  toolConfigId String @map("tool_config_id")
+
+  // Relations
+  filter     McpDefaultRouteFilter @relation(fields: [filterId], references: [id], onDelete: Cascade)
+  toolConfig ToolConfig            @relation(fields: [toolConfigId], references: [id], onDelete: Cascade)
+
+  @@unique([filterId, toolConfigId])
+  @@map("mcp_default_route_filter_tool_selections")
 }
 
 // -----------------------------------------------------------------------------
