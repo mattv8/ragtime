@@ -15,7 +15,7 @@ import json
 from typing import Any
 
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ragtime.core.logging import get_logger
 
@@ -28,7 +28,10 @@ class CreateDataTableInput(BaseModel):
     title: str = Field(description="Table title displayed above the table")
     columns: list[str] = Field(description="Column headers for the table")
     data: list[list[Any]] = Field(
-        description="2D array of table data - each inner array is a row"
+        description=(
+            "2D array of table data where each inner array is a row. "
+            "Can also be provided as 'rows' or as a list of objects with column keys."
+        ),
     )
     description: str = Field(
         default="",
@@ -41,6 +44,32 @@ class CreateDataTableInput(BaseModel):
             "Allows full access to DataTables options like columnDefs, order, pageLength, etc."
         ),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_input(cls, values: Any) -> Any:
+        """
+        Normalize input to accept common LLM variations:
+        - 'rows' as alias for 'data'
+        - List of dicts converted to list of lists
+        """
+        if not isinstance(values, dict):
+            return values
+
+        # Accept 'rows' as alias for 'data'
+        if "data" not in values and "rows" in values:
+            values["data"] = values.pop("rows")
+
+        # Convert list-of-dicts to list-of-lists using column order
+        data = values.get("data")
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            columns = values.get("columns", [])
+            if columns:
+                values["data"] = [[row.get(col) for col in columns] for row in data]
+            else:
+                values["data"] = [list(row.values()) for row in data]
+
+        return values
 
 
 async def create_datatable(
@@ -68,15 +97,18 @@ async def create_datatable(
     """
     logger.info(f"Creating datatable: {title} ({len(data)} rows)")
 
+    row_count = len(data)
+    page_length = 10 if row_count > 10 else max(row_count, 1)
+
     # Build DataTables configuration
     table_config: dict[str, Any] = {
         "columns": [{"title": col} for col in columns],
         "data": data,
-        "pageLength": 10 if len(data) > 10 else len(data),
-        "searching": len(data) > 5,
+        "pageLength": page_length,
+        "searching": row_count > 5,
         "ordering": True,
-        "paging": len(data) > 10,
-        "info": len(data) > 5,
+        "paging": row_count > 10,
+        "info": row_count > 5,
     }
 
     # Merge in raw config if provided (allows full customization)
