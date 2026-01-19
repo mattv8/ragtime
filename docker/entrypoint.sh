@@ -83,6 +83,13 @@ else
     fi
 fi
 
+# Apply pgvector optimizations (autovacuum, probes, etc.)
+if [ -x "/docker-scripts/init-pgvector.sh" ]; then
+    /docker-scripts/init-pgvector.sh 2>&1 || {
+        echo "Warning: pgvector optimization script failed (non-fatal)"
+    }
+fi
+
 # Start services based on mode
 if [ "$DEBUG_MODE" = "true" ]; then
     # Development mode with hot-reload

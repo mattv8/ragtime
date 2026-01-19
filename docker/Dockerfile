@@ -120,14 +120,15 @@ COPY --from=frontend-builder /frontend/dist /ragtime/ragtime/frontend/dist/
 # Copy entrypoint and scripts
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/scripts/backup-restore.sh /docker-scripts/backup-restore.sh
+COPY docker/scripts/init-pgvector.sh /docker-scripts/init-pgvector.sh
 
 # Create data directory
 RUN mkdir -p /ragtime/data/faiss_index && \
     chown -R ragtime:ragtime /ragtime
 
 # Fix line endings (Windows CRLF -> Unix LF) and make scripts executable
-RUN dos2unix /entrypoint.sh /docker-scripts/backup-restore.sh \
-    && chmod +x /entrypoint.sh /docker-scripts/backup-restore.sh \
+RUN dos2unix /entrypoint.sh /docker-scripts/backup-restore.sh /docker-scripts/init-pgvector.sh \
+    && chmod +x /entrypoint.sh /docker-scripts/backup-restore.sh /docker-scripts/init-pgvector.sh \
     && ln -sf /docker-scripts/backup-restore.sh /usr/local/bin/backup \
     && ln -sf /docker-scripts/backup-restore.sh /usr/local/bin/restore
 
