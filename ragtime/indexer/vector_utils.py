@@ -91,9 +91,12 @@ async def ensure_embedding_column(
                 f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS embedding vector({embedding_dim})"
             )
         elif dimension_changed:
-            log.info(
-                f"Updating embedding column for {table_name} {current_dim} -> {embedding_dim}"
+            log.warning(
+                f"Embedding dimension changed for {table_name}: {current_dim} -> {embedding_dim}. "
+                "Clearing existing embeddings and updating column."
             )
+            # Must clear existing embeddings before changing dimension - vectors can't be cast
+            await db.execute_raw(f"UPDATE {table_name} SET embedding = NULL")
             await db.execute_raw(f"DROP INDEX IF EXISTS {index_name}")
             await db.execute_raw(
                 f"ALTER TABLE {table_name} ALTER COLUMN embedding TYPE vector({embedding_dim})"
@@ -133,8 +136,9 @@ async def ensure_embedding_column(
         return True
 
     except Exception as exc:  # pragma: no cover - defensive logging
-        log.error(f"Error ensuring embedding column for {table_name}: {exc}")
-        return False
+        error_msg = f"Error ensuring embedding column for {table_name}: {exc}"
+        log.error(error_msg)
+        raise RuntimeError(error_msg) from exc
 
 
 async def get_embeddings_model(

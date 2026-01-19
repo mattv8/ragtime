@@ -892,6 +892,7 @@ class PdmIndexerService:
             )
             embedding_dim = len(test_embedding[0])
             index_lists = app_settings.get("ivfflat_lists", 100)
+            # This will raise RuntimeError with detailed message if it fails
             await self._ensure_embedding_column(embedding_dim, index_lists)
 
             # Update tracking if needed

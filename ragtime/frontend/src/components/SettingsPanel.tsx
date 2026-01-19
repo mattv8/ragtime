@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { Lock, LockOpen } from 'lucide-react';
 import { api } from '@/api';
-import type { AppSettings, UpdateSettingsRequest, OllamaModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig } from '@/types';
+import type { AppSettings, UpdateSettingsRequest, OllamaModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus } from '@/types';
 import { MCPRoutesPanel } from './MCPRoutesPanel';
 import { OllamaConnectionForm } from './OllamaConnectionForm';
 
@@ -43,9 +44,11 @@ interface SettingsPanelProps {
   highlightSetting?: string | null;
   /** Called after highlight animation completes to clear the param */
   onHighlightComplete?: () => void;
+  /** Auth status for security warnings */
+  authStatus?: AuthStatus | null;
 }
 
-export function SettingsPanel({ onServerNameChange, highlightSetting, onHighlightComplete }: SettingsPanelProps) {
+export function SettingsPanel({ onServerNameChange, highlightSetting, onHighlightComplete, authStatus }: SettingsPanelProps) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -798,14 +801,19 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         <p className="field-help" style={{ marginTop: '0.5rem' }}>
           Model: <code>{(formData.server_name || settings?.server_name || 'Ragtime').toLowerCase().replace(/\s+/g, '-')}</code>. The <code>/v1</code> path is required for OpenAI API compatibility.
         </p>
-        <div className="field-warning" style={{ marginTop: '0.75rem', padding: '0.75rem', backgroundColor: 'rgba(255, 193, 7, 0.15)', borderLeft: '3px solid #ffc107', borderRadius: '4px' }}>
-          <strong>Security:</strong> The API endpoint accepts an API Key for authentication (set via <code>API_KEY</code> environment variable).
-          Without an API key, anyone with network access can use your LLM and tools.
-          {window.location.protocol === 'http:' && (
-            <span> Additionally, you are currently accessing over HTTP - API keys and credentials will be transmitted in plaintext.
-            Consider using HTTPS via a reverse proxy or setting <code>ENABLE_HTTPS=true</code>.</span>
-          )}
-        </div>
+        {(!authStatus?.api_key_configured || window.location.protocol === 'http:') && (
+          <div className="field-warning" style={{ marginTop: '0.75rem', padding: '0.75rem', backgroundColor: 'rgba(255, 193, 7, 0.15)', borderLeft: '3px solid #ffc107', borderRadius: '4px' }}>
+            <strong>Security:</strong>
+            {!authStatus?.api_key_configured && (
+              <span> The API endpoint accepts an API Key for authentication (set via <code>API_KEY</code> environment variable).
+              Without an API key, anyone with network access can use your LLM and tools.</span>
+            )}
+            {window.location.protocol === 'http:' && (
+              <span> {authStatus?.api_key_configured ? '' : 'Additionally, y'}ou are currently accessing over HTTP - API keys and credentials will be transmitted in plaintext.
+              Consider using HTTPS via a reverse proxy or setting <code>ENABLE_HTTPS=true</code>.</span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* MCP Routes Summary */}
@@ -827,19 +835,34 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <code>{`${window.location.protocol}//${window.location.hostname}:8000/mcp`}</code>
             <span className="muted" style={{ fontSize: '0.85em' }}>(default - all tools)</span>
-            {settings?.mcp_default_route_auth && settings?.has_mcp_default_password && (
-              <span className="write-enabled" style={{ fontSize: '0.8em' }}>password protected</span>
+            {settings?.mcp_default_route_auth && settings?.has_mcp_default_password ? (
+              <span title="Password protected">
+                <Lock size={14} style={{ color: 'var(--success-color, #4caf50)' }} />
+              </span>
+            ) : (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', color: 'var(--error-color, #f44336)', fontSize: '0.8em' }}>
+                <LockOpen size={14} /> unprotected
+              </span>
             )}
           </div>
-          {mcpRoutes.filter(r => r.enabled).map(route => (
-            <div key={route.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <code>{`${window.location.protocol}//${window.location.hostname}:8000/mcp/${route.route_path}`}</code>
-              <span className="muted" style={{ fontSize: '0.85em' }}>({route.name})</span>
-              {route.require_auth && route.has_password && (
-                <span className="write-enabled" style={{ fontSize: '0.8em' }}>password protected</span>
-              )}
-            </div>
-          ))}
+          {mcpRoutes.filter(r => r.enabled).map(route => {
+            const isProtected = route.require_auth && (route.has_password || route.auth_method === 'oauth2');
+            return (
+              <div key={route.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <code>{`${window.location.protocol}//${window.location.hostname}:8000/mcp/${route.route_path}`}</code>
+                <span className="muted" style={{ fontSize: '0.85em' }}>({route.name})</span>
+                {isProtected ? (
+                  <span title={route.auth_method === 'oauth2' ? 'OAuth2 (LDAP)' : 'Password protected'}>
+                    <Lock size={14} style={{ color: 'var(--success-color, #4caf50)' }} />
+                  </span>
+                ) : (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', color: 'var(--error-color, #f44336)', fontSize: '0.8em' }}>
+                    <LockOpen size={14} /> unprotected
+                  </span>
+                )}
+              </div>
+            );
+          })}
         </div>
         {mcpRoutes.filter(r => !r.enabled).length > 0 && (
           <p className="field-help" style={{ marginTop: '0.5rem' }}>

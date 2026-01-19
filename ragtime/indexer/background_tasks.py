@@ -236,19 +236,17 @@ class BackgroundTaskService:
         from ragtime.indexer.schema_service import schema_indexer
 
         try:
-            db = await repository._get_db()
+            # Use repository to get properly decrypted tool configs
+            all_tools = await repository.list_tool_configs(enabled_only=True)
 
-            # Get all enabled postgres/mssql tool configs
-            tool_configs = await db.toolconfig.find_many(
-                where={
-                    "toolType": {"in": ["postgres", "mssql"]},
-                    "enabled": True,
-                }
-            )
+            # Filter for postgres/mssql tools
+            tool_configs = [
+                t for t in all_tools if t.tool_type.value in ("postgres", "mssql")
+            ]
 
             for config in tool_configs:
                 try:
-                    connection_config = config.connectionConfig
+                    connection_config = config.connection_config
                     if not isinstance(connection_config, dict):
                         continue
 
@@ -293,7 +291,7 @@ class BackgroundTaskService:
                     )
                     await schema_indexer.trigger_index(
                         tool_config_id=config.id,
-                        tool_type=config.toolType,
+                        tool_type=config.tool_type.value,
                         connection_config=connection_config,
                         full_reindex=False,  # Use hash-based change detection
                         tool_name=safe_tool_name(config.name) or None,

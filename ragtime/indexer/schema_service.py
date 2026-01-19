@@ -473,6 +473,53 @@ class SchemaIndexerService:
     # Schema Introspection
     # =========================================================================
 
+    async def test_connection(
+        self, tool_type: str, connection_config: dict
+    ) -> tuple[bool, str | None]:
+        """
+        Test database connectivity before starting indexing.
+
+        Returns:
+            Tuple of (success, error_message)
+        """
+        try:
+            if tool_type == DB_TYPE_POSTGRES:
+                # Simple SELECT 1 to verify connection
+                result = await self._execute_postgres_query(
+                    "SELECT 1 AS ok",
+                    connection_config.get("host", ""),
+                    connection_config.get("port", 5432),
+                    connection_config.get("user", ""),
+                    connection_config.get("password", ""),
+                    connection_config.get("database", ""),
+                    connection_config.get("container", ""),
+                )
+                if not result:
+                    return False, "Connection test returned no results"
+                return True, None
+            elif tool_type == DB_TYPE_MSSQL:
+                # For MSSQL, we'll test during introspection
+                # as it uses pyodbc which handles connection testing
+                return True, None
+            else:
+                return False, f"Unsupported database type: {tool_type}"
+        except Exception as e:
+            error_msg = str(e)
+            # Extract meaningful error from full traceback
+            if "password authentication failed" in error_msg.lower():
+                return (
+                    False,
+                    "Password authentication failed. Check username and password.",
+                )
+            if (
+                "could not connect" in error_msg.lower()
+                or "connection refused" in error_msg.lower()
+            ):
+                return False, "Could not connect to database. Check host and port."
+            if "does not exist" in error_msg.lower():
+                return False, "Database does not exist. Check database name."
+            return False, f"Connection test failed: {error_msg}"
+
     async def introspect_schema(
         self, tool_type: str, connection_config: dict
     ) -> List[TableSchemaInfo]:
@@ -1086,6 +1133,14 @@ class SchemaIndexerService:
             job.started_at = datetime.now(timezone.utc)
             await self._update_job(job)
 
+            # Early connection test - fail fast if credentials are wrong
+            logger.info(f"Testing {tool_type} connection...")
+            success, error_msg = await self.test_connection(
+                tool_type, connection_config
+            )
+            if not success:
+                raise RuntimeError(f"Database connection failed: {error_msg}")
+
             # Ensure pgvector is available
             if not await self._ensure_pgvector():
                 raise RuntimeError("pgvector extension not available")
@@ -1132,6 +1187,7 @@ class SchemaIndexerService:
                 )
             embedding_dim = len(test_embedding[0])
             index_lists = settings.ivfflat_lists or 100
+            # This will raise RuntimeError with detailed message if it fails
             await self._ensure_embedding_column(embedding_dim, index_lists)
 
             # Update tracking if needed (first index or config change)

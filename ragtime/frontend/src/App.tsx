@@ -555,6 +555,7 @@ export function App() {
           onServerNameChange={handleServerNameChange}
           highlightSetting={highlightSetting}
           onHighlightComplete={() => setHighlightSetting(null)}
+          authStatus={authStatus}
         />
       ) : activeView === 'tools' ? (
         <ToolsPanel onSchemaJobTriggered={loadSchemaJobs} />
