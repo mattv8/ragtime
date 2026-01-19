@@ -859,6 +859,7 @@ class PdmIndexerService:
             settings = await repository.get_settings()
 
             # Check for embedding configuration mismatch
+            # Auto-correct by forcing full re-index when config changes
             current_config_hash = settings.get_embedding_config_hash()
             tracking_needs_update = (
                 settings.embedding_dimension is None
@@ -867,16 +868,12 @@ class PdmIndexerService:
 
             if settings.embedding_config_hash is not None:
                 if settings.embedding_config_hash != current_config_hash:
-                    if not full_reindex:
-                        job.status = PdmIndexStatus.FAILED
-                        job.completed_at = datetime.now(timezone.utc)
-                        job.error_message = (
-                            "Embedding configuration mismatch. "
-                            "A full re-index is required."
-                        )
-                        await self._update_job(job)
-                        logger.error(job.error_message)
-                        return
+                    # Mismatch detected - auto-correct by treating as full reindex
+                    logger.warning(
+                        f"Embedding config changed: {settings.embedding_config_hash} -> {current_config_hash}. "
+                        "Auto-triggering full re-index to correct dimension mismatch."
+                    )
+                    full_reindex = True  # Force full reindex to clear old embeddings
                     tracking_needs_update = True
 
             # Get embeddings provider

@@ -1029,6 +1029,7 @@ class FilesystemIndexerService:
             app_settings = await get_app_settings()
 
             # Check for embedding configuration mismatch
+            # Auto-correct by forcing full re-index when config changes
             from ragtime.indexer.repository import IndexerRepository
 
             repo = IndexerRepository()
@@ -1042,22 +1043,12 @@ class FilesystemIndexerService:
 
             if settings.embedding_config_hash is not None:
                 if settings.embedding_config_hash != current_config_hash:
-                    # Mismatch detected - require full reindex
-                    if not full_reindex:
-                        job.status = FilesystemIndexStatus.FAILED
-                        job.completed_at = datetime.utcnow()
-                        job.error_message = (
-                            f"Embedding configuration mismatch: indexes were created with "
-                            f"'{settings.embedding_config_hash}' but current config is "
-                            f"'{current_config_hash}'. A full re-index is required. "
-                            "Use the 'Full Re-index' button to rebuild all embeddings."
-                        )
-                        await self._update_job(job)
-                        logger.error(job.error_message)
-                        return
+                    # Mismatch detected - auto-correct by treating as full reindex
                     logger.warning(
-                        f"Full re-index with config change: {settings.embedding_config_hash} -> {current_config_hash}"
+                        f"Embedding config changed: {settings.embedding_config_hash} -> {current_config_hash}. "
+                        "Auto-triggering full re-index to correct dimension mismatch."
                     )
+                    full_reindex = True  # Force full reindex to clear old embeddings
                     tracking_needs_update = True
 
             # Initialize embeddings
