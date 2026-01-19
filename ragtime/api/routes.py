@@ -138,33 +138,40 @@ async def chat_completions(request: ChatCompletionRequest):
             status_code=503, detail="Service initializing, please retry"
         )
 
-    # Extract the latest user message
-    user_msg = next(
-        (m.content for m in reversed(request.messages) if m.role == "user"), None
+    # Extract the latest user message (full message, including multimodal content)
+    user_message = next(
+        (m for m in reversed(request.messages) if m.role == "user"),
+        None,
     )
 
-    if not user_msg:
+    if not user_message:
         raise HTTPException(status_code=400, detail="No user message found")
 
-    logger.info(f"Processing query: {user_msg[:100]}...")
+    user_text = user_message.get_text_content()
+    logger.info(f"Processing query: {user_text[:100]}...")
 
-    # Build chat history for context
+    # Build chat history for context (convert to LangChain format)
     chat_history = []
     for msg in request.messages[:-1]:  # Exclude the current message
         if msg.role == "user":
-            chat_history.append(HumanMessage(content=msg.content))
+            # Convert multimodal content to LangChain format
+            if isinstance(msg.content, str):
+                chat_history.append(HumanMessage(content=msg.content))
+            else:
+                # For multimodal, pass as-is - LangChain will handle it
+                chat_history.append(HumanMessage(content=msg.content))
         elif msg.role == "assistant":
-            chat_history.append(AIMessage(content=msg.content))
+            chat_history.append(AIMessage(content=msg.get_text_content()))
 
     # Handle streaming response - use true LLM streaming
     if request.stream:
         return StreamingResponse(
-            _stream_response_tokens(user_msg, chat_history, request.model),
+            _stream_response_tokens(user_message, chat_history, request.model),
             media_type="text/event-stream",
         )
 
     # Non-streaming: process the query normally
-    answer = await rag.process_query(user_msg, chat_history)
+    answer = await rag.process_query(user_message, chat_history)
 
     logger.info(f"Response generated ({len(answer)} chars)")
 
@@ -183,13 +190,18 @@ async def chat_completions(request: ChatCompletionRequest):
     )
 
 
-async def _stream_response_tokens(user_msg: str, chat_history: list, model: str):
+async def _stream_response_tokens(user_message, chat_history: list, model: str):
     """
     Generate true streaming response by yielding tokens from the LLM.
 
     Streams tokens as they're generated, supporting <think> tags and other
     structured output without filtering. Tool calls are formatted as readable
     text for OpenAI API compatibility with external clients.
+
+    Args:
+        user_message: Message object (can contain multimodal content)
+        chat_history: Previous messages
+        model: Model name string
     """
     chunk_id = f"chatcmpl-{int(time.time())}"
 
@@ -235,7 +247,7 @@ async def _stream_response_tokens(user_msg: str, chat_history: list, model: str)
         return output
 
     # Stream tokens from the RAG agent
-    async for event in rag.process_query_stream(user_msg, chat_history):
+    async for event in rag.process_query_stream(user_message, chat_history):
         # Handle structured events (tool calls)
         if isinstance(event, dict):
             event_type = event.get("type")

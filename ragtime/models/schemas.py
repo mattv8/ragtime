@@ -3,16 +3,41 @@ Pydantic models for API requests and responses.
 OpenAI API compatible schemas.
 """
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
+
+
+class TextContent(BaseModel):
+    """Text content in a multimodal message."""
+
+    type: str = "text"
+    text: str
+
+
+class ImageUrl(BaseModel):
+    """Image URL for multimodal messages."""
+
+    url: str
+
+
+class ImageContent(BaseModel):
+    """Image content in a multimodal message."""
+
+    type: str = "image_url"
+    image_url: ImageUrl
+
+
+ContentPart = Union[TextContent, ImageContent, Dict[str, Any]]
 
 
 class Message(BaseModel):
     """A single message in the conversation."""
 
     role: str = Field(description="Role: 'user', 'assistant', or 'system'")
-    content: str = Field(description="Message content")
+    content: Union[str, List[ContentPart]] = Field(
+        description="Message content - either string or multimodal content array"
+    )
 
     @field_validator("role")
     @classmethod
@@ -20,6 +45,19 @@ class Message(BaseModel):
         if v not in ("user", "assistant", "system"):
             raise ValueError("Role must be 'user', 'assistant', or 'system'")
         return v
+
+    def get_text_content(self) -> str:
+        """Extract text content from message, handling both string and multimodal formats."""
+        if isinstance(self.content, str):
+            return self.content
+        # Extract text from multimodal content array
+        text_parts = []
+        for item in self.content:
+            if isinstance(item, TextContent):
+                text_parts.append(item.text)
+            elif isinstance(item, dict) and item.get("type") == "text":
+                text_parts.append(item.get("text", ""))
+        return " ".join(text_parts)
 
 
 class ChatCompletionRequest(BaseModel):

@@ -20,6 +20,7 @@ from urllib.parse import urlencode
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Form, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -244,6 +245,36 @@ app = FastAPI(
     redoc_url="/redoc",
     openapi_url="/openapi.json",
 )
+
+
+# Exception handler for validation errors
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """
+    Log detailed validation errors to help debug malformed requests.
+    This is especially useful when behind reverse proxies or with external clients.
+    """
+    body = None
+    try:
+        body = await request.body()
+        body_str = body.decode("utf-8")[:1000]  # Limit to first 1000 chars
+    except Exception:
+        body_str = "<unable to read body>"
+
+    logger.error(
+        f"Validation error on {request.method} {request.url.path}: {exc.errors()}"
+    )
+    logger.error(f"Request body: {body_str}")
+    logger.error(f"Request headers: {dict(request.headers)}")
+
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": exc.errors(),
+            "body": body_str if body else None,
+        },
+    )
+
 
 # CORS middleware
 # Note: allow_origins=["*"] with allow_credentials=True is problematic per CORS spec.

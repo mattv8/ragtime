@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, X, AlertCircle, RefreshCw } from 'lucide-react';
+import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, X, AlertCircle, RefreshCw, FileText, Image as ImageIcon } from 'lucide-react';
 import { api } from '@/api';
-import type { Conversation, ChatMessage, AvailableModel, ChatTask, User } from '@/types';
+import type { Conversation, ChatMessage, AvailableModel, ChatTask, User, ContentPart } from '@/types';
+import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
 
 // Memoized markdown component to prevent re-parsing on every render
 // Only re-renders when content actually changes
@@ -784,6 +785,69 @@ function formatRelativeTime(dateStr: string): string {
   return date.toLocaleDateString();
 }
 
+// Helper to extract text and attachments from message content
+function parseMessageContent(content: string | ContentPart[]): { text: string; attachments: ContentPart[] } {
+  if (typeof content === 'string') {
+    // Try to parse as JSON content parts (for backward compatibility)
+    try {
+      const parsed = JSON.parse(content);
+      if (Array.isArray(parsed)) {
+        const text = parsed
+          .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+          .map(p => p.text)
+          .join('\n');
+        const attachments = parsed.filter((p): p is ContentPart => p.type !== 'text');
+        return { text, attachments };
+      }
+    } catch {
+      // Not JSON, treat as plain text
+    }
+    return { text: content, attachments: [] };
+  }
+
+  // Already parsed array
+  const text = content
+    .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+    .map(p => p.text)
+    .join('\n');
+  const attachments = content.filter((p): p is ContentPart => p.type !== 'text');
+  return { text, attachments };
+}
+
+// Component to display message attachments
+const MessageAttachments = memo(function MessageAttachments({ attachments }: { attachments: ContentPart[] }) {
+  if (attachments.length === 0) return null;
+
+  return (
+    <div className="message-attachments">
+      {attachments.map((attachment, idx) => {
+        if (attachment.type === 'image_url') {
+          return (
+            <div key={idx} className="message-attachment">
+              <img
+                src={attachment.image_url.url}
+                alt="Attached image"
+                className="message-attachment-image"
+                onClick={() => window.open(attachment.image_url.url, '_blank')}
+              />
+            </div>
+          );
+        } else if (attachment.type === 'file') {
+          return (
+            <div key={idx} className="message-attachment message-attachment-file">
+              <FileText className="message-attachment-file-icon" size={16} />
+              <span className="message-attachment-file-name" title={attachment.file_path}>
+                {attachment.filename}
+              </span>
+            </div>
+          );
+        }
+        return null;
+      })}
+    </div>
+  );
+});
+
 interface ChatPanelProps {
   currentUser: User;
 }
@@ -792,6 +856,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [inputValue, setInputValue] = useState('');
+  const [attachments, setAttachments] = useState<AttachmentFile[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [streamingEvents, setStreamingEvents] = useState<StreamingRenderEvent[]>([]);
@@ -827,6 +892,16 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-resize textarea
+  useEffect(() => {
+    const textarea = inputRef.current;
+    if (textarea) {
+      textarea.style.height = '0px';
+      const scrollHeight = textarea.scrollHeight;
+      textarea.style.height = scrollHeight + 'px';
+    }
+  }, [inputValue]);
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const getOwnerKey = useCallback((conv: Conversation) => conv.username || conv.user_id || 'unknown', []);
@@ -1367,15 +1442,24 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
   };
 
   const sendMessage = async () => {
-    if (!inputValue.trim() || !activeConversation || isStreaming) return;
+    if ((!inputValue.trim() && attachments.length === 0) || !activeConversation || isStreaming) return;
 
     const userMessage = inputValue.trim();
+    const messageAttachments = [...attachments];
+
     setInputValue('');
+    setAttachments([]);
 
     // Auto-collapse sidebar when user starts chatting
     setShowSidebar(false);
 
-    sendMessageDirect(userMessage);
+    // Convert attachments to content parts if present
+    if (messageAttachments.length > 0) {
+      const contentParts = attachmentsToContentParts(userMessage, messageAttachments);
+      sendMessageDirect(JSON.stringify(contentParts));
+    } else {
+      sendMessageDirect(userMessage);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -1790,12 +1874,24 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
                                   </div>
                                 )}
                                 {msg.role === 'user' ? (
-                                  <div className="chat-message-text chat-message-user-text">
-                                    {msg.content}
-                                  </div>
+                                  <>
+                                    {(() => {
+                                      const { text, attachments } = parseMessageContent(msg.content);
+                                      return (
+                                        <>
+                                          {attachments.length > 0 && <MessageAttachments attachments={attachments} />}
+                                          {text && (
+                                            <div className="chat-message-text chat-message-user-text">
+                                              {text}
+                                            </div>
+                                          )}
+                                        </>
+                                      );
+                                    })()}
+                                  </>
                                 ) : (
                                   <div className="chat-message-text markdown-content">
-                                    <MemoizedMarkdown content={msg.content} />
+                                    <MemoizedMarkdown content={typeof msg.content === 'string' ? msg.content : parseMessageContent(msg.content).text} />
                                   </div>
                                 )}
                               </>
@@ -1886,34 +1982,50 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
 
             {/* Input Area */}
             <div className="chat-input-area">
-              <textarea
-                ref={inputRef}
-                value={inputValue}
-                onChange={(e) => setInputValue(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Type a message... (Enter to send, Shift+Enter for new line)"
-                disabled={isStreaming}
-                rows={1}
-                className="chat-input"
-              />
-              {isStreaming ? (
-                <button
-                  type="button"
-                  className="btn chat-stop-btn"
-                  onClick={stopStreaming}
-                >
-                  Stop
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="btn chat-send-btn"
-                  onClick={sendMessage}
-                  disabled={!inputValue.trim() || !activeConversation}
-                >
-                  Send
-                </button>
-              )}
+              <div className="chat-input-wrapper">
+                <FileAttachment
+                  attachments={attachments}
+                  onAttachmentsChange={setAttachments}
+                  disabled={isStreaming}
+                />
+                <textarea
+                  ref={inputRef}
+                  value={inputValue}
+                  onChange={(e) => setInputValue(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Ask a question or paste an image (Ctrl+V)..."
+                  disabled={isStreaming}
+                  rows={1}
+                  className="chat-input"
+                />
+                {isStreaming ? (
+                  <button
+                    type="button"
+                    className="btn chat-stop-btn-inline"
+                    onClick={stopStreaming}
+                    title="Stop generating"
+                  >
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                      <rect x="6" y="6" width="12" height="12" rx="2"></rect>
+                    </svg>
+                  </button>
+                ) : (
+                  (inputValue.trim() || attachments.length > 0) && (
+                    <button
+                      type="button"
+                      className="btn chat-send-btn-inline"
+                      onClick={sendMessage}
+                      disabled={!activeConversation}
+                      title="Send message"
+                    >
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="12" y1="19" x2="12" y2="5"></line>
+                        <polyline points="5 12 12 5 19 12"></polyline>
+                      </svg>
+                    </button>
+                  )
+                )}
+              </div>
             </div>
           </>
         ) : (

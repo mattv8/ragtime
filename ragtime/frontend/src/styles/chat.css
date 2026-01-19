@@ -516,30 +516,75 @@
 
 .chat-input-area {
   display: flex;
-  gap: var(--space-sm);
-  padding: var(--space-md) var(--space-lg);
+  padding: var(--space-lg);
   border-top: 1px solid var(--color-border);
   background: var(--color-surface-hover);
 }
 
-.chat-input {
+.chat-input-wrapper {
   flex: 1;
-  padding: var(--space-sm) var(--space-md);
+  position: relative;
+  display: flex;
+  align-items: center;
   background: var(--color-input-bg);
   border: 1px solid var(--color-input-border);
-  border-radius: var(--radius-md);
+  border-radius: 24px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.chat-input-wrapper:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-light);
+}
+
+.chat-input {
+  flex: 1;
+  padding: 12px 60px 12px 52px; /* Extra right padding to inset scrollbar */
+  background: transparent;
+  border: none;
   color: var(--color-text-primary);
   font-size: var(--text-base);
   font-family: inherit;
-  resize: vertical;
-  min-height: 48px;
-  max-height: 300px;
+  resize: none;
+  min-height: 24px;
+  max-height: 200px;
+  height: auto;
+  line-height: 1.5;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}
+
+/* Webkit scrollbar styling */
+.chat-input::-webkit-scrollbar {
+  width: 6px;
+}
+
+.chat-input::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 8px 0;
+}
+
+.chat-input::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 3px;
+}
+
+.chat-input::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.25);
+}
+
+[data-theme="dark"] .chat-input::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+[data-theme="dark"] .chat-input::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
 }
 
 .chat-input:focus {
   outline: none;
-  border-color: var(--color-primary);
-  box-shadow: 0 0 0 3px var(--color-primary-light);
 }
 
 .chat-input:disabled {
@@ -547,18 +592,55 @@
   cursor: not-allowed;
 }
 
-.chat-send-btn,
-.chat-stop-btn {
-  padding: var(--space-sm) var(--space-lg);
-  min-width: 80px;
+/* Inline send/stop buttons */
+.chat-send-btn-inline,
+.chat-stop-btn-inline {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  background: var(--color-primary);
+  border: none;
+  border-radius: 50%;
+  color: white;
+  cursor: pointer;
+  transition: all 0.2s;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
-.chat-stop-btn {
+.chat-send-btn-inline:hover:not(:disabled) {
+  background: var(--color-primary-hover, #3b82f6);
+  transform: scale(1.05);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.chat-send-btn-inline:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.chat-send-btn-inline:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chat-stop-btn-inline {
   background: var(--color-error);
 }
 
-.chat-stop-btn:hover {
+.chat-stop-btn-inline:hover {
   background: #dc2626;
+  transform: scale(1.05);
+}
+
+/* Remove old button styles */
+.chat-send-btn,
+.chat-stop-btn {
+  display: none;
 }
 
 /* Continue Button */

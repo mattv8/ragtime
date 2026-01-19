@@ -89,36 +89,12 @@ class FilesystemIndexerService:
             logger.debug(f"Could not load settings for embedding warning: {e}")
             return
 
-        provider = settings.embedding_provider.lower()
         model = settings.embedding_model
-        configured_dim = getattr(settings, "embedding_dimensions", None)
-
-        # For Ollama, query the actual model dimensions from the server
-        dimension: int | None = None
-        if provider == "ollama" and model:
-            try:
-                from ragtime.core.embedding_models import get_ollama_model_dimensions
-
-                protocol = getattr(settings, "ollama_protocol", "http") or "http"
-                host = getattr(settings, "ollama_host", "localhost") or "localhost"
-                port = getattr(settings, "ollama_port", 11434) or 11434
-                ollama_url = f"{protocol}://{host}:{port}"
-                dimension = await get_ollama_model_dimensions(model, ollama_url)
-            except Exception as e:
-                logger.debug(f"Could not fetch Ollama model dimensions: {e}")
-
-        # For OpenAI, use configured dimension or heuristic defaults
-        if provider == "openai":
-            dimension = configured_dim
-            if dimension is None:
-                if model and model.startswith("text-embedding-3-large"):
-                    dimension = 3072
-                elif model and model.startswith("text-embedding-3-small"):
-                    dimension = 1536
-
-        # Fall back to tracked dimension only if we couldn't determine from config
-        if dimension is None:
-            dimension = settings.embedding_dimension
+        # Use configured dimension if set, otherwise use tracked dimension
+        dimension = (
+            getattr(settings, "embedding_dimensions", None)
+            or settings.embedding_dimension
+        )
 
         limit = 2000
         if dimension is not None and dimension > limit:

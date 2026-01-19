@@ -7,7 +7,7 @@ import os
 import re
 import resource
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Union
 
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_community.vectorstores import FAISS
@@ -445,9 +445,8 @@ class RAGComponents:
 
         if provider == "ollama":
             try:
-                from langchain_ollama import (
-                    ChatOllama,
-                )  # type: ignore[import-untyped,import-not-found]  # pyright: ignore[reportMissingImports]
+                from langchain_ollama import \
+                    ChatOllama  # type: ignore[import-untyped,import-not-found]  # pyright: ignore[reportMissingImports]
 
                 # Use LLM-specific Ollama settings if available, otherwise fall back to embedding settings
                 base_url = self._app_settings.get(
@@ -510,9 +509,8 @@ class RAGComponents:
         model = self._app_settings.get("embedding_model", "nomic-embed-text")
 
         if provider == "ollama":
-            from langchain_ollama import (
-                OllamaEmbeddings,
-            )  # type: ignore[import-untyped,import-not-found]  # pyright: ignore[reportMissingImports]
+            from langchain_ollama import \
+                OllamaEmbeddings  # type: ignore[import-untyped,import-not-found]  # pyright: ignore[reportMissingImports]
 
             base_url = self._app_settings.get(
                 "ollama_base_url", "http://localhost:11434"
@@ -663,6 +661,26 @@ class RAGComponents:
         self._indexes_total = len(enabled_indexes)
         self._indexes_loaded = 0
 
+        # Get current embedding dimension by probing the embedding model
+        # This is more reliable than tracked app_settings when provider changes
+        current_embedding_dim = None
+        try:
+            test_embedding = await asyncio.to_thread(
+                embedding_model.embed_query, "test"
+            )
+            current_embedding_dim = len(test_embedding)
+            logger.info(
+                f"Detected embedding dimension: {current_embedding_dim} "
+                f"(will check indexes for mismatch)"
+            )
+        except Exception as e:
+            # Fall back to tracked dimension if probe fails
+            current_embedding_dim = self._app_settings.get("embedding_dimension")
+            logger.warning(
+                f"Could not probe embedding dimension: {e}. "
+                f"Using tracked dimension: {current_embedding_dim}"
+            )
+
         # Initialize index details for all indexes
         for idx in enabled_indexes:
             index_name = idx.get("name")
@@ -727,6 +745,27 @@ class RAGComponents:
 
                 # Get embedding dimension from the loaded index
                 embedding_dim = db.index.d if hasattr(db, "index") else None
+
+                # Check for dimension mismatch before creating retriever
+                if (
+                    current_embedding_dim
+                    and embedding_dim
+                    and embedding_dim != current_embedding_dim
+                ):
+                    mismatch_msg = (
+                        f"Embedding dimension mismatch: index has {embedding_dim} dims, "
+                        f"but current model produces {current_embedding_dim} dims. "
+                        f"Re-index required."
+                    )
+                    logger.warning(f"Index {index_name}: {mismatch_msg}")
+                    if index_name in self._index_details:
+                        self._index_details[index_name]["status"] = "error"
+                        self._index_details[index_name]["error"] = mismatch_msg
+                        self._index_details[index_name][
+                            "embedding_dimension"
+                        ] = embedding_dim
+                    # Return None to skip adding this retriever
+                    return None
 
                 # Memory used by this index (approximate - may include GC overhead)
                 steady_mem = max(0, mem_after - mem_before)
@@ -816,6 +855,26 @@ class RAGComponents:
         self._indexes_loaded = 0
         search_k = self._app_settings.get("search_results_k", 5)
 
+        # Get current embedding dimension by probing the embedding model
+        # This is more reliable than tracked app_settings when provider changes
+        current_embedding_dim = None
+        try:
+            test_embedding = await asyncio.to_thread(
+                embedding_model.embed_query, "test"
+            )
+            current_embedding_dim = len(test_embedding)
+            logger.info(
+                f"Detected embedding dimension: {current_embedding_dim} "
+                f"(will check indexes for mismatch)"
+            )
+        except Exception as e:
+            # Fall back to tracked dimension if probe fails
+            current_embedding_dim = self._app_settings.get("embedding_dimension")
+            logger.warning(
+                f"Could not probe embedding dimension: {e}. "
+                f"Using tracked dimension: {current_embedding_dim}"
+            )
+
         # Initialize index details for all indexes
         for idx in enabled_indexes:
             index_name = idx.get("name")
@@ -892,6 +951,26 @@ class RAGComponents:
 
                 # Get embedding dimension from the loaded index
                 embedding_dim = db.index.d if hasattr(db, "index") else None
+
+                # Check for dimension mismatch before creating retriever
+                if (
+                    current_embedding_dim
+                    and embedding_dim
+                    and embedding_dim != current_embedding_dim
+                ):
+                    mismatch_msg = (
+                        f"Embedding dimension mismatch: index has {embedding_dim} dims, "
+                        f"but current model produces {current_embedding_dim} dims. "
+                        f"Re-index required."
+                    )
+                    logger.warning(f"Index {index_name}: {mismatch_msg}")
+                    if index_name in self._index_details:
+                        self._index_details[index_name]["status"] = "error"
+                        self._index_details[index_name]["error"] = mismatch_msg
+                        self._index_details[index_name][
+                            "embedding_dimension"
+                        ] = embedding_dim
+                    continue  # Skip this index
 
                 # Calculate memory stats
                 steady_mem = max(0, mem_after - mem_before)
@@ -1342,10 +1421,8 @@ class RAGComponents:
         When aggregate_search is disabled: creates search_git_history_<name> per index
         """
         from ragtime.tools.git_history import (
-            _is_shallow_repository,
-            create_aggregate_git_history_tool,
-            create_per_index_git_history_tool,
-        )
+            _is_shallow_repository, create_aggregate_git_history_tool,
+            create_per_index_git_history_tool)
 
         tools: List[Any] = []
         index_base = Path(settings.index_data_path)
@@ -1543,7 +1620,8 @@ class RAGComponents:
 
         async def execute_query(query: str = "", reason: str = "", **_: Any) -> str:
             """Execute PostgreSQL query using this tool's configuration."""
-            from ragtime.core.security import sanitize_output, validate_sql_query
+            from ragtime.core.security import (sanitize_output,
+                                               validate_sql_query)
 
             # Validate required fields
             if not query or not query.strip():
@@ -1617,7 +1695,8 @@ class RAGComponents:
 
                 # Add table metadata for UI rendering BEFORE sanitizing
                 # so metadata is extracted from complete data
-                from ragtime.core.sql_utils import add_table_metadata_to_psql_output
+                from ragtime.core.sql_utils import \
+                    add_table_metadata_to_psql_output
 
                 output = add_table_metadata_to_psql_output(output)
 
@@ -1720,7 +1799,8 @@ class RAGComponents:
 
         async def execute_odoo(code: str = "", reason: str = "", **_: Any) -> str:
             """Execute Odoo shell command using this tool's configuration."""
-            from ragtime.core.security import sanitize_output, validate_odoo_code
+            from ragtime.core.security import (sanitize_output,
+                                               validate_odoo_code)
 
             # Validate required fields
             if not code or not code.strip():
@@ -1882,7 +1962,8 @@ except Exception as e:
 
         async def execute_ssh(command: str = "", reason: str = "", **_: Any) -> str:
             """Execute SSH command using this tool's configuration."""
-            from ragtime.core.security import sanitize_output, validate_ssh_command
+            from ragtime.core.security import (sanitize_output,
+                                               validate_ssh_command)
             from ragtime.core.ssh import SSHConfig, execute_ssh_command
 
             # Validate required fields
@@ -2149,14 +2230,104 @@ except Exception as e:
         """
         return user_message
 
+    def _convert_message_to_langchain(self, message: Any) -> Any:
+        """
+        Convert a Message object (from schemas.py) to LangChain HumanMessage format.
+
+        Handles both string content and multimodal content (text + images).
+        LangChain expects multimodal content in this format:
+        [
+            {"type": "text", "text": "..."},
+            {"type": "image_url", "image_url": {"url": "..."}}
+        ]
+
+        Args:
+            message: Either a string or Message object with content attribute
+
+        Returns:
+            str or list suitable for LangChain HumanMessage content
+        """
+        # If already a string, return as-is
+        if isinstance(message, str):
+            return message
+
+        # Get content from Message object
+        content = getattr(message, "content", message)
+
+        # If content is a string, return it
+        if isinstance(content, str):
+            return content
+
+        # If content is a list (multimodal), convert to LangChain format
+        if isinstance(content, list):
+            langchain_content = []
+            for item in content:
+                if isinstance(item, dict):
+                    # Already in dict format
+                    if item.get("type") == "text":
+                        langchain_content.append(
+                            {"type": "text", "text": item.get("text", "")}
+                        )
+                    elif item.get("type") == "image_url":
+                        langchain_content.append(item)  # Pass through
+                elif hasattr(item, "type"):
+                    # Pydantic model
+                    if item.type == "text":
+                        langchain_content.append({"type": "text", "text": item.text})
+                    elif item.type == "image_url":
+                        langchain_content.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": item.image_url.url},
+                            }
+                        )
+            return langchain_content if langchain_content else ""
+
+        # Fallback: convert to string
+        return str(content)
+
+    def _extract_text_from_message(self, message: Any) -> str:
+        """
+        Extract text content from a message (string or multimodal).
+
+        Args:
+            message: Either a string or Message object
+
+        Returns:
+            Extracted text content
+        """
+        if isinstance(message, str):
+            return message
+
+        # Use get_text_content if available
+        if hasattr(message, "get_text_content"):
+            return message.get_text_content()
+
+        # Get content attribute
+        content = getattr(message, "content", message)
+        if isinstance(content, str):
+            return content
+
+        # Extract from multimodal list
+        if isinstance(content, list):
+            text_parts = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text_parts.append(item.get("text", ""))
+                elif hasattr(item, "type") and item.type == "text":
+                    text_parts.append(item.text)
+            return " ".join(text_parts)
+
+        return str(content)
+
     async def process_query(
-        self, user_message: str, chat_history: Optional[List[Any]] = None
+        self, user_message: Union[str, Any], chat_history: Optional[List[Any]] = None
     ) -> str:
         """
         Process a user query through the RAG pipeline (non-streaming).
 
         Args:
-            user_message: The user's question or request.
+            user_message: The user's question (string or Message object with multimodal content)
             chat_history: Previous messages in the conversation.
 
         Returns:
@@ -2165,11 +2336,17 @@ except Exception as e:
         if chat_history is None:
             chat_history = []
 
-        augmented_input = self._build_augmented_input(user_message)
+        # Extract text for augmentation (search still text-based)
+        user_text = self._extract_text_from_message(user_message)
+        augmented_input = self._build_augmented_input(user_text)
+
+        # Convert to LangChain format (preserves multimodal content)
+        langchain_content = self._convert_message_to_langchain(user_message)
 
         try:
             if self.agent_executor:
                 # Use agent with tools
+                # Agent input must be string, so use augmented text input
                 result = await self.agent_executor.ainvoke(
                     {"input": augmented_input, "chat_history": chat_history}
                 )
@@ -2182,7 +2359,7 @@ except Exception as e:
                     )
                 return output
             else:
-                # Direct LLM call without tools
+                # Direct LLM call without tools - use multimodal content
                 if self.llm is None:
                     return (
                         "Error: No LLM configured. Please configure an LLM in Settings."
@@ -2192,7 +2369,8 @@ except Exception as e:
                     SystemMessage(content=self._system_prompt)
                 ]
                 messages.extend(chat_history)
-                messages.append(HumanMessage(content=augmented_input))
+                # Use langchain_content (can be string or multimodal list)
+                messages.append(HumanMessage(content=langchain_content))
                 response = await self.llm.ainvoke(messages)
                 content = response.content
                 return content if isinstance(content, str) else str(content)
@@ -2203,7 +2381,7 @@ except Exception as e:
 
     async def process_query_stream(
         self,
-        user_message: str,
+        user_message: Union[str, Any],
         chat_history: Optional[List[Any]] = None,
         is_ui: bool = False,
     ):
@@ -2214,7 +2392,7 @@ except Exception as e:
         For direct LLM: streams tokens directly from the LLM.
 
         Args:
-            user_message: The user's question or request.
+            user_message: The user's question (string or Message object with multimodal content)
             chat_history: Previous messages in the conversation.
             is_ui: If True, use the UI agent with chart tool and enhanced prompt.
                    If False (default), use the standard agent for API/MCP.
@@ -2229,8 +2407,12 @@ except Exception as e:
         if chat_history is None:
             chat_history = []
 
-        # Agent will use search_knowledge tool on-demand
-        augmented_input = self._build_augmented_input(user_message)
+        # Extract text for augmentation (search still text-based)
+        user_text = self._extract_text_from_message(user_message)
+        augmented_input = self._build_augmented_input(user_text)
+
+        # Convert to LangChain format (preserves multimodal content)
+        langchain_content = self._convert_message_to_langchain(user_message)
 
         # Select the appropriate agent executor
         executor = self.agent_executor_ui if is_ui else self.agent_executor
@@ -2239,6 +2421,7 @@ except Exception as e:
         try:
             if executor:
                 # Agent with tools: use astream_events for true streaming
+                # Agent input must be string, so use augmented text input
                 # This streams tool calls and final response tokens
                 # Track tool runs to avoid duplicates from nested events
                 active_tool_runs: set[str] = set()
@@ -2329,14 +2512,15 @@ except Exception as e:
                                 if "iteration limit" in str(rv_output).lower():
                                     yield {"type": "max_iterations_reached"}
             else:
-                # Direct LLM streaming without tools
+                # Direct LLM streaming without tools - use multimodal content
                 if self.llm is None:
                     yield "Error: No LLM configured. Please configure an LLM in Settings."
                     return
 
                 messages: List[BaseMessage] = [SystemMessage(content=system_prompt)]
                 messages.extend(chat_history)
-                messages.append(HumanMessage(content=augmented_input))
+                # Use langchain_content (can be string or multimodal list)
+                messages.append(HumanMessage(content=langchain_content))
 
                 # Use astream for true token-by-token streaming
                 async for chunk in self.llm.astream(messages):

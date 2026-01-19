@@ -1160,9 +1160,34 @@ export interface ToolCallEvent {
 
 export type MessageEvent = ContentEvent | ToolCallEvent;
 
+// Multimodal content types
+export interface TextContent {
+  type: 'text';
+  text: string;
+}
+
+export interface ImageUrl {
+  url: string;
+  detail?: 'auto' | 'low' | 'high';
+}
+
+export interface ImageContent {
+  type: 'image_url';
+  image_url: ImageUrl;
+}
+
+export interface FileContent {
+  type: 'file';
+  file_path: string;
+  filename: string;
+  mime_type?: string;
+}
+
+export type ContentPart = TextContent | ImageContent | FileContent;
+
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
-  content: string;
+  content: string | ContentPart[];  // Support both simple string and multimodal array
   timestamp: string;
   tool_calls?: ToolCallRecord[];  // Deprecated, for backward compatibility
   events?: MessageEvent[];        // Preferred: chronological events
