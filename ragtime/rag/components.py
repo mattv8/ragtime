@@ -530,6 +530,48 @@ class RAGComponents:
         else:
             raise ValueError(f"Unknown embedding provider: {provider}")
 
+    def _create_retriever_from_faiss(self, db: FAISS, index_name: str) -> Any:
+        """Create a retriever from a FAISS vectorstore with appropriate settings.
+
+        Supports MMR (Max Marginal Relevance) for result diversification when enabled.
+        MMR reduces near-duplicate results by balancing relevance with diversity.
+
+        Args:
+            db: FAISS vectorstore instance
+            index_name: Name of the index (for logging)
+
+        Returns:
+            A retriever configured with current settings
+        """
+        search_k = self._app_settings.get("search_results_k", 5)
+        use_mmr = self._app_settings.get("search_use_mmr", True)
+        mmr_lambda = self._app_settings.get("search_mmr_lambda", 0.5)
+
+        if use_mmr:
+            # MMR retriever: fetch_k gets more candidates, then MMR selects k diverse ones
+            # fetch_k should be larger than k to give MMR choices to diversify from
+            fetch_k = max(search_k * 4, 20)  # At least 4x k or 20 candidates
+            retriever = db.as_retriever(
+                search_type="mmr",
+                search_kwargs={
+                    "k": search_k,
+                    "fetch_k": fetch_k,
+                    "lambda_mult": mmr_lambda,  # 0=max diversity, 1=max relevance
+                },
+            )
+            logger.debug(
+                f"Created MMR retriever for {index_name} "
+                f"(k={search_k}, fetch_k={fetch_k}, lambda={mmr_lambda})"
+            )
+        else:
+            # Standard similarity retriever
+            retriever = db.as_retriever(search_kwargs={"k": search_k})
+            logger.debug(
+                f"Created similarity retriever for {index_name} (k={search_k})"
+            )
+
+        return retriever
+
     async def _load_faiss_indexes(self, embedding_model):
         """Load FAISS indexes from database metadata (sequential, for backwards compat).
 
@@ -568,13 +610,12 @@ class RAGComponents:
                                 embedding_model,
                                 allow_dangerous_deserialization=True,
                             )
-                            # Use configurable k from settings
-                            search_k = self._app_settings.get("search_results_k", 5)
-                            self.retrievers[index_name] = db.as_retriever(
-                                search_kwargs={"k": search_k}
+                            # Create retriever with MMR support if enabled
+                            self.retrievers[index_name] = (
+                                self._create_retriever_from_faiss(db, index_name)
                             )
                             logger.info(
-                                f"Loaded FAISS index: {index_name} from {index_path} (k={search_k})"
+                                f"Loaded FAISS index: {index_name} from {index_path}"
                             )
                         except Exception as e:
                             logger.warning(
@@ -621,7 +662,6 @@ class RAGComponents:
 
         self._indexes_total = len(enabled_indexes)
         self._indexes_loaded = 0
-        search_k = self._app_settings.get("search_results_k", 5)
 
         # Initialize index details for all indexes
         for idx in enabled_indexes:
@@ -691,10 +731,11 @@ class RAGComponents:
                 # Memory used by this index (approximate - may include GC overhead)
                 steady_mem = max(0, mem_after - mem_before)
 
-                retriever = db.as_retriever(search_kwargs={"k": search_k})
+                # Create retriever with MMR support if enabled
+                retriever = self._create_retriever_from_faiss(db, index_name)
                 logger.info(
                     f"Loaded FAISS index: {index_name} from {index_path} "
-                    f"(k={search_k}, {elapsed:.1f}s, ~{steady_mem / 1024**3:.2f}GB)"
+                    f"({elapsed:.1f}s, ~{steady_mem / 1024**3:.2f}GB)"
                 )
 
                 # Update index detail
@@ -856,7 +897,8 @@ class RAGComponents:
                 steady_mem = max(0, mem_after - mem_before)
                 observed_peak = max(0, peak_mem - mem_before)
 
-                retriever = db.as_retriever(search_kwargs={"k": search_k})
+                # Create retriever with MMR support if enabled
+                retriever = self._create_retriever_from_faiss(db, index_name)
                 self.retrievers[index_name] = retriever
                 self._indexes_loaded += 1
 
@@ -2039,6 +2081,9 @@ except Exception as e:
         """
         Retrieve relevant context from all FAISS indexes.
 
+        Applies token budget from settings to prevent context overflow.
+        When token budget is exceeded, earlier retrieved chunks take priority.
+
         Args:
             query: The search query.
             max_docs: Maximum documents per index.
@@ -2046,6 +2091,8 @@ except Exception as e:
         Returns:
             Tuple of (combined context string, list of source metadata).
         """
+        from ragtime.core.tokenization import truncate_to_token_budget
+
         all_docs = []
         sources = []
         for name, retriever in self.retrievers.items():
@@ -2068,7 +2115,27 @@ except Exception as e:
             except Exception as e:
                 logger.warning(f"Error retrieving from {name}: {e}")
 
-        context = "\n\n---\n\n".join(all_docs) if all_docs else ""
+        if not all_docs:
+            return "", sources
+
+        # Apply token budget if configured (0 = unlimited)
+        token_budget = (
+            self._app_settings.get("context_token_budget", 4000)
+            if self._app_settings
+            else 4000
+        )
+
+        if token_budget > 0:
+            context, actual_tokens = truncate_to_token_budget(
+                all_docs, max_tokens=token_budget
+            )
+            if actual_tokens >= token_budget:
+                logger.debug(
+                    f"Context truncated to {actual_tokens} tokens (budget: {token_budget})"
+                )
+        else:
+            context = "\n\n---\n\n".join(all_docs)
+
         return context, sources
 
     def _build_augmented_input(self, user_message: str) -> str:

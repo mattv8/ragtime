@@ -19,3 +19,4 @@ export { OllamaConnectionForm } from './OllamaConnectionForm';
 export { MemoryStatus } from './MemoryStatus';
 export { UserMenu } from './UserMenu';
 export { SecurityBanner } from './SecurityBanner';
+export { ConfigurationBanner } from './ConfigurationBanner';

@@ -1154,7 +1154,7 @@ export function MCPRoutesPanel({ onClose, ldapConfigured = false, ldapGroups = [
       setFilters(filtersRes.filters);
       setTools(toolsRes);
       setDocumentIndexes(indexesRes);
-      setSettings(settingsRes);
+      setSettings(settingsRes.settings);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load MCP configuration');
     } finally {

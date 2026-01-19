@@ -27,7 +27,7 @@ export function DescriptionField({
     // Check if user has configured an LLM API key for auto-generation
     const checkSettings = async () => {
       try {
-        const settings = await api.getSettings();
+        const { settings } = await api.getSettings();
         const hasKey = !!(settings.openai_api_key || settings.anthropic_api_key);
         setHasLlmKey(hasKey);
       } catch {

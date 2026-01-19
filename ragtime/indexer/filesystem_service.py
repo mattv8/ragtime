@@ -92,26 +92,43 @@ class FilesystemIndexerService:
         provider = settings.embedding_provider.lower()
         model = settings.embedding_model
         configured_dim = getattr(settings, "embedding_dimensions", None)
-        tracked_dim = settings.embedding_dimension
 
-        # Prefer explicit configuration, otherwise use tracked dimension from previous runs
-        dimension = configured_dim or tracked_dim
+        # For Ollama, query the actual model dimensions from the server
+        dimension: int | None = None
+        if provider == "ollama" and model:
+            try:
+                from ragtime.core.embedding_models import get_ollama_model_dimensions
 
-        # Heuristic defaults for OpenAI text-embedding-3 models when dimension not set
-        if provider == "openai" and dimension is None:
-            if model.startswith("text-embedding-3-large"):
-                dimension = 3072
-            elif model.startswith("text-embedding-3-small"):
-                dimension = 1536
+                protocol = getattr(settings, "ollama_protocol", "http") or "http"
+                host = getattr(settings, "ollama_host", "localhost") or "localhost"
+                port = getattr(settings, "ollama_port", 11434) or 11434
+                ollama_url = f"{protocol}://{host}:{port}"
+                dimension = await get_ollama_model_dimensions(model, ollama_url)
+            except Exception as e:
+                logger.debug(f"Could not fetch Ollama model dimensions: {e}")
+
+        # For OpenAI, use configured dimension or heuristic defaults
+        if provider == "openai":
+            dimension = configured_dim
+            if dimension is None:
+                if model and model.startswith("text-embedding-3-large"):
+                    dimension = 3072
+                elif model and model.startswith("text-embedding-3-small"):
+                    dimension = 1536
+
+        # Fall back to tracked dimension only if we couldn't determine from config
+        if dimension is None:
+            dimension = settings.embedding_dimension
 
         limit = 2000
         if dimension is not None and dimension > limit:
+            model_info = f" ({model})" if model else ""
             warnings.insert(
                 0,
                 (
-                    f"Embedding dimension {dimension} exceeds pgvector's {limit}-dim index limit. "
-                    "Search will fall back to exact (non-indexed). Use <=2000 dims (e.g., 1536 for "
-                    "OpenAI text-embedding-3-*) or a lower-dimension model."
+                    f"Embedding dimension {dimension}{model_info} exceeds pgvector's {limit}-dim index limit. "
+                    "Search will fall back to exact (non-indexed). Use a model with <=2000 dimensions, "
+                    "or configure lower dimensions in Embedding Configuration."
                 ),
             )
 
@@ -415,7 +432,9 @@ class FilesystemIndexerService:
         """
         return await ensure_pgvector_extension(logger_override=logger)
 
-    async def ensure_embedding_column(self, embedding_dim: int = 1536) -> bool:
+    async def ensure_embedding_column(
+        self, embedding_dim: int = 1536, index_lists: int = 100
+    ) -> bool:
         """
         Ensure the embedding column exists with the expected dimension.
 
@@ -424,11 +443,16 @@ class FilesystemIndexerService:
 
         Note: pgvector has a 2000-dimension limit for both IVFFlat and HNSW indexes.
         For embeddings > 2000 dimensions, we skip index creation and use exact search.
+
+        Args:
+            embedding_dim: Dimension of embedding vectors
+            index_lists: IVFFlat lists parameter (higher = slower build, faster query)
         """
         return await ensure_embedding_column(
             table_name="filesystem_embeddings",
             index_name="filesystem_embeddings_embedding_idx",
             embedding_dim=embedding_dim,
+            index_lists=index_lists,
             logger_override=logger,
         )
 
@@ -976,7 +1000,12 @@ class FilesystemIndexerService:
         # Ensure embedding column exists with correct dimensions
         if embeddings:
             embedding_dim = len(embeddings[0])
-            success = await self.ensure_embedding_column(embedding_dim)
+            # Get ivfflat_lists from app settings
+            from ragtime.core.app_settings import get_app_settings
+
+            app_settings = await get_app_settings()
+            index_lists = app_settings.get("ivfflat_lists", 100)
+            success = await self.ensure_embedding_column(embedding_dim, index_lists)
             if not success:
                 raise RuntimeError(
                     f"Failed to ensure embedding column with dimension {embedding_dim}"
@@ -1178,8 +1207,13 @@ class FilesystemIndexerService:
                                 await asyncio.sleep(0)  # Yield on skip updates too
                             continue
 
-                        # Load and chunk the file
-                        chunks = await self._load_and_chunk_file(file_path, config)
+                        # Load and chunk the file (use token chunking setting from app settings)
+                        use_token_chunking = app_settings.get(
+                            "chunking_use_tokens", True
+                        )
+                        chunks = await self._load_and_chunk_file(
+                            file_path, config, use_token_chunking
+                        )
                         if not chunks:
                             # No content extracted - count as skipped (empty/unparseable file)
                             job.skipped_files += 1
@@ -1357,8 +1391,15 @@ class FilesystemIndexerService:
         self,
         file_path: Path,
         config: FilesystemConnectionConfig,
+        use_token_chunking: bool = True,
     ) -> List[str]:
-        """Load a file and split it into chunks."""
+        """Load a file and split it into chunks.
+
+        Args:
+            file_path: Path to file to load
+            config: Filesystem connection config with chunk settings
+            use_token_chunking: If True, use token-based chunking for accuracy
+        """
         from langchain_text_splitters import RecursiveCharacterTextSplitter
 
         try:
@@ -1369,11 +1410,19 @@ class FilesystemIndexerService:
             if not content:
                 return []
 
+            # Determine length function based on settings
+            if use_token_chunking:
+                from ragtime.core.tokenization import get_token_length_function
+
+                length_function = get_token_length_function()
+            else:
+                length_function = len
+
             # Split into chunks
             splitter = RecursiveCharacterTextSplitter(
                 chunk_size=config.chunk_size,
                 chunk_overlap=config.chunk_overlap,
-                length_function=len,
+                length_function=length_function,
                 separators=["\n\n", "\n", " ", ""],
             )
 

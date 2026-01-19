@@ -60,10 +60,17 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     if (highlightSetting && !loading) {
       const element = document.getElementById(`setting-${highlightSetting}`);
       if (element) {
+        // If it's a details element, open it first
+        if (element.tagName === 'DETAILS') {
+          (element as HTMLDetailsElement).open = true;
+        }
+        // Add highlight class
+        element.classList.add('highlight-setting');
         // Scroll into view with some padding
         element.scrollIntoView({ behavior: 'smooth', block: 'center' });
         // Clear the highlight after animation
         const timer = setTimeout(() => {
+          element.classList.remove('highlight-setting');
           onHighlightComplete?.();
         }, 2000);
         return () => clearTimeout(timer);
@@ -149,6 +156,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         protocol: protocol || 'http',
         host: host || 'localhost',
         port: port || 11434,
+        embeddings_only: true,  // Filter to embedding models only
       });
 
       if (response.success) {
@@ -353,7 +361,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   const loadSettings = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await api.getSettings();
+      const { settings: data } = await api.getSettings();
       setSettings(data);
       setFormData({
         // Server branding
@@ -379,6 +387,12 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         // Search settings
         search_results_k: data.search_results_k,
         aggregate_search: data.aggregate_search,
+        // Advanced search settings
+        search_use_mmr: data.search_use_mmr,
+        search_mmr_lambda: data.search_mmr_lambda,
+        context_token_budget: data.context_token_budget,
+        chunking_use_tokens: data.chunking_use_tokens,
+        ivfflat_lists: data.ivfflat_lists,
         // MCP settings
         mcp_enabled: data.mcp_enabled,
         mcp_default_route_auth: data.mcp_default_route_auth,
@@ -665,6 +679,12 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       const dataToSave = {
         search_results_k: formData.search_results_k,
         aggregate_search: formData.aggregate_search,
+        // Advanced settings
+        search_use_mmr: formData.search_use_mmr,
+        search_mmr_lambda: formData.search_mmr_lambda,
+        context_token_budget: formData.context_token_budget,
+        chunking_use_tokens: formData.chunking_use_tokens,
+        ivfflat_lists: formData.ivfflat_lists,
       };
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
@@ -1129,14 +1149,14 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         </fieldset>
 
         {/* Embedding Configuration */}
-        <fieldset>
+        <fieldset id="setting-embedding_config">
           <legend>Embedding Configuration</legend>
           <p className="fieldset-help">
             Configure how document embeddings are generated for FAISS indexes.
           </p>
 
           <div className="form-row">
-            <div className="form-group">
+            <div className="form-group" id="setting-embedding_provider">
               <label>Provider</label>
               <select
                 value={formData.embedding_provider || 'ollama'}
@@ -1172,6 +1192,56 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                 Note: Anthropic does not offer embedding models. Use Ollama or OpenAI for document embeddings.
               </p>
             </div>
+            {/* Show embedding dimension info */}
+            {(() => {
+              // Get the dimension from the selected model if available
+              const selectedOllamaModel = ollamaModels.find(m => m.name === formData.embedding_model);
+              const selectedOpenAIModel = embeddingModels.find(m => m.id === formData.embedding_model);
+              const selectedModelDimension = selectedOllamaModel?.dimensions || selectedOpenAIModel?.dimensions;
+              const storedDimension = settings?.embedding_dimension;
+
+              // Determine if there's a mismatch between stored and selected
+              const hasMismatch = storedDimension && selectedModelDimension && storedDimension !== selectedModelDimension;
+              // Use selected model dimension if available, otherwise fall back to stored
+              const displayDimension = selectedModelDimension || storedDimension;
+
+              return (
+                <div className="form-group" style={{ flex: '0 0 auto', minWidth: '180px' }}>
+                  <label>{selectedModelDimension ? 'Model Dimensions' : 'Current Dimensions'}</label>
+                  <div style={{
+                    padding: '0.5rem 1rem',
+                    backgroundColor: hasMismatch
+                      ? 'var(--warning-bg, rgba(255, 152, 0, 0.1))'
+                      : 'var(--bg-secondary, #1e1e1e)',
+                    borderRadius: '4px',
+                    border: `1px solid ${hasMismatch ? 'var(--warning-color, #ff9800)' : 'var(--border-color, #3c3c3c)'}`,
+                    fontFamily: 'monospace',
+                    fontSize: '1.1rem',
+                    textAlign: 'center',
+                  }}>
+                    {displayDimension ? (
+                      <>
+                        {displayDimension.toLocaleString()}
+                        {hasMismatch && (
+                          <span style={{ color: 'var(--warning-color, #ff9800)', fontSize: '0.75rem', marginLeft: '0.25rem' }}>
+                            (change)
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>—</span>
+                    )}
+                  </div>
+                  <p className="field-help">
+                    {hasMismatch
+                      ? `Indexes use ${storedDimension?.toLocaleString()} dims. Re-index required.`
+                      : storedDimension
+                        ? 'Matches existing indexes.'
+                        : 'Will be set on first index.'}
+                  </p>
+                </div>
+              );
+            })()}
           </div>
 
           {formData.embedding_provider === 'ollama' && (
@@ -1226,7 +1296,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                       <option value="">Select a model...</option>
                       {embeddingModels.map((model) => (
                         <option key={model.id} value={model.id}>
-                          {model.name}
+                          {model.name}{model.dimensions ? ` (${model.dimensions} dims)` : ''}
                         </option>
                       ))}
                     </select>
@@ -1254,7 +1324,13 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                 )}
                 <p className="field-help">
                   {embeddingModelsLoaded
-                    ? 'Select an embedding model from OpenAI (embedding models only).'
+                    ? (() => {
+                        const selectedModel = embeddingModels.find(m => m.id === formData.embedding_model);
+                        const dimInfo = selectedModel?.dimensions
+                          ? ` Selected model outputs ${selectedModel.dimensions}-dimension vectors.`
+                          : '';
+                        return `Select an embedding model from OpenAI.${dimInfo}`;
+                      })()
                     : 'Requires OpenAI API key (configured above). Click "Fetch Models" to see available embedding models.'}
                 </p>
               </div>
@@ -1542,28 +1618,6 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           </p>
 
           <div className="form-group">
-            <label>Results per Search (k)</label>
-            <input
-              type="number"
-              min={1}
-              max={100}
-              value={formData.search_results_k ?? settings?.search_results_k ?? 5}
-              onChange={(e) =>
-                setFormData({
-                  ...formData,
-                  search_results_k: Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 5)),
-                })
-              }
-            />
-            <p className="field-help">
-              Number of matching document chunks retrieved per vector search query (k).
-              Lower values (3-5) are faster and cheaper but may miss relevant context.
-              Higher values (10-20) provide more context but increase token usage and response time.
-              Very high values (50+) may introduce noise from less relevant matches.
-            </p>
-          </div>
-
-          <div className="form-group">
             <label className="checkbox-label">
               <input
                 type="checkbox"
@@ -1583,6 +1637,131 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
               Use this when you have distinct knowledge bases (e.g., code vs. docs) and want the AI to target searches.
             </p>
           </div>
+
+          {/* Advanced Search Settings */}
+          <details style={{ marginBottom: '16px' }} id="setting-search_advanced">
+            <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Settings</summary>
+            <div className="form-group">
+              <label>Results per Search (k)</label>
+              <input
+                type="number"
+                min={1}
+                max={100}
+                value={formData.search_results_k ?? settings?.search_results_k ?? 5}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    search_results_k: Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 5)),
+                  })
+                }
+              />
+              <p className="field-help">
+                Number of matching document chunks retrieved per vector search query (k).
+                Lower values (3-5) are faster and cheaper but may miss relevant context.
+                Higher values (10-20) provide more context but increase token usage and response time.
+                Very high values (50+) may introduce noise from less relevant matches.
+              </p>
+            </div>
+
+            <div className="form-group">
+              <label className="checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={formData.search_use_mmr ?? settings?.search_use_mmr ?? true}
+                  onChange={(e) =>
+                    setFormData({ ...formData, search_use_mmr: e.target.checked })
+                  }
+                  style={{ marginRight: '0.5rem' }}
+                />
+                <span>Use MMR (Max Marginal Relevance)</span>
+              </label>
+              <p className="field-help">
+                Reduces near-duplicate results by balancing relevance with diversity.
+                Recommended for most use cases to get varied, high-quality context.
+              </p>
+            </div>
+
+            {(formData.search_use_mmr ?? settings?.search_use_mmr ?? true) && (
+              <div className="form-group">
+                <label>MMR Diversity/Relevance (lambda: {formData.search_mmr_lambda ?? settings?.search_mmr_lambda ?? 0.5})</label>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.1}
+                  value={formData.search_mmr_lambda ?? settings?.search_mmr_lambda ?? 0.5}
+                  onChange={(e) =>
+                    setFormData({ ...formData, search_mmr_lambda: parseFloat(e.target.value) })
+                  }
+                  style={{ width: '100%' }}
+                />
+                <p className="field-help">
+                  <strong>0 = Max diversity</strong> (most varied results) |
+                  <strong> 1 = Max relevance</strong> (closest matches).
+                  Default 0.5 provides a good balance.
+                </p>
+              </div>
+            )}
+
+            <div className="form-group">
+              <label>Context Token Budget</label>
+              <input
+                type="number"
+                min={0}
+                max={32000}
+                value={formData.context_token_budget ?? settings?.context_token_budget ?? 4000}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    context_token_budget: Math.max(0, Math.min(32000, parseInt(e.target.value, 10) || 0)),
+                  })
+                }
+              />
+              <p className="field-help">
+                Maximum tokens for retrieved context sent to the LLM. Set to 0 for unlimited.
+                Prevents context overflow for models with smaller context windows.
+              </p>
+            </div>
+
+            <div className="form-group">
+              <label className="checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={formData.chunking_use_tokens ?? settings?.chunking_use_tokens ?? true}
+                  onChange={(e) =>
+                    setFormData({ ...formData, chunking_use_tokens: e.target.checked })
+                  }
+                  style={{ marginRight: '0.5rem' }}
+                />
+                <span>Token-based chunking</span>
+              </label>
+              <p className="field-help">
+                Use token-based chunking instead of character-based for more accurate
+                chunk sizes aligned with model tokenization.
+              </p>
+            </div>
+
+            <div className="form-group">
+              <label>IVFFlat Lists (pgvector)</label>
+              <input
+                type="number"
+                min={10}
+                max={1000}
+                value={formData.ivfflat_lists ?? settings?.ivfflat_lists ?? 100}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    ivfflat_lists: Math.max(10, Math.min(1000, parseInt(e.target.value, 10) || 100)),
+                  })
+                }
+              />
+              <p className="field-help">
+                Index parameter for pgvector (filesystem indexes only).
+                Higher values: slower build but faster queries for large datasets.
+                Recommended: sqrt(number of embeddings). Default: 100.
+              </p>
+            </div>
+          </details>
 
           <div className="form-group" style={{ marginTop: '1rem' }}>
             <button

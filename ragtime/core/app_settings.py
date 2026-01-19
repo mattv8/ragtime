@@ -81,6 +81,12 @@ class SettingsCache:
                 # Search configuration
                 "search_results_k": prisma_settings.searchResultsK,
                 "aggregate_search": prisma_settings.aggregateSearch,
+                "search_use_mmr": prisma_settings.searchUseMmr,
+                "search_mmr_lambda": prisma_settings.searchMmrLambda,
+                "context_token_budget": prisma_settings.contextTokenBudget,
+                "chunking_use_tokens": prisma_settings.chunkingUseTokens,
+                # pgvector configuration
+                "ivfflat_lists": prisma_settings.ivfflatLists,
                 # Performance / Memory configuration
                 "sequential_index_loading": prisma_settings.sequentialIndexLoading,
                 # LLM settings
@@ -124,6 +130,12 @@ class SettingsCache:
                 # Search configuration
                 "search_results_k": 5,
                 "aggregate_search": True,
+                "search_use_mmr": True,
+                "search_mmr_lambda": 0.5,
+                "context_token_budget": 4000,
+                "chunking_use_tokens": True,
+                # pgvector configuration
+                "ivfflat_lists": 100,
                 # Performance / Memory configuration
                 "sequential_index_loading": False,
                 # LLM settings

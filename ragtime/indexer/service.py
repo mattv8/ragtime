@@ -2395,11 +2395,24 @@ class IndexerService:
 
         logger.info(f"Loaded {len(documents)} documents, splitting into chunks...")
 
+        # Get app settings for chunking configuration
+        app_settings = await repository.get_settings()
+
+        # Determine length function based on settings
+        if getattr(app_settings, "chunking_use_tokens", True):
+            from ragtime.core.tokenization import get_token_length_function
+
+            length_function = get_token_length_function()
+            logger.info("Using token-based chunking for accurate chunk sizes")
+        else:
+            length_function = len
+            logger.info("Using character-based chunking")
+
         # Split into chunks (run in thread pool to avoid blocking with many documents)
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=config.chunk_size,
             chunk_overlap=config.chunk_overlap,
-            length_function=len,
+            length_function=length_function,
             separators=["\n\n", "\n", " ", ""],
         )
         chunks = await asyncio.to_thread(splitter.split_documents, documents)
@@ -2408,8 +2421,7 @@ class IndexerService:
 
         logger.info(f"Created {len(chunks)} chunks, generating embeddings...")
 
-        # Get embedding settings from app settings
-        app_settings = await repository.get_settings()
+        # Get embeddings model
         embeddings = await self._get_embeddings(app_settings)
 
         logger.info(

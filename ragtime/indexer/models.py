@@ -475,6 +475,34 @@ class AppSettings(BaseModel):
         default=True,
         description="If True, provide a single search_knowledge tool that searches all indexes. If False, create separate search_<index_name> tools for granular control.",
     )
+    search_use_mmr: bool = Field(
+        default=True,
+        description="Use Max Marginal Relevance for result diversification. Reduces near-duplicate results by balancing relevance with diversity.",
+    )
+    search_mmr_lambda: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="MMR diversity/relevance tradeoff. 0=maximum diversity (most varied results), 1=maximum relevance (closest matches). Recommended: 0.5-0.7.",
+    )
+    context_token_budget: int = Field(
+        default=4000,
+        ge=0,
+        le=32000,
+        description="Maximum tokens for retrieved context sent to LLM. 0=unlimited. Prevents context overflow for models with smaller context windows.",
+    )
+    chunking_use_tokens: bool = Field(
+        default=True,
+        description="Use token-based chunking instead of character-based. More accurate chunk sizes aligned with model tokenization.",
+    )
+
+    # pgvector configuration
+    ivfflat_lists: int = Field(
+        default=100,
+        ge=10,
+        le=1000,
+        description="IVFFlat index lists parameter. Higher values: slower build but faster queries for large datasets. Scale with sqrt(num_embeddings).",
+    )
 
     # Performance configuration
     sequential_index_loading: bool = Field(
@@ -576,6 +604,108 @@ class AppSettings(BaseModel):
             return False  # No previous config, nothing has changed
         return self.get_embedding_config_hash() != self.embedding_config_hash
 
+    async def get_configuration_warnings(
+        self, chunk_count: int = 0
+    ) -> List["ConfigurationWarning"]:
+        """
+        Generate warnings about potentially suboptimal configuration.
+
+        Uses LiteLLM model data for intelligent dimension/model detection.
+
+        Args:
+            chunk_count: Total number of chunks across all indexes (for ivfflat tuning)
+
+        Returns:
+            List of configuration warnings
+        """
+        from ragtime.core.embedding_models import (
+            get_embedding_models,
+            get_model_dimensions_sync,
+        )
+
+        warnings: List["ConfigurationWarning"] = []
+
+        # Fetch LiteLLM model data for intelligent checks
+        embedding_models = await get_embedding_models()
+
+        # pgvector's IVFFlat maximum dimension limit
+        PGVECTOR_IVFFLAT_MAX_DIM = 2000
+
+        # Check actual embedding dimension vs pgvector index limit
+        # This is the authoritative check - we know the actual dimension in use
+        if (
+            self.embedding_dimension
+            and self.embedding_dimension > PGVECTOR_IVFFLAT_MAX_DIM
+        ):
+            warnings.append(
+                ConfigurationWarning(
+                    level="warning",
+                    category="embedding",
+                    message=f"Embedding dimension ({self.embedding_dimension}) exceeds "
+                    f"pgvector's IVFFlat index limit ({PGVECTOR_IVFFLAT_MAX_DIM}). Using exact search.",
+                    recommendation="Consider an embedding model with <=2000 dimensions for faster "
+                    "indexed queries, especially for large datasets (>10k chunks).",
+                )
+            )
+        elif not self.embedding_dimension:
+            # No embeddings yet - check if the selected model will exceed the limit
+            # This provides a heads-up before they start indexing
+            model_dims = get_model_dimensions_sync(
+                self.embedding_model or "", embedding_models
+            )
+            if model_dims and model_dims > PGVECTOR_IVFFLAT_MAX_DIM:
+                warnings.append(
+                    ConfigurationWarning(
+                        level="info",
+                        category="embedding",
+                        message=f"{self.embedding_model} uses {model_dims} dimensions.",
+                        recommendation=f"This exceeds pgvector's {PGVECTOR_IVFFLAT_MAX_DIM}-dim "
+                        f"IVFFlat limit. Consider a smaller model for large datasets.",
+                    )
+                )
+
+        # Check ivfflat_lists vs chunk count
+        if chunk_count > 0 and self.ivfflat_lists:
+            import math
+
+            optimal_lists = int(math.sqrt(chunk_count))
+            if self.ivfflat_lists < optimal_lists * 0.5 and chunk_count > 1000:
+                warnings.append(
+                    ConfigurationWarning(
+                        level="info",
+                        category="performance",
+                        message=f"ivfflat_lists ({self.ivfflat_lists}) may be suboptimal "
+                        f"for {chunk_count} chunks.",
+                        recommendation=f"Consider increasing to ~{optimal_lists} for "
+                        f"faster queries on large datasets.",
+                    )
+                )
+            elif self.ivfflat_lists > optimal_lists * 3 and chunk_count < 10000:
+                warnings.append(
+                    ConfigurationWarning(
+                        level="info",
+                        category="performance",
+                        message=f"ivfflat_lists ({self.ivfflat_lists}) is high for "
+                        f"{chunk_count} chunks.",
+                        recommendation=f"Consider reducing to ~{optimal_lists} for faster "
+                        f"index building.",
+                    )
+                )
+
+        # Check if MMR is disabled
+        if not self.search_use_mmr:
+            warnings.append(
+                ConfigurationWarning(
+                    level="info",
+                    category="retrieval",
+                    message="MMR (Max Marginal Relevance) is disabled.",
+                    recommendation="Enable MMR (search_use_mmr=true) for more diverse "
+                    "search results and better answer quality.",
+                )
+            )
+
+        return warnings
+
 
 class EmbeddingStatus(BaseModel):
     """Status of embedding configuration compatibility."""
@@ -588,6 +718,19 @@ class EmbeddingStatus(BaseModel):
     has_mismatch: bool = False
     requires_reindex: bool = False
     message: str = ""
+
+
+class ConfigurationWarning(BaseModel):
+    """A warning about potentially suboptimal configuration."""
+
+    level: Literal["info", "warning", "error"] = Field(
+        description="Severity level of the warning"
+    )
+    category: str = Field(description="Category: embedding, indexing, performance")
+    message: str = Field(description="Human-readable warning message")
+    recommendation: Optional[str] = Field(
+        default=None, description="Suggested action to resolve"
+    )
 
 
 class UpdateSettingsRequest(BaseModel):
@@ -625,6 +768,33 @@ class UpdateSettingsRequest(BaseModel):
     # Search configuration
     search_results_k: Optional[int] = Field(default=None, ge=1, le=100)
     aggregate_search: Optional[bool] = None
+    # Retrieval optimization
+    search_use_mmr: Optional[bool] = Field(
+        default=None,
+        description="Use MMR (Maximal Marginal Relevance) for result diversity.",
+    )
+    search_mmr_lambda: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="MMR diversity vs relevance tradeoff (0=max diversity, 1=max relevance).",
+    )
+    context_token_budget: Optional[int] = Field(
+        default=None,
+        ge=500,
+        le=32000,
+        description="Max tokens for retrieved context sent to LLM.",
+    )
+    chunking_use_tokens: Optional[bool] = Field(
+        default=None,
+        description="Use token-based chunking instead of character-based.",
+    )
+    ivfflat_lists: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=10000,
+        description="Number of IVFFlat index lists for pgvector (tune for dataset size).",
+    )
     # Performance / Memory configuration
     sequential_index_loading: Optional[bool] = None
     # MCP configuration

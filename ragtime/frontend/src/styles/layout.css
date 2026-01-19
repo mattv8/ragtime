@@ -174,6 +174,86 @@ body {
   color: var(--color-text-primary);
 }
 
+/* =============================================================================
+   CONFIGURATION BANNER
+   ============================================================================= */
+
+.config-banner {
+  max-width: 900px;
+  margin: 0 auto var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+}
+
+.config-banner-warning {
+  background: rgba(255, 152, 0, 0.15);
+  border: 1px solid rgba(255, 152, 0, 0.5);
+}
+
+.config-banner-error {
+  background: rgba(244, 67, 54, 0.15);
+  border: 1px solid rgba(244, 67, 54, 0.5);
+}
+
+.config-banner-content {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+.config-banner-content strong {
+  color: #e65100;
+}
+
+.config-banner-error .config-banner-content strong {
+  color: #c62828;
+}
+
+.config-recommendation {
+  color: var(--color-text-secondary);
+  font-style: italic;
+}
+
+.config-banner-actions {
+  display: flex;
+  gap: var(--space-md);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.config-banner-link {
+  background: transparent;
+  border: none;
+  color: var(--color-primary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0;
+}
+
+.config-banner-link:hover {
+  color: var(--color-primary-dark);
+}
+
+.config-banner-dismiss {
+  background: transparent;
+  border: none;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  padding: 0;
+  opacity: 0.7;
+}
+
+.config-banner-dismiss:hover {
+  opacity: 1;
+  color: var(--color-text-primary);
+}
+
 .topnav-username {
   display: flex;
   align-items: center;

@@ -155,8 +155,15 @@ model AppSettings {
   maxIterations     Int      @default(15) @map("max_iterations") // Agent iteration limit
 
   // Search Configuration
-  searchResultsK    Int      @default(5) @map("search_results_k") // Number of results per vector search (k)
-  aggregateSearch   Boolean  @default(true) @map("aggregate_search") // If true, use single search_knowledge; if false, create per-index tools
+  searchResultsK       Int      @default(5) @map("search_results_k") // Number of results per vector search (k)
+  aggregateSearch      Boolean  @default(true) @map("aggregate_search") // If true, use single search_knowledge; if false, create per-index tools
+  searchUseMmr         Boolean  @default(false) @map("search_use_mmr") // Use Max Marginal Relevance for result diversification
+  searchMmrLambda      Float    @default(0.5) @map("search_mmr_lambda") // MMR diversity/relevance tradeoff (0=max diversity, 1=max relevance)
+  contextTokenBudget   Int      @default(4000) @map("context_token_budget") // Max tokens for retrieved context (0=unlimited)
+  chunkingUseTokens    Boolean  @default(true) @map("chunking_use_tokens") // Use token-based chunking instead of character-based
+
+  // pgvector Index Configuration
+  ivfflatLists         Int      @default(100) @map("ivfflat_lists") // IVFFlat index lists parameter (higher=slower build, faster query)
 
   // Performance / Memory Configuration
   sequentialIndexLoading Boolean @default(false) @map("sequential_index_loading") // Load indexes one-by-one (lower peak RAM) vs parallel (faster)

@@ -667,6 +667,12 @@ class IndexerRepository:
             # Search configuration
             search_results_k=getattr(settings, "searchResultsK", 5),
             aggregate_search=getattr(settings, "aggregateSearch", True),
+            # Retrieval optimization
+            search_use_mmr=getattr(settings, "searchUseMmr", True),
+            search_mmr_lambda=getattr(settings, "searchMmrLambda", 0.5),
+            context_token_budget=getattr(settings, "contextTokenBudget", 4000),
+            chunking_use_tokens=getattr(settings, "chunkingUseTokens", True),
+            ivfflat_lists=getattr(settings, "ivfflatLists", 100),
             # Performance configuration
             sequential_index_loading=getattr(settings, "sequentialIndexLoading", False),
             # MCP configuration
@@ -725,6 +731,12 @@ class IndexerRepository:
             # Search configuration
             "search_results_k": "searchResultsK",
             "aggregate_search": "aggregateSearch",
+            # Retrieval optimization
+            "search_use_mmr": "searchUseMmr",
+            "search_mmr_lambda": "searchMmrLambda",
+            "context_token_budget": "contextTokenBudget",
+            "chunking_use_tokens": "chunkingUseTokens",
+            "ivfflat_lists": "ivfflatLists",
             # Performance configuration
             "sequential_index_loading": "sequentialIndexLoading",
             # MCP configuration

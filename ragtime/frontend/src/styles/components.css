@@ -296,6 +296,53 @@ textarea {
   margin: 0;
 }
 
+/* Advanced settings dropdown */
+.advanced-settings {
+  margin-top: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+}
+
+.advanced-settings summary {
+  padding: var(--space-sm) var(--space-md);
+  cursor: pointer;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  user-select: none;
+  list-style: none;
+}
+
+.advanced-settings summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-settings summary::before {
+  content: '▶';
+  display: inline-block;
+  margin-right: var(--space-sm);
+  font-size: 0.75rem;
+  transition: transform 0.2s ease;
+}
+
+.advanced-settings[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.advanced-settings summary:hover {
+  color: var(--color-text-primary);
+}
+
+.advanced-settings-content {
+  padding: var(--space-md);
+  padding-top: 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.advanced-settings[open] .advanced-settings-content {
+  padding-top: var(--space-md);
+}
+
 /* Input with inline button */
 .input-with-button {
   display: flex;

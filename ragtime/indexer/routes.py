@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional
 
 import httpx
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
+from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException,
+                     UploadFile)
 from pydantic import BaseModel, Field
 
 from ragtime.core.encryption import decrypt_secret
@@ -20,27 +21,20 @@ from ragtime.core.security import get_current_user, require_admin
 from ragtime.core.sql_utils import MssqlConnectionError, mssql_connect
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (
-    AnalyzeIndexRequest,
-    AppSettings,
-    CheckRepoVisibilityRequest,
-    CreateIndexRequest,
-    FetchBranchesRequest,
-    FetchBranchesResponse,
-    IndexAnalysisResult,
-    IndexConfig,
-    IndexInfo,
-    IndexJobResponse,
-    IndexStatus,
-    PdmIndexJobResponse,
-    RepoVisibilityResponse,
-    RetryVisualizationRequest,
-    RetryVisualizationResponse,
-    SchemaIndexJobResponse,
-    TriggerPdmIndexRequest,
-    TriggerSchemaIndexRequest,
-    UpdateSettingsRequest,
-)
+from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
+                                    CheckRepoVisibilityRequest,
+                                    ConfigurationWarning, CreateIndexRequest,
+                                    FetchBranchesRequest,
+                                    FetchBranchesResponse, IndexAnalysisResult,
+                                    IndexConfig, IndexInfo, IndexJobResponse,
+                                    IndexStatus, PdmIndexJobResponse,
+                                    RepoVisibilityResponse,
+                                    RetryVisualizationRequest,
+                                    RetryVisualizationResponse,
+                                    SchemaIndexJobResponse,
+                                    TriggerPdmIndexRequest,
+                                    TriggerSchemaIndexRequest,
+                                    UpdateSettingsRequest)
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer
@@ -1045,10 +1039,32 @@ async def download_index(name: str, _user: User = Depends(require_admin)):
 # -----------------------------------------------------------------------------
 
 
-@router.get("/settings", response_model=AppSettings, tags=["Settings"])
+class GetSettingsResponse(BaseModel):
+    """Response from get settings including configuration warnings."""
+
+    settings: AppSettings
+    configuration_warnings: List[ConfigurationWarning] = Field(
+        default_factory=list,
+        description="Warnings about potentially suboptimal configuration",
+    )
+
+
+@router.get("/settings", response_model=GetSettingsResponse, tags=["Settings"])
 async def get_settings(_user: User = Depends(require_admin)):
-    """Get current application settings. Admin only."""
-    return await repository.get_settings()
+    """Get current application settings with configuration warnings. Admin only."""
+    settings = await repository.get_settings()
+
+    # Get total chunk count for ivfflat tuning warnings
+    chunk_count = 0
+    try:
+        indexes = await repository.list_index_metadata()
+        chunk_count = sum(idx.chunk_count or 0 for idx in indexes)
+    except Exception:
+        pass
+
+    warnings = await settings.get_configuration_warnings(chunk_count=chunk_count)
+
+    return GetSettingsResponse(settings=settings, configuration_warnings=warnings)
 
 
 class UpdateSettingsResponse(BaseModel):
@@ -1149,19 +1165,14 @@ async def get_embedding_status(_user: User = Depends(require_admin)):
 # Tool Configuration Endpoints (Admin only)
 # -----------------------------------------------------------------------------
 
-from ragtime.indexer.models import (
-    CreateToolConfigRequest,
-    MssqlDiscoverRequest,
-    MssqlDiscoverResponse,
-    PdmDiscoverRequest,
-    PdmDiscoverResponse,
-    PostgresDiscoverRequest,
-    PostgresDiscoverResponse,
-    ToolConfig,
-    ToolTestRequest,
-    ToolType,
-    UpdateToolConfigRequest,
-)
+from ragtime.indexer.models import (CreateToolConfigRequest,
+                                    MssqlDiscoverRequest,
+                                    MssqlDiscoverResponse, PdmDiscoverRequest,
+                                    PdmDiscoverResponse,
+                                    PostgresDiscoverRequest,
+                                    PostgresDiscoverResponse, ToolConfig,
+                                    ToolTestRequest, ToolType,
+                                    UpdateToolConfigRequest)
 
 
 class SSHKeyPairResponse(BaseModel):
@@ -2427,7 +2438,8 @@ async def _test_odoo_ssh_connection(config: dict) -> ToolTestResponse:
     """Test Odoo shell connection via SSH using Paramiko."""
     import asyncio
 
-    from ragtime.core.ssh import SSHConfig, execute_ssh_command, test_ssh_connection
+    from ragtime.core.ssh import (SSHConfig, execute_ssh_command,
+                                  test_ssh_connection)
 
     ssh_host = config.get("ssh_host", "")
     ssh_port = config.get("ssh_port", 22)
@@ -3778,11 +3790,9 @@ async def browse_smb_share(
 # Filesystem Indexer Endpoints (Admin only)
 # -----------------------------------------------------------------------------
 
-from ragtime.indexer.models import (
-    FilesystemAnalysisJobResponse,
-    FilesystemIndexJobResponse,
-    TriggerFilesystemIndexRequest,
-)
+from ragtime.indexer.models import (FilesystemAnalysisJobResponse,
+                                    FilesystemIndexJobResponse,
+                                    TriggerFilesystemIndexRequest)
 
 
 class FilesystemIndexStatsResponse(BaseModel):
@@ -4204,6 +4214,10 @@ class OllamaTestRequest(BaseModel):
     protocol: str = Field(default="http", description="Protocol: 'http' or 'https'")
     host: str = Field(default="localhost", description="Ollama server hostname or IP")
     port: int = Field(default=11434, ge=1, le=65535, description="Ollama server port")
+    embeddings_only: bool = Field(
+        default=False,
+        description="If True, only return models capable of generating embeddings",
+    )
 
 
 class OllamaModel(BaseModel):
@@ -4212,6 +4226,8 @@ class OllamaModel(BaseModel):
     name: str
     modified_at: Optional[str] = None
     size: Optional[int] = None
+    dimensions: Optional[int] = None
+    is_embedding_model: bool = False
 
 
 class OllamaTestResponse(BaseModel):
@@ -4228,35 +4244,40 @@ async def test_ollama_connection(request: OllamaTestRequest):
     """
     Test connection to an Ollama server and retrieve available models.
 
-    Returns a list of available embedding models if the connection is successful.
+    When embeddings_only=True, filters to only return models capable of
+    generating embeddings (detected via embedding_length in model metadata).
+
+    Queries Ollama's /api/show endpoint to get accurate dimension info.
     """
+    from ragtime.core.ollama import list_models
+
     base_url = f"{request.protocol}://{request.host}:{request.port}"
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            # First check if the server is reachable
-            response = await client.get(f"{base_url}/api/tags")
-            response.raise_for_status()
+        ollama_models = await list_models(
+            base_url=base_url,
+            embeddings_only=request.embeddings_only,
+            include_dimensions=True,
+        )
 
-            data = response.json()
-            models = []
-
-            # Parse the models list from Ollama API response
-            for model in data.get("models", []):
-                models.append(
-                    OllamaModel(
-                        name=model.get("name", ""),
-                        modified_at=model.get("modified_at"),
-                        size=model.get("size"),
-                    )
-                )
-
-            return OllamaTestResponse(
-                success=True,
-                message=f"Connected successfully. Found {len(models)} model(s).",
-                models=models,
-                base_url=base_url,
+        models = [
+            OllamaModel(
+                name=m.name,
+                modified_at=m.modified_at,
+                size=m.size,
+                dimensions=m.dimensions,
+                is_embedding_model=m.is_embedding_model,
             )
+            for m in ollama_models
+        ]
+
+        filter_msg = " embedding" if request.embeddings_only else ""
+        return OllamaTestResponse(
+            success=True,
+            message=f"Connected successfully. Found {len(models)}{filter_msg} model(s).",
+            models=models,
+            base_url=base_url,
+        )
 
     except httpx.ConnectError:
         return OllamaTestResponse(
@@ -4313,10 +4334,8 @@ class EmbeddingModelsResponse(BaseModel):
 
 # OpenAI embedding models - prioritized list (from LiteLLM community data)
 # These are the recommended models for most use cases
-from ragtime.core.embedding_models import (
-    OPENAI_EMBEDDING_PRIORITY,
-    get_embedding_models,
-)
+from ragtime.core.embedding_models import (OPENAI_EMBEDDING_PRIORITY,
+                                           get_embedding_models)
 
 OPENAI_DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
@@ -4635,36 +4654,32 @@ async def _fetch_anthropic_models(api_key: str) -> LLMModelsResponse:
 
 async def _fetch_ollama_llm_models(base_url: str) -> LLMModelsResponse:
     """Fetch available models from Ollama server for LLM use."""
+    from ragtime.core.ollama import is_reachable
+    from ragtime.core.ollama import list_models as ollama_list_models
+
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{base_url}/api/tags")
-            response.raise_for_status()
-
-            data = response.json()
-            models = []
-
-            for model in data.get("models", []):
-                model_name = model.get("name", "")
-                if model_name:
-                    models.append(LLMModel(id=model_name, name=model_name))
-
+        # Check reachability first
+        reachable, error_msg = await is_reachable(base_url)
+        if not reachable:
             return LLMModelsResponse(
-                success=True,
-                message=f"Found {len(models)} model(s).",
-                models=models,
-                default_model=models[0].id if models else None,
+                success=False,
+                message=error_msg or f"Cannot connect to Ollama server at {base_url}.",
             )
 
-    except httpx.ConnectError:
-        return LLMModelsResponse(
-            success=False,
-            message=f"Cannot connect to Ollama server at {base_url}. Is Ollama running?",
+        # List all models (not just embedding models, since this is for LLM)
+        ollama_models = await ollama_list_models(
+            base_url, embeddings_only=False, include_dimensions=False
         )
-    except httpx.TimeoutException:
+
+        models = [LLMModel(id=m.name, name=m.name) for m in ollama_models]
+
         return LLMModelsResponse(
-            success=False,
-            message=f"Connection to {base_url} timed out.",
+            success=True,
+            message=f"Found {len(models)} model(s).",
+            models=models,
+            default_model=models[0].id if models else None,
         )
+
     except Exception as e:
         return LLMModelsResponse(
             success=False,
@@ -4676,13 +4691,10 @@ async def _fetch_ollama_llm_models(base_url: str) -> LLMModelsResponse:
 # Conversation/Chat Endpoints
 # =============================================================================
 
-from ragtime.indexer.models import (
-    ChatMessage,
-    Conversation,
-    ConversationResponse,
-    CreateConversationRequest,
-    SendMessageRequest,
-)
+from ragtime.indexer.models import (ChatMessage, Conversation,
+                                    ConversationResponse,
+                                    CreateConversationRequest,
+                                    SendMessageRequest)
 
 
 @router.get(

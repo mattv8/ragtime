@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '@/api';
-import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, LoginPage, OAuthLoginPage, MemoryStatus, UserMenu, SecurityBanner } from '@/components';
-import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob, ToolConfig, AppSettings } from '@/types';
+import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, LoginPage, OAuthLoginPage, MemoryStatus, UserMenu, SecurityBanner, ConfigurationBanner } from '@/components';
+import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob, ToolConfig, ConfigurationWarning } from '@/types';
 import type { OAuthParams } from '@/components';
 import '@/styles/global.css';
 
@@ -87,11 +87,14 @@ export function App() {
   const [pdmJobs, setPdmJobs] = useState<PdmIndexJob[]>([]);
   const pdmPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Configuration warnings state
+  const [configurationWarnings, setConfigurationWarnings] = useState<ConfigurationWarning[]>([]);
+
   // Load server name and embedding dimensions from settings
   useEffect(() => {
     const loadSettings = async () => {
       try {
-        const settings: AppSettings = await api.getSettings();
+        const { settings, configuration_warnings } = await api.getSettings();
         if (settings.server_name) {
           setServerName(settings.server_name);
           document.title = settings.server_name;
@@ -100,6 +103,8 @@ export function App() {
         setAggregateSearch(settings.aggregate_search ?? true);
         // Load embedding dimensions for memory calculation
         setEmbeddingDimensions(settings.embedding_dimensions ?? null);
+        // Store configuration warnings
+        setConfigurationWarnings(configuration_warnings ?? []);
       } catch {
         // Ignore errors, use default name
       }
@@ -526,6 +531,16 @@ export function App() {
         onNavigateToSettings={() => {
           if (isAdmin) {
             setHighlightSetting('api_key_info');
+            setActiveView('settings');
+          }
+        }}
+      />
+      <ConfigurationBanner
+        warnings={configurationWarnings}
+        isAdmin={isAdmin}
+        onNavigateToSettings={() => {
+          if (isAdmin) {
+            setHighlightSetting('embedding_config');
             setActiveView('settings');
           }
         }}

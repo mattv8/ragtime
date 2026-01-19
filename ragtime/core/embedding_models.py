@@ -9,6 +9,7 @@ Source: https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_wi
 import asyncio
 from dataclasses import dataclass
 from typing import Optional
+
 import httpx
 
 from ragtime.core.logging import get_logger
@@ -16,9 +17,7 @@ from ragtime.core.logging import get_logger
 logger = get_logger(__name__)
 
 # LiteLLM's community-maintained model data (updated frequently)
-LITELLM_MODEL_DATA_URL = (
-    "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
-)
+LITELLM_MODEL_DATA_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 
 # Cache for embedding models (populated on first request)
 _embedding_models_cache: dict[str, "EmbeddingModelInfo"] = {}
@@ -29,6 +28,7 @@ _cache_loaded = False
 @dataclass
 class EmbeddingModelInfo:
     """Information about an embedding model from LiteLLM."""
+
     id: str
     provider: str
     max_input_tokens: Optional[int] = None
@@ -61,7 +61,8 @@ async def _fetch_litellm_embedding_models() -> dict[str, EmbeddingModelInfo]:
                         models[model_id] = EmbeddingModelInfo(
                             id=model_id,
                             provider=provider,
-                            max_input_tokens=model_info.get("max_input_tokens") or model_info.get("max_tokens"),
+                            max_input_tokens=model_info.get("max_input_tokens")
+                            or model_info.get("max_tokens"),
                             output_vector_size=model_info.get("output_vector_size"),
                         )
 
@@ -85,14 +86,17 @@ async def get_embedding_models() -> dict[str, EmbeddingModelInfo]:
     return _embedding_models_cache
 
 
-def get_openai_embedding_models_sync(all_models: dict[str, EmbeddingModelInfo]) -> list[EmbeddingModelInfo]:
+def get_openai_embedding_models_sync(
+    all_models: dict[str, EmbeddingModelInfo],
+) -> list[EmbeddingModelInfo]:
     """
     Filter and sort OpenAI embedding models from the full model list.
 
     Returns models sorted by priority (recommended first, then alphabetically).
     """
     openai_models = [
-        m for m in all_models.values()
+        m
+        for m in all_models.values()
         if m.provider == "openai" and "embedding" in m.id.lower()
     ]
 
@@ -113,7 +117,9 @@ async def get_openai_embedding_models() -> list[EmbeddingModelInfo]:
     return get_openai_embedding_models_sync(all_models)
 
 
-def is_embedding_model(model_id: str, all_models: dict[str, EmbeddingModelInfo]) -> bool:
+def is_embedding_model(
+    model_id: str, all_models: dict[str, EmbeddingModelInfo]
+) -> bool:
     """Check if a model ID is an embedding model according to LiteLLM."""
     return model_id in all_models
 
@@ -122,3 +128,61 @@ async def validate_embedding_model(model_id: str) -> bool:
     """Check if a model ID is a valid embedding model."""
     all_models = await get_embedding_models()
     return is_embedding_model(model_id, all_models)
+
+
+async def get_model_dimensions(model_id: str) -> int | None:
+    """
+    Get the output vector dimensions for an embedding model.
+
+    Args:
+        model_id: The model identifier (e.g., 'text-embedding-3-small')
+
+    Returns:
+        The output vector size if known, None otherwise
+    """
+    all_models = await get_embedding_models()
+    model_info = all_models.get(model_id)
+    if model_info:
+        return model_info.output_vector_size
+    return None
+
+
+def get_model_dimensions_sync(
+    model_id: str, all_models: dict[str, EmbeddingModelInfo]
+) -> int | None:
+    """
+    Synchronous version - get dimensions from pre-fetched model data.
+
+    Args:
+        model_id: The model identifier
+        all_models: Pre-fetched embedding models dict
+
+    Returns:
+        The output vector size if known, None otherwise
+    """
+    model_info = all_models.get(model_id)
+    if model_info:
+        return model_info.output_vector_size
+    return None
+
+
+async def get_ollama_model_dimensions(
+    model_name: str,
+    ollama_base_url: str,
+) -> int | None:
+    """
+    Query Ollama's /api/show endpoint to get embedding dimensions for a model.
+
+    This is the authoritative source for Ollama model metadata.
+    The dimension is stored in model_info as '<architecture>.embedding_length'.
+
+    Args:
+        model_name: The Ollama model name (e.g., 'nomic-embed-text:latest')
+        ollama_base_url: Base URL for Ollama server (e.g., 'http://localhost:11434')
+
+    Returns:
+        The embedding dimension if found, None otherwise
+    """
+    from ragtime.core.ollama import get_model_embedding_dimension
+
+    return await get_model_embedding_dimension(model_name, ollama_base_url)

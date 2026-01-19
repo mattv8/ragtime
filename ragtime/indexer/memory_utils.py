@@ -26,9 +26,10 @@ DOCSTORE_OVERHEAD_FACTOR = 1.5
 # Default average chunk size in characters (when not known)
 DEFAULT_AVG_CHUNK_CHARS = 800
 
-# Fallback dimensions for common Ollama models not in LiteLLM
-# LiteLLM only tracks cloud provider models, so we need this for local models
-OLLAMA_MODEL_DIMENSIONS = {
+# Fallback dimensions for common Ollama models when /api/show is unavailable
+# Prefer querying Ollama's /api/show endpoint for accurate dimensions
+# This table is only used when Ollama server is not reachable
+OLLAMA_MODEL_DIMENSIONS_FALLBACK = {
     # Nomic
     "nomic-embed-text": 768,
     # BGE models
@@ -122,16 +123,16 @@ def get_embedding_dimension(
     if litellm_dim:
         return litellm_dim
 
-    # 3. Ollama model lookup table
+    # 3. Ollama model fallback table (when Ollama API is not available)
     model_lower = model.lower()
     # Strip version tags like :latest
     base_model = model_lower.split(":")[0]
 
-    if base_model in OLLAMA_MODEL_DIMENSIONS:
-        return OLLAMA_MODEL_DIMENSIONS[base_model]
+    if base_model in OLLAMA_MODEL_DIMENSIONS_FALLBACK:
+        return OLLAMA_MODEL_DIMENSIONS_FALLBACK[base_model]
 
     # Try partial match for model variants
-    for known_model, dim in OLLAMA_MODEL_DIMENSIONS.items():
+    for known_model, dim in OLLAMA_MODEL_DIMENSIONS_FALLBACK.items():
         if base_model.startswith(known_model) or known_model in base_model:
             return dim
 

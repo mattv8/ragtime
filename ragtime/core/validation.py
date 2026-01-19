@@ -81,53 +81,44 @@ async def validate_embedding_provider() -> ValidationResult:
 
 async def _validate_ollama_embeddings(settings: dict, model: str) -> ValidationResult:
     """Validate Ollama embedding provider is reachable and model exists."""
+    from ragtime.core.ollama import is_reachable, list_models
+
     base_url = settings.get("ollama_base_url", "http://localhost:11434")
 
     try:
+        # First check if Ollama is reachable
+        reachable, error_msg = await is_reachable(base_url)
+        if not reachable:
+            return ValidationResult(
+                valid=False,
+                error="Cannot reach Ollama server",
+                details=error_msg
+                or f"Failed to connect to Ollama at {base_url}. "
+                "Make sure Ollama is running and the URL is correct in Settings.",
+            )
+
+        # Get available models
+        models = await list_models(
+            base_url, embeddings_only=False, include_dimensions=False
+        )
+        available_model_names = [m.name.split(":")[0] for m in models]
+
+        # Check both exact match and base model name
+        model_base = model.split(":")[0]
+        if (
+            model not in [m.name for m in models]
+            and model_base not in available_model_names
+        ):
+            return ValidationResult(
+                valid=False,
+                error=f"Embedding model '{model}' not found in Ollama",
+                details=f"The model '{model}' is not available. "
+                f"Available models: {', '.join(available_model_names) or 'none'}. "
+                f"Pull the model with: ollama pull {model}",
+            )
+
+        # Quick test - try to generate an embedding
         async with httpx.AsyncClient(timeout=10.0) as client:
-            # First check if Ollama is reachable
-            try:
-                response = await client.get(f"{base_url}/api/tags")
-                if response.status_code != 200:
-                    return ValidationResult(
-                        valid=False,
-                        error="Cannot reach Ollama server",
-                        details=f"Ollama at {base_url} returned status {response.status_code}. "
-                        "Make sure Ollama is running and accessible.",
-                    )
-            except httpx.ConnectError:
-                return ValidationResult(
-                    valid=False,
-                    error="Cannot connect to Ollama server",
-                    details=f"Failed to connect to Ollama at {base_url}. "
-                    "Make sure Ollama is running and the URL is correct in Settings.",
-                )
-            except httpx.TimeoutException:
-                return ValidationResult(
-                    valid=False,
-                    error="Ollama server timeout",
-                    details=f"Connection to Ollama at {base_url} timed out. "
-                    "The server may be overloaded or unreachable.",
-                )
-
-            # Check if the model is available
-            data = response.json()
-            available_models = [
-                m.get("name", "").split(":")[0] for m in data.get("models", [])
-            ]
-
-            # Check both exact match and base model name
-            model_base = model.split(":")[0]
-            if model not in available_models and model_base not in available_models:
-                return ValidationResult(
-                    valid=False,
-                    error=f"Embedding model '{model}' not found in Ollama",
-                    details=f"The model '{model}' is not available. "
-                    f"Available models: {', '.join(available_models) or 'none'}. "
-                    f"Pull the model with: ollama pull {model}",
-                )
-
-            # Quick test - try to generate an embedding
             try:
                 embed_response = await client.post(
                     f"{base_url}/api/embeddings",
@@ -142,7 +133,7 @@ async def _validate_ollama_embeddings(settings: dict, model: str) -> ValidationR
                     )
                     return ValidationResult(
                         valid=False,
-                        error=f"Failed to generate test embedding",
+                        error="Failed to generate test embedding",
                         details=f"Model '{model}' returned error: {error_detail}",
                     )
             except httpx.TimeoutException:

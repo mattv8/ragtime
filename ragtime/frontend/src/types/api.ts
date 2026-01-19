@@ -421,6 +421,18 @@ export interface GitFormData {
 }
 
 // Application Settings
+export interface ConfigurationWarning {
+  level: 'info' | 'warning' | 'error';
+  category: string;
+  message: string;
+  recommendation?: string | null;
+}
+
+export interface GetSettingsResponse {
+  settings: AppSettings;
+  configuration_warnings: ConfigurationWarning[];
+}
+
 export interface AppSettings {
   id: string;
   // Server branding
@@ -449,6 +461,15 @@ export interface AppSettings {
   // Search Configuration
   search_results_k: number;
   aggregate_search: boolean;
+  // Advanced Search Settings
+  search_use_mmr: boolean;
+  search_mmr_lambda: number;
+  context_token_budget: number;
+  chunking_use_tokens: boolean;
+  ivfflat_lists: number;
+  // Embedding dimension tracking (pgvector)
+  embedding_dimension?: number | null;
+  embedding_config_hash?: string | null;
   // Performance / Memory Configuration
   sequential_index_loading: boolean;
   // MCP Configuration
@@ -499,6 +520,12 @@ export interface UpdateSettingsRequest {
   // Search settings
   search_results_k?: number;
   aggregate_search?: boolean;
+  // Advanced Search Settings
+  search_use_mmr?: boolean;
+  search_mmr_lambda?: number;
+  context_token_budget?: number;
+  chunking_use_tokens?: boolean;
+  ivfflat_lists?: number;
   // Performance / Memory settings
   sequential_index_loading?: boolean;
   // MCP settings
@@ -526,12 +553,16 @@ export interface OllamaTestRequest {
   protocol: 'http' | 'https';
   host: string;
   port: number;
+  /** If true, only return models capable of generating embeddings */
+  embeddings_only?: boolean;
 }
 
 export interface OllamaModel {
   name: string;
   modified_at?: string;
   size?: number;
+  dimensions?: number;
+  is_embedding_model?: boolean;
 }
 
 export interface OllamaTestResponse {

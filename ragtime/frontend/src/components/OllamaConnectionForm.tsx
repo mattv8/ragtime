@@ -25,6 +25,8 @@ interface OllamaConnectionFormProps {
   connectedHelpText?: string;
   /** Help text shown when not connected */
   disconnectedHelpText?: string;
+  /** Whether to filter for embedding models only */
+  embeddingsOnly?: boolean;
   /** Called when protocol changes */
   onProtocolChange: (protocol: 'http' | 'https') => void;
   /** Called when host changes */
@@ -124,6 +126,7 @@ export function OllamaConnectionForm({
               <option key={m.name} value={m.name}>
                 {m.name}
                 {m.size ? ` (${(m.size / 1024 / 1024 / 1024).toFixed(1)}GB)` : ''}
+                {m.dimensions ? ` [${m.dimensions} dims]` : ''}
               </option>
             ))}
           </select>
@@ -135,7 +138,17 @@ export function OllamaConnectionForm({
             placeholder={modelPlaceholder}
           />
         )}
-        <p className="field-help">{connected ? connectedHelpText : disconnectedHelpText}</p>
+        <p className="field-help">
+          {connected
+            ? (() => {
+                const selectedModel = models.find(m => m.name === model);
+                const dimInfo = selectedModel?.dimensions
+                  ? ` Selected model outputs ${selectedModel.dimensions}-dimension vectors.`
+                  : '';
+                return `${connectedHelpText}${dimInfo}`;
+              })()
+            : disconnectedHelpText}
+        </p>
       </div>
     </>
   );

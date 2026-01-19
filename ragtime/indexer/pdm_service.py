@@ -891,7 +891,8 @@ class PdmIndexerService:
                 embeddings.embed_documents, ["test"]
             )
             embedding_dim = len(test_embedding[0])
-            await self._ensure_embedding_column(embedding_dim)
+            index_lists = app_settings.get("ivfflat_lists", 100)
+            await self._ensure_embedding_column(embedding_dim, index_lists)
 
             # Update tracking if needed
             if tracking_needs_update:
@@ -1219,17 +1220,24 @@ class PdmIndexerService:
     async def _ensure_pgvector(self) -> bool:
         return await ensure_pgvector_extension(logger_override=logger)
 
-    async def _ensure_embedding_column(self, dimension: int) -> bool:
+    async def _ensure_embedding_column(
+        self, dimension: int, index_lists: int = 100
+    ) -> bool:
         """
         Ensure the embedding column exists with the correct dimension.
 
         If the column doesn't exist, add it. If it exists but dimension changed,
         alter the column and rebuild the index.
+
+        Args:
+            dimension: Dimension of embedding vectors
+            index_lists: IVFFlat lists parameter (higher = slower build, faster query)
         """
         return await ensure_embedding_column(
             table_name="pdm_embeddings",
             index_name="pdm_embeddings_embedding_idx",
             embedding_dim=dimension,
+            index_lists=index_lists,
             logger_override=logger,
         )
 

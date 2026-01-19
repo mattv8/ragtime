@@ -1131,7 +1131,8 @@ class SchemaIndexerService:
                     "Check that the embedding service is running and responsive."
                 )
             embedding_dim = len(test_embedding[0])
-            await self._ensure_embedding_column(embedding_dim)
+            index_lists = settings.ivfflat_lists or 100
+            await self._ensure_embedding_column(embedding_dim, index_lists)
 
             # Update tracking if needed (first index or config change)
             if tracking_needs_update:
@@ -1270,11 +1271,20 @@ class SchemaIndexerService:
     async def _ensure_pgvector(self) -> bool:
         return await ensure_pgvector_extension(logger_override=logger)
 
-    async def _ensure_embedding_column(self, embedding_dim: int = 1536) -> bool:
+    async def _ensure_embedding_column(
+        self, embedding_dim: int = 1536, index_lists: int = 100
+    ) -> bool:
+        """Ensure the embedding column exists with the correct dimension.
+
+        Args:
+            embedding_dim: Dimension of embedding vectors
+            index_lists: IVFFlat lists parameter (higher = slower build, faster query)
+        """
         return await ensure_embedding_column(
             table_name="schema_embeddings",
             index_name="schema_embeddings_embedding_idx",
             embedding_dim=embedding_dim,
+            index_lists=index_lists,
             logger_override=logger,
         )
 
