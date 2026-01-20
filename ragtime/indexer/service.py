@@ -1649,11 +1649,23 @@ class IndexerService:
             # Cleanup temp directory and cancellation flag
             shutil.rmtree(temp_dir, ignore_errors=True)
             self._cancellation_flags.pop(job.id, None)
-            await repository.update_job(job)
             self._active_jobs.pop(job.id, None)
 
+            # Update job status - gracefully handle database disconnection
+            try:
+                await repository.update_job(job)
+            except Exception as db_err:
+                logger.warning(
+                    f"Job {job.id}: Could not update job status (database may be disconnected): {db_err}"
+                )
+
             # Reinitialize RAG components if job completed successfully
-            await self._maybe_reinitialize_rag(job)
+            try:
+                await self._maybe_reinitialize_rag(job)
+            except Exception as rag_err:
+                logger.warning(
+                    f"Job {job.id}: Could not reinitialize RAG components: {rag_err}"
+                )
 
     async def _process_git(self, job: IndexJob, skip_clone: bool = False):
         """Process a git repository.
@@ -1740,11 +1752,23 @@ class IndexerService:
                     shutil.rmtree, temp_marker_dir, ignore_errors=True
                 )
             self._cancellation_flags.pop(job.id, None)
-            await repository.update_job(job)
             self._active_jobs.pop(job.id, None)
 
+            # Update job status - gracefully handle database disconnection
+            try:
+                await repository.update_job(job)
+            except Exception as db_err:
+                logger.warning(
+                    f"Job {job.id}: Could not update job status (database may be disconnected): {db_err}"
+                )
+
             # Reinitialize RAG components if job completed successfully
-            await self._maybe_reinitialize_rag(job)
+            try:
+                await self._maybe_reinitialize_rag(job)
+            except Exception as rag_err:
+                logger.warning(
+                    f"Job {job.id}: Could not reinitialize RAG components: {rag_err}"
+                )
 
     async def _clone_git_repo(self, job: IndexJob, repo_dir: Path) -> None:
         """Clone a git repository to the specified directory.

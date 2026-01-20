@@ -565,31 +565,43 @@ class BackgroundTaskService:
 
             except asyncio.CancelledError:
                 # Save partial response before cancelling
-                if full_response.strip():
-                    await repository.add_message(
-                        conversation_id,
-                        "assistant",
-                        full_response,
-                        tool_calls=tool_calls if tool_calls else None,
-                        events=events if events else None,
-                    )
-                    logger.info(f"Saved partial response for cancelled task {task_id}")
+                try:
+                    if full_response.strip():
+                        await repository.add_message(
+                            conversation_id,
+                            "assistant",
+                            full_response,
+                            tool_calls=tool_calls if tool_calls else None,
+                            events=events if events else None,
+                        )
+                        logger.info(
+                            f"Saved partial response for cancelled task {task_id}"
+                        )
 
-                # If shutting down (hot-reload/restart), mark as interrupted
-                # so user sees "continue?" prompt. Otherwise mark as cancelled.
-                if self._shutdown:
-                    await repository.update_chat_task_status(
-                        task_id, ChatTaskStatus.interrupted
+                    # If shutting down (hot-reload/restart), mark as interrupted
+                    # so user sees "continue?" prompt. Otherwise mark as cancelled.
+                    if self._shutdown:
+                        await repository.update_chat_task_status(
+                            task_id, ChatTaskStatus.interrupted
+                        )
+                        logger.info(f"Task {task_id} interrupted by shutdown")
+                    else:
+                        await repository.cancel_chat_task(task_id)
+                except Exception as db_err:
+                    logger.warning(
+                        f"Task {task_id}: Could not update task status (database may be disconnected): {db_err}"
                     )
-                    logger.info(f"Task {task_id} interrupted by shutdown")
-                else:
-                    await repository.cancel_chat_task(task_id)
                 raise
             except Exception as e:
                 logger.exception(f"Background task {task_id} failed")
-                await repository.update_chat_task_status(
-                    task_id, ChatTaskStatus.failed, str(e)
-                )
+                try:
+                    await repository.update_chat_task_status(
+                        task_id, ChatTaskStatus.failed, str(e)
+                    )
+                except Exception as db_err:
+                    logger.warning(
+                        f"Task {task_id}: Could not update task status (database may be disconnected): {db_err}"
+                    )
             finally:
                 self._running_tasks.pop(task_id, None)
 

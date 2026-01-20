@@ -1312,7 +1312,12 @@ class SchemaIndexerService:
             job.status = SchemaIndexStatus.FAILED
             job.error_message = str(e)
             job.completed_at = datetime.now(timezone.utc)
-            await self._update_job(job)
+            try:
+                await self._update_job(job)
+            except Exception as db_err:
+                logger.warning(
+                    f"Job {job.id}: Could not update job status (database may be disconnected): {db_err}"
+                )
 
         finally:
             # Clean up in-memory tracking
