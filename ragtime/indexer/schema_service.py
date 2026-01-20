@@ -706,6 +706,9 @@ class SchemaIndexerService:
                             "row_estimate": parts[4] if parts[4] != "\\N" else None,
                         }
                     )
+                elif len(parts) == 1:
+                    # Generic single-column result (e.g. connection check)
+                    rows.append({"result": parts[0]})
 
         return rows
 
