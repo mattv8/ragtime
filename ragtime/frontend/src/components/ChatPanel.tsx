@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, X, AlertCircle, RefreshCw, FileText, Image as ImageIcon } from 'lucide-react';
+import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, X, AlertCircle, RefreshCw, FileText } from 'lucide-react';
 import { api } from '@/api';
 import type { Conversation, ChatMessage, AvailableModel, ChatTask, User, ContentPart } from '@/types';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
@@ -752,7 +752,8 @@ function calculateMessageTokens(msg: ChatMessage): number {
   }
 
   // Fallback: use content + legacy tool_calls
-  let tokens = estimateTokens(msg.content || '');
+  const contentText = typeof msg.content === 'string' ? msg.content : parseMessageContent(msg.content).text;
+  let tokens = estimateTokens(contentText || '');
 
   if (msg.tool_calls?.length) {
     for (const tc of msg.tool_calls) {
@@ -1903,7 +1904,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
                               {msg.role === 'user' && !isStreaming && (
                                 <button
                                   className="chat-message-edit-btn"
-                                  onClick={() => startEditMessage(idx, msg.content)}
+                                  onClick={() => startEditMessage(idx, typeof msg.content === 'string' ? msg.content : parseMessageContent(msg.content).text)}
                                   title="Edit and resend"
                                 >
                                   <Pencil size={12} />
