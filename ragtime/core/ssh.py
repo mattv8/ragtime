@@ -9,6 +9,7 @@ Supports:
 
 import io
 import socket
+import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
@@ -22,6 +23,7 @@ logger = get_logger(__name__)
 
 class SSHAuthMethod(str, Enum):
     """SSH authentication methods."""
+
     PASSWORD = "password"
     KEY_FILE = "key_file"
     KEY_CONTENT = "key_content"
@@ -30,6 +32,7 @@ class SSHAuthMethod(str, Enum):
 @dataclass
 class SSHResult:
     """Result from SSH command execution."""
+
     stdout: str
     stderr: str
     exit_code: int
@@ -54,6 +57,7 @@ class SSHConfig:
     - Key file: set key_path (and optionally key_passphrase)
     - Key content: set key_content (and optionally key_passphrase)
     """
+
     host: str
     user: str
     port: int = 22
@@ -131,6 +135,21 @@ def _load_private_key(
     raise ValueError(f"Failed to load private key: {last_error}")
 
 
+def _drain_channel(
+    channel, stdout_chunks: list[bytes], stderr_chunks: list[bytes]
+) -> None:
+    """Drain any remaining data from the channel buffers."""
+    while channel.recv_ready():
+        stdout_chunks.append(channel.recv(4096))
+    while channel.recv_stderr_ready():
+        stderr_chunks.append(channel.recv_stderr(4096))
+
+
+def _error_result(message: str) -> SSHResult:
+    """Create a failed SSHResult with the given error message."""
+    return SSHResult(stdout="", stderr=message, exit_code=-1, success=False)
+
+
 def execute_ssh_command(
     config: SSHConfig,
     command: str,
@@ -165,7 +184,9 @@ def execute_ssh_command(
 
         # Add authentication
         auth_method = config.auth_method
-        logger.debug(f"SSH connecting to {config.user}@{config.host}:{config.port} using {auth_method.value}")
+        logger.debug(
+            f"SSH connecting to {config.user}@{config.host}:{config.port} using {auth_method.value}"
+        )
 
         if auth_method == SSHAuthMethod.PASSWORD:
             connect_kwargs["password"] = config.password
@@ -190,50 +211,73 @@ def execute_ssh_command(
             stdin.write(input_data)
             stdin.channel.shutdown_write()
 
-        # Read output
-        stdout_data = stdout.read().decode("utf-8", errors="replace")
-        stderr_data = stderr.read().decode("utf-8", errors="replace")
-        exit_code = stdout.channel.recv_exit_status()
+        # Read output with total timeout
+        channel = stdout.channel
+        start_time = time.time()
+        stdout_chunks = []
+        stderr_chunks = []
+        timed_out = False
+
+        while True:
+            # check timeout
+            if config.timeout and (time.time() - start_time > config.timeout):
+                logger.warning(
+                    f"SSH command execution timed out after {config.timeout}s"
+                )
+                timed_out = True
+                channel.close()
+                break
+
+            if channel.exit_status_ready():
+                break
+
+            # Check for data
+            if channel.recv_ready():
+                stdout_chunks.append(channel.recv(4096))
+
+            if channel.recv_stderr_ready():
+                stderr_chunks.append(channel.recv_stderr(4096))
+
+            # Small sleep to yield CPU and prevent tight loop
+            time.sleep(0.1)
+
+        # Drain any remaining buffered data
+        _drain_channel(channel, stdout_chunks, stderr_chunks)
+
+        stdout_data = b"".join(stdout_chunks).decode("utf-8", errors="replace")
+        stderr_data = b"".join(stderr_chunks).decode("utf-8", errors="replace")
+
+        if timed_out:
+            exit_code = -1
+            # Append timeout note to stderr but mark as success so partial stdout is returned
+            timeout_msg = (
+                f"[Command execution timed out after {config.timeout} seconds]"
+            )
+            stderr_data = (
+                f"{stderr_data}\n{timeout_msg}" if stderr_data else timeout_msg
+            )
+        else:
+            exit_code = channel.recv_exit_status()
 
         return SSHResult(
             stdout=stdout_data,
             stderr=stderr_data,
             exit_code=exit_code,
-            success=exit_code == 0,
+            success=(exit_code == 0) or timed_out,
         )
 
     except paramiko.AuthenticationException as e:
         logger.error(f"SSH authentication failed: {e}")
-        return SSHResult(
-            stdout="",
-            stderr=f"SSH authentication failed: {e}",
-            exit_code=-1,
-            success=False,
-        )
-    except socket.timeout as e:
-        logger.error(f"SSH connection timed out: {e}")
-        return SSHResult(
-            stdout="",
-            stderr=f"SSH connection timed out after {config.timeout}s",
-            exit_code=-1,
-            success=False,
-        )
+        return _error_result(f"SSH authentication failed: {e}")
+    except socket.timeout:
+        logger.error(f"SSH connection timed out after {config.timeout}s")
+        return _error_result(f"SSH connection timed out after {config.timeout}s")
     except socket.error as e:
         logger.error(f"SSH connection error: {e}")
-        return SSHResult(
-            stdout="",
-            stderr=f"SSH connection error: {e}",
-            exit_code=-1,
-            success=False,
-        )
+        return _error_result(f"SSH connection error: {e}")
     except Exception as e:
         logger.error(f"SSH error: {e}")
-        return SSHResult(
-            stdout="",
-            stderr=f"SSH error: {e}",
-            exit_code=-1,
-            success=False,
-        )
+        return _error_result(f"SSH error: {e}")
     finally:
         client.close()
 
@@ -254,6 +298,7 @@ def ssh_config_from_dict(config_dict: dict) -> SSHConfig:
     Maps common field names from tool configs to SSHConfig fields.
     Handles both 'ssh_' prefixed and non-prefixed field names.
     """
+
     def get_field(name: str, default=None):
         """Get field with or without ssh_ prefix."""
         return config_dict.get(f"ssh_{name}") or config_dict.get(name, default)
