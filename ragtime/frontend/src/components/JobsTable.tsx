@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Copy, Check } from 'lucide-react';
+import { Copy, Check, ArrowUp, ArrowDown, Search } from 'lucide-react';
 import { api } from '@/api';
 import type { IndexJob, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob } from '@/types';
 
@@ -33,6 +33,7 @@ type UnifiedJob = {
   processedChunks: number;
   errorMessage: string | null;
   createdAt: string;
+  completedAt: string | null;
   phase: string;
   cancelRequested?: boolean;
   // Collection phase info (filesystem jobs)
@@ -125,6 +126,7 @@ function toUnifiedJob(job: IndexJob): UnifiedJob {
     processedChunks: job.processed_chunks,
     errorMessage: job.error_message,
     createdAt: job.created_at,
+    completedAt: job.completed_at,
     phase: getProcessingPhase(job),
   };
 }
@@ -210,6 +212,7 @@ function toUnifiedFilesystemJob(job: FilesystemIndexJob): UnifiedJob {
     processedChunks: job.processed_chunks,
     errorMessage: job.error_message,
     createdAt: job.created_at,
+    completedAt: job.completed_at,
       phase,
     filesScanned: job.files_scanned,
     currentDirectory: job.current_directory,
@@ -277,6 +280,7 @@ function toUnifiedSchemaJob(job: SchemaIndexJob): UnifiedJob {
     processedChunks: job.processed_chunks,
     errorMessage: job.error_message,
     createdAt: job.created_at,
+    completedAt: job.completed_at,
     phase,
     toolConfigId: job.tool_config_id,
     cancelRequested: job.cancel_requested,
@@ -331,6 +335,7 @@ function toUnifiedPdmJob(job: PdmIndexJob): UnifiedJob {
     processedChunks: job.processed_chunks,
     errorMessage: job.error_message,
     createdAt: job.created_at,
+    completedAt: job.completed_at,
     phase,
     toolConfigId: job.tool_config_id,
     cancelRequested: job.cancel_requested,
@@ -342,6 +347,8 @@ function toUnifiedPdmJob(job: PdmIndexJob): UnifiedJob {
 
 export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs = [], loading, error, onJobsChanged, onFilesystemJobsChanged, onSchemaJobsChanged, onPdmJobsChanged, onCancelFilesystemJob, onCancelSchemaJob, onCancelPdmJob }: JobsTableProps) {
   const [showAll, setShowAll] = useState(false);
+  const [searchText, setSearchText] = useState('');
+  const [sortConfig, setSortConfig] = useState<{ key: keyof UnifiedJob; direction: 'asc' | 'desc' } | null>(null);
   const [selectedJob, setSelectedJob] = useState<UnifiedJob | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -349,6 +356,18 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [retryConfirmId, setRetryConfirmId] = useState<string | null>(null);
   const [copiedErrorId, setCopiedErrorId] = useState<string | null>(null);
+
+  const handleSort = (key: keyof UnifiedJob) => {
+    if (sortConfig && sortConfig.key === key) {
+      if (sortConfig.direction === 'asc') {
+        setSortConfig({ key, direction: 'desc' });
+      } else {
+        setSortConfig(null);
+      }
+    } else {
+      setSortConfig({ key, direction: 'asc' });
+    }
+  };
 
   const copyErrorMessage = async (text: string, jobId: string) => {
     try {
@@ -455,17 +474,50 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
     }
   };
 
-  // Combine and sort all jobs by creation date
-  const allJobs: UnifiedJob[] = [
+  // Combine all jobs
+  const combinedJobs: UnifiedJob[] = [
     ...jobs.map(toUnifiedJob),
     ...filesystemJobs.map(toUnifiedFilesystemJob),
     ...schemaJobs.map(toUnifiedSchemaJob),
     ...pdmJobs.map(toUnifiedPdmJob),
-  ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  ];
+
+  // Filter and sort
+  const allJobs = combinedJobs
+    .filter((job) => {
+      if (!searchText) return true;
+      const search = searchText.toLowerCase();
+      return (
+        job.name.toLowerCase().includes(search) ||
+        job.id.toLowerCase().includes(search) ||
+        job.status.toLowerCase().includes(search) ||
+        job.type.toLowerCase().includes(search)
+      );
+    })
+    .sort((a, b) => {
+      if (sortConfig) {
+        const { key, direction } = sortConfig;
+
+        // Handle null values
+        if (a[key] === null && b[key] === null) return 0;
+        if (a[key] === null) return 1;
+        if (b[key] === null) return -1;
+
+        if (a[key]! < b[key]!) {
+          return direction === 'asc' ? -1 : 1;
+        }
+        if (a[key]! > b[key]!) {
+          return direction === 'asc' ? 1 : -1;
+        }
+        return 0;
+      }
+      // Default sort by created date desc
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
 
   const displayedJobs = showAll ? allJobs : allJobs.slice(0, RECENT_LIMIT);
   const hasMore = allJobs.length > RECENT_LIMIT;
-  const hasActiveJobs = allJobs.some((j) =>
+  const hasActiveJobs = combinedJobs.some((j) =>
     j.status === 'pending' || j.status === 'processing' || j.status === 'indexing'
   );
 
@@ -476,8 +528,18 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
           Indexing Jobs
           {hasActiveJobs && <span className="live-indicator" title="Auto-refreshing">LIVE</span>}
         </h2>
+        <div className="search-input-wrapper" style={{ position: 'relative' }}>
+          <Search size={16} className="search-icon" style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-secondary)' }} />
+          <input
+            type="text"
+            placeholder="Filter jobs..."
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+            className="form-input"
+            style={{ paddingLeft: '32px', width: '250px' }}
+          />
+        </div>
       </div>
-
       {errorMessage && (
         <div className="error-banner">
           {errorMessage}
@@ -505,13 +567,43 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
             <table className="jobs-table">
               <thead>
                 <tr>
-                  <th>ID</th>
-                  <th>Name</th>
-                  <th>Type</th>
-                  <th>Status</th>
-                  <th>Progress</th>
-                  <th>Created</th>
-                  <th>Actions</th>
+                  <th onClick={() => handleSort('type')} style={{ cursor: 'pointer' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      Type
+                      {sortConfig?.key === 'type' && (sortConfig.direction === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />)}
+                    </div>
+                  </th>
+                  <th onClick={() => handleSort('name')} style={{ cursor: 'pointer' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      Name
+                      {sortConfig?.key === 'name' && (sortConfig.direction === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />)}
+                    </div>
+                  </th>
+                  <th onClick={() => handleSort('createdAt')} style={{ cursor: 'pointer' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      Created
+                      {sortConfig?.key === 'createdAt' && (sortConfig.direction === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />)}
+                    </div>
+                  </th>
+                  <th onClick={() => handleSort('completedAt')} style={{ cursor: 'pointer' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      Completed
+                      {sortConfig?.key === 'completedAt' && (sortConfig.direction === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />)}
+                    </div>
+                  </th>
+                  <th onClick={() => handleSort('progress')} style={{ cursor: 'pointer' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      Progress
+                      {sortConfig?.key === 'progress' && (sortConfig.direction === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />)}
+                    </div>
+                  </th>
+                  <th onClick={() => handleSort('id')} style={{ cursor: 'pointer' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      ID
+                      {sortConfig?.key === 'id' && (sortConfig.direction === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />)}
+                    </div>
+                  </th>
+                  <th className="sticky-action-header">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -520,30 +612,28 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
 
                 return (
                   <tr key={`${job.type}-${job.id}`}>
-                    <td data-label="ID">
-                      <code>{job.id.slice(0, 8)}</code>
-                    </td>
-                    <td data-label="Name">{job.name}</td>
                     <td data-label="Type">
                       <span className={`badge type-${job.type}`}>
-                        {job.type === 'document' ? 'Document' : job.type === 'filesystem' ? 'Filesystem' : 'Schema'}
+                        {job.type === 'document' ? 'Document' : job.type === 'filesystem' ? 'Filesystem' : job.type === 'pdm' ? 'PDM' : 'Schema'}
                       </span>
                     </td>
-                    <td data-label="Status">
-                      {job.status === 'failed' && job.errorMessage ? (
-                        <button
-                          className="badge failed clickable"
-                          onClick={() => setSelectedJob(job)}
-                          title="Click to view error details"
-                        >
-                          failed <span className="info-icon">i</span>
-                        </button>
-                      ) : (
-                        <span className={`badge ${job.status}`}>{job.status}</span>
-                      )}
-                    </td>
+                    <td data-label="Name" title={job.name}>{job.name}</td>
+                    <td data-label="Created">{formatDate(job.createdAt)}</td>
+                    <td data-label="Completed">{job.completedAt ? formatDate(job.completedAt) : '-'}</td>
                     <td data-label="Progress" className="progress-cell">
-                      {(job.status === 'processing' || job.status === 'indexing') ? (
+                      {job.status === 'failed' ? (
+                        job.errorMessage ? (
+                          <button
+                            className="badge failed clickable"
+                            onClick={() => setSelectedJob(job)}
+                            title="Click to view error details"
+                          >
+                            failed <span className="info-icon">i</span>
+                          </button>
+                        ) : (
+                          <span className="badge failed">failed</span>
+                        )
+                      ) : (job.status === 'processing' || job.status === 'indexing') ? (
                         <div className="progress-container">
                           <div className="progress-bar">
                             <div
@@ -630,8 +720,10 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
                         <span className="progress-failed">--</span>
                       )}
                     </td>
-                    <td data-label="Created">{formatDate(job.createdAt)}</td>
-                    <td data-label="Actions">
+                    <td data-label="ID">
+                      <code>{job.id.slice(0, 8)}</code>
+                    </td>
+                    <td data-label="Actions" className="sticky-action-cell">
                       <div className="actions-cell">
                       {actionLoading === job.id ? (
                         <span className="action-loading">...</span>
