@@ -783,6 +783,7 @@ class IndexerService:
                     doc_count = 0
                     chunk_count = 0
                     created_at = None
+                    last_modified = None
                     enabled = True  # Default to enabled
                     description = ""
                     source_type = "upload"
@@ -796,6 +797,7 @@ class IndexerService:
                         doc_count = meta.documentCount
                         chunk_count = getattr(meta, "chunkCount", 0)
                         created_at = meta.createdAt
+                        last_modified = getattr(meta, "lastModified", None)
                         enabled = meta.enabled
                         description = getattr(meta, "description", "")
                         source_type = getattr(meta, "sourceType", "upload")
@@ -884,7 +886,8 @@ class IndexerService:
                             has_stored_token=has_stored_token,
                             config_snapshot=config_snapshot,
                             created_at=created_at,
-                            last_modified=datetime.fromtimestamp(path.stat().st_mtime),
+                            last_modified=last_modified
+                            or datetime.fromtimestamp(path.stat().st_mtime),
                             git_repo_size_mb=git_repo_size_mb,
                             has_git_history=has_git_history,
                         )
