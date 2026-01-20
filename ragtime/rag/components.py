@@ -1463,12 +1463,14 @@ class RAGComponents:
                         )
                         continue
 
-                    # Also check actual repo state - it may have been cloned externally
-                    # with --depth=1 even if our config doesn't reflect this
+                    # Also check actual repo state - it may have minimal history
+                    # even if config doesn't reflect this (e.g., cloned externally)
+                    # Note: _is_shallow_repository checks commit count, not just
+                    # whether it's technically shallow - depth > 1 is still useful
                     if await _is_shallow_repository(git_repo):
                         logger.debug(
                             f"Skipping git history tool for {index_dir.name}: "
-                            "shallow repository detected (no history available)"
+                            "minimal commit history (1-2 commits)"
                         )
                         continue
 

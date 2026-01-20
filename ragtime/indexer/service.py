@@ -51,6 +51,7 @@ from ragtime.indexer.models import (
     MemoryEstimate,
 )
 from ragtime.indexer.repository import repository
+from ragtime.tools.git_history import _is_shallow_repository
 
 logger = get_logger(__name__)
 
@@ -858,9 +859,11 @@ class IndexerService:
                     git_repo_size_mb = None
                     has_git_history = False
                     if git_repo_path.exists() and git_repo_path.is_dir():
-                        # Check if it has meaningful history (not shallow)
-                        shallow_file = git_repo_path / ".git" / "shallow"
-                        has_git_history = not shallow_file.exists()
+                        # Check if it has meaningful history using commit count
+                        # Repos with depth > 1 still have useful history to search
+                        has_git_history = not await _is_shallow_repository(
+                            git_repo_path
+                        )
                         if has_git_history:
                             git_repo_size = sum(
                                 f.stat().st_size

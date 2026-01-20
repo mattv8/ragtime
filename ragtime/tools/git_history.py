@@ -96,31 +96,44 @@ async def _run_git_command(
 
 
 async def _is_shallow_repository(repo_path: Path) -> bool:
-    """Check if a git repository is a shallow clone.
+    """Check if a git repository has minimal history (not useful for searching).
 
-    Returns True if the repo was cloned with --depth=1 or similar,
-    meaning it has no meaningful git history to search.
+    Returns True only if the repo has 1 or fewer commits, meaning there's
+    no meaningful git history to search. Repos cloned with --depth > 1 that
+    have multiple commits ARE useful for git history searches.
+
+    Note: Git considers ANY depth-limited clone as "shallow" so we check actual
+    commit count instead.
     """
-    # Check for .git/shallow file (indicates shallow clone)
-    shallow_file = repo_path / ".git" / "shallow"
-    if shallow_file.exists():
-        return True
-
-    # Also verify with git command for robustness
+    # Count actual commits - if there's only one, it's not useful for searching
     returncode, stdout, _ = await _run_git_command(
-        repo_path, ["rev-parse", "--is-shallow-repository"], timeout=5
+        repo_path, ["rev-list", "--count", "--all"], timeout=10
     )
-    if returncode == 0 and stdout.strip().lower() == "true":
-        return True
+    if returncode == 0:
+        try:
+            commit_count = int(stdout.strip())
+            # Only skip if there's 1 or fewer commits (depth=1 clone)
+            # Repos with >1 commits have useful history even if technically "shallow"
+            if commit_count <= 1:
+                logger.debug(
+                    f"Repo at {repo_path} has only {commit_count} commit(s) - no useful history"
+                )
+                return True
+            return False
+        except ValueError:
+            pass
 
-    return False
+    # If we can't count commits, the repo is likely in a bad state - skip it
+    logger.warning(f"Could not count commits for {repo_path}, skipping git history")
+    return True
 
 
 async def _find_git_repos(index_name: Optional[str] = None) -> List[tuple[str, Path]]:
     """Find all git repos in the index base path.
 
     Returns list of (index_name, repo_path) tuples.
-    Excludes shallow clones (--depth=1) which have no useful history.
+    Excludes repos with only 1 commit (depth=1 clones) which aren't useful.
+    Repos with >1 commits are included even if technically "shallow".
     """
     index_base = Path(settings.index_data_path)
     repos: List[tuple[str, Path]] = []
