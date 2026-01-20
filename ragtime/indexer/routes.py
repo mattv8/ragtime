@@ -4,43 +4,60 @@ Indexer API routes.
 
 from __future__ import annotations
 
+import asyncio
 import importlib
+import io
 import os
+import shutil
+import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional
 
 import httpx
-from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException,
-                     UploadFile)
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
+from starlette.responses import StreamingResponse
 
+from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.encryption import decrypt_secret
+from ragtime.core.git import check_repo_visibility as git_check_visibility
+from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit
 from ragtime.core.security import get_current_user, require_admin
 from ragtime.core.sql_utils import MssqlConnectionError, mssql_connect
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
-                                    CheckRepoVisibilityRequest,
-                                    ConfigurationWarning, CreateIndexRequest,
-                                    FetchBranchesRequest,
-                                    FetchBranchesResponse, IndexAnalysisResult,
-                                    IndexConfig, IndexInfo, IndexJobResponse,
-                                    IndexStatus, PdmIndexJobResponse,
-                                    RepoVisibilityResponse,
-                                    RetryVisualizationRequest,
-                                    RetryVisualizationResponse,
-                                    SchemaIndexJobResponse,
-                                    TriggerPdmIndexRequest,
-                                    TriggerSchemaIndexRequest,
-                                    UpdateSettingsRequest)
+from ragtime.indexer.models import (
+    AnalyzeIndexRequest,
+    AppSettings,
+    CheckRepoVisibilityRequest,
+    ConfigurationWarning,
+    CreateIndexRequest,
+    FetchBranchesRequest,
+    FetchBranchesResponse,
+    IndexAnalysisResult,
+    IndexConfig,
+    IndexInfo,
+    IndexJobResponse,
+    IndexStatus,
+    PdmIndexJobResponse,
+    RepoVisibilityResponse,
+    RetryVisualizationRequest,
+    RetryVisualizationResponse,
+    SchemaIndexJobResponse,
+    TriggerPdmIndexRequest,
+    TriggerSchemaIndexRequest,
+    UpdateSettingsRequest,
+)
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer
 from ragtime.indexer.service import indexer
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_utils import ensure_pgvector_extension
+from ragtime.mcp.server import notify_tools_changed
+from ragtime.rag import rag
 
 if TYPE_CHECKING:
     from prisma.models import User
@@ -178,8 +195,6 @@ async def check_repo_visibility(
     - needs_token: True if user needs to provide a token
     - message: Human-readable status message
     """
-    from ragtime.core.git import check_repo_visibility as git_check_visibility
-
     # Get stored token if index_name provided
     stored_token = None
     if request.index_name:
@@ -213,8 +228,6 @@ async def fetch_branches(
 
     Uses stored token from an existing index if available, otherwise uses provided token.
     """
-    from ragtime.core.git import fetch_branches as git_fetch_branches
-
     # Try to get stored token from existing index if index_name provided
     token = request.git_token
     if not token and request.index_name:
@@ -623,8 +636,28 @@ async def retry_failed_job(
 @router.delete("/{name}")
 async def delete_index(name: str, _user: User = Depends(require_admin)):
     """Delete an index by name. Admin only."""
+    # Delete files and metadata
     if await indexer.delete_index(name):
+        # Remove from memory
+        rag.unload_index(name)
+
+        # Invalidate caches
+        invalidate_settings_cache()
+
+        # Rebuild agent with updated tools (without full reinit to avoid interrupting background tasks)
+        try:
+            await rag.rebuild_agent()
+        except Exception as e:
+            logger.warning(f"Failed to rebuild agent after delete: {e}")
+
+        # Notify MCP clients about tool changes
+        try:
+            notify_tools_changed()
+        except Exception as e:
+            logger.warning(f"Failed to notify MCP about delete: {e}")
+
         return {"message": f"Index '{name}' deleted successfully"}
+
     raise HTTPException(status_code=404, detail="Index not found")
 
 
@@ -663,11 +696,19 @@ async def toggle_index(
     if not success:
         raise HTTPException(status_code=404, detail="Index not found")
 
+    # When disabling, unload the index from memory to free RAM
+    if not request.enabled:
+        rag.unload_index(name)
+
+        # Rebuild agent without the disabled index
+        try:
+            await rag.rebuild_agent()
+        except Exception as e:
+            logger.warning(f"Failed to rebuild agent after disabling index {name}: {e}")
+
     # Reinitialize RAG when enabling to attempt loading the index
     # This allows retrying failed loads when user toggles an errored index back on
     if request.enabled:
-        from ragtime.rag import rag
-
         try:
             await rag.initialize()
         except Exception as e:
@@ -866,8 +907,6 @@ async def rename_index(
     The user-provided name is automatically converted to a safe identifier using
     safe_tool_name (lowercase, alphanumeric with underscores).
     """
-    import shutil
-
     # Convert user input to safe tool name
     raw_name = request.new_name.strip()
     if not raw_name:
@@ -946,22 +985,20 @@ async def rename_index(
         )
 
     # Invalidate caches so MCP and RAG pick up the new name
-    from ragtime.core.app_settings import invalidate_settings_cache
-    from ragtime.rag import rag
-
     invalidate_settings_cache()
 
-    # Reinitialize RAG to pick up the renamed index
-    # This reloads the retrievers with the new index name
+    # Rename the index in memory (update dict key, reuse loaded FAISS data)
+    # This avoids reloading from disk and prevents interrupting background tasks
+    rag.rename_index(name, new_name)
+
+    # Rebuild agent with updated tools (without full reinit to avoid interrupting background tasks)
     try:
-        await rag.initialize()
+        await rag.rebuild_agent()
     except Exception as e:
-        logger.warning(f"Failed to reinitialize RAG after rename: {e}")
+        logger.warning(f"Failed to rebuild agent after rename: {e}")
 
     # Notify MCP clients about tool changes
     try:
-        from ragtime.mcp.server import notify_tools_changed
-
         notify_tools_changed()  # This is a sync function that schedules an async notify
     except Exception as e:
         logger.warning(f"Failed to notify MCP about rename: {e}")
@@ -984,11 +1021,6 @@ async def download_index(name: str, _user: User = Depends(require_admin)):
 
     Returns a zip file containing the index.faiss and index.pkl files.
     """
-    import io
-    import zipfile
-
-    from starlette.responses import StreamingResponse
-
     # Validate index name (prevent path traversal)
     if "/" in name or "\\" in name or ".." in name:
         raise HTTPException(status_code=400, detail="Invalid index name")
@@ -1083,10 +1115,6 @@ async def update_settings(
     Returns a warning if the embedding provider or model was changed and
     existing filesystem indexes will need a full re-index.
     """
-    from ragtime.core.app_settings import invalidate_settings_cache
-    from ragtime.mcp.server import notify_tools_changed
-    from ragtime.rag import rag
-
     updates = request.model_dump(exclude_unset=True)
 
     # Check if embedding config is changing
@@ -1165,14 +1193,19 @@ async def get_embedding_status(_user: User = Depends(require_admin)):
 # Tool Configuration Endpoints (Admin only)
 # -----------------------------------------------------------------------------
 
-from ragtime.indexer.models import (CreateToolConfigRequest,
-                                    MssqlDiscoverRequest,
-                                    MssqlDiscoverResponse, PdmDiscoverRequest,
-                                    PdmDiscoverResponse,
-                                    PostgresDiscoverRequest,
-                                    PostgresDiscoverResponse, ToolConfig,
-                                    ToolTestRequest, ToolType,
-                                    UpdateToolConfigRequest)
+from ragtime.indexer.models import (
+    CreateToolConfigRequest,
+    MssqlDiscoverRequest,
+    MssqlDiscoverResponse,
+    PdmDiscoverRequest,
+    PdmDiscoverResponse,
+    PostgresDiscoverRequest,
+    PostgresDiscoverResponse,
+    ToolConfig,
+    ToolTestRequest,
+    ToolType,
+    UpdateToolConfigRequest,
+)
 
 
 class SSHKeyPairResponse(BaseModel):
@@ -1204,10 +1237,6 @@ async def create_tool_config(
     request: CreateToolConfigRequest, _user: User = Depends(require_admin)
 ):
     """Create a new tool configuration. Admin only."""
-    from ragtime.core.app_settings import invalidate_settings_cache
-    from ragtime.mcp.server import notify_tools_changed
-    from ragtime.rag import rag
-
     config = ToolConfig(
         name=request.name,
         tool_type=request.tool_type,
@@ -1253,7 +1282,6 @@ async def check_tool_heartbeats(_user: User = Depends(require_admin)):
     Returns quick connectivity status without updating database test results.
     Designed for frequent polling (every 10-30 seconds).
     """
-    import asyncio
     from datetime import datetime, timezone
 
     tools = await repository.list_tool_configs(enabled_only=True)
@@ -1327,10 +1355,6 @@ async def update_tool_config(
     embedding tables (schema_embeddings, pdm_embeddings, filesystem_embeddings, etc.)
     to maintain consistency.
     """
-    from ragtime.core.app_settings import invalidate_settings_cache
-    from ragtime.mcp.server import notify_tools_changed
-    from ragtime.rag import rag
-
     updates = request.model_dump(exclude_unset=True)
 
     # Check if name is being changed - if so, use rename_tool_config for consistency
@@ -1398,10 +1422,6 @@ async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin))
     - For SolidWorks PDM tools: PDM embeddings and document metadata
     - For Odoo tools: disconnects from Docker network if no other tools use it
     """
-    from ragtime.core.app_settings import invalidate_settings_cache
-    from ragtime.mcp.server import notify_tools_changed
-    from ragtime.rag import rag
-
     # Get the tool config before deleting to check for cleanup
     tool = await repository.get_tool_config(tool_id)
     if tool is None:
@@ -1501,10 +1521,6 @@ async def toggle_tool_config(
     tool_id: str, enabled: bool, _user: User = Depends(require_admin)
 ):
     """Toggle a tool's enabled status. Admin only."""
-    from ragtime.core.app_settings import invalidate_settings_cache
-    from ragtime.mcp.server import notify_tools_changed
-    from ragtime.rag import rag
-
     config = await repository.update_tool_config(tool_id, {"enabled": enabled})
     if config is None:
         raise HTTPException(status_code=404, detail="Tool configuration not found")
@@ -1571,7 +1587,6 @@ async def _test_filesystem_connection(config: dict) -> ToolTestResponse:
 
 async def _test_pdm_connection(config: dict) -> ToolTestResponse:
     """Test SolidWorks PDM database connection."""
-    import asyncio
 
     host = config.get("host", "")
     port = config.get("port", 1433)
@@ -1641,7 +1656,6 @@ async def discover_postgres_databases(
     Discover available databases on a PostgreSQL server. Admin only.
     Connects to the server and lists all accessible databases.
     """
-    import asyncio
     import subprocess
 
     try:
@@ -1706,7 +1720,6 @@ async def discover_mssql_databases(
     Discover available databases on an MSSQL server. Admin only.
     Connects to the server and lists all accessible databases.
     """
-    import asyncio
 
     def discover_databases() -> tuple[bool, list[str], str | None]:
         try:
@@ -1768,7 +1781,6 @@ async def discover_pdm_schema(
     Discover PDM schema metadata from a SolidWorks PDM database. Admin only.
     Returns available file extensions and variable names.
     """
-    import asyncio
 
     def discover_schema() -> tuple[bool, list[str], list[str], int, str | None]:
         """Returns (success, file_extensions, variable_names, doc_count, error)."""
@@ -2041,7 +2053,6 @@ async def _heartbeat_check(tool_type, config: dict) -> ToolTestResponse:
 
 async def _heartbeat_postgres(config: dict) -> ToolTestResponse:
     """Quick PostgreSQL heartbeat check."""
-    import asyncio
     import subprocess
 
     host = config.get("host", "")
@@ -2128,7 +2139,6 @@ async def _heartbeat_mssql(config: dict) -> ToolTestResponse:
 
 async def _heartbeat_odoo(config: dict) -> ToolTestResponse:
     """Quick Odoo container/SSH heartbeat check."""
-    import asyncio
     import subprocess
 
     mode = config.get("mode", "docker")
@@ -2201,7 +2211,6 @@ async def _heartbeat_ssh(config: dict) -> ToolTestResponse:
     This only verifies the SSH port is reachable, not full authentication.
     Full connection tests are done via the 'Test' button.
     """
-    import asyncio
 
     host = config.get("host", "")
     port = config.get("port", 22)
@@ -2271,7 +2280,6 @@ async def _heartbeat_filesystem(config: dict) -> ToolTestResponse:
 
 async def _heartbeat_pdm(config: dict) -> ToolTestResponse:
     """Quick SolidWorks PDM database heartbeat check."""
-    import asyncio
 
     host = config.get("host", "")
     port = config.get("port", 1433)
@@ -2315,7 +2323,6 @@ async def _heartbeat_pdm(config: dict) -> ToolTestResponse:
 
 async def _test_postgres_connection(config: dict) -> ToolTestResponse:
     """Test PostgreSQL connection."""
-    import asyncio
     import subprocess
 
     host = config.get("host", "")
@@ -2436,10 +2443,8 @@ async def _test_odoo_connection(config: dict) -> ToolTestResponse:
 
 async def _test_odoo_ssh_connection(config: dict) -> ToolTestResponse:
     """Test Odoo shell connection via SSH using Paramiko."""
-    import asyncio
 
-    from ragtime.core.ssh import (SSHConfig, execute_ssh_command,
-                                  test_ssh_connection)
+    from ragtime.core.ssh import SSHConfig, execute_ssh_command, test_ssh_connection
 
     ssh_host = config.get("ssh_host", "")
     ssh_port = config.get("ssh_port", 22)
@@ -2523,7 +2528,6 @@ async def _test_odoo_ssh_connection(config: dict) -> ToolTestResponse:
 
 async def _test_odoo_docker_connection(config: dict) -> ToolTestResponse:
     """Test Odoo shell connection via Docker."""
-    import asyncio
     import subprocess
 
     container = config.get("container", "")
@@ -2661,7 +2665,6 @@ async def _test_odoo_docker_connection(config: dict) -> ToolTestResponse:
 
 async def _test_ssh_connection(config: dict) -> ToolTestResponse:
     """Test SSH shell connection using Paramiko."""
-    import asyncio
 
     from ragtime.core.ssh import SSHConfig, test_ssh_connection
 
@@ -2752,7 +2755,6 @@ async def discover_docker_resources():
     Returns available networks, running containers, and which containers have Odoo.
     Also detects the current ragtime container's network.
     """
-    import asyncio
     import json
     import subprocess
 
@@ -2920,7 +2922,6 @@ async def connect_to_network(network_name: str):
 
     This enables container-to-container communication with services on that network.
     """
-    import asyncio
     import subprocess
 
     # Get current container name
@@ -2982,7 +2983,6 @@ async def disconnect_from_network(network_name: str):
 
     Used for cleanup when removing tools that required network access.
     """
-    import asyncio
     import subprocess
 
     # Get current container name
@@ -3200,7 +3200,6 @@ async def discover_mounts(_user: User = Depends(require_admin)):
 
     Returns mounted paths and example docker-compose configuration for adding new mounts.
     """
-    import asyncio
     import subprocess
 
     mounts = []
@@ -3400,7 +3399,6 @@ async def discover_nfs_exports(
 
     Uses showmount to list available exports on the target NFS server.
     """
-    import asyncio
     import subprocess
 
     if not host:
@@ -3474,7 +3472,6 @@ async def discover_smb_shares(
     """
     Discover SMB/CIFS shares from a remote server using pysmb.
     """
-    import asyncio
     import socket
 
     if not host:
@@ -3568,7 +3565,6 @@ async def browse_nfs_export(
     """
     Browse an NFS export using nfs-ls (userspace, no mount required).
     """
-    import asyncio
     import subprocess
 
     if not host or not export_path:
@@ -3689,7 +3685,6 @@ async def browse_smb_share(
     """
     Browse an SMB share using pysmb (userspace, no mount required).
     """
-    import asyncio
     import socket
 
     if not host or not share:
@@ -3790,9 +3785,11 @@ async def browse_smb_share(
 # Filesystem Indexer Endpoints (Admin only)
 # -----------------------------------------------------------------------------
 
-from ragtime.indexer.models import (FilesystemAnalysisJobResponse,
-                                    FilesystemIndexJobResponse,
-                                    TriggerFilesystemIndexRequest)
+from ragtime.indexer.models import (
+    FilesystemAnalysisJobResponse,
+    FilesystemIndexJobResponse,
+    TriggerFilesystemIndexRequest,
+)
 
 
 class FilesystemIndexStatsResponse(BaseModel):
@@ -4334,8 +4331,10 @@ class EmbeddingModelsResponse(BaseModel):
 
 # OpenAI embedding models - prioritized list (from LiteLLM community data)
 # These are the recommended models for most use cases
-from ragtime.core.embedding_models import (OPENAI_EMBEDDING_PRIORITY,
-                                           get_embedding_models)
+from ragtime.core.embedding_models import (
+    OPENAI_EMBEDDING_PRIORITY,
+    get_embedding_models,
+)
 
 OPENAI_DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
@@ -4691,10 +4690,13 @@ async def _fetch_ollama_llm_models(base_url: str) -> LLMModelsResponse:
 # Conversation/Chat Endpoints
 # =============================================================================
 
-from ragtime.indexer.models import (ChatMessage, Conversation,
-                                    ConversationResponse,
-                                    CreateConversationRequest,
-                                    SendMessageRequest)
+from ragtime.indexer.models import (
+    ChatMessage,
+    Conversation,
+    ConversationResponse,
+    CreateConversationRequest,
+    SendMessageRequest,
+)
 
 
 @router.get(

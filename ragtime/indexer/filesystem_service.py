@@ -1336,22 +1336,15 @@ class FilesystemIndexerService:
     async def _update_tool_config_last_indexed(self, tool_config_id: str) -> None:
         """Update the tool config with last indexed timestamp."""
         try:
-            import json
-
-            from prisma import Json
-
-            db = await get_db()
-            tool_config = await db.toolconfig.find_unique(where={"id": tool_config_id})
-            if tool_config:
-                # connectionConfig is stored as JSON string, parse it
-                if isinstance(tool_config.connectionConfig, str):
-                    connection_config = json.loads(tool_config.connectionConfig)
-                else:
-                    connection_config = dict(tool_config.connectionConfig)  # type: ignore
-                connection_config["last_indexed_at"] = datetime.utcnow().isoformat()
-                await db.toolconfig.update(
-                    where={"id": tool_config_id},
-                    data={"connectionConfig": Json(connection_config)},
+            # Use repository to get decrypted config and properly re-encrypt on update
+            tool_config = await repository.get_tool_config(tool_config_id)
+            if tool_config and tool_config.connection_config:
+                connection_config = dict(tool_config.connection_config)
+                connection_config["last_indexed_at"] = datetime.now(
+                    timezone.utc
+                ).isoformat()
+                await repository.update_tool_config(
+                    tool_config_id, {"connection_config": connection_config}
                 )
         except Exception as e:
             logger.warning(f"Failed to update last_indexed_at: {e}")

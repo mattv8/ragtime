@@ -6,19 +6,46 @@ import asyncio
 import os
 import re
 import resource
+import subprocess
+import time
 from pathlib import Path
 from typing import Any, List, Optional, Union
 
 from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_openai import ChatOpenAI
+from langchain_core.tools import StructuredTool
+from langchain_ollama import ChatOllama, OllamaEmbeddings
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from pydantic import BaseModel, Field
 
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.logging import get_logger
+from ragtime.core.security import (
+    sanitize_output,
+    validate_odoo_code,
+    validate_sql_query,
+    validate_ssh_command,
+)
+from ragtime.core.sql_utils import add_table_metadata_to_psql_output
+from ragtime.core.ssh import SSHConfig, execute_ssh_command
+from ragtime.core.tokenization import truncate_to_token_budget
+from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
+from ragtime.indexer.repository import repository
+from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.tools import get_all_tools, get_enabled_tools
+from ragtime.tools.chart import create_chart_tool
+from ragtime.tools.datatable import create_datatable_tool
+from ragtime.tools.filesystem_indexer import search_filesystem_index
+from ragtime.tools.git_history import (
+    _is_shallow_repository,
+    create_aggregate_git_history_tool,
+    create_per_index_git_history_tool,
+)
+from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
 
 logger = get_logger(__name__)
@@ -314,6 +341,60 @@ class RAGComponents:
             ),
         }
 
+    def unload_index(self, name: str) -> bool:
+        """Remove an index from memory.
+
+        Args:
+            name: Index name to unload
+
+        Returns:
+            True if the index was unloaded, False if not found
+        """
+        unloaded = False
+        if name in self.retrievers:
+            del self.retrievers[name]
+            logger.info(f"Unloaded index '{name}' from retrievers")
+            unloaded = True
+
+        if name in self._index_details:
+            del self._index_details[name]
+            logger.debug(f"Removed index '{name}' from index_details tracking")
+
+        return unloaded
+
+    def rename_index(self, old_name: str, new_name: str) -> bool:
+        """Rename an index in memory (reuse loaded FAISS data).
+
+        Args:
+            old_name: Current index name
+            new_name: New index name
+
+        Returns:
+            True if the index was renamed, False if not found
+        """
+        if old_name not in self.retrievers:
+            return False
+
+        # Move retriever to new key
+        self.retrievers[new_name] = self.retrievers.pop(old_name)
+        logger.info(f"Renamed index '{old_name}' to '{new_name}' in retrievers")
+
+        # Also move index_details tracking
+        if old_name in self._index_details:
+            self._index_details[new_name] = self._index_details.pop(old_name)
+            self._index_details[new_name]["name"] = new_name
+            logger.debug(f"Renamed index in index_details tracking")
+
+        return True
+
+    async def rebuild_agent(self) -> None:
+        """Rebuild the agent with current tools and retrievers.
+
+        Use this instead of full initialize() when only tool/index changes
+        need to be reflected without reloading all indexes from disk.
+        """
+        await self._create_agent()
+
     async def initialize(self):
         """Initialize all RAG components.
 
@@ -349,8 +430,6 @@ class RAGComponents:
 
         This allows the API to serve requests immediately while indexes load.
         """
-        import time
-
         start_time = time.time()
         logger.info("Initializing RAG components (core)...")
 
@@ -403,8 +482,6 @@ class RAGComponents:
         the API. Supports both parallel loading (faster, higher peak RAM) and
         sequential loading (slower, lower peak RAM - loads smallest first).
         """
-        import time
-
         start_time = time.time()
 
         if not self._embedding_model:
@@ -445,10 +522,6 @@ class RAGComponents:
 
         if provider == "ollama":
             try:
-                from langchain_ollama import (
-                    ChatOllama,
-                )  # type: ignore[import-untyped,import-not-found]  # pyright: ignore[reportMissingImports]
-
                 # Use LLM-specific Ollama settings if available, otherwise fall back to embedding settings
                 base_url = self._app_settings.get(
                     "llm_ollama_base_url",
@@ -468,8 +541,6 @@ class RAGComponents:
             api_key = self._app_settings.get("anthropic_api_key", "")
             if api_key:
                 try:
-                    from langchain_anthropic import ChatAnthropic
-
                     self.llm = ChatAnthropic(
                         model=model,
                         temperature=0,
@@ -510,18 +581,12 @@ class RAGComponents:
         model = self._app_settings.get("embedding_model", "nomic-embed-text")
 
         if provider == "ollama":
-            from langchain_ollama import (
-                OllamaEmbeddings,
-            )  # type: ignore[import-untyped,import-not-found]  # pyright: ignore[reportMissingImports]
-
             base_url = self._app_settings.get(
                 "ollama_base_url", "http://localhost:11434"
             )
             logger.info(f"Using Ollama embeddings: {model} at {base_url}")
             return OllamaEmbeddings(model=model, base_url=base_url)
         elif provider == "openai":
-            from langchain_openai import OpenAIEmbeddings
-
             api_key = self._app_settings.get("openai_api_key", "")
             if not api_key:
                 logger.warning("OpenAI embeddings selected but no API key configured")
@@ -642,12 +707,6 @@ class RAGComponents:
         allowing multiple indexes to load concurrently and not blocking the
         event loop. Tracks memory usage for each index.
         """
-        import time
-
-        from ragtime.indexer.repository import repository
-
-        assert self._app_settings is not None
-
         if not self._index_metadata:
             logger.info("No index metadata available for parallel loading")
             return
@@ -832,11 +891,6 @@ class RAGComponents:
         one index at a time. Indexes are sorted by size (smallest first) so
         the system becomes partially functional faster.
         """
-        import time
-
-        from ragtime.indexer.repository import repository
-
-        assert self._app_settings is not None
 
         if not self._index_metadata:
             logger.info("No index metadata available for sequential loading")
@@ -1023,8 +1077,6 @@ class RAGComponents:
 
     async def _load_index_metadata(self) -> list[dict]:
         """Load index metadata from database for system prompt."""
-        from ragtime.indexer.repository import repository
-
         try:
             metadata_list = await repository.list_index_metadata()
             return [
@@ -1141,9 +1193,6 @@ class RAGComponents:
             self.agent_executor = None
 
         # Create UI agent (with visualization tools and UI prompt)
-        from ragtime.tools.chart import create_chart_tool
-        from ragtime.tools.datatable import create_datatable_tool
-
         ui_tools = tools + [create_chart_tool, create_datatable_tool]
 
         prompt_ui = ChatPromptTemplate.from_messages(
@@ -1236,9 +1285,6 @@ class RAGComponents:
         This tool allows the agent to search the indexed database schema
         to find relevant table/column information before writing queries.
         """
-        from langchain_core.tools import StructuredTool
-        from pydantic import BaseModel, Field
-
         conn_config = config.get("connection_config", {})
 
         # Check if schema indexing is enabled
@@ -1250,8 +1296,6 @@ class RAGComponents:
             return None
 
         # Check if there are any schema embeddings for this tool
-        from ragtime.indexer.schema_service import schema_indexer
-
         embedding_count = await schema_indexer.get_embedding_count(tool_id, tool_name)
         if embedding_count == 0:
             logger.debug(
@@ -1271,8 +1315,6 @@ class RAGComponents:
 
         async def search_schema(query: str) -> str:
             """Search the database schema for relevant table information."""
-            from ragtime.indexer.schema_service import search_schema_index
-
             logger.debug(f"[{tool_name}] Schema search: {query[:100]}")
 
             result = await search_schema_index(
@@ -1305,9 +1347,6 @@ class RAGComponents:
         This allows the agent to search the indexed documentation at any point
         during its reasoning, not just at the beginning of the query.
         """
-        from langchain_core.tools import StructuredTool
-        from pydantic import BaseModel, Field
-
         # Build index_name description with available indexes
         index_names = list(self.retrievers.keys())
         index_name_desc = (
@@ -1422,12 +1461,6 @@ class RAGComponents:
         When aggregate_search is enabled: creates a single search_git_history tool
         When aggregate_search is disabled: creates search_git_history_<name> per index
         """
-        from ragtime.tools.git_history import (
-            _is_shallow_repository,
-            create_aggregate_git_history_tool,
-            create_per_index_git_history_tool,
-        )
-
         tools: List[Any] = []
         index_base = Path(settings.index_data_path)
 
@@ -1503,9 +1536,6 @@ class RAGComponents:
         When aggregate_search is disabled, this creates search_<index_name>
         tools that give the AI granular control over which index to search.
         """
-        from langchain_core.tools import StructuredTool
-        from pydantic import BaseModel, Field
-
         tools = []
 
         # Get index metadata for descriptions and weights
@@ -1605,11 +1635,6 @@ class RAGComponents:
 
     async def _create_postgres_tool(self, config: dict, tool_name: str, _tool_id: str):
         """Create a PostgreSQL query tool from config."""
-        import subprocess
-
-        from langchain_core.tools import StructuredTool
-        from pydantic import BaseModel, Field
-
         conn_config = config.get("connection_config", {})
         timeout = config.get("timeout", 30)
         allow_write = config.get("allow_write", False)
@@ -1626,8 +1651,6 @@ class RAGComponents:
 
         async def execute_query(query: str = "", reason: str = "", **_: Any) -> str:
             """Execute PostgreSQL query using this tool's configuration."""
-            from ragtime.core.security import sanitize_output, validate_sql_query
-
             # Validate required fields
             if not query or not query.strip():
                 return "Error: 'query' parameter is required. Provide a SQL query to execute."
@@ -1700,8 +1723,6 @@ class RAGComponents:
 
                 # Add table metadata for UI rendering BEFORE sanitizing
                 # so metadata is extracted from complete data
-                from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-
                 output = add_table_metadata_to_psql_output(output)
 
                 # Now sanitize the combined output
@@ -1729,8 +1750,6 @@ class RAGComponents:
 
     async def _create_mssql_tool(self, config: dict, tool_name: str, _tool_id: str):
         """Create an MSSQL/SQL Server query tool from config."""
-        from ragtime.tools.mssql import create_mssql_tool
-
         conn_config = config.get("connection_config", {})
         timeout = config.get("timeout", 30)
         max_results = config.get("max_results", 100)
@@ -1762,11 +1781,6 @@ class RAGComponents:
 
     async def _create_odoo_tool(self, config: dict, tool_name: str, _tool_id: str):
         """Create an Odoo shell tool from config (Docker or SSH mode)."""
-        import subprocess
-
-        from langchain_core.tools import StructuredTool
-        from pydantic import BaseModel, Field
-
         conn_config = config.get("connection_config", {})
         timeout = config.get("timeout", 60)  # Odoo shell needs more time to initialize
         allow_write = config.get("allow_write", False)
@@ -1803,8 +1817,6 @@ class RAGComponents:
 
         async def execute_odoo(code: str = "", reason: str = "", **_: Any) -> str:
             """Execute Odoo shell command using this tool's configuration."""
-            from ragtime.core.security import sanitize_output, validate_odoo_code
-
             # Validate required fields
             if not code or not code.strip():
                 return "Error: 'code' parameter is required. Provide Python code to execute in the Odoo shell."
@@ -1872,8 +1884,6 @@ except Exception as e:
                     return "Error: No SSH host configured"
 
                 # Use Paramiko for SSH connection
-                from ragtime.core.ssh import SSHConfig, execute_ssh_command
-
                 ssh_config = SSHConfig(
                     host=ssh_host,
                     port=conn_config.get("ssh_port", 22),
@@ -1947,9 +1957,6 @@ except Exception as e:
 
     async def _create_ssh_tool(self, config: dict, tool_name: str, _tool_id: str):
         """Create an SSH shell tool from config."""
-        from langchain_core.tools import StructuredTool
-        from pydantic import BaseModel, Field
-
         conn_config = config.get("connection_config", {})
         timeout = config.get("timeout", 30)
         allow_write = config.get("allow_write", False)
@@ -1965,9 +1972,6 @@ except Exception as e:
 
         async def execute_ssh(command: str = "", reason: str = "", **_: Any) -> str:
             """Execute SSH command using this tool's configuration."""
-            from ragtime.core.security import sanitize_output, validate_ssh_command
-            from ragtime.core.ssh import SSHConfig, execute_ssh_command
-
             # Validate required fields
             if not command or not command.strip():
                 return "Error: 'command' parameter is required. Provide a shell command to execute."
@@ -2046,11 +2050,6 @@ except Exception as e:
 
     async def _create_filesystem_tool(self, config: dict, tool_name: str, tool_id: str):
         """Create a filesystem search tool from config."""
-        from langchain_core.tools import StructuredTool
-        from pydantic import BaseModel, Field
-
-        from ragtime.tools.filesystem_indexer import search_filesystem_index
-
         conn_config = config.get("connection_config", {})
         description = config.get("description", "")
         index_name = conn_config.get("index_name", "")
@@ -2095,11 +2094,6 @@ except Exception as e:
 
     async def _create_pdm_search_tool(self, config: dict, tool_name: str, tool_id: str):
         """Create a SolidWorks PDM search tool from config."""
-        from langchain_core.tools import StructuredTool
-        from pydantic import BaseModel, Field
-
-        from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
-
         description = config.get("description", "")
 
         # Use tool_name for index lookup - matches how trigger_index creates it
@@ -2174,8 +2168,6 @@ except Exception as e:
         Returns:
             Tuple of (combined context string, list of source metadata).
         """
-        from ragtime.core.tokenization import truncate_to_token_budget
-
         all_docs = []
         sources = []
         for name, retriever in self.retrievers.items():
