@@ -407,7 +407,7 @@ class IndexerService:
         for tmp_path in UPLOAD_TMP_DIR.iterdir():
             if tmp_path.is_dir() and tmp_path.name not in active_job_ids:
                 logger.info(f"Cleaning orphaned tmp directory: {tmp_path.name}")
-                shutil.rmtree(tmp_path, ignore_errors=True)
+                await asyncio.to_thread(shutil.rmtree, tmp_path, ignore_errors=True)
 
     async def _cleanup_orphaned_git_repos(self) -> None:
         """Remove .git_repo directories for indexes that have no FAISS index.
@@ -450,7 +450,7 @@ class IndexerService:
                     f"Cleaning orphaned git repo: {index_dir.name}/.git_repo "
                     "(no FAISS index, no active job)"
                 )
-                shutil.rmtree(git_repo, ignore_errors=True)
+                await asyncio.to_thread(shutil.rmtree, git_repo, ignore_errors=True)
 
                 # If the directory is now empty, remove it too
                 try:
@@ -581,9 +581,11 @@ class IndexerService:
             else:
                 # Need to re-clone - clean up any partial clone first
                 if repo_dir.exists():
-                    shutil.rmtree(repo_dir, ignore_errors=True)
+                    await asyncio.to_thread(shutil.rmtree, repo_dir, ignore_errors=True)
                 if temp_marker_dir.exists():
-                    shutil.rmtree(temp_marker_dir, ignore_errors=True)
+                    await asyncio.to_thread(
+                        shutil.rmtree, temp_marker_dir, ignore_errors=True
+                    )
                 asyncio.create_task(self._process_git(job))
         elif job.source_type == "upload":
             # Check if tmp file still exists
@@ -597,7 +599,9 @@ class IndexerService:
                     # Clean any previous extraction attempt
                     extracted_dir = tmp_path / "extracted"
                     if extracted_dir.exists():
-                        shutil.rmtree(extracted_dir, ignore_errors=True)
+                        await asyncio.to_thread(
+                            shutil.rmtree, extracted_dir, ignore_errors=True
+                        )
 
                     temp_dir = tmp_path  # Use tmp dir for extraction
                     asyncio.create_task(
@@ -1732,7 +1736,9 @@ class IndexerService:
         finally:
             # Clean up temp marker directory
             if job.status in (IndexStatus.COMPLETED, IndexStatus.FAILED):
-                shutil.rmtree(temp_marker_dir, ignore_errors=True)
+                await asyncio.to_thread(
+                    shutil.rmtree, temp_marker_dir, ignore_errors=True
+                )
             self._cancellation_flags.pop(job.id, None)
             await repository.update_job(job)
             self._active_jobs.pop(job.id, None)
@@ -1758,7 +1764,7 @@ class IndexerService:
         # Ensure parent directory exists and target is clean
         repo_dir.parent.mkdir(parents=True, exist_ok=True)
         if repo_dir.exists():
-            shutil.rmtree(repo_dir)
+            await asyncio.to_thread(shutil.rmtree, repo_dir)
 
         clone_url = _build_authenticated_git_url(job.git_url, job.git_token)
         env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
@@ -1808,7 +1814,7 @@ class IndexerService:
             except Exception:
                 pass
             # Clean up partial clone on timeout
-            shutil.rmtree(repo_dir, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, repo_dir, ignore_errors=True)
             error_msg = (
                 f"Git clone timed out after {clone_timeout_minutes} minutes. "
                 "The repository may be too large or the network connection is slow. "
@@ -1819,7 +1825,7 @@ class IndexerService:
 
         if process.returncode != 0:
             # Clean up failed clone
-            shutil.rmtree(repo_dir, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, repo_dir, ignore_errors=True)
             error_msg = stderr_output
             if (
                 "could not read Username" in error_msg
