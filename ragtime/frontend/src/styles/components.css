@@ -567,6 +567,7 @@ textarea {
 .badge.type-document { background: var(--color-primary-light); color: var(--color-primary); }
 .badge.type-filesystem { background: rgba(139, 92, 246, 0.15); color: #a78bfa; }
 .badge.type-schema { background: var(--color-accent-light); color: var(--color-accent); }
+.badge.type-pdm { background: var(--color-warning-light); color: var(--color-warning);}
 
 .badge.clickable {
   cursor: pointer;
