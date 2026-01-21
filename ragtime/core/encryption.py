@@ -181,4 +181,8 @@ CONNECTION_CONFIG_PASSWORD_FIELDS = [
     "key_passphrase",  # ssh_shell
     "key_content",  # ssh private key (sensitive)
     "smb_password",  # filesystem smb mount
+    # SSH tunnel fields (postgres, mysql, mssql, pdm)
+    "ssh_tunnel_password",
+    "ssh_tunnel_key_content",
+    "ssh_tunnel_key_passphrase",
 ]

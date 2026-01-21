@@ -31,6 +31,7 @@ paramiko>=3.4.0,<4.0.0
 
 # Database connectors
 pymssql>=2.2.8,<3.0.0  # MSSQL/SQL Server (native TDS, no ODBC)
+pymysql>=1.1.0,<2.0.0  # MySQL/MariaDB (pure Python)
 
 # FAISS indexing dependencies
 langchain-text-splitters>=0.0.1,<1.0.0

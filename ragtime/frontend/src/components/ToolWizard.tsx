@@ -6,6 +6,7 @@ import type {
   ToolType,
   CreateToolConfigRequest,
   PostgresConnectionConfig,
+  MysqlConnectionConfig,
   MssqlConnectionConfig,
   OdooShellConnectionConfig,
   SSHShellConnectionConfig,
@@ -1191,18 +1192,17 @@ function SSHAuthPanel({
     <div className="ssh-auth-panel">
       {showHostPort && (
         <>
-          <div className="form-row">
-            <div className="form-group" style={{ flex: 2 }}>
-              <label>SSH Host</label>
+          <div className="form-row" style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap' }}>
+            <div className="form-group" style={{ flex: '3 1 200px', minWidth: '150px' }}>
+              <label>SSH Host *</label>
               <input
                 type="text"
                 value={config.host || ''}
                 onChange={(e) => onConfigChange({ ...config, host: e.target.value })}
                 placeholder="server.example.com"
               />
-              <p className="field-help">Hostname or IP address of the remote server.</p>
             </div>
-            <div className="form-group" style={{ flex: 1 }}>
+            <div className="form-group" style={{ flex: '1 1 80px', minWidth: '80px', maxWidth: '120px' }}>
               <label>SSH Port</label>
               <input
                 type="number"
@@ -1212,17 +1212,15 @@ function SSHAuthPanel({
                 max={65535}
               />
             </div>
-          </div>
-
-          <div className="form-group">
-            <label>SSH User</label>
-            <input
-              type="text"
-              value={config.user || ''}
-              onChange={(e) => onConfigChange({ ...config, user: e.target.value })}
-              placeholder="ubuntu"
-            />
-            <p className="field-help">Username for SSH connection.</p>
+            <div className="form-group" style={{ flex: '2 1 120px', minWidth: '100px' }}>
+              <label>SSH User *</label>
+              <input
+                type="text"
+                value={config.user || ''}
+                onChange={(e) => onConfigChange({ ...config, user: e.target.value })}
+                placeholder="ubuntu"
+              />
+            </div>
           </div>
         </>
       )}
@@ -1312,6 +1310,16 @@ function SSHAuthPanel({
                 </div>
               </div>
             )}
+            <div className="form-group" style={{ marginTop: '1rem' }}>
+              <label>SSH Password (optional)</label>
+              <input
+                type="password"
+                value={config.password || ''}
+                onChange={(e) => onConfigChange({ ...config, password: e.target.value })}
+                placeholder="Leave blank if not required"
+              />
+              <p className="field-help">Some servers require both SSH key and password. Fill in both if needed.</p>
+            </div>
           </div>
         )}
 
@@ -1359,6 +1367,16 @@ function SSHAuthPanel({
                 </div>
               </div>
             )}
+            <div className="form-group">
+              <label>SSH Password (optional)</label>
+              <input
+                type="password"
+                value={config.password || ''}
+                onChange={(e) => onConfigChange({ ...config, password: e.target.value })}
+                placeholder="Leave blank if not required"
+              />
+              <p className="field-help">Some servers require both SSH key and password. Fill in both if needed.</p>
+            </div>
           </div>
         )}
 
@@ -1387,6 +1405,16 @@ function SSHAuthPanel({
               />
               <p className="field-help">If your private key is encrypted with a passphrase, enter it here.</p>
             </div>
+            <div className="form-group">
+              <label>SSH Password (optional)</label>
+              <input
+                type="password"
+                value={config.password || ''}
+                onChange={(e) => onConfigChange({ ...config, password: e.target.value })}
+                placeholder="Leave blank if not required"
+              />
+              <p className="field-help">Some servers require both SSH key and password. Fill in both if needed.</p>
+            </div>
           </div>
         )}
 
@@ -1400,11 +1428,137 @@ function SSHAuthPanel({
                 onChange={(e) => onConfigChange({ ...config, password: e.target.value, key_path: '', key_content: '' })}
                 placeholder="Enter SSH password"
               />
-              <p className="field-help">Use password authentication instead of SSH key.</p>
+              <p className="field-help">Use password-only authentication (no SSH key).</p>
             </div>
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// SSH Tunnel Panel - Reusable component for database SSH tunnel configuration
+// =============================================================================
+
+interface SSHTunnelPanelProps {
+  enabled: boolean;
+  onEnabledChange: (enabled: boolean) => void;
+  config: {
+    ssh_tunnel_host?: string;
+    ssh_tunnel_port?: number;
+    ssh_tunnel_user?: string;
+    ssh_tunnel_password?: string;
+    ssh_tunnel_key_path?: string;
+    ssh_tunnel_key_content?: string;
+    ssh_tunnel_key_passphrase?: string;
+    ssh_tunnel_public_key?: string;
+  };
+  onConfigChange: (config: SSHTunnelPanelProps['config']) => void;
+  databaseLabel?: string; // e.g., "MySQL", "PostgreSQL"
+  authMode: SSHAuthMode;
+  onAuthModeChange: (mode: SSHAuthMode) => void;
+  generatingKey: boolean;
+  onGenerateKey: () => void;
+  keyCopied: boolean;
+  onCopyPublicKey: () => void;
+  toolName?: string;
+}
+
+function SSHTunnelPanel({
+  enabled,
+  onEnabledChange,
+  config,
+  onConfigChange,
+  databaseLabel = 'database',
+  authMode,
+  onAuthModeChange,
+  generatingKey,
+  onGenerateKey,
+  keyCopied,
+  onCopyPublicKey,
+  toolName = 'tunnel',
+}: SSHTunnelPanelProps) {
+  return (
+    <div className="ssh-tunnel-section" style={{ marginBottom: '1rem' }}>
+      <label className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer', marginBottom: '0.5rem' }}>
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => onEnabledChange(e.target.checked)}
+          style={{ width: 'auto', margin: 0 }}
+        />
+        <span style={{ fontWeight: 500 }}>Connect via SSH Tunnel</span>
+      </label>
+      <p className="field-help" style={{ marginTop: 0, marginBottom: enabled ? '1rem' : 0 }}>
+        Use an SSH tunnel to connect to {databaseLabel} servers that are not directly accessible (e.g., behind a firewall or bound to localhost).
+      </p>
+
+      {enabled && (
+        <>
+          {/* SSH Server Connection - Host, Port, User in one row */}
+          <div className="form-row" style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap' }}>
+            <div className="form-group" style={{ flex: '3 1 200px', minWidth: '150px' }}>
+              <label>SSH Host *</label>
+              <input
+                type="text"
+                value={config.ssh_tunnel_host || ''}
+                onChange={(e) => onConfigChange({ ...config, ssh_tunnel_host: e.target.value })}
+                placeholder="ssh.example.com"
+              />
+            </div>
+            <div className="form-group" style={{ flex: '1 1 80px', minWidth: '80px', maxWidth: '120px' }}>
+              <label>SSH Port</label>
+              <input
+                type="number"
+                value={config.ssh_tunnel_port || 22}
+                onChange={(e) => onConfigChange({ ...config, ssh_tunnel_port: parseInt(e.target.value) || 22 })}
+                min={1}
+                max={65535}
+              />
+            </div>
+            <div className="form-group" style={{ flex: '2 1 120px', minWidth: '100px' }}>
+              <label>SSH User *</label>
+              <input
+                type="text"
+                value={config.ssh_tunnel_user || ''}
+                onChange={(e) => onConfigChange({ ...config, ssh_tunnel_user: e.target.value })}
+                placeholder="root"
+              />
+            </div>
+          </div>
+
+          {/* SSH Authentication - reuse SSHAuthPanel */}
+          <SSHAuthPanel
+            config={{
+              host: config.ssh_tunnel_host || '',
+              port: config.ssh_tunnel_port || 22,
+              user: config.ssh_tunnel_user || '',
+              key_path: config.ssh_tunnel_key_path || '',
+              key_content: config.ssh_tunnel_key_content || '',
+              public_key: config.ssh_tunnel_public_key || '',
+              key_passphrase: config.ssh_tunnel_key_passphrase || '',
+              password: config.ssh_tunnel_password || '',
+            }}
+            onConfigChange={(sshAuthConfig) => onConfigChange({
+              ...config,
+              ssh_tunnel_key_path: sshAuthConfig.key_path || '',
+              ssh_tunnel_key_content: sshAuthConfig.key_content || '',
+              ssh_tunnel_public_key: sshAuthConfig.public_key || '',
+              ssh_tunnel_key_passphrase: sshAuthConfig.key_passphrase || '',
+              ssh_tunnel_password: sshAuthConfig.password || '',
+            })}
+            authMode={authMode}
+            onAuthModeChange={onAuthModeChange}
+            generatingKey={generatingKey}
+            onGenerateKey={onGenerateKey}
+            keyCopied={keyCopied}
+            onCopyPublicKey={onCopyPublicKey}
+            toolName={toolName}
+            showHostPort={false}
+          />
+        </>
+      )}
     </div>
   );
 }
@@ -1444,7 +1598,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
   const progressRef = useRef<HTMLDivElement>(null);
 
   // Form state - use defaultToolType if provided
-  const [toolType, setToolType] = useState<ToolType>(existingTool?.tool_type || defaultToolType || 'postgres');
+  const [toolType, setToolType] = useState<ToolType>(existingTool?.tool_type || defaultToolType || 'ssh_shell');
 
   // Get the appropriate wizard steps based on tool type
   const getWizardSteps = useCallback((): WizardStep[] => {
@@ -1460,6 +1614,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string; details?: unknown } | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // SQL tools dropdown state
+  const [sqlToolsExpanded, setSqlToolsExpanded] = useState(false);
 
   // Auto-scroll active step into view
   useEffect(() => {
@@ -1493,6 +1650,18 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
       : { host: '', port: 1433, user: '', password: '', database: '' }
   );
 
+  // MySQL/MariaDB config state
+  const [mysqlConnectionMode, setMysqlConnectionMode] = useState<'direct' | 'container'>(
+    existingTool?.tool_type === 'mysql' && (existingTool.connection_config as MysqlConnectionConfig).container
+      ? 'container'
+      : 'direct'
+  );
+  const [mysqlConfig, setMysqlConfig] = useState<MysqlConnectionConfig>(
+    existingTool?.tool_type === 'mysql'
+      ? (existingTool.connection_config as MysqlConnectionConfig)
+      : { host: '', port: 3306, user: '', password: '', database: '', container: '', docker_network: '' }
+  );
+
   const [odooConnectionMode, setOdooConnectionMode] = useState<'docker' | 'ssh'>(
     existingTool?.tool_type === 'odoo_shell' && (existingTool.connection_config as OdooShellConnectionConfig).mode === 'ssh'
       ? 'ssh'
@@ -1521,6 +1690,11 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
   const [mssqlDiscoveredDatabases, setMssqlDiscoveredDatabases] = useState<string[]>([]);
   const [mssqlDiscoveringDatabases, setMssqlDiscoveringDatabases] = useState(false);
   const [mssqlDatabaseDiscoveryError, setMssqlDatabaseDiscoveryError] = useState<string | null>(null);
+
+  // MySQL/MariaDB database discovery state
+  const [mysqlDiscoveredDatabases, setMysqlDiscoveredDatabases] = useState<string[]>([]);
+  const [mysqlDiscoveringDatabases, setMysqlDiscoveringDatabases] = useState(false);
+  const [mysqlDatabaseDiscoveryError, setMysqlDatabaseDiscoveryError] = useState<string | null>(null);
 
   const [sshConfig, setSshConfig] = useState<SSHShellConnectionConfig>(
     existingTool?.tool_type === 'ssh_shell'
@@ -1661,10 +1835,28 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
   const [_generatedPublicKey, setGeneratedPublicKey] = useState<string | null>(null);
   const [keyCopied, setKeyCopied] = useState(false);
 
+  // SSH Tunnel auth mode state (shared across database tools)
+  const [sshTunnelAuthMode, setSshTunnelAuthMode] = useState<SSHAuthMode>(
+    (() => {
+      // Determine initial mode based on existing config
+      const config = existingTool?.connection_config as { ssh_tunnel_key_content?: string; ssh_tunnel_key_path?: string; ssh_tunnel_password?: string } | undefined;
+      if (config) {
+        if (config.ssh_tunnel_key_content) return 'upload';
+        if (config.ssh_tunnel_key_path) return 'path';
+        if (config.ssh_tunnel_password) return 'password';
+      }
+      return 'generate';
+    })()
+  );
+  const [sshTunnelGeneratingKey, setSshTunnelGeneratingKey] = useState(false);
+  const [sshTunnelKeyCopied, setSshTunnelKeyCopied] = useState(false);
+
   const getConnectionConfig = (): ConnectionConfig => {
     switch (toolType) {
       case 'postgres':
         return postgresConfig;
+      case 'mysql':
+        return mysqlConfig;
       case 'mssql':
         return mssqlConfig;
       case 'odoo_shell':
@@ -1757,6 +1949,15 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
         port: postgresConfig.port || 5432,
         user: postgresConfig.user,
         password: postgresConfig.password,
+        // SSH tunnel fields
+        ssh_tunnel_enabled: postgresConfig.ssh_tunnel_enabled,
+        ssh_tunnel_host: postgresConfig.ssh_tunnel_host,
+        ssh_tunnel_port: postgresConfig.ssh_tunnel_port,
+        ssh_tunnel_user: postgresConfig.ssh_tunnel_user,
+        ssh_tunnel_password: postgresConfig.ssh_tunnel_password,
+        ssh_tunnel_key_path: postgresConfig.ssh_tunnel_key_path,
+        ssh_tunnel_key_content: postgresConfig.ssh_tunnel_key_content,
+        ssh_tunnel_key_passphrase: postgresConfig.ssh_tunnel_key_passphrase,
       });
 
       if (result.success) {
@@ -1792,6 +1993,15 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
         port: mssqlConfig.port || 1433,
         user: mssqlConfig.user,
         password: mssqlConfig.password,
+        // SSH tunnel fields
+        ssh_tunnel_enabled: mssqlConfig.ssh_tunnel_enabled,
+        ssh_tunnel_host: mssqlConfig.ssh_tunnel_host,
+        ssh_tunnel_port: mssqlConfig.ssh_tunnel_port,
+        ssh_tunnel_user: mssqlConfig.ssh_tunnel_user,
+        ssh_tunnel_password: mssqlConfig.ssh_tunnel_password,
+        ssh_tunnel_key_path: mssqlConfig.ssh_tunnel_key_path,
+        ssh_tunnel_key_content: mssqlConfig.ssh_tunnel_key_content,
+        ssh_tunnel_key_passphrase: mssqlConfig.ssh_tunnel_key_passphrase,
       });
 
       if (result.success) {
@@ -1807,6 +2017,66 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
       setMssqlDatabaseDiscoveryError(err instanceof Error ? err.message : 'Discovery failed');
     } finally {
       setMssqlDiscoveringDatabases(false);
+    }
+  };
+
+  // MySQL/MariaDB database discovery handler
+  const handleDiscoverMysqlDatabases = async () => {
+    // For container mode, we just need the container name
+    if (mysqlConnectionMode === 'container') {
+      if (!mysqlConfig.container) {
+        setMysqlDatabaseDiscoveryError('Container name is required to discover databases');
+        return;
+      }
+    } else {
+      // For direct mode, need host, user, password
+      if (!mysqlConfig.host || !mysqlConfig.user || !mysqlConfig.password) {
+        setMysqlDatabaseDiscoveryError('Host, user, and password are required to discover databases');
+        return;
+      }
+    }
+
+    setMysqlDiscoveringDatabases(true);
+    setMysqlDatabaseDiscoveryError(null);
+    setMysqlDiscoveredDatabases([]);
+
+    try {
+      const result = await api.discoverMysqlDatabases(
+        mysqlConnectionMode === 'container'
+          ? {
+              container: mysqlConfig.container,
+              docker_network: mysqlConfig.docker_network,
+            }
+          : {
+              host: mysqlConfig.host,
+              port: mysqlConfig.port || 3306,
+              user: mysqlConfig.user,
+              password: mysqlConfig.password,
+              // SSH tunnel fields
+              ssh_tunnel_enabled: mysqlConfig.ssh_tunnel_enabled,
+              ssh_tunnel_host: mysqlConfig.ssh_tunnel_host,
+              ssh_tunnel_port: mysqlConfig.ssh_tunnel_port,
+              ssh_tunnel_user: mysqlConfig.ssh_tunnel_user,
+              ssh_tunnel_password: mysqlConfig.ssh_tunnel_password,
+              ssh_tunnel_key_path: mysqlConfig.ssh_tunnel_key_path,
+              ssh_tunnel_key_content: mysqlConfig.ssh_tunnel_key_content,
+              ssh_tunnel_key_passphrase: mysqlConfig.ssh_tunnel_key_passphrase,
+            }
+      );
+
+      if (result.success) {
+        setMysqlDiscoveredDatabases(result.databases);
+        // Auto-select first database if none selected
+        if (result.databases.length > 0 && !mysqlConfig.database) {
+          setMysqlConfig({ ...mysqlConfig, database: result.databases[0] });
+        }
+      } else {
+        setMysqlDatabaseDiscoveryError(result.error || 'Discovery failed');
+      }
+    } catch (err) {
+      setMysqlDatabaseDiscoveryError(err instanceof Error ? err.message : 'Discovery failed');
+    } finally {
+      setMysqlDiscoveringDatabases(false);
     }
   };
 
@@ -1854,6 +2124,81 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
       await navigator.clipboard.writeText(pubKey);
       setKeyCopied(true);
       setTimeout(() => setKeyCopied(false), 2000);
+    }
+  };
+
+  // SSH Tunnel key generation handler (for database tools)
+  const handleGenerateTunnelSSHKey = async () => {
+    setSshTunnelGeneratingKey(true);
+    setError(null);
+    try {
+      // Get passphrase and config based on current tool type
+      let passphrase: string | undefined;
+      if (toolType === 'postgres') {
+        passphrase = postgresConfig.ssh_tunnel_key_passphrase;
+      } else if (toolType === 'mysql') {
+        passphrase = mysqlConfig.ssh_tunnel_key_passphrase;
+      } else if (toolType === 'mssql') {
+        passphrase = mssqlConfig.ssh_tunnel_key_passphrase;
+      } else if (toolType === 'solidworks_pdm') {
+        passphrase = pdmConfig.ssh_tunnel_key_passphrase;
+      }
+
+      const result = await api.generateSSHKeypair(name || 'tunnel', passphrase || undefined);
+
+      // Store the keys in the appropriate config
+      if (toolType === 'postgres') {
+        setPostgresConfig({
+          ...postgresConfig,
+          ssh_tunnel_key_content: result.private_key,
+          ssh_tunnel_public_key: result.public_key,
+          ssh_tunnel_key_path: '',
+        });
+      } else if (toolType === 'mysql') {
+        setMysqlConfig({
+          ...mysqlConfig,
+          ssh_tunnel_key_content: result.private_key,
+          ssh_tunnel_public_key: result.public_key,
+          ssh_tunnel_key_path: '',
+        });
+      } else if (toolType === 'mssql') {
+        setMssqlConfig({
+          ...mssqlConfig,
+          ssh_tunnel_key_content: result.private_key,
+          ssh_tunnel_public_key: result.public_key,
+          ssh_tunnel_key_path: '',
+        });
+      } else if (toolType === 'solidworks_pdm') {
+        setPdmConfig({
+          ...pdmConfig,
+          ssh_tunnel_key_content: result.private_key,
+          ssh_tunnel_public_key: result.public_key,
+          ssh_tunnel_key_path: '',
+        });
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to generate SSH keypair');
+    } finally {
+      setSshTunnelGeneratingKey(false);
+    }
+  };
+
+  // Copy SSH tunnel public key to clipboard
+  const handleCopyTunnelPublicKey = async () => {
+    let pubKey: string | undefined;
+    if (toolType === 'postgres') {
+      pubKey = postgresConfig.ssh_tunnel_public_key;
+    } else if (toolType === 'mysql') {
+      pubKey = mysqlConfig.ssh_tunnel_public_key;
+    } else if (toolType === 'mssql') {
+      pubKey = mssqlConfig.ssh_tunnel_public_key;
+    } else if (toolType === 'solidworks_pdm') {
+      pubKey = pdmConfig.ssh_tunnel_public_key;
+    }
+    if (pubKey) {
+      await navigator.clipboard.writeText(pubKey);
+      setSshTunnelKeyCopied(true);
+      setTimeout(() => setSshTunnelKeyCopied(false), 2000);
     }
   };
 
@@ -2062,7 +2407,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
       }
 
       // Trigger schema indexing for SQL tools if enabled
-      if ((toolType === 'postgres' || toolType === 'mssql') && savedToolId) {
+      if ((toolType === 'postgres' || toolType === 'mssql' || toolType === 'mysql') && savedToolId) {
         const config = connectionConfig as { schema_index_enabled?: boolean };
         const wasEnabled = (existingTool?.connection_config as { schema_index_enabled?: boolean } | undefined)?.schema_index_enabled;
 
@@ -2117,6 +2462,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
       case 'postgres':
         // Either host or container must be specified
         return Boolean((postgresConfig.host && postgresConfig.user) || postgresConfig.container);
+      case 'mysql':
+        // Either host or container must be specified
+        return Boolean((mysqlConfig.host && mysqlConfig.user) || mysqlConfig.container);
       case 'mssql':
         // Host, user, password, and database are required
         return Boolean(mssqlConfig.host && mssqlConfig.user && mssqlConfig.password && mssqlConfig.database);
@@ -2154,14 +2502,62 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
     }
   };
 
-  const renderTypeSelection = () => (
-    <div className="wizard-content">
-      <p className="wizard-help">
-        Select the type of tool connection you want to add:
-      </p>
-      <div className="tool-type-selection">
-        {(Object.entries(TOOL_TYPE_INFO) as [ToolType, typeof TOOL_TYPE_INFO[ToolType]][]).map(
-          ([type, info]) => (
+  const renderTypeSelection = () => {
+    // Define SQL tool types that should be grouped
+    const sqlToolTypes: ToolType[] = ['postgres', 'mysql', 'mssql'];
+    const isSqlTool = (type: ToolType) => sqlToolTypes.includes(type);
+    const nonSqlTools = (Object.entries(TOOL_TYPE_INFO) as [ToolType, typeof TOOL_TYPE_INFO[ToolType]][])
+      .filter(([type]) => !isSqlTool(type));
+    const sqlTools = (Object.entries(TOOL_TYPE_INFO) as [ToolType, typeof TOOL_TYPE_INFO[ToolType]][])
+      .filter(([type]) => isSqlTool(type));
+
+    // Check if any SQL tool is currently selected
+    const sqlToolSelected = isSqlTool(toolType);
+
+    return (
+      <div className="wizard-content">
+        <p className="wizard-help">
+          Select the type of tool connection you want to add:
+        </p>
+        <div className="tool-type-selection">
+          {/* SQL Tools Dropdown Group */}
+          <div
+            className={`tool-type-group ${sqlToolsExpanded || sqlToolSelected ? 'expanded' : ''}`}
+            onMouseEnter={() => setSqlToolsExpanded(true)}
+            onMouseLeave={() => setSqlToolsExpanded(false)}
+          >
+            <div className={`tool-type-group-header ${sqlToolSelected ? 'selected' : ''}`}>
+              <span className="tool-type-option-icon">
+                <Icon name="database" size={24} />
+              </span>
+              <span className="tool-type-option-name">SQL Databases</span>
+              <span className="tool-type-option-desc">PostgreSQL, MySQL/MariaDB, MSSQL/SQL Server</span>
+              <span className="tool-type-group-chevron">
+                <Icon name={sqlToolsExpanded || sqlToolSelected ? 'chevron-up' : 'chevron-down'} size={16} />
+              </span>
+            </div>
+            {(sqlToolsExpanded || sqlToolSelected) && (
+              <div className="tool-type-group-items">
+                {sqlTools.map(([type, info]) => (
+                  <button
+                    key={type}
+                    type="button"
+                    className={`tool-type-option tool-type-option-nested ${toolType === type ? 'selected' : ''}`}
+                    onClick={() => setToolType(type)}
+                  >
+                    <span className="tool-type-option-icon">
+                      <Icon name={getToolIconType(info.icon)} size={20} />
+                    </span>
+                    <span className="tool-type-option-name">{info.name}</span>
+                    <span className="tool-type-option-desc">{info.description}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Non-SQL Tools */}
+          {nonSqlTools.map(([type, info]) => (
             <button
               key={type}
               type="button"
@@ -2174,11 +2570,11 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
               <span className="tool-type-option-name">{info.name}</span>
               <span className="tool-type-option-desc">{info.description}</span>
             </button>
-          )
-        )}
+          ))}
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   const renderPostgresConnection = () => {
     return (
@@ -2212,15 +2608,51 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
 
         {pgConnectionMode === 'direct' ? (
           <div className="connection-panel">
+            {/* SSH Tunnel Option - shown first for clear context */}
+            <SSHTunnelPanel
+              enabled={postgresConfig.ssh_tunnel_enabled ?? false}
+              onEnabledChange={(enabled) => {
+                // When enabling tunnel, default host to localhost if empty
+                const updates: Partial<typeof postgresConfig> = { ssh_tunnel_enabled: enabled };
+                if (enabled && !postgresConfig.host) {
+                  updates.host = 'localhost';
+                }
+                setPostgresConfig({ ...postgresConfig, ...updates });
+              }}
+              config={{
+                ssh_tunnel_host: postgresConfig.ssh_tunnel_host,
+                ssh_tunnel_port: postgresConfig.ssh_tunnel_port,
+                ssh_tunnel_user: postgresConfig.ssh_tunnel_user,
+                ssh_tunnel_password: postgresConfig.ssh_tunnel_password,
+                ssh_tunnel_key_path: postgresConfig.ssh_tunnel_key_path,
+                ssh_tunnel_key_content: postgresConfig.ssh_tunnel_key_content,
+                ssh_tunnel_key_passphrase: postgresConfig.ssh_tunnel_key_passphrase,
+                ssh_tunnel_public_key: postgresConfig.ssh_tunnel_public_key,
+              }}
+              onConfigChange={(tunnelConfig) => setPostgresConfig({ ...postgresConfig, ...tunnelConfig })}
+              databaseLabel="PostgreSQL"
+              authMode={sshTunnelAuthMode}
+              onAuthModeChange={setSshTunnelAuthMode}
+              generatingKey={sshTunnelGeneratingKey}
+              onGenerateKey={handleGenerateTunnelSSHKey}
+              keyCopied={sshTunnelKeyCopied}
+              onCopyPublicKey={handleCopyTunnelPublicKey}
+              toolName={name || 'postgres'}
+            />
+
+            {/* Database Host/Port - context changes based on tunnel mode */}
             <div className="form-row">
               <div className="form-group">
-                <label>Host</label>
+                <label>{postgresConfig.ssh_tunnel_enabled ? 'Database Host (on SSH server)' : 'Host'} *</label>
                 <input
                   type="text"
                   value={postgresConfig.host || ''}
                   onChange={(e) => setPostgresConfig({ ...postgresConfig, host: e.target.value })}
-                  placeholder="localhost"
+                  placeholder={postgresConfig.ssh_tunnel_enabled ? 'localhost' : 'db.example.com'}
                 />
+                {postgresConfig.ssh_tunnel_enabled && (
+                  <p className="field-help">Usually "localhost" - the database host as seen from the SSH server</p>
+                )}
               </div>
               <div className="form-group form-group-small">
                 <label>Port</label>
@@ -2235,7 +2667,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
             </div>
             <div className="form-row">
               <div className="form-group">
-                <label>User</label>
+                <label>User *</label>
                 <input
                   type="text"
                   value={postgresConfig.user || ''}
@@ -2244,7 +2676,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
                 />
               </div>
               <div className="form-group">
-                <label>Password</label>
+                <label>Password *</label>
                 <input
                   type="password"
                   value={postgresConfig.password || ''}
@@ -2280,7 +2712,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
                   type="button"
                   className="btn btn-secondary btn-sm"
                   onClick={handleDiscoverDatabases}
-                  disabled={discoveringDatabases || !postgresConfig.host || !postgresConfig.user || !postgresConfig.password}
+                  disabled={discoveringDatabases || (!postgresConfig.ssh_tunnel_enabled && !postgresConfig.host) || !postgresConfig.user || !postgresConfig.password}
                   title="Discover available databases"
                 >
                   {discoveringDatabases ? 'Discovering...' : 'Discover'}
@@ -2292,7 +2724,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
                 ) : discoveredDatabases.length > 0 ? (
                   `Found ${discoveredDatabases.length} database(s). Select one or type manually.`
                 ) : (
-                  'Enter host, user, and password, then click Discover to find available databases.'
+                  'Enter credentials, then click Discover to find available databases.'
                 )}
               </p>
             </div>
@@ -2383,9 +2815,43 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
         </p>
 
         <div className="connection-panel">
+          {/* SSH Tunnel Option - shown first for clear context */}
+          <SSHTunnelPanel
+            enabled={mssqlConfig.ssh_tunnel_enabled ?? false}
+            onEnabledChange={(enabled) => {
+              // When enabling tunnel, default host to localhost if empty
+              const updates: Partial<typeof mssqlConfig> = { ssh_tunnel_enabled: enabled };
+              if (enabled && !mssqlConfig.host) {
+                updates.host = 'localhost';
+              }
+              setMssqlConfig({ ...mssqlConfig, ...updates });
+              setMssqlDiscoveredDatabases([]);
+            }}
+            config={{
+              ssh_tunnel_host: mssqlConfig.ssh_tunnel_host,
+              ssh_tunnel_port: mssqlConfig.ssh_tunnel_port,
+              ssh_tunnel_user: mssqlConfig.ssh_tunnel_user,
+              ssh_tunnel_password: mssqlConfig.ssh_tunnel_password,
+              ssh_tunnel_key_path: mssqlConfig.ssh_tunnel_key_path,
+              ssh_tunnel_key_content: mssqlConfig.ssh_tunnel_key_content,
+              ssh_tunnel_key_passphrase: mssqlConfig.ssh_tunnel_key_passphrase,
+              ssh_tunnel_public_key: mssqlConfig.ssh_tunnel_public_key,
+            }}
+            onConfigChange={(tunnelConfig) => setMssqlConfig({ ...mssqlConfig, ...tunnelConfig })}
+            databaseLabel="SQL Server"
+            authMode={sshTunnelAuthMode}
+            onAuthModeChange={setSshTunnelAuthMode}
+            generatingKey={sshTunnelGeneratingKey}
+            onGenerateKey={handleGenerateTunnelSSHKey}
+            keyCopied={sshTunnelKeyCopied}
+            onCopyPublicKey={handleCopyTunnelPublicKey}
+            toolName={name || 'mssql'}
+          />
+
+          {/* Database Host/Port - context changes based on tunnel mode */}
           <div className="form-row">
             <div className="form-group">
-              <label>Host</label>
+              <label>{mssqlConfig.ssh_tunnel_enabled ? 'Database Host (on SSH server)' : 'Host'} *</label>
               <input
                 type="text"
                 value={mssqlConfig.host || ''}
@@ -2393,8 +2859,11 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
                   setMssqlConfig({ ...mssqlConfig, host: e.target.value });
                   setMssqlDiscoveredDatabases([]);
                 }}
-                placeholder="server.database.windows.net"
+                placeholder={mssqlConfig.ssh_tunnel_enabled ? 'localhost' : 'server.database.windows.net'}
               />
+              {mssqlConfig.ssh_tunnel_enabled && (
+                <p className="field-help">Usually "localhost" - the SQL Server host as seen from the SSH server</p>
+              )}
             </div>
             <div className="form-group form-group-small">
               <label>Port</label>
@@ -2409,7 +2878,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
           </div>
           <div className="form-row">
             <div className="form-group">
-              <label>User</label>
+              <label>User *</label>
               <input
                 type="text"
                 value={mssqlConfig.user || ''}
@@ -2421,7 +2890,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
               />
             </div>
             <div className="form-group">
-              <label>Password</label>
+              <label>Password *</label>
               <input
                 type="password"
                 value={mssqlConfig.password || ''}
@@ -2460,7 +2929,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
                 type="button"
                 className="btn btn-secondary btn-sm"
                 onClick={handleDiscoverMssqlDatabases}
-                disabled={mssqlDiscoveringDatabases || !mssqlConfig.host || !mssqlConfig.user || !mssqlConfig.password}
+                disabled={mssqlDiscoveringDatabases || (!mssqlConfig.ssh_tunnel_enabled && !mssqlConfig.host) || !mssqlConfig.user || !mssqlConfig.password}
                 title="Discover available databases"
               >
                 {mssqlDiscoveringDatabases ? 'Discovering...' : 'Discover'}
@@ -2472,7 +2941,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
               ) : mssqlDiscoveredDatabases.length > 0 ? (
                 `Found ${mssqlDiscoveredDatabases.length} database(s). Select one or type manually.`
               ) : (
-                'Enter host, user, and password, then click Discover to find available databases.'
+                'Enter credentials, then click Discover to find available databases.'
               )}
             </p>
           </div>
@@ -2522,6 +2991,290 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
     );
   };
 
+  const renderMysqlConnection = () => {
+    return (
+      <div className="wizard-content">
+        <p className="wizard-help">
+          Choose your connection method:
+        </p>
+
+        <div className="connection-tabs">
+          <button
+            type="button"
+            className={`connection-tab ${mysqlConnectionMode === 'direct' ? 'active' : ''}`}
+            onClick={() => {
+              setMysqlConnectionMode('direct');
+              setMysqlConfig({ ...mysqlConfig, container: '' });
+              setMysqlDiscoveredDatabases([]);
+            }}
+          >
+            Direct Connection
+          </button>
+          <button
+            type="button"
+            className={`connection-tab ${mysqlConnectionMode === 'container' ? 'active' : ''}`}
+            onClick={() => {
+              setMysqlConnectionMode('container');
+              setMysqlConfig({ ...mysqlConfig, host: '', user: '', password: '' });
+              setMysqlDiscoveredDatabases([]);
+            }}
+          >
+            Docker Container
+          </button>
+        </div>
+
+        {mysqlConnectionMode === 'direct' ? (
+          <div className="connection-panel">
+            {/* SSH Tunnel Option - shown first for clear context */}
+            <SSHTunnelPanel
+              enabled={mysqlConfig.ssh_tunnel_enabled ?? false}
+              onEnabledChange={(enabled) => {
+                // When enabling tunnel, default host to localhost if empty
+                const updates: Partial<typeof mysqlConfig> = { ssh_tunnel_enabled: enabled };
+                if (enabled && !mysqlConfig.host) {
+                  updates.host = 'localhost';
+                }
+                setMysqlConfig({ ...mysqlConfig, ...updates });
+                setMysqlDiscoveredDatabases([]);
+              }}
+              config={{
+                ssh_tunnel_host: mysqlConfig.ssh_tunnel_host,
+                ssh_tunnel_port: mysqlConfig.ssh_tunnel_port,
+                ssh_tunnel_user: mysqlConfig.ssh_tunnel_user,
+                ssh_tunnel_password: mysqlConfig.ssh_tunnel_password,
+                ssh_tunnel_key_path: mysqlConfig.ssh_tunnel_key_path,
+                ssh_tunnel_key_content: mysqlConfig.ssh_tunnel_key_content,
+                ssh_tunnel_key_passphrase: mysqlConfig.ssh_tunnel_key_passphrase,
+                ssh_tunnel_public_key: mysqlConfig.ssh_tunnel_public_key,
+              }}
+              onConfigChange={(tunnelConfig) => setMysqlConfig({ ...mysqlConfig, ...tunnelConfig })}
+              databaseLabel="MySQL/MariaDB"
+              authMode={sshTunnelAuthMode}
+              onAuthModeChange={setSshTunnelAuthMode}
+              generatingKey={sshTunnelGeneratingKey}
+              onGenerateKey={handleGenerateTunnelSSHKey}
+              keyCopied={sshTunnelKeyCopied}
+              onCopyPublicKey={handleCopyTunnelPublicKey}
+              toolName={name || 'mysql'}
+            />
+
+            {/* Database Host/Port - context changes based on tunnel mode */}
+            <div className="form-row">
+              <div className="form-group">
+                <label>{mysqlConfig.ssh_tunnel_enabled ? 'Database Host (on SSH server)' : 'Host'} *</label>
+                <input
+                  type="text"
+                  value={mysqlConfig.host || ''}
+                  onChange={(e) => {
+                    setMysqlConfig({ ...mysqlConfig, host: e.target.value });
+                    setMysqlDiscoveredDatabases([]);
+                  }}
+                  placeholder={mysqlConfig.ssh_tunnel_enabled ? 'localhost' : 'db.example.com'}
+                />
+                {mysqlConfig.ssh_tunnel_enabled && (
+                  <p className="field-help">Usually "localhost" - the MySQL host as seen from the SSH server</p>
+                )}
+              </div>
+              <div className="form-group form-group-small">
+                <label>Port</label>
+                <input
+                  type="number"
+                  value={mysqlConfig.port || 3306}
+                  onChange={(e) => setMysqlConfig({ ...mysqlConfig, port: parseInt(e.target.value) || 3306 })}
+                  min={1}
+                  max={65535}
+                />
+              </div>
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label>User *</label>
+                <input
+                  type="text"
+                  value={mysqlConfig.user || ''}
+                  onChange={(e) => {
+                    setMysqlConfig({ ...mysqlConfig, user: e.target.value });
+                    setMysqlDiscoveredDatabases([]);
+                  }}
+                  placeholder="root"
+                />
+              </div>
+              <div className="form-group">
+                <label>Password *</label>
+                <input
+                  type="password"
+                  value={mysqlConfig.password || ''}
+                  onChange={(e) => {
+                    setMysqlConfig({ ...mysqlConfig, password: e.target.value });
+                    setMysqlDiscoveredDatabases([]);
+                  }}
+                  placeholder="********"
+                />
+              </div>
+            </div>
+            <div className="form-group">
+              <label>Database</label>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                {mysqlDiscoveredDatabases.length > 0 ? (
+                  <select
+                    value={mysqlConfig.database || ''}
+                    onChange={(e) => setMysqlConfig({ ...mysqlConfig, database: e.target.value })}
+                    style={{ flex: 1 }}
+                  >
+                    <option value="">Select database...</option>
+                    {mysqlDiscoveredDatabases.map(db => (
+                      <option key={db} value={db}>{db}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={mysqlConfig.database || ''}
+                    onChange={(e) => setMysqlConfig({ ...mysqlConfig, database: e.target.value })}
+                    placeholder="mydb"
+                    style={{ flex: 1 }}
+                  />
+                )}
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={handleDiscoverMysqlDatabases}
+                  disabled={mysqlDiscoveringDatabases || (!mysqlConfig.ssh_tunnel_enabled && !mysqlConfig.host) || !mysqlConfig.user || !mysqlConfig.password}
+                  title="Discover available databases"
+                >
+                  {mysqlDiscoveringDatabases ? 'Discovering...' : 'Discover'}
+                </button>
+              </div>
+              <p className="field-help">
+                {mysqlDatabaseDiscoveryError ? (
+                  <span style={{ color: '#dc3545' }}>{mysqlDatabaseDiscoveryError}</span>
+                ) : mysqlDiscoveredDatabases.length > 0 ? (
+                  `Found ${mysqlDiscoveredDatabases.length} database(s). Select one or type manually.`
+                ) : (
+                  'Enter credentials, then click Discover to find available databases.'
+                )}
+              </p>
+            </div>
+          </div>
+        ) : mysqlConnectionMode === 'container' ? (
+          <div className="connection-panel">
+            <DockerConnectionPanel
+              dockerContainers={dockerContainers}
+              dockerNetworks={dockerNetworks}
+              currentNetwork={currentNetwork}
+              currentContainer={currentContainer}
+              loadingDocker={loadingDocker}
+              connectingNetwork={connectingNetwork}
+              selectedNetwork={mysqlConfig.docker_network || ''}
+              selectedContainer={mysqlConfig.container || ''}
+              onDiscoverDocker={handleDiscoverDocker}
+              onConnectNetwork={handleConnectNetwork}
+              onNetworkChange={(network) => setMysqlConfig({ ...mysqlConfig, docker_network: network })}
+              onContainerChange={(container) => {
+                setMysqlConfig({ ...mysqlConfig, container });
+                setMysqlDiscoveredDatabases([]);
+              }}
+              containerFilter={(c) => c.image.toLowerCase().includes('mysql') || c.image.toLowerCase().includes('mariadb')}
+              containerLabel={(c) => {
+                const isMysql = c.image.toLowerCase().includes('mysql');
+                const isMariadb = c.image.toLowerCase().includes('mariadb');
+                return `${c.name}${isMysql ? ' (MySQL)' : isMariadb ? ' (MariaDB)' : ''}`;
+              }}
+              containerCountLabel="MySQL/MariaDB container(s)"
+              containerHelpText="Uses container's MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE (or MYSQL_ROOT_PASSWORD for root) environment variables."
+              fallbackPlaceholder="my-mysql-container"
+            />
+
+            <div className="form-group">
+              <label>Database</label>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                {mysqlDiscoveredDatabases.length > 0 ? (
+                  <select
+                    value={mysqlConfig.database || ''}
+                    onChange={(e) => setMysqlConfig({ ...mysqlConfig, database: e.target.value })}
+                    style={{ flex: 1 }}
+                  >
+                    <option value="">Select database...</option>
+                    {mysqlDiscoveredDatabases.map(db => (
+                      <option key={db} value={db}>{db}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={mysqlConfig.database || ''}
+                    onChange={(e) => setMysqlConfig({ ...mysqlConfig, database: e.target.value })}
+                    placeholder="Leave empty to use MYSQL_DATABASE"
+                    style={{ flex: 1 }}
+                  />
+                )}
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={handleDiscoverMysqlDatabases}
+                  disabled={mysqlDiscoveringDatabases || !mysqlConfig.container}
+                  title="Discover available databases"
+                >
+                  {mysqlDiscoveringDatabases ? 'Discovering...' : 'Discover'}
+                </button>
+              </div>
+              <p className="field-help">
+                {mysqlDatabaseDiscoveryError ? (
+                  <span style={{ color: '#dc3545' }}>{mysqlDatabaseDiscoveryError}</span>
+                ) : mysqlDiscoveredDatabases.length > 0 ? (
+                  `Found ${mysqlDiscoveredDatabases.length} database(s). Select one or type manually.`
+                ) : (
+                  'Select a container, then click Discover to find available databases.'
+                )}
+              </p>
+            </div>
+          </div>
+        ) : null}
+
+        {/* Schema Indexing Section */}
+        <div className="schema-indexing-section" style={{ marginTop: '1.5rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
+          <h4 style={{ marginTop: 0, marginBottom: '0.75rem' }}>Schema Indexing</h4>
+          <p className="field-help" style={{ marginBottom: '1rem' }}>
+            Index database schema for faster AI-powered queries. Requires an embedding provider to be configured.
+          </p>
+
+          <label className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={mysqlConfig.schema_index_enabled ?? false}
+              onChange={(e) => setMysqlConfig({
+                ...mysqlConfig,
+                schema_index_enabled: e.target.checked
+              })}
+              style={{ width: 'auto', margin: 0 }}
+            />
+            <span>Enable schema indexing</span>
+          </label>
+
+          {mysqlConfig.schema_index_enabled && (
+            <div className="form-group" style={{ marginTop: '1rem' }}>
+              <label>Re-index interval (hours)</label>
+              <input
+                type="number"
+                value={mysqlConfig.schema_index_interval_hours ?? 24}
+                onChange={(e) => setMysqlConfig({
+                  ...mysqlConfig,
+                  schema_index_interval_hours: parseInt(e.target.value) || 24
+                })}
+                min={1}
+                max={168}
+                style={{ maxWidth: '120px' }}
+              />
+              <p className="field-help">
+                How often to automatically re-index the database schema (1-168 hours).
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   // Handler for PDM database discovery
   const handleDiscoverPdmDatabases = async () => {
     if (!pdmConfig.host || !pdmConfig.user || !pdmConfig.password) {
@@ -2539,6 +3292,15 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
         port: pdmConfig.port || 1433,
         user: pdmConfig.user,
         password: pdmConfig.password,
+        // SSH tunnel fields
+        ssh_tunnel_enabled: pdmConfig.ssh_tunnel_enabled,
+        ssh_tunnel_host: pdmConfig.ssh_tunnel_host,
+        ssh_tunnel_port: pdmConfig.ssh_tunnel_port,
+        ssh_tunnel_user: pdmConfig.ssh_tunnel_user,
+        ssh_tunnel_password: pdmConfig.ssh_tunnel_password,
+        ssh_tunnel_key_path: pdmConfig.ssh_tunnel_key_path,
+        ssh_tunnel_key_content: pdmConfig.ssh_tunnel_key_content,
+        ssh_tunnel_key_passphrase: pdmConfig.ssh_tunnel_key_passphrase,
       });
 
       if (result.success) {
@@ -2570,6 +3332,15 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
         user: pdmConfig.user,
         password: pdmConfig.password,
         database: pdmConfig.database,
+        // SSH tunnel fields
+        ssh_tunnel_enabled: pdmConfig.ssh_tunnel_enabled,
+        ssh_tunnel_host: pdmConfig.ssh_tunnel_host,
+        ssh_tunnel_port: pdmConfig.ssh_tunnel_port,
+        ssh_tunnel_user: pdmConfig.ssh_tunnel_user,
+        ssh_tunnel_password: pdmConfig.ssh_tunnel_password,
+        ssh_tunnel_key_path: pdmConfig.ssh_tunnel_key_path,
+        ssh_tunnel_key_content: pdmConfig.ssh_tunnel_key_content,
+        ssh_tunnel_key_passphrase: pdmConfig.ssh_tunnel_key_passphrase,
       });
 
       if (result.success) {
@@ -2608,10 +3379,45 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
         </p>
 
         <div className="connection-panel">
-          <h4 style={{ marginTop: 0, marginBottom: '0.75rem' }}>Database Connection</h4>
+          <h4 style={{ marginTop: '0', marginBottom: '0.75rem' }}>Database Connection</h4>
+
+          {/* SSH Tunnel Option - shown first for clear context */}
+          <SSHTunnelPanel
+            enabled={pdmConfig.ssh_tunnel_enabled ?? false}
+            onEnabledChange={(enabled) => {
+              // When enabling tunnel, default host to localhost if empty
+              const updates: Partial<typeof pdmConfig> = { ssh_tunnel_enabled: enabled };
+              if (enabled && !pdmConfig.host) {
+                updates.host = 'localhost';
+              }
+              setPdmConfig({ ...pdmConfig, ...updates });
+              setPdmDiscoveredDatabases([]);
+            }}
+            config={{
+              ssh_tunnel_host: pdmConfig.ssh_tunnel_host,
+              ssh_tunnel_port: pdmConfig.ssh_tunnel_port,
+              ssh_tunnel_user: pdmConfig.ssh_tunnel_user,
+              ssh_tunnel_password: pdmConfig.ssh_tunnel_password,
+              ssh_tunnel_key_path: pdmConfig.ssh_tunnel_key_path,
+              ssh_tunnel_key_content: pdmConfig.ssh_tunnel_key_content,
+              ssh_tunnel_key_passphrase: pdmConfig.ssh_tunnel_key_passphrase,
+              ssh_tunnel_public_key: pdmConfig.ssh_tunnel_public_key,
+            }}
+            onConfigChange={(tunnelConfig) => setPdmConfig({ ...pdmConfig, ...tunnelConfig })}
+            databaseLabel="SQL Server"
+            authMode={sshTunnelAuthMode}
+            onAuthModeChange={setSshTunnelAuthMode}
+            generatingKey={sshTunnelGeneratingKey}
+            onGenerateKey={handleGenerateTunnelSSHKey}
+            keyCopied={sshTunnelKeyCopied}
+            onCopyPublicKey={handleCopyTunnelPublicKey}
+            toolName={name || 'pdm'}
+          />
+
+          {/* Database Host/Port - context changes based on tunnel mode */}
           <div className="form-row">
             <div className="form-group">
-              <label>Host</label>
+              <label>{pdmConfig.ssh_tunnel_enabled ? 'Database Host (on SSH server)' : 'Host'} *</label>
               <input
                 type="text"
                 value={pdmConfig.host || ''}
@@ -2619,8 +3425,11 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
                   setPdmConfig({ ...pdmConfig, host: e.target.value });
                   setPdmDiscoveredDatabases([]);
                 }}
-                placeholder="server.database.windows.net"
+                placeholder={pdmConfig.ssh_tunnel_enabled ? 'localhost' : 'server.database.windows.net'}
               />
+              {pdmConfig.ssh_tunnel_enabled && (
+                <p className="field-help">Usually "localhost" - the SQL Server host as seen from the SSH server</p>
+              )}
             </div>
             <div className="form-group form-group-small">
               <label>Port</label>
@@ -2635,7 +3444,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
           </div>
           <div className="form-row">
             <div className="form-group">
-              <label>User</label>
+              <label>User *</label>
               <input
                 type="text"
                 value={pdmConfig.user || ''}
@@ -2647,7 +3456,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
               />
             </div>
             <div className="form-group">
-              <label>Password</label>
+              <label>Password *</label>
               <input
                 type="password"
                 value={pdmConfig.password || ''}
@@ -2688,7 +3497,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
                 type="button"
                 className="btn btn-sm"
                 onClick={handleDiscoverPdmDatabases}
-                disabled={pdmDiscoveringDatabases || !pdmConfig.host || !pdmConfig.user || !pdmConfig.password}
+                disabled={pdmDiscoveringDatabases || (!pdmConfig.ssh_tunnel_enabled && !pdmConfig.host) || !pdmConfig.user || !pdmConfig.password}
                 style={{ whiteSpace: 'nowrap', padding: '12px 16px' }}
               >
                 {pdmDiscoveringDatabases ? 'Discovering...' : 'Discover'}
@@ -3740,6 +4549,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
       switch (toolType) {
         case 'postgres':
           return renderPostgresConnection();
+        case 'mysql':
+          return renderMysqlConnection();
         case 'mssql':
           return renderMssqlConnection();
         case 'odoo_shell':

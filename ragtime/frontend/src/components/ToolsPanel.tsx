@@ -34,7 +34,7 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
   const typeInfo = TOOL_TYPE_INFO[tool.tool_type];
 
   // Check if schema indexing is enabled for this tool
-  const hasSchemaIndexing = (tool.tool_type === 'postgres' || tool.tool_type === 'mssql') &&
+  const hasSchemaIndexing = (tool.tool_type === 'postgres' || tool.tool_type === 'mssql' || tool.tool_type === 'mysql') &&
     (tool.connection_config as { schema_index_enabled?: boolean })?.schema_index_enabled === true;
 
   // Format memory size for display
@@ -48,8 +48,9 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
     const config = tool.connection_config;
     switch (tool.tool_type) {
       case 'postgres':
+      case 'mysql':
         if ('host' in config && config.host) {
-          const port = 'port' in config ? config.port : 5432;
+          const port = 'port' in config ? config.port : (tool.tool_type === 'mysql' ? 3306 : 5432);
           const database = 'database' in config ? config.database : '';
           return `${config.host}:${port}/${database}`;
         }
@@ -268,7 +269,7 @@ export function ToolsPanel({ onSchemaJobTriggered }: ToolsPanelProps) {
   // Load schema stats for tools with schema indexing enabled
   const loadSchemaStats = useCallback(async (toolList: ToolConfig[]) => {
     const schemaTools = toolList.filter(t =>
-      (t.tool_type === 'postgres' || t.tool_type === 'mssql') &&
+      (t.tool_type === 'postgres' || t.tool_type === 'mssql' || t.tool_type === 'mysql') &&
       (t.connection_config as { schema_index_enabled?: boolean })?.schema_index_enabled === true
     );
 

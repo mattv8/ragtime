@@ -1129,7 +1129,7 @@ export function MCPRoutesPanel({ onClose, ldapConfigured = false, ldapGroups = [
   // Categorize tools
   const filesystemTools = tools.filter(t => t.tool_type === 'filesystem_indexer');
   const schemaTools = tools.filter(t => {
-    if (!['postgres', 'mssql'].includes(t.tool_type)) return false;
+    if (!['postgres', 'mssql', 'mysql'].includes(t.tool_type)) return false;
     const config = t.connection_config as { schema_index_enabled?: boolean } | undefined;
     return config?.schema_index_enabled === true;
   });

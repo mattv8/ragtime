@@ -198,6 +198,7 @@ model AppSettings {
 /// Type of tool connection
 enum ToolType {
   postgres
+  mysql
   mssql
   odoo_shell
   ssh_shell

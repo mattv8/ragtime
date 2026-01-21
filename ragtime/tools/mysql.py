@@ -1,8 +1,8 @@
 """
-MSSQL (SQL Server) query tool for executing read-only SQL queries.
+MySQL/MariaDB query tool for executing read-only SQL queries.
 
-Uses pymssql for native TDS protocol support (no ODBC required).
-Follows the same patterns as the PostgreSQL tool for consistency.
+Uses PyMySQL for pure-Python MySQL/MariaDB connectivity.
+Follows the same patterns as the MSSQL tool for consistency.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from ragtime.core.logging import get_logger
 from ragtime.core.sql_utils import (
-    DB_TYPE_MSSQL,
+    DB_TYPE_MYSQL,
     enforce_max_results,
     format_query_result,
     validate_sql_query,
@@ -25,14 +25,14 @@ from ragtime.core.ssh import SSHTunnel, ssh_tunnel_config_from_dict
 logger = get_logger(__name__)
 
 
-class MssqlQueryInput(BaseModel):
-    """Input schema for MSSQL queries."""
+class MysqlQueryInput(BaseModel):
+    """Input schema for MySQL queries."""
 
     query: str = Field(
         description=(
             "SQL SELECT query to execute. Must be read-only and include "
-            "TOP n clause (e.g., SELECT TOP 100 * FROM table). "
-            "For MSSQL, use square brackets for identifiers: [TableName].[ColumnName]"
+            "LIMIT clause (e.g., SELECT * FROM table LIMIT 100). "
+            "For MySQL, use backticks for identifiers: `table_name`.`column_name`"
         )
     )
     description: str = Field(
@@ -44,7 +44,7 @@ class MssqlQueryInput(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-async def execute_mssql_query_async(
+async def execute_mysql_query_async(
     query: str,
     host: str,
     port: int,
@@ -58,14 +58,14 @@ async def execute_mssql_query_async(
     ssh_tunnel_config: dict[str, Any] | None = None,
 ) -> str:
     """
-    Execute a read-only SQL query against MSSQL Server.
+    Execute a read-only SQL query against MySQL/MariaDB.
 
     Runs in a thread pool to avoid blocking the event loop.
 
     Args:
         query: SQL query to execute.
-        host: MSSQL server hostname.
-        port: MSSQL server port (default 1433).
+        host: MySQL server hostname.
+        port: MySQL server port (default 3306).
         user: Database username.
         password: Database password.
         database: Database name.
@@ -76,14 +76,14 @@ async def execute_mssql_query_async(
         ssh_tunnel_config: Optional SSH tunnel configuration dict.
 
     Returns:
-        String output from the MSSQL query.
+        String output from the MySQL query.
     """
-    logger.info(f"MSSQL Query: {description}")
+    logger.info(f"MySQL Query: {description}")
     logger.debug(f"SQL: {query[:200]}...")
 
     # Validate the query
     is_safe, reason = validate_sql_query(
-        query, enable_write=allow_write, db_type=DB_TYPE_MSSQL
+        query, enable_write=allow_write, db_type=DB_TYPE_MYSQL
     )
     if not is_safe:
         error_msg = f"Security validation failed: {reason}"
@@ -91,14 +91,15 @@ async def execute_mssql_query_async(
         return f"Error: {error_msg}"
 
     # Enforce max results
-    query = enforce_max_results(query, max_results, db_type=DB_TYPE_MSSQL)
+    query = enforce_max_results(query, max_results, db_type=DB_TYPE_MYSQL)
 
     def run_query() -> str:
         """Execute query in thread pool."""
         try:
-            import pymssql  # type: ignore[import-untyped]
+            import pymysql  # type: ignore[import-untyped]
+            import pymysql.cursors  # type: ignore[import-untyped]
         except ImportError:
-            return "Error: pymssql package not installed. Install with: pip install pymssql"
+            return "Error: pymysql package not installed. Install with: pip install pymysql"
 
         conn = None
         cursor = None
@@ -109,7 +110,9 @@ async def execute_mssql_query_async(
         try:
             # Set up SSH tunnel if configured
             if ssh_tunnel_config:
-                tunnel_cfg = ssh_tunnel_config_from_dict(ssh_tunnel_config)
+                tunnel_cfg = ssh_tunnel_config_from_dict(
+                    ssh_tunnel_config, default_remote_port=3306
+                )
                 if tunnel_cfg:
                     tunnel = SSHTunnel(tunnel_cfg)
                     local_port = tunnel.start()
@@ -120,15 +123,17 @@ async def execute_mssql_query_async(
                         f"{tunnel_cfg.remote_host}:{tunnel_cfg.remote_port}"
                     )
 
-            conn = pymssql.connect(  # type: ignore[attr-defined]
-                server=actual_host,
-                port=str(actual_port),
+            conn = pymysql.connect(
+                host=actual_host,
+                port=actual_port,
                 user=user,
                 password=password,
                 database=database,
-                login_timeout=timeout,
-                timeout=timeout,
-                as_dict=True,
+                cursorclass=pymysql.cursors.DictCursor,
+                connect_timeout=timeout,
+                read_timeout=timeout,
+                write_timeout=timeout,
+                charset="utf8mb4",
             )
             cursor = conn.cursor()
             cursor.execute(query)
@@ -145,24 +150,26 @@ async def execute_mssql_query_async(
 
             return format_query_result(rows, columns)
 
-        except pymssql.OperationalError as e:
+        except pymysql.OperationalError as e:
             error_str = str(e)
-            logger.error(f"MSSQL connection error: {error_str}")
+            logger.error(f"MySQL connection error: {error_str}")
             # Clean up sensitive info from error messages
-            if "Login failed" in error_str:
-                return "Error: Login failed - check username and password"
-            if "Cannot open database" in error_str:
-                return f"Error: Cannot open database '{database}' - check database name and permissions"
-            if tunnel:
-                return f"Error: Cannot connect to SQL Server through SSH tunnel"
+            if "Access denied" in error_str:
+                return "Error: Access denied - check username and password"
+            if "Unknown database" in error_str:
+                return f"Error: Unknown database '{database}' - check database name"
+            if "Can't connect" in error_str:
+                if tunnel:
+                    return f"Error: Cannot connect to MySQL through SSH tunnel"
+                return f"Error: Cannot connect to MySQL server at {host}:{port}"
             return f"Error: Connection failed - {error_str}"
 
-        except pymssql.ProgrammingError as e:
-            logger.error(f"MSSQL query error: {e}")
+        except pymysql.ProgrammingError as e:
+            logger.error(f"MySQL query error: {e}")
             return f"Error: Query failed - {e}"
 
         except Exception as e:
-            logger.exception("Unexpected error in MSSQL query")
+            logger.exception("Unexpected error in MySQL query")
             return f"Error: {str(e)}"
 
         finally:
@@ -190,11 +197,11 @@ async def execute_mssql_query_async(
         return result
 
     except asyncio.TimeoutError:
-        logger.error(f"MSSQL query timed out after {timeout}s")
+        logger.error(f"MySQL query timed out after {timeout}s")
         return f"Error: Query timed out after {timeout} seconds"
 
 
-def create_mssql_tool(
+def create_mysql_tool(
     name: str,
     host: str,
     port: int,
@@ -208,12 +215,12 @@ def create_mssql_tool(
     ssh_tunnel_config: dict[str, Any] | None = None,
 ) -> StructuredTool:
     """
-    Create a configured MSSQL query tool for LangChain.
+    Create a configured MySQL query tool for LangChain.
 
     Args:
         name: Tool name (used in LangChain agent).
-        host: MSSQL server hostname.
-        port: MSSQL server port.
+        host: MySQL server hostname.
+        port: MySQL server port.
         user: Database username.
         password: Database password.
         database: Database name.
@@ -228,7 +235,7 @@ def create_mssql_tool(
     """
 
     async def execute_query(query: str = "", description: str = "", **_: Any) -> str:
-        """Execute MSSQL query using configured connection."""
+        """Execute MySQL query using configured connection."""
         if not query or not query.strip():
             return (
                 "Error: 'query' parameter is required. Provide a SQL query to execute."
@@ -236,7 +243,7 @@ def create_mssql_tool(
         if not description:
             description = "SQL query"
 
-        return await execute_mssql_query_async(
+        return await execute_mysql_query_async(
             query=query,
             host=host,
             port=port,
@@ -250,11 +257,11 @@ def create_mssql_tool(
             ssh_tunnel_config=ssh_tunnel_config,
         )
 
-    tool_description = f"Query the {name} MSSQL/SQL Server database using SQL."
+    tool_description = f"Query the {name} MySQL/MariaDB database using SQL."
     if description:
         tool_description += f" This database contains: {description}"
     tool_description += (
-        " Include TOP n clause to limit results (e.g., SELECT TOP 100 ...). "
+        " Include LIMIT clause to limit results (e.g., SELECT ... LIMIT 100). "
         "SELECT queries only unless writes are enabled."
     )
 
@@ -262,28 +269,33 @@ def create_mssql_tool(
         coroutine=execute_query,
         name=f"query_{name.lower().replace(' ', '_').replace('-', '_')}",
         description=tool_description,
-        args_schema=MssqlQueryInput,
+        args_schema=MysqlQueryInput,
     )
 
 
-async def test_mssql_connection(
+async def test_mysql_connection(
     host: str = "",
-    port: int = 1433,
+    port: int = 3306,
     user: str = "",
     password: str = "",
     database: str = "",
+    container: str = "",
+    docker_network: str = "",
     timeout: int = 10,
     ssh_tunnel_config: dict[str, Any] | None = None,
 ) -> tuple[bool, str, dict[str, Any] | None]:
     """
-    Test MSSQL connection and return status.
+    Test MySQL connection and return status.
+    Supports both direct connections and Docker container mode.
 
     Args:
-        host: MSSQL server hostname.
-        port: MSSQL server port.
-        user: Database username.
-        password: Database password.
+        host: MySQL server hostname (for direct mode).
+        port: MySQL server port (for direct mode).
+        user: Database username (for direct mode).
+        password: Database password (for direct mode).
         database: Database name.
+        container: Docker container name (for container mode).
+        docker_network: Docker network name (for container mode).
         timeout: Connection timeout in seconds.
         ssh_tunnel_config: Optional SSH tunnel configuration dict.
 
@@ -293,10 +305,88 @@ async def test_mssql_connection(
 
     def do_test() -> tuple[bool, str, dict[str, Any] | None]:
         try:
-            import pymssql  # type: ignore[import-untyped]
+            import pymysql  # type: ignore[import-untyped]
         except ImportError:
-            return False, "pymssql package not installed", None
+            return False, "pymysql package not installed", None
 
+        # Docker container mode
+        if container:
+            import subprocess
+
+            exec_prefix = f"docker exec {container}"
+
+            def get_env_var(var_name: str) -> str | None:
+                try:
+                    result = subprocess.run(
+                        f"{exec_prefix} printenv {var_name}",
+                        shell=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                        check=False,
+                    )
+                    return result.stdout.strip() if result.returncode == 0 else None
+                except Exception:
+                    return None
+
+            # Get credentials from container environment
+            db_user = get_env_var("MYSQL_USER") or "root"
+            if db_user == "root":
+                db_password = get_env_var("MYSQL_ROOT_PASSWORD") or ""
+            else:
+                db_password = get_env_var("MYSQL_PASSWORD") or ""
+            db_name = database or get_env_var("MYSQL_DATABASE") or ""
+
+            if not db_name:
+                return (
+                    False,
+                    "No database specified and MYSQL_DATABASE not set in container",
+                    None,
+                )
+
+            # Test via docker exec mysql command
+            mysql_cmd = f'{exec_prefix} mysql -u{db_user} -p"{db_password}" -N -e "SELECT VERSION()" {db_name}'
+            try:
+                result = subprocess.run(
+                    mysql_cmd,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    check=False,
+                )
+
+                if result.returncode == 0:
+                    version = result.stdout.strip() or "Unknown"
+                    details = {
+                        "version": version,
+                        "database": db_name,
+                        "container": container,
+                        "mode": "docker",
+                    }
+                    return (
+                        True,
+                        f"Connected to {db_name} in container {container}",
+                        details,
+                    )
+                else:
+                    error_msg = result.stderr.strip() or "Unknown error"
+                    if "Access denied" in error_msg:
+                        return (
+                            False,
+                            "Access denied - check container credentials",
+                            None,
+                        )
+                    if "Unknown database" in error_msg:
+                        return False, f"Unknown database '{db_name}'", None
+                    return False, f"Connection failed: {error_msg}", None
+
+            except subprocess.TimeoutExpired:
+                return False, f"Connection timed out after {timeout}s", None
+            except Exception as e:
+                return False, f"Docker test failed: {str(e)}", None
+
+        # Direct connection mode (with optional SSH tunnel)
         conn = None
         cursor = None
         tunnel: SSHTunnel | None = None
@@ -307,7 +397,7 @@ async def test_mssql_connection(
             # Set up SSH tunnel if configured
             if ssh_tunnel_config:
                 tunnel_cfg = ssh_tunnel_config_from_dict(
-                    ssh_tunnel_config, default_remote_port=1433
+                    ssh_tunnel_config, default_remote_port=3306
                 )
                 if tunnel_cfg:
                     tunnel = SSHTunnel(tunnel_cfg)
@@ -319,29 +409,29 @@ async def test_mssql_connection(
                         f"{tunnel_cfg.remote_host}:{tunnel_cfg.remote_port}"
                     )
 
-            conn = pymssql.connect(  # type: ignore[attr-defined]
-                server=actual_host,
-                port=str(actual_port),
+            conn = pymysql.connect(
+                host=actual_host,
+                port=actual_port,
                 user=user,
                 password=password,
                 database=database,
-                login_timeout=timeout,
-                timeout=timeout,
+                connect_timeout=timeout,
+                read_timeout=timeout,
             )
             cursor = conn.cursor()
 
             # Get server version
-            cursor.execute("SELECT @@VERSION")
+            cursor.execute("SELECT VERSION()")
             version_row = cursor.fetchone()
             version = version_row[0] if version_row else "Unknown"
 
-            # Get database info
-            cursor.execute("SELECT DB_NAME() AS db_name")
+            # Get database name
+            cursor.execute("SELECT DATABASE()")
             db_row = cursor.fetchone()
             db_name = db_row[0] if db_row else database
 
             details: dict[str, Any] = {
-                "version": version.split("\n")[0] if version else "Unknown",
+                "version": version,
                 "database": db_name,
             }
 
@@ -362,14 +452,16 @@ async def test_mssql_connection(
 
             return True, msg, details
 
-        except pymssql.OperationalError as e:
+        except pymysql.OperationalError as e:
             error_str = str(e)
-            if "Login failed" in error_str:
-                return False, "Login failed - check username and password", None
-            if "Cannot open database" in error_str:
-                return False, f"Cannot open database '{database}'", None
-            if tunnel:
-                return False, "Cannot connect to SQL Server through SSH tunnel", None
+            if "Access denied" in error_str:
+                return False, "Access denied - check username and password", None
+            if "Unknown database" in error_str:
+                return False, f"Unknown database '{database}'", None
+            if "Can't connect" in error_str:
+                if tunnel:
+                    return False, "Cannot connect to MySQL through SSH tunnel", None
+                return False, f"Cannot connect to MySQL server at {host}:{port}", None
             return False, f"Connection failed: {error_str}", None
 
         except Exception as e:
@@ -402,5 +494,5 @@ async def test_mssql_connection(
 
 
 # Legacy tool export (for backwards compatibility if needed)
-# Note: Prefer using create_mssql_tool() with ToolConfig for dynamic instances
-mssql_tool = None  # Placeholder - instantiate via ToolConfig
+# Note: Prefer using create_mysql_tool() with ToolConfig for dynamic instances
+mysql_tool = None  # Placeholder - instantiate via ToolConfig

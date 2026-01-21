@@ -124,6 +124,51 @@ def validate_sql_query(
 
         return True, "Query is safe"
 
+    # For MySQL/MariaDB, do validation similar to PostgreSQL but with MySQL-specific checks
+    if db_type == DB_TYPE_MYSQL:
+        # Check for SELECT/WITH only (unless write enabled)
+        if not enable_write:
+            if not (query_upper.startswith("SELECT") or query_upper.startswith("WITH")):
+                return False, "Only SELECT queries are allowed"
+
+            # Check for dangerous patterns (shared with PostgreSQL)
+            dangerous_patterns = [
+                r"\b(DROP|DELETE|TRUNCATE|ALTER|CREATE|INSERT|UPDATE)\b",
+                r"\b(GRANT|REVOKE)\b",
+                r";\s*--",  # Comment injection
+                r";\s*(DROP|DELETE|UPDATE|INSERT)",  # Chained destructive commands
+            ]
+            for pattern in dangerous_patterns:
+                if re.search(pattern, query_upper, re.IGNORECASE):
+                    logger.warning(f"Dangerous SQL pattern detected: {pattern}")
+                    return False, "Query contains forbidden pattern"
+
+        # MySQL-specific dangerous patterns
+        mysql_dangerous = [
+            r"\bINTO\s+OUTFILE\b",  # Write files to server
+            r"\bINTO\s+DUMPFILE\b",  # Binary dump to file
+            r"\bLOAD_FILE\b",  # Read files from server
+            r"\bLOAD\s+DATA\b",  # Load data from file
+            r"\bSYSTEM\b",  # System commands (MariaDB)
+            r"\bBENCHMARK\b",  # Timing attacks
+            r"\bSLEEP\b",  # Timing attacks
+        ]
+        for pattern in mysql_dangerous:
+            if re.search(pattern, query_upper, re.IGNORECASE):
+                logger.warning(f"MySQL dangerous pattern detected: {pattern}")
+                return False, "Query contains forbidden MySQL pattern"
+
+        # Check for LIMIT clause (MySQL uses LIMIT like PostgreSQL)
+        if query_upper.startswith("SELECT"):
+            has_limit = re.search(r"\bLIMIT\s+\d+", query_upper)
+            if not has_limit:
+                return (
+                    False,
+                    "SELECT queries must include LIMIT clause to limit results",
+                )
+
+        return True, "Query is safe"
+
     # For PostgreSQL and others, use core validation
     is_safe, reason = _validate_sql_query(query, enable_write)
     if not is_safe:
@@ -673,5 +718,165 @@ def mssql_connect(
         database=database,
         login_timeout=login_timeout,
         timeout=timeout,
+        as_dict=as_dict,
+    )
+
+
+# =============================================================================
+# MYSQL CONNECTION UTILITIES
+# =============================================================================
+
+
+class MysqlConnectionError(Exception):
+    """Exception raised for MySQL connection errors."""
+
+
+class MysqlConnection:
+    """
+    Context manager for MySQL/MariaDB database connections.
+
+    Provides a clean interface for PyMySQL connections with proper
+    error handling and resource cleanup.
+
+    Example:
+        with mysql_connect(host, port, user, password, database) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM table LIMIT 10")
+            rows = cursor.fetchall()
+    """
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        user: str,
+        password: str,
+        database: str,
+        connect_timeout: int = 10,
+        read_timeout: int = 10,
+        as_dict: bool = True,
+    ):
+        self.host = host
+        self.port = port
+        self.user = user
+        self.password = password
+        self.database = database
+        self.connect_timeout = connect_timeout
+        self.read_timeout = read_timeout
+        self.as_dict = as_dict
+        self._conn: Any = None
+        self._pymysql: Any = None
+
+    def _import_pymysql(self) -> Any:
+        """Import pymysql, raising a clear error if not available."""
+        try:
+            import pymysql  # type: ignore[import-untyped]
+
+            return pymysql
+        except ImportError as e:
+            raise MysqlConnectionError(
+                "pymysql package not installed. Install with: pip install pymysql"
+            ) from e
+
+    def connect(self) -> Any:
+        """Establish connection synchronously (for use in thread pool)."""
+        self._pymysql = self._import_pymysql()
+
+        try:
+            cursor_class = None
+            if self.as_dict:
+                cursors_module = getattr(self._pymysql, "cursors", None)
+                if cursors_module:
+                    cursor_class = getattr(cursors_module, "DictCursor", None)
+
+            connect_fn = getattr(self._pymysql, "connect")
+            kwargs: dict[str, Any] = {
+                "host": self.host,
+                "port": self.port,
+                "user": self.user,
+                "password": self.password,
+                "database": self.database,
+                "connect_timeout": self.connect_timeout,
+                "read_timeout": self.read_timeout,
+                "write_timeout": self.read_timeout,
+                "charset": "utf8mb4",
+            }
+            if cursor_class:
+                kwargs["cursorclass"] = cursor_class
+
+            self._conn = connect_fn(**kwargs)
+            return self._conn
+        except Exception as e:
+            error_str = str(e)
+            if "Access denied" in error_str:
+                raise MysqlConnectionError(
+                    "Access denied - check username and password"
+                ) from e
+            if "Unknown database" in error_str:
+                raise MysqlConnectionError(
+                    f"Unknown database '{self.database}' - check database name"
+                ) from e
+            if "Can't connect" in error_str:
+                raise MysqlConnectionError(
+                    f"Cannot connect to MySQL server at {self.host}:{self.port}"
+                ) from e
+            raise MysqlConnectionError(f"Connection error: {error_str}") from e
+
+    def close(self) -> None:
+        """Close the connection if open."""
+        if self._conn:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
+
+    def __enter__(self) -> Any:
+        return self.connect()
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
+
+
+def mysql_connect(
+    host: str,
+    port: int,
+    user: str,
+    password: str,
+    database: str,
+    connect_timeout: int = 10,
+    read_timeout: int = 10,
+    as_dict: bool = True,
+) -> MysqlConnection:
+    """
+    Create a MySQL/MariaDB connection context manager.
+
+    Args:
+        host: Database server hostname or IP.
+        port: Database server port (default 3306).
+        user: Username for authentication.
+        password: Password for authentication.
+        database: Database name to connect to.
+        connect_timeout: Connection timeout in seconds.
+        read_timeout: Query read timeout in seconds.
+        as_dict: Whether to return rows as dictionaries.
+
+    Returns:
+        MysqlConnection context manager.
+
+    Example:
+        with mysql_connect(host, port, user, password, database) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM table LIMIT 10")
+            rows = cursor.fetchall()
+    """
+    return MysqlConnection(
+        host=host,
+        port=port,
+        user=user,
+        password=password,
+        database=database,
+        connect_timeout=connect_timeout,
+        read_timeout=read_timeout,
         as_dict=as_dict,
     )

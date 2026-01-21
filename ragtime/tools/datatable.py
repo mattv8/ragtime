@@ -145,6 +145,11 @@ The table will have:
 - Pagination (for tables with many rows)
 - Responsive design
 
+REQUIRED PARAMETERS:
+- title: Table title string
+- columns: Array of column header strings
+- data: 2D array of actual row values (REQUIRED - you must pass the data from your query results)
+
 Example:
 {
   "title": "Active Users",

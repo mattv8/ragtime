@@ -824,10 +824,17 @@ class ToolType(str, Enum):
 
     POSTGRES = "postgres"
     MSSQL = "mssql"
+    MYSQL = "mysql"
     ODOO_SHELL = "odoo_shell"
     SSH_SHELL = "ssh_shell"
     FILESYSTEM_INDEXER = "filesystem_indexer"
     SOLIDWORKS_PDM = "solidworks_pdm"
+
+
+# Tool types that support schema indexing (use for ToolType enum comparisons)
+SCHEMA_INDEXER_CAPABLE_TOOL_TYPES = frozenset(
+    {ToolType.POSTGRES, ToolType.MSSQL, ToolType.MYSQL}
+)
 
 
 class FilesystemMountType(str, Enum):
@@ -856,6 +863,30 @@ class PostgresConnectionConfig(BaseModel):
         default="",
         description="Docker network to connect ragtime to the PostgreSQL container's network",
     )
+    # SSH tunnel configuration
+    ssh_tunnel_enabled: bool = Field(
+        default=False, description="Use SSH tunnel for database connection"
+    )
+    ssh_tunnel_host: str = Field(
+        default="", description="SSH server hostname for tunnel"
+    )
+    ssh_tunnel_port: int = Field(
+        default=22, ge=1, le=65535, description="SSH server port"
+    )
+    ssh_tunnel_user: str = Field(default="", description="SSH username")
+    ssh_tunnel_password: str = Field(
+        default="", description="SSH password (if not using key)"
+    )
+    ssh_tunnel_key_path: str = Field(default="", description="Path to SSH private key")
+    ssh_tunnel_key_content: str = Field(
+        default="", description="SSH private key content (preferred over path)"
+    )
+    ssh_tunnel_key_passphrase: str = Field(
+        default="", description="Passphrase for encrypted SSH key"
+    )
+    ssh_tunnel_public_key: str = Field(
+        default="", description="SSH public key for generated keypairs"
+    )
 
 
 class MssqlConnectionConfig(BaseModel):
@@ -866,6 +897,87 @@ class MssqlConnectionConfig(BaseModel):
     user: str = Field(description="MSSQL username (e.g., 'sa' or 'domain\\user')")
     password: str = Field(description="MSSQL password")
     database: str = Field(description="Database name to connect to")
+    # SSH tunnel configuration
+    ssh_tunnel_enabled: bool = Field(
+        default=False, description="Use SSH tunnel for database connection"
+    )
+    ssh_tunnel_host: str = Field(
+        default="", description="SSH server hostname for tunnel"
+    )
+    ssh_tunnel_port: int = Field(
+        default=22, ge=1, le=65535, description="SSH server port"
+    )
+    ssh_tunnel_user: str = Field(default="", description="SSH username")
+    ssh_tunnel_password: str = Field(
+        default="", description="SSH password (if not using key)"
+    )
+    ssh_tunnel_key_path: str = Field(default="", description="Path to SSH private key")
+    ssh_tunnel_key_content: str = Field(
+        default="", description="SSH private key content (preferred over path)"
+    )
+    ssh_tunnel_key_passphrase: str = Field(
+        default="", description="Passphrase for encrypted SSH key"
+    )
+    ssh_tunnel_public_key: str = Field(
+        default="", description="SSH public key for generated keypairs"
+    )
+
+
+class MysqlConnectionConfig(BaseModel):
+    """Connection configuration for MySQL/MariaDB tool."""
+
+    host: str = Field(
+        default="", description="MySQL/MariaDB server hostname or IP address"
+    )
+    port: int = Field(default=3306, ge=1, le=65535, description="MySQL port")
+    user: str = Field(default="", description="MySQL username")
+    password: str = Field(default="", description="MySQL password")
+    database: str = Field(default="", description="Database name to connect to")
+    # Docker container mode (alternative to direct connection)
+    container: str = Field(
+        default="", description="Docker container name (alternative to host)"
+    )
+    docker_network: str = Field(
+        default="",
+        description="Docker network to connect ragtime to the MySQL container's network",
+    )
+    # SSH tunnel configuration
+    ssh_tunnel_enabled: bool = Field(
+        default=False, description="Use SSH tunnel for database connection"
+    )
+    ssh_tunnel_host: str = Field(
+        default="", description="SSH server hostname for tunnel"
+    )
+    ssh_tunnel_port: int = Field(
+        default=22, ge=1, le=65535, description="SSH server port"
+    )
+    ssh_tunnel_user: str = Field(default="", description="SSH username")
+    ssh_tunnel_password: str = Field(
+        default="", description="SSH password (if not using key)"
+    )
+    ssh_tunnel_key_path: str = Field(default="", description="Path to SSH private key")
+    ssh_tunnel_key_content: str = Field(
+        default="", description="SSH private key content (preferred over path)"
+    )
+    ssh_tunnel_key_passphrase: str = Field(
+        default="", description="Passphrase for encrypted SSH key"
+    )
+    ssh_tunnel_public_key: str = Field(
+        default="", description="SSH public key for generated keypairs"
+    )
+    # Schema indexing options
+    schema_index_enabled: bool = Field(
+        default=False, description="Enable automatic schema indexing"
+    )
+    schema_index_interval_hours: int = Field(
+        default=24, ge=1, le=168, description="Re-index schema every N hours"
+    )
+    last_schema_indexed_at: Optional[str] = Field(
+        default=None, description="Timestamp of last schema indexing"
+    )
+    schema_hash: Optional[str] = Field(
+        default=None, description="Hash of last indexed schema"
+    )
 
 
 class OdooShellConnectionConfig(BaseModel):
@@ -1278,6 +1390,25 @@ class PostgresDiscoverRequest(BaseModel):
     port: int = Field(default=5432, description="PostgreSQL server port")
     user: str = Field(description="PostgreSQL username")
     password: str = Field(description="PostgreSQL password")
+    # SSH tunnel configuration
+    ssh_tunnel_enabled: bool = Field(
+        default=False, description="Whether to use SSH tunnel"
+    )
+    ssh_tunnel_host: Optional[str] = Field(
+        default=None, description="SSH server hostname"
+    )
+    ssh_tunnel_port: int = Field(default=22, description="SSH server port")
+    ssh_tunnel_user: Optional[str] = Field(default=None, description="SSH username")
+    ssh_tunnel_password: Optional[str] = Field(default=None, description="SSH password")
+    ssh_tunnel_key_path: Optional[str] = Field(
+        default=None, description="Path to SSH private key"
+    )
+    ssh_tunnel_key_content: Optional[str] = Field(
+        default=None, description="SSH private key content"
+    )
+    ssh_tunnel_key_passphrase: Optional[str] = Field(
+        default=None, description="SSH key passphrase"
+    )
 
 
 class PostgresDiscoverResponse(BaseModel):
@@ -1299,10 +1430,84 @@ class MssqlDiscoverRequest(BaseModel):
     port: int = Field(default=1433, description="SQL Server port")
     user: str = Field(description="SQL Server username")
     password: str = Field(description="SQL Server password")
+    # SSH tunnel configuration
+    ssh_tunnel_enabled: bool = Field(
+        default=False, description="Whether to use SSH tunnel"
+    )
+    ssh_tunnel_host: Optional[str] = Field(
+        default=None, description="SSH server hostname"
+    )
+    ssh_tunnel_port: int = Field(default=22, description="SSH server port")
+    ssh_tunnel_user: Optional[str] = Field(default=None, description="SSH username")
+    ssh_tunnel_password: Optional[str] = Field(default=None, description="SSH password")
+    ssh_tunnel_key_path: Optional[str] = Field(
+        default=None, description="Path to SSH private key"
+    )
+    ssh_tunnel_key_content: Optional[str] = Field(
+        default=None, description="SSH private key content"
+    )
+    ssh_tunnel_key_passphrase: Optional[str] = Field(
+        default=None, description="SSH key passphrase"
+    )
 
 
 class MssqlDiscoverResponse(BaseModel):
     """Response from MSSQL database discovery."""
+
+    success: bool = Field(description="Whether discovery succeeded")
+    databases: List[str] = Field(
+        default_factory=list, description="List of discovered database names"
+    )
+    error: Optional[str] = Field(
+        default=None, description="Error message if discovery failed"
+    )
+
+
+class MysqlDiscoverRequest(BaseModel):
+    """Request to discover databases on a MySQL/MariaDB server."""
+
+    host: Optional[str] = Field(
+        default=None, description="MySQL/MariaDB hostname or IP (for direct mode)"
+    )
+    port: int = Field(default=3306, description="MySQL/MariaDB port")
+    user: Optional[str] = Field(
+        default=None, description="MySQL username (for direct mode)"
+    )
+    password: Optional[str] = Field(
+        default=None, description="MySQL password (for direct mode)"
+    )
+    database: Optional[str] = Field(
+        default=None, description="Default database to check if discovery fails"
+    )
+    container: Optional[str] = Field(
+        default=None, description="Docker container name (for container mode)"
+    )
+    docker_network: Optional[str] = Field(
+        default=None, description="Docker network name (for container mode)"
+    )
+    # SSH tunnel configuration
+    ssh_tunnel_enabled: bool = Field(
+        default=False, description="Whether to use SSH tunnel"
+    )
+    ssh_tunnel_host: Optional[str] = Field(
+        default=None, description="SSH server hostname"
+    )
+    ssh_tunnel_port: int = Field(default=22, description="SSH server port")
+    ssh_tunnel_user: Optional[str] = Field(default=None, description="SSH username")
+    ssh_tunnel_password: Optional[str] = Field(default=None, description="SSH password")
+    ssh_tunnel_key_path: Optional[str] = Field(
+        default=None, description="Path to SSH private key"
+    )
+    ssh_tunnel_key_content: Optional[str] = Field(
+        default=None, description="SSH private key content"
+    )
+    ssh_tunnel_key_passphrase: Optional[str] = Field(
+        default=None, description="SSH key passphrase"
+    )
+
+
+class MysqlDiscoverResponse(BaseModel):
+    """Response from MySQL database discovery."""
 
     success: bool = Field(description="Whether discovery succeeded")
     databases: List[str] = Field(
@@ -1321,6 +1526,25 @@ class PdmDiscoverRequest(BaseModel):
     user: str = Field(description="SQL Server username")
     password: str = Field(description="SQL Server password")
     database: str = Field(description="PDM database name")
+    # SSH tunnel configuration
+    ssh_tunnel_enabled: bool = Field(
+        default=False, description="Whether to use SSH tunnel"
+    )
+    ssh_tunnel_host: Optional[str] = Field(
+        default=None, description="SSH server hostname"
+    )
+    ssh_tunnel_port: int = Field(default=22, description="SSH server port")
+    ssh_tunnel_user: Optional[str] = Field(default=None, description="SSH username")
+    ssh_tunnel_password: Optional[str] = Field(default=None, description="SSH password")
+    ssh_tunnel_key_path: Optional[str] = Field(
+        default=None, description="Path to SSH private key"
+    )
+    ssh_tunnel_key_content: Optional[str] = Field(
+        default=None, description="SSH private key content"
+    )
+    ssh_tunnel_key_passphrase: Optional[str] = Field(
+        default=None, description="SSH key passphrase"
+    )
 
 
 class PdmDiscoverResponse(BaseModel):
@@ -1958,6 +2182,30 @@ class SolidworksPdmConnectionConfig(BaseModel):
     user: str = Field(description="SQL Server username (readonly recommended)")
     password: str = Field(default="", description="SQL Server password")
     database: str = Field(description="PDM database name (e.g., 'HAM-PDM')")
+    # SSH tunnel configuration
+    ssh_tunnel_enabled: bool = Field(
+        default=False, description="Use SSH tunnel for database connection"
+    )
+    ssh_tunnel_host: str = Field(
+        default="", description="SSH server hostname for tunnel"
+    )
+    ssh_tunnel_port: int = Field(
+        default=22, ge=1, le=65535, description="SSH server port"
+    )
+    ssh_tunnel_user: str = Field(default="", description="SSH username")
+    ssh_tunnel_password: str = Field(
+        default="", description="SSH password (if not using key)"
+    )
+    ssh_tunnel_key_path: str = Field(default="", description="Path to SSH private key")
+    ssh_tunnel_key_content: str = Field(
+        default="", description="SSH private key content (preferred over path)"
+    )
+    ssh_tunnel_key_passphrase: str = Field(
+        default="", description="Passphrase for encrypted SSH key"
+    )
+    ssh_tunnel_public_key: str = Field(
+        default="", description="SSH public key for generated keypairs"
+    )
 
     # Document filtering
     file_extensions: List[str] = Field(

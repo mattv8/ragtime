@@ -24,14 +24,11 @@ from pydantic import BaseModel, Field
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.logging import get_logger
-from ragtime.core.security import (
-    sanitize_output,
-    validate_odoo_code,
-    validate_sql_query,
-    validate_ssh_command,
-)
+from ragtime.core.security import (sanitize_output, validate_odoo_code,
+                                   validate_sql_query, validate_ssh_command)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import SSHConfig, execute_ssh_command
+from ragtime.core.ssh import (SSHConfig, execute_ssh_command,
+                              ssh_tunnel_config_from_dict, build_ssh_tunnel_config)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
@@ -40,12 +37,11 @@ from ragtime.tools import get_all_tools, get_enabled_tools
 from ragtime.tools.chart import create_chart_tool
 from ragtime.tools.datatable import create_datatable_tool
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (
-    _is_shallow_repository,
-    create_aggregate_git_history_tool,
-    create_per_index_git_history_tool,
-)
+from ragtime.tools.git_history import (_is_shallow_repository,
+                                       create_aggregate_git_history_tool,
+                                       create_per_index_git_history_tool)
 from ragtime.tools.mssql import create_mssql_tool
+from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
 
 logger = get_logger(__name__)
@@ -136,6 +132,10 @@ RULES:
 1. NEVER write markdown tables in your response text. ALWAYS use create_datatable instead.
 2. Proactively use these tools AFTER you retrieve data. Don't wait to be asked.
 3. You can (and should) use BOTH tools together - a chart for visualization AND a datatable for the raw data.
+4. You MUST pass the actual data values to these tools - they do not have access to previous query results.
+
+CRITICAL: When calling create_datatable, you must include the 'data' parameter with the actual row values
+from your query results. The tool cannot see your previous outputs - you must explicitly pass the data array.
 
 AUTO-VISUALIZE when:
 - Query returns numeric data that can be compared -> USE create_chart (bar/line)
@@ -831,7 +831,7 @@ class RAGComponents:
                 # Memory used by this index (approximate - may include GC overhead)
                 steady_mem = max(0, mem_after - mem_before)
 
-                # Create retriever with MMR support if enabled
+                # Create retriever with MMR support if enabledfrom ragtime.core.ssh import
                 retriever = self._create_retriever_from_faiss(db, index_name)
                 logger.info(
                     f"Loaded FAISS index: {index_name} from {index_path} "
@@ -1260,6 +1260,14 @@ class RAGComponents:
                 )
                 if schema_tool:
                     tools.append(schema_tool)
+            elif tool_type == "mysql":
+                tool = await self._create_mysql_tool(config, tool_name, tool_id)
+                # Also create schema search tool if schema indexing is enabled
+                schema_tool = await self._create_schema_search_tool(
+                    config, tool_name, tool_id
+                )
+                if schema_tool:
+                    tools.append(schema_tool)
             elif tool_type == "odoo_shell":
                 tool = await self._create_odoo_tool(config, tool_name, tool_id)
             elif tool_type == "ssh_shell":
@@ -1640,6 +1648,12 @@ class RAGComponents:
         allow_write = config.get("allow_write", False)
         description = config.get("description", "")
 
+        host = conn_config.get("host", "")
+        port = conn_config.get("port", 5432)
+
+        # Build SSH tunnel config if enabled
+        ssh_tunnel_config = build_ssh_tunnel_config(conn_config, host, port)
+
         class PostgresInput(BaseModel):
             query: str = Field(
                 default="",
@@ -1667,12 +1681,92 @@ class RAGComponents:
                 return f"Error: {validation_reason}"
 
             # Build command
-            host = conn_config.get("host", "")
-            port = conn_config.get("port", 5432)
             user = conn_config.get("user", "")
             password = conn_config.get("password", "")
             database = conn_config.get("database", "")
             container = conn_config.get("container", "")
+
+            # SSH tunnel mode uses psycopg2
+            if ssh_tunnel_config:
+                def run_tunnel_query() -> str:
+                    try:
+                        import psycopg2  # type: ignore[import-untyped]
+                        import psycopg2.extras  # type: ignore[import-untyped]
+                    except ImportError:
+                        return "Error: psycopg2 package not installed. Install with: pip install psycopg2-binary"
+
+                    tunnel: SSHTunnel | None = None
+                    conn = None
+                    try:
+                        if ssh_tunnel_config is None:
+                            return "Error: SSH tunnel configuration is missing"
+                        tunnel_cfg = ssh_tunnel_config_from_dict(
+                            ssh_tunnel_config, default_remote_port=5432
+                        )
+                        if not tunnel_cfg:
+                            return "Error: Invalid SSH tunnel configuration"
+
+                        tunnel = SSHTunnel(tunnel_cfg)
+                        local_port = tunnel.start()
+
+                        conn = psycopg2.connect(
+                            host="127.0.0.1",
+                            port=local_port,
+                            user=user,
+                            password=password,
+                            dbname=database,
+                            connect_timeout=timeout,
+                        )
+                        cursor = conn.cursor(
+                            cursor_factory=psycopg2.extras.RealDictCursor
+                        )
+                        cursor.execute(query)
+
+                        if cursor.description:
+                            rows = cursor.fetchall()
+                            if not rows:
+                                return "Query executed successfully (no results)"
+                            # Format as psql-like output
+                            columns = [col.name for col in cursor.description]
+                            lines = []
+                            lines.append(" | ".join(columns))
+                            lines.append("-+-".join(["-" * len(c) for c in columns]))
+                            for row in rows:
+                                lines.append(
+                                    " | ".join(str(row.get(c, "")) for c in columns)
+                                )
+                            lines.append(
+                                f"({len(rows)} row{'s' if len(rows) != 1 else ''})"
+                            )
+                            output = "\n".join(lines)
+                            output = add_table_metadata_to_psql_output(output)
+                            return sanitize_output(output)
+                        else:
+                            return "Query executed successfully (no results)"
+
+                    except Exception as e:
+                        return f"Error: {str(e)}"
+                    finally:
+                        if conn:
+                            try:
+                                conn.close()
+                            except Exception:
+                                pass
+                        if tunnel:
+                            try:
+                                tunnel.stop()
+                            except Exception:
+                                pass
+
+                try:
+                    return await asyncio.wait_for(
+                        asyncio.get_event_loop().run_in_executor(
+                            None, run_tunnel_query
+                        ),
+                        timeout=timeout + 5,
+                    )
+                except asyncio.TimeoutError:
+                    return f"Error: Query timed out after {timeout}s"
 
             escaped_query = query.replace("'", "'\\''")
 
@@ -1750,6 +1844,7 @@ class RAGComponents:
 
     async def _create_mssql_tool(self, config: dict, tool_name: str, _tool_id: str):
         """Create an MSSQL/SQL Server query tool from config."""
+
         conn_config = config.get("connection_config", {})
         timeout = config.get("timeout", 30)
         max_results = config.get("max_results", 100)
@@ -1762,7 +1857,9 @@ class RAGComponents:
         password = conn_config.get("password", "")
         database = conn_config.get("database", "")
 
-        if not host:
+        # Build SSH tunnel config if enabled
+        ssh_tunnel_config = build_ssh_tunnel_config(conn_config, host, port)
+        if not ssh_tunnel_config and not host:
             logger.error(f"MSSQL tool {tool_name} missing host configuration")
             return None
 
@@ -1777,6 +1874,42 @@ class RAGComponents:
             max_results=max_results,
             allow_write=allow_write,
             description=description,
+            ssh_tunnel_config=ssh_tunnel_config,
+        )
+
+    async def _create_mysql_tool(self, config: dict, tool_name: str, _tool_id: str):
+        """Create a MySQL/MariaDB query tool from config."""
+
+        conn_config = config.get("connection_config", {})
+        timeout = config.get("timeout", 30)
+        max_results = config.get("max_results", 100)
+        allow_write = config.get("allow_write", False)
+        description = config.get("description", "")
+
+        host = conn_config.get("host", "")
+        port = conn_config.get("port", 3306)
+        user = conn_config.get("user", "")
+        password = conn_config.get("password", "")
+        database = conn_config.get("database", "")
+
+        # Build SSH tunnel config if enabled
+        ssh_tunnel_config = build_ssh_tunnel_config(conn_config, host, port)
+        if not ssh_tunnel_config and not host:
+            logger.error(f"MySQL tool {tool_name} missing host configuration")
+            return None
+
+        return create_mysql_tool(
+            name=config.get("name", tool_name),
+            host=host,
+            port=port,
+            user=user,
+            password=password,
+            database=database,
+            timeout=timeout,
+            max_results=max_results,
+            allow_write=allow_write,
+            description=description,
+            ssh_tunnel_config=ssh_tunnel_config,
         )
 
     async def _create_odoo_tool(self, config: dict, tool_name: str, _tool_id: str):

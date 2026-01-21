@@ -29,6 +29,7 @@ from ragtime.core.encryption import (
 )
 from ragtime.core.logging import get_logger
 from ragtime.indexer.models import (
+    SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
     AppSettings,
     ChatMessage,
     ChatTask,
@@ -1004,7 +1005,7 @@ class IndexerRepository:
 
         try:
             # Update based on tool type
-            if tool.tool_type in (ToolType.POSTGRES, ToolType.MSSQL):
+            if tool.tool_type in SCHEMA_INDEXER_CAPABLE_TOOL_TYPES:
                 # Schema embeddings: schema_{old_safe_name} -> schema_{new_safe_name}
                 old_index_name = f"schema_{old_safe_name}"
                 new_index_name = f"schema_{new_safe_name}"
@@ -1787,7 +1788,7 @@ class IndexerRepository:
                         if index_name:
                             valid_filesystem_indexes.add(index_name)
 
-                elif tool.tool_type in (ToolType.POSTGRES, ToolType.MSSQL):
+                elif tool.tool_type in SCHEMA_INDEXER_CAPABLE_TOOL_TYPES:
                     # Schema indexes use format: schema_{tool_name} or schema_{tool_id}
                     if tool_safe_name:
                         valid_schema_indexes.add(f"schema_{tool_safe_name}")

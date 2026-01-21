@@ -341,3 +341,445 @@ def ssh_config_from_dict(config_dict: dict) -> SSHConfig:
         key_passphrase=get_field("key_passphrase"),
         timeout=int(get_field("timeout", 30)),
     )
+
+
+# =============================================================================
+# SSH Tunnel Support
+# =============================================================================
+
+
+@dataclass
+class SSHTunnelConfig:
+    """Configuration for SSH tunnel to a database.
+
+    The tunnel forwards a local port to a remote host:port as seen from the SSH server.
+    This allows connecting to databases that are only accessible from the SSH server
+    (e.g., localhost:3306 on a remote server).
+    """
+
+    # SSH connection settings
+    ssh_host: str
+    ssh_user: str
+    ssh_port: int = 22
+    ssh_password: Optional[str] = None
+    ssh_key_path: Optional[str] = None
+    ssh_key_content: Optional[str] = None
+    ssh_key_passphrase: Optional[str] = None
+
+    # Remote endpoint (as seen from SSH server)
+    remote_host: str = "127.0.0.1"  # Usually localhost on the remote server
+    remote_port: int = 3306  # Default MySQL port
+
+    # Local binding
+    local_port: int = 0  # 0 = auto-assign
+
+    timeout: int = 30
+
+    def to_ssh_config(self) -> SSHConfig:
+        """Convert to SSHConfig for connection."""
+        return SSHConfig(
+            host=self.ssh_host,
+            user=self.ssh_user,
+            port=self.ssh_port,
+            password=self.ssh_password,
+            key_path=self.ssh_key_path,
+            key_content=self.ssh_key_content,
+            key_passphrase=self.ssh_key_passphrase,
+            timeout=self.timeout,
+        )
+
+    def validate(self) -> None:
+        """Validate tunnel configuration."""
+        if not self.ssh_host:
+            raise ValueError("SSH host is required for tunnel")
+        if not self.ssh_user:
+            raise ValueError("SSH user is required for tunnel")
+        if not any([self.ssh_password, self.ssh_key_path, self.ssh_key_content]):
+            raise ValueError(
+                "SSH authentication required: provide password, key_path, or key_content"
+            )
+
+
+class SSHTunnel:
+    """
+    SSH tunnel manager for database connections.
+
+    Usage:
+        tunnel = SSHTunnel(config)
+        with tunnel:
+            # Connect to database at ('127.0.0.1', tunnel.local_port)
+            conn = pymysql.connect(host='127.0.0.1', port=tunnel.local_port, ...)
+
+    Or for async:
+        tunnel = SSHTunnel(config)
+        tunnel.start()
+        try:
+            # Use tunnel.local_port
+        finally:
+            tunnel.stop()
+    """
+
+    def __init__(self, config: SSHTunnelConfig):
+        self.config = config
+        self._client: Optional[paramiko.SSHClient] = None
+        self._transport: Optional[paramiko.Transport] = None
+        self._local_port: int = 0
+        self._server_socket: Optional[socket.socket] = None
+        self._forward_thread: Optional[socket.socket] = None
+        self._running = False
+        self._connections: list = []
+
+    @property
+    def local_port(self) -> int:
+        """Get the local port the tunnel is bound to."""
+        return self._local_port
+
+    @property
+    def local_bind_address(self) -> tuple[str, int]:
+        """Get the local bind address tuple."""
+        return ("127.0.0.1", self._local_port)
+
+    def start(self) -> int:
+        """
+        Start the SSH tunnel.
+
+        Returns:
+            The local port number to connect to.
+        """
+        self.config.validate()
+
+        self._client = paramiko.SSHClient()
+        self._client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+        # Build connection kwargs
+        ssh_config = self.config.to_ssh_config()
+        connect_kwargs = {
+            "hostname": ssh_config.host,
+            "port": ssh_config.port,
+            "username": ssh_config.user,
+            "timeout": ssh_config.timeout,
+            "allow_agent": False,
+            "look_for_keys": False,
+        }
+
+        auth_method = ssh_config.auth_method
+        logger.debug(
+            f"SSH tunnel connecting to {ssh_config.user}@{ssh_config.host}:{ssh_config.port}"
+        )
+
+        if auth_method == SSHAuthMethod.PASSWORD:
+            connect_kwargs["password"] = ssh_config.password
+        else:
+            pkey = _load_private_key(
+                key_content=ssh_config.key_content,
+                key_path=ssh_config.key_path,
+                passphrase=ssh_config.key_passphrase,
+            )
+            connect_kwargs["pkey"] = pkey
+
+        self._client.connect(**connect_kwargs)
+        self._transport = self._client.get_transport()
+
+        # Create local server socket
+        self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._server_socket.bind(("127.0.0.1", self.config.local_port))
+        self._server_socket.listen(5)
+        self._server_socket.settimeout(1.0)  # For clean shutdown
+
+        self._local_port = self._server_socket.getsockname()[1]
+        self._running = True
+
+        # Start forwarding thread
+        import threading
+
+        self._forward_thread = threading.Thread(target=self._forward_loop, daemon=True)
+        self._forward_thread.start()
+
+        logger.info(
+            f"SSH tunnel started: localhost:{self._local_port} -> "
+            f"{self.config.remote_host}:{self.config.remote_port} "
+            f"via {self.config.ssh_host}"
+        )
+
+        return self._local_port
+
+    def _forward_loop(self) -> None:
+        """Accept connections and forward them through SSH."""
+        import threading
+
+        while self._running:
+            try:
+                client_socket, addr = self._server_socket.accept()
+                logger.debug(f"SSH tunnel connection from {addr}")
+
+                # Open channel to remote host
+                try:
+                    channel = self._transport.open_channel(
+                        "direct-tcpip",
+                        (self.config.remote_host, self.config.remote_port),
+                        addr,
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to open SSH channel: {e}")
+                    client_socket.close()
+                    continue
+
+                if channel is None:
+                    logger.error("SSH channel open returned None")
+                    client_socket.close()
+                    continue
+
+                # Start bidirectional forwarding threads
+                self._connections.append((client_socket, channel))
+
+                t1 = threading.Thread(
+                    target=self._forward_data,
+                    args=(client_socket, channel, "local->remote"),
+                    daemon=True,
+                )
+                t2 = threading.Thread(
+                    target=self._forward_data,
+                    args=(channel, client_socket, "remote->local"),
+                    daemon=True,
+                )
+                t1.start()
+                t2.start()
+
+            except socket.timeout:
+                continue
+            except Exception as e:
+                if self._running:
+                    logger.error(f"SSH tunnel accept error: {e}")
+                break
+
+    def _forward_data(self, src, dst, direction: str) -> None:
+        """Forward data between sockets."""
+        try:
+            while self._running:
+                try:
+                    data = src.recv(4096)
+                    if not data:
+                        break
+                    dst.sendall(data)
+                except Exception:
+                    break
+        except Exception:
+            pass
+        finally:
+            try:
+                src.close()
+            except Exception:
+                pass
+            try:
+                dst.close()
+            except Exception:
+                pass
+
+    def stop(self) -> None:
+        """Stop the SSH tunnel."""
+        self._running = False
+
+        # Close all forwarded connections
+        for client_socket, channel in self._connections:
+            try:
+                client_socket.close()
+            except Exception:
+                pass
+            try:
+                channel.close()
+            except Exception:
+                pass
+        self._connections.clear()
+
+        # Close server socket
+        if self._server_socket:
+            try:
+                self._server_socket.close()
+            except Exception:
+                pass
+            self._server_socket = None
+
+        # Close SSH connection
+        if self._client:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+            self._client = None
+            self._transport = None
+
+        logger.debug("SSH tunnel stopped")
+
+    def __enter__(self) -> "SSHTunnel":
+        """Context manager entry."""
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Context manager exit."""
+        self.stop()
+
+
+def ssh_tunnel_config_from_dict(
+    config_dict: dict, default_remote_port: int = 3306
+) -> SSHTunnelConfig:
+    """
+    Create SSHTunnelConfig from a connection config dictionary.
+
+    Expects fields prefixed with 'ssh_tunnel_' for tunnel settings.
+    The remote host/port for the tunnel are taken from the main 'host'/'port'
+    fields in the config (these represent the remote endpoint from the SSH
+    server's perspective when tunneling).
+    """
+
+    def _coerce_int(value, default: int) -> int:
+        """Best-effort int conversion that tolerates blanks and wrong types."""
+        try:
+            if value is None:
+                return default
+            if isinstance(value, bool):
+                return int(value)
+            if isinstance(value, (int, float)):
+                return int(value)
+            if isinstance(value, str):
+                stripped = value.strip()
+                if not stripped:
+                    return default
+                return int(stripped)
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    # Remote endpoint is the main host/port - this is where the database is
+    # from the SSH server's perspective (usually 127.0.0.1 / localhost)
+    remote_host = config_dict.get("host", "127.0.0.1") or "127.0.0.1"
+    remote_port = _coerce_int(
+        config_dict.get("port", default_remote_port), default_remote_port
+    )
+
+    return SSHTunnelConfig(
+        ssh_host=config_dict.get("ssh_tunnel_host", ""),
+        ssh_user=config_dict.get("ssh_tunnel_user", ""),
+        ssh_port=_coerce_int(config_dict.get("ssh_tunnel_port", 22), 22),
+        ssh_password=config_dict.get("ssh_tunnel_password"),
+        ssh_key_path=config_dict.get("ssh_tunnel_key_path"),
+        ssh_key_content=config_dict.get("ssh_tunnel_key_content"),
+        ssh_key_passphrase=config_dict.get("ssh_tunnel_key_passphrase"),
+        remote_host=remote_host,
+        remote_port=remote_port,
+        timeout=_coerce_int(config_dict.get("ssh_tunnel_timeout", 30), 30),
+    )
+
+
+def test_ssh_tunnel(config: SSHTunnelConfig) -> tuple[bool, str]:
+    """
+    Test SSH tunnel connectivity.
+
+    Verifies that the SSH connection can be established and a channel
+    to the remote endpoint can be opened.
+
+    Returns:
+        Tuple of (success, message)
+    """
+    try:
+        config.validate()
+    except ValueError as e:
+        return False, str(e)
+
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+    try:
+        ssh_config = config.to_ssh_config()
+        connect_kwargs = {
+            "hostname": ssh_config.host,
+            "port": ssh_config.port,
+            "username": ssh_config.user,
+            "timeout": ssh_config.timeout,
+            "allow_agent": False,
+            "look_for_keys": False,
+        }
+
+        auth_method = ssh_config.auth_method
+        if auth_method == SSHAuthMethod.PASSWORD:
+            connect_kwargs["password"] = ssh_config.password
+        else:
+            pkey = _load_private_key(
+                key_content=ssh_config.key_content,
+                key_path=ssh_config.key_path,
+                passphrase=ssh_config.key_passphrase,
+            )
+            connect_kwargs["pkey"] = pkey
+
+        client.connect(**connect_kwargs)
+        transport = client.get_transport()
+
+        # Try to open a channel to verify the remote endpoint is reachable
+        try:
+            channel = transport.open_channel(
+                "direct-tcpip",
+                (config.remote_host, config.remote_port),
+                ("127.0.0.1", 0),
+                timeout=10,
+            )
+            if channel:
+                channel.close()
+                return (
+                    True,
+                    f"SSH tunnel test successful: {config.ssh_host} -> "
+                    f"{config.remote_host}:{config.remote_port}",
+                )
+            else:
+                return (
+                    False,
+                    f"Could not open channel to {config.remote_host}:{config.remote_port}",
+                )
+        except Exception as e:
+            return (
+                False,
+                f"SSH connected but cannot reach {config.remote_host}:{config.remote_port}: {e}",
+            )
+
+    except paramiko.AuthenticationException as e:
+        return False, f"SSH authentication failed: {e}"
+    except socket.timeout:
+        return False, f"SSH connection timed out"
+    except socket.error as e:
+        return False, f"SSH connection error: {e}"
+    except Exception as e:
+        return False, f"SSH tunnel test failed: {e}"
+    finally:
+        client.close()
+
+
+def build_ssh_tunnel_config(config: dict, host: str, port: int) -> dict | None:
+    """
+    Build a normalized SSH tunnel config dict from a tool connection config.
+
+    This extracts ssh_tunnel_* prefixed fields from the config and builds
+    a dict suitable for passing to ssh_tunnel_config_from_dict().
+
+    Args:
+        config: Tool connection config dict with ssh_tunnel_* fields
+        host: Remote host (database host from SSH server's perspective)
+        port: Remote port (database port from SSH server's perspective)
+
+    Returns:
+        Dict for ssh_tunnel_config_from_dict(), or None if SSH tunnel not enabled
+    """
+    if not config.get("ssh_tunnel_enabled"):
+        return None
+
+    return {
+        "host": host or "127.0.0.1",
+        "port": port,
+        "ssh_tunnel_host": config.get("ssh_tunnel_host"),
+        "ssh_tunnel_port": config.get("ssh_tunnel_port"),
+        "ssh_tunnel_user": config.get("ssh_tunnel_user"),
+        "ssh_tunnel_password": config.get("ssh_tunnel_password"),
+        "ssh_tunnel_key_path": config.get("ssh_tunnel_key_path"),
+        "ssh_tunnel_key_content": config.get("ssh_tunnel_key_content"),
+        "ssh_tunnel_key_passphrase": config.get("ssh_tunnel_key_passphrase"),
+    }
+

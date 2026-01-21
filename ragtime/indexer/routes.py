@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional
 
 import httpx
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
+from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException,
+                     UploadFile)
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
@@ -25,34 +26,28 @@ from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit
 from ragtime.core.security import get_current_user, require_admin
-from ragtime.core.sql_utils import MssqlConnectionError, mssql_connect
+from ragtime.core.sql_utils import (MssqlConnectionError, MysqlConnectionError,
+                                    mssql_connect, mysql_connect)
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (
-    AnalyzeIndexRequest,
-    AppSettings,
-    CheckRepoVisibilityRequest,
-    ConfigurationWarning,
-    CreateIndexRequest,
-    FetchBranchesRequest,
-    FetchBranchesResponse,
-    IndexAnalysisResult,
-    IndexConfig,
-    IndexInfo,
-    IndexJobResponse,
-    IndexStatus,
-    PdmIndexJobResponse,
-    RepoVisibilityResponse,
-    RetryVisualizationRequest,
-    RetryVisualizationResponse,
-    SchemaIndexJobResponse,
-    TriggerPdmIndexRequest,
-    TriggerSchemaIndexRequest,
-    UpdateSettingsRequest,
-)
+from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
+                                    CheckRepoVisibilityRequest,
+                                    ConfigurationWarning, CreateIndexRequest,
+                                    FetchBranchesRequest,
+                                    FetchBranchesResponse, IndexAnalysisResult,
+                                    IndexConfig, IndexInfo, IndexJobResponse,
+                                    IndexStatus, PdmIndexJobResponse,
+                                    RepoVisibilityResponse,
+                                    RetryVisualizationRequest,
+                                    RetryVisualizationResponse,
+                                    SchemaIndexJobResponse,
+                                    TriggerPdmIndexRequest,
+                                    TriggerSchemaIndexRequest,
+                                    UpdateSettingsRequest)
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import schema_indexer
+from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
+                                            schema_indexer)
 from ragtime.indexer.service import indexer
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_utils import ensure_pgvector_extension
@@ -1193,19 +1188,16 @@ async def get_embedding_status(_user: User = Depends(require_admin)):
 # Tool Configuration Endpoints (Admin only)
 # -----------------------------------------------------------------------------
 
-from ragtime.indexer.models import (
-    CreateToolConfigRequest,
-    MssqlDiscoverRequest,
-    MssqlDiscoverResponse,
-    PdmDiscoverRequest,
-    PdmDiscoverResponse,
-    PostgresDiscoverRequest,
-    PostgresDiscoverResponse,
-    ToolConfig,
-    ToolTestRequest,
-    ToolType,
-    UpdateToolConfigRequest,
-)
+from ragtime.indexer.models import (CreateToolConfigRequest,
+                                    MssqlDiscoverRequest,
+                                    MssqlDiscoverResponse,
+                                    MysqlDiscoverRequest,
+                                    MysqlDiscoverResponse, PdmDiscoverRequest,
+                                    PdmDiscoverResponse,
+                                    PostgresDiscoverRequest,
+                                    PostgresDiscoverResponse, ToolConfig,
+                                    ToolTestRequest, ToolType,
+                                    UpdateToolConfigRequest)
 
 
 class SSHKeyPairResponse(BaseModel):
@@ -1357,15 +1349,15 @@ async def update_tool_config(
     """
     updates = request.model_dump(exclude_unset=True)
 
+    # Capture the current config to detect changes (e.g., schema indexing enablement)
+    original_config = await repository.get_tool_config(tool_id)
+    if original_config is None:
+        raise HTTPException(status_code=404, detail="Tool configuration not found")
+
     # Check if name is being changed - if so, use rename_tool_config for consistency
     if "name" in updates and updates["name"] is not None:
-        # Get current tool to check if name actually changed
-        current_tool = await repository.get_tool_config(tool_id)
-        if current_tool is None:
-            raise HTTPException(status_code=404, detail="Tool configuration not found")
-
         new_name = updates.pop("name")
-        if new_name != current_tool.name:
+        if new_name != original_config.name:
             # Use rename_tool_config for comprehensive name updates
             config, update_counts = await repository.rename_tool_config(
                 tool_id, new_name
@@ -1407,6 +1399,40 @@ async def update_tool_config(
 
     # Notify MCP clients that tools have changed (e.g., renamed)
     notify_tools_changed()
+
+    # Auto-trigger schema indexing when it is newly enabled on supported tools
+    try:
+        prev_enabled = bool(
+            (original_config.connection_config or {}).get("schema_index_enabled", False)
+        )
+        new_enabled = bool(
+            (config.connection_config or {}).get("schema_index_enabled", False)
+        )
+        if (
+            config.tool_type.value in SCHEMA_INDEXER_CAPABLE_TYPES
+            and new_enabled
+            and not prev_enabled
+        ):
+            # Ensure pgvector is available; log instead of failing the update
+            if await ensure_pgvector_extension(logger_override=logger):
+                await schema_indexer.trigger_index(
+                    tool_config_id=tool_id,
+                    tool_type=config.tool_type.value,
+                    connection_config=config.connection_config or {},
+                    full_reindex=True,
+                    tool_name=safe_tool_name(config.name) or None,
+                )
+                logger.info(
+                    "Auto-triggered schema indexing after enabling on tool %s",
+                    tool_id,
+                )
+            else:
+                logger.warning(
+                    "pgvector extension unavailable; skipping auto schema index for tool %s",
+                    tool_id,
+                )
+    except Exception:
+        logger.exception("Failed to auto-trigger schema indexing after update")
 
     return config
 
@@ -1453,7 +1479,7 @@ async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin))
                 f"Failed to cleanup filesystem embeddings for tool {tool_id}: {e}"
             )
 
-    elif tool.tool_type in ("postgres", "mssql"):
+    elif tool.tool_type in SCHEMA_INDEXER_CAPABLE_TYPES:
         try:
             success, msg = await schema_indexer.delete_index(tool_id, tool_name)
             if success:
@@ -1550,6 +1576,8 @@ async def test_tool_connection(
         return await _test_postgres_connection(config)
     elif tool_type == ToolType.MSSQL:
         return await _test_mssql_connection(config)
+    elif tool_type == ToolType.MYSQL:
+        return await _test_mysql_connection(config)
     elif tool_type == ToolType.ODOO_SHELL:
         return await _test_odoo_connection(config)
     elif tool_type == ToolType.SSH_SHELL:
@@ -1655,17 +1683,50 @@ async def discover_postgres_databases(
     """
     Discover available databases on a PostgreSQL server. Admin only.
     Connects to the server and lists all accessible databases.
+    Supports SSH tunnel for remote database access.
     """
     import subprocess
 
+    from ragtime.core.ssh import SSHTunnel, ssh_tunnel_config_from_dict
+
+    tunnel = None
     try:
+        # Determine host and port (may be overridden by SSH tunnel)
+        connect_host = request.host
+        connect_port = request.port
+
+        # Set up SSH tunnel if enabled
+        if request.ssh_tunnel_enabled:
+            tunnel_config_dict = {
+                "host": request.host,
+                "port": request.port,
+                "ssh_tunnel_host": request.ssh_tunnel_host,
+                "ssh_tunnel_port": request.ssh_tunnel_port,
+                "ssh_tunnel_user": request.ssh_tunnel_user,
+                "ssh_tunnel_password": request.ssh_tunnel_password,
+                "ssh_tunnel_key_path": request.ssh_tunnel_key_path,
+                "ssh_tunnel_key_content": request.ssh_tunnel_key_content,
+                "ssh_tunnel_key_passphrase": request.ssh_tunnel_key_passphrase,
+            }
+            tunnel_config = ssh_tunnel_config_from_dict(
+                tunnel_config_dict, default_remote_port=5432
+            )
+            tunnel = SSHTunnel(tunnel_config)
+            tunnel.start()
+            # Connect through the tunnel's local port
+            connect_host = "127.0.0.1"
+            connect_port = tunnel.local_port
+            logger.info(
+                f"SSH tunnel established for PostgreSQL discovery: localhost:{connect_port}"
+            )
+
         # Connect to 'postgres' system database to list all databases
         cmd = [
             "psql",
             "-h",
-            request.host,
+            connect_host,
             "-p",
-            str(request.port),
+            str(connect_port),
             "-U",
             request.user,
             "-d",
@@ -1681,7 +1742,7 @@ async def discover_postgres_databases(
             asyncio.create_subprocess_exec(
                 *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
             ),
-            timeout=10.0,
+            timeout=15.0,
         )
         _stdout, stderr = await process.communicate()
 
@@ -1698,16 +1759,22 @@ async def discover_postgres_databases(
 
     except asyncio.TimeoutError:
         return PostgresDiscoverResponse(
-            success=False, databases=[], error="Connection timed out after 10 seconds"
+            success=False, databases=[], error="Connection timed out after 15 seconds"
         )
     except FileNotFoundError:
         return PostgresDiscoverResponse(
             success=False, databases=[], error="psql command not found"
         )
     except Exception as e:
+        error_msg = str(e)
+        if "Authentication" in error_msg:
+            error_msg = f"SSH tunnel authentication failed: {error_msg}"
         return PostgresDiscoverResponse(
-            success=False, databases=[], error=f"Discovery failed: {str(e)}"
+            success=False, databases=[], error=f"Discovery failed: {error_msg}"
         )
+    finally:
+        if tunnel:
+            tunnel.stop()
 
 
 @router.post(
@@ -1719,18 +1786,24 @@ async def discover_mssql_databases(
     """
     Discover available databases on an MSSQL server. Admin only.
     Connects to the server and lists all accessible databases.
+    Supports SSH tunnel for remote database access.
     """
+    from ragtime.core.ssh import SSHTunnel, ssh_tunnel_config_from_dict
 
-    def discover_databases() -> tuple[bool, list[str], str | None]:
+    tunnel = None
+
+    def discover_databases(
+        connect_host: str, connect_port: int
+    ) -> tuple[bool, list[str], str | None]:
         try:
             with mssql_connect(
-                host=request.host,
-                port=request.port,
+                host=connect_host,
+                port=connect_port,
                 user=request.user,
                 password=request.password,
                 database="master",  # Connect to master to list databases
                 login_timeout=10,
-                timeout=10,
+                timeout=15,
             ) as conn:
                 cursor = conn.cursor()
 
@@ -1761,16 +1834,291 @@ async def discover_mssql_databases(
             return False, [], f"Connection error: {str(e)}"
 
     try:
-        success, databases, error = await asyncio.to_thread(discover_databases)
+        # Determine host and port (may be overridden by SSH tunnel)
+        connect_host = request.host
+        connect_port = request.port
+
+        # Set up SSH tunnel if enabled
+        if request.ssh_tunnel_enabled:
+            tunnel_config_dict = {
+                "host": request.host,
+                "port": request.port,
+                "ssh_tunnel_host": request.ssh_tunnel_host,
+                "ssh_tunnel_port": request.ssh_tunnel_port,
+                "ssh_tunnel_user": request.ssh_tunnel_user,
+                "ssh_tunnel_password": request.ssh_tunnel_password,
+                "ssh_tunnel_key_path": request.ssh_tunnel_key_path,
+                "ssh_tunnel_key_content": request.ssh_tunnel_key_content,
+                "ssh_tunnel_key_passphrase": request.ssh_tunnel_key_passphrase,
+            }
+            tunnel_config = ssh_tunnel_config_from_dict(
+                tunnel_config_dict, default_remote_port=1433
+            )
+            tunnel = SSHTunnel(tunnel_config)
+            tunnel.start()
+            connect_host = "127.0.0.1"
+            connect_port = tunnel.local_port
+            logger.info(
+                f"SSH tunnel established for MSSQL discovery: localhost:{connect_port}"
+            )
+
+        success, databases, error = await asyncio.to_thread(
+            discover_databases, connect_host, connect_port
+        )
         return MssqlDiscoverResponse(success=success, databases=databases, error=error)
     except asyncio.TimeoutError:
         return MssqlDiscoverResponse(
             success=False, databases=[], error="Connection timed out"
         )
     except Exception as e:
+        error_msg = str(e)
+        if "Authentication" in error_msg:
+            error_msg = f"SSH tunnel authentication failed: {error_msg}"
         return MssqlDiscoverResponse(
-            success=False, databases=[], error=f"Discovery failed: {str(e)}"
+            success=False, databases=[], error=f"Discovery failed: {error_msg}"
         )
+    finally:
+        if tunnel:
+            tunnel.stop()
+
+
+@router.post(
+    "/tools/mysql/discover", response_model=MysqlDiscoverResponse, tags=["Tools"]
+)
+async def discover_mysql_databases(
+    request: MysqlDiscoverRequest, _user: User = Depends(require_admin)
+):
+    """
+    Discover available databases on a MySQL/MariaDB server. Admin only.
+    Connects to the server and lists all accessible databases.
+    Supports direct connections, Docker containers, and SSH tunnels.
+    """
+    from ragtime.core.ssh import SSHTunnel, ssh_tunnel_config_from_dict
+
+    tunnel = None
+
+    def discover_databases(
+        connect_host: str, connect_port: int
+    ) -> tuple[bool, list[str], str | None]:
+        try:
+            # Handle Docker container mode
+            if request.container:
+                container = request.container
+                docker_network = request.docker_network
+
+                # Build docker exec command to get credentials from env
+                if docker_network:
+                    exec_prefix = f"docker exec {container}"
+                else:
+                    exec_prefix = f"docker exec {container}"
+
+                # Get credentials from container environment
+                import subprocess
+
+                def get_env_var(var_name: str) -> str | None:
+                    try:
+                        result = subprocess.run(
+                            f"{exec_prefix} printenv {var_name}",
+                            shell=True,
+                            capture_output=True,
+                            text=True,
+                            timeout=10,
+                            check=False,
+                        )
+                        return result.stdout.strip() if result.returncode == 0 else None
+                    except Exception:
+                        return None
+
+                # Try MYSQL_USER, fallback to root
+                user = get_env_var("MYSQL_USER") or "root"
+                # Try MYSQL_PASSWORD for regular user, MYSQL_ROOT_PASSWORD for root
+                if user == "root":
+                    password = get_env_var("MYSQL_ROOT_PASSWORD") or ""
+                else:
+                    password = get_env_var("MYSQL_PASSWORD") or ""
+
+                # Execute mysql command inside container to list databases
+                mysql_cmd = f'{exec_prefix} mysql -u{user} -p"{password}" -N -e "SHOW DATABASES"'
+                result = subprocess.run(
+                    mysql_cmd,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                )
+
+                if result.returncode != 0:
+                    return False, [], f"MySQL command failed: {result.stderr}"
+
+                # Parse database list, excluding system databases
+                system_dbs = {
+                    "information_schema",
+                    "mysql",
+                    "performance_schema",
+                    "sys",
+                }
+                databases = [
+                    db.strip()
+                    for db in result.stdout.strip().split("\n")
+                    if db.strip() and db.strip().lower() not in system_dbs
+                ]
+                return True, databases, None
+
+            # Direct connection mode (or through SSH tunnel)
+            try:
+                with mysql_connect(
+                    host=connect_host,
+                    port=connect_port,
+                    user=request.user,
+                    password=request.password,
+                    database="information_schema",  # Connect to information_schema to list databases
+                    connect_timeout=15,
+                ) as conn:
+                    cursor = conn.cursor()
+
+                    # Query for non-system databases
+                    cursor.execute(
+                        """
+                        SELECT SCHEMA_NAME FROM information_schema.SCHEMATA
+                        WHERE SCHEMA_NAME NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
+                        ORDER BY SCHEMA_NAME
+                        """
+                    )
+                    rows = cursor.fetchall() or []
+                    db_list: list[str] = []
+                    for row in rows:
+                        if not row:
+                            continue
+
+                        name = None
+                        if isinstance(row, dict):
+                            name = row.get("SCHEMA_NAME")
+                            if name is None and row:
+                                # Fallback to first value in dict
+                                name = next(iter(row.values()), None)
+                        elif isinstance(row, (list, tuple)):
+                            if len(row) > 0:
+                                name = row[0]
+                        else:
+                            # Fallback: try attribute or str
+                            try:
+                                name = row[0]  # type: ignore[index]
+                            except Exception:
+                                name = str(row)
+
+                        if name:
+                            db_list.append(str(name))
+                    return True, db_list, None
+            except Exception as e:
+                # Fallback: if global discovery fails, try connecting to the specific database if provided
+                if request.database:
+                    try:
+                        with mysql_connect(
+                            host=connect_host,
+                            port=connect_port,
+                            user=request.user,
+                            password=request.password,
+                            database=request.database,
+                            connect_timeout=10,
+                        ):
+                            pass
+                        return True, [request.database], None
+                    except Exception as fallback_error:
+                        # Prefer the fallback error message if it is more descriptive
+                        if str(fallback_error):
+                            e = fallback_error
+
+                # Log the discovery failure for visibility in container logs
+                logger.error(
+                    "MySQL discovery failed",
+                    exc_info=e,
+                    extra={
+                        "host": connect_host,
+                        "port": connect_port,
+                        "user": request.user,
+                        "database": request.database,
+                        "ssh_tunnel": bool(request.ssh_tunnel_enabled),
+                    },
+                )
+
+                error_msg = str(e) or "Unknown error"
+                if getattr(e, "args", None):
+                    arg_parts = [str(a) for a in e.args if str(a)]
+                    if arg_parts:
+                        error_msg = " | ".join(arg_parts)
+
+                return False, [], f"Connection error: {error_msg}"
+
+        except MysqlConnectionError as e:
+            return False, [], str(e)
+        except Exception as e:
+            error_msg = str(e) or "Unknown error"
+            if getattr(e, "args", None):
+                arg_parts = [str(a) for a in e.args if str(a)]
+                if arg_parts:
+                    error_msg = " | ".join(arg_parts)
+            # Log the outer exception to help diagnose opaque UI errors
+            logger.error(
+                "MySQL discovery encountered an unexpected error",
+                exc_info=e,
+                extra={
+                    "host": connect_host,
+                    "port": connect_port,
+                    "user": request.user,
+                    "database": request.database,
+                    "ssh_tunnel": bool(request.ssh_tunnel_enabled),
+                },
+            )
+            return False, [], f"Connection error: {error_msg}"
+
+    try:
+        # Determine host and port (may be overridden by SSH tunnel)
+        connect_host = request.host or "127.0.0.1"
+        connect_port = request.port
+
+        # Set up SSH tunnel if enabled
+        if request.ssh_tunnel_enabled:
+            tunnel_config_dict = {
+                "host": request.host or "127.0.0.1",
+                "port": request.port,
+                "ssh_tunnel_host": request.ssh_tunnel_host,
+                "ssh_tunnel_port": request.ssh_tunnel_port,
+                "ssh_tunnel_user": request.ssh_tunnel_user,
+                "ssh_tunnel_password": request.ssh_tunnel_password,
+                "ssh_tunnel_key_path": request.ssh_tunnel_key_path,
+                "ssh_tunnel_key_content": request.ssh_tunnel_key_content,
+                "ssh_tunnel_key_passphrase": request.ssh_tunnel_key_passphrase,
+            }
+            tunnel_config = ssh_tunnel_config_from_dict(
+                tunnel_config_dict, default_remote_port=3306
+            )
+            tunnel = SSHTunnel(tunnel_config)
+            tunnel.start()
+            connect_host = "127.0.0.1"
+            connect_port = tunnel.local_port
+            logger.info(
+                f"SSH tunnel established for MySQL discovery: localhost:{connect_port}"
+            )
+
+        success, databases, error = await asyncio.to_thread(
+            discover_databases, connect_host, connect_port
+        )
+        return MysqlDiscoverResponse(success=success, databases=databases, error=error)
+    except asyncio.TimeoutError:
+        return MysqlDiscoverResponse(
+            success=False, databases=[], error="Connection timed out"
+        )
+    except Exception as e:
+        error_msg = str(e)
+        if "Authentication" in error_msg:
+            error_msg = f"SSH tunnel authentication failed: {error_msg}"
+        return MysqlDiscoverResponse(
+            success=False, databases=[], error=f"Discovery failed: {error_msg}"
+        )
+    finally:
+        if tunnel:
+            tunnel.stop()
 
 
 @router.post("/tools/pdm/discover", response_model=PdmDiscoverResponse, tags=["Tools"])
@@ -1780,92 +2128,123 @@ async def discover_pdm_schema(
     """
     Discover PDM schema metadata from a SolidWorks PDM database. Admin only.
     Returns available file extensions and variable names.
+    Supports SSH tunnel connections for remote database access.
     """
+    from ragtime.core.ssh import SSHTunnel, ssh_tunnel_config_from_dict
 
-    def discover_schema() -> tuple[bool, list[str], list[str], int, str | None]:
-        """Returns (success, file_extensions, variable_names, doc_count, error)."""
-        try:
-            with mssql_connect(
-                host=request.host,
-                port=request.port,
-                user=request.user,
-                password=request.password,
-                database=request.database,
-                login_timeout=10,
-                timeout=30,
-            ) as conn:
-                cursor = conn.cursor()
-
-                # Get distinct file extensions from Documents table
-                # Use RIGHT() with CHARINDEX on reversed string to get extension from end
-                # Filter out configuration markers containing angle brackets
-                cursor.execute(
-                    """
-                    SELECT DISTINCT
-                        UPPER(RIGHT(Filename, CHARINDEX('.', REVERSE(Filename)))) AS Extension
-                    FROM Documents
-                    WHERE Filename LIKE '%.%'
-                        AND Deleted = 0
-                        AND CHARINDEX('.', REVERSE(Filename)) > 1
-                        AND CHARINDEX('.', REVERSE(Filename)) <= 10
-                        AND Filename NOT LIKE '%<%'
-                    ORDER BY Extension
-                    """
-                )
-                ext_rows = cursor.fetchall() or []
-                extensions = []
-                for row in ext_rows:
-                    ext_value = None
-                    if isinstance(row, dict):
-                        ext_value = row.get("Extension")
-                    elif row and len(row) > 0:
-                        ext_value = row[0]
-                    if ext_value:
-                        extensions.append(str(ext_value))
-
-                # Get all variable names from Variable table
-                # Filter out GUID-like names (patterns like {xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx})
-                cursor.execute(
-                    """
-                    SELECT VariableName FROM Variable
-                    WHERE VariableName NOT LIKE '{________-____-____-____-____________}'
-                        AND VariableName NOT LIKE '{%-%-%-%-%}'
-                    ORDER BY VariableName
-                    """
-                )
-                var_rows = cursor.fetchall() or []
-                variables = []
-                for row in var_rows:
-                    var_value = None
-                    if isinstance(row, dict):
-                        var_value = row.get("VariableName")
-                    elif row and len(row) > 0:
-                        var_value = row[0]
-                    if var_value:
-                        variables.append(str(var_value))
-
-                # Get total document count
-                cursor.execute(
-                    "SELECT COUNT(*) as cnt FROM Documents WHERE Deleted = 0"
-                )
-                result = cursor.fetchone()
-                if isinstance(result, dict):
-                    doc_count = int(result.get("cnt", 0))
-                elif result:
-                    doc_count = int(result[0])
-                else:
-                    doc_count = 0
-
-                return True, extensions, variables, doc_count, None
-
-        except MssqlConnectionError as e:
-            return False, [], [], 0, str(e)
-        except Exception as e:
-            return False, [], [], 0, f"Connection error: {str(e)}"
-
+    tunnel = None
     try:
+        # Set up connection parameters
+        connect_host = request.host
+        connect_port = request.port
+
+        # Start SSH tunnel if enabled
+        if request.ssh_tunnel_enabled:
+            tunnel_config_dict = {
+                "host": request.host,  # Remote endpoint from SSH server's perspective
+                "port": request.port,
+                "ssh_tunnel_host": request.ssh_tunnel_host,
+                "ssh_tunnel_port": request.ssh_tunnel_port,
+                "ssh_tunnel_user": request.ssh_tunnel_user,
+                "ssh_tunnel_password": request.ssh_tunnel_password,
+                "ssh_tunnel_key_path": request.ssh_tunnel_key_path,
+                "ssh_tunnel_key_content": request.ssh_tunnel_key_content,
+                "ssh_tunnel_key_passphrase": request.ssh_tunnel_key_passphrase,
+            }
+            tunnel_config = ssh_tunnel_config_from_dict(
+                tunnel_config_dict,
+                default_remote_port=1433,  # MSSQL default port
+            )
+            tunnel = SSHTunnel(tunnel_config)
+            tunnel.start()
+            connect_host = "127.0.0.1"
+            connect_port = tunnel.local_port
+
+        def discover_schema(
+            host: str, port: int
+        ) -> tuple[bool, list[str], list[str], int, str | None]:
+            """Returns (success, file_extensions, variable_names, doc_count, error)."""
+            try:
+                with mssql_connect(
+                    host=host,
+                    port=port,
+                    user=request.user,
+                    password=request.password,
+                    database=request.database,
+                    login_timeout=10,
+                    timeout=30,
+                ) as conn:
+                    cursor = conn.cursor()
+
+                    # Get distinct file extensions from Documents table
+                    # Use RIGHT() with CHARINDEX on reversed string to get extension from end
+                    # Filter out configuration markers containing angle brackets
+                    cursor.execute(
+                        """
+                        SELECT DISTINCT
+                            UPPER(RIGHT(Filename, CHARINDEX('.', REVERSE(Filename)))) AS Extension
+                        FROM Documents
+                        WHERE Filename LIKE '%.%'
+                            AND Deleted = 0
+                            AND CHARINDEX('.', REVERSE(Filename)) > 1
+                            AND CHARINDEX('.', REVERSE(Filename)) <= 10
+                            AND Filename NOT LIKE '%<%'
+                        ORDER BY Extension
+                        """
+                    )
+                    ext_rows = cursor.fetchall() or []
+                    extensions = []
+                    for row in ext_rows:
+                        ext_value = None
+                        if isinstance(row, dict):
+                            ext_value = row.get("Extension")
+                        elif row and len(row) > 0:
+                            ext_value = row[0]
+                        if ext_value:
+                            extensions.append(str(ext_value))
+
+                    # Get all variable names from Variable table
+                    # Filter out GUID-like names (patterns like {xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx})
+                    cursor.execute(
+                        """
+                        SELECT VariableName FROM Variable
+                        WHERE VariableName NOT LIKE '{________-____-____-____-____________}'
+                            AND VariableName NOT LIKE '{%-%-%-%-%}'
+                        ORDER BY VariableName
+                        """
+                    )
+                    var_rows = cursor.fetchall() or []
+                    variables = []
+                    for row in var_rows:
+                        var_value = None
+                        if isinstance(row, dict):
+                            var_value = row.get("VariableName")
+                        elif row and len(row) > 0:
+                            var_value = row[0]
+                        if var_value:
+                            variables.append(str(var_value))
+
+                    # Get total document count
+                    cursor.execute(
+                        "SELECT COUNT(*) as cnt FROM Documents WHERE Deleted = 0"
+                    )
+                    result = cursor.fetchone()
+                    if isinstance(result, dict):
+                        doc_count = int(result.get("cnt", 0))
+                    elif result:
+                        doc_count = int(result[0])
+                    else:
+                        doc_count = 0
+
+                    return True, extensions, variables, doc_count, None
+
+            except MssqlConnectionError as e:
+                return False, [], [], 0, str(e)
+            except Exception as e:
+                return False, [], [], 0, f"Connection error: {str(e)}"
+
         success, extensions, variables, doc_count, error = await asyncio.to_thread(
-            discover_schema
+            discover_schema, connect_host, connect_port
         )
         return PdmDiscoverResponse(
             success=success,
@@ -1877,7 +2256,15 @@ async def discover_pdm_schema(
     except asyncio.TimeoutError:
         return PdmDiscoverResponse(success=False, error="Connection timed out")
     except Exception as e:
-        return PdmDiscoverResponse(success=False, error=f"Discovery failed: {str(e)}")
+        error_msg = str(e)
+        if "Authentication" in error_msg:
+            error_msg = f"SSH tunnel authentication failed: {error_msg}"
+        return PdmDiscoverResponse(
+            success=False, error=f"Discovery failed: {error_msg}"
+        )
+    finally:
+        if tunnel:
+            tunnel.stop()
 
 
 @router.post(
@@ -2035,6 +2422,8 @@ async def _heartbeat_check(tool_type, config: dict) -> ToolTestResponse:
 
     if tool_type_str == "postgres":
         return await _heartbeat_postgres(config)
+    elif tool_type_str == "mysql":
+        return await _heartbeat_mysql(config)
     elif tool_type_str == "mssql":
         return await _heartbeat_mssql(config)
     elif tool_type_str == "odoo_shell":
@@ -2051,25 +2440,69 @@ async def _heartbeat_check(tool_type, config: dict) -> ToolTestResponse:
         )
 
 
+def _coerce_int(value, default: int) -> int:
+    """Best-effort int conversion for heartbeat inputs."""
+    try:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return default
+            return int(stripped)
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _start_ssh_tunnel_if_enabled(
+    config: dict, host: str, port: int
+) -> tuple[Optional["SSHTunnel"], str, int]:
+    """Start SSH tunnel if enabled and return (tunnel, host, port)."""
+    from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
+                                  ssh_tunnel_config_from_dict)
+
+    tunnel_cfg_dict = build_ssh_tunnel_config(config, host, port)
+    if not tunnel_cfg_dict:
+        return None, host, port
+
+    tunnel_config = ssh_tunnel_config_from_dict(
+        tunnel_cfg_dict, default_remote_port=port
+    )
+    tunnel = SSHTunnel(tunnel_config)
+    tunnel.start()
+    return tunnel, "127.0.0.1", tunnel.local_port
+
+
 async def _heartbeat_postgres(config: dict) -> ToolTestResponse:
     """Quick PostgreSQL heartbeat check."""
     import subprocess
 
     host = config.get("host", "")
-    port = config.get("port", 5432)
+    port = _coerce_int(config.get("port", 5432), 5432)
     user = config.get("user", "")
     password = config.get("password", "")
     database = config.get("database", "")
     container = config.get("container", "")
 
+    tunnel: Optional["SSHTunnel"] = None
+
     try:
         if host:
+            tunnel, connect_host, connect_port = _start_ssh_tunnel_if_enabled(
+                config, host, port
+            )
+
             cmd = [
                 "psql",
                 "-h",
-                host,
+                connect_host,
                 "-p",
-                str(port),
+                str(connect_port),
                 "-U",
                 user,
                 "-d",
@@ -2107,14 +2540,54 @@ async def _heartbeat_postgres(config: dict) -> ToolTestResponse:
         )
     except Exception as e:
         return ToolTestResponse(success=False, message=str(e)[:100])
+    finally:
+        if tunnel:
+            tunnel.stop()
+
+
+async def _heartbeat_mysql(config: dict) -> ToolTestResponse:
+    """Quick MySQL/MariaDB heartbeat check."""
+    from ragtime.core.ssh import build_ssh_tunnel_config
+    from ragtime.tools.mysql import test_mysql_connection
+
+    host = config.get("host", "")
+    port = _coerce_int(config.get("port", 3306), 3306)
+    user = config.get("user", "")
+    password = config.get("password", "")
+    database = config.get("database", "")
+    container = config.get("container", "")
+    docker_network = config.get("docker_network", "")
+
+    if not host and not container:
+        return ToolTestResponse(success=False, message="MySQL not configured")
+
+    ssh_tunnel_config = build_ssh_tunnel_config(config, host, port)
+
+    success, message, _ = await test_mysql_connection(
+        host=host,
+        port=port,
+        user=user,
+        password=password,
+        database=database,
+        container=container,
+        docker_network=docker_network,
+        ssh_tunnel_config=ssh_tunnel_config,
+        timeout=5,
+    )
+
+    return ToolTestResponse(
+        success=success,
+        message=message[:100] if message else "OK",
+    )
 
 
 async def _heartbeat_mssql(config: dict) -> ToolTestResponse:
     """Quick MSSQL heartbeat check."""
+    from ragtime.core.ssh import build_ssh_tunnel_config
     from ragtime.tools.mssql import test_mssql_connection
 
     host = config.get("host", "")
-    port = config.get("port", 1433)
+    port = _coerce_int(config.get("port", 1433), 1433)
     user = config.get("user", "")
     password = config.get("password", "")
     database = config.get("database", "")
@@ -2122,12 +2595,15 @@ async def _heartbeat_mssql(config: dict) -> ToolTestResponse:
     if not host or not user or not database:
         return ToolTestResponse(success=False, message="MSSQL not configured")
 
+    ssh_tunnel_config = build_ssh_tunnel_config(config, host, port)
+
     success, message, _ = await test_mssql_connection(
         host=host,
         port=port,
         user=user,
         password=password,
         database=database,
+        ssh_tunnel_config=ssh_tunnel_config,
         timeout=5,
     )
 
@@ -2282,7 +2758,7 @@ async def _heartbeat_pdm(config: dict) -> ToolTestResponse:
     """Quick SolidWorks PDM database heartbeat check."""
 
     host = config.get("host", "")
-    port = config.get("port", 1433)
+    port = _coerce_int(config.get("port", 1433), 1433)
     user = config.get("user", "")
     password = config.get("password", "")
     database = config.get("database", "")
@@ -2290,11 +2766,19 @@ async def _heartbeat_pdm(config: dict) -> ToolTestResponse:
     if not all([host, user, password, database]):
         return ToolTestResponse(success=False, message="PDM connection not configured")
 
+    tunnel: Optional["SSHTunnel"] = None
+    connect_host = host
+    connect_port = port
+
+    tunnel, connect_host, connect_port = _start_ssh_tunnel_if_enabled(
+        config, host, port
+    )
+
     def check_connection() -> tuple[bool, str]:
         try:
             with mssql_connect(
-                host=host,
-                port=port,
+                host=connect_host,
+                port=connect_port,
                 user=user,
                 password=password,
                 database=database,
@@ -2319,11 +2803,16 @@ async def _heartbeat_pdm(config: dict) -> ToolTestResponse:
         return ToolTestResponse(success=False, message="Connection timed out")
     except Exception as e:
         return ToolTestResponse(success=False, message=str(e)[:80])
+    finally:
+        if tunnel:
+            tunnel.stop()
 
 
 async def _test_postgres_connection(config: dict) -> ToolTestResponse:
-    """Test PostgreSQL connection."""
+    """Test PostgreSQL connection. Supports direct, Docker container, and SSH tunnel modes."""
     import subprocess
+
+    from ragtime.core.ssh import SSHTunnel, ssh_tunnel_config_from_dict
 
     host = config.get("host", "")
     port = config.get("port", 5432)
@@ -2331,9 +2820,127 @@ async def _test_postgres_connection(config: dict) -> ToolTestResponse:
     password = config.get("password", "")
     database = config.get("database", "")
     container = config.get("container", "")
+    ssh_tunnel_enabled = config.get("ssh_tunnel_enabled", False)
 
     try:
-        if host:
+        if ssh_tunnel_enabled:
+            # SSH tunnel mode - requires psycopg2
+            ssh_tunnel_host = config.get("ssh_tunnel_host", "")
+            ssh_tunnel_user = config.get("ssh_tunnel_user", "")
+
+            if not ssh_tunnel_host:
+                return ToolTestResponse(
+                    success=False, message="SSH tunnel host is required"
+                )
+            if not ssh_tunnel_user:
+                return ToolTestResponse(
+                    success=False, message="SSH tunnel user is required"
+                )
+            if not user or not password:
+                return ToolTestResponse(
+                    success=False, message="Database username and password are required"
+                )
+            if not database:
+                return ToolTestResponse(success=False, message="Database is required")
+
+            # Build SSH tunnel config - host/port represent the remote endpoint
+            ssh_tunnel_config_dict = {
+                "ssh_tunnel_enabled": True,
+                "ssh_tunnel_host": ssh_tunnel_host,
+                "ssh_tunnel_port": config.get("ssh_tunnel_port", 22),
+                "ssh_tunnel_user": ssh_tunnel_user,
+                "ssh_tunnel_password": config.get("ssh_tunnel_password", ""),
+                "ssh_tunnel_key_path": config.get("ssh_tunnel_key_path", ""),
+                "ssh_tunnel_key_content": config.get("ssh_tunnel_key_content", ""),
+                "ssh_tunnel_key_passphrase": config.get(
+                    "ssh_tunnel_key_passphrase", ""
+                ),
+                "host": host
+                or "127.0.0.1",  # Remote endpoint from SSH server's perspective
+                "port": port,
+            }
+
+            def do_tunnel_test() -> ToolTestResponse:
+                try:
+                    import psycopg2  # type: ignore[import-untyped]
+                except ImportError:
+                    return ToolTestResponse(
+                        success=False,
+                        message="psycopg2 package not installed. Install with: pip install psycopg2-binary",
+                    )
+
+                tunnel = None
+                conn = None
+                try:
+                    tunnel_cfg = ssh_tunnel_config_from_dict(
+                        ssh_tunnel_config_dict, default_remote_port=5432
+                    )
+                    if not tunnel_cfg:
+                        return ToolTestResponse(
+                            success=False, message="Invalid SSH tunnel configuration"
+                        )
+
+                    tunnel = SSHTunnel(tunnel_cfg)
+                    local_port = tunnel.start()
+
+                    conn = psycopg2.connect(
+                        host="127.0.0.1",
+                        port=local_port,
+                        user=user,
+                        password=password,
+                        dbname=database,
+                        connect_timeout=30,
+                    )
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT version()")
+                    version = cursor.fetchone()
+                    cursor.close()
+
+                    return ToolTestResponse(
+                        success=True,
+                        message="PostgreSQL connection successful (via SSH tunnel)",
+                        details={
+                            "mode": "ssh_tunnel",
+                            "ssh_host": ssh_tunnel_host,
+                            "database": database,
+                            "version": (
+                                version[0].split(",")[0] if version else "Unknown"
+                            ),
+                        },
+                    )
+                except Exception as e:
+                    error_str = str(e)
+                    if "password authentication failed" in error_str:
+                        return ToolTestResponse(
+                            success=False,
+                            message="Authentication failed - check username and password",
+                        )
+                    if "does not exist" in error_str:
+                        return ToolTestResponse(
+                            success=False,
+                            message=f"Database '{database}' does not exist",
+                        )
+                    return ToolTestResponse(
+                        success=False, message=f"Connection failed: {error_str}"
+                    )
+                finally:
+                    if conn:
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+                    if tunnel:
+                        try:
+                            tunnel.stop()
+                        except Exception:
+                            pass
+
+            return await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(None, do_tunnel_test),
+                timeout=35.0,
+            )
+
+        elif host:
             # Direct connection test
             cmd = [
                 "psql",
@@ -2363,7 +2970,8 @@ async def _test_postgres_connection(config: dict) -> ToolTestResponse:
             env = None
         else:
             return ToolTestResponse(
-                success=False, message="Either host or container must be specified"
+                success=False,
+                message="Either host, container, or SSH tunnel must be specified",
             )
 
         process = await asyncio.wait_for(
@@ -2401,32 +3009,178 @@ async def _test_postgres_connection(config: dict) -> ToolTestResponse:
 
 
 async def _test_mssql_connection(config: dict) -> ToolTestResponse:
-    """Test MSSQL/SQL Server connection."""
+    """Test MSSQL/SQL Server connection. Supports direct and SSH tunnel modes."""
     from ragtime.tools.mssql import test_mssql_connection
 
-    host = config.get("host", "")
-    port = config.get("port", 1433)
-    user = config.get("user", "")
-    password = config.get("password", "")
-    database = config.get("database", "")
+    ssh_tunnel_enabled = config.get("ssh_tunnel_enabled", False)
 
-    if not host:
-        return ToolTestResponse(success=False, message="Host is required")
-    if not user or not password:
-        return ToolTestResponse(
-            success=False, message="Username and password are required"
+    if ssh_tunnel_enabled:
+        # SSH tunnel mode
+        ssh_tunnel_host = config.get("ssh_tunnel_host", "")
+        ssh_tunnel_user = config.get("ssh_tunnel_user", "")
+        user = config.get("user", "")
+        password = config.get("password", "")
+        database = config.get("database", "")
+        host = config.get("host", "127.0.0.1")  # Remote endpoint from SSH server
+        port = config.get("port", 1433)
+
+        if not ssh_tunnel_host:
+            return ToolTestResponse(
+                success=False, message="SSH tunnel host is required"
+            )
+        if not ssh_tunnel_user:
+            return ToolTestResponse(
+                success=False, message="SSH tunnel user is required"
+            )
+        if not user or not password:
+            return ToolTestResponse(
+                success=False, message="Database username and password are required"
+            )
+        if not database:
+            return ToolTestResponse(success=False, message="Database is required")
+
+        # Build SSH tunnel config - host/port represent the remote endpoint
+        ssh_tunnel_config = {
+            "ssh_tunnel_enabled": True,
+            "ssh_tunnel_host": ssh_tunnel_host,
+            "ssh_tunnel_port": config.get("ssh_tunnel_port", 22),
+            "ssh_tunnel_user": ssh_tunnel_user,
+            "ssh_tunnel_password": config.get("ssh_tunnel_password", ""),
+            "ssh_tunnel_key_path": config.get("ssh_tunnel_key_path", ""),
+            "ssh_tunnel_key_content": config.get("ssh_tunnel_key_content", ""),
+            "ssh_tunnel_key_passphrase": config.get("ssh_tunnel_key_passphrase", ""),
+            "host": host,  # Remote endpoint from SSH server's perspective
+            "port": port,
+        }
+
+        success, message, details = await test_mssql_connection(
+            user=user,
+            password=password,
+            database=database,
+            timeout=30,
+            ssh_tunnel_config=ssh_tunnel_config,
         )
-    if not database:
-        return ToolTestResponse(success=False, message="Database is required")
+    else:
+        # Direct connection mode
+        host = config.get("host", "")
+        port = config.get("port", 1433)
+        user = config.get("user", "")
+        password = config.get("password", "")
+        database = config.get("database", "")
 
-    success, message, details = await test_mssql_connection(
-        host=host,
-        port=port,
-        user=user,
-        password=password,
-        database=database,
-        timeout=10,
-    )
+        if not host:
+            return ToolTestResponse(success=False, message="Host is required")
+        if not user or not password:
+            return ToolTestResponse(
+                success=False, message="Username and password are required"
+            )
+        if not database:
+            return ToolTestResponse(success=False, message="Database is required")
+
+        success, message, details = await test_mssql_connection(
+            host=host,
+            port=port,
+            user=user,
+            password=password,
+            database=database,
+            timeout=10,
+        )
+
+    return ToolTestResponse(success=success, message=message, details=details)
+
+
+async def _test_mysql_connection(config: dict) -> ToolTestResponse:
+    """Test MySQL/MariaDB connection. Supports direct, Docker container, and SSH tunnel modes."""
+    from ragtime.tools.mysql import test_mysql_connection
+
+    container = config.get("container", "")
+    ssh_tunnel_enabled = config.get("ssh_tunnel_enabled", False)
+
+    if container:
+        # Docker container mode
+        docker_network = config.get("docker_network", "")
+        database = config.get("database", "")
+
+        if not database:
+            return ToolTestResponse(success=False, message="Database is required")
+
+        success, message, details = await test_mysql_connection(
+            container=container,
+            docker_network=docker_network,
+            database=database,
+            timeout=30,
+        )
+    elif ssh_tunnel_enabled:
+        # SSH tunnel mode
+        ssh_tunnel_host = config.get("ssh_tunnel_host", "")
+        ssh_tunnel_user = config.get("ssh_tunnel_user", "")
+        user = config.get("user", "")
+        password = config.get("password", "")
+        database = config.get("database", "")
+        host = config.get("host", "127.0.0.1")  # Remote endpoint from SSH server
+        port = config.get("port", 3306)
+
+        if not ssh_tunnel_host:
+            return ToolTestResponse(
+                success=False, message="SSH tunnel host is required"
+            )
+        if not ssh_tunnel_user:
+            return ToolTestResponse(
+                success=False, message="SSH tunnel user is required"
+            )
+        if not user or not password:
+            return ToolTestResponse(
+                success=False, message="Database username and password are required"
+            )
+        if not database:
+            return ToolTestResponse(success=False, message="Database is required")
+
+        # Build SSH tunnel config - host/port represent the remote endpoint
+        ssh_tunnel_config = {
+            "ssh_tunnel_enabled": True,
+            "ssh_tunnel_host": ssh_tunnel_host,
+            "ssh_tunnel_port": config.get("ssh_tunnel_port", 22),
+            "ssh_tunnel_user": ssh_tunnel_user,
+            "ssh_tunnel_password": config.get("ssh_tunnel_password", ""),
+            "ssh_tunnel_key_path": config.get("ssh_tunnel_key_path", ""),
+            "ssh_tunnel_key_content": config.get("ssh_tunnel_key_content", ""),
+            "ssh_tunnel_key_passphrase": config.get("ssh_tunnel_key_passphrase", ""),
+            "host": host,  # Remote endpoint from SSH server's perspective
+            "port": port,
+        }
+
+        success, message, details = await test_mysql_connection(
+            user=user,
+            password=password,
+            database=database,
+            timeout=30,
+            ssh_tunnel_config=ssh_tunnel_config,
+        )
+    else:
+        # Direct connection mode
+        host = config.get("host", "")
+        port = config.get("port", 3306)
+        user = config.get("user", "")
+        password = config.get("password", "")
+        database = config.get("database", "")
+
+        if not host:
+            return ToolTestResponse(success=False, message="Host is required")
+        if not user or not password:
+            return ToolTestResponse(
+                success=False, message="Username and password are required"
+            )
+        if not database:
+            return ToolTestResponse(success=False, message="Database is required")
+
+        success, message, details = await test_mysql_connection(
+            host=host,
+            port=port,
+            user=user,
+            password=password,
+            database=database,
+            timeout=10,
+        )
 
     return ToolTestResponse(success=success, message=message, details=details)
 
@@ -2444,7 +3198,8 @@ async def _test_odoo_connection(config: dict) -> ToolTestResponse:
 async def _test_odoo_ssh_connection(config: dict) -> ToolTestResponse:
     """Test Odoo shell connection via SSH using Paramiko."""
 
-    from ragtime.core.ssh import SSHConfig, execute_ssh_command, test_ssh_connection
+    from ragtime.core.ssh import (SSHConfig, execute_ssh_command,
+                                  test_ssh_connection)
 
     ssh_host = config.get("ssh_host", "")
     ssh_port = config.get("ssh_port", 22)
@@ -3785,11 +4540,9 @@ async def browse_smb_share(
 # Filesystem Indexer Endpoints (Admin only)
 # -----------------------------------------------------------------------------
 
-from ragtime.indexer.models import (
-    FilesystemAnalysisJobResponse,
-    FilesystemIndexJobResponse,
-    TriggerFilesystemIndexRequest,
-)
+from ragtime.indexer.models import (FilesystemAnalysisJobResponse,
+                                    FilesystemIndexJobResponse,
+                                    TriggerFilesystemIndexRequest)
 
 
 class FilesystemIndexStatsResponse(BaseModel):
@@ -4331,10 +5084,8 @@ class EmbeddingModelsResponse(BaseModel):
 
 # OpenAI embedding models - prioritized list (from LiteLLM community data)
 # These are the recommended models for most use cases
-from ragtime.core.embedding_models import (
-    OPENAI_EMBEDDING_PRIORITY,
-    get_embedding_models,
-)
+from ragtime.core.embedding_models import (OPENAI_EMBEDDING_PRIORITY,
+                                           get_embedding_models)
 
 OPENAI_DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
@@ -4690,13 +5441,10 @@ async def _fetch_ollama_llm_models(base_url: str) -> LLMModelsResponse:
 # Conversation/Chat Endpoints
 # =============================================================================
 
-from ragtime.indexer.models import (
-    ChatMessage,
-    Conversation,
-    ConversationResponse,
-    CreateConversationRequest,
-    SendMessageRequest,
-)
+from ragtime.indexer.models import (ChatMessage, Conversation,
+                                    ConversationResponse,
+                                    CreateConversationRequest,
+                                    SendMessageRequest)
 
 
 @router.get(
@@ -5740,11 +6488,11 @@ async def trigger_schema_index(
     if not tool_config:
         raise HTTPException(status_code=404, detail="Tool configuration not found")
 
-    # Only allow for SQL database tools
-    if tool_config.tool_type not in (ToolType.POSTGRES, ToolType.MSSQL):
+    # Only allow for SQL database tools that support schema indexing
+    if tool_config.tool_type.value not in SCHEMA_INDEXER_CAPABLE_TYPES:
         raise HTTPException(
             status_code=400,
-            detail=f"Schema indexing is only available for postgres and mssql tools, got '{tool_config.tool_type.value}'",
+            detail=f"Schema indexing is only available for {', '.join(sorted(SCHEMA_INDEXER_CAPABLE_TYPES))} tools, got '{tool_config.tool_type.value}'",
         )
 
     # Check that schema indexing is enabled

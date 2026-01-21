@@ -16,6 +16,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from ragtime.core.logging import get_logger
 from ragtime.indexer.models import ChatTaskStatus, FilesystemConnectionConfig
 from ragtime.indexer.repository import repository
+from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES
 from ragtime.indexer.utils import safe_tool_name
 
 logger = get_logger(__name__)
@@ -214,7 +215,7 @@ class BackgroundTaskService:
         """
         Periodically check SQL database tools and trigger schema re-indexing.
 
-        Runs every hour and checks each postgres/mssql tool config to see
+        Runs every hour and checks each schema-capable tool config to see
         if it's due for schema re-indexing based on its configured interval.
         """
         # Initial delay to let the system stabilize
@@ -239,9 +240,11 @@ class BackgroundTaskService:
             # Use repository to get properly decrypted tool configs
             all_tools = await repository.list_tool_configs(enabled_only=True)
 
-            # Filter for postgres/mssql tools
+            # Filter for schema-capable tools (postgres, mssql, mysql)
             tool_configs = [
-                t for t in all_tools if t.tool_type.value in ("postgres", "mssql")
+                t
+                for t in all_tools
+                if t.tool_type.value in SCHEMA_INDEXER_CAPABLE_TYPES
             ]
 
             for config in tool_configs:

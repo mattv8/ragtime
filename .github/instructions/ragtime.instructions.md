@@ -91,7 +91,7 @@ Schema changes require migrations for production deployment:
 
 **Encrypted fields:**
 - `app_settings`: `openai_api_key`, `anthropic_api_key`, `postgres_password`, `mcp_default_route_password`
-- `tool_configs.connection_config`: `password`, `ssh_password`, `ssh_key_passphrase`, `key_passphrase`, `smb_password`, `key_content`, `ssh_key_content`
+- `tool_configs.connection_config`: `password`, `ssh_password`, `ssh_key_passphrase`, `key_passphrase`, `smb_password`, `key_content`, `ssh_key_content`, `ssh_tunnel_password`, `ssh_tunnel_key_content`, `ssh_tunnel_key_passphrase`
 - `mcp_route_configs`: `auth_password`
 - `index_jobs` / `index_metadata`: `git_token`
 

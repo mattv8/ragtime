@@ -611,12 +611,25 @@ export interface EmbeddingModelsResponse {
 }
 
 // Tool Configuration Types
-export type ToolType = 'postgres' | 'mssql' | 'odoo_shell' | 'ssh_shell' | 'filesystem_indexer' | 'solidworks_pdm';
+export type ToolType = 'postgres' | 'mysql' | 'mssql' | 'odoo_shell' | 'ssh_shell' | 'filesystem_indexer' | 'solidworks_pdm';
 
 // Mount type for filesystem indexer
 export type FilesystemMountType = 'docker_volume' | 'smb' | 'nfs' | 'local';
 
-export interface PostgresConnectionConfig {
+// SSH Tunnel configuration (shared across database tools)
+export interface SSHTunnelConfig {
+  ssh_tunnel_enabled?: boolean;
+  ssh_tunnel_host?: string;
+  ssh_tunnel_port?: number;
+  ssh_tunnel_user?: string;
+  ssh_tunnel_password?: string;
+  ssh_tunnel_key_path?: string;
+  ssh_tunnel_key_content?: string;
+  ssh_tunnel_key_passphrase?: string;
+  ssh_tunnel_public_key?: string;
+}
+
+export interface PostgresConnectionConfig extends SSHTunnelConfig {
   host?: string;
   port?: number;
   user?: string;
@@ -631,12 +644,27 @@ export interface PostgresConnectionConfig {
   schema_hash?: string | null;
 }
 
-export interface MssqlConnectionConfig {
+export interface MssqlConnectionConfig extends SSHTunnelConfig {
   host: string;
   port?: number;
   user: string;
   password: string;
   database: string;
+  // Schema indexing options
+  schema_index_enabled?: boolean;
+  schema_index_interval_hours?: number;
+  last_schema_indexed_at?: string | null;
+  schema_hash?: string | null;
+}
+
+export interface MysqlConnectionConfig extends SSHTunnelConfig {
+  host?: string;
+  port?: number;
+  user?: string;
+  password?: string;
+  database?: string;
+  container?: string;
+  docker_network?: string;
   // Schema indexing options
   schema_index_enabled?: boolean;
   schema_index_interval_hours?: number;
@@ -716,7 +744,7 @@ export interface FilesystemConnectionConfig {
   last_indexed_at?: string | null;
 }
 
-export interface SolidworksPdmConnectionConfig {
+export interface SolidworksPdmConnectionConfig extends SSHTunnelConfig {
   // MSSQL Connection (same as MssqlConnectionConfig)
   host: string;
   port?: number;
@@ -741,7 +769,7 @@ export interface SolidworksPdmConnectionConfig {
   last_indexed_at?: string | null;
 }
 
-export type ConnectionConfig = PostgresConnectionConfig | MssqlConnectionConfig | OdooShellConnectionConfig | SSHShellConnectionConfig | FilesystemConnectionConfig | SolidworksPdmConnectionConfig;
+export type ConnectionConfig = PostgresConnectionConfig | MysqlConnectionConfig | MssqlConnectionConfig | OdooShellConnectionConfig | SSHShellConnectionConfig | FilesystemConnectionConfig | SolidworksPdmConnectionConfig;
 
 export interface ToolConfig {
   id: string;
@@ -797,6 +825,15 @@ export interface PostgresDiscoverRequest {
   port: number;
   user: string;
   password: string;
+  // SSH tunnel fields
+  ssh_tunnel_enabled?: boolean;
+  ssh_tunnel_host?: string;
+  ssh_tunnel_port?: number;
+  ssh_tunnel_user?: string;
+  ssh_tunnel_password?: string;
+  ssh_tunnel_key_path?: string;
+  ssh_tunnel_key_content?: string;
+  ssh_tunnel_key_passphrase?: string;
 }
 
 export interface PostgresDiscoverResponse {
@@ -811,9 +848,43 @@ export interface MssqlDiscoverRequest {
   port: number;
   user: string;
   password: string;
+  // SSH tunnel fields
+  ssh_tunnel_enabled?: boolean;
+  ssh_tunnel_host?: string;
+  ssh_tunnel_port?: number;
+  ssh_tunnel_user?: string;
+  ssh_tunnel_password?: string;
+  ssh_tunnel_key_path?: string;
+  ssh_tunnel_key_content?: string;
+  ssh_tunnel_key_passphrase?: string;
 }
 
 export interface MssqlDiscoverResponse {
+  success: boolean;
+  databases: string[];
+  error?: string;
+}
+
+// MySQL Database Discovery
+export interface MysqlDiscoverRequest {
+  host?: string;
+  port?: number;
+  user?: string;
+  password?: string;
+  container?: string;
+  docker_network?: string;
+  // SSH tunnel fields
+  ssh_tunnel_enabled?: boolean;
+  ssh_tunnel_host?: string;
+  ssh_tunnel_port?: number;
+  ssh_tunnel_user?: string;
+  ssh_tunnel_password?: string;
+  ssh_tunnel_key_path?: string;
+  ssh_tunnel_key_content?: string;
+  ssh_tunnel_key_passphrase?: string;
+}
+
+export interface MysqlDiscoverResponse {
   success: boolean;
   databases: string[];
   error?: string;
@@ -826,6 +897,15 @@ export interface PdmDiscoverRequest {
   user: string;
   password: string;
   database: string;
+  // SSH tunnel fields
+  ssh_tunnel_enabled?: boolean;
+  ssh_tunnel_host?: string;
+  ssh_tunnel_port?: number;
+  ssh_tunnel_user?: string;
+  ssh_tunnel_password?: string;
+  ssh_tunnel_key_path?: string;
+  ssh_tunnel_key_content?: string;
+  ssh_tunnel_key_passphrase?: string;
 }
 
 export interface PdmDiscoverResponse {
@@ -861,6 +941,11 @@ export const TOOL_TYPE_INFO: Record<ToolType, { name: string; description: strin
   postgres: {
     name: 'PostgreSQL Database',
     description: 'Connect to a PostgreSQL database to execute SQL queries',
+    icon: 'database',
+  },
+  mysql: {
+    name: 'MySQL / MariaDB',
+    description: 'Connect to a MySQL or MariaDB database to execute SQL queries',
     icon: 'database',
   },
   mssql: {

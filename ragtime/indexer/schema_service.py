@@ -2,7 +2,7 @@
 Schema Indexer Service - Creates and manages pgvector-based schema indexes for SQL databases.
 
 This service handles:
-- Introspecting database schemas from PostgreSQL, MSSQL (and future MySQL/MariaDB)
+- Introspecting database schemas from PostgreSQL, MSSQL, and MySQL/MariaDB
 - Converting schema definitions to embeddable text chunks
 - Storing embeddings in PostgreSQL using pgvector
 - Progress tracking and job management
@@ -49,7 +49,12 @@ logger = get_logger(__name__)
 
 DB_TYPE_POSTGRES = "postgres"
 DB_TYPE_MSSQL = "mssql"
-DB_TYPE_MYSQL = "mysql"  # Future support
+DB_TYPE_MYSQL = "mysql"
+
+# Tool types that support schema indexing
+SCHEMA_INDEXER_CAPABLE_TYPES = frozenset(
+    {DB_TYPE_POSTGRES, DB_TYPE_MSSQL, DB_TYPE_MYSQL}
+)
 
 
 class SchemaIndexerService:
@@ -76,7 +81,7 @@ class SchemaIndexerService:
 
         Args:
             tool_config_id: The tool configuration ID
-            tool_type: Type of database (postgres, mssql)
+            tool_type: Type of database (postgres, mssql, mysql)
             connection_config: Database connection configuration
             full_reindex: If True, re-index all tables regardless of hash
             tool_name: Safe tool name for display (if None, uses tool_config_id)
@@ -499,7 +504,11 @@ class SchemaIndexerService:
                 return True, None
             elif tool_type == DB_TYPE_MSSQL:
                 # For MSSQL, we'll test during introspection
-                # as it uses pyodbc which handles connection testing
+                # as it uses pymssql which handles connection testing
+                return True, None
+            elif tool_type == DB_TYPE_MYSQL:
+                # For MySQL, we'll test during introspection
+                # as it uses pymysql which handles connection testing
                 return True, None
             else:
                 return False, f"Unsupported database type: {tool_type}"
@@ -527,7 +536,7 @@ class SchemaIndexerService:
         Introspect database schema and return structured table information.
 
         Args:
-            tool_type: Database type (postgres, mssql)
+            tool_type: Database type (postgres, mssql, mysql)
             connection_config: Database connection configuration
 
         Returns:
@@ -537,6 +546,8 @@ class SchemaIndexerService:
             return await self._introspect_postgres(connection_config)
         elif tool_type == DB_TYPE_MSSQL:
             return await self._introspect_mssql(connection_config)
+        elif tool_type == DB_TYPE_MYSQL:
+            return await self._introspect_mysql(connection_config)
         else:
             raise ValueError(f"Unsupported database type: {tool_type}")
 
@@ -1116,6 +1127,222 @@ class SchemaIndexerService:
 
         tables = await asyncio.to_thread(run_introspection)
         logger.info(f"Introspected {len(tables)} tables/views from MSSQL")
+        return tables
+
+    async def _introspect_mysql(self, connection_config: dict) -> List[TableSchemaInfo]:
+        """Introspect MySQL/MariaDB database schema."""
+        try:
+            import pymysql
+            import pymysql.cursors
+        except ImportError:
+            raise RuntimeError("pymysql not installed for MySQL schema introspection")
+
+        from ragtime.core.ssh import (
+            SSHTunnel,
+            build_ssh_tunnel_config,
+            ssh_tunnel_config_from_dict,
+        )
+
+        host = connection_config.get("host", "")
+        port = connection_config.get("port", 3306)
+        user = connection_config.get("user", "")
+        password = connection_config.get("password", "")
+        database = connection_config.get("database", "")
+
+        # Build SSH tunnel config dict from top-level ssh_tunnel_* fields
+        tunnel_cfg_dict = build_ssh_tunnel_config(connection_config, host, port)
+
+        tables: List[TableSchemaInfo] = []
+
+        def run_introspection() -> List[TableSchemaInfo]:
+            tunnel: SSHTunnel | None = None
+            actual_host = host
+            actual_port = port
+
+            try:
+                # Set up SSH tunnel if configured
+                if tunnel_cfg_dict:
+                    tunnel_cfg = ssh_tunnel_config_from_dict(
+                        tunnel_cfg_dict, default_remote_port=3306
+                    )
+                    if tunnel_cfg:
+                        tunnel = SSHTunnel(tunnel_cfg)
+                        local_port = tunnel.start()
+                        actual_host = "127.0.0.1"
+                        actual_port = local_port
+                        logger.debug(
+                            f"SSH tunnel established: localhost:{local_port} -> "
+                            f"{tunnel_cfg.remote_host}:{tunnel_cfg.remote_port}"
+                        )
+
+                conn = pymysql.connect(
+                    host=actual_host,
+                    port=actual_port,
+                    user=user,
+                    password=password,
+                    database=database,
+                    cursorclass=pymysql.cursors.DictCursor,
+                    connect_timeout=30,
+                    read_timeout=60,
+                    charset="utf8mb4",
+                )
+                cursor = conn.cursor()
+
+                # Get all tables and views
+                cursor.execute(
+                    """
+                    SELECT
+                        TABLE_SCHEMA AS table_schema,
+                        TABLE_NAME AS table_name,
+                        TABLE_TYPE AS table_type,
+                        TABLE_ROWS AS row_estimate
+                    FROM information_schema.TABLES
+                    WHERE TABLE_SCHEMA = %s
+                    ORDER BY TABLE_SCHEMA, TABLE_NAME
+                    """,
+                    (database,),
+                )
+
+                table_rows = cursor.fetchall()
+                result_tables: List[TableSchemaInfo] = []
+
+                for row in table_rows:
+                    schema = row["table_schema"]
+                    table_name = row["table_name"]
+                    table_type_raw = row["table_type"]
+                    row_estimate = row.get("row_estimate")
+                    full_name = f"{schema}.{table_name}"
+
+                    # Normalize table type
+                    table_type = "VIEW" if "VIEW" in table_type_raw.upper() else "TABLE"
+
+                    # Get columns
+                    cursor.execute(
+                        """
+                        SELECT
+                            COLUMN_NAME AS column_name,
+                            COLUMN_TYPE AS data_type,
+                            IS_NULLABLE AS is_nullable,
+                            COLUMN_DEFAULT AS column_default,
+                            COLUMN_KEY AS column_key,
+                            EXTRA AS extra,
+                            COLUMN_COMMENT AS column_comment
+                        FROM information_schema.COLUMNS
+                        WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
+                        ORDER BY ORDINAL_POSITION
+                        """,
+                        (schema, table_name),
+                    )
+                    columns = [
+                        {
+                            "name": c["column_name"],
+                            "type": c["data_type"],
+                            "nullable": c["is_nullable"] == "YES",
+                            "default": c["column_default"],
+                            "comment": c.get("column_comment") or None,
+                        }
+                        for c in cursor.fetchall()
+                    ]
+
+                    # Get primary key columns
+                    cursor.execute(
+                        """
+                        SELECT COLUMN_NAME
+                        FROM information_schema.KEY_COLUMN_USAGE
+                        WHERE TABLE_SCHEMA = %s
+                          AND TABLE_NAME = %s
+                          AND CONSTRAINT_NAME = 'PRIMARY'
+                        ORDER BY ORDINAL_POSITION
+                        """,
+                        (schema, table_name),
+                    )
+                    pk = [r["COLUMN_NAME"] for r in cursor.fetchall()]
+
+                    # Get foreign keys
+                    cursor.execute(
+                        """
+                        SELECT
+                            kcu.CONSTRAINT_NAME AS constraint_name,
+                            kcu.COLUMN_NAME AS column_name,
+                            kcu.REFERENCED_TABLE_SCHEMA AS ref_schema,
+                            kcu.REFERENCED_TABLE_NAME AS ref_table,
+                            kcu.REFERENCED_COLUMN_NAME AS ref_column
+                        FROM information_schema.KEY_COLUMN_USAGE kcu
+                        WHERE kcu.TABLE_SCHEMA = %s
+                          AND kcu.TABLE_NAME = %s
+                          AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
+                        ORDER BY kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION
+                        """,
+                        (schema, table_name),
+                    )
+
+                    fk_map: Dict[str, dict] = {}
+                    for r in cursor.fetchall():
+                        name = r["constraint_name"]
+                        ref_table = f"{r['ref_schema']}.{r['ref_table']}"
+                        if name not in fk_map:
+                            fk_map[name] = {
+                                "name": name,
+                                "columns": [],
+                                "references_table": ref_table,
+                                "references_columns": [],
+                            }
+                        fk_map[name]["columns"].append(r["column_name"])
+                        fk_map[name]["references_columns"].append(r["ref_column"])
+                    fks = list(fk_map.values())
+
+                    # Get indexes (non-primary key)
+                    cursor.execute(
+                        """
+                        SELECT
+                            INDEX_NAME AS index_name,
+                            NON_UNIQUE AS non_unique,
+                            GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS columns
+                        FROM information_schema.STATISTICS
+                        WHERE TABLE_SCHEMA = %s
+                          AND TABLE_NAME = %s
+                          AND INDEX_NAME != 'PRIMARY'
+                        GROUP BY INDEX_NAME, NON_UNIQUE
+                        """,
+                        (schema, table_name),
+                    )
+                    indexes = [
+                        {
+                            "name": r["index_name"],
+                            "unique": r["non_unique"] == 0,
+                            "columns": r["columns"].split(",") if r["columns"] else [],
+                        }
+                        for r in cursor.fetchall()
+                    ]
+
+                    result_tables.append(
+                        TableSchemaInfo(
+                            table_schema=schema,
+                            table_name=table_name,
+                            full_name=full_name,
+                            table_type=table_type,
+                            columns=columns,
+                            primary_key=pk,
+                            foreign_keys=fks,
+                            indexes=indexes,
+                            row_count_estimate=(
+                                int(row_estimate) if row_estimate else None
+                            ),
+                        )
+                    )
+
+                conn.close()
+                return result_tables
+
+            finally:
+                if tunnel:
+                    try:
+                        tunnel.stop()
+                    except Exception:
+                        pass
+
+        tables = await asyncio.to_thread(run_introspection)
+        logger.info(f"Introspected {len(tables)} tables/views from MySQL/MariaDB")
         return tables
 
     # =========================================================================
