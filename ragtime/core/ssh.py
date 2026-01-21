@@ -20,6 +20,31 @@ from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Common stderr noise patterns to filter out (shell initialization artifacts)
+# These occur when shell RC files run terminal commands without a TTY
+STDERR_NOISE_PATTERNS = [
+    "tput: No value for $TERM and no -T specified",
+]
+
+
+def _filter_stderr_noise(stderr: str) -> str:
+    """Filter out known harmless stderr noise from SSH output.
+
+    Some SSH servers have shell initialization scripts that produce
+    stderr output when run without a TTY (e.g., tput commands).
+    This filters those known-harmless warnings.
+    """
+    if not stderr:
+        return stderr
+
+    lines = stderr.splitlines()
+    filtered_lines = [
+        line
+        for line in lines
+        if not any(pattern in line for pattern in STDERR_NOISE_PATTERNS)
+    ]
+    return "\n".join(filtered_lines)
+
 
 class SSHAuthMethod(str, Enum):
     """SSH authentication methods."""
@@ -246,6 +271,9 @@ def execute_ssh_command(
 
         stdout_data = b"".join(stdout_chunks).decode("utf-8", errors="replace")
         stderr_data = b"".join(stderr_chunks).decode("utf-8", errors="replace")
+
+        # Filter out harmless stderr noise (e.g., tput warnings) at the source
+        stderr_data = _filter_stderr_noise(stderr_data)
 
         if timed_out:
             exit_code = -1
