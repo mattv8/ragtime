@@ -21,6 +21,11 @@ from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Maximum number of changed files to display in commit details before truncating
+MAX_FILES_DISPLAY_LIMIT = 50
+# Maximum number of lines to display in diff output
+MAX_DIFF_LINES = 200
+
 
 def _create_git_history_input_schema(available_repos: Optional[List[str]] = None):
     """Create input schema with available repos in description."""
@@ -36,6 +41,7 @@ def _create_git_history_input_schema(available_repos: Optional[List[str]] = None
                 "The git action to perform. One of: "
                 "'search_commits' - Search commit messages for keywords, "
                 "'get_commit' - Get detailed info about a specific commit, "
+                "'show_changes' (or 'get_diff') - Show the code changes (diff) for a commit, "
                 "'file_history' - Get commit history for a specific file, "
                 "'blame' - Show who last modified each line of a file, "
                 "'find_files' - Find files matching a pattern (use before file_history/blame)"
@@ -47,11 +53,11 @@ def _create_git_history_input_schema(available_repos: Optional[List[str]] = None
         )
         commit_hash: Optional[str] = Field(
             default=None,
-            description="Commit hash for 'get_commit' action (full or abbreviated)",
+            description="Commit hash for 'get_commit' or 'show_changes' action",
         )
         file_path: Optional[str] = Field(
             default=None,
-            description="File path for 'file_history' or 'blame' actions (relative to repo root), or pattern for 'find_files' (e.g., '**/index.php', '*.py')",
+            description="File path for 'file_history' or 'blame' actions (relative to repo root), pattern for 'find_files', or optional filter for 'show_changes'",
         )
         index_name: Optional[str] = Field(
             default=None,
@@ -96,36 +102,25 @@ async def _run_git_command(
 
 
 async def _is_shallow_repository(repo_path: Path) -> bool:
-    """Check if a git repository has minimal history (not useful for searching).
+    """Check if a git repository is a shallow clone.
 
-    Returns True only if the repo has 1 or fewer commits, meaning there's
-    no meaningful git history to search. Repos cloned with --depth > 1 that
-    have multiple commits ARE useful for git history searches.
-
-    Note: Git considers ANY depth-limited clone as "shallow" so we check actual
-    commit count instead.
+    Returns True if the repo was cloned with --depth (indicated by .git/shallow),
+    meaning it may have incomplete history which causes issues with commands
+    like 'git show' treating boundary commits as root commits (dumping all files).
     """
-    # Count actual commits - if there's only one, it's not useful for searching
-    returncode, stdout, _ = await _run_git_command(
-        repo_path, ["rev-list", "--count", "--all"], timeout=10
-    )
-    if returncode == 0:
-        try:
-            commit_count = int(stdout.strip())
-            # Only skip if there's 1 or fewer commits (depth=1 clone)
-            # Repos with >1 commits have useful history even if technically "shallow"
-            if commit_count <= 1:
-                logger.debug(
-                    f"Repo at {repo_path} has only {commit_count} commit(s) - no useful history"
-                )
-                return True
-            return False
-        except ValueError:
-            pass
+    # Check for .git/shallow file (indicates shallow clone)
+    shallow_file = repo_path / ".git" / "shallow"
+    if shallow_file.exists():
+        return True
 
-    # If we can't count commits, the repo is likely in a bad state - skip it
-    logger.warning(f"Could not count commits for {repo_path}, skipping git history")
-    return True
+    # Also verify with git command for robustness
+    returncode, stdout, _ = await _run_git_command(
+        repo_path, ["rev-parse", "--is-shallow-repository"], timeout=5
+    )
+    if returncode == 0 and stdout.strip().lower() == "true":
+        return True
+
+    return False
 
 
 async def _find_git_repos(index_name: Optional[str] = None) -> List[tuple[str, Path]]:
@@ -196,24 +191,88 @@ async def _search_commits(repo_path: Path, query: str, max_results: int) -> str:
 
 
 async def _get_commit_details(repo_path: Path, commit_hash: str) -> str:
-    """Get detailed information about a specific commit."""
-    # Get commit info with diff stats
-    args = [
+    """Get detailed information about a specific commit.
+
+    Truncates the file list if there are too many changed files to avoid context overflow.
+    """
+    # Get commit message and metadata (no diff/stat)
+    args_msg = [
         "show",
         commit_hash,
-        "--stat",
+        "--no-patch",
         "--format=Commit: %H%nAuthor: %an <%ae>%nDate: %ad%n%nSubject: %s%n%nBody:%n%b",
         "--date=iso",
     ]
 
+    # Get stat separately to handle truncation safely
+    args_stat = [
+        "show",
+        commit_hash,
+        "--stat",
+        "--format=",  # No commit info, just stat
+    ]
+
+    # Run in parallel
+    (rc_msg, msg_stdout, msg_stderr), (rc_stat, stat_stdout, stat_stderr) = (
+        await asyncio.gather(
+            _run_git_command(repo_path, args_msg),
+            _run_git_command(repo_path, args_stat),
+        )
+    )
+
+    if rc_msg != 0:
+        if "unknown revision" in msg_stderr or "bad revision" in msg_stderr:
+            return f"Commit '{commit_hash}' not found in this repository"
+        return f"Error getting commit details: {msg_stderr}"
+
+    # Process stat output
+    stat_output = stat_stdout.strip()
+    stat_lines = stat_output.split("\n")
+
+    # Truncate if too many files (e.g., > 50 files)
+    # Stat output usually ends with a summary line, check if we have enough lines
+    if len(stat_lines) > MAX_FILES_DISPLAY_LIMIT + 1:
+        # Keep summary line (last line)
+        summary_line = stat_lines[-1]
+
+        # Take first MAX_FILES_DISPLAY_LIMIT lines
+        truncated_files = stat_lines[:MAX_FILES_DISPLAY_LIMIT]
+        remaining_count = len(stat_lines) - 1 - MAX_FILES_DISPLAY_LIMIT
+
+        stat_output = "\n".join(truncated_files)
+        stat_output += f"\n... ({remaining_count} more files changed) ...\n"
+        stat_output += summary_line
+
+    if not stat_output:
+        return msg_stdout.strip()
+
+    return f"{msg_stdout.strip()}\n\n{stat_output}"
+
+
+async def _get_commit_diff(
+    repo_path: Path, commit_hash: str, file_path: Optional[str] = None
+) -> str:
+    """Get the diff for a specific commit, optionally filtered by file."""
+    # args = ["show", commit_hash, "--format="] # This works but git show output is slightly different than diff
+    # Use git show with patch
+    args = ["show", commit_hash, "--format=commit %H"]
+    if file_path:
+        args.extend(["--", file_path])
+
     returncode, stdout, stderr = await _run_git_command(repo_path, args)
 
     if returncode != 0:
-        if "unknown revision" in stderr or "bad revision" in stderr:
-            return f"Commit '{commit_hash}' not found in this repository"
-        return f"Error getting commit: {stderr}"
+        return f"Error getting diff: {stderr}"
 
-    return stdout.strip()
+    lines = stdout.splitlines()
+    if len(lines) > MAX_DIFF_LINES:
+        truncated = "\n".join(lines[:MAX_DIFF_LINES])
+        return (
+            f"{truncated}\n"
+            f"\n... (Output truncated, showing {MAX_DIFF_LINES} of {len(lines)} lines) ..."
+        )
+
+    return stdout
 
 
 async def _get_file_history(repo_path: Path, file_path: str, max_results: int) -> str:
@@ -284,29 +343,54 @@ async def _git_blame(repo_path: Path, file_path: str, max_lines: int = 100) -> s
             if current_entry:
                 commit = current_entry.get("hash", "?")[:8]
                 author = current_entry.get("author", "?")
+                author_mail = current_entry.get("author_mail", "")
                 line_num = current_entry.get("line", "?")
+                summary = current_entry.get("summary", "")
                 content = line[1:]  # Remove leading tab
 
-                # Truncate long lines
-                if len(content) > 60:
-                    content = content[:57] + "..."
+                # Truncate summary
+                if len(summary) > 40:
+                    summary = summary[:37] + "..."
 
-                blame_entries.append(f"{line_num:4} {commit} ({author:12}) {content}")
+                blame_entries.append(
+                    f"{line_num:4} {commit} ({author} {author_mail}) [{summary}]"
+                )
                 current_entry = {}
                 line_count += 1
 
                 if line_count >= max_lines:
                     break
-        elif len(line) >= 40 and line[0:40].replace(" ", "").isalnum():
-            # Commit hash line
+        elif len(line) >= 40:
+            # Commit hash line logic
+            # A valid commit hash line in porcelain output starts with a 40-char hex string
+            # Format: <40-char-sha1> <orig_line> <final_line> <group_lines>
             parts = line.split()
-            if len(parts) >= 3:
-                current_entry = {
-                    "hash": parts[0],
-                    "line": parts[2],
-                }
-        elif line.startswith("author "):
-            current_entry["author"] = line[7:]
+            if len(parts) >= 3 and len(parts[0]) == 40:
+                # Strictly check if first token is a valid hex sha1
+                is_sha1 = True
+                for char in parts[0]:
+                    if not (
+                        (char >= "0" and char <= "9")
+                        or (char >= "a" and char <= "f")
+                        or (char >= "A" and char <= "F")
+                    ):
+                        is_sha1 = False
+                        break
+
+                if is_sha1:
+                    current_entry = {
+                        "hash": parts[0],
+                        "line": parts[2],
+                    }
+
+        # Only parse headers if we have an active commit entry
+        if current_entry:
+            if line.startswith("author "):
+                current_entry["author"] = line[7:]
+            elif line.startswith("author-mail "):
+                current_entry["author_mail"] = line[12:]
+            elif line.startswith("summary "):
+                current_entry["summary"] = line[8:]
 
     if not blame_entries:
         return f"Could not parse blame output for '{file_path}'"
@@ -314,7 +398,9 @@ async def _git_blame(repo_path: Path, file_path: str, max_lines: int = 100) -> s
     result = f"Blame for '{file_path}'"
     if line_count >= max_lines:
         result += f" (first {max_lines} lines)"
-    result += ":\n" + "\n".join(blame_entries)
+
+    result += "\nFormat: Line Hash (Author <Email>) [Subject]\n"
+    result += "\n".join(blame_entries)
 
     return result
 
@@ -382,16 +468,16 @@ async def search_git_history(
     if action == "search_commits":
         if not query:
             return "Error: 'query' parameter is required for search_commits action"
-    elif action == "get_commit":
+    elif action in ("get_commit", "show_changes", "get_diff"):
         if not commit_hash:
-            return "Error: 'commit_hash' parameter is required for get_commit action"
+            return f"Error: 'commit_hash' parameter is required for {action} action"
     elif action in ("file_history", "blame", "find_files"):
         if not file_path:
             return f"Error: 'file_path' parameter is required for {action} action"
     else:
         return (
             f"Unknown action: '{action}'. "
-            "Valid actions: search_commits, get_commit, file_history, blame, find_files"
+            "Valid actions: search_commits, get_commit, show_changes, file_history, blame, find_files"
         )
 
     # Execute action on each repo
@@ -406,6 +492,9 @@ async def search_git_history(
             elif action == "get_commit":
                 assert commit_hash is not None  # Validated above
                 result = await _get_commit_details(repo_path, commit_hash)
+            elif action in ("show_changes", "get_diff"):
+                assert commit_hash is not None  # Validated above
+                result = await _get_commit_diff(repo_path, commit_hash, file_path)
             elif action == "file_history":
                 assert file_path is not None  # Validated above
                 result = await _get_file_history(repo_path, file_path, max_results)
@@ -443,6 +532,7 @@ def create_aggregate_git_history_tool(
         "Search git repository history for detailed commit information. "
         "Actions: 'search_commits' (find commits by message keywords), "
         "'get_commit' (show full commit details), "
+        "'show_changes' (show code diff for a commit), "
         "'file_history' (show commits that modified a file), "
         "'blame' (show who last modified each line), "
         "'find_files' (find files matching a pattern - use before file_history/blame if unsure of path). "
@@ -485,6 +575,7 @@ def create_per_index_git_history_tool(
                 "The git action to perform. One of: "
                 "'search_commits' - Search commit messages for keywords, "
                 "'get_commit' - Get detailed info about a specific commit, "
+                "'show_changes' (or 'get_diff') - Show the code changes (diff) for a commit, "
                 "'file_history' - Get commit history for a specific file, "
                 "'blame' - Show who last modified each line of a file, "
                 "'find_files' - Find files matching a pattern (use before file_history/blame if unsure of path)"
@@ -496,11 +587,11 @@ def create_per_index_git_history_tool(
         )
         commit_hash: Optional[str] = Field(
             default=None,
-            description="Commit hash for 'get_commit' action",
+            description="Commit hash for 'get_commit' or 'show_changes' action",
         )
         file_path: Optional[str] = Field(
             default=None,
-            description="File path for 'file_history'/'blame' actions, or pattern for 'find_files' (e.g., 'index.php', '*.py')",
+            description="File path for 'file_history'/'blame' actions, optional filter for 'show_changes', or pattern for 'find_files' (e.g., 'index.php', '*.py')",
         )
         max_results: int = Field(
             default=10,
@@ -531,6 +622,10 @@ def create_per_index_git_history_tool(
             if not commit_hash:
                 return "Error: 'commit_hash' parameter is required for get_commit"
             return await _get_commit_details(repo_path, commit_hash)
+        elif action in ("show_changes", "get_diff"):
+            if not commit_hash:
+                return f"Error: 'commit_hash' parameter is required for {action}"
+            return await _get_commit_diff(repo_path, commit_hash, file_path)
         elif action == "file_history":
             if not file_path:
                 return "Error: 'file_path' parameter is required for file_history"
@@ -542,7 +637,7 @@ def create_per_index_git_history_tool(
         else:
             return (
                 f"Unknown action: '{action}'. "
-                "Valid actions: search_commits, get_commit, file_history, blame"
+                "Valid actions: search_commits, get_commit, show_changes, file_history, blame"
             )
 
     # Sanitize index name for tool name
@@ -551,9 +646,7 @@ def create_per_index_git_history_tool(
     tool_description = f"Search git history for the '{index_name}' repository. "
     if description:
         tool_description += f"{description} "
-    tool_description += (
-        "Actions: 'search_commits', 'get_commit', 'file_history', 'blame'."
-    )
+    tool_description += "Actions: 'search_commits', 'get_commit', 'show_changes', 'file_history', 'blame'."
 
     return StructuredTool.from_function(
         coroutine=search_this_repo,
