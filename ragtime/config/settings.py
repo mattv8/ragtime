@@ -36,6 +36,11 @@ class Settings(BaseSettings):
         default="postgresql://ragtime:ragtime_dev@localhost:5434/ragtime",
         alias="DATABASE_URL",
     )
+    prisma_timeout: int = Field(
+        default=60,
+        alias="PRISMA_TIMEOUT",
+        description="Timeout in seconds for database operations",
+    )
 
     # Security
     api_key: str = Field(default="", alias="API_KEY")  # API key for auth

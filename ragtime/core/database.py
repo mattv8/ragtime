@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
 
 from prisma import Prisma
-
+from ragtime.config import settings
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -36,7 +36,7 @@ class DatabaseManager:
     async def connect(self) -> Prisma:
         """Connect to the database and return the Prisma client."""
         if self._db is None:
-            self._db = Prisma()
+            self._db = Prisma(http={"timeout": settings.prisma_timeout})
 
         if not self._db.is_connected():
             logger.info("Connecting to database...")
