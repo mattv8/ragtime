@@ -550,6 +550,7 @@ async def authorize_get(
 
 @app.post("/authorize", include_in_schema=False)
 async def authorize_post(
+    request: Request,
     client_id: str = Form(...),
     redirect_uri: str = Form(...),
     response_type: str = Form(...),
@@ -561,7 +562,8 @@ async def authorize_post(
 ):
     """
     OAuth2 Authorization Endpoint - POST request handles login.
-    Returns JSON error on failure, redirects on success.
+    Returns JSON with redirect_url on success (frontend navigates).
+    Returns JSON error on failure.
     """
     # Validate redirect_uri (security: prevent open redirect attacks)
     if not validate_redirect_uri(redirect_uri):
@@ -600,13 +602,41 @@ async def authorize_post(
 
     logger.info(f"OAuth2 authorization code issued for '{result.username}'")
 
+    # Create session for the user (so they stay logged in to Ragtime)
+    from ragtime.core.auth import create_access_token, create_session
+
+    token = create_access_token(result.user_id, result.username, result.role)
+
+    await create_session(
+        user_id=result.user_id,
+        token=token,
+        user_agent=request.headers.get("User-Agent"),
+        ip_address=request.client.host if request.client else None,
+    )
+
     # Build redirect URL with authorization code
     params = {"code": code}
     if state:
         params["state"] = state
 
     redirect_url = f"{redirect_uri}?{urlencode(params)}"
-    return RedirectResponse(url=redirect_url, status_code=302)
+
+    # Return JSON response - frontend will navigate to redirect_url
+    # Cannot use RedirectResponse because fetch would try to follow it
+    # and the OAuth callback server doesn't have CORS headers
+    response = JSONResponse(content={"redirect_url": redirect_url})
+
+    # Set session cookie so user stays logged in
+    response.set_cookie(
+        key=settings.session_cookie_name,
+        value=token,
+        httponly=settings.session_cookie_httponly,
+        secure=settings.session_cookie_secure,
+        samesite=settings.session_cookie_samesite,
+        max_age=settings.jwt_expire_hours * 3600,
+    )
+
+    return response
 
 
 @app.post("/authorize/session", include_in_schema=False)

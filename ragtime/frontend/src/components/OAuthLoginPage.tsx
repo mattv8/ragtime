@@ -50,7 +50,7 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
           'Content-Type': 'application/x-www-form-urlencoded',
         },
         body: formData.toString(),
-        redirect: 'follow', // Follow redirects automatically
+        credentials: 'include', // Include session cookie
       });
 
       // If we get redirected (302), the browser should follow it
@@ -61,27 +61,29 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
         return;
       }
 
+      // Try to parse JSON response
+      let data;
+      try {
+        data = await response.json();
+      } catch {
+        // Response wasn't JSON
+      }
+
       if (response.ok) {
-        // Success without redirect - shouldn't happen but handle it
+        if (data && data.redirect_url) {
+          // Navigate to the redirect URL
+          window.location.href = data.redirect_url;
+          return;
+        }
+        // Fallback or unexpected success without redirect info
         return;
       }
 
-      // Handle error response (JSON)
-      if (response.status === 401) {
-        try {
-          const data = await response.json();
-          setError(data.error || 'Invalid username or password');
-        } catch {
-          setError('Invalid username or password');
-        }
+      // Handle error response
+      if (data && data.error) {
+        setError(data.error);
       } else {
-        try {
-          const data = await response.json();
-          setError(data.error || 'Authentication failed');
-        } catch {
-          const text = await response.text();
-          setError(text || 'Authentication failed');
-        }
+        setError('Authentication failed');
       }
     } catch (err) {
       if (err instanceof Error) {

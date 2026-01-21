@@ -10,6 +10,14 @@ docker exec -i ragtime-db-dev bash -c \
 ```
 **Tables**: `users`, `sessions`, `ldap_configs`, `conversations`, `index_jobs`, `index_metadata`, `index_configs`, `app_settings`, `tool_configs`
 
+## Frontend Testing on Port 8000
+
+When testing against port 8000 (non-Vite production build), frontend changes require manual rebuild:
+```bash
+docker exec ragtime-dev sh -c "cd /ragtime/ragtime/frontend && npm run build"
+```
+Port 8001 (Vite dev server) has hot-reload and does not require this step.
+
 ## API Auth Testing
 ```bash
 # Get token (uses container env vars)

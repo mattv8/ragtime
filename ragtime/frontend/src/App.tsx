@@ -55,9 +55,6 @@ export function App() {
   // OAuth flow state - capture on mount
   const [oauthParams] = useState<OAuthParams | null>(() => {
     const params = getOAuthParams();
-    if (params) {
-      console.log('OAuth flow: Detected OAuth params on mount', params);
-    }
     return params;
   });
 
@@ -166,11 +163,6 @@ export function App() {
   useEffect(() => {
     if (!oauthParams || !currentUser || authLoading) return;
 
-    console.log('OAuth flow: User authenticated, completing flow...', {
-      client_id: oauthParams.client_id,
-      redirect_uri: oauthParams.redirect_uri,
-    });
-
     const completeOAuthFlow = async () => {
       try {
         const formData = new URLSearchParams();
@@ -181,7 +173,6 @@ export function App() {
         formData.append('code_challenge_method', oauthParams.code_challenge_method);
         formData.append('state', oauthParams.state);
 
-        console.log('OAuth flow: Requesting auth code from /authorize/session');
         const response = await fetch('/authorize/session', {
           method: 'POST',
           headers: {
@@ -192,10 +183,8 @@ export function App() {
         });
 
         const data = await response.json();
-        console.log('OAuth flow: Response from /authorize/session', { status: response.status, data });
 
         if (response.ok && data.redirect_url) {
-          console.log('OAuth flow: Redirecting to', data.redirect_url);
           window.location.href = data.redirect_url;
         } else {
           // Session invalid or error - user needs to re-login
