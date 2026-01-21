@@ -775,6 +775,14 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     }
   };
 
+  const getDisplayUrl = (path: string) => {
+    const protocol = window.location.protocol;
+    const hostname = window.location.hostname;
+    const port = window.location.port === '8001' ? '8000' : window.location.port;
+    const host = port ? `${hostname}:${port}` : hostname;
+    return `${protocol}//${host}${path}`;
+  };
+
   if (loading) {
     return (
       <div className="card">
@@ -797,7 +805,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         <p>
           Connect external clients (e.g., Open WebUI) using:
         </p>
-        <code>{`${window.location.protocol}//${window.location.hostname}:8000/v1`}</code>
+        <code>{getDisplayUrl('/v1')}</code>
         <p className="field-help" style={{ marginTop: '0.5rem' }}>
           Model: <code>{(formData.server_name || settings?.server_name || 'Ragtime').toLowerCase().replace(/\s+/g, '-')}</code>. The <code>/v1</code> path is required for OpenAI API compatibility.
         </p>
@@ -833,10 +841,10 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         </p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', marginTop: '0.5rem' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <code>{`${window.location.protocol}//${window.location.hostname}:8000/mcp`}</code>
+            <code>{getDisplayUrl('/mcp')}</code>
             <span className="muted" style={{ fontSize: '0.85em' }}>(default - all tools)</span>
-            {settings?.mcp_default_route_auth && settings?.has_mcp_default_password ? (
-              <span title="Password protected">
+            {settings?.mcp_default_route_auth && (settings?.has_mcp_default_password || settings?.mcp_default_route_auth_method === 'oauth2') ? (
+              <span title={settings?.mcp_default_route_auth_method === 'oauth2' ? "OAuth2 protected" : "Password protected"}>
                 <Lock size={14} style={{ color: 'var(--success-color, #4caf50)' }} />
               </span>
             ) : (
@@ -849,7 +857,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
             const isProtected = route.require_auth && (route.has_password || route.auth_method === 'oauth2');
             return (
               <div key={route.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <code>{`${window.location.protocol}//${window.location.hostname}:8000/mcp/${route.route_path}`}</code>
+                <code>{getDisplayUrl(`/mcp/${route.route_path}`)}</code>
                 <span className="muted" style={{ fontSize: '0.85em' }}>({route.name})</span>
                 {isProtected ? (
                   <span title={route.auth_method === 'oauth2' ? 'OAuth2 (LDAP)' : 'Password protected'}>
