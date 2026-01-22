@@ -55,6 +55,10 @@ async function handleResponse<T>(response: Response): Promise<T> {
 }
 
 export const api = {
+  getConversationEventsUrl(conversationId: string): string {
+    return `${API_BASE}/conversations/${conversationId}/events`;
+  },
+
   // ===========================================================================
   // Authentication
   // ===========================================================================
@@ -1421,6 +1425,53 @@ export const api = {
       : `${API_BASE}/tasks/${taskId}`;
     const response = await apiFetch(url);
     return handleResponse<import('@/types').ChatTask>(response);
+  },
+
+  /**
+   * Stream updates for a chat task via SSE.
+   */
+  async *streamChatTask(taskId: string, sinceVersion?: number, signal?: AbortSignal): AsyncGenerator<any, void, unknown> {
+    const url = sinceVersion !== undefined
+      ? `${API_BASE}/tasks/${taskId}/stream?since_version=${sinceVersion}`
+      : `${API_BASE}/tasks/${taskId}/stream`;
+
+    const response = await apiFetch(url, {
+      method: 'GET',
+      signal,
+    });
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new ApiError(
+        data.detail || `Stream failed: ${response.status}`,
+        response.status,
+        data.detail
+      );
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) throw new ApiError('No response body', 500);
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.trim().startsWith('data: ')) {
+          const data = line.trim().slice(6);
+          try {
+             yield JSON.parse(data);
+          } catch { }
+        }
+      }
+    }
   },
 
   /**

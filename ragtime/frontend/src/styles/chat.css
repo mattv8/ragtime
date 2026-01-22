@@ -312,21 +312,29 @@
 
 .chat-model-select {
   font-size: var(--text-xs);
-  padding: 4px var(--space-sm);
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
   color: var(--color-text-primary);
   cursor: pointer;
   max-width: 200px;
+  transition: all var(--transition-fast);
+  font-weight: 500;
 }
 
 .chat-model-select:hover:not(:disabled) {
-  border-color: var(--color-primary-border);
+  background: var(--color-surface-hover);
+  border-color: var(--color-text-muted);
+}
+
+.chat-model-select:focus {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
 }
 
 .chat-model-select:disabled {
-  opacity: 0.6;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 

@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from langchain_core.messages import AIMessage, HumanMessage
 
+from ragtime.core.event_bus import task_event_bus
 from ragtime.core.logging import get_logger
 from ragtime.indexer.models import ChatTaskStatus, FilesystemConnectionConfig
 from ragtime.indexer.repository import repository
@@ -498,6 +499,14 @@ class BackgroundTaskService:
                     await repository.update_chat_task_status(
                         task_id, ChatTaskStatus.failed, "RAG service not ready"
                     )
+                    await task_event_bus.publish(
+                        task_id,
+                        {
+                            "completed": True,
+                            "status": "failed",
+                            "error": "RAG service not ready",
+                        },
+                    )
                     return
 
                 full_response = ""
@@ -548,6 +557,9 @@ class BackgroundTaskService:
                             )
                             if result and result.streaming_state:
                                 current_version = result.streaming_state.version
+                                await task_event_bus.publish(
+                                    task_id, result.streaming_state.dict()
+                                )
                             last_update = datetime.utcnow()
 
                         elif event_type == "tool_end":
@@ -578,6 +590,9 @@ class BackgroundTaskService:
                                 )
                                 if result and result.streaming_state:
                                     current_version = result.streaming_state.version
+                                    await task_event_bus.publish(
+                                        task_id, result.streaming_state.dict()
+                                    )
                                 last_update = datetime.utcnow()
 
                         elif event_type == "max_iterations_reached":
@@ -594,6 +609,9 @@ class BackgroundTaskService:
                             )
                             if result and result.streaming_state:
                                 current_version = result.streaming_state.version
+                                await task_event_bus.publish(
+                                    task_id, result.streaming_state.dict()
+                                )
                             last_update = datetime.utcnow()
                     else:
                         # Text token
@@ -620,6 +638,9 @@ class BackgroundTaskService:
                         )
                         if result and result.streaming_state:
                             current_version = result.streaming_state.version
+                            await task_event_bus.publish(
+                                task_id, result.streaming_state.dict()
+                            )
                         last_update = now
 
                 # Task completed successfully - save final state
@@ -630,6 +651,17 @@ class BackgroundTaskService:
                     tool_calls,
                     hit_max_iterations,
                     current_version,
+                )
+
+                # Notify completion
+                await task_event_bus.publish(
+                    task_id,
+                    {
+                        "completed": True,
+                        "status": "completed",
+                        "content": full_response,
+                        "events": events,
+                    },
                 )
 
                 # Add the assistant response to the conversation
@@ -667,6 +699,9 @@ class BackgroundTaskService:
                         logger.info(f"Task {task_id} interrupted by shutdown")
                     else:
                         await repository.cancel_chat_task(task_id)
+                        await task_event_bus.publish(
+                            task_id, {"completed": True, "status": "cancelled"}
+                        )
                 except Exception as db_err:
                     logger.warning(
                         f"Task {task_id}: Could not update task status (database may be disconnected): {db_err}"
@@ -677,6 +712,10 @@ class BackgroundTaskService:
                 try:
                     await repository.update_chat_task_status(
                         task_id, ChatTaskStatus.failed, str(e)
+                    )
+                    await task_event_bus.publish(
+                        task_id,
+                        {"completed": True, "status": "failed", "error": str(e)},
                     )
                 except Exception as db_err:
                     logger.warning(

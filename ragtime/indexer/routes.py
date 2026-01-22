@@ -20,6 +20,7 @@ from starlette.responses import StreamingResponse
 
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.encryption import decrypt_secret
+from ragtime.core.event_bus import task_event_bus
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
@@ -6427,6 +6428,119 @@ async def get_chat_task(task_id: str, since_version: int = 0):
         completed_at=task.completed_at,
         last_update_at=task.last_update_at,
     )
+
+
+@router.get("/tasks/{task_id}/stream")
+async def stream_chat_task(
+    task_id: str,
+    since_version: int = 0,
+    user: User = Depends(get_current_user),
+):
+    """
+    Stream updates for a chat task via SSE.
+    """
+    import asyncio
+    import json
+
+    from fastapi.responses import StreamingResponse
+
+    from ragtime.core.event_bus import task_event_bus
+    from ragtime.indexer.models import ChatTaskStatus
+    from ragtime.indexer.repository import repository
+
+    # Verify task exists and user has access
+    task = await repository.get_chat_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    # Check conversation access
+    has_access = await repository.check_conversation_access(
+        task.conversation_id, user.id, is_admin=(user.role == "admin")
+    )
+    if not has_access:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    async def event_generator():
+        # First partial update if we are behind
+        # If task has state and it is newer than what client has, send valid state immediately
+        if task.streaming_state and task.streaming_state.version > since_version:
+            # Send initial state
+            yield f"data: {json.dumps({'type': 'state', 'state': task.streaming_state.dict()})}\n\n"
+
+        if task.status in [
+            ChatTaskStatus.completed,
+            ChatTaskStatus.failed,
+            ChatTaskStatus.cancelled,
+            ChatTaskStatus.interrupted,
+        ]:
+            yield f"data: {json.dumps({'type': 'completion', 'status': task.status.value})}\n\n"
+            return
+
+        queue = await task_event_bus.subscribe(task_id)
+        try:
+            while True:
+                # Wait for data or disconnect
+                try:
+                    data = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield f"data: {json.dumps(data)}\n\n"
+
+                    if data.get("completed"):
+                        break
+
+                except asyncio.TimeoutError:
+                    # Helper keep-alive
+                    yield ": keep-alive\n\n"
+                    # Check if task is still running (handle restarted server case)
+                    t = await repository.get_chat_task(task_id)
+                    if t and t.status not in (
+                        ChatTaskStatus.pending,
+                        ChatTaskStatus.running,
+                    ):
+                        yield f"data: {json.dumps({'type': 'completion', 'status': t.status.value})}\n\n"
+                        break
+
+        finally:
+            task_event_bus.unsubscribe(task_id, queue)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@router.get("/conversations/{conversation_id}/events")
+async def conversation_events(
+    conversation_id: str,
+    user: User = Depends(get_current_user),
+):
+    """
+    Subscribe to conversation events (e.g. title updates).
+    """
+    import json
+
+    from ragtime.indexer.repository import repository
+
+    # Check conversation access
+    has_access = await repository.check_conversation_access(
+        conversation_id, user.id, is_admin=(user.role == "admin")
+    )
+    if not has_access:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    async def event_generator():
+        channel = f"conversation:{conversation_id}"
+        queue = await task_event_bus.subscribe(channel)
+        try:
+            while True:
+                # Keep-alive heartbeat every 15s to handle load balancers
+                try:
+                    data = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield f"data: {json.dumps(data)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            task_event_bus.unsubscribe(channel, queue)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @router.post("/tasks/{task_id}/cancel", response_model=ChatTaskResponse)

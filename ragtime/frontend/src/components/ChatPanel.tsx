@@ -917,6 +917,35 @@ const MessageAttachments = memo(function MessageAttachments({ attachments, onIma
   );
 });
 
+const ChatTitle = memo(({ title }: { title: string }) => {
+  const [displayTitle, setDisplayTitle] = useState(title);
+  const previousTitleRef = useRef(title);
+
+  useEffect(() => {
+    if (previousTitleRef.current === title) return;
+
+    if (previousTitleRef.current === 'New Chat' && title !== 'New Chat') {
+      let i = 0;
+      setDisplayTitle('');
+      const interval = setInterval(() => {
+        i++;
+        if (i <= title.length) {
+          setDisplayTitle(title.substring(0, i));
+        } else {
+          clearInterval(interval);
+        }
+      }, 30);
+      previousTitleRef.current = title;
+      return () => clearInterval(interval);
+    } else {
+      setDisplayTitle(title);
+      previousTitleRef.current = title;
+    }
+  }, [title]);
+
+  return <>{displayTitle}</>;
+});
+
 interface ChatPanelProps {
   currentUser: User;
 }
@@ -953,9 +982,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
   const [activeTask, setActiveTask] = useState<ChatTask | null>(null);
   const [interruptedTask, setInterruptedTask] = useState<ChatTask | null>(null);  // Last interrupted task for continue
   const [_isPollingTask, setIsPollingTask] = useState(false);
-  const taskPollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastSeenVersionRef = useRef<number>(0);  // Track last seen version for delta polling
-
   // Available models state
   const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
@@ -965,6 +992,9 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const processingTaskRef = useRef<string | null>(null);
+  const titleSourceRef = useRef<Map<string, EventSource>>(new Map());
 
   // Auto-resize textarea
   useEffect(() => {
@@ -975,7 +1005,8 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
       textarea.style.height = scrollHeight + 'px';
     }
   }, [inputValue]);
-  const abortControllerRef = useRef<AbortController | null>(null);
+
+
 
   const getOwnerKey = useCallback((conv: Conversation) => conv.username || conv.user_id || 'unknown', []);
 
@@ -1124,171 +1155,307 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
     }
   };
 
-  // =========================================================================
-  // Background Task Polling
-  // =========================================================================
 
-  const stopTaskPolling = useCallback(() => {
-    if (taskPollIntervalRef.current) {
-      clearInterval(taskPollIntervalRef.current);
-      taskPollIntervalRef.current = null;
+  // Listen for auto-generated titles per conversation using SSE
+  const stopTitleStreamFor = useCallback((conversationId: string) => {
+    const es = titleSourceRef.current.get(conversationId);
+    if (es) {
+      es.close();
     }
-    setIsPollingTask(false);
-    lastSeenVersionRef.current = 0;  // Reset version tracking
+    titleSourceRef.current.delete(conversationId);
   }, []);
 
-  const pollTaskStatus = useCallback(async (taskId: string) => {
+  const startTitleStreamFor = useCallback((conversationId: string) => {
+    if (titleSourceRef.current.has(conversationId)) return;
+
+    const target = conversations.find(c => c.id === conversationId);
+    if (!target || target.title !== 'New Chat') return;
+
     try {
-      // Use delta polling - pass last seen version to skip unchanged data
-      const task = await api.getChatTask(taskId, lastSeenVersionRef.current);
-      setActiveTask(task);
+      const url = api.getConversationEventsUrl(conversationId);
+      const es = new EventSource(url, { withCredentials: true });
 
-      // Update streaming display from task state
-      // If streaming_state is null, server indicates no change since our version
-      if (task.streaming_state) {
-        // Update our tracked version
-        lastSeenVersionRef.current = task.streaming_state.version;
+      es.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'title_update' && data.title) {
+            // Update conversation title
+            setConversations(prev => prev.map(c => {
+               if (c.id === conversationId) {
+                 return { ...c, title: data.title };
+               }
+               return c;
+            }));
 
-        // Only update content if it actually changed (avoids React re-render)
-        setStreamingContent(prev =>
-          prev === task.streaming_state!.content ? prev : task.streaming_state!.content
-        );
-        // Convert task events to streaming render events
-        // Use functional update to compare with previous state
-        setStreamingEvents(prev => {
-          const newEvents: StreamingRenderEvent[] = task.streaming_state!.events.map(ev => {
-            if (ev.type === 'content') {
-              return { type: 'content' as const, content: ev.content || '' };
-            } else {
-              return {
-                type: 'tool' as const,
-                toolCall: {
-                  tool: ev.tool || '',
-                  input: ev.input,
-                  output: ev.output,
-                  status: ev.output ? 'complete' as const : 'running' as const,
-                }
-              };
-            }
-          });
-          // Skip update if events haven't changed (simple length + last event check)
-          if (prev.length === newEvents.length && prev.length > 0) {
-            const lastPrev = prev[prev.length - 1];
-            const lastNew = newEvents[newEvents.length - 1];
-            if (lastPrev.type === lastNew.type) {
-              if (lastPrev.type === 'content' && lastNew.type === 'content' &&
-                  lastPrev.content === lastNew.content) {
-                return prev;
+            // Also update active conversation if it matches
+            setActiveConversation(prev => {
+              if (prev && prev.id === conversationId) {
+                return { ...prev, title: data.title };
               }
-              if (lastPrev.type === 'tool' && lastNew.type === 'tool' &&
-                  lastPrev.toolCall.output === lastNew.toolCall.output) {
-                return prev;
-              }
-            }
+              return prev;
+            });
+
+            // Close stream after receiving title
+            es.close();
+            titleSourceRef.current.delete(conversationId);
           }
-          return newEvents;
-        });
-
-        // Check for max iterations flag
-        if (task.streaming_state.hit_max_iterations) {
-          setHitMaxIterations(true);
+        } catch (e) {
+          console.error("Failed to parse title update", e);
         }
-      }
+      };
 
-      // Check if task is done
-      if (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled') {
-        stopTaskPolling();
-        setIsStreaming(false);
-        setActiveTask(null);
+      es.onerror = (err) => {
+        // Just close on error, don't retry locally as SSE retries automatically
+        // But if connection keeps failing, we might want to clean up.
+        // For now, let generic browser retry logic handle transient issues?
+        // Actually, if we get error, it might be 404 or something, let's close to be safe from inf loops
+        es.close();
+        titleSourceRef.current.delete(conversationId);
+      };
 
-        // Refresh conversation to get final state (including any partial messages)
-        // Do NOT clear streaming state until after refresh completes
-        if (activeConversation) {
-          const updated = await api.getConversation(activeConversation.id);
-          setActiveConversation(updated);
-          setConversations(prev => prev.map(c => c.id === updated.id ? updated : c));
-          // Only clear streaming state after successful refresh
-          setStreamingContent('');
-          setStreamingEvents([]);
-        } else {
-          // No active conversation, safe to clear streaming state
-          setStreamingContent('');
-          setStreamingEvents([]);
-        }
-
-        if (task.status === 'failed' && task.error_message) {
-          setError(task.error_message);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to poll task status:', err);
-      // Don't stop polling on transient errors
+      titleSourceRef.current.set(conversationId, es);
+    } catch (e) {
+      console.error("Failed to start title stream", e);
     }
-  }, [activeConversation, stopTaskPolling]);
+  }, [conversations]);
 
-  const startTaskPolling = useCallback((taskId: string) => {
-    stopTaskPolling();
+  useEffect(() => {
+    const newChatIds = conversations.filter(c => c.title === 'New Chat').map(c => c.id);
+
+    newChatIds.forEach(startTitleStreamFor);
+
+    // Stop streams for conversations that resolved or were removed
+    titleSourceRef.current.forEach((_, id) => {
+      if (!newChatIds.includes(id)) {
+        stopTitleStreamFor(id);
+      }
+    });
+
+    return () => {
+      titleSourceRef.current.forEach(es => es.close());
+      titleSourceRef.current.clear();
+    };
+  }, [conversations, startTitleStreamFor, stopTitleStreamFor]);
+
+  // =========================================================================
+  // Background Task Streaming (Resume & Reconnect)
+  // =========================================================================
+
+  const stopTaskStreaming = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    // Also clear processing ref so we can reconnect if needed
+    processingTaskRef.current = null;
+    setIsPollingTask(false);
+    lastSeenVersionRef.current = 0;
+  }, []);
+
+  const connectTaskStream = useCallback(async (taskId: string) => {
+    // Prevent duplicate connection for same task
+    if (processingTaskRef.current === taskId) return;
+
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
+    processingTaskRef.current = taskId;
     setIsPollingTask(true);
     setIsStreaming(true);
-    lastSeenVersionRef.current = 0;  // Start fresh
 
-    // Poll immediately, then every 300ms for responsive updates
-    // Backend writes at ~400ms intervals, so 300ms gives us good balance
-    pollTaskStatus(taskId);
-    taskPollIntervalRef.current = setInterval(() => {
-      pollTaskStatus(taskId);
-    }, 300);
-  }, [pollTaskStatus, stopTaskPolling]);
+    // Create new abort controller for this stream
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+    lastSeenVersionRef.current = 0;
+
+    try {
+      const stream = api.streamChatTask(taskId, 0, abortController.signal);
+
+      for await (const data of stream) {
+        // Handle explicit completion event
+        if (data.type === 'completion' || data.completed) {
+            const status = data.status || (data.completed ? 'completed' : 'unknown');
+            if (status === 'failed' && data.error) {
+                setError(data.error);
+            }
+            break; // Exit loop, cleanup below
+        }
+
+        // Handle streaming state update
+        let state = data;
+        if (data.type === 'state') state = data.state;
+
+        // Validation: ensure it looks like a streaming state
+        if (state && typeof state === 'object') {
+           const { content, events, version, hit_max_iterations } = state;
+
+           if (version !== undefined) lastSeenVersionRef.current = version;
+
+           if (content !== undefined) {
+             setStreamingContent(prev => prev === content ? prev : content);
+           }
+
+           if (events && Array.isArray(events)) {
+             setStreamingEvents(prev => {
+                // Skip update if events haven't changed (simple length + last event check)
+                if (prev.length === events.length && prev.length > 0) {
+                    const lastP = prev[prev.length - 1];
+                    const lastN = events[events.length - 1];
+                    // Simple check on last item to avoid unnecessary re-renders
+                    if (JSON.stringify(lastP) === JSON.stringify(lastN)) return prev;
+                }
+
+                // Convert to StreamingRenderEvent format
+                return events.map((ev: any) => {
+                    if (ev.type === 'content') return { type: 'content', content: ev.content || '' };
+                    return {
+                        type: 'tool',
+                        toolCall: {
+                            tool: ev.tool || '',
+                            input: ev.input,
+                            output: ev.output,
+                            status: ev.output ? 'complete' : 'running'
+                        }
+                    };
+                });
+             });
+           }
+
+           if (hit_max_iterations) setHitMaxIterations(true);
+        }
+      }
+    } catch (err: any) {
+        if (err.name !== 'AbortError') {
+            console.error('Task stream error:', err);
+        }
+    } finally {
+        if (processingTaskRef.current === taskId) {
+            processingTaskRef.current = null;
+            setIsPollingTask(false);
+            setIsStreaming(false);
+            setActiveTask(null);
+
+            // Refresh conversation on completion
+            if (activeConversation) {
+                try {
+                    const updated = await api.getConversation(activeConversation.id);
+                    setActiveConversation(updated);
+                    setConversations(prev => prev.map(c => c.id === updated.id ? updated : c));
+                    setStreamingContent('');
+                    setStreamingEvents([]);
+                } catch (e) { console.error(e); }
+            }
+        }
+    }
+  }, [activeConversation, stopTaskStreaming]);
+
+  const startTaskAndStream = useCallback(async (conversationId: string, message: string) => {
+    // 1. Optimistic update (User message)
+    let content: string | ContentPart[] = message;
+    try {
+      const parsed = JSON.parse(message);
+      if (Array.isArray(parsed) && parsed.some(p => p.type)) {
+        content = parsed;
+      }
+    } catch {
+      // Not JSON
+    }
+
+    const optimisticMsg: ChatMessage = {
+      role: 'user',
+      content: content as any,
+      timestamp: new Date().toISOString()
+    };
+
+    if (activeConversation) {
+      const updatedWithUser = {
+        ...activeConversation,
+        messages: [...activeConversation.messages, optimisticMsg]
+      };
+      setActiveConversation(updatedWithUser);
+      setConversations(prev => prev.map(c => c.id === conversationId ? updatedWithUser : c));
+    }
+
+    try {
+        // 2. Start background task
+        const task = await api.sendMessageBackground(conversationId, message);
+        setActiveTask(task);
+        setInterruptedTask(null);
+
+        // 3. Connect to stream
+        await connectTaskStream(task.id);
+    } catch (err: any) {
+       console.error(err);
+       setError(err.message || 'Failed to start task');
+       setIsStreaming(false);
+    }
+  }, [activeConversation, connectTaskStream]);
 
   // Check for active/interrupted background task when conversation changes
   useEffect(() => {
     const checkTasks = async () => {
+      // If we are switching conversations, ensure we stop any previous stream
       if (!activeConversation) {
-        stopTaskPolling();
+        stopTaskStreaming();
         setActiveTask(null);
         setInterruptedTask(null);
         return;
       }
 
-      try {
-        // Check for active (running/pending) task first
-        const activeT = await api.getConversationActiveTask(activeConversation.id);
-        if (activeT && (activeT.status === 'pending' || activeT.status === 'running')) {
-          setActiveTask(activeT);
-          setInterruptedTask(null);
-          startTaskPolling(activeT.id);
-        } else {
-          setActiveTask(null);
-          stopTaskPolling();
+      // If we are already streaming a task for this conversation, don't interrupt it.
+      // But how do we know if the running task belongs to THIS conversation?
+      // processingTaskRef stores taskId. activeTask stores taskId.
+      // We should check API to be sure.
 
-          // Check for interrupted task (from server restart)
-          const interruptedT = await api.getConversationInterruptedTask(activeConversation.id);
-          setInterruptedTask(interruptedT);
+      try {
+        const activeT = await api.getConversationActiveTask(activeConversation.id);
+
+        // Use functional state update to avoid dependency issues if needed, but here simple set is fine
+        if (activeT && (activeT.status === 'pending' || activeT.status === 'running')) {
+            setActiveTask(activeT);
+            setInterruptedTask(null);
+
+            // Connect to stream if not already processing this task
+            connectTaskStream(activeT.id);
+        } else {
+            // No active task for this conversation.
+            // If we are streaming something that is NOT this task, we should stop?
+            // "stopTaskStreaming" was called in cleanup of previous effect run (when ID changed).
+            // So we are clean here usually.
+
+            // If we were processing a task that just finished, connectTaskStream finally block clears it.
+            if (!activeT) {
+                 setActiveTask(null);
+                 // Only verify interrupted if no active task
+                 const interruptedT = await api.getConversationInterruptedTask(activeConversation.id);
+                 setInterruptedTask(interruptedT);
+            }
         }
       } catch (err) {
-        console.error('Failed to check tasks:', err);
+         console.error('Failed to check tasks:', err);
       }
     };
 
     checkTasks();
 
-    // Cleanup on unmount or conversation change
     return () => {
-      stopTaskPolling();
+        // Stop streaming when conversation ID changes (unmounting this effect instance)
+        stopTaskStreaming();
     };
-  }, [activeConversation?.id, startTaskPolling, stopTaskPolling]);
+  }, [activeConversation?.id, connectTaskStream, stopTaskStreaming]);
 
   // Cleanup on component unmount
   useEffect(() => {
     return () => {
-      stopTaskPolling();
+      stopTaskStreaming();
     };
-  }, [stopTaskPolling]);
+  }, [stopTaskStreaming]);
 
   const selectConversation = async (conversation: Conversation) => {
     try {
-      // Stop any current polling when switching
-      stopTaskPolling();
+      // Stop any current streaming when switching
+      stopTaskStreaming();
       setActiveTask(null);
       setIsStreaming(false);
       setStreamingContent('');
@@ -1400,7 +1567,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
       }
     }
 
-    stopTaskPolling();
+    stopTaskStreaming();
     setActiveTask(null);
     setInterruptedTask(null);
     setIsStreaming(false);
@@ -1470,17 +1637,8 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
     setHitMaxIterations(false);
 
     try {
-      // Use background task API
-      const task = await api.sendMessageBackground(activeConversation.id, userMessage);
-      setActiveTask(task);
-
-      // Refresh conversation to get the user message that the backend added
-      const updated = await api.getConversation(activeConversation.id);
-      setActiveConversation(updated);
-      setConversations(prev => prev.map(c => c.id === updated.id ? updated : c));
-
-      // Start polling for task updates
-      startTaskPolling(task.id);
+      // Use background task streaming
+      await startTaskAndStream(activeConversation.id, userMessage);
 
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to send message';
@@ -1667,17 +1825,8 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
       setStreamingContent('');
       setStreamingEvents([]);
 
-      // Use background task API
-      const task = await api.sendMessageBackground(activeConversation.id, messageToSend);
-      setActiveTask(task);
-
-      // Refresh conversation to get the user message that the backend added
-      const updated = await api.getConversation(activeConversation.id);
-      setActiveConversation(updated);
-      setConversations(prev => prev.map(c => c.id === updated.id ? updated : c));
-
-      // Start polling for task updates
-      startTaskPolling(task.id);
+      // Use background task streaming
+      await startTaskAndStream(activeConversation.id, messageToSend);
 
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to resend message');
@@ -1727,7 +1876,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
                   <Loader2 size={12} className="spinning" />
                 </span>
               )}
-              {conv.title}
+              <ChatTitle title={conv.title} />
             </div>
             <div className="chat-conversation-meta">
               {metaText}

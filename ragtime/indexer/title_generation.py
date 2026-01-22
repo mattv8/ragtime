@@ -8,6 +8,7 @@ from typing import Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
 
+from ragtime.core.event_bus import task_event_bus
 from ragtime.core.logging import get_logger
 from ragtime.indexer.repository import repository
 from ragtime.rag import rag
@@ -126,6 +127,9 @@ async def update_conversation_title_from_question(
 
     try:
         await repository.update_conversation_title(conversation_id, title)
+        await task_event_bus.publish(
+            f"conversation:{conversation_id}", {"type": "title_update", "title": title}
+        )
     except Exception as exc:
         logger.warning("Could not update conversation title: %s", exc)
 
