@@ -28,40 +28,34 @@ Self-hosted, OpenAI-compatible RAG API + MCP server that plugs local knowledge i
 
 ## Features
 
-- **OpenAI-compatible `/v1/chat/completions`** endpoint with streaming: works with OpenWebUI, Continue, and any OpenAI client
+- **OpenAI-compatible `/v1/chat/completions`** endpoint with streaming: works with [OpenWebUI](#connecting-to-openwebui), Continue, and any OpenAI client
 - **Built-in chat UI** at `/` with tool visualization, interactive charts, and DataTables: no external client required
-- **MCP server** (HTTP Streamable + stdio transports) exposing tools to Claude Desktop, VS Code Copilot, Cursor, and JetBrains IDEs
-- **Dual vector store**: FAISS for uploaded/git-cloned indexes, pgvector for filesystem/schema/PDM indexes (details below)
-- **LangChain tool calling**: PostgreSQL, MSSQL, MySQL/MariaDB, Odoo ORM, SSH shell: read-only by default, write-ops opt-in
-- **Auto-discovered tools**: drop a `<name>_tool` StructuredTool in `ragtime/tools/` and it registers at startup
-- **Security**: SQL injection prevention via allowlist patterns, LIMIT enforcement, Odoo code validation, optional write-ops flag
-- **Auth**: Local admin + optional LDAP, rate-limited login, encrypted secrets (Fernet), httpOnly session cookies
+- **[MCP server](#model-context-protocol-mcp-integration)** (HTTP Streamable + stdio transports) exposing tools to Claude Desktop, VS Code Copilot, Cursor, and JetBrains IDEs with auth
+- **Dual vector store**: FAISS for uploaded/git-cloned indexes, pgvector for filesystem/schema/PDM indexes ([details](#vector-store-abstraction))
+- **[LangChain tool calling](#tool-configuration)**: PostgreSQL, MSSQL, MySQL/MariaDB, Odoo ORM, SSH shell: read-only by default, write-ops opt-in
+- **Auto-discovered tools**: drop a `<name>_tool` StructuredTool in `ragtime/tools/` and it registers at startup (see [CONTRIBUTING.md](CONTRIBUTING.md))
+- **[Tool security](#security)**: SQL injection prevention via allowlist patterns, LIMIT enforcement, Odoo code validation, optional write-ops flag
+- **Auth**: Local admin + optional LDAP, rate-limited login, encrypted secrets ([Fernet](https://cryptography.io/en/latest/fernet/)), httpOnly session cookies
 
 ## Architecture
 
 ```mermaid
-flowchart TB
-    %% Clients
-    Clients["LLM Clients<br/>(OpenWebUI · Continue · ChatGPT-compatible apps · MCP clients)"]
+flowchart LR
+  Tools["Tools<br/>(SQL, SSH, Odoo)"] -->|tool runs + results| Ragtime
+  Context["Knowledge Sources<br/>(FAISS, pgvector)"] -->|retrieved context| Ragtime
+  LLM["LLM Provider<br/>(OpenAI, Anthropic, Ollama)"] -->|LLM API| Ragtime
 
-    %% Ragtime
-    Ragtime["Ragtime<br/>FastAPI :8000<br/><br/>/v1/chat/completions<br/>(OpenAI-compatible API)<br/>/mcp (HTTP + stdio)<br/>/indexes (Web UI)"]
+  subgraph Ragtime["Ragtime"]
+    direction TB
+    API["/v1/chat/completions"]
+    MCP["/mcp"]
+    UI["Web UI"]
+  end
 
-    %% Vector Stores
-    Vectors["Vector Stores<br/><br/>FAISS (local)<br/>pgvector (PostgreSQL)"]
+  Ragtime -->|chat responses| Clients["Clients<br/>(OpenWebUI, Claude, VS Code)"]
+  Clients -->|chat queries| Ragtime
 
-    %% LLM Providers
-    LLMs["LLM Providers<br/><br/>OpenAI<br/>Anthropic<br/>Ollama"]
-
-    %% Tools
-    Tools["Tools<br/><br/>postgres.py · mssql.py · mysql.py · odoo_shell.py<br/>filesystem_indexer.py · git_history.py · ssh · …"]
-
-    %% Connections
-    Clients --> Ragtime
-    Ragtime --> Vectors
-    Ragtime --> LLMs
-    Vectors --> Tools
-
+  style Ragtime fill:#1a365d,stroke:#3182ce,stroke-width:3px,color:#fff
 ```
 
 ## Vector Store Abstraction
@@ -311,7 +305,7 @@ Before you connect Ragtime to MCP clients, configure tools in the Ragtime web UI
 4. Fill in connection details (hostnames, credentials, database names, paths) for each tool.
 5. Use the built-in test button to verify each tool connection.
 
-Only tools that pass their health checks are exposed to chat and MCP clients. Configure and verify your tools here before following the MCP Integration section below.
+Only tools that pass their health checks are exposed to chat and MCP clients. Configure and verify your tools here before following the [MCP Integration](#model-context-protocol-mcp-integration) section below.
 
 ## Connecting to OpenWebUI
 
@@ -383,10 +377,10 @@ For local development or environments where HTTP isn't preferred, use stdio tran
 Replace `ragtime` with your container name if different (find it with `docker ps`).
 
 **Configuration file locations:**
-- **Claude Desktop**: `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows)
-- **VS Code / Copilot**: User or workspace MCP settings
-- **Cursor**: `.cursor/mcp.json`
-- **Windsurf**: `~/.codeium/windsurf/mcp_config.json`
+- **[Claude Desktop](https://claude.ai/download)**: `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows)
+- **[VS Code / Copilot](https://code.visualstudio.com/docs/copilot/chat/mcp-servers)**: User or workspace MCP settings
+- **[Cursor](https://docs.cursor.com/context/model-context-protocol)**: `.cursor/mcp.json`
+- **[Windsurf](https://docs.codeium.com/windsurf/mcp)**: `~/.codeium/windsurf/mcp_config.json`
 
 ## Creating Indexes
 
@@ -397,7 +391,7 @@ The Indexer UI (http://localhost:8000, **Indexes** tab) supports multiple index 
 | **Upload** (zip/tar) | FAISS | Static codebases, documentation snapshots |
 | **Git Clone** | FAISS | Repositories with optional private token auth |
 | **Filesystem** | pgvector | Live SMB/NFS shares, Docker volumes, local paths: incremental re-index |
-| **Schema** | pgvector | Auto-generated from PostgreSQL/MSSQL/MySQL tools (enable in tool settings) |
+| **Schema** | pgvector | Auto-generated from PostgreSQL/MSSQL/MySQL tools (enable in [Tool Configuration](#tool-configuration)) |
 | **PDM** | pgvector | SolidWorks PDM metadata via SQL Server |
 
 Jobs run async with progress streaming to the UI.
