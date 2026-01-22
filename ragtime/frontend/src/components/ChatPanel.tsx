@@ -1795,8 +1795,9 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
     setError(null);
 
     try {
-      // Sync with server first so we never diverge on which message was replaced
-      const truncated = await api.truncateConversation(activeConversation.id, truncateAt);
+      // 1. Local Optimistic Truncation & Update
+      // We do this immediately so the UI reflects the "revert" behavior users expect.
+      const messagesToKeep = activeConversation.messages.slice(0, truncateAt);
 
       let content: string | ContentPart[] = messageToSend;
       try {
@@ -1815,8 +1816,8 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
       };
 
       const optimisticConv: Conversation = {
-        ...truncated,
-        messages: [...truncated.messages, optimisticMsg]
+        ...activeConversation,
+        messages: [...messagesToKeep, optimisticMsg]
       };
 
       setActiveConversation(optimisticConv);
@@ -1828,10 +1829,20 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
       setHitMaxIterations(false);
       setIsConnectionError(false);
 
+      // 2. Server Sync (Truncate)
+      // Call endpoint to persist string truncation (removes old message & subsequent from DB)
+      const truncated = await api.truncateConversation(activeConversation.id, truncateAt);
+
+      // Note: We don't overwrite local state with 'truncated' here because 'truncated'
+      // doesn't have our optimistic user message yet.
+
+      // 3. Start background task
+      // This sends the message and creates a background task
       const task = await api.sendMessageBackground(truncated.id, messageToSend);
       setActiveTask(task);
       setInterruptedTask(null);
 
+      // 4. Connect to stream
       await connectTaskStream(task.id);
 
     } catch (err) {
