@@ -1524,6 +1524,8 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
+      if (isStreaming) return; // Allow typing while a response streams
+
       e.preventDefault();
       sendMessage();
     }
@@ -2144,7 +2146,6 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
                 <FileAttachment
                   attachments={attachments}
                   onAttachmentsChange={setAttachments}
-                  disabled={isStreaming}
                 />
                 <textarea
                   ref={inputRef}
@@ -2152,7 +2153,6 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
                   onChange={(e) => setInputValue(e.target.value)}
                   onKeyDown={handleKeyDown}
                   placeholder="Ask a question or paste an image (Ctrl+V)..."
-                  disabled={isStreaming}
                   rows={1}
                   className="chat-input"
                 />

@@ -34,8 +34,6 @@ export function FileAttachment({ attachments, onAttachmentsChange, disabled }: F
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [dragActive, setDragActive] = useState(false);
-  const [filePathInput, setFilePathInput] = useState('');
-  const [showFilePathInput, setShowFilePathInput] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
 
   // Handle click outside to close dropdown
@@ -218,24 +216,6 @@ export function FileAttachment({ attachments, onAttachmentsChange, disabled }: F
     };
   }, [disabled, attachments]);
 
-  const handleFilePathSubmit = () => {
-    if (!filePathInput.trim()) return;
-
-    const filename = filePathInput.split('/').pop() || filePathInput.split('\\').pop() || 'file';
-
-    onAttachmentsChange([...attachments, {
-      id: `${Date.now()}-${Math.random()}`,
-      type: 'file',
-      name: filename,
-      size: 0,
-      mimeType: 'application/octet-stream',
-      filePath: filePathInput.trim()
-    }]);
-
-    setFilePathInput('');
-    setShowFilePathInput(false);
-  };
-
   const removeAttachment = (id: string) => {
     onAttachmentsChange(attachments.filter(a => a.id !== id));
   };
@@ -325,63 +305,9 @@ export function FileAttachment({ attachments, onAttachmentsChange, disabled }: F
                 <Upload size={18} />
                 <span>Upload Files</span>
               </button>
-              <button
-                type="button"
-                className="attachment-dropdown-item"
-                onClick={() => {
-                  setShowFilePathInput(!showFilePathInput);
-                  setShowDropdown(false);
-                }}
-                disabled={disabled}
-              >
-                <Link size={18} />
-                <span>File Path</span>
-              </button>
             </div>
           )}
         </div>
-
-        {showFilePathInput && (
-          <div className="file-path-input-group">
-            <input
-              type="text"
-              className="file-path-input"
-              placeholder="/path/to/file.txt"
-              value={filePathInput}
-              onChange={(e) => setFilePathInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  handleFilePathSubmit();
-                } else if (e.key === 'Escape') {
-                  setShowFilePathInput(false);
-                  setFilePathInput('');
-                }
-              }}
-              disabled={disabled}
-              autoFocus
-            />
-            <button
-              type="button"
-              className="btn-path-submit"
-              onClick={handleFilePathSubmit}
-              disabled={disabled || !filePathInput.trim()}
-            >
-              Add
-            </button>
-            <button
-              type="button"
-              className="btn-path-close"
-              onClick={() => {
-                setShowFilePathInput(false);
-                setFilePathInput('');
-              }}
-              title="Close"
-            >
-              <X size={14} />
-            </button>
-          </div>
-        )}
       </div>
 
       {dragActive && (
