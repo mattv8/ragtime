@@ -992,6 +992,8 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
   const [modalImageUrl, setModalImageUrl] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatMessagesRef = useRef<HTMLDivElement>(null);
+  const shouldAutoScrollRef = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const processingTaskRef = useRef<string | null>(null);
@@ -1106,8 +1108,18 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (shouldAutoScrollRef.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [activeConversation?.messages, streamingContent]);
+
+  const handleScroll = useCallback(() => {
+    if (!chatMessagesRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = chatMessagesRef.current;
+    // Use a small threshold to account for fractional pixels
+    const isAtBottom = scrollHeight - scrollTop - clientHeight < 50;
+    shouldAutoScrollRef.current = isAtBottom;
+  }, []);
 
   // Focus input when conversation changes
   useEffect(() => {
@@ -1147,6 +1159,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
 
   const createNewConversation = async () => {
     try {
+      shouldAutoScrollRef.current = true;
       const conversation = await api.createConversation();
       setConversations(prev => [conversation, ...prev]);
       setActiveConversation(conversation);
@@ -1455,6 +1468,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
 
   const selectConversation = async (conversation: Conversation) => {
     try {
+      shouldAutoScrollRef.current = true;
       // Stop any current streaming when switching
       stopTaskStreaming();
       setActiveTask(null);
@@ -1539,6 +1553,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
     // Start a fresh conversation (same behavior as New button)
     // This replaces the old clearConversation which wiped messages
     if (isStreaming) return;
+    shouldAutoScrollRef.current = true;
     try {
       const conversation = await api.createConversation();
       setConversations(prev => [conversation, ...prev]);
@@ -1615,6 +1630,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
   // Direct message send - bypasses inputValue state for programmatic sending
   const sendMessageDirect = async (message: string) => {
     if (!message.trim() || !activeConversation || isStreaming) return;
+    shouldAutoScrollRef.current = true;
 
     const userMessage = message.trim();
     setError(null);
@@ -1779,6 +1795,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
 
   const submitEditMessage = async () => {
     if (!activeConversation || editingMessageIdx === null || (!editMessageContent.trim() && editMessageAttachments.length === 0)) return;
+    shouldAutoScrollRef.current = true;
 
     let messageToSend: string = editMessageContent.trim();
     if (editMessageAttachments.length > 0) {
@@ -1958,7 +1975,14 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
       {/* Conversations Sidebar */}
       <div className={`chat-sidebar ${showSidebar ? 'open' : ''}`}>
         <div className="chat-sidebar-header">
-          <h3>Conversations</h3>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <h3>Conversations</h3>
+            {conversations.some(c => c.active_task_id) && (
+              <span title="Processing in background">
+                <Loader2 size={14} className="spinning" />
+              </span>
+            )}
+          </div>
           <div className="chat-sidebar-header-actions">
             <button className="btn btn-sm" onClick={createNewConversation}>
               + New
@@ -2024,11 +2048,6 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
             <div className="chat-header">
               <div className="chat-header-info">
                 <h2>{activeConversation.title}</h2>
-                {activeTask && (
-                  <span className="chat-background-indicator" title="Processing in background - you can switch chats">
-                    Background
-                  </span>
-                )}
               </div>
               <div className="chat-header-actions">
                 <label className="chat-toggle-control" title="Show/hide tool calls in messages">
@@ -2067,7 +2086,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
             </div>
 
             {/* Messages */}
-            <div className="chat-messages">
+            <div className="chat-messages" ref={chatMessagesRef} onScroll={handleScroll}>
               {activeConversation.messages.length === 0 && !isStreaming ? (
                 <div className="chat-welcome">
                   <h3>Start a conversation</h3>
