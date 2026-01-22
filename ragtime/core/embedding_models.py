@@ -19,6 +19,14 @@ logger = get_logger(__name__)
 # LiteLLM's community-maintained model data (updated frequently)
 LITELLM_MODEL_DATA_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 
+# OpenAI embedding models priority order (recommended first)
+# Used for sorting in the embedding model selection UI
+OPENAI_EMBEDDING_PRIORITY = [
+    "text-embedding-3-small",
+    "text-embedding-3-large",
+    "text-embedding-ada-002",
+]
+
 # Cache for embedding models (populated on first request)
 _embedding_models_cache: dict[str, "EmbeddingModelInfo"] = {}
 _cache_lock = asyncio.Lock()
@@ -33,15 +41,6 @@ class EmbeddingModelInfo:
     provider: str
     max_input_tokens: Optional[int] = None
     output_vector_size: Optional[int] = None
-
-
-# OpenAI embedding models - prioritized list for display order
-OPENAI_EMBEDDING_PRIORITY = [
-    "text-embedding-3-small",
-    "text-embedding-3-large",
-    "text-embedding-ada-002",
-]
-
 
 async def _fetch_litellm_embedding_models() -> dict[str, EmbeddingModelInfo]:
     """Fetch embedding models from LiteLLM's dataset."""
@@ -101,11 +100,7 @@ def get_openai_embedding_models_sync(
     ]
 
     def sort_key(m: EmbeddingModelInfo) -> tuple:
-        try:
-            priority_idx = OPENAI_EMBEDDING_PRIORITY.index(m.id)
-        except ValueError:
-            priority_idx = 999
-        return (priority_idx, m.id)
+        return m.id
 
     openai_models.sort(key=sort_key)
     return openai_models

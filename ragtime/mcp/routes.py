@@ -22,15 +22,17 @@ from typing import Any
 
 import anyio
 from anyio.abc import TaskStatus
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from mcp.server.lowlevel.server import Server as MCPServer
 from mcp.server.streamable_http import StreamableHTTPServerTransport
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from prisma.models import User
 from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.logging import get_logger
+from ragtime.core.security import require_admin
 from ragtime.mcp.server import (
     get_custom_route_server,
     get_default_route_filtered_server,
@@ -870,7 +872,9 @@ def get_mcp_routes() -> list[Route]:
 
 
 @router.get("/tools")
-async def list_mcp_tools(include_unhealthy: bool = False):
+async def list_mcp_tools(
+    include_unhealthy: bool = False, _user: User = Depends(require_admin)
+):
     """
     List available MCP tools (debug endpoint).
 
@@ -899,7 +903,9 @@ async def list_mcp_tools(include_unhealthy: bool = False):
 
 
 @router.post("/tools/{tool_name}/call")
-async def call_mcp_tool(tool_name: str, request: Request):
+async def call_mcp_tool(
+    tool_name: str, request: Request, _user: User = Depends(require_admin)
+):
     """
     Call an MCP tool directly (debug endpoint).
 
@@ -918,7 +924,7 @@ async def call_mcp_tool(tool_name: str, request: Request):
 
 
 @router.post("/invalidate-cache")
-async def invalidate_mcp_cache():
+async def invalidate_mcp_cache(_user: User = Depends(require_admin)):
     """
     Invalidate the MCP tool cache.
 
@@ -934,7 +940,7 @@ async def invalidate_mcp_cache():
 
 
 @router.get("/health")
-async def mcp_health():
+async def mcp_health(_user: User = Depends(require_admin)):
     """
     MCP server health check.
 
@@ -961,7 +967,7 @@ async def mcp_health():
 
 
 @router.get("/routes")
-async def list_mcp_routes_debug():
+async def list_mcp_routes_debug(_user: User = Depends(require_admin)):
     """
     List all custom MCP routes (debug endpoint).
 

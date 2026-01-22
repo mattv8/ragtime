@@ -582,6 +582,8 @@ export interface LLMModel {
   id: string;
   name: string;
   created?: number;
+  group?: string;
+  is_latest?: boolean;
 }
 
 export interface LLMModelsResponse {
@@ -1348,6 +1350,8 @@ export interface AvailableModel {
   name: string;
   provider: 'openai' | 'anthropic' | 'ollama';
   context_limit: number;  // Max context window tokens
+  group?: string;  // Optional group for UI organization
+  is_latest?: boolean; // Whether this model is considered the latest in its group
 }
 
 // Response with all available models

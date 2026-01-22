@@ -4,6 +4,7 @@ import { api } from '@/api';
 import type { AppSettings, UpdateSettingsRequest, OllamaModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus } from '@/types';
 import { MCPRoutesPanel } from './MCPRoutesPanel';
 import { OllamaConnectionForm } from './OllamaConnectionForm';
+import { ModelSelector } from './ModelSelector';
 
 /**
  * Format a DN for display like Active Directory tree view.
@@ -930,10 +931,10 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                   llm_provider: newProvider,
                   llm_model:
                     newProvider === 'anthropic'
-                      ? 'claude-sonnet-4-20250514'
+                      ? ''
                       : newProvider === 'ollama'
-                        ? 'llama3'
-                        : 'gpt-4o',
+                        ? ''
+                        : '',
                 });
                 // Reset LLM models when switching providers
                 setLlmModels([]);
@@ -965,7 +966,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
               error={llmOllamaError}
               models={llmOllamaModels}
               modelLabel="Model"
-              modelPlaceholder="llama3"
+              modelPlaceholder=""
               connectedHelpText="Select an LLM from your Ollama server."
               disconnectedHelpText="Click &quot;Fetch Models&quot; to see available models, or enter manually."
               onProtocolChange={(protocol) => {
@@ -1076,19 +1077,15 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
             <div className="form-group">
               <label>Model</label>
               {llmModelsLoaded && llmModels.length > 0 ? (
-                <select
-                  value={formData.llm_model || ''}
-                  onChange={(e) =>
-                    setFormData({ ...formData, llm_model: e.target.value })
+                <ModelSelector
+                  models={llmModels}
+                  selectedModelId={formData.llm_model || ''}
+                  onModelChange={(modelId) =>
+                    setFormData({ ...formData, llm_model: modelId })
                   }
-                >
-                  <option value="">Select a model...</option>
-                  {llmModels.map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.name}
-                    </option>
-                  ))}
-                </select>
+                  placeholder="Select a model..."
+                  variant="full"
+                />
               ) : (
                 <input
                   type="text"
@@ -1096,11 +1093,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                   onChange={(e) =>
                     setFormData({ ...formData, llm_model: e.target.value })
                   }
-                  placeholder={
-                    formData.llm_provider === 'anthropic'
-                      ? 'claude-sonnet-4-20250514'
-                      : 'gpt-4o'
-                  }
+                  placeholder="Select a model..."
                 />
               )}
               <p className="field-help">
@@ -2110,23 +2103,45 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                     </span>
                   </div>
                   <div className="model-filter-list">
-                    {allAvailableModels
-                      .filter((model) =>
+                    {(() => {
+                      // Filter models first
+                      const filtered = allAvailableModels.filter((model) =>
                         modelFilterText === '' ||
                         model.name.toLowerCase().includes(modelFilterText.toLowerCase()) ||
                         model.provider.toLowerCase().includes(modelFilterText.toLowerCase())
-                      )
-                      .map((model) => (
-                        <label key={model.id} className="model-filter-item">
-                          <input
-                            type="checkbox"
-                            checked={selectedModels.has(model.id)}
-                            onChange={() => toggleModel(model.id)}
-                          />
-                          <span className="model-filter-name">{model.name}</span>
-                          <span className="model-filter-provider">{model.provider}</span>
-                        </label>
-                      ))}
+                      );
+
+                      // Group them
+                      const groups: Record<string, typeof filtered> = {};
+                      filtered.forEach(m => {
+                        const g = m.group || 'Other';
+                        if (!groups[g]) groups[g] = [];
+                        groups[g].push(m);
+                      });
+
+                      return Object.keys(groups).map(groupName => (
+                         <div key={groupName} className="model-group">
+                           <div className="model-group-header">{groupName}</div>
+                           {groups[groupName].map((model) => (
+                              <label key={model.id} className="model-filter-item" style={{
+                                paddingLeft: '1rem',
+                                backgroundColor: model.is_latest ? 'rgba(0,0,0,0.03)' : undefined,
+                                fontWeight: model.is_latest ? 500 : undefined
+                                }}>
+                                <input
+                                  type="checkbox"
+                                  checked={selectedModels.has(model.id)}
+                                  onChange={() => toggleModel(model.id)}
+                                />
+                                <span className="model-filter-name">
+                                  {model.name}
+                                  {model.is_latest && <span style={{ marginLeft: '6px', fontSize: '0.7em', padding: '1px 4px', borderRadius: '4px', background: '#e0e0e0', color: '#555' }}>LATEST</span>}
+                                </span>
+                              </label>
+                           ))}
+                         </div>
+                      ));
+                    })()}
                   </div>
                 </>
               )}

@@ -6,6 +6,7 @@ Source: https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_wi
 
 import asyncio
 from typing import Optional
+
 import httpx
 
 from ragtime.core.logging import get_logger
@@ -13,50 +14,62 @@ from ragtime.core.logging import get_logger
 logger = get_logger(__name__)
 
 # LiteLLM's community-maintained model data (updated frequently)
-LITELLM_MODEL_DATA_URL = (
-    "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
-)
+LITELLM_MODEL_DATA_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 
 # Cache for model limits (populated on first request)
 _model_limits_cache: dict[str, int] = {}
+# Cache for function calling support
+_model_supports_function_calling: dict[str, bool] = {}
 _cache_lock = asyncio.Lock()
 _cache_loaded = False
-
-# Fallback limits for common models if fetch fails
-FALLBACK_LIMITS: dict[str, int] = {
-    # OpenAI
-    "gpt-4o": 128000,
-    "gpt-4o-mini": 128000,
-    "gpt-4-turbo": 128000,
-    "gpt-4": 8192,
-    "gpt-4-32k": 32768,
-    "gpt-3.5-turbo": 16385,
-    "gpt-3.5-turbo-16k": 16385,
-    # Anthropic
-    "claude-3-opus-20240229": 200000,
-    "claude-3-sonnet-20240229": 200000,
-    "claude-3-haiku-20240307": 200000,
-    "claude-3-5-sonnet-20241022": 200000,
-    "claude-3-5-haiku-20241022": 200000,
-    "claude-haiku-4-5-20251001": 200000,
-    "claude-sonnet-4-20250514": 200000,
-    "claude-opus-4-20250514": 200000,
-    # Local models (Ollama)
-    "llama2": 4096,
-    "llama3": 8192,
-    "llama3.1": 128000,
-    "mistral": 8192,
-    "mixtral": 32768,
-    "codellama": 16384,
-    "qwen2.5": 32768,
-}
 
 # Default when model not found
 DEFAULT_CONTEXT_LIMIT = 8192
 
 
+# Model family grouping patterns for UI organization
+# Format: {provider: [(regex_pattern, group_name_or_None)]}
+# If group_name is None, it uses the first capture group of the regex
+# IMPORTANT: Patterns are matched in order, so more specific patterns must come first
+MODEL_FAMILY_PATTERNS = {
+    "openai": [
+        # O-series models (reasoning models) - must come before gpt patterns
+        (r"^o\d+-", "O-Series"),
+        (r"^o\d+$", "O-Series"),
+        # GPT-5.x series (more specific patterns first)
+        (r"^gpt-5\.2", "GPT-5.2"),
+        (r"^gpt-5\.1", "GPT-5.1"),
+        (r"^gpt-5", "GPT-5"),
+        # GPT-4.x series
+        (r"^gpt-4\.5", "GPT-4.5"),
+        (r"^gpt-4o", "GPT-4o"),
+        (r"^gpt-4-turbo", "GPT-4 Turbo"),
+        (r"^gpt-4", "GPT-4"),
+        # GPT-3.5 series
+        (r"^gpt-3\.5", "GPT-3.5"),
+    ],
+    "anthropic": [
+        # Haiku models grouped together (all versions) - must be BEFORE general claude-3.5/3 patterns
+        (r"claude-haiku-4", "Claude Haiku"),
+        (r"claude-(3-5|3\.5|3)-haiku", "Claude Haiku"),
+        # Opus and Sonnet families
+        (r"claude-opus-4", "Claude Opus 4"),
+        (r"claude-sonnet-4", "Claude Sonnet 4"),
+        (r"claude-4", "Claude 4"),
+        (r"claude-(3-5|3\.5)-sonnet", "Claude 3.5 Sonnet"),
+        (r"claude-(3-5|3\.5)", "Claude 3.5"),
+        (r"claude-3-opus", "Claude 3 Opus"),
+        (r"claude-3-sonnet", "Claude 3 Sonnet"),
+        (r"claude-3", "Claude 3"),
+        (r"claude-2", "Claude 2"),
+    ],
+    "ollama": [(r"^([a-z0-9]+)", None)],
+}
+
+
 async def _fetch_litellm_data() -> dict[str, int]:
     """Fetch model limits from LiteLLM's dataset."""
+    global _model_supports_function_calling
     limits: dict[str, int] = {}
 
     try:
@@ -68,9 +81,16 @@ async def _fetch_litellm_data() -> dict[str, int]:
             for model_id, model_info in data.items():
                 if isinstance(model_info, dict):
                     # LiteLLM uses "max_input_tokens" or "max_tokens" for context window
-                    ctx = model_info.get("max_input_tokens") or model_info.get("max_tokens")
+                    ctx = model_info.get("max_input_tokens") or model_info.get(
+                        "max_tokens"
+                    )
                     if ctx and isinstance(ctx, int):
                         limits[model_id] = ctx
+
+                    # Track function calling support
+                    supports_fc = model_info.get("supports_function_calling", False)
+                    if isinstance(supports_fc, bool):
+                        _model_supports_function_calling[model_id] = supports_fc
 
             logger.info(f"Loaded {len(limits)} model context limits from LiteLLM")
             return limits
@@ -98,9 +118,7 @@ async def _ensure_cache_loaded() -> None:
         if fetched:
             _model_limits_cache = fetched
         else:
-            # Use fallback if fetch failed
-            _model_limits_cache = FALLBACK_LIMITS.copy()
-            logger.info("Using fallback model limits")
+            logger.info("Using empty cache as fetch failed")
 
         _cache_loaded = True
 
@@ -123,14 +141,6 @@ async def get_context_limit(model_id: str) -> int:
         if model_lower.startswith(key.lower()) or key.lower() in model_lower:
             return value
 
-    # Check fallback limits too (for local models not in LiteLLM)
-    if model_id in FALLBACK_LIMITS:
-        return FALLBACK_LIMITS[model_id]
-
-    for key, value in FALLBACK_LIMITS.items():
-        if model_lower.startswith(key.lower()) or key.lower() in model_lower:
-            return value
-
     return DEFAULT_CONTEXT_LIMIT
 
 
@@ -144,8 +154,57 @@ async def get_context_limits_batch(model_ids: list[str]) -> dict[str, int]:
     return result
 
 
+def update_model_limit(model_id: str, limit: int) -> None:
+    """Update the context limit for a model in the runtime cache."""
+    _model_limits_cache[model_id] = limit
+
+
+def update_model_function_calling(model_id: str, supports: bool) -> None:
+    """Update function calling support for a model in the runtime cache."""
+    _model_supports_function_calling[model_id] = supports
+
+
 def invalidate_cache() -> None:
     """Invalidate the cache (forces re-fetch on next request)."""
     global _cache_loaded
     _cache_loaded = False
     _model_limits_cache.clear()
+    _model_supports_function_calling.clear()
+
+
+async def supports_function_calling(model_id: str) -> bool:
+    """
+    Check if a model supports function calling (indicates it's a chat model).
+
+    Returns True if the model supports function calling, False otherwise.
+    Uses LiteLLM's dataset for authoritative data.
+    """
+    await _ensure_cache_loaded()
+
+    # Try exact match
+    if model_id in _model_supports_function_calling:
+        return _model_supports_function_calling[model_id]
+
+    # Try partial match (e.g., "gpt-4o-2024-05-13" should match "gpt-4o")
+    model_lower = model_id.lower()
+    for key, value in _model_supports_function_calling.items():
+        if model_lower.startswith(key.lower()) or key.lower() in model_lower:
+            return value
+
+    # Default heuristics if not in LiteLLM data
+    # OpenAI: gpt-* and o-series models support function calling (except whisper, dall-e, tts, embeddings)
+    if (
+        model_id.startswith("gpt-")
+        or model_id.startswith("o1")
+        or model_id.startswith("o3")
+    ):
+        return not any(
+            x in model_id.lower() for x in ["whisper", "dall-e", "tts", "embedding"]
+        )
+
+    # Anthropic: all claude models support function calling
+    if "claude" in model_id.lower():
+        return True
+
+    # Conservative default: assume no function calling support
+    return False

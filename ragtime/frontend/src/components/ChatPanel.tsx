@@ -5,6 +5,7 @@ import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, X, AlertCircle, Refres
 import { api } from '@/api';
 import type { Conversation, ChatMessage, AvailableModel, ChatTask, User, ContentPart } from '@/types';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
+import { ModelSelector } from './ModelSelector';
 
 interface CodeBlockProps {
   inline?: boolean;
@@ -1204,7 +1205,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
         }
       };
 
-      es.onerror = (err) => {
+      es.onerror = () => {
         // Just close on error, don't retry locally as SSE retries automatically
         // But if connection keeps failing, we might want to clean up.
         // For now, let generic browser retry logic handle transient issues?
@@ -1770,21 +1771,10 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
     })();
   };
 
-  const cancelEditMessage = async () => {
+  const cancelEditMessage = () => {
     setEditingMessageIdx(null);
     setEditMessageContent('');
     setEditMessageAttachments([]);
-
-    // Refresh conversation to clear any optimistic duplication that may linger in local state
-    if (activeConversation) {
-      try {
-        const refreshed = await api.getConversation(activeConversation.id);
-        setActiveConversation(refreshed);
-        setConversations(prev => prev.map(c => c.id === refreshed.id ? refreshed : c));
-      } catch (err) {
-        console.error('Failed to refresh conversation after cancel edit:', err);
-      }
-    }
   };
 
   const submitEditMessage = async () => {
@@ -1796,7 +1786,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
       messageToSend = JSON.stringify(parts);
     }
 
-    const truncateAt = editingMessageIdx;
+    const truncateAt = Math.max(0, editingMessageIdx);
 
     // Clear the edit state
     setEditingMessageIdx(null);
@@ -1805,34 +1795,59 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
     setError(null);
 
     try {
-      // Truncate messages on the backend to remove old message and all subsequent
+      // Sync with server first so we never diverge on which message was replaced
       const truncated = await api.truncateConversation(activeConversation.id, truncateAt);
 
-      // Check context limit before sending
-      const currentTokens = calculateConversationTokens(truncated.messages);
-      const newMessageTokens = estimateTokens(messageToSend);
-      const contextLimit = getContextLimit(truncated.model);
-
-      if (currentTokens + newMessageTokens > contextLimit * 0.9) {
-        setError(`Context limit nearly reached. Consider starting a new conversation.`);
-        return;
+      let content: string | ContentPart[] = messageToSend;
+      try {
+        const parsed = JSON.parse(messageToSend);
+        if (Array.isArray(parsed) && parsed.some(p => p.type)) {
+          content = parsed;
+        }
+      } catch {
+        // Not JSON
       }
 
-      setActiveConversation(truncated);
-      setConversations(prev => prev.map(c => c.id === truncated.id ? truncated : c));
+      const optimisticMsg: ChatMessage = {
+        role: 'user',
+        content: content as any,
+        timestamp: new Date().toISOString()
+      };
+
+      const optimisticConv: Conversation = {
+        ...truncated,
+        messages: [...truncated.messages, optimisticMsg]
+      };
+
+      setActiveConversation(optimisticConv);
+      setConversations(prev => prev.map(c => c.id === optimisticConv.id ? optimisticConv : c));
 
       setIsStreaming(true);
       setStreamingContent('');
       setStreamingEvents([]);
+      setHitMaxIterations(false);
+      setIsConnectionError(false);
 
-      // Use background task streaming
-      await startTaskAndStream(activeConversation.id, messageToSend);
+      const task = await api.sendMessageBackground(truncated.id, messageToSend);
+      setActiveTask(task);
+      setInterruptedTask(null);
+
+      await connectTaskStream(task.id);
 
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to resend message');
       setIsStreaming(false);
       setStreamingContent('');
       setStreamingEvents([]);
+
+      // Restore authoritative state from server on error
+      try {
+        const refreshed = await api.getConversation(activeConversation.id);
+        setActiveConversation(refreshed);
+        setConversations(prev => prev.map(c => c.id === refreshed.id ? refreshed : c));
+      } catch (refreshErr) {
+        console.error('Failed to refresh conversation after edit error:', refreshErr);
+      }
     }
   };
 
@@ -1998,29 +2013,6 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
             <div className="chat-header">
               <div className="chat-header-info">
                 <h2>{activeConversation.title}</h2>
-                {availableModels.length > 0 ? (
-                  <select
-                    className="chat-model-select"
-                    value={activeConversation.model}
-                    onChange={(e) => changeModel(e.target.value)}
-                    disabled={isStreaming || modelsLoading}
-                    title="Select model for this conversation"
-                  >
-                    {availableModels.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name} ({m.provider})
-                      </option>
-                    ))}
-                    {/* If current model is not in available models, show it anyway */}
-                    {!availableModels.some(m => m.id === activeConversation.model) && (
-                      <option value={activeConversation.model}>
-                        {activeConversation.model}
-                      </option>
-                    )}
-                  </select>
-                ) : (
-                  <span className="chat-model-badge">{activeConversation.model}</span>
-                )}
                 {activeTask && (
                   <span className="chat-background-indicator" title="Processing in background - you can switch chats">
                     Background
@@ -2051,6 +2043,12 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
                   />
                   <span className="chat-context-label">{contextUsagePercent}%</span>
                 </div>
+                <ModelSelector
+                  models={availableModels}
+                  selectedModelId={activeConversation.model}
+                  onModelChange={changeModel}
+                  disabled={isStreaming || modelsLoading}
+                />
                 <button className="btn btn-sm btn-secondary" onClick={startFreshConversation} title="Start a new conversation">
                   New Chat
                 </button>
@@ -2080,7 +2078,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
 
                     return (
                     <div key={idx} className={`chat-message chat-message-${msg.role}`}>
-                      <div className="chat-message-content">
+                      <div className="chat-message-content" key={editingMessageIdx === idx ? 'editing' : 'viewing'}>
                         {editingMessageIdx === idx ? (
                           <>
                             {/* Attachments for editing mode */}

@@ -338,6 +338,188 @@
   cursor: not-allowed;
 }
 
+.chat-model-select optgroup {
+  font-weight: 600;
+  font-size: var(--text-xs);
+  color: var(--color-text-primary);
+  background: var(--color-surface);
+  padding: 4px 0;
+}
+
+.chat-model-select option {
+  padding: 4px 12px;
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+}
+
+/* =============================================================================
+   MODEL SELECTOR (Custom Dropdown with Hover Submenus)
+   ============================================================================= */
+
+.model-selector {
+  position: relative;
+  display: inline-block;
+}
+
+.model-selector.is-disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* Full variant for settings forms */
+.model-selector-full {
+  display: block;
+  width: 100%;
+}
+
+.model-selector-trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: var(--text-xs);
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  max-width: 200px;
+  transition: all var(--transition-fast);
+  font-weight: 500;
+}
+
+.model-selector-trigger-full {
+  max-width: none;
+  width: 100%;
+  font-size: var(--text-sm);
+  padding: 8px 12px;
+  background: var(--color-surface);
+  justify-content: space-between;
+}
+
+.model-selector-trigger:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  border-color: var(--color-text-muted);
+}
+
+.model-selector-trigger:focus {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.model-selector-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-selector-arrow {
+  font-size: 10px;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+.model-selector-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 180px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  z-index: 1000;
+  /* No overflow here - allows submenus to escape */
+}
+
+/* Full variant dropdown */
+.model-selector-full .model-selector-dropdown {
+  min-width: 100%;
+}
+
+/* Scrollable inner container for dropdown items */
+.model-selector-dropdown-inner {
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.model-selector-group {
+  position: relative;
+}
+
+.model-selector-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.model-selector-item:hover {
+  background: var(--color-surface-hover);
+}
+
+.model-selector-item.is-selected {
+  background: var(--color-primary-soft);
+  font-weight: 500;
+}
+
+.model-selector-group-item {
+  font-weight: 500;
+}
+
+.model-selector-expand-indicator {
+  font-size: 12px;
+  opacity: 0.6;
+  flex-shrink: 0;
+  margin-left: var(--space-sm);
+}
+
+/* No rotation - chevron always points right for breadcrumb-style navigation */
+
+.model-selector-submenu {
+  position: fixed;
+  /* top/left set dynamically via inline style */
+  width: max-content;
+  max-height: 350px;
+  overflow-y: auto;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  z-index: 10000;
+}
+
+.model-selector-subitem {
+  font-size: var(--text-xs);
+  padding: 6px 12px;
+}
+
+.model-selector-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.model-selector-latest-badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  border-radius: var(--radius-sm);
+  font-weight: 500;
+  margin-left: var(--space-sm);
+  flex-shrink: 0;
+}
+
 .chat-header-actions {
   display: flex;
   align-items: center;

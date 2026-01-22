@@ -480,12 +480,14 @@ export function App() {
       <nav className="topnav">
         <span className="topnav-brand">{serverName}</span>
         <div className="topnav-links">
-          <button
-            className={`topnav-link ${activeView === 'chat' ? 'active' : ''}`}
-            onClick={() => setActiveView('chat')}
-          >
-            Chat
-          </button>
+          {isAdmin && (
+            <button
+              className={`topnav-link ${activeView === 'chat' ? 'active' : ''}`}
+              onClick={() => setActiveView('chat')}
+            >
+              Chat
+            </button>
+          )}
           {isAdmin && (
             <>
               <button

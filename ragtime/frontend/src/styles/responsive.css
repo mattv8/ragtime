@@ -347,6 +347,18 @@
     font-size: 0.7rem;
   }
 
+  .model-selector-trigger:not(.model-selector-trigger-full) {
+    max-width: 150px;
+    font-size: 0.7rem;
+  }
+
+  .model-selector:not(.model-selector-full) .model-selector-submenu {
+    /* On smaller screens, show submenu below rather than to the side */
+    left: 0;
+    top: 100%;
+    min-width: 100%;
+  }
+
   .chat-header-actions {
     gap: var(--space-sm);
     flex-wrap: wrap;
@@ -562,6 +574,17 @@
   .chat-model-select {
     max-width: 120px;
     font-size: 0.65rem;
+  }
+
+  .model-selector-trigger:not(.model-selector-trigger-full) {
+    max-width: 120px;
+    font-size: 0.65rem;
+  }
+
+  .model-selector:not(.model-selector-full) .model-selector-submenu {
+    left: 0;
+    top: 100%;
+    min-width: 100%;
   }
 
   .chat-messages {

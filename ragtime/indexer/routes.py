@@ -24,7 +24,11 @@ from ragtime.core.event_bus import task_event_bus
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import get_context_limit
+from ragtime.core.model_limits import (
+    MODEL_FAMILY_PATTERNS,
+    get_context_limit,
+    supports_function_calling,
+)
 from ragtime.core.security import get_current_user, require_admin
 from ragtime.core.sql_utils import (
     MssqlConnectionError,
@@ -2402,7 +2406,9 @@ async def test_filesystem_path(
 
 
 @router.post("/tools/{tool_id}/test", response_model=ToolTestResponse, tags=["Tools"])
-async def test_saved_tool_connection(tool_id: str):
+async def test_saved_tool_connection(
+    tool_id: str, _user: User = Depends(require_admin)
+):
     """Test the connection for a saved tool configuration."""
     config = await repository.get_tool_config(tool_id)
     if config is None:
@@ -3521,7 +3527,7 @@ class DockerDiscoveryResponse(BaseModel):
 
 
 @router.get("/docker/discover", response_model=DockerDiscoveryResponse, tags=["Tools"])
-async def discover_docker_resources():
+async def discover_docker_resources(_user: User = Depends(require_admin)):
     """
     Discover Docker networks and containers for tool configuration.
 
@@ -3689,7 +3695,7 @@ async def discover_docker_resources():
 
 
 @router.post("/docker/connect-network", tags=["Tools"])
-async def connect_to_network(network_name: str):
+async def connect_to_network(network_name: str, _user: User = Depends(require_admin)):
     """
     Connect the ragtime container to a Docker network.
 
@@ -3750,7 +3756,9 @@ async def connect_to_network(network_name: str):
 
 
 @router.post("/docker/disconnect-network", tags=["Tools"])
-async def disconnect_from_network(network_name: str):
+async def disconnect_from_network(
+    network_name: str, _user: User = Depends(require_admin)
+):
     """
     Disconnect the ragtime container from a Docker network.
 
@@ -5010,7 +5018,9 @@ class OllamaTestResponse(BaseModel):
 
 
 @router.post("/ollama/test", response_model=OllamaTestResponse, tags=["Settings"])
-async def test_ollama_connection(request: OllamaTestRequest):
+async def test_ollama_connection(
+    request: OllamaTestRequest, _user: User = Depends(require_admin)
+):
     """
     Test connection to an Ollama server and retrieve available models.
 
@@ -5115,7 +5125,9 @@ OPENAI_DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 @router.post(
     "/embedding/models", response_model=EmbeddingModelsResponse, tags=["Settings"]
 )
-async def fetch_embedding_models(request: EmbeddingModelsRequest):
+async def fetch_embedding_models(
+    request: EmbeddingModelsRequest, _user: User = Depends(require_admin)
+):
     """
     Fetch available embedding models from a provider given a valid API key.
 
@@ -5233,6 +5245,8 @@ class LLMModel(BaseModel):
     id: str
     name: str
     created: Optional[int] = None
+    group: Optional[str] = None
+    is_latest: bool = False
 
 
 class LLMModelsResponse(BaseModel):
@@ -5251,6 +5265,9 @@ class AvailableModel(BaseModel):
     name: str
     provider: str  # 'openai' or 'anthropic'
     context_limit: int = 8192  # Max context window tokens
+    group: Optional[str] = None  # Model group for UI organization
+    is_latest: bool = False  # Whether this is the latest version in its group
+    created: Optional[int] = None
 
 
 class AvailableModelsResponse(BaseModel):
@@ -5263,29 +5280,115 @@ class AvailableModelsResponse(BaseModel):
 
 
 # Sensible default models for each provider
-OPENAI_DEFAULT_MODEL = "gpt-4o"
-ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-4-20250514"
+OPENAI_DEFAULT_MODEL = ""
+ANTHROPIC_DEFAULT_MODEL = ""
 
-# Models to prioritize in the list (shown first)
-OPENAI_PRIORITY_MODELS = [
-    "gpt-4o",
-    "gpt-4o-mini",
-    "gpt-4-turbo",
-    "gpt-4",
-    "gpt-3.5-turbo",
-]
-ANTHROPIC_PRIORITY_MODELS = [
-    "claude-sonnet-4-20250514",
-    "claude-opus-4-20250514",
-    "claude-3-5-sonnet-20241022",
-    "claude-3-opus-20240229",
-    "claude-3-sonnet-20240229",
-    "claude-3-haiku-20240307",
-]
+
+def _group_models(models: List[LLMModel], provider: str) -> List[LLMModel]:
+    """
+    Group models into families and identify the latest version.
+    Does NOT remove dated versions, but marks grouping metadata.
+    """
+    # Use the same logic as _assign_model_groups but for LLMModel
+    import re
+    from collections import defaultdict
+
+    for model in models:
+        mid = model.id.lower()
+        provider_patterns = MODEL_FAMILY_PATTERNS.get(provider, [])
+        found_group = False
+
+        for pattern, group_name in provider_patterns:
+            match = re.search(pattern, mid)
+            if match:
+                if group_name:
+                    model.group = group_name
+                elif provider == "ollama":
+                    model.group = match.group(1).title()
+                found_group = True
+                break
+
+        if not found_group:
+            model.group = f"Other {provider.title()}"
+
+    # Identify 'is_latest' within each group
+    grouped = defaultdict(list)
+    for model in models:
+        grouped[model.group].append(model)
+
+    for _, group_models in grouped.items():
+        if not group_models:
+            continue
+
+        # Sort: Base Aliases (shorter) FIRST, then Created date (Newer)
+        group_models.sort(key=lambda m: (len(m.id), -(m.created or 0)))
+
+        # Mark first as latest
+        group_models[0].is_latest = True
+
+    return models
+
+
+def _assign_model_groups(models: List[AvailableModel]) -> List[AvailableModel]:
+    """Assign UI group labels to models for better organization."""
+    import re
+    from collections import defaultdict
+
+    for model in models:
+        mid = model.id.lower()
+        provider_patterns = MODEL_FAMILY_PATTERNS.get(model.provider, [])
+        found_group = False
+
+        for pattern, group_name in provider_patterns:
+            match = re.search(pattern, mid)
+            if match:
+                if group_name:
+                    model.group = group_name
+                elif model.provider == "ollama":
+                    model.group = match.group(1).title()
+                found_group = True
+                break
+
+        if not found_group:
+            model.group = f"Other {model.provider.title()}"
+
+    # Grouping and is_latest logic
+    grouped = defaultdict(list)
+    for model in models:
+        grouped[(model.provider, model.group)].append(model)
+
+    for _, group_models in grouped.items():
+        if not group_models:
+            continue
+
+        # Sort mechanism:
+        # 1. Extract version from model name (higher version = more recent)
+        # 2. Created date (Newer first) as fallback
+        # 3. Shorter ID length as final tiebreaker (base aliases first)
+        def extract_version(m: AvailableModel) -> float:
+            """Extract numeric version from model name like 'Claude Haiku 4.5' -> 4.5"""
+            import re
+
+            # Look for version pattern like "4.5", "3.5", "4" in the name
+            match = re.search(r"(\d+(?:\.\d+)?)\s*$", m.name)
+            if match:
+                return float(match.group(1))
+            return 0.0
+
+        group_models.sort(
+            key=lambda m: (-extract_version(m), -(m.created or 0), len(m.id))
+        )
+
+        # Mark the first one as latest
+        group_models[0].is_latest = True
+
+    return models
 
 
 @router.post("/llm/models", response_model=LLMModelsResponse, tags=["Settings"])
-async def fetch_llm_models(request: LLMModelsRequest):
+async def fetch_llm_models(
+    request: LLMModelsRequest, _user: User = Depends(require_admin)
+):
     """
     Fetch available models from an LLM provider given a valid API key.
 
@@ -5315,28 +5418,31 @@ async def _fetch_openai_models(api_key: str) -> LLMModelsResponse:
             data = response.json()
             models = []
 
-            # Filter for chat-capable models (gpt-* models, excluding embedding/audio/etc)
+            # Filter for chat-capable models using LiteLLM's function calling support
             for model in data.get("data", []):
                 model_id = model.get("id", "")
                 # Include GPT models suitable for chat (exclude embeddings, whisper, tts, dall-e, etc.)
                 if model_id.startswith("gpt-") and not any(
-                    x in model_id for x in ["instruct", "vision", "realtime", "audio"]
+                    x in model_id
+                    for x in ["instruct", "vision", "realtime", "audio", "tts"]
                 ):
-                    models.append(
-                        LLMModel(
-                            id=model_id, name=model_id, created=model.get("created")
+                    # Check if model supports function calling (indicates chat capability)
+                    if await supports_function_calling(model_id):
+                        models.append(
+                            LLMModel(
+                                id=model_id, name=model_id, created=model.get("created")
+                            )
                         )
-                    )
+
+            # Curate models to remove dated duplicates
+            models = _group_models(models, "openai")
 
             # Sort: priority models first, then alphabetically
-            def sort_key(m: LLMModel) -> tuple:
-                try:
-                    priority_idx = OPENAI_PRIORITY_MODELS.index(m.id)
-                except ValueError:
-                    priority_idx = 999
-                return (priority_idx, m.id)
-
-            models.sort(key=sort_key)
+            # Priority sorting is now handled by is_latest flag for UI
+            # Here we just ensure deterministic order or created time
+            models.sort(
+                key=lambda m: (m.group or "", m.is_latest, m.created or 0), reverse=True
+            )
 
             return LLMModelsResponse(
                 success=True,
@@ -5344,7 +5450,8 @@ async def _fetch_openai_models(api_key: str) -> LLMModelsResponse:
                 models=models,
                 default_model=(
                     OPENAI_DEFAULT_MODEL
-                    if any(m.id == OPENAI_DEFAULT_MODEL for m in models)
+                    if OPENAI_DEFAULT_MODEL
+                    and any(m.id == OPENAI_DEFAULT_MODEL for m in models)
                     else (models[0].id if models else None)
                 ),
             )
@@ -5382,17 +5489,14 @@ async def _fetch_anthropic_models(api_key: str) -> LLMModelsResponse:
             for model in data.get("data", []):
                 model_id = model.get("id", "")
                 display_name = model.get("display_name", model_id)
+                # All Claude models support function calling (chat capable)
                 models.append(LLMModel(id=model_id, name=display_name, created=None))
 
-            # Sort: priority models first, then alphabetically
-            def sort_key(m: LLMModel) -> tuple:
-                try:
-                    priority_idx = ANTHROPIC_PRIORITY_MODELS.index(m.id)
-                except ValueError:
-                    priority_idx = 999
-                return (priority_idx, m.id)
+            # Curate models to remove dated duplicates
+            models = _group_models(models, "anthropic")
 
-            models.sort(key=sort_key)
+            # Sort: Alphabetically
+            models.sort(key=lambda m: (m.group or "", m.is_latest, m.id), reverse=True)
 
             return LLMModelsResponse(
                 success=True,
@@ -5400,7 +5504,8 @@ async def _fetch_anthropic_models(api_key: str) -> LLMModelsResponse:
                 models=models,
                 default_model=(
                     ANTHROPIC_DEFAULT_MODEL
-                    if any(m.id == ANTHROPIC_DEFAULT_MODEL for m in models)
+                    if ANTHROPIC_DEFAULT_MODEL
+                    and any(m.id == ANTHROPIC_DEFAULT_MODEL for m in models)
                     else (models[0].id if models else None)
                 ),
             )
@@ -5426,7 +5531,11 @@ async def _fetch_anthropic_models(api_key: str) -> LLMModelsResponse:
 
 async def _fetch_ollama_llm_models(base_url: str) -> LLMModelsResponse:
     """Fetch available models from Ollama server for LLM use."""
-    from ragtime.core.ollama import is_reachable
+    from ragtime.core.model_limits import (
+        update_model_function_calling,
+        update_model_limit,
+    )
+    from ragtime.core.ollama import get_model_details, is_reachable
     from ragtime.core.ollama import list_models as ollama_list_models
 
     try:
@@ -5444,6 +5553,44 @@ async def _fetch_ollama_llm_models(base_url: str) -> LLMModelsResponse:
         )
 
         models = [LLMModel(id=m.name, name=m.name) for m in ollama_models]
+
+        # Fetch details for each model to get context window
+        # We allow this to be "best effort" - if details fail, we just don't update limit
+        try:
+            # Create a client for reuse
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                tasks = []
+                for m in models:
+                    # Mark as supporting function calling
+                    update_model_function_calling(m.id, True)
+                    tasks.append(get_model_details(m.id, base_url, client))
+
+                # Run all detail fetches concurrently
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                for idx, details in enumerate(results):
+                    if isinstance(details, dict) and details:
+                        # Extract context length
+                        # Ollama usually returns 'model_info' with parameters
+                        # Or 'parameters' string which is hard to parse
+                        # But /api/show usually has 'model_info' -> 'llama.context_length' or 'context_length'
+                        model_info = details.get("model_info", {})
+
+                        # Try common keys for context length
+                        ctx_len = (
+                            model_info.get("llama.context_length")
+                            or model_info.get("context_length")
+                            or model_info.get("max_tokens")
+                        )
+
+                        if ctx_len:
+                            try:
+                                limit = int(ctx_len)
+                                update_model_limit(models[idx].id, limit)
+                            except (ValueError, TypeError):
+                                pass
+        except Exception as e:
+            logger.warning(f"Failed to fetch Ollama model details: {e}")
 
         return LLMModelsResponse(
             success=True,
@@ -5501,6 +5648,7 @@ async def get_available_chat_models():
                             name=m.name,
                             provider="openai",
                             context_limit=await get_context_limit(m.id),
+                            created=m.created,
                         )
                     )
                 if not default_model and result.default_model:
@@ -5520,6 +5668,7 @@ async def get_available_chat_models():
                             name=m.name,
                             provider="anthropic",
                             context_limit=await get_context_limit(m.id),
+                            created=m.created,
                         )
                     )
                 if not default_model and result.default_model:
@@ -5544,7 +5693,8 @@ async def get_available_chat_models():
                                 id=m.id,
                                 name=m.name,
                                 provider="ollama",
-                                context_limit=128000,  # Ollama models typically have large context
+                                context_limit=await get_context_limit(m.id),
+                                created=m.created,
                             )
                         )
                     if not default_model and result.default_model:
@@ -5565,13 +5715,16 @@ async def get_available_chat_models():
         if default_model and default_model not in allowed_models:
             default_model = all_models[0].id if all_models else None
 
+    # Assign groups to models for UI organization
+    all_models = _assign_model_groups(all_models)
+
     return AvailableModelsResponse(
         models=all_models, default_model=default_model, current_model=current_model
     )
 
 
 @router.get("/chat/all-models", response_model=AvailableModelsResponse, tags=["Chat"])
-async def get_all_chat_models():
+async def get_all_chat_models(_user: User = Depends(require_admin)):
     """
     Get ALL available models from configured LLM providers (unfiltered).
 
@@ -5595,6 +5748,7 @@ async def get_all_chat_models():
                             name=m.name,
                             provider="openai",
                             context_limit=await get_context_limit(m.id),
+                            created=m.created,
                         )
                     )
         except Exception as e:
@@ -5612,6 +5766,7 @@ async def get_all_chat_models():
                             name=m.name,
                             provider="anthropic",
                             context_limit=await get_context_limit(m.id),
+                            created=m.created,
                         )
                     )
         except Exception as e:
@@ -5634,7 +5789,8 @@ async def get_all_chat_models():
                                 id=m.id,
                                 name=m.name,
                                 provider="ollama",
-                                context_limit=128000,  # Ollama models typically have large context
+                                context_limit=await get_context_limit(m.id),
+                                created=m.created,
                             )
                         )
             except Exception as e:
@@ -5642,6 +5798,9 @@ async def get_all_chat_models():
 
     # Get currently allowed models from settings
     allowed_models = app_settings.allowed_chat_models or []
+
+    # Assign groups to models for UI organization
+    all_models = _assign_model_groups(all_models)
 
     return AvailableModelsResponse(
         models=all_models,
