@@ -1,15 +1,78 @@
-import { useState, useEffect, useRef, useCallback, useMemo, memo } from 'react';
-import ReactMarkdown from 'react-markdown';
+import { useState, useEffect, useRef, useCallback, useMemo, memo, isValidElement, type ReactNode } from 'react';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, X, AlertCircle, RefreshCw, FileText } from 'lucide-react';
 import { api } from '@/api';
 import type { Conversation, ChatMessage, AvailableModel, ChatTask, User, ContentPart } from '@/types';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
 
+interface CodeBlockProps {
+  inline?: boolean;
+  className?: string;
+  children?: ReactNode | ReactNode[];
+}
+
+// Renders markdown code blocks with inset styling and copy support
+function CodeBlock({ className, children }: CodeBlockProps) {
+  const [copied, setCopied] = useState(false);
+
+  const codeText = useMemo(() => {
+    if (!children) return '';
+    const raw = Array.isArray(children) ? children.join('') : String(children);
+    return raw.replace(/\n$/, '');
+  }, [children]);
+
+  const language = useMemo(() => {
+    if (!className) return 'text';
+    return className.replace('language-', '') || 'text';
+  }, [className]);
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(codeText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy code block:', err);
+    }
+  }, [codeText]);
+
+  return (
+    <div className="markdown-codeblock">
+      <div className="markdown-codeblock-header">
+        <span className="markdown-codeblock-lang">{language}</span>
+        <button
+          type="button"
+          className={`markdown-codeblock-copy ${copied ? 'is-copied' : ''}`}
+          onClick={handleCopy}
+          aria-label={copied ? 'Code copied' : 'Copy code'}
+        >
+          {copied ? <Check size={14} /> : <Copy size={14} />}
+          <span>{copied ? 'Copied' : 'Copy'}</span>
+        </button>
+      </div>
+      <pre className="markdown-codeblock-pre">
+        <code className={className}>{codeText}</code>
+      </pre>
+    </div>
+  );
+}
+
+const PreBlock = ({ children, ...rest }: React.HTMLAttributes<HTMLPreElement> & { children?: ReactNode }) => {
+  if (isValidElement<{ className?: string; children?: ReactNode }>(children) && children.type === 'code') {
+    return <CodeBlock {...children.props} />;
+  }
+  return <pre {...rest}>{children}</pre>;
+};
+
+const markdownComponents: Components = {
+  pre: PreBlock,
+};
+
 // Memoized markdown component to prevent re-parsing on every render
 // Only re-renders when content actually changes
 const MemoizedMarkdown = memo(function MemoizedMarkdown({ content }: { content: string }) {
-  return <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>;
+  return <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{content}</ReactMarkdown>;
 });
 
 // Tool call info for display during streaming
@@ -752,7 +815,7 @@ function calculateMessageTokens(msg: ChatMessage): number {
   }
 
   // Fallback: use content + legacy tool_calls
-  const contentText = typeof msg.content === 'string' ? msg.content : parseMessageContent(msg.content).text;
+  const contentText = parseMessageContent(msg.content).text;
   let tokens = estimateTokens(contentText || '');
 
   if (msg.tool_calls?.length) {
@@ -816,7 +879,12 @@ function parseMessageContent(content: string | ContentPart[]): { text: string; a
 }
 
 // Component to display message attachments
-const MessageAttachments = memo(function MessageAttachments({ attachments }: { attachments: ContentPart[] }) {
+interface MessageAttachmentsProps {
+  attachments: ContentPart[];
+  onImageClick?: (url: string) => void;
+}
+
+const MessageAttachments = memo(function MessageAttachments({ attachments, onImageClick }: MessageAttachmentsProps) {
   if (attachments.length === 0) return null;
 
   return (
@@ -829,7 +897,7 @@ const MessageAttachments = memo(function MessageAttachments({ attachments }: { a
                 src={attachment.image_url.url}
                 alt="Attached image"
                 className="message-attachment-image"
-                onClick={() => window.open(attachment.image_url.url, '_blank')}
+                onClick={() => onImageClick?.(attachment.image_url.url)}
               />
             </div>
           );
@@ -867,6 +935,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
   const [titleInput, setTitleInput] = useState('');
   const [editingMessageIdx, setEditingMessageIdx] = useState<number | null>(null);
   const [editMessageContent, setEditMessageContent] = useState('');
+  const [editMessageAttachments, setEditMessageAttachments] = useState<AttachmentFile[]>([]);
   const [hitMaxIterations, setHitMaxIterations] = useState(false);
   const [showToolCalls, setShowToolCalls] = useState(() => {
     const saved = localStorage.getItem('chat-show-tool-calls');
@@ -890,6 +959,9 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
   // Available models state
   const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
+
+  // Image modal state
+  const [modalImageUrl, setModalImageUrl] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -1392,18 +1464,6 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
       return;
     }
 
-    // Optimistically add user message
-    const userMsg: ChatMessage = {
-      role: 'user',
-      content: userMessage,
-      timestamp: new Date().toISOString(),
-    };
-
-    setActiveConversation(prev => prev ? {
-      ...prev,
-      messages: [...prev.messages, userMsg],
-    } : null);
-
     setIsStreaming(true);
     setStreamingContent('');
     setStreamingEvents([]);
@@ -1413,6 +1473,11 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
       // Use background task API
       const task = await api.sendMessageBackground(activeConversation.id, userMessage);
       setActiveTask(task);
+
+      // Refresh conversation to get the user message that the backend added
+      const updated = await api.getConversation(activeConversation.id);
+      setActiveConversation(updated);
+      setConversations(prev => prev.map(c => c.id === updated.id ? updated : c));
 
       // Start polling for task updates
       startTaskPolling(task.id);
@@ -1429,12 +1494,6 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
 
       setIsConnectionError(isConnError);
       setError(errorMessage);
-
-      // Remove the optimistic user message on error
-      setActiveConversation(prev => prev ? {
-        ...prev,
-        messages: prev.messages.slice(0, -1),
-      } : null);
 
       setIsStreaming(false);
       setStreamingContent('');
@@ -1470,32 +1529,124 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
     }
   };
 
-  const startEditMessage = (idx: number, content: string) => {
+  const resizeImageDataUrl = useCallback(async (
+    dataUrl: string,
+    mimeType: string,
+    maxDimension = 1024,
+    quality = 0.8
+  ): Promise<string> => {
+    try {
+      const img = new Image();
+      img.src = dataUrl;
+      await img.decode();
+
+      const { naturalWidth, naturalHeight } = img;
+      if (!naturalWidth || !naturalHeight) return dataUrl;
+
+      const scale = Math.min(1, maxDimension / Math.max(naturalWidth, naturalHeight));
+      if (scale === 1) return dataUrl;
+
+      const width = Math.round(naturalWidth * scale);
+      const height = Math.round(naturalHeight * scale);
+
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return dataUrl;
+      ctx.drawImage(img, 0, 0, width, height);
+
+      return canvas.toDataURL(mimeType || 'image/png', quality);
+    } catch {
+      return dataUrl;
+    }
+  }, []);
+
+  const contentPartsToAttachments = useCallback(async (parts: ContentPart[]): Promise<AttachmentFile[]> => {
+    // Extract mime type from data URL (e.g., "data:image/png;base64,..." -> "image/png")
+    const extractMimeFromDataUrl = (url: string): string => {
+      const match = url.match(/^data:([^;,]+)/);
+      return match?.[1] || 'image/png';
+    };
+
+    const mapped = await Promise.all(parts
+      .filter(p => p.type === 'image_url' || p.type === 'file')
+      .map(async (p, i) => {
+        if (p.type === 'image_url') {
+          const url = p.image_url.url;
+          const mimeType = extractMimeFromDataUrl(url);
+          const resized = await resizeImageDataUrl(url, mimeType);
+          return {
+            id: `edit-attachment-${i}-${Date.now()}`,
+            type: 'image' as const,
+            name: 'Attached Image',
+            size: 0,
+            mimeType,
+            preview: resized,
+            dataUrl: resized
+          } as AttachmentFile;
+        }
+        // Handle file type
+        return {
+          id: `edit-attachment-${i}-${Date.now()}`,
+          type: 'file' as const,
+          name: (p as any).filename || 'file',
+          size: 0,
+          mimeType: (p as any).mime_type || 'application/octet-stream',
+          filePath: (p as any).file_path
+        } as AttachmentFile;
+      }));
+
+    return mapped;
+  }, [resizeImageDataUrl]);
+
+  const startEditMessage = (idx: number, content: string, attachments: ContentPart[] = []) => {
     setEditingMessageIdx(idx);
     setEditMessageContent(content);
+
+    (async () => {
+      const files = await contentPartsToAttachments(attachments);
+      setEditMessageAttachments(files);
+    })();
   };
 
-  const cancelEditMessage = () => {
+  const cancelEditMessage = async () => {
     setEditingMessageIdx(null);
     setEditMessageContent('');
+    setEditMessageAttachments([]);
+
+    // Refresh conversation to clear any optimistic duplication that may linger in local state
+    if (activeConversation) {
+      try {
+        const refreshed = await api.getConversation(activeConversation.id);
+        setActiveConversation(refreshed);
+        setConversations(prev => prev.map(c => c.id === refreshed.id ? refreshed : c));
+      } catch (err) {
+        console.error('Failed to refresh conversation after cancel edit:', err);
+      }
+    }
   };
 
   const submitEditMessage = async () => {
-    if (!activeConversation || editingMessageIdx === null || !editMessageContent.trim()) return;
+    if (!activeConversation || editingMessageIdx === null || (!editMessageContent.trim() && editMessageAttachments.length === 0)) return;
 
-    const messageToSend = editMessageContent.trim();
+    let messageToSend: string = editMessageContent.trim();
+    if (editMessageAttachments.length > 0) {
+      const parts = attachmentsToContentParts(messageToSend, editMessageAttachments);
+      messageToSend = JSON.stringify(parts);
+    }
+
     const truncateAt = editingMessageIdx;
 
     // Clear the edit state
     setEditingMessageIdx(null);
     setEditMessageContent('');
+    setEditMessageAttachments([]);
     setError(null);
 
     try {
       // Truncate messages on the backend to remove old message and all subsequent
       const truncated = await api.truncateConversation(activeConversation.id, truncateAt);
-      setActiveConversation(truncated);
-      setConversations(prev => prev.map(c => c.id === truncated.id ? truncated : c));
 
       // Check context limit before sending
       const currentTokens = calculateConversationTokens(truncated.messages);
@@ -1507,17 +1658,8 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
         return;
       }
 
-      // Optimistically add user message
-      const userMsg: ChatMessage = {
-        role: 'user',
-        content: messageToSend,
-        timestamp: new Date().toISOString(),
-      };
-
-      setActiveConversation(prev => prev ? {
-        ...prev,
-        messages: [...prev.messages, userMsg],
-      } : null);
+      setActiveConversation(truncated);
+      setConversations(prev => prev.map(c => c.id === truncated.id ? truncated : c));
 
       setIsStreaming(true);
       setStreamingContent('');
@@ -1526,6 +1668,11 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
       // Use background task API
       const task = await api.sendMessageBackground(activeConversation.id, messageToSend);
       setActiveTask(task);
+
+      // Refresh conversation to get the user message that the backend added
+      const updated = await api.getConversation(activeConversation.id);
+      setActiveConversation(updated);
+      setConversations(prev => prev.map(c => c.id === updated.id ? updated : c));
 
       // Start polling for task updates
       startTaskPolling(task.id);
@@ -1785,6 +1932,13 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
                       <div className="chat-message-content">
                         {editingMessageIdx === idx ? (
                           <>
+                            {/* Attachments for editing mode */}
+                            <div className="chat-edit-attachments-wrapper">
+                              <FileAttachment
+                                attachments={editMessageAttachments}
+                                onAttachmentsChange={setEditMessageAttachments}
+                              />
+                            </div>
                             <div
                               contentEditable
                               suppressContentEditableWarning
@@ -1880,7 +2034,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
                                       const { text, attachments } = parseMessageContent(msg.content);
                                       return (
                                         <>
-                                          {attachments.length > 0 && <MessageAttachments attachments={attachments} />}
+                                          {attachments.length > 0 && <MessageAttachments attachments={attachments} onImageClick={setModalImageUrl} />}
                                           {text && (
                                             <div className="chat-message-text chat-message-user-text">
                                               {text}
@@ -1892,7 +2046,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
                                   </>
                                 ) : (
                                   <div className="chat-message-text markdown-content">
-                                    <MemoizedMarkdown content={typeof msg.content === 'string' ? msg.content : parseMessageContent(msg.content).text} />
+                                    <MemoizedMarkdown content={parseMessageContent(msg.content).text} />
                                   </div>
                                 )}
                               </>
@@ -1904,7 +2058,10 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
                               {msg.role === 'user' && !isStreaming && (
                                 <button
                                   className="chat-message-edit-btn"
-                                  onClick={() => startEditMessage(idx, typeof msg.content === 'string' ? msg.content : parseMessageContent(msg.content).text)}
+                                  onClick={() => {
+                                    const parsed = parseMessageContent(msg.content);
+                                    startEditMessage(idx, parsed.text, parsed.attachments);
+                                  }}
                                   title="Edit and resend"
                                 >
                                   <Pencil size={12} />
@@ -2039,6 +2196,26 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
           </div>
         )}
       </div>
+
+      {/* Image Modal */}
+      {modalImageUrl && (
+        <div
+          className="image-modal-overlay"
+          onClick={() => setModalImageUrl(null)}
+          onKeyDown={(e) => e.key === 'Escape' && setModalImageUrl(null)}
+        >
+          <div className="image-modal-content" onClick={(e) => e.stopPropagation()}>
+            <button
+              className="image-modal-close"
+              onClick={() => setModalImageUrl(null)}
+              title="Close"
+            >
+              <X size={24} />
+            </button>
+            <img src={modalImageUrl} alt="Enlarged view" />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

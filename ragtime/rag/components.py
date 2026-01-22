@@ -24,11 +24,19 @@ from pydantic import BaseModel, Field
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.logging import get_logger
-from ragtime.core.security import (sanitize_output, validate_odoo_code,
-                                   validate_sql_query, validate_ssh_command)
+from ragtime.core.security import (
+    sanitize_output,
+    validate_odoo_code,
+    validate_sql_query,
+    validate_ssh_command,
+)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (SSHConfig, execute_ssh_command,
-                              ssh_tunnel_config_from_dict, build_ssh_tunnel_config)
+from ragtime.core.ssh import (
+    SSHConfig,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
@@ -37,9 +45,11 @@ from ragtime.tools import get_all_tools, get_enabled_tools
 from ragtime.tools.chart import create_chart_tool
 from ragtime.tools.datatable import create_datatable_tool
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (_is_shallow_repository,
-                                       create_aggregate_git_history_tool,
-                                       create_per_index_git_history_tool)
+from ragtime.tools.git_history import (
+    _is_shallow_repository,
+    create_aggregate_git_history_tool,
+    create_per_index_git_history_tool,
+)
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
@@ -1688,6 +1698,7 @@ class RAGComponents:
 
             # SSH tunnel mode uses psycopg2
             if ssh_tunnel_config:
+
                 def run_tunnel_query() -> str:
                     try:
                         import psycopg2  # type: ignore[import-untyped]
@@ -2413,6 +2424,43 @@ except Exception as e:
         # Fallback: convert to string
         return str(content)
 
+    def _strip_images_from_content(self, content: Any) -> Any:
+        """
+        Strip image_url parts from multimodal content.
+
+        Used to prevent rate limit issues when using tool-calling agents,
+        since each agent iteration resends the full input including images.
+        Images are replaced with [image attached] placeholder text.
+
+        Args:
+            content: String or list of content parts
+
+        Returns:
+            Content with images replaced by placeholder text
+        """
+        if isinstance(content, str):
+            return content
+
+        if not isinstance(content, list):
+            return content
+
+        stripped = []
+        image_count = 0
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "image_url":
+                image_count += 1
+                stripped.append({"type": "text", "text": "[image attached]"})
+            else:
+                stripped.append(part)
+
+        if image_count > 0:
+            logger.info(
+                f"Stripped {image_count} image(s) from input to reduce token usage "
+                "(tool-calling agents resend input on each iteration)"
+            )
+
+        return stripped if stripped else content
+
     def _extract_text_from_message(self, message: Any) -> str:
         """
         Extract text content from a message (string or multimodal).
@@ -2473,9 +2521,9 @@ except Exception as e:
         try:
             if self.agent_executor:
                 # Use agent with tools
-                # Agent input must be string, so use augmented text input
+                # Use langchain_content to support multimodal current message
                 result = await self.agent_executor.ainvoke(
-                    {"input": augmented_input, "chat_history": chat_history}
+                    {"input": langchain_content, "chat_history": chat_history}
                 )
                 output = result.get("output", "I couldn't generate a response.")
                 # Handle Anthropic-style content blocks (list of dicts with 'text' key)
@@ -2548,13 +2596,15 @@ except Exception as e:
         try:
             if executor:
                 # Agent with tools: use astream_events for true streaming
-                # Agent input must be string, so use augmented text input
-                # This streams tool calls and final response tokens
+                # Strip images from input - tool-calling agents resend the full input
+                # on each iteration (tool call -> response -> tool call...) which
+                # quickly exhausts rate limits. Images are replaced with [image attached].
+                agent_input = self._strip_images_from_content(langchain_content)
                 # Track tool runs to avoid duplicates from nested events
                 active_tool_runs: set[str] = set()
 
                 async for event in executor.astream_events(
-                    {"input": augmented_input, "chat_history": chat_history},
+                    {"input": agent_input, "chat_history": chat_history},
                     version="v2",
                 ):
                     kind = event.get("event", "")

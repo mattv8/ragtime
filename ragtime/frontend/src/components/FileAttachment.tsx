@@ -94,6 +94,39 @@ export function FileAttachment({ attachments, onAttachmentsChange, disabled }: F
     });
   };
 
+  const resizeImageDataUrl = async (
+    dataUrl: string,
+    mimeType: string,
+    maxDimension = 1024,
+    quality = 0.8
+  ): Promise<string> => {
+    try {
+      const img = new Image();
+      img.src = dataUrl;
+      await img.decode();
+
+      const { naturalWidth, naturalHeight } = img;
+      if (!naturalWidth || !naturalHeight) return dataUrl;
+
+      const scale = Math.min(1, maxDimension / Math.max(naturalWidth, naturalHeight));
+      if (scale === 1) return dataUrl; // Already within bounds
+
+      const width = Math.round(naturalWidth * scale);
+      const height = Math.round(naturalHeight * scale);
+
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return dataUrl;
+      ctx.drawImage(img, 0, 0, width, height);
+
+      return canvas.toDataURL(mimeType || 'image/png', quality);
+    } catch {
+      return dataUrl; // Fallback to original if resize fails
+    }
+  };
+
   const handleFiles = async (files: File[]) => {
     const newAttachments: AttachmentFile[] = [];
 
@@ -111,7 +144,12 @@ export function FileAttachment({ attachments, onAttachmentsChange, disabled }: F
       }
 
       const isImage = SUPPORTED_IMAGE_TYPES.includes(file.type);
-      const dataUrl = await readFileAsDataURL(file);
+      let dataUrl = await readFileAsDataURL(file);
+
+      // Downsize images to reduce token usage while preserving visual fidelity
+      if (isImage) {
+        dataUrl = await resizeImageDataUrl(dataUrl, file.type);
+      }
 
       newAttachments.push({
         id: `${Date.now()}-${Math.random()}`,
@@ -315,9 +353,13 @@ export function FileAttachment({ attachments, onAttachmentsChange, disabled }: F
                 if (e.key === 'Enter') {
                   e.preventDefault();
                   handleFilePathSubmit();
+                } else if (e.key === 'Escape') {
+                  setShowFilePathInput(false);
+                  setFilePathInput('');
                 }
               }}
               disabled={disabled}
+              autoFocus
             />
             <button
               type="button"
@@ -326,6 +368,17 @@ export function FileAttachment({ attachments, onAttachmentsChange, disabled }: F
               disabled={disabled || !filePathInput.trim()}
             >
               Add
+            </button>
+            <button
+              type="button"
+              className="btn-path-close"
+              onClick={() => {
+                setShowFilePathInput(false);
+                setFilePathInput('');
+              }}
+              title="Close"
+            >
+              <X size={14} />
             </button>
           </div>
         )}

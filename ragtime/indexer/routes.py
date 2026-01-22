@@ -14,8 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional
 
 import httpx
-from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException,
-                     UploadFile)
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
@@ -26,28 +25,39 @@ from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit
 from ragtime.core.security import get_current_user, require_admin
-from ragtime.core.sql_utils import (MssqlConnectionError, MysqlConnectionError,
-                                    mssql_connect, mysql_connect)
+from ragtime.core.sql_utils import (
+    MssqlConnectionError,
+    MysqlConnectionError,
+    mssql_connect,
+    mysql_connect,
+)
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
-                                    CheckRepoVisibilityRequest,
-                                    ConfigurationWarning, CreateIndexRequest,
-                                    FetchBranchesRequest,
-                                    FetchBranchesResponse, IndexAnalysisResult,
-                                    IndexConfig, IndexInfo, IndexJobResponse,
-                                    IndexStatus, PdmIndexJobResponse,
-                                    RepoVisibilityResponse,
-                                    RetryVisualizationRequest,
-                                    RetryVisualizationResponse,
-                                    SchemaIndexJobResponse,
-                                    TriggerPdmIndexRequest,
-                                    TriggerSchemaIndexRequest,
-                                    UpdateSettingsRequest)
+from ragtime.indexer.models import (
+    AnalyzeIndexRequest,
+    AppSettings,
+    CheckRepoVisibilityRequest,
+    ConfigurationWarning,
+    CreateIndexRequest,
+    FetchBranchesRequest,
+    FetchBranchesResponse,
+    IndexAnalysisResult,
+    IndexConfig,
+    IndexInfo,
+    IndexJobResponse,
+    IndexStatus,
+    PdmIndexJobResponse,
+    RepoVisibilityResponse,
+    RetryVisualizationRequest,
+    RetryVisualizationResponse,
+    SchemaIndexJobResponse,
+    TriggerPdmIndexRequest,
+    TriggerSchemaIndexRequest,
+    UpdateSettingsRequest,
+)
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
-                                            schema_indexer)
+from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
 from ragtime.indexer.service import indexer
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_utils import ensure_pgvector_extension
@@ -1188,16 +1198,21 @@ async def get_embedding_status(_user: User = Depends(require_admin)):
 # Tool Configuration Endpoints (Admin only)
 # -----------------------------------------------------------------------------
 
-from ragtime.indexer.models import (CreateToolConfigRequest,
-                                    MssqlDiscoverRequest,
-                                    MssqlDiscoverResponse,
-                                    MysqlDiscoverRequest,
-                                    MysqlDiscoverResponse, PdmDiscoverRequest,
-                                    PdmDiscoverResponse,
-                                    PostgresDiscoverRequest,
-                                    PostgresDiscoverResponse, ToolConfig,
-                                    ToolTestRequest, ToolType,
-                                    UpdateToolConfigRequest)
+from ragtime.indexer.models import (
+    CreateToolConfigRequest,
+    MssqlDiscoverRequest,
+    MssqlDiscoverResponse,
+    MysqlDiscoverRequest,
+    MysqlDiscoverResponse,
+    PdmDiscoverRequest,
+    PdmDiscoverResponse,
+    PostgresDiscoverRequest,
+    PostgresDiscoverResponse,
+    ToolConfig,
+    ToolTestRequest,
+    ToolType,
+    UpdateToolConfigRequest,
+)
 
 
 class SSHKeyPairResponse(BaseModel):
@@ -2463,8 +2478,11 @@ def _start_ssh_tunnel_if_enabled(
     config: dict, host: str, port: int
 ) -> tuple[Optional["SSHTunnel"], str, int]:
     """Start SSH tunnel if enabled and return (tunnel, host, port)."""
-    from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
-                                  ssh_tunnel_config_from_dict)
+    from ragtime.core.ssh import (
+        SSHTunnel,
+        build_ssh_tunnel_config,
+        ssh_tunnel_config_from_dict,
+    )
 
     tunnel_cfg_dict = build_ssh_tunnel_config(config, host, port)
     if not tunnel_cfg_dict:
@@ -3198,8 +3216,7 @@ async def _test_odoo_connection(config: dict) -> ToolTestResponse:
 async def _test_odoo_ssh_connection(config: dict) -> ToolTestResponse:
     """Test Odoo shell connection via SSH using Paramiko."""
 
-    from ragtime.core.ssh import (SSHConfig, execute_ssh_command,
-                                  test_ssh_connection)
+    from ragtime.core.ssh import SSHConfig, execute_ssh_command, test_ssh_connection
 
     ssh_host = config.get("ssh_host", "")
     ssh_port = config.get("ssh_port", 22)
@@ -4540,9 +4557,11 @@ async def browse_smb_share(
 # Filesystem Indexer Endpoints (Admin only)
 # -----------------------------------------------------------------------------
 
-from ragtime.indexer.models import (FilesystemAnalysisJobResponse,
-                                    FilesystemIndexJobResponse,
-                                    TriggerFilesystemIndexRequest)
+from ragtime.indexer.models import (
+    FilesystemAnalysisJobResponse,
+    FilesystemIndexJobResponse,
+    TriggerFilesystemIndexRequest,
+)
 
 
 class FilesystemIndexStatsResponse(BaseModel):
@@ -5084,8 +5103,10 @@ class EmbeddingModelsResponse(BaseModel):
 
 # OpenAI embedding models - prioritized list (from LiteLLM community data)
 # These are the recommended models for most use cases
-from ragtime.core.embedding_models import (OPENAI_EMBEDDING_PRIORITY,
-                                           get_embedding_models)
+from ragtime.core.embedding_models import (
+    OPENAI_EMBEDDING_PRIORITY,
+    get_embedding_models,
+)
 
 OPENAI_DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
@@ -5441,10 +5462,14 @@ async def _fetch_ollama_llm_models(base_url: str) -> LLMModelsResponse:
 # Conversation/Chat Endpoints
 # =============================================================================
 
-from ragtime.indexer.models import (ChatMessage, Conversation,
-                                    ConversationResponse,
-                                    CreateConversationRequest,
-                                    SendMessageRequest)
+from ragtime.indexer.models import (
+    ChatMessage,
+    Conversation,
+    ConversationResponse,
+    CreateConversationRequest,
+    SendMessageRequest,
+)
+from ragtime.indexer.title_generation import schedule_title_generation
 
 
 @router.get(
@@ -5813,6 +5838,7 @@ async def send_message(
 
     # Add user message
     conv = await repository.add_message(conversation_id, "user", user_message)
+    schedule_title_generation(conversation_id, user_message)
     if conv is None:
         raise HTTPException(status_code=500, detail="Failed to add user message")
 
@@ -5835,15 +5861,6 @@ async def send_message(
     conv = await repository.add_message(conversation_id, "assistant", answer)
     if conv is None:
         raise HTTPException(status_code=500, detail="Failed to add assistant message")
-
-    # Auto-generate title from first user message if still "New Chat"
-    if conv.title == "New Chat" and len(conv.messages) >= 2:
-        first_msg = conv.messages[0].content[:50]
-        new_title = first_msg + ("..." if len(conv.messages[0].content) > 50 else "")
-        conv = (
-            await repository.update_conversation_title(conversation_id, new_title)
-            or conv
-        )
 
     return {
         "message": ChatMessage(
@@ -5896,6 +5913,7 @@ async def send_message_stream(
 
     # Add user message
     await repository.add_message(conversation_id, "user", user_message)
+    schedule_title_generation(conversation_id, user_message)
 
     # Refresh conversation to get updated messages
     conv = await repository.get_conversation(conversation_id)
@@ -6033,18 +6051,6 @@ async def send_message_stream(
                 tool_calls=tool_calls_collected if tool_calls_collected else None,
                 events=chronological_events if chronological_events else None,
             )
-
-            # Auto-generate title if needed
-            if (
-                updated_conv
-                and updated_conv.title == "New Chat"
-                and len(updated_conv.messages) >= 2
-            ):
-                first_msg = updated_conv.messages[0].content[:50]
-                new_title = first_msg + (
-                    "..." if len(updated_conv.messages[0].content) > 50 else ""
-                )
-                await repository.update_conversation_title(conversation_id, new_title)
 
             # Final chunk
             final_chunk = {
@@ -6280,6 +6286,7 @@ async def send_message_background(
 
     # Add user message to conversation first
     await repository.add_message(conversation_id, "user", user_message)
+    schedule_title_generation(conversation_id, user_message)
 
     # Start background task
     task_id = await background_task_service.start_task_async(

@@ -8,8 +8,9 @@ Also handles scheduled filesystem re-indexing tasks.
 """
 
 import asyncio
+import json
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -20,6 +21,87 @@ from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES
 from ragtime.indexer.utils import safe_tool_name
 
 logger = get_logger(__name__)
+
+
+def parse_message_content(content: str) -> Union[str, List[Dict[str, Any]]]:
+    """
+    Parse message content that might be a JSON-encoded multimodal payload.
+
+    Handles these shapes:
+    - '[{"type":"text","text":"..."}, {"type":"image_url",...}]'
+    - '{"content": [...]}'
+    - '{"role": "user", "content": "[...]"}' (double-wrapped)
+    - '{"type":"text","text":"..."}' (single part object)
+    """
+    if not content:
+        return content
+
+    trimmed = content.lstrip()
+    if not trimmed or trimmed[0] not in "[{":
+        return content
+
+    try:
+        parsed: Any = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return content
+
+    # Direct list of content parts
+    if isinstance(parsed, list):
+        if parsed and isinstance(parsed[0], dict) and "type" in parsed[0]:
+            logger.debug(
+                f"Parsed multimodal content: {len(parsed)} parts, "
+                f"types={[p.get('type') for p in parsed]}"
+            )
+            return parsed
+        return content
+
+    if isinstance(parsed, dict):
+        # Single content part dict
+        if parsed.get("type"):
+            return [parsed]
+
+        # Wrapped with content field
+        if "content" in parsed:
+            inner = parsed["content"]
+            if isinstance(inner, list):
+                return inner
+            if isinstance(inner, str) and inner != content:
+                inner_parsed = parse_message_content(inner)
+                return inner_parsed
+
+    return content
+
+
+def strip_images_from_content(
+    content: Union[str, List[Dict[str, Any]]],
+) -> Union[str, List[Dict[str, Any]]]:
+    """
+    Strip image_url parts from multimodal content to reduce token usage in history.
+
+    Images in chat history are generally not needed - only the current message
+    needs the actual image data. This significantly reduces tokens sent to the LLM.
+    """
+    if isinstance(content, str):
+        return content
+
+    if not isinstance(content, list):
+        return content
+
+    # Filter out image_url parts, keep text and file references
+    stripped = []
+    image_count = 0
+    for part in content:
+        if isinstance(part, dict) and part.get("type") == "image_url":
+            image_count += 1
+            # Replace with a placeholder text
+            stripped.append({"type": "text", "text": "[image attachment]"})
+        else:
+            stripped.append(part)
+
+    if image_count > 0:
+        logger.debug(f"Stripped {image_count} images from chat history")
+
+    return stripped if stripped else content
 
 
 class BackgroundTaskService:
@@ -360,7 +442,11 @@ class BackgroundTaskService:
                 chat_history = []
                 for msg in conv.messages[:-1]:  # Exclude last (current user) message
                     if msg.role == "user":
-                        chat_history.append(HumanMessage(content=msg.content))
+                        # Parse content in case it's a JSON-encoded multimodal array
+                        parsed_content = parse_message_content(msg.content)
+                        # Strip images from history - they consume tokens but add little value
+                        parsed_content = strip_images_from_content(parsed_content)
+                        chat_history.append(HumanMessage(content=parsed_content))
                     elif msg.role == "assistant":
                         # Build content that includes tool call context
                         content_parts = []
@@ -424,8 +510,10 @@ class BackgroundTaskService:
                 current_version = 0  # Version counter for efficient client polling
 
                 # Use UI agent (with chart tool and enhanced prompt)
+                # Parse user message in case it's a JSON-encoded multimodal array
+                parsed_user_message = parse_message_content(user_message)
                 async for event in rag.process_query_stream(
-                    user_message, chat_history, is_ui=True
+                    parsed_user_message, chat_history, is_ui=True
                 ):
                     if self._shutdown:
                         await repository.cancel_chat_task(task_id)
@@ -552,17 +640,6 @@ class BackgroundTaskService:
                     tool_calls=tool_calls if tool_calls else None,
                     events=events if events else None,
                 )
-
-                # Auto-generate title if needed
-                conv = await repository.get_conversation(conversation_id)
-                if conv and conv.title == "New Chat" and len(conv.messages) >= 2:
-                    first_msg = conv.messages[0].content[:50]
-                    new_title = first_msg + (
-                        "..." if len(conv.messages[0].content) > 50 else ""
-                    )
-                    await repository.update_conversation_title(
-                        conversation_id, new_title
-                    )
 
                 logger.info(f"Background task {task_id} completed successfully")
 
