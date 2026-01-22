@@ -1,22 +1,24 @@
 # Ragtime
 
-OpenAI-compatible RAG API and MCP server with LangChain tool calling for business intelligence queries.
+Self-hosted, OpenAI-compatible RAG API + MCP server that plugs local knowledge into existing LLM clients.
 
 <p align="center">
-  <a href="https://ragtime.dev.visnovsky.us"><strong>🚀 Live Demo (coming soon)</strong></a><br />
-  <a href="CONTRIBUTING.md"><strong>📄 Contributing Guide</strong></a>
+  <a href="https://github.com/mattv8/ragtime/actions/workflows/build-container.yml?query=branch%3Amain">
+    <img src="https://github.com/mattv8/ragtime/actions/workflows/build-container.yml/badge.svg?branch=main" alt="Build" />
+  </a>
+  <a href="https://github.com/mattv8/ragtime/actions/workflows/build-container.yml?query=branch%3Amain+is%3Asuccess">
+    <img src="https://img.shields.io/badge/Container-signed%20with%20Cosign-0a7cff" alt="Container Signed" />
+  </a>
+  <a href="https://github.com/mattv8/ragtime/actions/workflows/build-container.yml?query=branch%3Amain+is%3Asuccess">
+    <img src="https://img.shields.io/badge/SBOM-SPDX%20artifact-4c1" alt="SBOM" />
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT" />
+  </a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/mattv8/ragtime/actions/workflows/build-container.yml">
-    <img src="https://github.com/mattv8/ragtime/actions/workflows/build-container.yml/badge.svg?branch=main" alt="Build" />
-  </a>
-  <a href="https://github.com/mattv8/ragtime/actions/workflows/build-container.yml">
-    <img src="https://img.shields.io/badge/Container-signed%20with%20Cosign-0a7cff" alt="Container Signed" />
-  </a>
-  <a href="https://github.com/mattv8/ragtime/actions/workflows/build-container.yml?query=branch%3Amain+event%3Apush">
-    <img src="https://img.shields.io/badge/SBOM-SPDX%20artifact-4c1" alt="SBOM" />
-  </a>
+  <a href="CONTRIBUTING.md">Contributing Guide</a>
 </p>
 
 <div align="center">
@@ -24,30 +26,76 @@ OpenAI-compatible RAG API and MCP server with LangChain tool calling for busines
   <img src=".github/images/Screenshot%202026-01-12%20110434.png" alt="Screenshot 2" height="360" />
 </div>
 
+## Features
+
+- **OpenAI-compatible `/v1/chat/completions`** endpoint with streaming: works with OpenWebUI, Continue, and any OpenAI client
+- **Built-in chat UI** at `/` with tool visualization, interactive charts, and DataTables: no external client required
+- **MCP server** (HTTP Streamable + stdio transports) exposing tools to Claude Desktop, VS Code Copilot, Cursor, and JetBrains IDEs
+- **Dual vector store**: FAISS for uploaded/git-cloned indexes, pgvector for filesystem/schema/PDM indexes (details below)
+- **LangChain tool calling**: PostgreSQL, MSSQL, MySQL/MariaDB, Odoo ORM, SSH shell: read-only by default, write-ops opt-in
+- **Auto-discovered tools**: drop a `<name>_tool` StructuredTool in `ragtime/tools/` and it registers at startup
+- **Security**: SQL injection prevention via allowlist patterns, LIMIT enforcement, Odoo code validation, optional write-ops flag
+- **Auth**: Local admin + optional LDAP, rate-limited login, encrypted secrets (Fernet), httpOnly session cookies
+
+## Architecture
+
+```mermaid
+flowchart TB
+    %% Clients
+    Clients["LLM Clients<br/>(OpenWebUI · Continue · ChatGPT-compatible apps · MCP clients)"]
+
+    %% Ragtime
+    Ragtime["Ragtime<br/>FastAPI :8000<br/><br/>/v1/chat/completions<br/>(OpenAI-compatible API)<br/>/mcp (HTTP + stdio)<br/>/indexes (Web UI)"]
+
+    %% Vector Stores
+    Vectors["Vector Stores<br/><br/>FAISS (local)<br/>pgvector (PostgreSQL)"]
+
+    %% LLM Providers
+    LLMs["LLM Providers<br/><br/>OpenAI<br/>Anthropic<br/>Ollama"]
+
+    %% Tools
+    Tools["Tools<br/><br/>postgres.py · mssql.py · mysql.py · odoo_shell.py<br/>filesystem_indexer.py · git_history.py · ssh · …"]
+
+    %% Connections
+    Clients --> Ragtime
+    Ragtime --> Vectors
+    Ragtime --> LLMs
+    Vectors --> Tools
+
+```
+
+## Vector Store Abstraction
+
+Ragtime uses **two vector backends**, chosen per index type:
+
+| Index Source | Vector Store | Backing Storage |
+|--------------|--------------|-----------------|
+| **Upload** (zip/tar) | FAISS | `data/indexes/<name>/` |
+| **Git clone** | FAISS | `data/indexes/<name>/` |
+| **Filesystem** (local/SMB/NFS) | pgvector | `filesystem_chunks` table |
+| **Schema** (DB introspection) | pgvector | `schema_embeddings` table |
+| **SolidWorks PDM** | pgvector | `pdm_embeddings` table |
+
+FAISS indexes are loaded into memory at startup; pgvector indexes stay in PostgreSQL and use cosine similarity search. Embedding provider (OpenAI or Ollama) is configured once in Settings and applies to all index types. Swapping embedding model or dimensions after initial indexing requires a full re-index.
+
+## Who This Is For / Not For
+
+**Good fit**: Teams that want to query internal docs and databases through existing chat UIs without shipping data to third-party RAG SaaS: especially if you already run OpenWebUI, Claude Desktop, or VS Code with MCP.
+
+**Not a fit**: If you need multi-tenant SaaS, fine-grained RBAC beyond admin/user, or sub-second latency at scale, consider managed solutions or a custom LangServe deployment.
+
 ## Table of Contents
 
-- [Features](#features)
 - [Quick Start](#quick-start)
 - [Security](#security)
 - [Tool Configuration](#tool-configuration)
 - [Model Context Protocol (MCP) Integration](#model-context-protocol-mcp-integration)
-  - [MCP Server Setup](#mcp-server-setup)
-    - [HTTP Transport (Recommended)](#http-transport-recommended)
-    - [Stdio Transport (Alternative)](#stdio-transport-alternative)
-- [Creating FAISS Indexes](#creating-faiss-indexes)
+- [Creating Indexes](#creating-indexes)
 - [Connecting to OpenWebUI](#connecting-to-openwebui)
 - [License](#license)
 - [Updating](#updating)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
-
-## Features
-
-- **OpenAI API Compatible**: Works with OpenWebUI, ChatGPT clients, and any OpenAI-compatible interface
-- **MCP Server**: Integrates with Claude and other MCP-compatible clients
-- **RAG with FAISS**: Vector search over your codebase documentation
-- **Tool Calling**: Execute Odoo ORM queries and PostgreSQL queries via natural language
-- **Security**: Read-only by default with SQL injection and command injection prevention
 
 ## Quick Start
 
@@ -279,13 +327,19 @@ Ragtime exposes its tools via the [Model Context Protocol](https://modelcontextp
 
 ### Available MCP Tools
 
-When you configure tool connections in the Ragtime UI, they become available to MCP clients:
+Tools are dynamically exposed based on what you configure in the UI:
 
-- **PostgreSQL Queries** - Execute read-only SQL queries against configured databases
-- **Odoo Shell** - Run ORM queries against Odoo instances
-- **SSH Shell** - Execute commands on remote servers via SSH
-- **Filesystem Search** - Semantic search across indexed codebases and documentation
-- **Knowledge Search** - Search FAISS vector indexes created in the UI
+| Tool Type | Input Schema |
+|-----------|-------------|
+| `postgres` | `{query, reason}` |
+| `mssql` | `{query, reason}` |
+| `mysql` | `{query, reason}` |
+| `odoo_shell` | `{code, reason}` |
+| `ssh_shell` | `{command, reason}` |
+| `filesystem_indexer` | `{query, max_results}` |
+| `knowledge_search` | `{query, index_name}` |
+| `schema_search` | `{prompt, limit}` |
+| `git_history` | `{action, ...}` |
 
 ### MCP Server Setup
 
@@ -334,24 +388,23 @@ Replace `ragtime` with your container name if different (find it with `docker ps
 - **Cursor**: `.cursor/mcp.json`
 - **Windsurf**: `~/.codeium/windsurf/mcp_config.json`
 
-## Creating FAISS Indexes
+## Creating Indexes
 
-The Indexer UI provides an easy way to create FAISS indexes from your codebases.
+The Indexer UI (http://localhost:8000, **Indexes** tab) supports multiple index types:
 
-1. **Open the Web UI:** http://localhost:8000
-2. Navigate to the **Indexes** tab
-3. Use the **Upload** or **Git** tabs to create indexes from your code
+| Method | Vector Store | Use Case |
+|--------|--------------|----------|
+| **Upload** (zip/tar) | FAISS | Static codebases, documentation snapshots |
+| **Git Clone** | FAISS | Repositories with optional private token auth |
+| **Filesystem** | pgvector | Live SMB/NFS shares, Docker volumes, local paths: incremental re-index |
+| **Schema** | pgvector | Auto-generated from PostgreSQL/MSSQL/MySQL tools (enable in tool settings) |
+| **PDM** | pgvector | SolidWorks PDM metadata via SQL Server |
 
-The UI provides:
-- **Upload Tab**: Upload a zip file of your codebase to create an index
-- **Git Tab**: Clone and index a Git repository by URL
-- **Indexes List**: View, manage, and delete existing indexes
-- **Job Status**: Monitor indexing progress in real-time
-- **Settings**: Configure LLM provider, embedding model, and enabled tools
+Jobs run async with progress streaming to the UI.
 
 ## License
 
-MIT
+MIT: see [LICENSE](LICENSE).
 
 ## Updating
 
