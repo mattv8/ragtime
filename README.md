@@ -60,15 +60,9 @@ flowchart LR
 
 ## Vector Store Abstraction
 
-Ragtime uses **two vector backends**, chosen per index type:
+Ragtime uses **two vector backends**, chosen per index type: **FAISS** for in-memory, static indexes (Upload, Git) and **pgvector** for persistent, scalable indexes (Filesystem, Schema, PDM).
 
-| Index Source | Vector Store | Backing Storage |
-|--------------|--------------|-----------------|
-| **Upload** (zip/tar) | FAISS | `data/indexes/<name>/` |
-| **Git clone** | FAISS | `data/indexes/<name>/` |
-| **Filesystem** (local/SMB/NFS) | pgvector | `filesystem_chunks` table |
-| **Schema** (DB introspection) | pgvector | `schema_embeddings` table |
-| **SolidWorks PDM** | pgvector | `pdm_embeddings` table |
+See [Creating Indexes](#creating-indexes) for a detailed breakdown of index types and their storage backends.
 
 FAISS indexes are loaded into memory at startup; pgvector indexes stay in PostgreSQL and use cosine similarity search. Embedding provider (OpenAI or Ollama) is configured once in Settings and applies to all index types. Swapping embedding model or dimensions after initial indexing requires a full re-index.
 
@@ -81,15 +75,15 @@ FAISS indexes are loaded into memory at startup; pgvector indexes stay in Postgr
 ## Table of Contents
 
 - [Quick Start](#quick-start)
-- [Security](#security)
 - [Tool Configuration](#tool-configuration)
-- [Model Context Protocol (MCP) Integration](#model-context-protocol-mcp-integration)
 - [Creating Indexes](#creating-indexes)
+- [Model Context Protocol (MCP) Integration](#model-context-protocol-mcp-integration)
 - [Connecting to OpenWebUI](#connecting-to-openwebui)
-- [License](#license)
+- [Security](#security)
 - [Updating](#updating)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
+- [License](#license)
 
 ## Quick Start
 
@@ -264,37 +258,6 @@ FAISS indexes are loaded into memory at startup; pgvector indexes stay in Postgr
 
    Default credentials: `admin` / (set via `LOCAL_ADMIN_PASSWORD` in `.env`)
 
-## Security
-
-Ragtime is designed for self-hosted deployment on trusted networks. Review these recommendations before exposing it beyond localhost:
-
-CI builds each push; main-branch images are Cosign-signed and ship with an SPDX SBOM artifact (linked from the badges above and workflow runs) so you can verify what you pull from the registry.
-
-### Network & Access
-- **Run behind a reverse proxy or firewall.** Avoid exposing port 8000 directly to the public internet.
-- **Set `API_KEY`** to protect the `/v1/chat/completions` endpoint. When unset (the default), anyone with network access can call the chat API and invoke your configured tools.
-- **Restrict `ALLOWED_ORIGINS`** to trusted domains. The default `*` with `allow_credentials=True` permits cross-site requests that carry session cookies, which may be exploitable if the server is publicly reachable.
-- **Enable MCP route authentication** via Settings UI if `/mcp` is network-accessible. By default the MCP endpoint is open without auth.
-- Set a strong `LOCAL_ADMIN_PASSWORD` when deploying.
-
-### Authentication Security
-- **Encryption key is auto-generated** on first startup and stored at `data/.encryption_key`. Include this file in your backups using `backup --include-secret` or your encrypted secrets will be unrecoverable.
-- **Rate limiting** protects the login endpoint (5 attempts/minute per IP) to prevent brute-force attacks.
-
-### Debug Mode Warning
-**Do not use `DEBUG_MODE=true` outside local development.** When enabled, the `/auth/status` endpoint exposes your admin username and password in plaintext. This is intentional for self-hosted debugging but dangerous if the server is accessible to untrusted users.
-
-### SSH Connections
-The SSH tool uses Paramiko with `AutoAddPolicy`, which accepts any host key without verification. This makes SSH connections vulnerable to man-in-the-middle attacks on first connect. Only use the SSH tool on trusted networks or with hosts you have verified out-of-band.
-
-### Docker & Mounts
-- The default compose files include mounts for `docker.sock` and optional privileged flags to support advanced tool features (container exec, SSH tunnels, NFS/SMB mounts).
-- If you do not need these features, remove or comment out the corresponding lines in your compose file.
-- For NFS/SMB filesystem indexing, the container may require elevated privileges. Consider the security implications before enabling `privileged: true` or `SYS_ADMIN` capabilities.
-
-### Third-Party Data Relay
-Queries and tool calls may forward your data to external services you configure (OpenAI, Anthropic, Ollama, PostgreSQL, MSSQL, SSH hosts). Only connect to services you trust with your data.
-
 ## Tool Configuration
 
 Before you connect Ragtime to MCP clients, configure tools in the Ragtime web UI so they are ready for use:
@@ -307,13 +270,19 @@ Before you connect Ragtime to MCP clients, configure tools in the Ragtime web UI
 
 Only tools that pass their health checks are exposed to chat and MCP clients. Configure and verify your tools here before following the [MCP Integration](#model-context-protocol-mcp-integration) section below.
 
-## Connecting to OpenWebUI
+## Creating Indexes
 
-1. In OpenWebUI, go to **Settings** > **Connections** > **OpenAI API**
-2. Add a new connection:
-   - **API Base URL**: `http://ragtime:8000/v1` (or `http://localhost:8000/v1` if running locally)
-   - **API Key**: Your configured `API_KEY` (or any value if not set)
-3. Select your server's model name (default: "ragtime", configurable in Settings > Server Branding)
+The Indexer UI (http://localhost:8000, **Indexes** tab) supports multiple index types:
+
+| Method | Vector Store | Storage | Use Case |
+|--------|--------------|---------|----------|
+| **Upload** (zip/tar) | FAISS | `data/indexes/<name>/` | Static codebases, documentation snapshots |
+| **Git Clone** | FAISS | `data/indexes/<name>/` | Repositories with optional private token auth |
+| **Filesystem** | pgvector | `filesystem_chunks` table | Live SMB/NFS shares, Docker volumes, local paths: incremental re-index |
+| **Schema** | pgvector | `schema_embeddings` table | Auto-generated from PostgreSQL/MSSQL/MySQL tools (enable in [Tool Configuration](#tool-configuration)) |
+| **PDM** | pgvector | `pdm_embeddings` table | SolidWorks PDM metadata via SQL Server |
+
+Jobs run async with progress streaming to the UI.
 
 ## Model Context Protocol (MCP) Integration
 
@@ -382,23 +351,44 @@ Replace `ragtime` with your container name if different (find it with `docker ps
 - **[Cursor](https://docs.cursor.com/context/model-context-protocol)**: `.cursor/mcp.json`
 - **[Windsurf](https://docs.codeium.com/windsurf/mcp)**: `~/.codeium/windsurf/mcp_config.json`
 
-## Creating Indexes
+## Connecting to OpenWebUI
 
-The Indexer UI (http://localhost:8000, **Indexes** tab) supports multiple index types:
+1. In OpenWebUI, go to **Settings** > **Connections** > **OpenAI API**
+2. Add a new connection:
+   - **API Base URL**: `http://ragtime:8000/v1` (or `http://localhost:8000/v1` if running locally)
+   - **API Key**: Your configured `API_KEY` (or any value if not set)
+3. Select your server's model name (default: "ragtime", configurable in Settings > Server Branding)
 
-| Method | Vector Store | Use Case |
-|--------|--------------|----------|
-| **Upload** (zip/tar) | FAISS | Static codebases, documentation snapshots |
-| **Git Clone** | FAISS | Repositories with optional private token auth |
-| **Filesystem** | pgvector | Live SMB/NFS shares, Docker volumes, local paths: incremental re-index |
-| **Schema** | pgvector | Auto-generated from PostgreSQL/MSSQL/MySQL tools (enable in [Tool Configuration](#tool-configuration)) |
-| **PDM** | pgvector | SolidWorks PDM metadata via SQL Server |
+## Security
 
-Jobs run async with progress streaming to the UI.
+Ragtime is designed for self-hosted deployment on trusted networks. Review these recommendations before exposing it beyond localhost:
 
-## License
+CI builds each push; main-branch images are Cosign-signed and ship with an SPDX SBOM artifact (linked from the badges above and workflow runs) so you can verify what you pull from the registry.
 
-MIT: see [LICENSE](LICENSE).
+### Network & Access
+- **Run behind a reverse proxy or firewall.** Avoid exposing port 8000 directly to the public internet.
+- **Set `API_KEY`** to protect the `/v1/chat/completions` endpoint. When unset (the default), anyone with network access can call the chat API and invoke your configured tools.
+- **Restrict `ALLOWED_ORIGINS`** to trusted domains. The default `*` with `allow_credentials=True` permits cross-site requests that carry session cookies, which may be exploitable if the server is publicly reachable.
+- **Enable MCP route authentication** via Settings UI if `/mcp` is network-accessible. By default the MCP endpoint is open without auth.
+- Set a strong `LOCAL_ADMIN_PASSWORD` when deploying.
+
+### Authentication Security
+- **Encryption key is auto-generated** on first startup and stored at `data/.encryption_key`. Include this file in your backups using `backup --include-secret` or your encrypted secrets will be unrecoverable.
+- **Rate limiting** protects the login endpoint (5 attempts/minute per IP) to prevent brute-force attacks.
+
+### Debug Mode Warning
+**Do not use `DEBUG_MODE=true` outside local development.** When enabled, the `/auth/status` endpoint exposes your admin username and password in plaintext. This is intentional for self-hosted debugging but dangerous if the server is accessible to untrusted users.
+
+### SSH Connections
+The SSH tool uses Paramiko with `AutoAddPolicy`, which accepts any host key without verification. This makes SSH connections vulnerable to man-in-the-middle attacks on first connect. Only use the SSH tool on trusted networks or with hosts you have verified out-of-band.
+
+### Docker & Mounts
+- The default compose files include mounts for `docker.sock` and optional privileged flags to support advanced tool features (container exec, SSH tunnels, NFS/SMB mounts).
+- If you do not need these features, remove or comment out the corresponding lines in your compose file.
+- For NFS/SMB filesystem indexing, the container may require elevated privileges. Consider the security implications before enabling `privileged: true` or `SYS_ADMIN` capabilities.
+
+### Third-Party Data Relay
+Queries and tool calls may forward your data to external services you configure (OpenAI, Anthropic, Ollama, PostgreSQL, MSSQL, SSH hosts). Only connect to services you trust with your data.
 
 ## Updating
 
@@ -429,3 +419,7 @@ This image builds NumPy from source without CPU-specific optimizations.
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, making changes, and CI/CD details.
+
+## License
+
+MIT: see [LICENSE](LICENSE).
