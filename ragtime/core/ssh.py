@@ -319,6 +319,32 @@ def test_ssh_connection(config: SSHConfig) -> SSHResult:
     return execute_ssh_command(config, "echo 'SSH connection successful'")
 
 
+def expand_env_vars_via_ssh(config: SSHConfig, command: str) -> tuple[str, str | None]:
+    """
+    Expand environment variables in a command via SSH.
+
+    Uses printf with the command to expand variables on the remote host,
+    then returns the expanded command for validation.
+
+    Args:
+        config: SSH connection configuration
+        command: Command containing env vars like $HOME, ${PATH}, etc.
+
+    Returns:
+        Tuple of (expanded_command, error_message). Error is None on success.
+    """
+    # Use printf %s to expand variables without executing the command
+    # We wrap in single quotes and escape existing single quotes
+    escaped_command = command.replace("'", "'\"'\"'")
+    expand_cmd = f"printf '%s' '{escaped_command}'"
+
+    result = execute_ssh_command(config, expand_cmd)
+    if not result.success:
+        return command, f"Failed to expand environment variables: {result.stderr}"
+
+    return result.stdout, None
+
+
 def ssh_config_from_dict(config_dict: dict) -> SSHConfig:
     """
     Create SSHConfig from a connection config dictionary.
@@ -782,4 +808,3 @@ def build_ssh_tunnel_config(config: dict, host: str, port: int) -> dict | None:
         "ssh_tunnel_key_content": config.get("ssh_tunnel_key_content"),
         "ssh_tunnel_key_passphrase": config.get("ssh_tunnel_key_passphrase"),
     }
-

@@ -940,6 +940,30 @@ export const api = {
   },
 
   /**
+   * Browse a remote SSH filesystem
+   */
+  async browseSSHFilesystem(
+    config: import('@/types').SSHShellConnectionConfig,
+    path: string
+  ): Promise<import('@/types').BrowseResponse> {
+    const response = await apiFetch(`${API_BASE}/filesystem/ssh/browse`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        host: config.host,
+        user: config.user,
+        port: config.port,
+        password: config.password,
+        key_path: config.key_path,
+        key_content: config.key_content,
+        key_passphrase: config.key_passphrase,
+        path,
+      }),
+    });
+    return handleResponse<import('@/types').BrowseResponse>(response);
+  },
+
+  /**
    * Discover NFS exports from a server
    */
   async discoverNfsExports(host: string): Promise<import('@/types').NFSDiscoveryResponse> {

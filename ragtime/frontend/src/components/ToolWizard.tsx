@@ -61,6 +61,11 @@ interface DirectoryBrowserProps {
 function DirectoryBrowser({ currentPath, entries, loading, error, onNavigate, onGoUp, onSelect }: DirectoryBrowserProps) {
   const [pathInput, setPathInput] = useState('');
 
+  // Clear filter input when navigating to a new directory
+  useEffect(() => {
+    setPathInput('');
+  }, [currentPath]);
+
   // Filter entries based on current input (only the segment before any "/")
   const filterText = pathInput.split('/')[0];
   const filteredEntries = entries.filter(e => {
@@ -101,6 +106,7 @@ function DirectoryBrowser({ currentPath, entries, loading, error, onNavigate, on
       const firstDir = filteredEntries.find(e => e.is_dir);
       if (firstDir) {
         onNavigate(firstDir.path);
+        setPathInput(''); // Clear filter after navigation
       }
     }
   };
@@ -548,6 +554,217 @@ function FilesystemBrowser({ currentPath, onSelectPath }: FilesystemBrowserProps
   );
 }
 
+
+// =============================================================================
+// SSH Filesystem Browser Component
+// =============================================================================
+
+interface SSHFilesystemBrowserProps {
+  currentPath: string;
+  onSelectPath: (path: string) => void;
+  sshConfig: SSHShellConnectionConfig;
+}
+
+function SSHFilesystemBrowser({ currentPath, onSelectPath, sshConfig }: SSHFilesystemBrowserProps) {
+  const [entries, setEntries] = useState<DirectoryEntry[]>([]);
+  const [browsePath, setBrowsePath] = useState<string>(currentPath || '/');
+  const [pathInput, setPathInput] = useState<string>('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [isExpanded, setIsExpanded] = useState(!currentPath || currentPath === '/'); // Start expanded if no selection
+
+  const browseCurrent = useCallback(async () => {
+    if (!browsePath) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await api.browseSSHFilesystem(sshConfig, browsePath);
+      if (result.error) {
+        setError(result.error);
+        setEntries([]);
+      } else {
+        setEntries(result.entries || []);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Browse failed');
+    } finally {
+      setLoading(false);
+    }
+  }, [browsePath, sshConfig]);
+
+  useEffect(() => {
+    browseCurrent();
+  }, [browseCurrent]);
+
+  const handleNavigate = (path: string) => {
+    setBrowsePath(path || '/');
+    setPathInput(''); // Clear filter when navigating
+  };
+
+  const handleGoUp = () => {
+    if (!browsePath || browsePath === '/') return;
+    const parts = browsePath.split('/').filter(Boolean);
+    parts.pop();
+    const newPath = '/' + parts.join('/') || '/';
+    setBrowsePath(newPath);
+    setPathInput('');
+  };
+
+  const handleSelect = (path: string) => {
+    onSelectPath(path);
+    setIsExpanded(false); // Collapse after selection
+  };
+
+  // Filter entries based on input
+  const filterText = pathInput.split('/')[0];
+  const filteredEntries = entries.filter(e => {
+    if (!filterText) return true;
+    return e.name.toLowerCase().startsWith(filterText.toLowerCase());
+  });
+
+  // Handle filter changes and implicit navigation when typing "dir/"
+  const handleFilterChange = (value: string) => {
+    if (value.endsWith('/')) {
+      const dirName = value.slice(0, -1);
+      const matchingDir = entries.find(e => e.is_dir && e.name.toLowerCase() === dirName.toLowerCase());
+      if (matchingDir) {
+        handleNavigate(matchingDir.path);
+        return;
+      }
+    }
+    if (value.includes('/')) {
+      const segments = value.split('/');
+      const first = segments[0];
+      const matchingDir = entries.find(e => e.is_dir && e.name.toLowerCase() === first.toLowerCase());
+      if (matchingDir) {
+        handleNavigate(matchingDir.path);
+        return;
+      }
+    }
+    setPathInput(value);
+  };
+
+  const handlePathInputKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const firstDir = filteredEntries.find(e => e.is_dir);
+      if (firstDir) {
+        handleNavigate(firstDir.path);
+      }
+    }
+  };
+
+  // Get path segments for breadcrumbs
+  const segments = browsePath.split('/').filter(Boolean);
+
+  // Display path for the accordion header
+  const displayPath = currentPath && currentPath !== '/' ? currentPath : browsePath;
+
+  return (
+    <div className="filesystem-browser">
+      <div className="mounts-accordion">
+        <div className={`mount-item ${isExpanded ? 'expanded' : ''}`}>
+          <button
+            type="button"
+            className="mount-header"
+            onClick={() => {
+              if (!isExpanded) {
+                setBrowsePath(currentPath || '/');
+              }
+              setIsExpanded(!isExpanded);
+            }}
+          >
+            <span className="mount-icon">{isExpanded ? '▼' : '▶'}</span>
+            <span className="mount-path">{displayPath}</span>
+            {currentPath && currentPath !== '/' && (
+              <span className="current-badge">Selected</span>
+            )}
+          </button>
+
+          {/* Expanded browser */}
+          {isExpanded && (
+            <div className="mount-browser">
+              <div className="browser-header">
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={handleGoUp}
+                  disabled={browsePath === '/' || loading}
+                >
+                  ..
+                </button>
+                <div className="browser-path-wrapper">
+                  <span className="browser-path-breadcrumbs">
+                    <span className="breadcrumb-segment">
+                      <button type="button" className="breadcrumb-btn" onClick={() => handleNavigate('/')}>
+                        /
+                      </button>
+                    </span>
+                    {segments.map((segment, idx) => {
+                      const pathToSegment = '/' + segments.slice(0, idx + 1).join('/');
+                      const isLast = idx === segments.length - 1;
+                      return (
+                        <span key={idx} className="breadcrumb-segment">
+                          <button
+                            type="button"
+                            className="breadcrumb-btn"
+                            onClick={() => handleNavigate(pathToSegment)}
+                          >
+                            {segment}
+                          </button>
+                          {!isLast && <span className="breadcrumb-sep">/</span>}
+                        </span>
+                      );
+                    })}
+                  </span>
+                  <input
+                    type="text"
+                    className="browser-path-input"
+                    value={pathInput}
+                    onChange={(e) => handleFilterChange(e.target.value)}
+                    onKeyDown={handlePathInputKeyDown}
+                    placeholder="Filter..."
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-primary"
+                  onClick={() => handleSelect(browsePath)}
+                  disabled={loading}
+                >
+                  Select
+                </button>
+              </div>
+
+              {error && <div className="browser-error">{error}</div>}
+
+              {loading ? (
+                <div className="browser-loading">Loading...</div>
+              ) : (
+                <div className="browser-entries">
+                  {filteredEntries.filter(e => e.is_dir).map((entry) => (
+                    <button
+                      key={entry.path}
+                      type="button"
+                      className="browser-entry"
+                      onClick={() => handleNavigate(entry.path)}
+                    >
+                      <span className="entry-icon"><Icon name="folder" size={16} /></span>
+                      <span className="entry-name">{entry.name}</span>
+                    </button>
+                  ))}
+                  {filteredEntries.length === 0 && !loading && (
+                    <div className="browser-empty">Empty directory</div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // =============================================================================
 // NFS Browser Component
@@ -1570,11 +1787,12 @@ interface ToolWizardProps {
   defaultToolType?: ToolType;
 }
 
-type WizardStep = 'type' | 'connection' | 'pdm_filtering' | 'description' | 'options' | 'review';
+type WizardStep = 'type' | 'connection' | 'pdm_filtering' | 'execution_constraints' | 'description' | 'options' | 'review';
 
 // Base steps - pdm_filtering is dynamically inserted for solidworks_pdm tools
 const BASE_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'description', 'options', 'review'];
 const PDM_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'pdm_filtering', 'description', 'options', 'review'];
+const SSH_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'execution_constraints', 'description', 'options', 'review'];
 
 function getStepTitle(step: WizardStep): string {
   switch (step) {
@@ -1584,6 +1802,8 @@ function getStepTitle(step: WizardStep): string {
       return 'Configure Connection';
     case 'pdm_filtering':
       return 'Document Filtering';
+    case 'execution_constraints':
+      return 'Execution Constraints';
     case 'description':
       return 'Add Description';
     case 'options':
@@ -1602,7 +1822,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
 
   // Get the appropriate wizard steps based on tool type
   const getWizardSteps = useCallback((): WizardStep[] => {
-    return toolType === 'solidworks_pdm' ? PDM_WIZARD_STEPS : BASE_WIZARD_STEPS;
+    if (toolType === 'solidworks_pdm') return PDM_WIZARD_STEPS;
+    if (toolType === 'ssh_shell') return SSH_WIZARD_STEPS;
+    return BASE_WIZARD_STEPS;
   }, [toolType]);
 
   // Wizard state - skip type selection if defaultToolType is provided
@@ -2445,6 +2667,10 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
         return true;
       case 'connection':
         return validateConnection();
+      case 'execution_constraints':
+        // Optional, but if entering manually must be valid?
+        // For now just allow proceeding (empty = no constraints or root)
+        return true;
       case 'pdm_filtering':
         // Must have at least one file extension selected
         return (pdmConfig.file_extensions?.length ?? 0) > 0;
@@ -4614,6 +4840,46 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
     );
   };
 
+  const renderExecutionConstraints = () => {
+    if (toolType !== 'ssh_shell') return null;
+
+    // Check if we have enough config to connect
+    const canConnect = sshConfig.host && sshConfig.user && (sshConfig.password || sshConfig.key_content || sshConfig.key_path);
+
+    return (
+      <div className="wizard-content">
+        <p className="wizard-help">
+          Constrain the AI agent to a specific directory. It will not be able to interact with files outside this path.
+        </p>
+
+        <div className="form-group">
+           <label>Working Directory</label>
+           {!canConnect ? (
+              <>
+                 <input
+                    type="text"
+                    value={sshConfig.working_directory || ''}
+                    onChange={e => setSshConfig({...sshConfig, working_directory: e.target.value})}
+                    placeholder="/var/www/html"
+                 />
+                 <p className="field-help warning" style={{color: '#f0ad4e'}}>
+                    Enter directory manually. Configure authentication in the previous step to enable file browsing.
+                 </p>
+              </>
+           ) : (
+              <>
+                 <SSHFilesystemBrowser
+                    currentPath={sshConfig.working_directory || '/'}
+                    onSelectPath={(path) => setSshConfig({...sshConfig, working_directory: path})}
+                    sshConfig={sshConfig}
+                 />
+              </>
+           )}
+        </div>
+      </div>
+    );
+  };
+
   const renderDescription = () => (
     <div className="wizard-content">
       <p className="wizard-help">
@@ -4763,6 +5029,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
         return renderConnectionConfig();
       case 'pdm_filtering':
         return renderPdmFiltering();
+      case 'execution_constraints':
+        return renderExecutionConstraints();
       case 'description':
         return renderDescription();
       case 'options':

@@ -7,6 +7,7 @@ The enable_write_ops parameter should be passed from the database settings.
 
 from __future__ import annotations
 
+import posixpath
 import re
 from typing import TYPE_CHECKING, Optional, Tuple
 
@@ -130,11 +131,11 @@ async def get_token_data(
 
 
 # =============================================================================
-# SQL SECURITY PATTERNS
+# SQL SECURITY PATTERNS (precompiled for performance)
 # =============================================================================
 
 # Patterns that indicate potentially dangerous SQL
-DANGEROUS_SQL_PATTERNS = [
+_DANGEROUS_SQL_PATTERN_STRINGS = [
     r"\b(DROP|DELETE|TRUNCATE|ALTER|CREATE|INSERT|UPDATE)\b",
     r"\b(GRANT|REVOKE)\b",
     r";\s*--",  # Comment injection
@@ -146,6 +147,14 @@ DANGEROUS_SQL_PATTERNS = [
     r"COPY\s+.*\s+TO",
     r"COPY\s+.*\s+FROM",
 ]
+# Precompile with IGNORECASE since SQL is case-insensitive
+DANGEROUS_SQL_PATTERNS = [
+    re.compile(p, re.IGNORECASE) for p in _DANGEROUS_SQL_PATTERN_STRINGS
+]
+
+# SQL comment stripping patterns (precompiled)
+_SQL_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+_SQL_LINE_COMMENT_RE = re.compile(r"--[^\n]*")
 
 # Allowed read-only SQL keywords
 SAFE_SQL_KEYWORDS = [
@@ -185,11 +194,11 @@ SAFE_SQL_KEYWORDS = [
 ]
 
 # =============================================================================
-# ODOO SECURITY PATTERNS
+# ODOO SECURITY PATTERNS (precompiled for performance)
 # =============================================================================
 
 # Patterns for safe Odoo ORM operations (read-only)
-SAFE_ODOO_PATTERNS = [
+_SAFE_ODOO_PATTERN_STRINGS = [
     r"\.search\s*\(",
     r"\.browse\s*\(",
     r"\.read\s*\(",
@@ -203,9 +212,10 @@ SAFE_ODOO_PATTERNS = [
     r"env\s*\[.*\]",
     r"env\.registry",
 ]
+SAFE_ODOO_PATTERNS = [re.compile(p) for p in _SAFE_ODOO_PATTERN_STRINGS]
 
 # Dangerous Odoo patterns (write operations)
-DANGEROUS_ODOO_PATTERNS = [
+_DANGEROUS_ODOO_PATTERN_STRINGS = [
     r"\.write\s*\(",
     r"\.create\s*\(",
     r"\.unlink\s*\(",
@@ -227,13 +237,23 @@ DANGEROUS_ODOO_PATTERNS = [
     r"__mro__",
     r"__subclasses__",
 ]
+DANGEROUS_ODOO_PATTERNS = [
+    re.compile(p, re.IGNORECASE) for p in _DANGEROUS_ODOO_PATTERN_STRINGS
+]
+
+# Odoo-specific patterns (precompiled)
+_ODOO_GETATTR_RE = re.compile(r"getattr\s*\(", re.IGNORECASE)
+_ODOO_SAFE_GETATTR_RE = re.compile(r"getattr\s*\(\s*\w+\s*,\s*field_name")
+_ODOO_OPEN_WRITE_RE = re.compile(
+    r"open\s*\([^)]*,\s*['\"][^'\"]*[wa\+][^'\"]*['\"]", re.IGNORECASE
+)
 
 # =============================================================================
-# SSH COMMAND SECURITY PATTERNS
+# SSH COMMAND SECURITY PATTERNS (precompiled for performance)
 # =============================================================================
 
 # Shell commands that modify system state
-SSH_DANGEROUS_SHELL_PATTERNS = [
+_SSH_DANGEROUS_SHELL_PATTERN_STRINGS = [
     # File system modifications
     r"\brm\s+(-[rf]+\s+)?/",  # rm with absolute paths
     r"\brm\s+-[rf]*\s+\*",  # rm with wildcards
@@ -318,6 +338,136 @@ SSH_DANGEROUS_SHELL_PATTERNS = [
     r"\bpsql\b.*-c\s*['\"].*\b(UPDATE|INSERT|DELETE|DROP|TRUNCATE|ALTER|CREATE|GRANT|REVOKE)\b",
     r"\bmysql\b.*-e\s*['\"].*\b(UPDATE|INSERT|DELETE|DROP|TRUNCATE|ALTER|CREATE|GRANT|REVOKE)\b",
 ]
+SSH_DANGEROUS_SHELL_PATTERNS = [
+    re.compile(p, re.IGNORECASE) for p in _SSH_DANGEROUS_SHELL_PATTERN_STRINGS
+]
+
+# SSH directory constraint patterns (precompiled)
+_SSH_DIR_TRAVERSAL_RE = re.compile(r"(?:^|[\s/])\.\.(?:/|[\s]|$)")
+_SSH_HOME_EXPANSION_RE = re.compile(r"(?:^|[\s=:])~(?:\/|[\s]|$)")
+_SSH_ENV_VAR_RE = re.compile(
+    r"\$(?!\?|\$|\d)(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})"
+)
+
+# Write target extraction patterns - find paths that are destinations for writes
+# These patterns extract the path argument from write commands
+_SSH_WRITE_TARGET_PATTERNS = [
+    # === Redirections ===
+    # Redirect: > /path or >> /path
+    re.compile(r">{1,2}\s*(/[^\s;|&<>]+)"),
+    # tee: tee /path or tee -a /path
+    re.compile(r"\btee\s+(?:-[a-z]\s+)*(/[^\s;|&<>]+)"),
+    #
+    # === File operations ===
+    # ln: ln -s target /link (second path is write target)
+    re.compile(r"\bln\s+(?:-[a-z]+\s+)*[^\s]+\s+(/[^\s;|&<>]+)"),
+    # cp: cp [options] source(s) /dest - destination is the last absolute path
+    re.compile(r"\bcp\s+(?:-[a-zA-Z]+\s+)*(?:[^\s]+\s+)+(/[^\s;|&<>]+)\s*(?:[;&|]|$)"),
+    # mv: mv [options] source(s) /dest
+    re.compile(r"\bmv\s+(?:-[a-zA-Z]+\s+)*(?:[^\s]+\s+)+(/[^\s;|&<>]+)\s*(?:[;&|]|$)"),
+    # rm: rm [options] /path
+    re.compile(r"\brm\s+(?:-[a-zA-Z]+\s+)*(/[^\s;|&<>]+)"),
+    # touch, mkdir, rmdir - path is direct argument
+    re.compile(r"\btouch\s+(/[^\s;|&<>]+)"),
+    re.compile(r"\bmkdir\s+(?:-[a-z]+\s+)*(/[^\s;|&<>]+)"),
+    re.compile(r"\brmdir\s+(?:-[a-z]+\s+)*(/[^\s;|&<>]+)"),
+    # install: install [options] source /dest
+    re.compile(r"\binstall\s+(?:-[a-zA-Z]+\s+)*(?:[^\s]+\s+)+(/[^\s;|&<>]+)"),
+    # chmod/chown/chgrp: can modify file attributes
+    re.compile(r"\bchmod\s+(?:-[a-zA-Z]+\s+)*[0-7]+\s+(/[^\s;|&<>]+)"),
+    re.compile(r"\bchmod\s+(?:-[a-zA-Z]+\s+)*[ugoa]*[+=-][rwxXst]+\s+(/[^\s;|&<>]+)"),
+    re.compile(r"\bchown\s+(?:-[a-zA-Z]+\s+)*[^\s]+\s+(/[^\s;|&<>]+)"),
+    re.compile(r"\bchgrp\s+(?:-[a-zA-Z]+\s+)*[^\s]+\s+(/[^\s;|&<>]+)"),
+    #
+    # === Sync/Transfer ===
+    # rsync: rsync [options] source /dest (dangerous with --delete)
+    re.compile(r"\brsync\s+[^\n]*\s(/[^\s;|&<>]+)\s*(?:[;&|]|$)"),
+    # scp: scp [options] source /dest or scp source host:/dest
+    re.compile(r"\bscp\s+(?:-[a-zA-Z]+\s+)*[^\s]+\s+(/[^\s;|&<>:]+)"),
+    #
+    # === Low-level disk/file operations ===
+    # dd: of=/path - output file
+    re.compile(r"\bdd\b[^\n]*\bof=(/[^\s;|&<>]+)"),
+    # truncate: truncate [options] /path
+    re.compile(r"\btruncate\s+(?:-[a-zA-Z]+\s+)*(/[^\s;|&<>]+)"),
+    # fallocate: fallocate [options] /path
+    re.compile(r"\bfallocate\s+(?:-[a-zA-Z]+\s+)*(/[^\s;|&<>]+)"),
+    # shred: shred [options] /path
+    re.compile(r"\bshred\s+(?:-[a-zA-Z]+\s+)*(/[^\s;|&<>]+)"),
+    #
+    # === In-place editing ===
+    # sed -i: sed -i[suffix] 'pattern' /path
+    re.compile(r"\bsed\s+(?:[^\n]*\s)?-i[^\s]*\s+[^\n]*\s(/[^\s;|&<>]+)"),
+    # perl -i: perl -i[suffix] -e 'code' /path or perl -pie 'code' /path
+    re.compile(r"\bperl\s+(?:[^\n]*\s)?-[a-z]*i[^\s]*\s+[^\n]*\s(/[^\s;|&<>]+)"),
+    # awk -i inplace (gawk): awk -i inplace 'code' /path
+    re.compile(r"\b[gm]?awk\s+(?:[^\n]*\s)?-i\s+inplace\s+[^\n]*\s(/[^\s;|&<>]+)"),
+    # ed: ed /path (line editor that modifies files)
+    re.compile(r"\bed\s+(/[^\s;|&<>]+)"),
+    # ex: ex /path (vi's line mode, can modify files)
+    re.compile(r"\bex\s+(?:-[a-z]+\s+)*(/[^\s;|&<>]+)"),
+    # patch: patch [options] /path < patchfile or patch -d /dir
+    re.compile(r"\bpatch\s+(?:[^\n]*\s)?(?:-d\s+)?(/[^\s;|&<>]+)"),
+    #
+    # === Compression (in-place by default) ===
+    # gzip/gunzip/bzip2/bunzip2/xz/unxz - modify files in place
+    re.compile(
+        r"\b(?:gzip|gunzip|bzip2|bunzip2|xz|unxz|lzma|unlzma)\s+"
+        r"(?:-[a-zA-Z]+\s+)*(/[^\s;|&<>]+)"
+    ),
+    # zip: zip archive.zip /path (adding to archive writes to archive location)
+    re.compile(r"\bzip\s+(?:-[a-zA-Z]+\s+)*(/[^\s;|&<>]+)"),
+    #
+    # === Archive extraction ===
+    # tar -x: tar -xf archive -C /dest or tar -xf archive (extracts to cwd or specified dir)
+    re.compile(r"\btar\s+[^\n]*-C\s+(/[^\s;|&<>]+)"),
+    re.compile(r"\btar\s+[^\n]*--directory[=\s]+(/[^\s;|&<>]+)"),
+    # unzip: unzip archive -d /dest
+    re.compile(r"\bunzip\s+[^\n]*-d\s+(/[^\s;|&<>]+)"),
+    # 7z/7za: 7z x archive -o/dest
+    re.compile(r"\b7z[a]?\s+[ex]\s+[^\n]*-o(/[^\s;|&<>]+)"),
+    #
+    # === Download ===
+    # wget: wget -O /path or wget -P /dir
+    re.compile(r"\bwget\s+[^\n]*-O\s+(/[^\s;|&<>]+)"),
+    re.compile(r"\bwget\s+[^\n]*-P\s+(/[^\s;|&<>]+)"),
+    re.compile(r"\bwget\s+[^\n]*--output-document[=\s]+(/[^\s;|&<>]+)"),
+    re.compile(r"\bwget\s+[^\n]*--directory-prefix[=\s]+(/[^\s;|&<>]+)"),
+    # curl: curl -o /path or curl -O (to cwd)
+    re.compile(r"\bcurl\s+[^\n]*-o\s+(/[^\s;|&<>]+)"),
+    re.compile(r"\bcurl\s+[^\n]*--output[=\s]+(/[^\s;|&<>]+)"),
+    #
+    # === Text processing with output ===
+    # sort -o: sort -o /output input
+    re.compile(r"\bsort\s+[^\n]*-o\s+(/[^\s;|&<>]+)"),
+    re.compile(r"\bsort\s+[^\n]*--output[=\s]+(/[^\s;|&<>]+)"),
+    # split: split [options] input /prefix
+    re.compile(r"\bsplit\s+(?:-[a-zA-Z]+\s+)*[^\s]+\s+(/[^\s;|&<>]+)"),
+    # csplit: csplit [options] input /pattern/ -f /prefix
+    re.compile(r"\bcsplit\s+[^\n]*-f\s+(/[^\s;|&<>]+)"),
+    #
+    # === Git operations (can write to worktree) ===
+    # git clone: git clone url /dest
+    re.compile(r"\bgit\s+clone\s+[^\n]*\s(/[^\s;|&<>]+)\s*(?:[;&|]|$)"),
+    #
+    # === Database CLI write with output files ===
+    # psql with \o or COPY TO
+    re.compile(r"\bpsql\s+[^\n]*-o\s+(/[^\s;|&<>]+)"),
+    # mysql with output redirect is caught by > pattern
+]
+_SSH_PATH_EXTRACT_RE = re.compile(r"(?:^|[\s=:\"'])(/[a-zA-Z0-9_\-\./]+)")
+
+# System-level SQL patterns for write mode (precompiled)
+_SQL_SYSTEM_PATTERNS = [
+    re.compile(r"INTO\s+OUTFILE", re.IGNORECASE),
+    re.compile(r"LOAD_FILE", re.IGNORECASE),
+    re.compile(r"pg_read_file", re.IGNORECASE),
+    re.compile(r"pg_write_file", re.IGNORECASE),
+    re.compile(r"COPY\s+.*\s+TO", re.IGNORECASE),
+    re.compile(r"COPY\s+.*\s+FROM", re.IGNORECASE),
+    re.compile(r"\b(DROP|TRUNCATE|ALTER|CREATE)\b", re.IGNORECASE),
+    re.compile(r"\b(GRANT|REVOKE)\b", re.IGNORECASE),
+]
 
 
 def validate_sql_query(query: str, enable_write: bool = False) -> Tuple[bool, str]:
@@ -335,10 +485,10 @@ def validate_sql_query(query: str, enable_write: bool = False) -> Tuple[bool, st
     # Strip ALL SQL comments for validation to prevent false positives
     # and to catch patterns that might be obscured by comments
     query_stripped = query.strip()
-    # Remove all block comments /* ... */
-    query_stripped = re.sub(r"/\*.*?\*/", " ", query_stripped, flags=re.DOTALL)
-    # Remove all single-line comments -- ...
-    query_stripped = re.sub(r"--[^\n]*", " ", query_stripped)
+    # Remove all block comments /* ... */ (using precompiled pattern)
+    query_stripped = _SQL_BLOCK_COMMENT_RE.sub(" ", query_stripped)
+    # Remove all single-line comments -- ... (using precompiled pattern)
+    query_stripped = _SQL_LINE_COMMENT_RE.sub(" ", query_stripped)
     # Normalize whitespace
     query_stripped = " ".join(query_stripped.split())
 
@@ -349,26 +499,16 @@ def validate_sql_query(query: str, enable_write: bool = False) -> Tuple[bool, st
         if not (query_upper.startswith("SELECT") or query_upper.startswith("WITH")):
             return False, "Only SELECT queries are allowed"
 
-        # Check for dangerous patterns
+        # Check for dangerous patterns (using precompiled patterns)
         for pattern in DANGEROUS_SQL_PATTERNS:
-            if re.search(pattern, query_upper, re.IGNORECASE):
-                logger.warning(f"Dangerous SQL pattern detected: {pattern}")
+            if pattern.search(query_upper):
+                logger.warning(f"Dangerous SQL pattern detected: {pattern.pattern}")
                 return False, "Query contains forbidden pattern"
     else:
-        # Even with write enabled, block system-level operations
-        system_patterns = [
-            r"INTO\s+OUTFILE",
-            r"LOAD_FILE",
-            r"pg_read_file",
-            r"pg_write_file",
-            r"COPY\s+.*\s+TO",
-            r"COPY\s+.*\s+FROM",
-            r"\b(DROP|TRUNCATE|ALTER|CREATE)\b",
-            r"\b(GRANT|REVOKE)\b",
-        ]
-        for pattern in system_patterns:
-            if re.search(pattern, query_upper, re.IGNORECASE):
-                logger.warning(f"System-level SQL pattern blocked: {pattern}")
+        # Even with write enabled, block system-level operations (using precompiled)
+        for pattern in _SQL_SYSTEM_PATTERNS:
+            if pattern.search(query_upper):
+                logger.warning(f"System-level SQL pattern blocked: {pattern.pattern}")
                 return (
                     False,
                     "Query contains system-level operations that are not allowed",
@@ -393,20 +533,20 @@ def validate_odoo_code(code: str, enable_write_ops: bool = False) -> Tuple[bool,
     Returns:
         Tuple of (is_safe, reason_message).
     """
-    # Check for dangerous patterns first
+    # Check for dangerous patterns first (using precompiled patterns)
     for pattern in DANGEROUS_ODOO_PATTERNS:
-        if re.search(pattern, code, re.IGNORECASE):
+        if pattern.search(code):
             if enable_write_ops:
-                logger.warning(f"Write operation detected but allowed: {pattern}")
+                logger.warning(
+                    f"Write operation detected but allowed: {pattern.pattern}"
+                )
             else:
-                logger.warning(f"Dangerous Odoo pattern detected: {pattern}")
+                logger.warning(f"Dangerous Odoo pattern detected: {pattern.pattern}")
                 return False, "Code contains forbidden pattern"
 
     # Allow read-only getattr over model fields (e.g., getattr(order, field_name))
-    getattr_matches = re.findall(r"getattr\s*\(", code, re.IGNORECASE)
-    if getattr_matches:
-        safe_getattr = re.search(r"getattr\s*\(\s*\w+\s*,\s*field_name", code)
-        if not safe_getattr:
+    if _ODOO_GETATTR_RE.search(code):
+        if not _ODOO_SAFE_GETATTR_RE.search(code):
             if enable_write_ops:
                 logger.warning("getattr detected but allowed due to write flag")
             else:
@@ -414,16 +554,15 @@ def validate_odoo_code(code: str, enable_write_ops: bool = False) -> Tuple[bool,
                 return False, "getattr usage is restricted to field_name inspection"
 
     # Allow open() only when clearly read-only; block write/append/update modes
-    open_write_pattern = r"open\s*\([^)]*,\s*['\"][^'\"]*[wa\+][^'\"]*['\"]"
-    if re.search(open_write_pattern, code, re.IGNORECASE):
+    if _ODOO_OPEN_WRITE_RE.search(code):
         if enable_write_ops:
             logger.warning("open() with write/append mode detected but allowed")
         else:
             logger.warning("open() with write/append mode detected and blocked")
             return False, "File writes via open() are not allowed"
 
-    # Must contain at least one safe pattern
-    has_safe_pattern = any(re.search(pattern, code) for pattern in SAFE_ODOO_PATTERNS)
+    # Must contain at least one safe pattern (using precompiled patterns)
+    has_safe_pattern = any(pattern.search(code) for pattern in SAFE_ODOO_PATTERNS)
 
     if not has_safe_pattern:
         return False, "Code must contain valid ORM read operations"
@@ -431,7 +570,12 @@ def validate_odoo_code(code: str, enable_write_ops: bool = False) -> Tuple[bool,
     return True, "Code is safe"
 
 
-def validate_ssh_command(command: str, allow_write: bool = False) -> Tuple[bool, str]:
+def validate_ssh_command(
+    command: str,
+    allow_write: bool = False,
+    allowed_directory: Optional[str] = None,
+    expanded_command: Optional[str] = None,
+) -> Tuple[bool, str]:
     """
     Validate SSH shell command for safety. Returns (is_safe, reason).
     Blocks commands that modify system state unless write ops are enabled.
@@ -439,6 +583,10 @@ def validate_ssh_command(command: str, allow_write: bool = False) -> Tuple[bool,
     Args:
         command: The shell command to validate.
         allow_write: Whether write operations are allowed.
+        allowed_directory: Optional directory path to constrain operations to.
+        expanded_command: Optional pre-expanded command (env vars resolved via SSH).
+            Required when command contains env vars and allowed_directory is set.
+            Use expand_env_vars_via_ssh() from ragtime.core.ssh to obtain this.
 
     Returns:
         Tuple of (is_safe, reason_message).
@@ -446,27 +594,165 @@ def validate_ssh_command(command: str, allow_write: bool = False) -> Tuple[bool,
     if not command or not command.strip():
         return False, "Empty command"
 
+    # Directory constraint check
+    if allowed_directory:
+        # 0. Validate allowed_directory is an absolute path (no ~ or relative paths)
+        # This prevents misconfiguration where the constraint itself is ambiguous
+        if not allowed_directory.startswith("/"):
+            return (
+                False,
+                f"Configuration error: allowed_directory must be an absolute path, got '{allowed_directory}'",
+            )
+        if "~" in allowed_directory:
+            return (
+                False,
+                "Configuration error: allowed_directory must not contain '~'. Use an absolute path.",
+            )
+
+        # 1. Block directory traversal via relative paths (using precompiled pattern)
+        # We catch '..' only when it acts as a path component (bounded by / or whitespace)
+        # This allows 'git log master..main' but blocks 'cd ..', 'cat ../file', '/foo/../bar'
+        if _SSH_DIR_TRAVERSAL_RE.search(command):
+            return (
+                False,
+                "Directory traversal (..) is not allowed when constrained to a directory.",
+            )
+
+        # 2. Block home directory expansion which might escape (using precompiled pattern)
+        # Catch '~' when used as a path start (bounded by whitespace/=/: and followed by / or whitespace)
+        # This allows 'HEAD~1' but blocks 'cd ~', 'cat ~/.ssh/id_rsa'
+        if _SSH_HOME_EXPANSION_RE.search(command):
+            return (
+                False,
+                "Home directory expansion (~) is not allowed when constrained to a directory.",
+            )
+
+        # 3. Check for unexpanded environment variables (using precompiled pattern)
+        # If env vars are present and no expanded_command was provided, we can't validate paths
+        # The caller should use expand_env_vars_via_ssh() first to get the expanded command
+        has_env_vars = bool(_SSH_ENV_VAR_RE.search(command))
+        if has_env_vars and expanded_command is None:
+            return (
+                False,
+                "Command contains environment variables but no expanded form was provided. "
+                "Use expand_env_vars_via_ssh() to pre-expand variables before validation.",
+            )
+
+        # Use expanded command for path validation if available
+        command_for_path_check = expanded_command if expanded_command else command
+
+        # 4. Check absolute paths (using precompiled pattern on expanded command if available)
+        # Find paths starting with / (at start of string, or after space, =, :, ", ')
+        # This covers: /path, arg=/path, "/path", etc.
+        paths = _SSH_PATH_EXTRACT_RE.findall(command_for_path_check)
+
+        # Base allowed path (normalized)
+        base_allowed = posixpath.normpath(allowed_directory)
+
+        # Safe system prefixes that are always allowed (executables, devices, temp)
+        # This allows running tools (/usr/bin/git) and using safe resources (/dev/null)
+        # Note: Write operations to these paths are still blocked by SSH_DANGEROUS_SHELL_PATTERNS
+        SAFE_SYSTEM_PREFIXES = [
+            # Device/kernel interfaces (read-safe, writes blocked by patterns)
+            "/dev/",
+            "/proc/",
+            "/sys/",
+            # Temp directories (commonly needed for intermediate files)
+            "/tmp/",
+            "/var/tmp/",
+            # Executables (needed to run system tools)
+            "/bin/",
+            "/usr/bin/",
+            "/usr/local/bin/",
+            "/sbin/",
+            "/usr/sbin/",
+            # Libraries (needed by executables)
+            "/lib/",
+            "/lib64/",
+            "/usr/lib/",
+            "/usr/lib64/",
+            "/usr/local/lib/",
+            # Runtime/socket directories (for checking service status, etc.)
+            "/run/",
+            "/var/run/",
+        ]
+
+        for path in paths:
+            # Normalize path to resolve .. inside strings
+            # e.g. /app/../etc/passwd -> /etc/passwd
+            normalized_path = posixpath.normpath(path)
+
+            # Check for exact equality or prefix match with safe paths
+            is_safe_system = False
+            for safe_prefix in SAFE_SYSTEM_PREFIXES:
+                # Check for exact match (e.g. /bin) or subpath (/bin/ls)
+                # We strip trailing slash from prefix for exact match check
+                clean_prefix = safe_prefix.rstrip("/")
+                if normalized_path == clean_prefix or normalized_path.startswith(
+                    safe_prefix
+                ):
+                    is_safe_system = True
+                    break
+
+            if is_safe_system:
+                continue
+
+            # If not a safe system path, it must be within allowed_directory
+            if (
+                not normalized_path.startswith(base_allowed + "/")
+                and normalized_path != base_allowed
+            ):
+                return (
+                    False,
+                    f"Access forbidden: Path '{path}' is outside the allowed directory '{allowed_directory}'",
+                )
+
+        # 5. Check write targets specifically - writes must be within allowed_directory
+        # Even when allow_write=True, we restrict writes to the allowed_directory
+        # Safe system prefixes are for reading (executables, libs), not writing
+        if allow_write:
+            write_targets = []
+            for pattern in _SSH_WRITE_TARGET_PATTERNS:
+                write_targets.extend(pattern.findall(command_for_path_check))
+
+            for target in write_targets:
+                normalized_target = posixpath.normpath(target)
+
+                # Only /dev/null is allowed as a write target outside the allowed_directory
+                if normalized_target == "/dev/null":
+                    continue
+
+                # Write targets must be within allowed_directory
+                if (
+                    not normalized_target.startswith(base_allowed + "/")
+                    and normalized_target != base_allowed
+                ):
+                    return (
+                        False,
+                        f"Write forbidden: Path '{target}' is outside the allowed directory '{allowed_directory}'",
+                    )
+
     if allow_write:
         # When writes are allowed, only log but don't block
         logger.debug(f"SSH command allowed (write mode enabled): {command[:100]}...")
         return True, "Command allowed (write mode enabled)"
 
-    # Check for embedded SQL write operations using existing patterns (case-insensitive)
+    # Check for embedded SQL write operations (using precompiled patterns)
     for pattern in DANGEROUS_SQL_PATTERNS:
-        if re.search(pattern, command, re.IGNORECASE):
+        if pattern.search(command):
             logger.warning(
-                f"SSH command blocked - SQL write pattern detected: {pattern}"
+                f"SSH command blocked - SQL write pattern detected: {pattern.pattern}"
             )
             return (
                 False,
                 "Command contains SQL write operation. Enable 'Allow Write Operations' to permit this.",
             )
 
-    # Check for dangerous shell patterns (case-insensitive for commands)
+    # Check for dangerous shell patterns (using precompiled patterns)
     for pattern in SSH_DANGEROUS_SHELL_PATTERNS:
-        if re.search(pattern, command, re.IGNORECASE):
+        if pattern.search(command):
             logger.warning(
-                f"SSH command blocked - dangerous pattern detected: {pattern}"
+                f"SSH command blocked - dangerous pattern detected: {pattern.pattern}"
             )
             return (
                 False,

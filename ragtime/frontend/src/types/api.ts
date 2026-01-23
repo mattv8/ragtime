@@ -706,6 +706,7 @@ export interface SSHShellConnectionConfig {
   key_passphrase?: string;
   password?: string;
   command_prefix?: string;
+  working_directory?: string;
 }
 
 export interface FilesystemConnectionConfig {

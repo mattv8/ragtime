@@ -3962,6 +3962,19 @@ class BrowseResponse(BaseModel):
     error: Optional[str] = None
 
 
+class SSHBrowseRequest(BaseModel):
+    """Request to browse remote SSH filesystem."""
+
+    host: str
+    user: str
+    port: int = 22
+    password: Optional[str] = None
+    key_path: Optional[str] = None
+    key_content: Optional[str] = None
+    key_passphrase: Optional[str] = None
+    path: str = "/"
+
+
 class MountDiscoveryResponse(BaseModel):
     """Response from mount discovery."""
 
@@ -4059,6 +4072,99 @@ volumes:
         suggested_paths=suggested_paths,
         docker_compose_example=docker_compose_example,
     )
+
+
+@router.post(
+    "/filesystem/ssh/browse", response_model=BrowseResponse, tags=["Filesystem Indexer"]
+)
+async def browse_ssh_filesystem(
+    request: SSHBrowseRequest, _: User = Depends(require_admin)
+):
+    """
+    Browse a remote directory path via SSH.
+    """
+    import shlex
+
+    from ragtime.core.ssh import SSHConfig, execute_ssh_command
+
+    config = SSHConfig(
+        host=request.host,
+        user=request.user,
+        port=request.port,
+        password=request.password,
+        key_path=request.key_path,
+        key_content=request.key_content,
+        key_passphrase=request.key_passphrase,
+    )
+
+    # Use ls -p1a to list files (append / to dirs, one per line, all files)
+    # ls -p appends / indicator to directories
+    # -1 forces one entry per line
+    # -a includes hidden files
+    path = request.path
+    # Quote the path to handle spaces and special chars
+    quoted_path = shlex.quote(path)
+
+    # We list the contents OF the directory, not the directory itself if it is one
+    # If path is a file, ls might return it.
+    # To ensure we are listing directory content, we assume path is a dir.
+
+    cmd = f"ls -p1a {quoted_path}"
+
+    # Execute SSH command
+    try:
+        # We need to make sure we don't hang if it prompts for anything (SSHConfig handles timeouts)
+        result = execute_ssh_command(config, cmd)
+    except Exception as e:
+        return BrowseResponse(
+            path=path,
+            entries=[],
+            error=str(e),
+        )
+
+    if not result.success:
+        # Check if it's "No such file or directory" or "Not a directory"
+        error_msg = result.stderr or result.stdout or "Failed to list directory"
+        return BrowseResponse(
+            path=path,
+            entries=[],
+            error=error_msg,
+        )
+
+    entries = []
+    # Parse output
+    for line in result.stdout.splitlines():
+        name = line.strip()
+        # Skip current/parent dir markers from -a
+        if name in (".", "./", "..", "../"):
+            continue
+
+        if not name:
+            continue
+
+        is_dir = name.endswith("/")
+
+        # Only show directories
+        if not is_dir:
+            continue
+
+        clean_name = name.rstrip("/")
+
+        # Construct full path safely
+        # We assume unix remote
+        if path.endswith("/"):
+            full_path = f"{path}{clean_name}"
+        else:
+            full_path = f"{path}/{clean_name}"
+
+        entries.append(
+            DirectoryEntry(name=clean_name, path=full_path, is_dir=is_dir, size=None)
+        )
+
+    # Sort: directories first, then files, ignoring case
+    entries.sort(key=lambda x: (not x.is_dir, x.name.lower()))
+
+    return BrowseResponse(path=path, entries=entries)
 
 
 @router.get(

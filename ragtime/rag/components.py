@@ -25,6 +25,7 @@ from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.logging import get_logger
 from ragtime.core.security import (
+    _SSH_ENV_VAR_RE,
     sanitize_output,
     validate_odoo_code,
     validate_sql_query,
@@ -35,6 +36,7 @@ from ragtime.core.ssh import (
     SSHConfig,
     build_ssh_tunnel_config,
     execute_ssh_command,
+    expand_env_vars_via_ssh,
     ssh_tunnel_config_from_dict,
 )
 from ragtime.core.tokenization import truncate_to_token_budget
@@ -2105,6 +2107,7 @@ except Exception as e:
         timeout = config.get("timeout", 30)
         allow_write = config.get("allow_write", False)
         description = config.get("description", "")
+        working_directory = conn_config.get("working_directory", "")
 
         class SSHInput(BaseModel):
             command: str = Field(
@@ -2122,15 +2125,6 @@ except Exception as e:
             if not reason:
                 reason = "SSH command"
 
-            # Validate command for dangerous patterns
-            is_safe, validation_reason = validate_ssh_command(
-                command, allow_write=allow_write
-            )
-            if not is_safe:
-                return f"Error: {validation_reason}"
-
-            logger.info(f"[{tool_name}] SSH: {reason}")
-
             host = conn_config.get("host", "")
             port = conn_config.get("port", 22)
             user = conn_config.get("user", "")
@@ -2143,9 +2137,7 @@ except Exception as e:
             if not host or not user:
                 return "Error: Host and user are required"
 
-            full_command = f"{command_prefix}{command}"
-
-            # Build SSH config
+            # Build SSH config for potential env var expansion
             ssh_config = SSHConfig(
                 host=host,
                 port=port,
@@ -2156,6 +2148,33 @@ except Exception as e:
                 key_passphrase=key_passphrase,
                 timeout=timeout,
             )
+
+            # If working_directory is set, expand env vars for path validation
+            expanded_command = None
+            if working_directory:
+                # Check if command contains env vars that need expansion (using precompiled pattern)
+                if _SSH_ENV_VAR_RE.search(command):
+                    # Expand env vars on the remote host
+                    loop = asyncio.get_event_loop()
+                    expanded_command, expand_error = await loop.run_in_executor(
+                        None, lambda: expand_env_vars_via_ssh(ssh_config, command)
+                    )
+                    if expand_error:
+                        return f"Error: {expand_error}"
+
+            # Validate command for dangerous patterns
+            is_safe, validation_reason = validate_ssh_command(
+                command,
+                allow_write=allow_write,
+                allowed_directory=working_directory or None,
+                expanded_command=expanded_command,
+            )
+            if not is_safe:
+                return f"Error: {validation_reason}"
+
+            logger.info(f"[{tool_name}] SSH: {reason}")
+
+            full_command = f"{command_prefix}{command}"
 
             try:
                 # Run in thread pool to avoid blocking
