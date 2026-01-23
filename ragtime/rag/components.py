@@ -295,6 +295,9 @@ class RAGComponents:
 
     def __init__(self):
         self.retrievers: dict[str, Any] = {}
+        self.faiss_dbs: dict[str, Any] = (
+            {}
+        )  # Raw FAISS vectorstores for dynamic k searches
         self.agent_executor: Optional[AgentExecutor] = None
         self.agent_executor_ui: Optional[AgentExecutor] = (
             None  # UI-only agent with chart tool
@@ -368,6 +371,10 @@ class RAGComponents:
             logger.info(f"Unloaded index '{name}' from retrievers")
             unloaded = True
 
+        if name in self.faiss_dbs:
+            del self.faiss_dbs[name]
+            logger.debug(f"Removed index '{name}' from faiss_dbs")
+
         if name in self._index_details:
             del self._index_details[name]
             logger.debug(f"Removed index '{name}' from index_details tracking")
@@ -390,6 +397,11 @@ class RAGComponents:
         # Move retriever to new key
         self.retrievers[new_name] = self.retrievers.pop(old_name)
         logger.info(f"Renamed index '{old_name}' to '{new_name}' in retrievers")
+
+        # Also move faiss_dbs
+        if old_name in self.faiss_dbs:
+            self.faiss_dbs[new_name] = self.faiss_dbs.pop(old_name)
+            logger.debug(f"Renamed index in faiss_dbs")
 
         # Also move index_details tracking
         if old_name in self._index_details:
@@ -691,6 +703,9 @@ class RAGComponents:
                             self.retrievers[index_name] = (
                                 self._create_retriever_from_faiss(db, index_name)
                             )
+                            self.faiss_dbs[index_name] = (
+                                db  # Store for dynamic k searches
+                            )
                             logger.info(
                                 f"Loaded FAISS index: {index_name} from {index_path}"
                             )
@@ -861,7 +876,7 @@ class RAGComponents:
                     "load_time_seconds": elapsed,
                 }
 
-                return (index_name, retriever, memory_stats)
+                return (index_name, db, retriever, memory_stats)
             except Exception as e:
                 logger.warning(f"Failed to load FAISS index {index_name}: {e}")
                 if index_name in self._index_details:
@@ -881,8 +896,9 @@ class RAGComponents:
             if isinstance(result, BaseException):
                 logger.warning(f"Index loading exception: {result}")
             elif result is not None:
-                index_name, retriever, memory_stats = result
+                index_name, db, retriever, memory_stats = result
                 self.retrievers[index_name] = retriever
+                self.faiss_dbs[index_name] = db  # Store for dynamic k searches
                 self._indexes_loaded += 1
 
                 # Update memory stats in database (best effort)
@@ -1047,6 +1063,7 @@ class RAGComponents:
                 # Create retriever with MMR support if enabled
                 retriever = self._create_retriever_from_faiss(db, index_name)
                 self.retrievers[index_name] = retriever
+                self.faiss_dbs[index_name] = db  # Store for dynamic k searches
                 self._indexes_loaded += 1
 
                 # Update index detail
@@ -1366,6 +1383,10 @@ class RAGComponents:
 
         This allows the agent to search the indexed documentation at any point
         during its reasoning, not just at the beginning of the query.
+
+        The agent can control:
+        - k: Number of results to retrieve (default from settings, max 50)
+        - max_chars_per_result: How much content to show per result (default 500, 0=unlimited)
         """
         # Build index_name description with available indexes
         index_names = list(self.retrievers.keys())
@@ -1375,6 +1396,21 @@ class RAGComponents:
         if index_names:
             index_name_desc += f". Available indexes: {', '.join(index_names)}"
 
+        # Get default k from settings
+        default_k = (
+            self._app_settings.get("search_results_k", 5) if self._app_settings else 5
+        )
+        use_mmr = (
+            self._app_settings.get("search_use_mmr", True)
+            if self._app_settings
+            else True
+        )
+        mmr_lambda = (
+            self._app_settings.get("search_mmr_lambda", 0.5)
+            if self._app_settings
+            else 0.5
+        )
+
         class KnowledgeSearchInput(BaseModel):
             query: str = Field(
                 description="Search query to find relevant documentation, code, or technical information"
@@ -1383,25 +1419,46 @@ class RAGComponents:
                 default="",
                 description=index_name_desc,
             )
+            k: int = Field(
+                default=default_k,
+                ge=1,
+                le=50,
+                description=f"Number of results to retrieve (default: {default_k}). Increase for broader searches, decrease for focused results.",
+            )
+            max_chars_per_result: int = Field(
+                default=500,
+                ge=0,
+                le=10000,
+                description="Maximum characters per result (default: 500). Use 0 for full content when you need complete code/file content. Increase when results are truncated.",
+            )
 
-        def search_knowledge(query: str, index_name: str = "") -> str:
+        def search_knowledge(
+            query: str,
+            index_name: str = "",
+            k: int = default_k,
+            max_chars_per_result: int = 500,
+        ) -> str:
             """Search indexed documentation for relevant information."""
             results = []
             errors = []
 
+            # Clamp parameters
+            k = max(1, min(50, k))
+            max_chars_per_result = max(0, min(10000, max_chars_per_result))
+
             # Log the search attempt for debugging
             logger.debug(
-                f"search_knowledge called with query='{query[:50]}...', index_name='{index_name}'"
+                f"search_knowledge called with query='{query[:50]}...', index_name='{index_name}', k={k}, max_chars={max_chars_per_result}"
             )
-            logger.debug(f"Available retrievers: {list(self.retrievers.keys())}")
+            logger.debug(f"Available FAISS dbs: {list(self.faiss_dbs.keys())}")
 
-            # Determine which retrievers to search
-            if index_name and index_name in self.retrievers:
-                retrievers_to_search = {index_name: self.retrievers[index_name]}
+            # Determine which indexes to search
+            if index_name and index_name in self.faiss_dbs:
+                dbs_to_search = {index_name: self.faiss_dbs[index_name]}
             else:
-                retrievers_to_search = self.retrievers
+                dbs_to_search = self.faiss_dbs
 
-            if not retrievers_to_search:
+            if not dbs_to_search:
                 # Check if indexes are still loading
                 if self._indexes_loading:
                     logger.info("Knowledge search called while indexes still loading")
@@ -1410,23 +1467,33 @@ class RAGComponents:
                         f"Progress: {self._indexes_loaded}/{self._indexes_total} loaded. "
                         "Please try again in a moment, or use other available tools."
                     )
-                logger.warning("No retrievers available for search_knowledge")
+                logger.warning("No FAISS dbs available for search_knowledge")
                 return "No knowledge indexes are currently loaded. Please index some documents first."
 
-            for name, retriever in retrievers_to_search.items():
+            for name, db in dbs_to_search.items():
                 try:
                     logger.debug(
-                        f"Searching index '{name}' with query: {query[:50]}..."
+                        f"Searching index '{name}' with query: {query[:50]}..., k={k}"
                     )
-                    docs = retriever.invoke(query)
+                    # Use MMR or similarity search based on settings
+                    if use_mmr:
+                        fetch_k = max(k * 4, 20)  # Get more candidates for diversity
+                        docs = db.max_marginal_relevance_search(
+                            query, k=k, fetch_k=fetch_k, lambda_mult=mmr_lambda
+                        )
+                    else:
+                        docs = db.similarity_search(query, k=k)
+
                     logger.debug(f"Index '{name}' returned {len(docs)} documents")
                     for doc in docs:
                         source = doc.metadata.get("source", "unknown")
-                        content = (
-                            doc.page_content[:500] + "..."
-                            if len(doc.page_content) > 500
-                            else doc.page_content
-                        )
+                        content = doc.page_content
+                        # Apply truncation if max_chars_per_result > 0
+                        if (
+                            max_chars_per_result > 0
+                            and len(content) > max_chars_per_result
+                        ):
+                            content = content[:max_chars_per_result] + "... (truncated)"
                         results.append(f"[{name}] {source}:\n{content}")
                 except Exception as e:
                     error_msg = str(e)
@@ -1465,7 +1532,9 @@ class RAGComponents:
             "Search the indexed documentation and codebase for relevant information. "
             "Use this to find code examples, schema definitions, configuration details, or technical documentation. "
             f"Available indexes: {', '.join(index_names)}. "
-            "The query should describe what you're looking for (e.g., 'user authentication implementation', 'database schema for orders')."
+            "The query should describe what you're looking for. "
+            "Use 'k' to control number of results (increase for broader searches). "
+            "Use 'max_chars_per_result' to control content length (use 0 for full content when results are truncated)."
         )
 
         return StructuredTool.from_function(
@@ -1555,8 +1624,25 @@ class RAGComponents:
 
         When aggregate_search is disabled, this creates search_<index_name>
         tools that give the AI granular control over which index to search.
+
+        Supports dynamic k and max_chars_per_result parameters like the aggregate search.
         """
         tools = []
+
+        # Get settings
+        default_k = (
+            self._app_settings.get("search_results_k", 5) if self._app_settings else 5
+        )
+        use_mmr = (
+            self._app_settings.get("search_use_mmr", True)
+            if self._app_settings
+            else True
+        )
+        mmr_lambda = (
+            self._app_settings.get("search_mmr_lambda", 0.5)
+            if self._app_settings
+            else 0.5
+        )
 
         # Get index metadata for descriptions and weights
         index_weights = {}
@@ -1567,29 +1653,55 @@ class RAGComponents:
                 index_weights[name] = idx.get("search_weight", 1.0)
                 index_descriptions[name] = idx.get("description", "")
 
-        for index_name, retriever in self.retrievers.items():
-            # Create a closure to capture the current index_name and retriever
-            def make_search_func(idx_name: str, idx_retriever):
-                def search_index(query: str) -> str:
+        for index_name, db in self.faiss_dbs.items():
+            # Create a closure to capture the current index_name and db
+            def make_search_func(
+                idx_name: str,
+                idx_db,
+                use_mmr_: bool,
+                mmr_lambda_: float,
+                default_k_: int,
+            ):
+                def search_index(
+                    query: str,
+                    k: int = default_k_,
+                    max_chars_per_result: int = 500,
+                ) -> str:
                     """Search this specific index for relevant information."""
                     results = []
 
+                    # Clamp parameters
+                    k = max(1, min(50, k))
+                    max_chars_per_result = max(0, min(10000, max_chars_per_result))
+
                     logger.debug(
-                        f"search_{idx_name} called with query='{query[:50]}...'"
+                        f"search_{idx_name} called with query='{query[:50]}...', k={k}, max_chars={max_chars_per_result}"
                     )
 
                     try:
-                        docs = idx_retriever.invoke(query)
+                        # Use MMR or similarity search based on settings
+                        if use_mmr_:
+                            fetch_k = max(k * 4, 20)
+                            docs = idx_db.max_marginal_relevance_search(
+                                query, k=k, fetch_k=fetch_k, lambda_mult=mmr_lambda_
+                            )
+                        else:
+                            docs = idx_db.similarity_search(query, k=k)
+
                         logger.debug(
                             f"Index '{idx_name}' returned {len(docs)} documents"
                         )
                         for doc in docs:
                             source = doc.metadata.get("source", "unknown")
-                            content = (
-                                doc.page_content[:500] + "..."
-                                if len(doc.page_content) > 500
-                                else doc.page_content
-                            )
+                            content = doc.page_content
+                            # Apply truncation if max_chars_per_result > 0
+                            if (
+                                max_chars_per_result > 0
+                                and len(content) > max_chars_per_result
+                            ):
+                                content = (
+                                    content[:max_chars_per_result] + "... (truncated)"
+                                )
                             results.append(f"{source}:\n{content}")
                     except Exception as e:
                         error_msg = str(e)
@@ -1618,10 +1730,22 @@ class RAGComponents:
 
                 return search_index
 
-            # Create input schema for this tool
+            # Create input schema for this tool with k and max_chars_per_result
             class IndexSearchInput(BaseModel):
                 query: str = Field(
                     description="Search query to find relevant documentation or code"
+                )
+                k: int = Field(
+                    default=default_k,
+                    ge=1,
+                    le=50,
+                    description=f"Number of results (default: {default_k}). Increase for broader searches.",
+                )
+                max_chars_per_result: int = Field(
+                    default=500,
+                    ge=0,
+                    le=10000,
+                    description="Max chars per result (default: 500). Use 0 for full content.",
                 )
 
             # Build description including the index description and weight hint
@@ -1629,7 +1753,8 @@ class RAGComponents:
             idx_desc = index_descriptions.get(index_name, "")
 
             tool_description = (
-                f"Search the '{index_name}' index for relevant information."
+                f"Search the '{index_name}' index for relevant information. "
+                "Use 'k' for result count, 'max_chars_per_result' for content length (0=full)."
             )
             if idx_desc:
                 tool_description += f" {idx_desc}"
@@ -1644,7 +1769,7 @@ class RAGComponents:
             tool_name = f"search_{safe_name}"
 
             tool = StructuredTool.from_function(
-                func=make_search_func(index_name, retriever),
+                func=make_search_func(index_name, db, use_mmr, mmr_lambda, default_k),
                 name=tool_name,
                 description=tool_description,
                 args_schema=IndexSearchInput,

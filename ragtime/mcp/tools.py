@@ -730,66 +730,95 @@ class MCPToolAdapter:
                 logger.debug("Knowledge search tool skipped - indexes still loading")
             return None
 
-        # Filter retrievers based on selected_indexes
+        # Filter FAISS dbs based on selected_indexes
         if selected_indexes is not None:
             if not selected_indexes:
                 return None  # Empty list means no document indexes selected
-            available_retrievers = {
-                name: retriever
-                for name, retriever in rag.retrievers.items()
+            available_dbs = {
+                name: db
+                for name, db in rag.faiss_dbs.items()
                 if name in selected_indexes
             }
-            if not available_retrievers:
+            if not available_dbs:
                 return None
         else:
-            available_retrievers = rag.retrievers
+            available_dbs = rag.faiss_dbs
 
-        index_names = list(available_retrievers.keys())
+        index_names = list(available_dbs.keys())
+
+        # Get default k and MMR settings
+        app_settings = rag._app_settings or {}  # pyright: ignore[reportPrivateUsage]
+        default_k = app_settings.get("search_results_k", 5)
+        use_mmr = app_settings.get("search_use_mmr", True)
+        mmr_lambda = app_settings.get("search_mmr_lambda", 0.5)
 
         description = (
             "Search indexed documentation and codebase for relevant information. "
             f"Available indexes: {', '.join(index_names)}. "
-            "Use for finding code examples, schema definitions, configuration details."
+            "Use for finding code examples, schema definitions, configuration details. "
+            "Use 'k' to control number of results. "
+            "Use 'max_chars_per_result' to control content length (0 for full content when results are truncated)."
         )
 
-        # Capture available_retrievers in closure
-        retrievers_snapshot = available_retrievers
+        # Capture available_dbs in closure
+        dbs_snapshot = available_dbs
 
-        async def search_knowledge(query: str, index_name: str = "", **_: Any) -> str:
-            """Execute knowledge search."""
+        async def search_knowledge(
+            query: str,
+            index_name: str = "",
+            k: int = default_k,
+            max_chars_per_result: int = 500,
+            **_: Any,
+        ) -> str:
+            """Execute knowledge search with dynamic k and content length."""
             results = []
             errors = []
 
+            # Clamp parameters
+            k = max(1, min(50, k))
+            max_chars_per_result = max(0, min(10000, max_chars_per_result))
+
             # Log the search attempt for debugging
             logger.debug(
-                f"MCP search_knowledge called with query='{query[:50] if query else ''}...', index_name='{index_name}'"
+                f"MCP search_knowledge called with query='{query[:50] if query else ''}...', "
+                f"index_name='{index_name}', k={k}, max_chars={max_chars_per_result}"
             )
-            logger.debug(f"Available retrievers: {list(retrievers_snapshot.keys())}")
+            logger.debug(f"Available FAISS dbs: {list(dbs_snapshot.keys())}")
 
-            # Determine which retrievers to search
-            if index_name and index_name in retrievers_snapshot:
-                retrievers_to_search = {index_name: retrievers_snapshot[index_name]}
+            # Determine which dbs to search
+            if index_name and index_name in dbs_snapshot:
+                dbs_to_search = {index_name: dbs_snapshot[index_name]}
             else:
-                retrievers_to_search = retrievers_snapshot
+                dbs_to_search = dbs_snapshot
 
-            if not retrievers_to_search:
-                logger.warning("No retrievers available for MCP search_knowledge")
+            if not dbs_to_search:
+                logger.warning("No FAISS dbs available for MCP search_knowledge")
                 return "No knowledge indexes are currently loaded. Please index some documents first."
 
-            for name, retriever in retrievers_to_search.items():
+            for name, db in dbs_to_search.items():
                 try:
                     logger.debug(
-                        f"MCP searching index '{name}' with query: {query[:50] if query else ''}..."
+                        f"MCP searching index '{name}' with query: {query[:50] if query else ''}..., k={k}"
                     )
-                    docs = retriever.invoke(query)
+                    # Use MMR or similarity search based on settings
+                    if use_mmr:
+                        fetch_k = max(k * 4, 20)  # Get more candidates for diversity
+                        docs = db.max_marginal_relevance_search(
+                            query, k=k, fetch_k=fetch_k, lambda_mult=mmr_lambda
+                        )
+                    else:
+                        docs = db.similarity_search(query, k=k)
+
                     logger.debug(f"MCP index '{name}' returned {len(docs)} documents")
                     for doc in docs:
                         source = doc.metadata.get("source", "unknown")
-                        content = (
-                            doc.page_content[:500] + "..."
-                            if len(doc.page_content) > 500
-                            else doc.page_content
-                        )
+                        content = doc.page_content
+                        # Apply truncation if max_chars_per_result > 0
+                        if (
+                            max_chars_per_result > 0
+                            and len(content) > max_chars_per_result
+                        ):
+                            content = content[:max_chars_per_result] + "... (truncated)"
                         results.append(f"[{name}] {source}:\n{content}")
                 except Exception as e:
                     error_msg = str(e)
@@ -835,6 +864,27 @@ class MCPToolAdapter:
                     ),
                     "default": "",
                 },
+                "k": {
+                    "type": "integer",
+                    "description": (
+                        f"Number of results to retrieve (default: {default_k}, max: 50). "
+                        "Increase for broader searches, decrease for focused results."
+                    ),
+                    "default": default_k,
+                    "minimum": 1,
+                    "maximum": 50,
+                },
+                "max_chars_per_result": {
+                    "type": "integer",
+                    "description": (
+                        "Maximum characters per result (default: 500). "
+                        "Use 0 for full content when you need complete code/file content. "
+                        "Increase when results are truncated."
+                    ),
+                    "default": 500,
+                    "minimum": 0,
+                    "maximum": 10000,
+                },
             },
             "required": ["query"],
         }
@@ -866,26 +916,32 @@ class MCPToolAdapter:
             return []
 
         # If indexes are still loading but none available yet, skip for now
-        if not rag.retrievers:
+        if not rag.faiss_dbs:
             if rag._indexes_loading:  # pyright: ignore[reportPrivateUsage]
                 logger.debug("Per-index search tools skipped - indexes still loading")
             return []
 
-        # Filter retrievers based on selected_indexes
+        # Filter FAISS dbs based on selected_indexes
         if selected_indexes is not None:
             if not selected_indexes:
                 return []  # Empty list means no document indexes selected
-            available_retrievers = {
-                name: retriever
-                for name, retriever in rag.retrievers.items()
+            available_dbs = {
+                name: db
+                for name, db in rag.faiss_dbs.items()
                 if name in selected_indexes
             }
-            if not available_retrievers:
+            if not available_dbs:
                 return []
         else:
-            available_retrievers = rag.retrievers
+            available_dbs = rag.faiss_dbs
 
         tools: list[MCPToolDefinition] = []
+
+        # Get settings for default k and MMR
+        app_settings = rag._app_settings or {}  # pyright: ignore[reportPrivateUsage]
+        default_k = app_settings.get("search_results_k", 5)
+        use_mmr = app_settings.get("search_use_mmr", True)
+        mmr_lambda = app_settings.get("search_mmr_lambda", 0.5)
 
         # Get index metadata for descriptions
         index_descriptions: dict[str, str] = {}
@@ -894,7 +950,7 @@ class MCPToolAdapter:
                 name = idx.get("name", "")
                 index_descriptions[name] = idx.get("description", "")
 
-        # Create input schema for per-index search (no index_name param needed)
+        # Create input schema for per-index search with k and max_chars_per_result
         per_index_schema = {
             "type": "object",
             "properties": {
@@ -902,11 +958,31 @@ class MCPToolAdapter:
                     "type": "string",
                     "description": "Search query to find relevant documentation, code, or technical information",
                 },
+                "k": {
+                    "type": "integer",
+                    "description": (
+                        f"Number of results to retrieve (default: {default_k}, max: 50). "
+                        "Increase for broader searches."
+                    ),
+                    "default": default_k,
+                    "minimum": 1,
+                    "maximum": 50,
+                },
+                "max_chars_per_result": {
+                    "type": "integer",
+                    "description": (
+                        "Maximum characters per result (default: 500). "
+                        "Use 0 for full content when results are truncated."
+                    ),
+                    "default": 500,
+                    "minimum": 0,
+                    "maximum": 10000,
+                },
             },
             "required": ["query"],
         }
 
-        for index_name, retriever in available_retrievers.items():
+        for index_name, db in available_dbs.items():
             # Sanitize index name for tool name
             safe_name = re.sub(r"[^a-zA-Z0-9]+", "_", index_name).strip("_").lower()
             tool_name = f"search_{safe_name}"
@@ -914,33 +990,61 @@ class MCPToolAdapter:
             # Build description
             idx_desc = index_descriptions.get(index_name, "")
             tool_description = (
-                f"Search the '{index_name}' index for relevant information."
+                f"Search the '{index_name}' index for relevant information. "
+                "Use 'k' to control results count, 'max_chars_per_result' for content length (0=full)."
             )
             if idx_desc:
                 tool_description += f" {idx_desc}"
 
             # Create executor for this specific index
-            def make_search_func(idx_name: str, idx_retriever):
-                async def search_index(query: str, **_: Any) -> str:
-                    """Execute search on a specific index."""
+            def make_search_func(
+                idx_name: str,
+                idx_db,
+                use_mmr_: bool,
+                mmr_lambda_: float,
+                default_k_: int,
+            ):
+                async def search_index(
+                    query: str,
+                    k: int = default_k_,
+                    max_chars_per_result: int = 500,
+                    **_: Any,
+                ) -> str:
+                    """Execute search on a specific index with dynamic k."""
                     results = []
 
+                    # Clamp parameters
+                    k = max(1, min(50, k))
+                    max_chars_per_result = max(0, min(10000, max_chars_per_result))
+
                     logger.debug(
-                        f"MCP search_{idx_name} called with query='{query[:50] if query else ''}...'"
+                        f"MCP search_{idx_name} called with query='{query[:50] if query else ''}...', k={k}, max_chars={max_chars_per_result}"
                     )
 
                     try:
-                        docs = idx_retriever.invoke(query)
+                        # Use MMR or similarity search based on settings
+                        if use_mmr_:
+                            fetch_k = max(k * 4, 20)
+                            docs = idx_db.max_marginal_relevance_search(
+                                query, k=k, fetch_k=fetch_k, lambda_mult=mmr_lambda_
+                            )
+                        else:
+                            docs = idx_db.similarity_search(query, k=k)
+
                         logger.debug(
                             f"MCP index '{idx_name}' returned {len(docs)} documents"
                         )
                         for doc in docs:
                             source = doc.metadata.get("source", "unknown")
-                            content = (
-                                doc.page_content[:500] + "..."
-                                if len(doc.page_content) > 500
-                                else doc.page_content
-                            )
+                            content = doc.page_content
+                            # Apply truncation if max_chars_per_result > 0
+                            if (
+                                max_chars_per_result > 0
+                                and len(content) > max_chars_per_result
+                            ):
+                                content = (
+                                    content[:max_chars_per_result] + "... (truncated)"
+                                )
                             results.append(f"{source}:\n{content}")
                     except Exception as e:
                         error_msg = str(e)
@@ -975,7 +1079,9 @@ class MCPToolAdapter:
                     description=tool_description,
                     input_schema=per_index_schema,
                     tool_config={"tool_type": "per_index_search", "name": index_name},
-                    execute_fn=make_search_func(index_name, retriever),
+                    execute_fn=make_search_func(
+                        index_name, db, use_mmr, mmr_lambda, default_k
+                    ),
                 )
             )
 
