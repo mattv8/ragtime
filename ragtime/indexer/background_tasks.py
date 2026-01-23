@@ -653,6 +653,15 @@ class BackgroundTaskService:
                     current_version,
                 )
 
+                # Add the assistant response to the conversation
+                await repository.add_message(
+                    conversation_id,
+                    "assistant",
+                    full_response,
+                    tool_calls=tool_calls if tool_calls else None,
+                    events=events if events else None,
+                )
+
                 # Notify completion
                 await task_event_bus.publish(
                     task_id,
@@ -662,15 +671,6 @@ class BackgroundTaskService:
                         "content": full_response,
                         "events": events,
                     },
-                )
-
-                # Add the assistant response to the conversation
-                await repository.add_message(
-                    conversation_id,
-                    "assistant",
-                    full_response,
-                    tool_calls=tool_calls if tool_calls else None,
-                    events=events if events else None,
                 )
 
                 logger.info(f"Background task {task_id} completed successfully")
