@@ -1810,7 +1810,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           </p>
 
           <div className="form-group">
-            <label className="chat-toggle-control" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <div className="chat-toggle-control" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
               <label className="toggle-switch">
                 <input
                   type="checkbox"
@@ -1822,7 +1822,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                 <span className="toggle-slider"></span>
               </label>
               <span>Suppress Tool Call Output</span>
-            </label>
+            </div>
             <p className="form-help">
               When enabled, tool call details (input/output) will not be included in streaming API responses.
               The AI will still use tools internally, but external clients will only see the final answer.

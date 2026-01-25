@@ -41,6 +41,7 @@ from ragtime.indexer.models import (
     IndexStatus,
     ToolCallRecord,
     ToolConfig,
+    ToolOutputMode,
     ToolType,
 )
 
@@ -1444,7 +1445,6 @@ class IndexerRepository:
 
         # Parse tool_output_mode
         tool_output_mode_raw = getattr(prisma_conv, "toolOutputMode", "default")
-        from ragtime.indexer.models import ToolOutputMode
         try:
             tool_output_mode = ToolOutputMode(tool_output_mode_raw)
         except ValueError:
