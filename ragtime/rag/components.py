@@ -166,6 +166,20 @@ The tools accept full Chart.js/DataTables configuration objects, giving you
 complete control over styling, axes, legends, tooltips, and interactivity.
 
 REMEMBER: create_datatable renders beautiful interactive tables. Markdown tables are ugly.
+
+TOOL OUTPUT VISIBILITY (AUTO MODE):
+
+When the conversation's tool output mode is set to "auto", you have control over whether your tool call
+details (queries, code, results) are shown to the user in the response. Consider:
+
+- SHOW tool output when: The user explicitly asks how you got the answer, wants to see the query/code,
+  is debugging or learning, or the raw data is useful context.
+- HIDE tool output when: The user just wants a concise answer, the tool calls are routine lookups,
+  or showing implementation details would clutter the response.
+
+In auto mode, you can indicate your preference by including a hint in your thinking. By default,
+focus on giving the user the most useful response - if they need the technical details, they can
+toggle tool visibility or ask to see the underlying queries.
 """
 
 
