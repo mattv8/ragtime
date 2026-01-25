@@ -397,6 +397,8 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         context_token_budget: data.context_token_budget,
         chunking_use_tokens: data.chunking_use_tokens,
         ivfflat_lists: data.ivfflat_lists,
+        // API Tool Output settings
+        suppress_tool_output: data.suppress_tool_output,
         // MCP settings
         mcp_enabled: data.mcp_enabled,
         mcp_default_route_auth: data.mcp_default_route_auth,
@@ -1795,6 +1797,58 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
               disabled={searchSaving}
             >
               {searchSaving ? 'Saving...' : 'Save Search Configuration'}
+            </button>
+          </div>
+        </fieldset>
+
+        {/* API Output Configuration */}
+        <fieldset>
+          <legend>API Output Configuration</legend>
+          <p className="fieldset-help">
+            Configure how tool call output is handled in OpenAI-compatible API responses (e.g., when using OpenWebUI or other clients).
+            This does not affect MCP or the built-in chat interface.
+          </p>
+
+          <div className="form-group">
+            <label className="chat-toggle-control" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <label className="toggle-switch">
+                <input
+                  type="checkbox"
+                  checked={formData.suppress_tool_output ?? settings?.suppress_tool_output ?? false}
+                  onChange={(e) =>
+                    setFormData({ ...formData, suppress_tool_output: e.target.checked })
+                  }
+                />
+                <span className="toggle-slider"></span>
+              </label>
+              <span>Suppress Tool Call Output</span>
+            </label>
+            <p className="form-help">
+              When enabled, tool call details (input/output) will not be included in streaming API responses.
+              The AI will still use tools internally, but external clients will only see the final answer.
+            </p>
+          </div>
+
+          <div className="form-actions">
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={async () => {
+                try {
+                  const updated = await api.updateSettings({
+                    suppress_tool_output: formData.suppress_tool_output,
+                  });
+                  setFormData((prev) => ({
+                    ...prev,
+                    suppress_tool_output: updated.suppress_tool_output,
+                  }));
+                  setSuccess('API output settings saved.');
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : 'Failed to save settings');
+                }
+              }}
+            >
+              Save API Output Settings
             </button>
           </div>
         </fieldset>

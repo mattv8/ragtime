@@ -676,6 +676,8 @@ class IndexerRepository:
             ivfflat_lists=getattr(settings, "ivfflatLists", 100),
             # Performance configuration
             sequential_index_loading=getattr(settings, "sequentialIndexLoading", False),
+            # API Tool Output configuration
+            suppress_tool_output=getattr(settings, "suppressToolOutput", False),
             # MCP configuration
             mcp_enabled=getattr(settings, "mcpEnabled", False),
             mcp_default_route_auth=getattr(settings, "mcpDefaultRouteAuth", False),
@@ -740,6 +742,8 @@ class IndexerRepository:
             "ivfflat_lists": "ivfflatLists",
             # Performance configuration
             "sequential_index_loading": "sequentialIndexLoading",
+            # API Tool Output configuration
+            "suppress_tool_output": "suppressToolOutput",
             # MCP configuration
             "mcp_enabled": "mcpEnabled",
             "mcp_default_route_auth": "mcpDefaultRouteAuth",
@@ -1305,6 +1309,23 @@ class IndexerRepository:
             logger.warning(f"Failed to update conversation model: {e}")
             return None
 
+    async def update_conversation_tool_output_mode(
+        self, conversation_id: str, tool_output_mode: str
+    ) -> Optional[Conversation]:
+        """Update a conversation's tool output mode."""
+        db = await self._get_db()
+
+        try:
+            updated = await db.conversation.update(
+                where={"id": conversation_id},
+                data={"toolOutputMode": tool_output_mode, "updatedAt": datetime.utcnow()},
+                include={"user": True},
+            )
+            return self._prisma_conversation_to_model(updated)
+        except Exception as e:
+            logger.warning(f"Failed to update conversation tool output mode: {e}")
+            return None
+
     async def truncate_messages(
         self, conversation_id: str, keep_count: int
     ) -> Optional[Conversation]:
@@ -1421,6 +1442,14 @@ class IndexerRepository:
 
         user = getattr(prisma_conv, "user", None)
 
+        # Parse tool_output_mode
+        tool_output_mode_raw = getattr(prisma_conv, "toolOutputMode", "default")
+        from ragtime.indexer.models import ToolOutputMode
+        try:
+            tool_output_mode = ToolOutputMode(tool_output_mode_raw)
+        except ValueError:
+            tool_output_mode = ToolOutputMode.DEFAULT
+
         return Conversation(
             id=prisma_conv.id,
             title=prisma_conv.title,
@@ -1433,6 +1462,7 @@ class IndexerRepository:
             created_at=prisma_conv.createdAt,
             updated_at=prisma_conv.updatedAt,
             active_task_id=getattr(prisma_conv, "activeTaskId", None),
+            tool_output_mode=tool_output_mode,
         )
 
     # -------------------------------------------------------------------------

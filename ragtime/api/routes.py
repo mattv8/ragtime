@@ -198,11 +198,17 @@ async def _stream_response_tokens(user_message, chat_history: list, model: str):
     structured output without filtering. Tool calls are formatted as readable
     text for OpenAI API compatibility with external clients.
 
+    Tool call output can be suppressed via the suppress_tool_output setting.
+
     Args:
         user_message: Message object (can contain multimodal content)
         chat_history: Previous messages
         model: Model name string
     """
+    # Check if tool output should be suppressed
+    app_settings = await get_app_settings()
+    suppress_tool_output = app_settings.get("suppress_tool_output", False)
+
     chunk_id = f"chatcmpl-{int(time.time())}"
 
     def make_chunk(content: str, finish_reason: str | None = None) -> str:
@@ -257,6 +263,10 @@ async def _stream_response_tokens(user_message, chat_history: list, model: str):
                 tool_input = event.get("input", {})
                 current_tool = tool_name
 
+                # Skip tool output if suppressed
+                if suppress_tool_output:
+                    continue
+
                 # Format tool start as readable text
                 input_display = ""
                 if tool_input:
@@ -281,6 +291,10 @@ async def _stream_response_tokens(user_message, chat_history: list, model: str):
                 tool_name = event.get("tool", current_tool or "unknown")
                 tool_output = event.get("output", "")
                 current_tool = None
+
+                # Skip tool output if suppressed
+                if suppress_tool_output:
+                    continue
 
                 output_display = _format_tool_output(str(tool_output))
 

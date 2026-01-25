@@ -171,6 +171,9 @@ model AppSettings {
   // Security
   enableWriteOps    Boolean  @default(false) @map("enable_write_ops")
 
+  // API Tool Output Configuration
+  suppressToolOutput  Boolean  @default(false) @map("suppress_tool_output") // Suppress tool call output in API responses (not MCP)
+
   // MCP Configuration
   mcpEnabled                  Boolean        @default(false) @map("mcp_enabled") // Enable/disable MCP server
   mcpDefaultRouteAuth         Boolean        @default(false) @map("mcp_default_route_auth") // Require auth for default /mcp route
@@ -669,6 +672,14 @@ enum ChatTaskStatus {
   interrupted
 }
 
+/// Tool output mode for conversations
+enum ConversationToolOutputMode {
+  default // Use global setting
+  show    // Always show tool output
+  hide    // Always hide tool output
+  auto    // Let AI decide based on relevance
+}
+
 /// A chat conversation with the RAG assistant
 model Conversation {
   id        String    @id @default(uuid())
@@ -685,6 +696,9 @@ model Conversation {
 
   // Token tracking for context management
   totalTokens Int     @default(0) @map("total_tokens")
+
+  // Tool output mode for this conversation
+  toolOutputMode ConversationToolOutputMode @default(default) @map("tool_output_mode")
 
   // Background task tracking - active task for this conversation
   activeTaskId String? @map("active_task_id")

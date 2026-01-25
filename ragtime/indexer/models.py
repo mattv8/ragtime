@@ -18,6 +18,15 @@ class IndexStatus(str, Enum):
     FAILED = "failed"
 
 
+class ToolOutputMode(str, Enum):
+    """Tool output mode for conversations."""
+
+    DEFAULT = "default"  # Use global setting
+    SHOW = "show"        # Always show tool output
+    HIDE = "hide"        # Always hide tool output
+    AUTO = "auto"        # Let AI decide based on relevance
+
+
 class IndexConfig(BaseModel):
     """Configuration for creating an index."""
 
@@ -510,6 +519,12 @@ class AppSettings(BaseModel):
         description="If True, load FAISS indexes one at a time (smallest first) to reduce peak memory. If False (default), load all indexes in parallel for faster startup.",
     )
 
+    # API Tool Output Configuration
+    suppress_tool_output: bool = Field(
+        default=False,
+        description="If True, suppress tool call output in OpenAI-compatible API responses. Does not affect MCP or internal chat UI.",
+    )
+
     # MCP Configuration
     mcp_enabled: bool = Field(
         default=False,
@@ -797,6 +812,11 @@ class UpdateSettingsRequest(BaseModel):
     )
     # Performance / Memory configuration
     sequential_index_loading: Optional[bool] = None
+    # API Tool Output configuration
+    suppress_tool_output: Optional[bool] = Field(
+        default=None,
+        description="If True, suppress tool call output in API responses (not MCP).",
+    )
     # MCP configuration
     mcp_enabled: Optional[bool] = None
     mcp_default_route_auth: Optional[bool] = None
@@ -1632,6 +1652,10 @@ class Conversation(BaseModel):
     active_task_id: Optional[str] = Field(
         default=None, description="ID of currently running background task"
     )
+    tool_output_mode: ToolOutputMode = Field(
+        default=ToolOutputMode.DEFAULT,
+        description="Per-conversation tool output preference: default (use global), show (always), hide (always), auto (AI decides)",
+    )
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -1648,6 +1672,7 @@ class ConversationResponse(BaseModel):
     messages: List[ChatMessage]
     total_tokens: int
     active_task_id: Optional[str] = None
+    tool_output_mode: ToolOutputMode = Field(default=ToolOutputMode.DEFAULT)
     created_at: datetime
     updated_at: datetime
 

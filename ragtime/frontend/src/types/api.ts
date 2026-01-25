@@ -472,6 +472,8 @@ export interface AppSettings {
   embedding_config_hash?: string | null;
   // Performance / Memory Configuration
   sequential_index_loading: boolean;
+  // API Tool Output Configuration
+  suppress_tool_output: boolean;
   // MCP Configuration
   mcp_enabled: boolean;
   mcp_default_route_auth: boolean;
@@ -528,6 +530,8 @@ export interface UpdateSettingsRequest {
   ivfflat_lists?: number;
   // Performance / Memory settings
   sequential_index_loading?: boolean;
+  // API Tool Output settings
+  suppress_tool_output?: boolean;
   // MCP settings
   mcp_enabled?: boolean;
   mcp_default_route_auth?: boolean;
@@ -1297,6 +1301,8 @@ export interface StreamEvent {
   error?: string;          // For 'error' events
 }
 
+export type ToolOutputMode = 'default' | 'show' | 'hide' | 'auto';
+
 export interface Conversation {
   id: string;
   title: string;
@@ -1307,6 +1313,7 @@ export interface Conversation {
   messages: ChatMessage[];
   total_tokens: number;
   active_task_id: string | null;  // ID of currently running background task
+  tool_output_mode: ToolOutputMode;  // Per-conversation tool output preference
   created_at: string;
   updated_at: string;
 }
