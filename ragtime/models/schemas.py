@@ -60,6 +60,25 @@ class Message(BaseModel):
         return " ".join(text_parts)
 
 
+class AgentOptions(BaseModel):
+    """Agent-controllable options that can be set per-request.
+
+    These options allow the AI agent (or API caller) to control behavior
+    for individual requests, overriding global settings.
+
+    Designed for extensibility - add new fields here as needed.
+    """
+
+    suppress_tool_output: Optional[bool] = Field(
+        default=None,
+        description="Suppress tool call details in streaming response",
+    )
+    # Future options can be added here, e.g.:
+    # max_tool_iterations: Optional[int] = Field(default=None)
+    # preferred_tools: Optional[List[str]] = Field(default=None)
+    # response_format: Optional[str] = Field(default=None)
+
+
 class ChatCompletionRequest(BaseModel):
     """OpenAI-compatible chat completion request."""
 
@@ -72,6 +91,10 @@ class ChatCompletionRequest(BaseModel):
     frequency_penalty: Optional[float] = Field(default=None, ge=-2, le=2)
     presence_penalty: Optional[float] = Field(default=None, ge=-2, le=2)
     stop: Optional[List[str]] = Field(default=None)
+    agent_options: Optional[AgentOptions] = Field(
+        default=None,
+        description="Agent-controllable options for this request",
+    )
 
 
 class ChatChoice(BaseModel):

@@ -5927,6 +5927,7 @@ def _to_conversation_response(conv: Conversation) -> ConversationResponse:
         messages=conv.messages,
         total_tokens=conv.total_tokens,
         active_task_id=conv.active_task_id,
+        tool_output_mode=conv.tool_output_mode,
         created_at=conv.created_at,
         updated_at=conv.updated_at,
     )
@@ -6038,6 +6039,33 @@ async def update_conversation_model(
         raise HTTPException(status_code=400, detail="Model is required")
 
     conv = await repository.update_conversation_model(conversation_id, model)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    return _to_conversation_response(conv)
+
+
+@router.patch(
+    "/conversations/{conversation_id}/tool-output-mode", response_model=ConversationResponse
+)
+async def update_conversation_tool_output_mode(
+    conversation_id: str, body: dict, user: User = Depends(get_current_user)
+):
+    """Update a conversation's tool output mode. Users can only update their own conversations."""
+    has_access = await repository.check_conversation_access(
+        conversation_id, user.id, is_admin=(user.role == "admin")
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    mode = body.get("tool_output_mode", "").strip()
+    if mode not in ["default", "show", "hide", "auto"]:
+        raise HTTPException(
+            status_code=400,
+            detail="tool_output_mode must be 'default', 'show', 'hide', or 'auto'"
+        )
+
+    conv = await repository.update_conversation_tool_output_mode(conversation_id, mode)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
 

@@ -1,6 +1,7 @@
 """Request and response models."""
 
 from .schemas import (
+    AgentOptions,
     ChatChoice,
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -14,6 +15,7 @@ from .schemas import (
 )
 
 __all__ = [
+    "AgentOptions",
     "Message",
     "ChatCompletionRequest",
     "ChatCompletionResponse",

@@ -89,6 +89,8 @@ class SettingsCache:
                 "ivfflat_lists": prisma_settings.ivfflatLists,
                 # Performance / Memory configuration
                 "sequential_index_loading": prisma_settings.sequentialIndexLoading,
+                # API Tool Output configuration
+                "suppress_tool_output": getattr(prisma_settings, "suppressToolOutput", False),
                 # LLM settings
                 "llm_provider": prisma_settings.llmProvider,
                 "llm_model": prisma_settings.llmModel,
@@ -138,6 +140,8 @@ class SettingsCache:
                 "ivfflat_lists": 100,
                 # Performance / Memory configuration
                 "sequential_index_loading": False,
+                # API Tool Output configuration
+                "suppress_tool_output": False,
                 # LLM settings
                 "llm_provider": "openai",
                 "llm_model": "gpt-4-turbo",

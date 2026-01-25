@@ -15,6 +15,7 @@ from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.logging import get_logger
 from ragtime.models import (
+    AgentOptions,
     ChatChoice,
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -166,7 +167,12 @@ async def chat_completions(request: ChatCompletionRequest):
     # Handle streaming response - use true LLM streaming
     if request.stream:
         return StreamingResponse(
-            _stream_response_tokens(user_message, chat_history, request.model),
+            _stream_response_tokens(
+                user_message,
+                chat_history,
+                request.model,
+                agent_options=request.agent_options,
+            ),
             media_type="text/event-stream",
         )
 
@@ -190,7 +196,12 @@ async def chat_completions(request: ChatCompletionRequest):
     )
 
 
-async def _stream_response_tokens(user_message, chat_history: list, model: str):
+async def _stream_response_tokens(
+    user_message,
+    chat_history: list,
+    model: str,
+    agent_options: Optional[AgentOptions] = None,
+):
     """
     Generate true streaming response by yielding tokens from the LLM.
 
@@ -198,11 +209,24 @@ async def _stream_response_tokens(user_message, chat_history: list, model: str):
     structured output without filtering. Tool calls are formatted as readable
     text for OpenAI API compatibility with external clients.
 
+    Tool call output can be suppressed via the suppress_tool_output setting,
+    or overridden per-request via agent_options.
+
     Args:
         user_message: Message object (can contain multimodal content)
         chat_history: Previous messages
         model: Model name string
+        agent_options: Optional agent-controllable options for this request
     """
+    # Load global settings
+    app_settings = await get_app_settings()
+
+    # Resolve suppress_tool_output: request override > global setting > default
+    if agent_options and agent_options.suppress_tool_output is not None:
+        suppress_tool_output = agent_options.suppress_tool_output
+    else:
+        suppress_tool_output = app_settings.get("suppress_tool_output", False)
+
     chunk_id = f"chatcmpl-{int(time.time())}"
 
     def make_chunk(content: str, finish_reason: str | None = None) -> str:
@@ -257,6 +281,10 @@ async def _stream_response_tokens(user_message, chat_history: list, model: str):
                 tool_input = event.get("input", {})
                 current_tool = tool_name
 
+                # Skip tool output if suppressed
+                if suppress_tool_output:
+                    continue
+
                 # Format tool start as readable text
                 input_display = ""
                 if tool_input:
@@ -281,6 +309,10 @@ async def _stream_response_tokens(user_message, chat_history: list, model: str):
                 tool_name = event.get("tool", current_tool or "unknown")
                 tool_output = event.get("output", "")
                 current_tool = None
+
+                # Skip tool output if suppressed
+                if suppress_tool_output:
+                    continue
 
                 output_display = _format_tool_output(str(tool_output))
 

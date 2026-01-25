@@ -1282,6 +1282,18 @@ export const api = {
   },
 
   /**
+   * Update a conversation's tool output mode
+   */
+  async updateConversationToolOutputMode(conversationId: string, toolOutputMode: import('@/types').ToolOutputMode): Promise<Conversation> {
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/tool-output-mode`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tool_output_mode: toolOutputMode }),
+    });
+    return handleResponse<Conversation>(response);
+  },
+
+  /**
    * Send a message to a conversation (non-streaming)
    */
   async sendMessage(conversationId: string, request: SendMessageRequest): Promise<{ message: ChatMessage; conversation: Conversation }> {
