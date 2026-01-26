@@ -1586,28 +1586,23 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
     stopTaskStreaming();
     setActiveTask(null);
     setInterruptedTask(null);
-    setIsStreaming(false);
+    // Don't modify isStreaming yet to avoid UI flash/loss of content during refresh
 
     // Refresh conversation to get current state (including partial messages)
-    // Do NOT clear streaming state until after refresh completes
     if (activeConversation) {
       try {
         const updated = await api.getConversation(activeConversation.id);
         setActiveConversation(updated);
         setConversations(prev => prev.map(c => c.id === updated.id ? updated : c));
-        // Only clear streaming state after successful refresh
-        setStreamingContent('');
-        setStreamingEvents([]);
-      } catch {
-        // Ignore refresh errors, but still clear streaming state
-        setStreamingContent('');
-        setStreamingEvents([]);
+      } catch (err) {
+        console.error('Failed to update conversation after stop:', err);
       }
-    } else {
-      // No active conversation, safe to clear streaming state
-      setStreamingContent('');
-      setStreamingEvents([]);
     }
+
+    // Always clear streaming state at the end
+    setStreamingContent('');
+    setStreamingEvents([]);
+    setIsStreaming(false);
   };
 
   const resendMessage = () => {

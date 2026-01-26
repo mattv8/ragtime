@@ -2132,7 +2132,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
             </p>
           </div>
 
-          <div className="form-actions">
+          <div className="form-actions" style={{ borderTop: 'none', paddingTop: 0 }}>
             <button
               type="button"
               className="btn btn-primary"
