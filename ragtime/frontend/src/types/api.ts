@@ -449,6 +449,7 @@ export interface AppSettings {
   // LLM Configuration (for chat/RAG responses)
   llm_provider: 'openai' | 'anthropic' | 'ollama';
   llm_model: string;
+  llm_max_tokens?: number;
   // Ollama LLM connection settings (separate from embedding Ollama)
   llm_ollama_protocol: 'http' | 'https';
   llm_ollama_host: string;
@@ -510,6 +511,7 @@ export interface UpdateSettingsRequest {
   // LLM settings
   llm_provider?: 'openai' | 'anthropic' | 'ollama';
   llm_model?: string;
+  llm_max_tokens?: number;
   // LLM Ollama connection settings
   llm_ollama_protocol?: 'http' | 'https';
   llm_ollama_host?: string;

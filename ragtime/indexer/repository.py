@@ -646,6 +646,7 @@ class IndexerRepository:
             # LLM settings
             llm_provider=settings.llmProvider,
             llm_model=settings.llmModel,
+            llm_max_tokens=getattr(settings, "llmMaxTokens", 4096),
             openai_api_key=openai_key,
             anthropic_api_key=anthropic_key,
             allowed_chat_models=settings.allowedChatModels or [],
@@ -716,6 +717,7 @@ class IndexerRepository:
             # LLM settings
             "llm_provider": "llmProvider",
             "llm_model": "llmModel",
+            "llm_max_tokens": "llmMaxTokens",
             "openai_api_key": "openaiApiKey",
             "anthropic_api_key": "anthropicApiKey",
             "allowed_chat_models": "allowedChatModels",
@@ -1319,7 +1321,10 @@ class IndexerRepository:
         try:
             updated = await db.conversation.update(
                 where={"id": conversation_id},
-                data={"toolOutputMode": tool_output_mode, "updatedAt": datetime.utcnow()},
+                data={
+                    "toolOutputMode": tool_output_mode,
+                    "updatedAt": datetime.utcnow(),
+                },
                 include={"user": True},
             )
             return self._prisma_conversation_to_model(updated)

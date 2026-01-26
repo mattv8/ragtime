@@ -135,6 +135,7 @@ model AppSettings {
   // LLM Configuration (for chat/RAG responses)
   llmProvider       String   @default("openai") @map("llm_provider") // "openai" or "anthropic"
   llmModel          String   @default("gpt-4-turbo") @map("llm_model")
+  llmMaxTokens      Int      @default(4096) @map("llm_max_tokens") // Max output tokens
   openaiApiKey      String   @default("") @map("openai_api_key")
   anthropicApiKey   String   @default("") @map("anthropic_api_key")
   allowedChatModels String[] @default([]) @map("allowed_chat_models") // Empty = all models allowed

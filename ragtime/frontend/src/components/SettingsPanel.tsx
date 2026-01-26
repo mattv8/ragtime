@@ -1143,23 +1143,65 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
             </p>
           </div>
 
-          <div className="form-group">
-            <label>Max Tool Iterations</label>
-            <input
-              type="number"
-              min={1}
-              max={50}
-              value={formData.max_iterations ?? 15}
-              onChange={(e) =>
-                setFormData({
-                  ...formData,
-                  max_iterations: Math.max(1, Math.min(50, parseInt(e.target.value, 10) || 1)),
-                })
-              }
-            />
-            <p className="field-help">
-              Maximum number of agent tool-calling steps before stopping. Lower to keep runs short; higher to allow deeper reasoning.
-            </p>
+          <div className="form-row">
+            <div className="form-group" style={{ flex: 2 }}>
+              <label>Max Output Tokens</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  style={{ flex: 1 }}
+                  value={(() => {
+                    const val = formData.llm_max_tokens || 4096;
+                    if (val >= 100000) return 100;
+                    const min = 500;
+                    const max = 100000;
+                    const scale = Math.log(max / min);
+                    return (Math.log(val / min) / scale) * 100;
+                  })()}
+                  onChange={(e) => {
+                    const slider = parseInt(e.target.value, 10);
+                    const min = 500;
+                    const max = 100000;
+                    let val;
+                    if (slider === 100) {
+                       val = max;
+                    } else {
+                      const scale = Math.log(max / min);
+                      val = Math.round(min * Math.exp((slider / 100) * scale));
+                    }
+                    setFormData({ ...formData, llm_max_tokens: val });
+                  }}
+                />
+                <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'monospace' }}>
+                  {formData.llm_max_tokens && formData.llm_max_tokens >= 100000 ? 'LLM Max' : (formData.llm_max_tokens || 4096).toLocaleString()}
+                </span>
+              </div>
+              <p className="field-help">
+                Limit the length of the model's response.
+              </p>
+            </div>
+
+            <div className="form-group" style={{ flex: 1 }}>
+              <label>Max Tool Iterations</label>
+              <input
+                type="number"
+                min={1}
+                max={50}
+                value={formData.max_iterations ?? 15}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    max_iterations: Math.max(1, Math.min(50, parseInt(e.target.value, 10) || 1)),
+                  })
+                }
+              />
+              <p className="field-help">
+                Maximum number of agent tool-calling steps.
+              </p>
+            </div>
           </div>
 
           <div className="form-group" style={{ marginTop: '1rem' }}>

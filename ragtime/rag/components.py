@@ -558,6 +558,7 @@ class RAGComponents:
         assert self._app_settings is not None  # Set by initialize()
         provider = self._app_settings.get("llm_provider", "openai").lower()
         model = self._app_settings.get("llm_model", "gpt-4-turbo")
+        max_tokens = self._app_settings.get("llm_max_tokens", 4096)
 
         if provider == "ollama":
             try:
@@ -570,6 +571,7 @@ class RAGComponents:
                     model=model,
                     base_url=base_url,
                     temperature=0,
+                    num_predict=max_tokens,
                 )
                 logger.info(f"Using Ollama LLM: {model} at {base_url}")
                 return
@@ -584,6 +586,7 @@ class RAGComponents:
                         model=model,
                         temperature=0,
                         api_key=api_key,
+                        max_tokens=max_tokens,
                     )
                     logger.info(f"Using Anthropic LLM: {model}")
                     return
@@ -610,6 +613,7 @@ class RAGComponents:
             temperature=0,
             streaming=True,
             api_key=api_key,
+            max_tokens=max_tokens,
         )
         logger.info(f"Using OpenAI LLM: {self.llm.model_name}")
 

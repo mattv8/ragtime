@@ -22,9 +22,9 @@ class ToolOutputMode(str, Enum):
     """Tool output mode for conversations."""
 
     DEFAULT = "default"  # Use global setting
-    SHOW = "show"        # Always show tool output
-    HIDE = "hide"        # Always hide tool output
-    AUTO = "auto"        # Let AI decide based on relevance
+    SHOW = "show"  # Always show tool output
+    HIDE = "hide"  # Always hide tool output
+    AUTO = "auto"  # Let AI decide based on relevance
 
 
 class IndexConfig(BaseModel):
@@ -437,6 +437,11 @@ class AppSettings(BaseModel):
         default="gpt-4-turbo",
         description="LLM model name (e.g., 'gpt-4-turbo' for OpenAI, 'claude-3-sonnet-20240229' for Anthropic, 'llama3' for Ollama)",
     )
+    llm_max_tokens: int = Field(
+        default=4096,
+        ge=1,
+        description="Maximum number of tokens to generate in LLM response",
+    )
     # LLM Ollama connection settings (separate from embedding Ollama)
     llm_ollama_protocol: str = Field(
         default="http", description="Ollama LLM server protocol: 'http' or 'https'"
@@ -764,6 +769,7 @@ class UpdateSettingsRequest(BaseModel):
     # LLM settings
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
+    llm_max_tokens: Optional[int] = Field(default=None, ge=1)
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     allowed_chat_models: Optional[List[str]] = None

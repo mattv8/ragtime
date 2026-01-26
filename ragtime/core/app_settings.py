@@ -90,10 +90,13 @@ class SettingsCache:
                 # Performance / Memory configuration
                 "sequential_index_loading": prisma_settings.sequentialIndexLoading,
                 # API Tool Output configuration
-                "suppress_tool_output": getattr(prisma_settings, "suppressToolOutput", False),
+                "suppress_tool_output": getattr(
+                    prisma_settings, "suppressToolOutput", False
+                ),
                 # LLM settings
                 "llm_provider": prisma_settings.llmProvider,
                 "llm_model": prisma_settings.llmModel,
+                "llm_max_tokens": getattr(prisma_settings, "llmMaxTokens", 4096),
                 "openai_api_key": openai_key,
                 "anthropic_api_key": anthropic_key,
                 "allowed_chat_models": prisma_settings.allowedChatModels or [],
