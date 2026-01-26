@@ -136,10 +136,16 @@ async def get_token_data(
 
 # Patterns that indicate potentially dangerous SQL
 _DANGEROUS_SQL_PATTERN_STRINGS = [
-    r"\b(DROP|DELETE|TRUNCATE|ALTER|CREATE|INSERT|UPDATE)\b",
-    r"\b(GRANT|REVOKE)\b",
+    r"\bDROP\s+(?:IF\s+EXISTS\s+)?(?:TABLE|DATABASE|SCHEMA|USER|ROLE|VIEW|INDEX|TRIGGER|FUNCTION|PROCEDURE|SEQUENCE|EXTENSION|DOMAIN|TYPE)\b",
+    r"\bALTER\s+(?:IF\s+EXISTS\s+)?(?:TABLE|DATABASE|SCHEMA|USER|ROLE|VIEW|INDEX|TRIGGER|FUNCTION|PROCEDURE|SEQUENCE|EXTENSION|DOMAIN|TYPE)\b",
+    r"\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMPORARY\s+)?(?:TABLE|DATABASE|SCHEMA|USER|ROLE|VIEW|INDEX|TRIGGER|FUNCTION|PROCEDURE|SEQUENCE|UNIQUE\s+INDEX|EXTENSION|DOMAIN|TYPE)\b",
+    r"\bTRUNCATE\s+(?:TABLE\s+)?",
+    r"\bINSERT\s+INTO\b",
+    r"\bUPDATE\s+[^;&|\n]+\s+SET\b",
+    r"\bDELETE\s+FROM\b",
+    r"\bGRANT\s+.*\s+TO\b",
+    r"\bREVOKE\s+.*\s+FROM\b",
     r";\s*--",  # Comment injection
-    r";\s*(DROP|DELETE|UPDATE|INSERT)",  # Chained destructive commands
     r"INTO\s+OUTFILE",
     r"LOAD_FILE",
     r"pg_read_file",
