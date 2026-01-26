@@ -773,7 +773,7 @@ class UpdateSettingsRequest(BaseModel):
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     allowed_chat_models: Optional[List[str]] = None
-    max_iterations: Optional[int] = Field(default=None, ge=1, le=50)
+    max_iterations: Optional[int] = Field(default=None, ge=1, le=100)
     # Legacy tool settings (for backward compatibility)
     enabled_tools: Optional[List[str]] = None
     odoo_container: Optional[str] = None

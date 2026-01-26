@@ -1186,18 +1186,25 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
 
             <div className="form-group" style={{ flex: 1 }}>
               <label>Max Tool Iterations</label>
-              <input
-                type="number"
-                min={1}
-                max={50}
-                value={formData.max_iterations ?? 15}
-                onChange={(e) =>
-                  setFormData({
-                    ...formData,
-                    max_iterations: Math.max(1, Math.min(50, parseInt(e.target.value, 10) || 1)),
-                  })
-                }
-              />
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <input
+                  type="range"
+                  min="1"
+                  max="100"
+                  step="1"
+                  style={{ flex: 1 }}
+                  value={formData.max_iterations ?? 30}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      max_iterations: parseInt(e.target.value, 10),
+                    })
+                  }
+                />
+                <span style={{ minWidth: '30px', textAlign: 'right', fontFamily: 'monospace' }}>
+                  {formData.max_iterations ?? 30}
+                </span>
+              </div>
               <p className="field-help">
                 Maximum number of agent tool-calling steps.
               </p>

@@ -153,7 +153,7 @@ model AppSettings {
   // Query Limits
   maxQueryResults   Int      @default(100) @map("max_query_results")
   queryTimeout      Int      @default(30) @map("query_timeout")
-  maxIterations     Int      @default(15) @map("max_iterations") // Agent iteration limit
+  maxIterations     Int      @default(30) @map("max_iterations") // Agent iteration limit
 
   // Search Configuration
   searchResultsK       Int      @default(5) @map("search_results_k") // Number of results per vector search (k)
