@@ -562,35 +562,6 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
     }
   }, []);
 
-  // Special rendering for chart tool - show chart inline without collapsible
-  if (chartData) {
-    return (
-      <div className="tool-call tool-call-chart tool-call-complete">
-        <ChartDisplay chartData={chartData} />
-      </div>
-    );
-  }
-
-  // Special rendering for datatable tool - show table inline without collapsible
-  if (datatableData) {
-    return (
-      <div className="tool-call tool-call-datatable tool-call-complete">
-        <DataTableDisplay tableData={datatableData} />
-      </div>
-    );
-  }
-
-  // Determine the status icon
-  const getStatusIcon = () => {
-    if (toolCall.status === 'running') {
-      return <Loader2 size={14} className="spinning" />;
-    }
-    if (isFailed && isVisualizationTool) {
-      return <AlertCircle size={14} className="tool-call-error-icon" />;
-    }
-    return <Check size={14} />;
-  };
-
   // Handle retry for visualization tools
   const handleRetry = useCallback(async (e: React.MouseEvent) => {
     e.preventDefault();
@@ -661,6 +632,35 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
       setIsRetrying(false);
     }
   }, [conversationId, siblingEvents, toolCall.tool, onRetrySuccess]);
+
+  // Special rendering for chart tool - show chart inline without collapsible
+  if (chartData) {
+    return (
+      <div className="tool-call tool-call-chart tool-call-complete">
+        <ChartDisplay chartData={chartData} />
+      </div>
+    );
+  }
+
+  // Special rendering for datatable tool - show table inline without collapsible
+  if (datatableData) {
+    return (
+      <div className="tool-call tool-call-datatable tool-call-complete">
+        <DataTableDisplay tableData={datatableData} />
+      </div>
+    );
+  }
+
+  // Determine the status icon
+  const getStatusIcon = () => {
+    if (toolCall.status === 'running') {
+      return <Loader2 size={14} className="spinning" />;
+    }
+    if (isFailed && isVisualizationTool) {
+      return <AlertCircle size={14} className="tool-call-error-icon" />;
+    }
+    return <Check size={14} />;
+  };
 
   return (
     <div className={`tool-call tool-call-${toolCall.status}${isFailed ? ' tool-call-failed' : ''}`}>
