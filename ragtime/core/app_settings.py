@@ -90,8 +90,8 @@ class SettingsCache:
                 # Performance / Memory configuration
                 "sequential_index_loading": prisma_settings.sequentialIndexLoading,
                 # API Tool Output configuration
-                "suppress_tool_output": getattr(
-                    prisma_settings, "suppressToolOutput", False
+                "tool_output_mode": getattr(
+                    prisma_settings, "toolOutputMode", "default"
                 ),
                 # LLM settings
                 "llm_provider": prisma_settings.llmProvider,
@@ -144,7 +144,7 @@ class SettingsCache:
                 # Performance / Memory configuration
                 "sequential_index_loading": False,
                 # API Tool Output configuration
-                "suppress_tool_output": False,
+                "tool_output_mode": "default",
                 # LLM settings
                 "llm_provider": "openai",
                 "llm_model": "gpt-4-turbo",

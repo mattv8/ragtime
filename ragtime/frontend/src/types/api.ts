@@ -474,7 +474,7 @@ export interface AppSettings {
   // Performance / Memory Configuration
   sequential_index_loading: boolean;
   // API Tool Output Configuration
-  suppress_tool_output: boolean;
+  tool_output_mode: ToolOutputMode;
   // MCP Configuration
   mcp_enabled: boolean;
   mcp_default_route_auth: boolean;
@@ -533,7 +533,7 @@ export interface UpdateSettingsRequest {
   // Performance / Memory settings
   sequential_index_loading?: boolean;
   // API Tool Output settings
-  suppress_tool_output?: boolean;
+  tool_output_mode?: ToolOutputMode;
   // MCP settings
   mcp_enabled?: boolean;
   mcp_default_route_auth?: boolean;

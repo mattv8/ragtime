@@ -69,9 +69,9 @@ class AgentOptions(BaseModel):
     Designed for extensibility - add new fields here as needed.
     """
 
-    suppress_tool_output: Optional[bool] = Field(
+    tool_output_mode: Optional[str] = Field(
         default=None,
-        description="Suppress tool call details in streaming response",
+        description="Tool call output mode: 'default', 'show', 'hide', or 'auto'",
     )
     # Future options can be added here, e.g.:
     # max_tool_iterations: Optional[int] = Field(default=None)

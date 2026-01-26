@@ -9,7 +9,6 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
-
 from ragtime import __version__
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings
@@ -209,7 +208,7 @@ async def _stream_response_tokens(
     structured output without filtering. Tool calls are formatted as readable
     text for OpenAI API compatibility with external clients.
 
-    Tool call output can be suppressed via the suppress_tool_output setting,
+    Tool call output can be suppressed via the tool_output_mode setting,
     or overridden per-request via agent_options.
 
     Args:
@@ -221,11 +220,16 @@ async def _stream_response_tokens(
     # Load global settings
     app_settings = await get_app_settings()
 
-    # Resolve suppress_tool_output: request override > global setting > default
-    if agent_options and agent_options.suppress_tool_output is not None:
-        suppress_tool_output = agent_options.suppress_tool_output
+    # Resolve tool_output_mode: request override > global setting > default
+    if agent_options and agent_options.tool_output_mode is not None:
+        tool_output_mode = agent_options.tool_output_mode
     else:
-        suppress_tool_output = app_settings.get("suppress_tool_output", False)
+        tool_output_mode = app_settings.get("tool_output_mode", "default")
+
+    # Determine if we should suppress output
+    # 'hide' -> suppress
+    # 'default', 'show', 'auto' -> show (do not suppress)
+    suppress_tool_output = tool_output_mode == "hide"
 
     chunk_id = f"chatcmpl-{int(time.time())}"
 

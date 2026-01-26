@@ -525,9 +525,9 @@ class AppSettings(BaseModel):
     )
 
     # API Tool Output Configuration
-    suppress_tool_output: bool = Field(
-        default=False,
-        description="If True, suppress tool call output in OpenAI-compatible API responses. Does not affect MCP or internal chat UI.",
+    tool_output_mode: ToolOutputMode = Field(
+        default=ToolOutputMode.DEFAULT,
+        description="Tool output visibility mode: 'default'/'show' (always show), 'hide' (suppress), 'auto' (AI decides). Does not affect MCP or internal chat UI.",
     )
 
     # MCP Configuration
@@ -819,9 +819,9 @@ class UpdateSettingsRequest(BaseModel):
     # Performance / Memory configuration
     sequential_index_loading: Optional[bool] = None
     # API Tool Output configuration
-    suppress_tool_output: Optional[bool] = Field(
+    tool_output_mode: Optional[str] = Field(
         default=None,
-        description="If True, suppress tool call output in API responses (not MCP).",
+        description="Tool output mode: 'default', 'show', 'hide', or 'auto'.",
     )
     # MCP configuration
     mcp_enabled: Optional[bool] = None

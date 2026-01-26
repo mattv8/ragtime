@@ -24,21 +24,13 @@ from pydantic import BaseModel, Field
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.logging import get_logger
-from ragtime.core.security import (
-    _SSH_ENV_VAR_RE,
-    sanitize_output,
-    validate_odoo_code,
-    validate_sql_query,
-    validate_ssh_command,
-)
+from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
+                                   validate_odoo_code, validate_sql_query,
+                                   validate_ssh_command)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (
-    SSHConfig,
-    build_ssh_tunnel_config,
-    execute_ssh_command,
-    expand_env_vars_via_ssh,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.ssh import (SSHConfig, build_ssh_tunnel_config,
+                              execute_ssh_command, expand_env_vars_via_ssh,
+                              ssh_tunnel_config_from_dict)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
@@ -47,11 +39,9 @@ from ragtime.tools import get_all_tools, get_enabled_tools
 from ragtime.tools.chart import create_chart_tool
 from ragtime.tools.datatable import create_datatable_tool
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (
-    _is_shallow_repository,
-    create_aggregate_git_history_tool,
-    create_per_index_git_history_tool,
-)
+from ragtime.tools.git_history import (_is_shallow_repository,
+                                       create_aggregate_git_history_tool,
+                                       create_per_index_git_history_tool)
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
@@ -90,7 +80,7 @@ def get_process_memory_bytes() -> int:
 # 2. build_index_system_prompt() - Dynamic: lists available knowledge indexes
 # 3. build_tool_system_prompt() - Dynamic: lists available query/action tools
 # 4. UI_SYSTEM_PROMPT_ADDITION - (UI only) Visualization tool instructions
-# 5. TOOL_OUTPUT_VISIBILITY_PROMPT - (Conditional) When suppress_tool_output is enabled
+# 5. TOOL_OUTPUT_VISIBILITY_PROMPT - (Conditional) When tool_output_mode is 'auto'
 # =============================================================================
 
 BASE_SYSTEM_PROMPT = """You are a technical assistant with access to indexed documentation and live system connections.
@@ -132,6 +122,12 @@ Choose the right tool based on what information you need:
 - Show queries/code only if explicitly requested
 - Be concise but thorough"""
 
+# Reminder prepended to user message - adjacent placement is more effective than distant system prompt
+# Contains the critical anti-hallucination instructions that need to be fresh in context
+TOOL_USAGE_REMINDER = """[CRITICAL: Use the tool calling API. Do NOT write fake tool invocations or results as text. If you catch yourself writing "(I used X..." or "Result:", STOP - you are hallucinating. Make actual tool calls and wait for real responses.]
+
+"""
+
 
 # UI-only addition: visualization tools (create_chart, create_datatable)
 UI_SYSTEM_PROMPT_ADDITION = """
@@ -169,7 +165,7 @@ You have visualization tools for rich, interactive displays. Use them proactivel
 """
 
 
-# Conditional: tool output visibility control (when suppress_tool_output is enabled)
+# Conditional: tool output visibility control (when tool_output_mode is 'auto')
 TOOL_OUTPUT_VISIBILITY_PROMPT = """
 
 ## TOOL OUTPUT VISIBILITY
@@ -491,7 +487,8 @@ class RAGComponents:
             + UI_SYSTEM_PROMPT_ADDITION
         )
 
-        if self._app_settings.get("suppress_tool_output", False):
+        # Add visibility prompt when mode is 'auto' (AI decides)
+        if self._app_settings.get("tool_output_mode", "default") == "auto":
             self._system_prompt_ui += TOOL_OUTPUT_VISIBILITY_PROMPT
 
         # Initialize LLM based on provider from database settings
@@ -2520,16 +2517,28 @@ except Exception as e:
 
         return context, sources
 
-    def _build_augmented_input(self, user_message: str) -> str:
-        """Build the input for the agent.
+    def _prepend_reminder_to_content(self, content: Any) -> Any:
+        """Prepend tool usage reminder to content (string or multimodal list).
 
-        The agent has access to search_knowledge tool to search documentation
-        on-demand, so we just pass through the user message.
+        For string content: prepends the reminder text.
+        For multimodal content: prepends a text block with the reminder.
+
+        Args:
+            content: String or list of content parts (LangChain format)
 
         Returns:
-            The user message (unmodified).
+            Content with reminder prepended
         """
-        return user_message
+        if isinstance(content, str):
+            return f"{TOOL_USAGE_REMINDER}{content}"
+
+        if isinstance(content, list):
+            # Prepend reminder as first text block
+            reminder_block = {"type": "text", "text": TOOL_USAGE_REMINDER}
+            return [reminder_block] + content
+
+        # Fallback
+        return f"{TOOL_USAGE_REMINDER}{content}"
 
     def _convert_message_to_langchain(self, message: Any) -> Any:
         """
@@ -2674,19 +2683,17 @@ except Exception as e:
         if chat_history is None:
             chat_history = []
 
-        # Extract text for augmentation (search still text-based)
-        user_text = self._extract_text_from_message(user_message)
-        augmented_input = self._build_augmented_input(user_text)
-
         # Convert to LangChain format (preserves multimodal content)
         langchain_content = self._convert_message_to_langchain(user_message)
+
+        # Prepend tool usage reminder (adjacent to current message for effectiveness)
+        augmented_content = self._prepend_reminder_to_content(langchain_content)
 
         try:
             if self.agent_executor:
                 # Use agent with tools
-                # Use langchain_content to support multimodal current message
                 result = await self.agent_executor.ainvoke(
-                    {"input": langchain_content, "chat_history": chat_history}
+                    {"input": augmented_content, "chat_history": chat_history}
                 )
                 output = result.get("output", "I couldn't generate a response.")
                 # Handle Anthropic-style content blocks (list of dicts with 'text' key)
@@ -2745,10 +2752,6 @@ except Exception as e:
         if chat_history is None:
             chat_history = []
 
-        # Extract text for augmentation (search still text-based)
-        user_text = self._extract_text_from_message(user_message)
-        augmented_input = self._build_augmented_input(user_text)
-
         # Convert to LangChain format (preserves multimodal content)
         langchain_content = self._convert_message_to_langchain(user_message)
 
@@ -2762,7 +2765,11 @@ except Exception as e:
                 # Strip images from input - tool-calling agents resend the full input
                 # on each iteration (tool call -> response -> tool call...) which
                 # quickly exhausts rate limits. Images are replaced with [image attached].
-                agent_input = self._strip_images_from_content(langchain_content)
+                stripped_content = self._strip_images_from_content(langchain_content)
+
+                # Prepend tool usage reminder (adjacent to current message for effectiveness)
+                agent_input = self._prepend_reminder_to_content(stripped_content)
+
                 # Track tool runs to avoid duplicates from nested events
                 active_tool_runs: set[str] = set()
 

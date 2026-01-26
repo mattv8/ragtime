@@ -173,7 +173,7 @@ model AppSettings {
   enableWriteOps    Boolean  @default(false) @map("enable_write_ops")
 
   // API Tool Output Configuration
-  suppressToolOutput  Boolean  @default(false) @map("suppress_tool_output") // Suppress tool call output in API responses (not MCP)
+  toolOutputMode      ConversationToolOutputMode @default(default) @map("tool_output_mode") // API tool output mode
 
   // MCP Configuration
   mcpEnabled                  Boolean        @default(false) @map("mcp_enabled") // Enable/disable MCP server

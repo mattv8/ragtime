@@ -398,7 +398,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         chunking_use_tokens: data.chunking_use_tokens,
         ivfflat_lists: data.ivfflat_lists,
         // API Tool Output settings
-        suppress_tool_output: data.suppress_tool_output,
+        tool_output_mode: data.tool_output_mode,
         // MCP settings
         mcp_enabled: data.mcp_enabled,
         mcp_default_route_auth: data.mcp_default_route_auth,
@@ -1859,37 +1859,35 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           </p>
 
           <div className="form-group">
-            <div className="chat-toggle-control" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-              <label className="toggle-switch">
-                <input
-                  type="checkbox"
-                  checked={formData.suppress_tool_output ?? settings?.suppress_tool_output ?? false}
-                  onChange={(e) =>
-                    setFormData({ ...formData, suppress_tool_output: e.target.checked })
-                  }
-                />
-                <span className="toggle-slider"></span>
-              </label>
-              <span>Suppress Tool Call Output</span>
-            </div>
-            <p className="form-help">
-              When enabled, tool call details (input/output) will not be included in streaming API responses.
-              The AI will still use tools internally, but external clients will only see the final answer.
+            <label>Tool Output Visibility</label>
+            <select
+              value={(formData.tool_output_mode ?? settings?.tool_output_mode) === 'default' ? 'show' : (formData.tool_output_mode ?? settings?.tool_output_mode ?? 'show')}
+              onChange={(e) =>
+                setFormData({ ...formData, tool_output_mode: e.target.value as any })
+              }
+            >
+              <option value="show">Show (Always include output)</option>
+              <option value="hide">Hide (Suppress output)</option>
+              <option value="auto">Auto (AI decides)</option>
+            </select>
+            <p className="field-help">
+              Controls whether tool execution details (inputs/outputs) are included in the streaming response.
+              <strong>Hide</strong> is useful for cleaner output in clients that don't support tool visualization.
             </p>
           </div>
 
-          <div className="form-actions">
+          <div className="form-actions" style={{ borderTop: 'none', paddingTop: 0 }}>
             <button
               type="button"
               className="btn btn-primary"
               onClick={async () => {
                 try {
                   const updated = await api.updateSettings({
-                    suppress_tool_output: formData.suppress_tool_output,
+                    tool_output_mode: formData.tool_output_mode,
                   });
                   setFormData((prev) => ({
                     ...prev,
-                    suppress_tool_output: updated.suppress_tool_output,
+                    tool_output_mode: updated.tool_output_mode,
                   }));
                   setSuccess('API output settings saved.');
                 } catch (err) {

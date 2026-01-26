@@ -679,7 +679,7 @@ class IndexerRepository:
             # Performance configuration
             sequential_index_loading=getattr(settings, "sequentialIndexLoading", False),
             # API Tool Output configuration
-            suppress_tool_output=getattr(settings, "suppressToolOutput", False),
+            tool_output_mode=getattr(settings, "toolOutputMode", "default"),
             # MCP configuration
             mcp_enabled=getattr(settings, "mcpEnabled", False),
             mcp_default_route_auth=getattr(settings, "mcpDefaultRouteAuth", False),
@@ -746,7 +746,7 @@ class IndexerRepository:
             # Performance configuration
             "sequential_index_loading": "sequentialIndexLoading",
             # API Tool Output configuration
-            "suppress_tool_output": "suppressToolOutput",
+            "tool_output_mode": "toolOutputMode",
             # MCP configuration
             "mcp_enabled": "mcpEnabled",
             "mcp_default_route_auth": "mcpDefaultRouteAuth",
