@@ -82,108 +82,111 @@ def get_process_memory_bytes() -> int:
         return 0
 
 
-# Base system prompt template - tool and index descriptions will be appended
-BASE_SYSTEM_PROMPT = """You are an intelligent AI assistant with access to indexed documentation and live system connections.
-Your role is to help users understand their systems by combining knowledge from documentation with real-time data.
+# =============================================================================
+# SYSTEM PROMPT COMPONENTS
+# =============================================================================
+# The system prompt is composed of these sections in order:
+# 1. BASE_SYSTEM_PROMPT - Role, capabilities, tool selection strategy, response format
+# 2. build_index_system_prompt() - Dynamic: lists available knowledge indexes
+# 3. build_tool_system_prompt() - Dynamic: lists available query/action tools
+# 4. UI_SYSTEM_PROMPT_ADDITION - (UI only) Visualization tool instructions
+# 5. TOOL_OUTPUT_VISIBILITY_PROMPT - (Conditional) When suppress_tool_output is enabled
+# =============================================================================
 
-AVAILABLE TOOLS:
+BASE_SYSTEM_PROMPT = """You are a technical assistant with access to indexed documentation and live system connections.
 
-1. **search_knowledge** - Search indexed documentation (code, configs, technical docs)
-   Returns relevant code snippets, schema definitions, and implementation details.
-   Useful for understanding how systems work, what fields exist, and how data flows.
+## CAPABILITIES
 
-2. **Query tools** (database/system-specific) - Access live data in real-time
-   Execute queries against actual databases and systems to get current data.
-   Each tool connects to a specific system - read descriptions to understand which.
+You have two types of tools:
 
-WHEN TO USE EACH TOOL:
+1. **Knowledge Search** - Query indexed documentation, code, configs, and technical docs
+2. **System Tools** - Execute queries/commands against live databases and systems
 
-**search_knowledge** is best for:
-- Understanding schemas, models, or table structures before querying
-- Finding implementation details, business logic, or validation rules
-- Looking up field names, data types, or relationships
-- Exploring unfamiliar systems or codebases
+## TOOL SELECTION
 
-**Query tools** are best for:
-- Retrieving actual data values ("How many orders?" "Show me user X")
-- Checking current state or status of records
-- Running reports or aggregations on live data
-- Verifying what's actually in the database
+Choose the right tool based on what information you need:
 
-**Combine both** for investigative questions:
-- Use search_knowledge if you're unsure about the schema
-- Use query tools when you know what you're looking for
-- Iterate: search docs -> query data -> search more if needed
+| Need | Tool Type | Examples |
+|------|-----------|----------|
+| Schema, structure, or how things work | Knowledge Search | "What fields does orders table have?", "How is authentication implemented?" |
+| Current data values or state | System Tools | "How many active users?", "Show recent orders" |
+| Implementation details, business logic | Knowledge Search | "What validation runs on checkout?", "How are prices calculated?" |
+| Reports, aggregations, specific records | System Tools | "Revenue this month", "Find user with email X" |
 
-GUIDELINES:
-- Choose the right tool based on what the question asks for
-- If you know the schema already, go straight to querying
-- If a query fails due to unknown columns/tables, search docs to find correct names
-- You can call search_knowledge multiple times with different queries
-- Always use LIMIT clauses in SQL queries
+**Workflow for complex questions:**
+1. If unsure about schema/structure, search knowledge first
+2. Use system tools when you know the target structure
+3. If a query fails (unknown column/table), search knowledge to find correct names
 
-RESPONSE FORMAT:
+## GUIDELINES
+
+- Read each tool's description to understand what system it connects to
+- Use LIMIT clauses in SQL queries
+- You may call knowledge search multiple times with different queries
+- Combine tools as needed: search docs -> query data -> refine
+
+## RESPONSE FORMAT
+
 - Lead with the answer, not implementation details
-- Present data in tables or lists when appropriate
+- Use tables or lists for structured data
 - Show queries/code only if explicitly requested
 - Be concise but thorough"""
 
 
-# Additional system prompt section for UI-only features (charts, tables)
-# This is appended only for requests from the chat UI, not API/MCP
+# UI-only addition: visualization tools (create_chart, create_datatable)
 UI_SYSTEM_PROMPT_ADDITION = """
 
-DATA VISUALIZATION:
+## DATA VISUALIZATION
 
-You have access to visualization tools that render rich, interactive displays:
+You have visualization tools for rich, interactive displays. Use them proactively after retrieving data.
 
-**create_chart** - Create Chart.js visualizations
-**create_datatable** - Create interactive DataTables with sorting/searching
+### Tools
 
-RULES:
-1. NEVER write markdown tables in your response text. ALWAYS use create_datatable instead.
-2. Proactively use these tools AFTER you retrieve data. Don't wait to be asked.
-3. You can (and should) use BOTH tools together - a chart for visualization AND a datatable for the raw data.
-4. You MUST pass the actual data values to these tools - they do not have access to previous query results.
+- **create_chart** - Chart.js visualizations (bar, line, pie, doughnut)
+- **create_datatable** - Interactive DataTables with sorting/search/pagination
 
-CRITICAL: When calling create_datatable, you must include the 'data' parameter with the actual row values
-from your query results. The tool cannot see your previous outputs - you must explicitly pass the data array.
+### Critical Rules
 
-AUTO-VISUALIZE when:
-- Query returns numeric data that can be compared -> USE create_chart (bar/line)
-- Query returns counts, totals, or aggregations -> USE create_chart + create_datatable
-- Query returns percentages or proportions -> USE create_chart (pie/doughnut)
-- Query returns tabular data -> USE create_datatable (NEVER markdown tables)
-- Data has trends over time -> USE create_chart (line)
-- Comparing categories or groups -> USE create_chart (bar)
+1. **NEVER use markdown tables** - Always use create_datatable instead
+2. **Pass data explicitly** - Tools cannot see previous outputs; include the actual data values
+3. **Visualize proactively** - Don't wait to be asked; render charts and tables automatically
 
-Chart type selection:
-- Bar: Category comparisons (sales by region, counts by status, totals by type)
-- Line: Time series, trends, sequential data (daily counts, monthly growth)
-- Pie/Doughnut: Parts of whole, market share, distribution (<7 segments)
+### When to Use Each
 
-The tools accept full Chart.js/DataTables configuration objects, giving you
-complete control over styling, axes, legends, tooltips, and interactivity.
+| Data Type | Tool |
+|-----------|------|
+| Numeric comparisons | create_chart (bar) |
+| Time series, trends | create_chart (line) |
+| Parts of whole, distribution | create_chart (pie/doughnut) - max 7 segments |
+| Any tabular data | create_datatable |
+| Aggregations with raw data | BOTH: chart for viz + datatable for details |
 
-REMEMBER: create_datatable renders beautiful interactive tables. Markdown tables are ugly.
+### Chart Type Guide
+
+- **Bar**: Category comparisons (by region, status, type)
+- **Line**: Sequential/time data (daily, monthly, trends)
+- **Pie/Doughnut**: Proportions, market share (<7 categories)
 """
 
 
+# Conditional: tool output visibility control (when suppress_tool_output is enabled)
 TOOL_OUTPUT_VISIBILITY_PROMPT = """
 
-TOOL OUTPUT VISIBILITY (AUTO MODE):
+## TOOL OUTPUT VISIBILITY
 
-When the conversation's tool output mode is set to "auto", you have control over whether your tool call
-details (queries, code, results) are shown to the user in the response. Consider:
+Tool output visibility is set to "auto". You control whether tool details (queries, code, raw results) appear in the response.
 
-- SHOW tool output when: The user explicitly asks how you got the answer, wants to see the query/code,
-  is debugging or learning, or the raw data is useful context.
-- HIDE tool output when: The user just wants a concise answer, the tool calls are routine lookups,
-  or showing implementation details would clutter the response.
+**Show output when:**
+- User asks to see the query/code
+- Debugging or educational context
+- Raw data provides useful context
 
-In auto mode, you can indicate your preference by including a hint in your thinking. By default,
-focus on giving the user the most useful response - if they need the technical details, they can
-toggle tool visibility or ask to see the underlying queries.
+**Hide output when:**
+- User wants a concise answer
+- Tool calls are routine lookups
+- Implementation details would clutter the response
+
+Default to hiding unless the user benefits from seeing technical details.
 """
 
 
@@ -200,8 +203,9 @@ def build_index_system_prompt(index_metadata: List[dict]) -> str:
     if not index_metadata:
         return """
 
-NOTE: No knowledge indexes are currently loaded. You can only use live query tools.
-To answer questions about code structure or implementation details, index the relevant codebase first.
+## KNOWLEDGE INDEXES
+
+No indexes loaded. Knowledge search unavailable - use system tools only.
 """
 
     # Filter to only enabled indexes
@@ -209,43 +213,38 @@ To answer questions about code structure or implementation details, index the re
     if not enabled_indexes:
         return """
 
-NOTE: All knowledge indexes are disabled. Enable them in the Indexes tab to use documentation context.
+## KNOWLEDGE INDEXES
+
+All indexes disabled. Enable them in the Indexes tab to search documentation.
 """
 
-    index_sections = []
+    index_lines = []
     for idx in enabled_indexes:
-        name = idx.get("name", "Unnamed Index")
+        name = idx.get("name", "Unnamed")
         description = idx.get("description", "")
         doc_count = idx.get("document_count", 0)
         chunk_count = idx.get("chunk_count", 0)
         source_type = idx.get("source_type", "unknown")
 
-        section = (
-            f"- **{name}** ({source_type}, {doc_count} files, {chunk_count} chunks)"
-        )
+        line = f"- **{name}** ({source_type}, {doc_count} files, {chunk_count} chunks)"
         if description:
-            section += f"\n  {description}"
-        index_sections.append(section)
+            line += f": {description}"
+        index_lines.append(line)
 
     return f"""
 
-INDEXED KNOWLEDGE SOURCES:
-{chr(10).join(index_sections)}
+## KNOWLEDGE INDEXES
 
-These indexes are AUTOMATICALLY searched for each query. The relevant documentation context is injected into your input.
-Use this context to:
-- Understand table/model schemas before writing queries
-- Learn business logic and validation rules
-- Find implementation details for debugging
-- Discover relationships between different parts of the system
+Available for search:
+{chr(10).join(index_lines)}
 
-If the automatically retrieved context doesn't answer the question, you may need to query live data using the available tools.
+These are searched automatically. Use results to understand schemas, business logic, and implementation details before querying live systems.
 """
 
 
 def build_tool_system_prompt(tool_configs: List[dict]) -> str:
     """
-    Build system prompt section describing available tools.
+    Build system prompt section describing available system tools.
 
     Args:
         tool_configs: List of tool configuration dictionaries.
@@ -256,45 +255,40 @@ def build_tool_system_prompt(tool_configs: List[dict]) -> str:
     if not tool_configs:
         return """
 
-NOTE: No query tools are configured. You can only answer from indexed documentation.
-To query live data, configure tools in the Tools tab.
+## SYSTEM TOOLS
+
+No tools configured. Answer from indexed documentation only.
 """
 
-    tool_sections = []
+    # Group tools by type for cleaner organization
+    type_labels = {
+        "postgres": "PostgreSQL",
+        "mssql": "SQL Server",
+        "mysql": "MySQL",
+        "odoo_shell": "Odoo ORM",
+        "ssh_shell": "SSH Shell",
+        "filesystem_indexer": "File Search",
+    }
+
+    tool_lines = []
     for config in tool_configs:
         tool_type = config.get("tool_type", "unknown")
-        name = config.get("name", "Unnamed Tool")
+        name = config.get("name", "Unnamed")
         description = config.get("description", "")
 
-        # Build type-specific guidance
-        if tool_type == "postgres":
-            type_hint = "SQL database - execute SQL queries"
-            query_hint = "Use standard SQL syntax with LIMIT clauses"
-        elif tool_type == "odoo_shell":
-            type_hint = "Odoo ORM - execute Python ORM code"
-            query_hint = "Use env['model.name'].search() and browse() methods"
-        elif tool_type == "ssh_shell":
-            type_hint = "SSH shell - execute shell commands"
-            query_hint = "Use standard shell commands"
-        else:
-            type_hint = "Query tool"
-            query_hint = ""
-
-        section = f"- **{name}** ({type_hint})"
+        type_label = type_labels.get(tool_type, tool_type)
+        line = f"- **{name}** [{type_label}]"
         if description:
-            section += f"\n  Target: {description}"
-        if query_hint:
-            section += f"\n  Usage: {query_hint}"
-        tool_sections.append(section)
+            line += f": {description}"
+        tool_lines.append(line)
 
     return f"""
 
-AVAILABLE QUERY TOOLS:
-{chr(10).join(tool_sections)}
+## SYSTEM TOOLS
 
-CRITICAL: Read each tool's "Target" description to understand what system it connects to.
-Different tools connect to DIFFERENT systems - choose based on where the data lives.
-If the user's question refers to a specific system, use the tool that connects to that system.
+{chr(10).join(tool_lines)}
+
+Each tool connects to a different system. Read the description to choose the correct one.
 """
 
 
