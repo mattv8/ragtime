@@ -220,6 +220,11 @@ async def lifespan(app: FastAPI):
     # Cleanup - stop background services before disconnecting DB
     await background_task_service.stop()
 
+    # Shutdown chunking process pool
+    from ragtime.indexer.chunking import shutdown_process_pool
+
+    shutdown_process_pool()
+
     # Stop PDM indexer tasks
     from ragtime.indexer.pdm_service import pdm_indexer
 

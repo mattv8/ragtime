@@ -2288,7 +2288,6 @@ class IndexerService:
         """Create FAISS index from source directory."""
         from langchain_community.document_loaders import TextLoader
         from langchain_community.vectorstores import FAISS
-        from langchain_text_splitters import RecursiveCharacterTextSplitter
 
         config = job.config
 
@@ -2434,24 +2433,27 @@ class IndexerService:
         # Get app settings for chunking configuration
         app_settings = await repository.get_settings()
 
-        # Determine length function based on settings
-        if getattr(app_settings, "chunking_use_tokens", True):
-            from ragtime.core.tokenization import get_token_length_function
-
-            length_function = get_token_length_function()
+        # Determine if we should use token-based chunking
+        use_tokens = getattr(app_settings, "chunking_use_tokens", True)
+        if use_tokens:
             logger.info("Using token-based chunking for accurate chunk sizes")
         else:
-            length_function = len
             logger.info("Using character-based chunking")
 
-        # Split into chunks (run in thread pool to avoid blocking with many documents)
-        splitter = RecursiveCharacterTextSplitter(
+        # Split into chunks using parallel process pool
+        # This runs CPU-intensive tiktoken work in separate processes,
+        # leaving the main event loop responsive for API/UI/MCP
+        from ragtime.indexer.chunking import chunk_documents_parallel
+
+        chunks = await chunk_documents_parallel(
+            documents=documents,
             chunk_size=config.chunk_size,
             chunk_overlap=config.chunk_overlap,
-            length_function=length_function,
-            separators=["\n\n", "\n", " ", ""],
+            use_tokens=use_tokens,
+            batch_size=100,  # Larger batches for efficiency
+            progress_callback=None,  # Progress logged from the function itself
         )
-        chunks = await asyncio.to_thread(splitter.split_documents, documents)
+
         job.total_chunks = len(chunks)
         await repository.update_job(job)
 
