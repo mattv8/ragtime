@@ -381,6 +381,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         // LLM settings
         llm_provider: data.llm_provider,
         llm_model: data.llm_model,
+        llm_max_tokens: data.llm_max_tokens,
         llm_ollama_protocol: data.llm_ollama_protocol,
         llm_ollama_host: data.llm_ollama_host,
         llm_ollama_port: data.llm_ollama_port,
@@ -651,6 +652,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       const dataToSave: Record<string, unknown> = {
         llm_provider: formData.llm_provider,
         llm_model: formData.llm_model,
+        llm_max_tokens: formData.llm_max_tokens,
         openai_api_key: formData.openai_api_key,
         anthropic_api_key: formData.anthropic_api_key,
         allowed_chat_models: formData.allowed_chat_models,
