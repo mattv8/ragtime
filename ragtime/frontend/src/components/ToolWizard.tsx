@@ -32,6 +32,8 @@ const SYSTEM_MOUNT_PATTERNS = [
   '/ragtime/requirements.txt',
   '/ragtime/prisma',
   '/ragtime/data',
+  '/ragtime/scripts',
+  '/data',
   '/var/run/docker.sock',
   '/etc/localtime',
   '/etc/timezone',

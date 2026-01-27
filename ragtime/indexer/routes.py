@@ -4790,6 +4790,8 @@ class FilesystemIndexStatsResponse(BaseModel):
     embedding_count: int
     file_count: int
     last_indexed: Optional[str] = None
+    chunk_count: Optional[int] = None
+    estimated_memory_mb: Optional[float] = None
 
 
 @router.post(
@@ -5119,6 +5121,8 @@ async def get_filesystem_index_stats(
         last_indexed=(
             stats["last_indexed"].isoformat() if stats["last_indexed"] else None
         ),
+        chunk_count=stats.get("chunk_count"),
+        estimated_memory_mb=stats.get("estimated_memory_mb"),
     )
 
 

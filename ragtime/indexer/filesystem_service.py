@@ -1819,14 +1819,18 @@ class FilesystemIndexerService:
 
     async def get_index_stats(self, index_name: str) -> Dict[str, Any]:
         """Get statistics for a filesystem index."""
+        from ragtime.core.app_settings import get_app_settings
+
         db = await get_db()
+        app_settings = await get_app_settings()
 
         # Count embeddings
         embedding_count = await db.filesystemembedding.count(
             where={"indexName": index_name}
         )
 
-        # Count unique files
+        # Count unique files with explicit chunk count sum if possible, or just file count
+        # For now, just count files
         file_count = await db.filesystemfilemetadata.count(
             where={"indexName": index_name}
         )
@@ -1837,11 +1841,23 @@ class FilesystemIndexerService:
             order={"lastIndexed": "desc"},
         )
 
+        # Calculate memory
+        embedding_dimension = app_settings.get("embedding_dimension")
+        estimated_memory_mb = 0.0
+
+        if embedding_dimension and embedding_count > 0:
+            # Memory formula for pgvector: embeddings * dimensions * 4 bytes (float32)
+            # pgvector uses slightly different overhead, estimate 1.15x
+            bytes_per_embedding = embedding_dimension * 4 * 1.15
+            estimated_memory_mb = (embedding_count * bytes_per_embedding) / (1024 * 1024)
+
         return {
             "index_name": index_name,
             "embedding_count": embedding_count,
+            "chunk_count": embedding_count,
             "file_count": file_count,
             "last_indexed": latest_file.lastIndexed if latest_file else None,
+            "estimated_memory_mb": estimated_memory_mb,
         }
 
 

@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { MemoryStick } from 'lucide-react';
 import { api } from '@/api';
+import { formatSizeMB } from '@/utils';
 import type { ToolConfig, FilesystemIndexJob, FilesystemIndexStats } from '@/types';
 import { ToolWizard } from './ToolWizard';
 
@@ -23,6 +25,7 @@ interface FilesystemIndexCardProps {
   onDelete: (toolId: string) => void;
   onToggle: (toolId: string, enabled: boolean) => void;
   indexing: boolean;
+  embeddingDimensions?: number | null;
 }
 
 function FilesystemIndexCard({
@@ -35,6 +38,7 @@ function FilesystemIndexCard({
   onDelete,
   onToggle,
   indexing,
+  embeddingDimensions,
 }: FilesystemIndexCardProps) {
   const config = tool.connection_config as { base_path?: string; index_name?: string };
   const [deleteConfirm, setDeleteConfirm] = useState(false);
@@ -71,7 +75,31 @@ function FilesystemIndexCard({
           {stats && stats.embedding_count > 0 && (
             <>
               <span className="meta-pill files">{stats.file_count} files</span>
-              <span className="meta-pill embeddings">{stats.embedding_count} embeddings</span>
+              {(() => {
+                let ramMb = 0;
+
+                // Use server-side estimate if available, otherwise calculate fallback
+                if (stats.estimated_memory_mb !== undefined && stats.estimated_memory_mb !== null) {
+                  ramMb = stats.estimated_memory_mb;
+                } else if (embeddingDimensions && embeddingDimensions > 0) {
+                  // Memory formula for pgvector: embeddings * dimensions * 4 bytes (float32)
+                  // pgvector uses slightly different overhead, estimate 1.15x
+                  const bytesPerEmbedding = embeddingDimensions * 4 * 1.15;
+                  ramMb = (stats.embedding_count * bytesPerEmbedding) / (1024 * 1024);
+                } else {
+                  return null;
+                }
+
+                return (
+                  <span
+                    className={`meta-pill ram ${tool.enabled ? 'ram-loaded' : 'ram-unloaded'}`}
+                    title={`${tool.enabled ? 'Loaded in RAM' : 'Not loaded (disabled)'}: ${formatSizeMB(ramMb)} (${stats.embedding_count.toLocaleString()} embeddings)`}
+                  >
+                    <MemoryStick size={12} />
+                    {formatSizeMB(ramMb)}
+                  </span>
+                );
+              })()}
             </>
           )}
           {stats?.last_indexed && (
@@ -186,26 +214,33 @@ export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged, embeddingD
 
   // Calculate total memory for enabled filesystem indexes
   const calculateTotalMemory = (): { total: number; enabled: number } | null => {
-    if (!embeddingDimensions || embeddingDimensions <= 0) return null;
-
-    let totalEmbeddings = 0;
-    let enabledEmbeddings = 0;
+    let totalMb = 0;
+    let enabledMb = 0;
+    let hasData = false;
 
     for (const tool of tools) {
       const stats = filesystemStats[tool.id];
       if (stats) {
-        totalEmbeddings += stats.embedding_count;
+        let memory = 0;
+        if (stats.estimated_memory_mb !== undefined && stats.estimated_memory_mb !== null) {
+          memory = stats.estimated_memory_mb;
+          hasData = true;
+        } else if (embeddingDimensions && embeddingDimensions > 0) {
+          // Memory formula for pgvector: embeddings * dimensions * 4 bytes (float32)
+          // pgvector uses slightly different overhead, estimate 1.15x
+          const bytesPerEmbedding = embeddingDimensions * 4 * 1.15;
+          memory = (stats.embedding_count * bytesPerEmbedding) / (1024 * 1024);
+          hasData = true;
+        }
+
+        totalMb += memory;
         if (tool.enabled) {
-          enabledEmbeddings += stats.embedding_count;
+          enabledMb += memory;
         }
       }
     }
 
-    // Memory formula for pgvector: embeddings * dimensions * 4 bytes (float32)
-    // pgvector uses slightly different overhead, estimate 1.15x
-    const bytesPerEmbedding = embeddingDimensions * 4 * 1.15;
-    const totalMb = (totalEmbeddings * bytesPerEmbedding) / (1024 * 1024);
-    const enabledMb = (enabledEmbeddings * bytesPerEmbedding) / (1024 * 1024);
+    if (!hasData) return null;
 
     return { total: totalMb, enabled: enabledMb };
   };
@@ -470,6 +505,7 @@ export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged, embeddingD
           onDelete={handleDeleteTool}
           onToggle={handleToggleTool}
           indexing={indexingToolId === tool.id}
+          embeddingDimensions={embeddingDimensions}
         />
       ))}
     </div>

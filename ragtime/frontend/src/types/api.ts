@@ -1042,6 +1042,9 @@ export interface FilesystemIndexStats {
   embedding_count: number;
   file_count: number;
   last_indexed: string | null;
+  // Memory usage
+  chunk_count?: number;
+  estimated_memory_mb?: number;
 }
 
 export interface TriggerFilesystemIndexRequest {
