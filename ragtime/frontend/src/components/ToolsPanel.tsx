@@ -202,53 +202,59 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
   return (
     <div className={`tool-card ${!tool.enabled ? 'disabled' : ''}`}>
       <div className="tool-card-header">
-        <div className="tool-card-icon"><Icon name={getToolIconType(typeInfo?.icon)} size={24} /></div>
-        <div className="tool-card-title">
-          {editingField === 'name' ? (
-            <div className="inline-edit-field">
-              <input
-                ref={nameInputRef}
-                type="text"
-                value={editName}
-                onChange={(e) => setEditName(e.target.value)}
-                onKeyDown={handleKeyDown}
-                onBlur={handleSaveEdit}
-                disabled={saving}
-                className="inline-edit-input"
-              />
+        <div className="tool-card-icon"><Icon name={getToolIconType(typeInfo?.icon)} size={28} /></div>
+        <div className="tool-card-header-content">
+          <div className="tool-card-header-main">
+            <div className="tool-card-title">
+              {editingField === 'name' ? (
+                <div className="inline-edit-field">
+                  <input
+                    ref={nameInputRef}
+                    type="text"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    onBlur={handleSaveEdit}
+                    disabled={saving}
+                    className="inline-edit-input"
+                  />
+                </div>
+              ) : (
+                <div className="editable-field-wrapper name-wrapper" onClick={() => handleStartEdit('name')}>
+                  <h3>{tool.name}</h3>
+                  <button
+                    type="button"
+                    className="inline-edit-btn"
+                    onClick={(e) => { e.stopPropagation(); handleStartEdit('name'); }}
+                    title="Edit name"
+                  >
+                    <Icon name="pencil" size={14} />
+                  </button>
+                </div>
+              )}
             </div>
-          ) : (
-            <div className="editable-field-wrapper" onClick={() => handleStartEdit('name')}>
-              <h3>{tool.name}</h3>
-              <button
-                type="button"
-                className="inline-edit-btn"
-                onClick={(e) => { e.stopPropagation(); handleStartEdit('name'); }}
-                title="Edit name"
-              >
-                <Icon name="pencil" size={14} />
-              </button>
+            <div className="tool-card-header-actions">
+              <div className="tool-card-heartbeat">
+                <span
+                  className={`heartbeat-indicator ${heartbeatDisplay.status}`}
+                  title={heartbeatDisplay.label}
+                >
+                  {heartbeatDisplay.icon}
+                </span>
+              </div>
+              <div className="tool-card-status">
+                <label className="toggle-switch">
+                  <input
+                    type="checkbox"
+                    checked={tool.enabled}
+                    onChange={(e) => onToggle(tool.id, e.target.checked)}
+                  />
+                  <span className="toggle-slider"></span>
+                </label>
+              </div>
             </div>
-          )}
-          <span className="tool-card-type">{typeInfo?.name || tool.tool_type}</span>
-        </div>
-        <div className="tool-card-heartbeat">
-          <span
-            className={`heartbeat-indicator ${heartbeatDisplay.status}`}
-            title={heartbeatDisplay.label}
-          >
-            {heartbeatDisplay.icon}
-          </span>
-        </div>
-        <div className="tool-card-status">
-          <label className="toggle-switch">
-            <input
-              type="checkbox"
-              checked={tool.enabled}
-              onChange={(e) => onToggle(tool.id, e.target.checked)}
-            />
-            <span className="toggle-slider"></span>
-          </label>
+          </div>
+          <code className="tool-card-connection-sub">{getConnectionSummary()}</code>
         </div>
       </div>
 
@@ -290,11 +296,6 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
         </div>
       )}
 
-      <div className="tool-card-connection">
-        <span className="connection-label">Connection:</span>
-        <code>{getConnectionSummary()}</code>
-      </div>
-
       {/* Show heartbeat error if connection failed */}
       {heartbeat && !heartbeat.alive && tool.enabled && (
         <div className="tool-card-heartbeat-error">
@@ -305,11 +306,22 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
         </div>
       )}
 
-      <div className="tool-card-meta">
-        <span>Timeout: {tool.timeout}s</span>
-        <span>Max results: {tool.max_results}</span>
-        {tool.allow_write && <span className="write-enabled">Write enabled</span>}
-      </div>
+      {((tool.allow_write) || ((tool.tool_type === 'ssh_shell' || tool.tool_type === 'odoo_shell') && (tool.connection_config as any)?.working_directory)) && (
+        <div className="tool-card-constraints">
+          {tool.allow_write && (
+            <span className="write-enabled-pill">
+              <Icon name="alert-triangle" size={12} />
+              Write enabled
+            </span>
+          )}
+          {((tool.tool_type === 'ssh_shell' || tool.tool_type === 'odoo_shell') && (tool.connection_config as any)?.working_directory) && (
+            <span className="constrained-path" title={`Constrained to ${(tool.connection_config as any).working_directory}`}>
+              <Icon name="folder" size={14} />
+              <span className="path-text">{(tool.connection_config as any).working_directory}</span>
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Schema index stats */}
       {hasSchemaIndexing && schemaStats && schemaStats.embedding_count > 0 && (

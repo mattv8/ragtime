@@ -1,7 +1,7 @@
-import { Database, Terminal, Monitor, Folder, File, Plug, Loader2, Check, Pencil, Trash2, X, HardDrive, Users, ChevronUp, ChevronDown, AlertCircle, Circle, RefreshCw } from 'lucide-react';
+import { Database, Terminal, Monitor, Folder, File, Plug, Loader2, Check, Pencil, Trash2, X, HardDrive, Users, ChevronUp, ChevronDown, AlertCircle, AlertTriangle, Circle, RefreshCw } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
-export type IconType = 'database' | 'terminal' | 'server' | 'folder' | 'file' | 'plug' | 'loader' | 'check' | 'pencil' | 'trash' | 'close' | 'harddrive' | 'users' | 'chevron-up' | 'chevron-down' | 'alert-circle' | 'circle' | 'refresh';
+export type IconType = 'database' | 'terminal' | 'server' | 'folder' | 'file' | 'plug' | 'loader' | 'check' | 'pencil' | 'trash' | 'close' | 'harddrive' | 'users' | 'chevron-up' | 'chevron-down' | 'alert-circle' | 'alert-triangle' | 'circle' | 'refresh';
 
 const iconMap: Record<IconType, LucideIcon> = {
   database: Database,
@@ -20,6 +20,7 @@ const iconMap: Record<IconType, LucideIcon> = {
   'chevron-up': ChevronUp,
   'chevron-down': ChevronDown,
   'alert-circle': AlertCircle,
+  'alert-triangle': AlertTriangle,
   circle: Circle,
   refresh: RefreshCw,
 };
