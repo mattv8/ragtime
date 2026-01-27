@@ -626,6 +626,8 @@ body {
 
 /* Tool Card */
 .tool-card {
+  display: flex;
+  flex-direction: column;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
@@ -802,10 +804,11 @@ body {
 
 .tool-card-actions {
   display: flex;
+  justify-content: flex-end;
   flex-wrap: wrap;
   gap: var(--space-sm);
-  padding-top: var(--space-sm);
-  border-top: 1px solid var(--color-border);
+  margin-top: auto;
+  padding-top: var(--space-md);
 }
 
 /* =============================================================================

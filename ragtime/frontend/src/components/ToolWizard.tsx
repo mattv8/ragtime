@@ -1792,7 +1792,10 @@ type WizardStep = 'type' | 'connection' | 'pdm_filtering' | 'execution_constrain
 // Base steps - pdm_filtering is dynamically inserted for solidworks_pdm tools
 const BASE_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'description', 'options', 'review'];
 const PDM_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'pdm_filtering', 'description', 'options', 'review'];
-const SSH_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'execution_constraints', 'description', 'options', 'review'];
+// SSH tools combine options into the execution_constraints step
+const SSH_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'execution_constraints', 'description', 'review'];
+// Odoo tools show options before description for logical flow
+const ODOO_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'options', 'description', 'review'];
 
 function getStepTitle(step: WizardStep): string {
   switch (step) {
@@ -1803,11 +1806,11 @@ function getStepTitle(step: WizardStep): string {
     case 'pdm_filtering':
       return 'Document Filtering';
     case 'execution_constraints':
-      return 'Execution Constraints';
+      return 'Execution Options';
     case 'description':
       return 'Add Description';
     case 'options':
-      return 'Set Options';
+      return 'Execution Options';
     case 'review':
       return 'Review & Save';
   }
@@ -1824,6 +1827,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
   const getWizardSteps = useCallback((): WizardStep[] => {
     if (toolType === 'solidworks_pdm') return PDM_WIZARD_STEPS;
     if (toolType === 'ssh_shell') return SSH_WIZARD_STEPS;
+    if (toolType === 'odoo_shell') return ODOO_WIZARD_STEPS;
     return BASE_WIZARD_STEPS;
   }, [toolType]);
 
@@ -4849,11 +4853,44 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
     return (
       <div className="wizard-content">
         <p className="wizard-help">
-          Constrain the AI agent to a specific directory. It will not be able to interact with files outside this path.
+          Configure execution limits, security options, and optionally constrain the AI agent to a specific directory.
         </p>
 
-        <div className="form-group">
-           <label>Working Directory</label>
+        <div className="form-row">
+          <div className="form-group">
+            <label>Timeout (seconds)</label>
+            <input
+              type="number"
+              value={timeoutValue}
+              onChange={(e) => setTimeoutValue(parseInt(e.target.value) || 30)}
+              min={1}
+              max={300}
+            />
+            <p className="field-help">
+              Maximum time to wait for a command to complete.
+            </p>
+          </div>
+        </div>
+
+        <fieldset>
+          <legend>Security</legend>
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={allowWrite}
+              onChange={(e) => setAllowWrite(e.target.checked)}
+            />
+            Allow write operations
+          </label>
+          {allowWrite && (
+            <p className="warning-text">
+              Warning: Write operations are enabled. The AI will be able to modify files and run destructive commands.
+            </p>
+          )}
+        </fieldset>
+
+        <div className="form-group" style={{ marginTop: '1rem' }}>
+           <label>Working Directory (optional)</label>
            {!canConnect ? (
               <>
                  <input
@@ -4873,6 +4910,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
                     onSelectPath={(path) => setSshConfig({...sshConfig, working_directory: path})}
                     sshConfig={sshConfig}
                  />
+                 <p className="field-help">
+                    Constrain the AI agent to a specific directory. It will not be able to interact with files outside this path.
+                 </p>
               </>
            )}
         </div>
@@ -4916,60 +4956,67 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
     </div>
   );
 
-  const renderOptions = () => (
-    <div className="wizard-content">
-      <p className="wizard-help">
-        Configure limits and security options for this tool.
-      </p>
+  const renderOptions = () => {
+    // SQL-based tools need Max Results for query limiting
+    const showMaxResults = ['postgres', 'mysql', 'mssql', 'solidworks_pdm'].includes(toolType);
 
-      <div className="form-row">
-        <div className="form-group">
-          <label>Max Results</label>
-          <input
-            type="number"
-            value={maxResults}
-            onChange={(e) => setMaxResults(parseInt(e.target.value) || 100)}
-            min={1}
-            max={1000}
-          />
-          <p className="field-help">
-            Maximum number of rows/results returned per query.
-          </p>
+    return (
+      <div className="wizard-content">
+        <p className="wizard-help">
+          Configure limits and security options for this tool.
+        </p>
+
+        <div className="form-row">
+          {showMaxResults && (
+            <div className="form-group">
+              <label>Max Results</label>
+              <input
+                type="number"
+                value={maxResults}
+                onChange={(e) => setMaxResults(parseInt(e.target.value) || 100)}
+                min={1}
+                max={1000}
+              />
+              <p className="field-help">
+                Maximum number of rows/results returned per query.
+              </p>
+            </div>
+          )}
+
+          <div className="form-group">
+            <label>Timeout (seconds)</label>
+            <input
+              type="number"
+              value={timeoutValue}
+              onChange={(e) => setTimeoutValue(parseInt(e.target.value) || 30)}
+              min={1}
+              max={300}
+            />
+            <p className="field-help">
+              Maximum time to wait for a query to complete.
+            </p>
+          </div>
         </div>
 
-        <div className="form-group">
-          <label>Timeout (seconds)</label>
-          <input
-            type="number"
-            value={timeoutValue}
-            onChange={(e) => setTimeoutValue(parseInt(e.target.value) || 30)}
-            min={1}
-            max={300}
-          />
-          <p className="field-help">
-            Maximum time to wait for a query to complete.
-          </p>
-        </div>
+        <fieldset>
+          <legend>Security</legend>
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={allowWrite}
+              onChange={(e) => setAllowWrite(e.target.checked)}
+            />
+            Allow write operations (INSERT/UPDATE/DELETE)
+          </label>
+          {allowWrite && (
+            <p className="warning-text">
+              Warning: Write operations are enabled. The AI will be able to modify data.
+            </p>
+          )}
+        </fieldset>
       </div>
-
-      <fieldset>
-        <legend>Security</legend>
-        <label className="checkbox-label">
-          <input
-            type="checkbox"
-            checked={allowWrite}
-            onChange={(e) => setAllowWrite(e.target.checked)}
-          />
-          Allow write operations (INSERT/UPDATE/DELETE)
-        </label>
-        {allowWrite && (
-          <p className="warning-text">
-            Warning: Write operations are enabled. The AI will be able to modify data.
-          </p>
-        )}
-      </fieldset>
-    </div>
-  );
+    );
+  };
 
   const renderReview = () => {
     const typeInfo = TOOL_TYPE_INFO[toolType];
