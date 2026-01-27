@@ -1364,12 +1364,22 @@ class FilesystemIndexerService:
     ) -> List[str]:
         """Load a file and split it into chunks.
 
+        Uses semantic/language-aware splitting based on file type:
+        - Code files: Language-specific splitters that respect syntax
+        - Markdown: Header-aware splitting
+        - HTML: Tag-aware splitting
+        - Other: RecursiveCharacterTextSplitter with good defaults
+
         Args:
             file_path: Path to file to load
             config: Filesystem connection config with chunk settings
             use_token_chunking: If True, use token-based chunking for accuracy
         """
-        from langchain_text_splitters import RecursiveCharacterTextSplitter
+        from ragtime.indexer.chunking import (
+            _get_file_extension,
+            _get_language_for_extension,
+        )
+        from langchain_text_splitters import Language, RecursiveCharacterTextSplitter
 
         try:
             # Read file content
@@ -1387,14 +1397,64 @@ class FilesystemIndexerService:
             else:
                 length_function = len
 
-            # Split into chunks
-            splitter = RecursiveCharacterTextSplitter(
-                chunk_size=config.chunk_size,
-                chunk_overlap=config.chunk_overlap,
-                length_function=length_function,
-                separators=["\n\n", "\n", " ", ""],
-            )
+            # Get file extension and determine appropriate splitter
+            ext = file_path.suffix.lower()
+            lang_name = _get_language_for_extension(ext)
+            splitter_type = "default"
 
+            splitter = None
+
+            # Special handling for Markdown
+            if ext in (".md", ".markdown"):
+                try:
+                    splitter = RecursiveCharacterTextSplitter.from_language(
+                        language=Language.MARKDOWN,
+                        chunk_size=config.chunk_size,
+                        chunk_overlap=config.chunk_overlap,
+                        length_function=length_function,
+                    )
+                    splitter_type = "MARKDOWN"
+                except Exception:
+                    pass
+
+            # Special handling for HTML
+            elif ext in (".html", ".htm", ".vue", ".svelte"):
+                try:
+                    splitter = RecursiveCharacterTextSplitter.from_language(
+                        language=Language.HTML,
+                        chunk_size=config.chunk_size,
+                        chunk_overlap=config.chunk_overlap,
+                        length_function=length_function,
+                    )
+                    splitter_type = "HTML"
+                except Exception:
+                    pass
+
+            # Language-specific code splitter
+            elif lang_name:
+                try:
+                    lang_enum = getattr(Language, lang_name, None)
+                    if lang_enum:
+                        splitter = RecursiveCharacterTextSplitter.from_language(
+                            language=lang_enum,
+                            chunk_size=config.chunk_size,
+                            chunk_overlap=config.chunk_overlap,
+                            length_function=length_function,
+                        )
+                        splitter_type = lang_name
+                except Exception:
+                    pass
+
+            # Default splitter
+            if splitter is None:
+                splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=config.chunk_size,
+                    chunk_overlap=config.chunk_overlap,
+                    length_function=length_function,
+                    separators=["\n\n", "\n", ". ", " ", ""],
+                )
+
+            logger.debug(f"Using {splitter_type} splitter for {file_path.name}")
             chunks = splitter.split_text(content)
             return chunks
 
