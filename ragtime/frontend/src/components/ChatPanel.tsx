@@ -141,6 +141,41 @@ interface ChartConfig {
   options?: Record<string, unknown>;
 }
 
+// Global URL regex for efficient linkification
+const URL_PATTERN = /(https?:\/\/[^\s<]+[^<.,:;"')\]\s])/g;
+
+// Helper component to parse URLs and render them as clickable links
+const LinkifiedText = memo(function LinkifiedText({ text }: { text: string }) {
+  if (typeof text !== 'string') return <>{text}</>;
+
+  const parts = text.split(URL_PATTERN);
+  if (parts.length === 1) {
+    return <>{text}</>;
+  }
+
+  return (
+    <>
+      {parts.map((part, i) => {
+        if (part.match(URL_PATTERN)) {
+          return (
+            <a
+              key={i}
+              href={part}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="chat-link"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {part}
+            </a>
+          );
+        }
+        return part;
+      })}
+    </>
+  );
+});
+
 interface ChartData {
   __chart__: true;
   config: ChartConfig;
@@ -206,7 +241,15 @@ const DataTable = memo(function DataTable({ data }: { data: TableData }) {
           {data.rows.map((row, rowIdx) => (
             <tr key={rowIdx}>
               {row.map((cell, cellIdx) => (
-                <td key={cellIdx}>{cell === null ? <span className="null-value">NULL</span> : String(cell)}</td>
+                <td key={cellIdx}>
+                  {cell === null ? (
+                    <span className="null-value">NULL</span>
+                  ) : typeof cell === 'string' ? (
+                    <LinkifiedText text={cell} />
+                  ) : (
+                    String(cell)
+                  )}
+                </td>
               ))}
             </tr>
           ))}
@@ -345,7 +388,9 @@ const ChartDisplay = memo(function ChartDisplay({ chartData }: { chartData: Char
       </button>
       <canvas ref={canvasRef}></canvas>
       {chartData.description && (
-        <p className="chart-description">{chartData.description}</p>
+        <p className="chart-description">
+          <LinkifiedText text={chartData.description} />
+        </p>
       )}
     </div>
   );
@@ -391,10 +436,39 @@ const DataTableDisplay = memo(function DataTableDisplay({ tableData }: { tableDa
             }
           }
 
+          // Prepare columns with linkification support
+          const existingColumns = tableData.config.columns || [];
+          const preparedColumns = existingColumns.map((col: any) => {
+            const existingRender = col.render;
+            return {
+              ...col,
+              render: (data: any, type: string, row: any, meta: any) => {
+                let val = data;
+                // Call existing renderer if it exists
+                if (typeof existingRender === 'function') {
+                  val = existingRender(data, type, row, meta);
+                } else if (typeof existingRender === 'string' && (window as any).$.fn.dataTable.render[existingRender]) {
+                  // Handle built-in renderers if they are passed as strings (rare but possible)
+                  val = (window as any).$.fn.dataTable.render[existingRender]()(data, type, row, meta);
+                }
+
+                if (type === 'display' && typeof val === 'string' && val.match(URL_PATTERN)) {
+                  // Replace URLs with clickable <a> tags
+                  return val.replace(URL_PATTERN, '<a href="$1" target="_blank" rel="noopener noreferrer" class="chat-link">$1</a>');
+                }
+                return val;
+              }
+            };
+          });
+
           // Initialize DataTable
           tableInstanceRef.current = $(tableEl).DataTable({
             ...tableData.config,
+            columns: preparedColumns,
             destroy: true, // Allow re-initialization
+            columnDefs: [
+              ...(Array.isArray((tableData.config as any).columnDefs) ? (tableData.config as any).columnDefs : [])
+            ]
           });
         }
       } catch (err) {
@@ -433,7 +507,15 @@ const DataTableDisplay = memo(function DataTableDisplay({ tableData }: { tableDa
               {tableData.config.data.map((row, rowIdx) => (
                 <tr key={rowIdx}>
                   {(row as unknown[]).map((cell, cellIdx) => (
-                    <td key={cellIdx}>{cell === null ? 'NULL' : String(cell)}</td>
+                    <td key={cellIdx}>
+                      {cell === null ? (
+                        'NULL'
+                      ) : typeof cell === 'string' ? (
+                        <LinkifiedText text={cell} />
+                      ) : (
+                        String(cell)
+                      )}
+                    </td>
                   ))}
                 </tr>
               ))}
@@ -2211,7 +2293,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
                                           {attachments.length > 0 && <MessageAttachments attachments={attachments} onImageClick={setModalImageUrl} />}
                                           {text && (
                                             <div className="chat-message-text chat-message-user-text">
-                                              {text}
+                                              <LinkifiedText text={text} />
                                             </div>
                                           )}
                                         </>
