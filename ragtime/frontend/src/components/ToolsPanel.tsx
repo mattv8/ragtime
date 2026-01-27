@@ -12,6 +12,9 @@ interface ConfirmationState {
   onCancel?: () => void;
 }
 
+// Inline field being edited
+type EditingField = 'name' | 'description' | null;
+
 // Heartbeat polling interval (15 seconds)
 const HEARTBEAT_INTERVAL = 15000;
 
@@ -28,10 +31,19 @@ interface ToolCardProps {
   onSchemaReindex?: (toolId: string, fullReindex: boolean) => void;
   schemaIndexing?: boolean;
   schemaStats?: SchemaIndexStats | null;
+  onInlineUpdate?: (toolId: string, updates: { name?: string; description?: string }) => Promise<void>;
 }
 
-function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing, onPdmReindex, pdmIndexing, onSchemaReindex, schemaIndexing, schemaStats }: ToolCardProps) {
+function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing, onPdmReindex, pdmIndexing, onSchemaReindex, schemaIndexing, schemaStats, onInlineUpdate }: ToolCardProps) {
   const typeInfo = TOOL_TYPE_INFO[tool.tool_type];
+
+  // Inline editing state
+  const [editingField, setEditingField] = useState<EditingField>(null);
+  const [editName, setEditName] = useState(tool.name);
+  const [editDescription, setEditDescription] = useState(tool.description || '');
+  const [saving, setSaving] = useState(false);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+  const descTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Check if schema indexing is enabled for this tool
   const hasSchemaIndexing = (tool.tool_type === 'postgres' || tool.tool_type === 'mssql' || tool.tool_type === 'mysql') &&
@@ -105,12 +117,119 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
 
   const heartbeatDisplay = getHeartbeatDisplay();
 
+  // Auto-resize textarea to fit content
+  const autoResizeTextarea = (textarea: HTMLTextAreaElement | null) => {
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  };
+
+  // Focus input/textarea when entering edit mode
+  useEffect(() => {
+    if (editingField === 'name' && nameInputRef.current) {
+      nameInputRef.current.focus();
+      nameInputRef.current.select();
+    } else if (editingField === 'description' && descTextareaRef.current) {
+      descTextareaRef.current.focus();
+      descTextareaRef.current.select();
+      autoResizeTextarea(descTextareaRef.current);
+    }
+  }, [editingField]);
+
+  // Sync local state when tool prop changes
+  useEffect(() => {
+    setEditName(tool.name);
+    setEditDescription(tool.description || '');
+  }, [tool.name, tool.description]);
+
+  const handleStartEdit = (field: EditingField) => {
+    setEditingField(field);
+    if (field === 'name') {
+      setEditName(tool.name);
+    } else if (field === 'description') {
+      setEditDescription(tool.description || '');
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setEditingField(null);
+    setEditName(tool.name);
+    setEditDescription(tool.description || '');
+  };
+
+  const handleSaveEdit = async () => {
+    if (!onInlineUpdate || saving) return;
+
+    const updates: { name?: string; description?: string } = {};
+
+    if (editingField === 'name' && editName.trim() !== tool.name) {
+      if (!editName.trim()) {
+        // Don't allow empty names
+        handleCancelEdit();
+        return;
+      }
+      updates.name = editName.trim();
+    } else if (editingField === 'description' && editDescription !== (tool.description || '')) {
+      updates.description = editDescription;
+    }
+
+    if (Object.keys(updates).length === 0) {
+      setEditingField(null);
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await onInlineUpdate(tool.id, updates);
+      setEditingField(null);
+    } catch (err) {
+      console.error('Failed to save:', err);
+      // Keep edit mode open on error
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      handleCancelEdit();
+    } else if (e.key === 'Enter' && (editingField === 'name' || e.ctrlKey)) {
+      e.preventDefault();
+      handleSaveEdit();
+    }
+  };
+
   return (
     <div className={`tool-card ${!tool.enabled ? 'disabled' : ''}`}>
       <div className="tool-card-header">
         <div className="tool-card-icon"><Icon name={getToolIconType(typeInfo?.icon)} size={24} /></div>
         <div className="tool-card-title">
-          <h3>{tool.name}</h3>
+          {editingField === 'name' ? (
+            <div className="inline-edit-field">
+              <input
+                ref={nameInputRef}
+                type="text"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                onKeyDown={handleKeyDown}
+                onBlur={handleSaveEdit}
+                disabled={saving}
+                className="inline-edit-input"
+              />
+            </div>
+          ) : (
+            <div className="editable-field-wrapper" onClick={() => handleStartEdit('name')}>
+              <h3>{tool.name}</h3>
+              <button
+                type="button"
+                className="inline-edit-btn"
+                onClick={(e) => { e.stopPropagation(); handleStartEdit('name'); }}
+                title="Edit name"
+              >
+                <Icon name="pencil" size={14} />
+              </button>
+            </div>
+          )}
           <span className="tool-card-type">{typeInfo?.name || tool.tool_type}</span>
         </div>
         <div className="tool-card-heartbeat">
@@ -133,8 +252,42 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
         </div>
       </div>
 
-      {tool.description && (
-        <p className="tool-card-description">{tool.description}</p>
+      {editingField === 'description' ? (
+        <div className="inline-edit-field description-edit">
+          <textarea
+            ref={descTextareaRef}
+            value={editDescription}
+            onChange={(e) => {
+              setEditDescription(e.target.value);
+              autoResizeTextarea(e.target);
+            }}
+            onKeyDown={handleKeyDown}
+            onBlur={handleSaveEdit}
+            disabled={saving}
+            className="inline-edit-textarea"
+            rows={1}
+            placeholder="Description for AI..."
+          />
+        </div>
+      ) : (
+        <div
+          className="editable-field-wrapper description-wrapper"
+          onClick={() => handleStartEdit('description')}
+        >
+          {tool.description ? (
+            <p className="tool-card-description">{tool.description}</p>
+          ) : (
+            <p className="tool-card-description placeholder">Add description for AI...</p>
+          )}
+          <button
+            type="button"
+            className="inline-edit-btn"
+            onClick={(e) => { e.stopPropagation(); handleStartEdit('description'); }}
+            title="Edit description"
+          >
+            <Icon name="pencil" size={14} />
+          </button>
+        </div>
       )}
 
       <div className="tool-card-connection">
@@ -440,6 +593,23 @@ export function ToolsPanel({ onSchemaJobTriggered }: ToolsPanelProps) {
     }
   };
 
+  const handleInlineUpdate = async (toolId: string, updates: { name?: string; description?: string }) => {
+    try {
+      await api.updateToolConfig(toolId, updates);
+      await loadTools();
+      if (updates.name) {
+        setSuccess('Tool name updated');
+      } else {
+        setSuccess('Description updated');
+      }
+      setTimeout(() => setSuccess(null), 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update');
+      setTimeout(() => setError(null), 3000);
+      throw err; // Re-throw to let ToolCard know the save failed
+    }
+  };
+
   if (showWizard) {
     return (
       <ToolWizard
@@ -517,6 +687,7 @@ export function ToolsPanel({ onSchemaJobTriggered }: ToolsPanelProps) {
                 onSchemaReindex={handleSchemaReindex}
                 schemaIndexing={schemaIndexingToolId === tool.id}
                 schemaStats={schemaStats[tool.id] || null}
+                onInlineUpdate={handleInlineUpdate}
               />
             ))}
           </div>

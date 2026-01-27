@@ -811,6 +811,116 @@ body {
   padding-top: var(--space-md);
 }
 
+/* Inline Edit for Tool Cards */
+.editable-field-wrapper {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-xs);
+  cursor: pointer;
+  position: relative;
+}
+
+.editable-field-wrapper h3 {
+  margin: 0;
+}
+
+.editable-field-wrapper .inline-edit-btn {
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.editable-field-wrapper:hover .inline-edit-btn {
+  opacity: 1;
+}
+
+.description-wrapper {
+  margin-bottom: var(--space-sm);
+}
+
+.description-wrapper .tool-card-description {
+  margin-bottom: 0;
+  flex: 1;
+}
+
+.description-wrapper .tool-card-description.placeholder {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.inline-edit-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+  transition: all var(--transition-fast);
+}
+
+.inline-edit-btn:hover {
+  color: var(--color-primary);
+}
+
+.inline-edit-field {
+  width: 100%;
+}
+
+.inline-edit-input {
+  width: 100% !important;
+  font-size: var(--text-base) !important;
+  font-weight: 600 !important;
+  color: var(--color-text-primary) !important;
+  background: transparent !important;
+  border: 1px solid var(--color-primary-border) !important;
+  box-shadow: none !important;
+  padding: 4px 8px !important;
+  margin: -5px -9px !important;
+  outline: none !important;
+  border-radius: var(--radius-sm) !important;
+}
+
+.inline-edit-input:focus {
+  outline: none !important;
+  border-color: var(--color-primary) !important;
+  box-shadow: none !important;
+}
+
+.description-edit {
+  margin-bottom: var(--space-sm);
+  padding: 2px 0;
+}
+
+.inline-edit-textarea {
+  width: 100% !important;
+  font-size: var(--text-sm) !important;
+  color: var(--color-text-secondary) !important;
+  background: transparent !important;
+  border: 1px solid var(--color-primary-border) !important;
+  box-shadow: none !important;
+  padding: 6px 10px !important;
+  margin: -7px -11px !important;
+  resize: none !important;
+  overflow: hidden !important;
+  outline: none !important;
+  line-height: var(--leading-normal) !important;
+  font-family: inherit !important;
+  display: -webkit-box !important;
+  -webkit-box-orient: vertical !important;
+  border-radius: var(--radius-sm) !important;
+}
+
+.inline-edit-textarea:focus {
+  outline: none !important;
+  border-color: var(--color-primary) !important;
+  box-shadow: none !important;
+}
+
 /* =============================================================================
    WIZARD LAYOUT
    ============================================================================= */
