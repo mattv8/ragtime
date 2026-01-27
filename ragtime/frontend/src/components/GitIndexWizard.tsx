@@ -147,6 +147,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
   const [enableOcr, setEnableOcr] = useState(configSnapshot?.enable_ocr || false);
   const [gitCloneTimeoutMinutes, setGitCloneTimeoutMinutes] = useState(configSnapshot?.git_clone_timeout_minutes || 5);
   const [gitHistoryDepth, setGitHistoryDepth] = useState(configSnapshot?.git_history_depth || 1);
+  const [reindexIntervalHours, setReindexIntervalHours] = useState(configSnapshot?.reindex_interval_hours || 0);
   const [timeoutManuallySet, setTimeoutManuallySet] = useState(false);  // Track if user overrode timeout
   const [exclusionsApplied, setExclusionsApplied] = useState(false);
   const [patternsExpanded, setPatternsExpanded] = useState(isEditMode);  // Expand by default in edit mode
@@ -178,6 +179,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         setChunkOverlap(snapshot.chunk_overlap || 200);
         setMaxFileSizeKb(snapshot.max_file_size_kb || 500);
         setEnableOcr(snapshot.enable_ocr || false);
+        setReindexIntervalHours(snapshot.reindex_interval_hours || 0);
 
         // Use nullish coalescing - 0 is a valid depth (full history)
         const loadedDepth = snapshot.git_history_depth ?? 1;
@@ -195,6 +197,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         setChunkOverlap(200);
         setMaxFileSizeKb(500);
         setEnableOcr(false);
+        setReindexIntervalHours(0);
         setGitCloneTimeoutMinutes(5);
         setGitHistoryDepth(1);
         setTimeoutManuallySet(false);
@@ -454,6 +457,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           enable_ocr: enableOcr,
           git_clone_timeout_minutes: gitCloneTimeoutMinutes,
           git_history_depth: gitHistoryDepth,
+          reindex_interval_hours: reindexIntervalHours,
         },
       });
       const successMessage = `Job started - ID: ${job.id}`;
@@ -520,12 +524,14 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         enable_ocr: enableOcr,
         git_clone_timeout_minutes: gitCloneTimeoutMinutes,
         git_history_depth: gitHistoryDepth,
+        reindex_interval_hours: reindexIntervalHours,
       });
       // Reflect saved config locally so the UI shows persisted values
       const snap = updated?.config_snapshot;
       if (snap) {
         setGitHistoryDepth(snap.git_history_depth ?? gitHistoryDepth);
         setGitCloneTimeoutMinutes(snap.git_clone_timeout_minutes ?? gitCloneTimeoutMinutes);
+        setReindexIntervalHours(snap.reindex_interval_hours ?? reindexIntervalHours);
         setFilePatterns(snap.file_patterns?.join(', ') || filePatterns);
         setExcludePatterns(snap.exclude_patterns?.join(', ') || excludePatterns);
         setChunkSize(snap.chunk_size ?? chunkSize);
@@ -733,6 +739,30 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
               : gitHistoryDepth === 1
                 ? 'Shallow clone: Only latest commit. Fastest, but no git history search.'
                 : `Indexes last ${gitHistoryDepth} commits. Clone time scales with depth.`}
+          </small>
+        </div>
+
+        <div className="form-group" style={{ marginTop: '12px' }}>
+          <label>Auto Re-index Interval</label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <select
+              value={reindexIntervalHours}
+              onChange={(e) => setReindexIntervalHours(parseInt(e.target.value, 10))}
+              disabled={isLoading}
+              style={{ flex: 1 }}
+            >
+              <option value={0}>Manual only</option>
+              <option value={1}>Every hour</option>
+              <option value={6}>Every 6 hours</option>
+              <option value={12}>Every 12 hours</option>
+              <option value={24}>Every 24 hours (daily)</option>
+              <option value={168}>Every week</option>
+            </select>
+          </div>
+          <small style={{ color: '#888', fontSize: '0.8rem' }}>
+            {reindexIntervalHours === 0
+              ? 'Re-indexing will only happen when you click "Pull & Re-index".'
+              : `Repository will be automatically pulled and re-indexed every ${reindexIntervalHours} hour${reindexIntervalHours > 1 ? 's' : ''}.`}
           </small>
         </div>
 
@@ -997,6 +1027,27 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
                   : `Indexes last ${gitHistoryDepth} commits. Clone time scales with depth.`}
             </small>
           </div>
+
+          <div className="form-group" style={{ marginTop: '12px' }}>
+            <label>Auto Re-index Interval</label>
+            <select
+              value={reindexIntervalHours}
+              onChange={(e) => setReindexIntervalHours(parseInt(e.target.value, 10))}
+              disabled={isLoading}
+            >
+              <option value={0}>Manual only</option>
+              <option value={1}>Every hour</option>
+              <option value={6}>Every 6 hours</option>
+              <option value={12}>Every 12 hours</option>
+              <option value={24}>Every 24 hours (daily)</option>
+              <option value={168}>Every week</option>
+            </select>
+            <small style={{ color: '#888', fontSize: '0.8rem' }}>
+              {reindexIntervalHours === 0
+                ? 'Re-indexing will only happen when you click "Pull & Re-index".'
+                : `Repository will be automatically pulled and re-indexed every ${reindexIntervalHours} hour${reindexIntervalHours > 1 ? 's' : ''}.`}
+            </small>
+          </div>
         </details>
 
         <div className="wizard-actions">
@@ -1243,6 +1294,27 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
                         ? `Indexes last ${gitHistoryDepth} commits (${dateEstimate}). Clone time scales with depth.`
                         : `Indexes last ${gitHistoryDepth} commits. Clone time scales with depth.`;
                     })()}
+            </small>
+          </div>
+
+          <div className="form-group" style={{ marginTop: '12px' }}>
+            <label>Auto Re-index Interval</label>
+            <select
+              value={reindexIntervalHours}
+              onChange={(e) => setReindexIntervalHours(parseInt(e.target.value, 10))}
+              disabled={isLoading}
+            >
+              <option value={0}>Manual only</option>
+              <option value={1}>Every hour</option>
+              <option value={6}>Every 6 hours</option>
+              <option value={12}>Every 12 hours</option>
+              <option value={24}>Every 24 hours (daily)</option>
+              <option value={168}>Every week</option>
+            </select>
+            <small style={{ color: '#888', fontSize: '0.8rem' }}>
+              {reindexIntervalHours === 0
+                ? 'Re-indexing will only happen when you click "Pull & Re-index".'
+                : `Repository will be automatically pulled and re-indexed every ${reindexIntervalHours} hour${reindexIntervalHours > 1 ? 's' : ''}.`}
             </small>
           </div>
 

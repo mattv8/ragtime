@@ -547,6 +547,7 @@ async def reindex_from_git(
         enable_ocr=config_data.get("enable_ocr", False),
         git_clone_timeout_minutes=config_data.get("git_clone_timeout_minutes", 5),
         git_history_depth=config_data.get("git_history_depth", 1),
+        reindex_interval_hours=config_data.get("reindex_interval_hours", 0),
     )
 
     try:
@@ -811,6 +812,12 @@ class UpdateIndexConfigRequest(BaseModel):
         ge=0,
         description="Git history depth. 0=full history, 1=shallow (latest only), N=last N commits",
     )
+    reindex_interval_hours: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=8760,
+        description="Hours between automatic pull & re-index (0 = manual only)",
+    )
 
 
 @router.patch("/{name}/config")
@@ -852,6 +859,7 @@ async def update_index_config(
         "enable_ocr",
         "git_clone_timeout_minutes",
         "git_history_depth",
+        "reindex_interval_hours",
     ]:
         if key in existing_config:
             new_config[key] = existing_config[key]
@@ -873,6 +881,8 @@ async def update_index_config(
         new_config["git_clone_timeout_minutes"] = request.git_clone_timeout_minutes
     if request.git_history_depth is not None:
         new_config["git_history_depth"] = request.git_history_depth
+    if request.reindex_interval_hours is not None:
+        new_config["reindex_interval_hours"] = request.reindex_interval_hours
 
     success = await repository.update_index_config(
         name=name,

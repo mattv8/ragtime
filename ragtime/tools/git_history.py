@@ -101,26 +101,43 @@ async def _run_git_command(
         return -1, "", str(e)
 
 
-async def _is_shallow_repository(repo_path: Path) -> bool:
-    """Check if a git repository is a shallow clone.
+async def _get_commit_count(repo_path: Path) -> int:
+    """Get the number of commits in the repository (reachable from HEAD)."""
+    returncode, stdout, _ = await _run_git_command(
+        repo_path, ["rev-list", "--count", "HEAD"], timeout=5
+    )
+    if returncode == 0 and stdout.strip().isdigit():
+        return int(stdout.strip())
+    return 0
 
-    Returns True if the repo was cloned with --depth (indicated by .git/shallow),
-    meaning it may have incomplete history which causes issues with commands
-    like 'git show' treating boundary commits as root commits (dumping all files).
+
+async def _is_shallow_repository(repo_path: Path) -> bool:
+    """Check if a git repository is a shallow clone AND has minimal history (depth=1).
+
+    Returns True ONLY if the repo is shallow AND has <= 1 commit.
+    Returns False if the repo is full depth OR if it is shallow but has > 1 commit.
     """
     # Check for .git/shallow file (indicates shallow clone)
     shallow_file = repo_path / ".git" / "shallow"
-    if shallow_file.exists():
-        return True
+    is_technical_shallow = shallow_file.exists()
 
-    # Also verify with git command for robustness
-    returncode, stdout, _ = await _run_git_command(
-        repo_path, ["rev-parse", "--is-shallow-repository"], timeout=5
-    )
-    if returncode == 0 and stdout.strip().lower() == "true":
-        return True
+    if not is_technical_shallow:
+        # Also verify with git command for robustness
+        returncode, stdout, _ = await _run_git_command(
+            repo_path, ["rev-parse", "--is-shallow-repository"], timeout=5
+        )
+        if returncode == 0 and stdout.strip().lower() == "true":
+            is_technical_shallow = True
 
-    return False
+    if not is_technical_shallow:
+        return False
+
+    # It is shallow, check if it has meaningful history (more than 1 commit)
+    commit_count = await _get_commit_count(repo_path)
+    if commit_count > 1:
+        return False
+
+    return True
 
 
 async def _find_git_repos(index_name: Optional[str] = None) -> List[tuple[str, Path]]:
@@ -149,7 +166,7 @@ async def _find_git_repos(index_name: Optional[str] = None) -> List[tuple[str, P
             # Skip shallow clones - they have no meaningful history to search
             if await _is_shallow_repository(git_repo):
                 logger.debug(
-                    f"Skipping shallow git repo for {index_dir.name}: no history available"
+                    f"Skipping shallow git repo for {index_dir.name}: no meaningful history available"
                 )
                 continue
 

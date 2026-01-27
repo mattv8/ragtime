@@ -227,6 +227,7 @@ export interface IndexConfig {
   enable_ocr?: boolean;  // Enable OCR for images (default false)
   git_clone_timeout_minutes?: number;  // Max time for git clone (default 5 min)
   git_history_depth?: number;  // 1=shallow (default), 0=full history
+  reindex_interval_hours?: number;  // Hours between auto pull & re-index (0=manual)
 }
 
 export interface IndexJob {
@@ -253,6 +254,7 @@ export interface IndexConfigSnapshot {
   enable_ocr: boolean;
   git_clone_timeout_minutes?: number;  // May be absent for older indexes
   git_history_depth?: number;  // 1=shallow (default), 0=full history
+  reindex_interval_hours?: number;  // Hours between auto pull & re-index (0=manual)
 }
 
 export interface IndexInfo {
@@ -287,6 +289,7 @@ export interface UpdateIndexConfigRequest {
   enable_ocr?: boolean;
   git_clone_timeout_minutes?: number;
   git_history_depth?: number;
+  reindex_interval_hours?: number;
 }
 
 export interface RenameIndexRequest {

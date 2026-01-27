@@ -113,6 +113,7 @@ class BackgroundTaskService:
         self._shutdown = False
         self._filesystem_scheduler_task: Optional[asyncio.Task] = None
         self._schema_scheduler_task: Optional[asyncio.Task] = None
+        self._git_scheduler_task: Optional[asyncio.Task] = None
 
     async def start(self):
         """Start the background task service."""
@@ -129,6 +130,10 @@ class BackgroundTaskService:
         # Start schema re-indexing scheduler
         self._schema_scheduler_task = asyncio.create_task(
             self._schema_reindex_scheduler()
+        )
+        # Start git re-indexing scheduler
+        self._git_scheduler_task = asyncio.create_task(
+            self._git_reindex_scheduler()
         )
 
     async def stop(self):
@@ -152,6 +157,14 @@ class BackgroundTaskService:
             self._schema_scheduler_task.cancel()
             try:
                 await self._schema_scheduler_task
+            except asyncio.CancelledError:
+                pass
+
+        # Cancel git scheduler
+        if self._git_scheduler_task and not self._git_scheduler_task.done():
+            self._git_scheduler_task.cancel()
+            try:
+                await self._git_scheduler_task
             except asyncio.CancelledError:
                 pass
 
@@ -390,6 +403,119 @@ class BackgroundTaskService:
 
         except Exception as e:
             logger.error(f"Error in schema reindex check: {e}")
+
+    async def _git_reindex_scheduler(self):
+        """
+        Periodically check git-based indexes and trigger pull & re-indexing.
+
+        Runs every hour and checks each git-based index to see
+        if it's due for re-indexing based on its configured interval.
+        """
+        # Initial delay to let the system stabilize
+        await asyncio.sleep(180)  # 3 minutes
+
+        while not self._shutdown:
+            try:
+                await self._check_and_trigger_git_reindex()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in git reindex scheduler: {e}")
+
+            # Check every hour
+            await asyncio.sleep(3600)
+
+    async def _check_and_trigger_git_reindex(self):
+        """Check git-based indexes and trigger pull & re-indexing if due."""
+        from ragtime.indexer.service import indexer
+
+        try:
+            db = await repository._get_db()
+
+            # Get all git-based index metadata
+            git_indexes = await db.indexmetadata.find_many(
+                where={"sourceType": "git"}
+            )
+
+            for metadata in git_indexes:
+                try:
+                    # Get config snapshot
+                    config_snapshot = metadata.configSnapshot
+                    if not isinstance(config_snapshot, dict):
+                        continue
+
+                    # Get reindex interval (default 0 = manual only)
+                    interval_hours = config_snapshot.get("reindex_interval_hours", 0)
+                    if interval_hours <= 0:
+                        continue  # Manual only
+
+                    # Check if re-indexing is due
+                    last_modified = metadata.lastModified
+                    if last_modified:
+                        next_reindex = last_modified + timedelta(hours=interval_hours)
+                        if datetime.utcnow() < next_reindex.replace(tzinfo=None):
+                            continue  # Not due yet
+
+                    # Check if there's already a running job for this index
+                    running_job = await db.indexjob.find_first(
+                        where={
+                            "name": metadata.name,
+                            "status": {"in": ["pending", "processing"]},
+                        }
+                    )
+                    if running_job:
+                        logger.debug(
+                            f"Skipping scheduled git reindex for '{metadata.name}': "
+                            f"job {running_job.id} already running"
+                        )
+                        continue
+
+                    # Get stored token (decrypt if needed)
+                    from ragtime.core.encryption import decrypt_secret
+
+                    git_token = decrypt_secret(metadata.gitToken) if metadata.gitToken else None
+
+                    # Build config from snapshot
+                    from ragtime.indexer.models import IndexConfig
+
+                    config = IndexConfig(
+                        name=metadata.name,
+                        description=metadata.description or "",
+                        file_patterns=config_snapshot.get("file_patterns", ["**/*"]),
+                        exclude_patterns=config_snapshot.get(
+                            "exclude_patterns",
+                            ["**/test/**", "**/tests/**", "**/__pycache__/**"],
+                        ),
+                        chunk_size=config_snapshot.get("chunk_size", 1000),
+                        chunk_overlap=config_snapshot.get("chunk_overlap", 200),
+                        max_file_size_kb=config_snapshot.get("max_file_size_kb", 500),
+                        enable_ocr=config_snapshot.get("enable_ocr", False),
+                        git_clone_timeout_minutes=config_snapshot.get(
+                            "git_clone_timeout_minutes", 5
+                        ),
+                        git_history_depth=config_snapshot.get("git_history_depth", 1),
+                        reindex_interval_hours=interval_hours,
+                    )
+
+                    # Trigger re-indexing
+                    logger.info(
+                        f"Triggering scheduled git pull & re-index for '{metadata.name}' "
+                        f"(last indexed: {last_modified or 'never'})"
+                    )
+                    await indexer.create_index_from_git(
+                        git_url=metadata.source or "",
+                        branch=metadata.gitBranch or "main",
+                        config=config,
+                        git_token=git_token,
+                    )
+
+                except Exception as e:
+                    logger.warning(
+                        f"Error checking git index '{metadata.name}': {e}"
+                    )
+
+        except Exception as e:
+            logger.error(f"Error in git reindex check: {e}")
 
     def start_task(
         self,

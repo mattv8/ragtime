@@ -67,6 +67,12 @@ class IndexConfig(BaseModel):
         ge=0,
         description="Git clone depth. 1=latest commit only (fastest), 0=full history (slowest). Values >1 specify number of commits.",
     )
+    reindex_interval_hours: int = Field(
+        default=0,
+        ge=0,
+        le=8760,  # Max 1 year
+        description="Hours between automatic pull & re-index (0 = manual only). Only applies to git-based indexes.",
+    )
 
 
 class IndexJob(BaseModel):
@@ -123,6 +129,7 @@ class IndexConfigSnapshot(BaseModel):
     enable_ocr: bool = Field(default=False)
     git_clone_timeout_minutes: int = Field(default=5)
     git_history_depth: int = Field(default=1)
+    reindex_interval_hours: int = Field(default=0)
 
 
 class IndexInfo(BaseModel):
