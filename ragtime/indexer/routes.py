@@ -84,6 +84,11 @@ ASSETS_DIR = DIST_DIR / "assets"
 # Check if running in development mode
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 
+# Cache for SSH credential validation results (tool_id -> (timestamp, result))
+# This allows the heartbeat to return cached deep-check results
+_ssh_credential_cache: dict[str, tuple[float, ToolTestResponse]] = {}
+_SSH_CREDENTIAL_CACHE_TTL = 15.0  # seconds
+
 
 @router.get("", response_model=List[IndexInfo])
 async def list_indexes(_user: User = Depends(require_admin)):
@@ -2704,14 +2709,74 @@ async def _heartbeat_odoo(config: dict) -> ToolTestResponse:
             return ToolTestResponse(success=False, message=str(e)[:100])
 
 
+def _get_ssh_cache_key(config: dict) -> str:
+    """Generate a cache key from SSH config (host:port:user)."""
+    host = config.get("host", "")
+    port = config.get("port", 22)
+    user = config.get("user", "")
+    return f"{host}:{port}:{user}"
+
+
+async def _deep_ssh_credential_check(config: dict) -> ToolTestResponse:
+    """
+    Perform a full SSH credential validation using Paramiko.
+
+    This is slower but verifies that credentials are correct.
+    Results are cached for 15 seconds to avoid repeated checks.
+    """
+    from ragtime.core.ssh import SSHConfig, test_ssh_connection
+
+    host = config.get("host", "")
+    port = config.get("port", 22)
+    user = config.get("user", "")
+    key_path = config.get("key_path")
+    key_content = config.get("key_content")
+    key_passphrase = config.get("key_passphrase")
+    password = config.get("password")
+
+    if not host or not user:
+        return ToolTestResponse(success=False, message="SSH not configured")
+
+    ssh_config = SSHConfig(
+        host=host,
+        port=port,
+        user=user,
+        password=password if password else None,
+        key_path=key_path if key_path else None,
+        key_content=key_content if key_content else None,
+        key_passphrase=key_passphrase if key_passphrase else None,
+        timeout=10,  # Shorter timeout for heartbeat check
+    )
+
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, lambda: test_ssh_connection(ssh_config)
+        )
+
+        if result.success:
+            return ToolTestResponse(success=True, message="OK")
+        else:
+            error_msg = result.stderr or result.stdout or "Authentication failed"
+            # Truncate for heartbeat display
+            return ToolTestResponse(
+                success=False,
+                message=error_msg[:80] if len(error_msg) > 80 else error_msg,
+            )
+
+    except Exception as e:
+        return ToolTestResponse(success=False, message=f"SSH error: {str(e)[:60]}")
+
+
 async def _heartbeat_ssh(config: dict) -> ToolTestResponse:
     """
-    Quick SSH heartbeat check using socket-level port check.
+    SSH heartbeat check with credential validation.
 
-    Uses asyncio sockets instead of paramiko to avoid blocking threads.
-    This only verifies the SSH port is reachable, not full authentication.
-    Full connection tests are done via the 'Test' button.
+    Uses cached credential check results (refreshed every 15 seconds) to avoid
+    blocking the UI while still validating that credentials are correct.
+    Falls back to quick port check if cache is being refreshed.
     """
+    import time
 
     host = config.get("host", "")
     port = config.get("port", 22)
@@ -2720,32 +2785,61 @@ async def _heartbeat_ssh(config: dict) -> ToolTestResponse:
     if not host or not user:
         return ToolTestResponse(success=False, message="SSH not configured")
 
-    try:
-        # Use asyncio socket to check if SSH port is reachable
-        # This is non-blocking and respects asyncio timeout
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(host, port), timeout=3.0
-        )
+    cache_key = _get_ssh_cache_key(config)
+    current_time = time.time()
 
-        # Read SSH banner to verify it's actually an SSH server
-        banner = await asyncio.wait_for(reader.readline(), timeout=2.0)
+    # Check if we have a valid cached result
+    if cache_key in _ssh_credential_cache:
+        cached_time, cached_result = _ssh_credential_cache[cache_key]
+        cache_age = current_time - cached_time
+
+        if cache_age < _SSH_CREDENTIAL_CACHE_TTL:
+            # Return cached result
+            return cached_result
+
+    # Cache expired or not present - do a quick port check first
+    # to provide fast feedback, then trigger background credential refresh
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port), timeout=2.0
+        )
+        banner = await asyncio.wait_for(reader.readline(), timeout=1.0)
         writer.close()
         await writer.wait_closed()
 
-        if banner and b"SSH" in banner:
-            return ToolTestResponse(success=True, message="OK")
-        else:
-            return ToolTestResponse(
+        if not (banner and b"SSH" in banner):
+            result = ToolTestResponse(
                 success=False,
                 message=f"Not an SSH server: {banner.decode('utf-8', errors='replace')[:50]}",
             )
+            _ssh_credential_cache[cache_key] = (current_time, result)
+            return result
 
     except asyncio.TimeoutError:
-        return ToolTestResponse(success=False, message="Connection timeout")
+        result = ToolTestResponse(success=False, message="Connection timeout")
+        _ssh_credential_cache[cache_key] = (current_time, result)
+        return result
     except ConnectionRefusedError:
-        return ToolTestResponse(success=False, message="Connection refused")
+        result = ToolTestResponse(success=False, message="Connection refused")
+        _ssh_credential_cache[cache_key] = (current_time, result)
+        return result
     except OSError as e:
-        return ToolTestResponse(success=False, message=str(e)[:100])
+        result = ToolTestResponse(success=False, message=str(e)[:100])
+        _ssh_credential_cache[cache_key] = (current_time, result)
+        return result
+
+    # Port is reachable - now do a full credential check
+    # This runs inline but is cached, so subsequent calls return quickly
+    try:
+        result = await asyncio.wait_for(
+            _deep_ssh_credential_check(config), timeout=12.0
+        )
+        _ssh_credential_cache[cache_key] = (current_time, result)
+        return result
+    except asyncio.TimeoutError:
+        result = ToolTestResponse(success=False, message="Credential check timeout")
+        _ssh_credential_cache[cache_key] = (current_time, result)
+        return result
 
 
 async def _heartbeat_filesystem(config: dict) -> ToolTestResponse:
@@ -6046,7 +6140,8 @@ async def update_conversation_model(
 
 
 @router.patch(
-    "/conversations/{conversation_id}/tool-output-mode", response_model=ConversationResponse
+    "/conversations/{conversation_id}/tool-output-mode",
+    response_model=ConversationResponse,
 )
 async def update_conversation_tool_output_mode(
     conversation_id: str, body: dict, user: User = Depends(get_current_user)
@@ -6062,7 +6157,7 @@ async def update_conversation_tool_output_mode(
     if mode not in ["default", "show", "hide", "auto"]:
         raise HTTPException(
             status_code=400,
-            detail="tool_output_mode must be 'default', 'show', 'hide', or 'auto'"
+            detail="tool_output_mode must be 'default', 'show', 'hide', or 'auto'",
         )
 
     conv = await repository.update_conversation_tool_output_mode(conversation_id, mode)

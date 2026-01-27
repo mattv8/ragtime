@@ -683,7 +683,11 @@ body {
 }
 
 .heartbeat-indicator {
-  font-size: 1.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
   cursor: default;
   transition: all var(--transition-slow);
 }
@@ -747,6 +751,13 @@ body {
   background: var(--color-error-light);
   border: 1px solid var(--color-error-border);
   color: var(--color-error);
+}
+
+.error-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 .tool-card-meta {

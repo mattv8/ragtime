@@ -91,16 +91,16 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
   // Determine heartbeat display status
   const getHeartbeatDisplay = () => {
     if (!tool.enabled) {
-      return { status: 'disabled', label: 'Disabled', icon: '○' };
+      return { status: 'disabled', label: 'Disabled', icon: <Icon name="circle" size={16} /> };
     }
     if (!heartbeat) {
-      return { status: 'checking', label: 'Checking...', icon: '◌' };
+      return { status: 'checking', label: 'Checking...', icon: <Icon name="loader" size={16} /> };
     }
     if (heartbeat.alive) {
       const latency = heartbeat.latency_ms ? `${Math.round(heartbeat.latency_ms)}ms` : '';
-      return { status: 'alive', label: latency || 'Connected', icon: '●' };
+      return { status: 'alive', label: latency || 'Connected', icon: <Icon name="check" size={16} /> };
     }
-    return { status: 'dead', label: heartbeat.error || 'Disconnected', icon: '●' };
+    return { status: 'dead', label: heartbeat.error || 'Disconnected', icon: <Icon name="close" size={16} /> };
   };
 
   const heartbeatDisplay = getHeartbeatDisplay();
@@ -145,7 +145,9 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
       {/* Show heartbeat error if connection failed */}
       {heartbeat && !heartbeat.alive && tool.enabled && (
         <div className="tool-card-heartbeat-error">
-          <span className="error-icon">✗</span>
+          <span className="error-icon">
+            <Icon name="alert-circle" size={16} />
+          </span>
           <span>{heartbeat.error || 'Connection failed'}</span>
         </div>
       )}
