@@ -10,6 +10,7 @@ for each git-based index.
 """
 
 import asyncio
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -25,6 +26,40 @@ logger = get_logger(__name__)
 MAX_FILES_DISPLAY_LIMIT = 50
 # Maximum number of lines to display in diff output
 MAX_DIFF_LINES = 200
+
+
+async def _get_repo_diagnostics(repo_path: Path) -> str:
+    """Get diagnostic information about the git repository state."""
+    diagnostics = []
+
+    # Check last fetch time
+    fetch_head = repo_path / ".git" / "FETCH_HEAD"
+    if fetch_head.exists():
+        mtime = fetch_head.stat().st_mtime
+        last_fetch = datetime.fromtimestamp(mtime)
+        time_since = datetime.now() - last_fetch
+
+        # Format nice duration
+        if time_since.days > 0:
+            ago = f"{time_since.days} days ago"
+        elif time_since.seconds > 3600:
+            ago = f"{time_since.seconds // 3600} hours ago"
+        elif time_since.seconds > 60:
+            ago = f"{time_since.seconds // 60} minutes ago"
+        else:
+            ago = "just now"
+
+        diagnostics.append(
+            f"Last fetch: {ago} ({last_fetch.strftime('%Y-%m-%d %H:%M:%S')})"
+        )
+    else:
+        diagnostics.append("Last fetch: Never (fresh clone?)")
+
+    # Check if shallow
+    if await _is_shallow(repo_path):
+        diagnostics.append("Repo is shallow (incomplete history)")
+
+    return "; ".join(diagnostics)
 
 
 def _create_git_history_input_schema(available_repos: Optional[List[str]] = None):
@@ -111,25 +146,30 @@ async def _get_commit_count(repo_path: Path) -> int:
     return 0
 
 
+async def _is_shallow(repo_path: Path) -> bool:
+    """Check if a directory is a shallow clone."""
+    # Check for .git/shallow file (indicates shallow clone)
+    shallow_file = repo_path / ".git" / "shallow"
+    if shallow_file.exists():
+        return True
+
+    # Also verify with git command for robustness
+    returncode, stdout, _ = await _run_git_command(
+        repo_path, ["rev-parse", "--is-shallow-repository"], timeout=5
+    )
+    if returncode == 0 and stdout.strip().lower() == "true":
+        return True
+
+    return False
+
+
 async def _is_shallow_repository(repo_path: Path) -> bool:
     """Check if a git repository is a shallow clone AND has minimal history (depth=1).
 
     Returns True ONLY if the repo is shallow AND has <= 1 commit.
     Returns False if the repo is full depth OR if it is shallow but has > 1 commit.
     """
-    # Check for .git/shallow file (indicates shallow clone)
-    shallow_file = repo_path / ".git" / "shallow"
-    is_technical_shallow = shallow_file.exists()
-
-    if not is_technical_shallow:
-        # Also verify with git command for robustness
-        returncode, stdout, _ = await _run_git_command(
-            repo_path, ["rev-parse", "--is-shallow-repository"], timeout=5
-        )
-        if returncode == 0 and stdout.strip().lower() == "true":
-            is_technical_shallow = True
-
-    if not is_technical_shallow:
+    if not await _is_shallow(repo_path):
         return False
 
     # It is shallow, check if it has meaningful history (more than 1 commit)
@@ -238,8 +278,16 @@ async def _get_commit_details(repo_path: Path, commit_hash: str) -> str:
     )
 
     if rc_msg != 0:
-        if "unknown revision" in msg_stderr or "bad revision" in msg_stderr:
-            return f"Commit '{commit_hash}' not found in this repository"
+        if any(
+            msg in msg_stderr
+            for msg in ["unknown revision", "bad revision", "bad object"]
+        ):
+            diagnostics = await _get_repo_diagnostics(repo_path)
+            return (
+                f"Commit '{commit_hash}' not found locally.\n"
+                f"Repo Status: {diagnostics}.\n"
+                "Try re-indexing to fetch latest commits, or verify the commit hash."
+            )
         return f"Error getting commit details: {msg_stderr}"
 
     # Process stat output
@@ -279,6 +327,13 @@ async def _get_commit_diff(
     returncode, stdout, stderr = await _run_git_command(repo_path, args)
 
     if returncode != 0:
+        if "bad object" in stderr or "unknown revision" in stderr:
+            diagnostics = await _get_repo_diagnostics(repo_path)
+            return (
+                f"Commit '{commit_hash}' not found locally.\n"
+                f"Repo Status: {diagnostics}.\n"
+                "The index may be out of date (try re-indexing to fetch latest commits)."
+            )
         return f"Error getting diff: {stderr}"
 
     lines = stdout.splitlines()
