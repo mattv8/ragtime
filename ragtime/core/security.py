@@ -217,6 +217,15 @@ _SAFE_ODOO_PATTERN_STRINGS = [
     r"\.sorted\s*\(",
     r"env\s*\[.*\]",
     r"env\.registry",
+    # Raw cursor operations (SQL validated separately)
+    r"env\.cr\.execute\s*\(",
+    r"env\.cr\.fetchall\s*\(",
+    r"env\.cr\.fetchone\s*\(",
+    r"env\.cr\.fetchmany\s*\(",
+    r"env\.cr\.dictfetchall\s*\(",
+    r"env\.cr\.dictfetchone\s*\(",
+    r"env\.cr\.rowcount",
+    r"env\.cr\.mogrify\s*\(",
 ]
 SAFE_ODOO_PATTERNS = [re.compile(p) for p in _SAFE_ODOO_PATTERN_STRINGS]
 
@@ -252,6 +261,17 @@ _ODOO_GETATTR_RE = re.compile(r"getattr\s*\(", re.IGNORECASE)
 _ODOO_SAFE_GETATTR_RE = re.compile(r"getattr\s*\(\s*\w+\s*,\s*field_name")
 _ODOO_OPEN_WRITE_RE = re.compile(
     r"open\s*\([^)]*,\s*['\"][^'\"]*[wa\+][^'\"]*['\"]", re.IGNORECASE
+)
+# Extract SQL from env.cr.execute() - matches triple-quoted and single-quoted strings
+_ODOO_CR_EXECUTE_RE = re.compile(
+    r"env\.cr\.execute\s*\(\s*"
+    r"(?:"
+    r'"""([^"]*(?:"(?!"")|""(?!"))*[^"]*)"""'
+    r"|'''([^']*(?:'(?!'')|''(?!'))*[^']*)'''"
+    r'|"([^"]*)"'
+    r"|'([^']*)'"
+    r")",
+    re.DOTALL,
 )
 
 # =============================================================================
@@ -566,6 +586,20 @@ def validate_odoo_code(code: str, enable_write_ops: bool = False) -> Tuple[bool,
         else:
             logger.warning("open() with write/append mode detected and blocked")
             return False, "File writes via open() are not allowed"
+
+    # Validate SQL inside env.cr.execute() calls
+    for match in _ODOO_CR_EXECUTE_RE.finditer(code):
+        # Extract SQL from whichever group matched (triple or single quoted)
+        sql = match.group(1) or match.group(2) or match.group(3) or match.group(4)
+        if sql:
+            sql = sql.strip()
+            is_safe, reason = validate_sql_query(sql, enable_write=enable_write_ops)
+            if not is_safe:
+                logger.warning(f"Unsafe SQL in env.cr.execute(): {reason}")
+                return (
+                    False,
+                    f"SQL query in env.cr.execute() failed validation: {reason}",
+                )
 
     # Must contain at least one safe pattern (using precompiled patterns)
     has_safe_pattern = any(pattern.search(code) for pattern in SAFE_ODOO_PATTERNS)
