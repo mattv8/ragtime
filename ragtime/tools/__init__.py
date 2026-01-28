@@ -7,11 +7,6 @@ Tools are auto-discovered from this package. To add a new tool:
 3. Enable "my_tool" via the Settings UI at /indexes/ui
 
 See registry.py for the discovery mechanism.
-
-NOTE: Static tool definitions (odoo, postgres) are deprecated.
-      Use dynamic tool configs via the UI (Tools tab) instead.
-      The postgres_tool is kept for backwards compatibility but
-      odoo_tool has been removed in favor of odoo_shell tool configs.
 """
 
 from .registry import (

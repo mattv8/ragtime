@@ -27,28 +27,22 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from ragtime.core.database import get_db
-from ragtime.core.file_constants import (
-    PARSEABLE_DOCUMENT_EXTENSIONS,
-    UNPARSEABLE_BINARY_EXTENSIONS,
-)
+from ragtime.core.file_constants import (DOCUMENT_EXTENSIONS,
+                                         PARSEABLE_DOCUMENT_EXTENSIONS,
+                                         UNPARSEABLE_BINARY_EXTENSIONS)
 from ragtime.core.logging import get_logger
-from ragtime.indexer.document_parser import OCR_EXTENSIONS
-from ragtime.indexer.models import (
-    FilesystemAnalysisJob,
-    FilesystemAnalysisResult,
-    FilesystemAnalysisStatus,
-    FilesystemConnectionConfig,
-    FilesystemFileMetadata,
-    FilesystemIndexJob,
-    FilesystemIndexStatus,
-    FileTypeStats,
-)
+from ragtime.indexer.document_parser import (OCR_EXTENSIONS, is_ocr_supported,
+                                             is_supported_document)
+from ragtime.indexer.models import (FilesystemAnalysisJob,
+                                    FilesystemAnalysisResult,
+                                    FilesystemAnalysisStatus,
+                                    FilesystemConnectionConfig,
+                                    FilesystemFileMetadata, FilesystemIndexJob,
+                                    FilesystemIndexStatus, FileTypeStats)
 from ragtime.indexer.repository import repository
-from ragtime.indexer.vector_utils import (
-    ensure_embedding_column,
-    ensure_pgvector_extension,
-    get_embeddings_model,
-)
+from ragtime.indexer.vector_utils import (ensure_embedding_column,
+                                          ensure_pgvector_extension,
+                                          get_embeddings_model)
 
 logger = get_logger(__name__)
 
@@ -1384,12 +1378,11 @@ class FilesystemIndexerService:
             config: Filesystem connection config with chunk settings
             use_token_chunking: If True, use token-based chunking for accuracy
         """
-        from langchain_text_splitters import Language, RecursiveCharacterTextSplitter
+        from langchain_text_splitters import (Language,
+                                              RecursiveCharacterTextSplitter)
 
-        from ragtime.indexer.chunking import (
-            _get_file_extension,
-            _get_language_for_extension,
-        )
+        from ragtime.indexer.chunking import (_get_file_extension,
+                                              _get_language_for_extension)
 
         try:
             # Read file content
@@ -1675,16 +1668,28 @@ class FilesystemIndexerService:
                 for ext, stats in ext_stats.items():
                     effective_chunk = config.chunk_size - config.chunk_overlap
                     if effective_chunk > 0:
+                        # For images/OCR, the file size is NOT representative of text content.
+                        # Apply a drastic reduction factor (1/100) to estimate actual text content.
+                        if ext in OCR_EXTENSIONS:
+                            density_factor = 0.01
+                        # PDF/Office docs contain significant formatting overhead/binary data
+                        # Apply reduction factor (1/10)
+                        elif ext in PARSEABLE_DOCUMENT_EXTENSIONS:
+                            density_factor = 0.1
+                        else:
+                            density_factor = 1.0
+
+                        estimated_text_size = stats["total_size"] * density_factor
+
                         stats["estimated_chunks"] = max(
-                            1, stats["total_size"] // effective_chunk
+                            1, int(estimated_text_size // effective_chunk)
                         )
                     else:
                         stats["estimated_chunks"] = stats["file_count"]
 
                 # Get LLM-powered exclusion suggestions
-                from ragtime.indexer.llm_exclusions import (
-                    get_smart_exclusion_suggestions,
-                )
+                from ragtime.indexer.llm_exclusions import \
+                    get_smart_exclusion_suggestions
 
                 smart_exclusions, _used_llm = await get_smart_exclusion_suggestions(
                     ext_stats=dict(ext_stats),

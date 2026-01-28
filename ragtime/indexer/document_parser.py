@@ -20,21 +20,10 @@ import io
 from pathlib import Path
 from typing import Optional
 
+from ragtime.core.file_constants import DOCUMENT_EXTENSIONS, OCR_EXTENSIONS
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
-
-# Extensions that support OCR text extraction
-OCR_EXTENSIONS: set[str] = {
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".tiff",
-    ".tif",
-    ".bmp",
-    ".gif",
-    ".webp",
-}
 
 
 def extract_text_from_file(
@@ -602,63 +591,6 @@ def _extract_image_ocr(content: bytes) -> str:
         else:
             logger.warning(f"OCR extraction error: {e}")
         return ""
-
-
-# Supported extensions for document parsing
-DOCUMENT_EXTENSIONS: set[str] = {
-    # Office documents
-    ".pdf",
-    ".docx",
-    ".doc",
-    ".xlsx",
-    ".xls",
-    ".pptx",
-    # OpenDocument
-    ".odt",
-    ".ods",
-    ".odp",
-    # Rich text
-    ".rtf",
-    # Ebooks
-    ".epub",
-    # Email
-    ".eml",
-    ".msg",
-    # Plain text
-    ".txt",
-    ".md",
-    ".rst",
-    ".json",
-    ".xml",
-    ".html",
-    ".htm",
-    ".csv",
-    ".tsv",
-    # Code
-    ".py",
-    ".js",
-    ".ts",
-    ".jsx",
-    ".tsx",
-    ".java",
-    ".c",
-    ".cpp",
-    ".h",
-    ".hpp",
-    ".go",
-    ".rs",
-    ".rb",
-    ".php",
-    ".sql",
-    ".sh",
-    ".bash",
-    ".zsh",
-    ".yaml",
-    ".yml",
-    ".toml",
-    ".ini",
-    ".cfg",
-}
 
 
 def is_supported_document(file_path: Path) -> bool:

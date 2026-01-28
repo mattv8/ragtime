@@ -275,6 +275,49 @@ DEFAULT_FILE_PATTERNS: list[str] = [
 ]
 
 
+# =============================================================================
+# ALL DOCUMENT EXTENSIONS
+# =============================================================================
+# Comprehensive list of all supported document extensions including
+# parseable documents, plain text, and code files.
+DOCUMENT_EXTENSIONS: set[str] = PARSEABLE_DOCUMENT_EXTENSIONS | {
+    # Plain text
+    ".txt",
+    ".md",
+    ".rst",
+    ".json",
+    ".xml",
+    ".html",
+    ".htm",
+    ".csv",
+    ".tsv",
+    # Code
+    ".py",
+    ".js",
+    ".ts",
+    ".jsx",
+    ".tsx",
+    ".java",
+    ".c",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".go",
+    ".rs",
+    ".rb",
+    ".php",
+    ".sql",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".cfg",
+}
+
+
 def is_binary_extension(ext: str) -> bool:
     """Check if a file extension indicates a truly unparseable binary file."""
     return ext.lower() in UNPARSEABLE_BINARY_EXTENSIONS
