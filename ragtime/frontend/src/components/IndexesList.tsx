@@ -6,6 +6,7 @@ import type { IndexInfo, RepoVisibilityResponse, IndexLoadingDetail } from '@/ty
 import { GitIndexWizard } from './GitIndexWizard';
 import { UploadForm } from './UploadForm';
 import { DescriptionField } from './DescriptionField';
+import { IndexCard } from './IndexCard';
 
 interface IndexesListProps {
   indexes: IndexInfo[];
@@ -551,168 +552,164 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
             // Show toggle as off if disabled OR if has load error
             const effectiveEnabled = idx.enabled && !hasError;
 
-            return (
-            <div key={idx.name} className={`index-item ${!effectiveEnabled ? 'index-disabled' : ''}`}>
-              <div className="index-toggle">
-                <label
-                  className="toggle-switch"
-                  title={hasError ? `Load error - click to retry: ${loadError}` : (idx.enabled ? 'Enabled for RAG' : 'Disabled from RAG')}
-                >
-                  <input
-                type="checkbox"
-                checked={effectiveEnabled}
-                onChange={() => handleToggle(idx.name, idx.enabled, hasError)}
-                disabled={toggling === idx.name}
-              />
-              <span className="toggle-slider"></span>
-            </label>
-          </div>
-          <div className="index-info">
-            <h3>{idx.display_name || idx.name}</h3>
-            <div className="index-meta-pills">
-              <span className="meta-pill documents">{idx.document_count} documents</span>
-              {(() => {
-                const ramMb = getIndexMemory(idx.name);
-                const diskMb = idx.size_mb;
-                const showBoth = ramMb !== null && Math.abs(ramMb - diskMb) > 1; // Show both if >1MB difference
+            const metaPills = (
+              <>
+                <span className="meta-pill documents">{idx.document_count} documents</span>
+                {(() => {
+                  const ramMb = getIndexMemory(idx.name);
+                  const diskMb = idx.size_mb;
+                  const showBoth = ramMb !== null && Math.abs(ramMb - diskMb) > 1; // Show both if >1MB difference
 
-                if (ramMb !== null) {
-                  return (
-                    <>
-                      <span
-                        className={`meta-pill ram ${idx.enabled ? 'ram-loaded' : 'ram-unloaded'}`}
-                        title={`${idx.enabled ? 'Loaded in RAM' : 'Not loaded (disabled)'}: ${formatSizeMB(ramMb)} (${idx.chunk_count.toLocaleString()} chunks)`}
-                      >
-                        <MemoryStick size={12} />
-                        {formatSizeMB(ramMb)}
-                      </span>
-                      {showBoth && (
-                        <span className="meta-pill size" title={`Size on disk: ${formatSizeMB(diskMb)}`}>
-                          <HardDrive size={12} />
-                          {formatSizeMB(diskMb)}
+                  if (ramMb !== null) {
+                    return (
+                      <>
+                        <span
+                          className={`meta-pill ram ${idx.enabled ? 'ram-loaded' : 'ram-unloaded'}`}
+                          title={`${idx.enabled ? 'Loaded in RAM' : 'Not loaded (disabled)'}: ${formatSizeMB(ramMb)} (${idx.chunk_count.toLocaleString()} chunks)`}
+                        >
+                          <MemoryStick size={12} />
+                          {formatSizeMB(ramMb)}
                         </span>
-                      )}
-                    </>
-                  );
-                }
-                // Fallback to disk size when RAM info not available
-                return (
-                  <span className="meta-pill size" title={`Size on disk: ${formatSizeMB(diskMb)}`}>
-                    <HardDrive size={12} />
-                    {formatSizeMB(diskMb)}
-                  </span>
-                );
-              })()}
-              {idx.source_type === 'git' && idx.source && (
-                <span className="meta-pill git" title={`Git: ${idx.source}${idx.git_branch ? ` (${idx.git_branch})` : ''}`}>
-                  Git
-                </span>
-              )}
-              {idx.has_git_history && idx.git_repo_size_mb !== null && (
-                <span
-                  className="meta-pill git-history"
-                  title={`Git history available: ${formatSizeMB(idx.git_repo_size_mb)} on disk (searchable via git_history tool)`}
-                >
-                  <GitCommitHorizontal size={12} />
-                  {formatSizeMB(idx.git_repo_size_mb)}
-                </span>
-              )}
-              {idx.last_modified && (
-                <span className="meta-pill date" title={`Last updated: ${new Date(idx.last_modified).toLocaleString()}`}>
-                  {`Updated ${new Date(idx.last_modified).toLocaleString()}`}
-                </span>
-              )}
-              {!aggregateSearch && (
-                <span
-                  className={`meta-pill weight ${idx.search_weight !== 1.0 ? 'weight-modified' : ''}`}
-                  title="Search weight: Higher values prioritize this index in results. Click to edit."
-                  style={{ cursor: 'pointer' }}
-                  onClick={() => setWeightEditIndex(idx)}
-                >
-                  Weight: {idx.search_weight.toFixed(1)}
-                </span>
-              )}
-              {!idx.enabled && <span className="meta-pill disabled">Excluded from RAG</span>}
-              {(() => {
-                const loadError = getIndexLoadError(idx.name);
-                if (loadError) {
+                        {showBoth && (
+                          <span className="meta-pill size" title={`Size on disk: ${formatSizeMB(diskMb)}`}>
+                            <HardDrive size={12} />
+                            {formatSizeMB(diskMb)}
+                          </span>
+                        )}
+                      </>
+                    );
+                  }
+                  // Fallback to disk size when RAM info not available
                   return (
-                    <span className="meta-pill error" title={loadError}>
-                      <AlertTriangle size={12} />
-                      Load Error
+                    <span className="meta-pill size" title={`Size on disk: ${formatSizeMB(diskMb)}`}>
+                      <HardDrive size={12} />
+                      {formatSizeMB(diskMb)}
                     </span>
                   );
-                }
-                return null;
-              })()}
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            {idx.source_type === 'git' && idx.source ? (
-              <button
-                className="btn btn-sm btn-secondary"
-                onClick={() => setEditingGitIndex(idx)}
-                title="Edit index configuration (description, patterns, branch, etc.)"
-              >
-                Edit
-              </button>
-            ) : (
-              <button
-                className="btn btn-sm btn-secondary"
-                onClick={() => setEditingIndex(idx)}
-                title="Edit description for AI context"
-              >
-                Edit
-              </button>
-            )}
-            <button
-              className="btn btn-sm btn-secondary"
-              onClick={() => handleDownload(idx.name)}
-              disabled={downloading === idx.name}
-              title="Download FAISS index files as zip"
-            >
-              {downloading === idx.name ? 'Downloading...' : 'Download'}
-            </button>
-            {idx.source_type === 'git' && idx.source && (
-              <button
-                className="btn btn-sm btn-primary"
-                onClick={() => setReindexingIndex(idx)}
-                title="Pull latest changes from git and re-index"
-              >
-                Pull &amp; Re-index
-              </button>
-            )}
-            {deleteConfirmName === idx.name ? (
+                })()}
+                {idx.source_type === 'git' && idx.source && (
+                  <span className="meta-pill git" title={`Git: ${idx.source}${idx.git_branch ? ` (${idx.git_branch})` : ''}`}>
+                    Git
+                  </span>
+                )}
+                {idx.has_git_history && idx.git_repo_size_mb !== null && (
+                  <span
+                    className="meta-pill git-history"
+                    title={`Git history available: ${formatSizeMB(idx.git_repo_size_mb)} on disk (searchable via git_history tool)`}
+                  >
+                    <GitCommitHorizontal size={12} />
+                    {formatSizeMB(idx.git_repo_size_mb)}
+                  </span>
+                )}
+                {idx.last_modified && (
+                  <span className="meta-pill date" title={`Last updated: ${new Date(idx.last_modified).toLocaleString()}`}>
+                    {`Updated ${new Date(idx.last_modified).toLocaleString()}`}
+                  </span>
+                )}
+                {!aggregateSearch && (
+                  <span
+                    className={`meta-pill weight ${idx.search_weight !== 1.0 ? 'weight-modified' : ''}`}
+                    title="Search weight: Higher values prioritize this index in results. Click to edit."
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => setWeightEditIndex(idx)}
+                  >
+                    Weight: {idx.search_weight.toFixed(1)}
+                  </span>
+                )}
+                {!idx.enabled && <span className="meta-pill disabled">Excluded from RAG</span>}
+                {(() => {
+                  const loadError = getIndexLoadError(idx.name);
+                  if (loadError) {
+                    return (
+                      <span className="meta-pill error" title={loadError}>
+                        <AlertTriangle size={12} />
+                        Load Error
+                      </span>
+                    );
+                  }
+                  return null;
+                })()}
+              </>
+            );
+
+            const actions = (
               <>
-                <button
-                  className="btn btn-sm btn-success"
-                  onClick={() => confirmDelete(idx.name)}
-                  title="Confirm delete"
-                  disabled={deleting === idx.name}
-                >
-                  Confirm
-                </button>
+                {idx.source_type === 'git' && idx.source ? (
+                  <button
+                    className="btn btn-sm btn-secondary"
+                    onClick={() => setEditingGitIndex(idx)}
+                    title="Edit index configuration (description, patterns, branch, etc.)"
+                  >
+                    Edit
+                  </button>
+                ) : (
+                  <button
+                    className="btn btn-sm btn-secondary"
+                    onClick={() => setEditingIndex(idx)}
+                    title="Edit description for AI context"
+                  >
+                    Edit
+                  </button>
+                )}
                 <button
                   className="btn btn-sm btn-secondary"
-                  onClick={() => setDeleteConfirmName(null)}
-                  title="Cancel"
+                  onClick={() => handleDownload(idx.name)}
+                  disabled={downloading === idx.name}
+                  title="Download FAISS index files as zip"
                 >
-                  Cancel
+                  {downloading === idx.name ? 'Downloading...' : 'Download'}
                 </button>
+                {idx.source_type === 'git' && idx.source && (
+                  <button
+                    className="btn btn-sm btn-primary"
+                    onClick={() => setReindexingIndex(idx)}
+                    title="Pull latest changes from git and re-index"
+                  >
+                    Pull &amp; Re-index
+                  </button>
+                )}
+                {deleteConfirmName === idx.name ? (
+                  <>
+                    <button
+                      className="btn btn-sm btn-success"
+                      onClick={() => confirmDelete(idx.name)}
+                      title="Confirm delete"
+                      disabled={deleting === idx.name}
+                    >
+                      Confirm
+                    </button>
+                    <button
+                      className="btn btn-sm btn-secondary"
+                      onClick={() => setDeleteConfirmName(null)}
+                      title="Cancel"
+                    >
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    className="btn btn-sm btn-danger"
+                    onClick={() => handleDelete(idx.name)}
+                    disabled={deleting === idx.name}
+                  >
+                    {deleting === idx.name ? 'Deleting...' : 'Delete'}
+                  </button>
+                )}
               </>
-            ) : (
-              <button
-                className="btn btn-sm btn-danger"
-                onClick={() => handleDelete(idx.name)}
-                disabled={deleting === idx.name}
-              >
-                {deleting === idx.name ? 'Deleting...' : 'Delete'}
-              </button>
-            )}
-          </div>
-        </div>
-      );
-      })}
+            );
+
+            return (
+              <IndexCard
+                key={idx.name}
+                title={idx.display_name || idx.name}
+                enabled={effectiveEnabled}
+                onToggle={() => handleToggle(idx.name, idx.enabled, hasError)}
+                metaPills={metaPills}
+                actions={actions}
+                toggleTitle={hasError ? `Load error - click to retry: ${loadError}` : (idx.enabled ? 'Enabled for RAG' : 'Disabled from RAG')}
+              />
+            );
+          })}
 
           {editingIndex && (
             <EditDescriptionModal

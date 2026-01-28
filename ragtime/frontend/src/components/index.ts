@@ -20,3 +20,4 @@ export { MemoryStatus } from './MemoryStatus';
 export { UserMenu } from './UserMenu';
 export { SecurityBanner } from './SecurityBanner';
 export { ConfigurationBanner } from './ConfigurationBanner';
+export * from './IndexCard';

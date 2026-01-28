@@ -4,6 +4,7 @@ import { api } from '@/api';
 import { formatSizeMB } from '@/utils';
 import type { ToolConfig, FilesystemIndexJob, FilesystemIndexStats } from '@/types';
 import { ToolWizard } from './ToolWizard';
+import { IndexCard } from './IndexCard';
 
 // Polling interval for active jobs (2 seconds)
 const ACTIVE_JOB_POLL_INTERVAL = 2000;
@@ -54,139 +55,138 @@ function FilesystemIndexCard({
     }
   };
 
-  return (
-    <div className={`index-item filesystem-index-item ${!tool.enabled ? 'index-disabled' : ''}`}>
-      <div className="index-toggle">
-        <label className="toggle-switch" title={tool.enabled ? 'Enabled for RAG' : 'Disabled from RAG'}>
-          <input
-            type="checkbox"
-            checked={tool.enabled}
-            onChange={(e) => onToggle(tool.id, e.target.checked)}
-          />
-          <span className="toggle-slider"></span>
-        </label>
-      </div>
-      <div className="index-info">
-        <h3>{tool.name}</h3>
-        <div className="index-meta-pills">
-          <span className="meta-pill path" title={config.base_path}>
-            {config.base_path || 'Path not configured'}
-          </span>
-          {stats && stats.embedding_count > 0 && (
-            <>
-              <span className="meta-pill files">{stats.file_count} files</span>
-              {(() => {
-                let ramMb = 0;
+  const metaPills = (
+    <>
+      <span className="meta-pill path" title={config.base_path}>
+        {config.base_path || 'Path not configured'}
+      </span>
+      {stats && stats.embedding_count > 0 && (
+        <>
+          <span className="meta-pill files">{stats.file_count} files</span>
+          {(() => {
+            let ramMb = 0;
 
-                // Use server-side estimate if available, otherwise calculate fallback
-                if (stats.estimated_memory_mb !== undefined && stats.estimated_memory_mb !== null) {
-                  ramMb = stats.estimated_memory_mb;
-                } else if (embeddingDimensions && embeddingDimensions > 0) {
-                  // Memory formula for pgvector: embeddings * dimensions * 4 bytes (float32)
-                  // pgvector uses slightly different overhead, estimate 1.15x
-                  const bytesPerEmbedding = embeddingDimensions * 4 * 1.15;
-                  ramMb = (stats.embedding_count * bytesPerEmbedding) / (1024 * 1024);
-                } else {
-                  return null;
-                }
+            // Use server-side estimate if available, otherwise calculate fallback
+            if (stats.estimated_memory_mb !== undefined && stats.estimated_memory_mb !== null) {
+              ramMb = stats.estimated_memory_mb;
+            } else if (embeddingDimensions && embeddingDimensions > 0) {
+              // Memory formula for pgvector: embeddings * dimensions * 4 bytes (float32)
+              // pgvector uses slightly different overhead, estimate 1.15x
+              const bytesPerEmbedding = embeddingDimensions * 4 * 1.15;
+              ramMb = (stats.embedding_count * bytesPerEmbedding) / (1024 * 1024);
+            } else {
+              return null;
+            }
 
-                return (
-                  <span
-                    className={`meta-pill ram ${tool.enabled ? 'ram-loaded' : 'ram-unloaded'}`}
-                    title={`${tool.enabled ? 'Loaded in RAM' : 'Not loaded (disabled)'}: ${formatSizeMB(ramMb)} (${stats.embedding_count.toLocaleString()} embeddings)`}
-                  >
-                    <MemoryStick size={12} />
-                    {formatSizeMB(ramMb)}
-                  </span>
-                );
-              })()}
-            </>
-          )}
-          {stats?.last_indexed && (
-            <span className="meta-pill date" title={`Last indexed: ${new Date(stats.last_indexed).toLocaleString()}`}>
-              {`Updated ${new Date(stats.last_indexed).toLocaleString()}`}
-            </span>
-          )}
-          {isActive && (
-            <span className="meta-pill active">Indexing...</span>
-          )}
-          {!tool.enabled && <span className="meta-pill disabled">Excluded from RAG</span>}
-        </div>
-      </div>
+            return (
+              <span
+                className={`meta-pill ram ${tool.enabled ? 'ram-loaded' : 'ram-unloaded'}`}
+                title={`${tool.enabled ? 'Loaded in RAM' : 'Not loaded (disabled)'}: ${formatSizeMB(ramMb)} (${stats.embedding_count.toLocaleString()} embeddings)`}
+              >
+                <MemoryStick size={12} />
+                {formatSizeMB(ramMb)}
+              </span>
+            );
+          })()}
+        </>
+      )}
+      {stats?.last_indexed && (
+        <span className="meta-pill date" title={`Last indexed: ${new Date(stats.last_indexed).toLocaleString()}`}>
+          {`Updated ${new Date(stats.last_indexed).toLocaleString()}`}
+        </span>
+      )}
+      {isActive && (
+        <span className="meta-pill active">Indexing...</span>
+      )}
+      {!tool.enabled && <span className="meta-pill disabled">Excluded from RAG</span>}
+    </>
+  );
 
-      <div className="index-actions">
-        {/* Indexing controls */}
+  const actions = (
+    <>
+      {/* Indexing controls */}
+      <button
+        type="button"
+        className="btn btn-sm btn-primary"
+        onClick={() => onStartIndex(tool.id, false)}
+        disabled={indexing || isActive || !tool.enabled}
+        title="Start incremental indexing (skip unchanged files)"
+      >
+        {indexing ? 'Starting...' : 'Index'}
+      </button>
+      <button
+        type="button"
+        className="btn btn-sm"
+        onClick={() => onStartIndex(tool.id, true)}
+        disabled={indexing || isActive || !tool.enabled}
+        title="Re-index all files from scratch"
+      >
+        Full
+      </button>
+
+      {/* Management controls */}
+      <button
+        type="button"
+        className="btn btn-sm btn-secondary"
+        onClick={() => onEdit(tool)}
+        title="Edit configuration"
+      >
+        Edit
+      </button>
+
+      {stats && stats.embedding_count > 0 && !isActive && (
         <button
           type="button"
-          className="btn btn-sm btn-primary"
-          onClick={() => onStartIndex(tool.id, false)}
-          disabled={indexing || isActive || !tool.enabled}
-          title="Start incremental indexing (skip unchanged files)"
+          className="btn btn-sm btn-warning"
+          onClick={() => onDeleteIndex(tool.id)}
+          title="Delete all indexed embeddings"
         >
-          {indexing ? 'Starting...' : 'Index'}
+          Clear
         </button>
-        <button
-          type="button"
-          className="btn btn-sm"
-          onClick={() => onStartIndex(tool.id, true)}
-          disabled={indexing || isActive || !tool.enabled}
-          title="Re-index all files from scratch"
-        >
-          Full
-        </button>
+      )}
 
-        {/* Management controls */}
-        <button
-          type="button"
-          className="btn btn-sm btn-secondary"
-          onClick={() => onEdit(tool)}
-          title="Edit configuration"
-        >
-          Edit
-        </button>
-
-        {stats && stats.embedding_count > 0 && !isActive && (
+      {deleteConfirm ? (
+        <>
           <button
             type="button"
-            className="btn btn-sm btn-warning"
-            onClick={() => onDeleteIndex(tool.id)}
-            title="Delete all indexed embeddings"
-          >
-            Clear
-          </button>
-        )}
-
-        {deleteConfirm ? (
-          <>
-            <button
-              type="button"
-              className="btn btn-sm btn-success"
-              onClick={handleDelete}
-              title="Confirm delete"
-            >
-              Confirm
-            </button>
-            <button
-              type="button"
-              className="btn btn-sm btn-secondary"
-              onClick={() => setDeleteConfirm(false)}
-              title="Cancel"
-            >
-              Cancel
-            </button>
-          </>
-        ) : (
-          <button
-            type="button"
-            className="btn btn-sm btn-danger"
+            className="btn btn-sm btn-success"
             onClick={handleDelete}
-            title="Delete this filesystem index configuration"
+            title="Confirm delete"
           >
-            Delete
+            Confirm
           </button>
-        )}
-      </div>
-    </div>
+          <button
+            type="button"
+            className="btn btn-sm btn-secondary"
+            onClick={() => setDeleteConfirm(false)}
+            title="Cancel"
+          >
+            Cancel
+          </button>
+        </>
+      ) : (
+        <button
+          type="button"
+          className="btn btn-sm btn-danger"
+          onClick={handleDelete}
+          title="Delete this filesystem index configuration"
+        >
+          Delete
+        </button>
+      )}
+    </>
+  );
+
+  return (
+    <IndexCard
+      title={tool.name}
+      enabled={tool.enabled}
+      onToggle={(checked) => onToggle(tool.id, checked)}
+      className="filesystem-index-item"
+      metaPills={metaPills}
+      actions={actions}
+      toggleTitle={tool.enabled ? 'Enabled for RAG' : 'Disabled from RAG'}
+    />
   );
 }
 
