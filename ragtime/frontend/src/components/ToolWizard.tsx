@@ -1798,6 +1798,8 @@ const PDM_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'pdm_filtering', '
 const SSH_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'execution_constraints', 'description', 'review'];
 // Odoo tools show options before description for logical flow
 const ODOO_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'options', 'description', 'review'];
+// Filesystem indexers don't need execution options (read-only background job)
+const FILESYSTEM_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'description', 'review'];
 
 function getStepTitle(step: WizardStep): string {
   switch (step) {
@@ -1827,11 +1829,18 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
 
   // Get the appropriate wizard steps based on tool type
   const getWizardSteps = useCallback((): WizardStep[] => {
-    if (toolType === 'solidworks_pdm') return PDM_WIZARD_STEPS;
-    if (toolType === 'ssh_shell') return SSH_WIZARD_STEPS;
-    if (toolType === 'odoo_shell') return ODOO_WIZARD_STEPS;
-    return BASE_WIZARD_STEPS;
-  }, [toolType]);
+    let steps = BASE_WIZARD_STEPS;
+    if (toolType === 'solidworks_pdm') steps = PDM_WIZARD_STEPS;
+    else if (toolType === 'ssh_shell') steps = SSH_WIZARD_STEPS;
+    else if (toolType === 'odoo_shell') steps = ODOO_WIZARD_STEPS;
+    else if (toolType === 'filesystem_indexer') steps = FILESYSTEM_WIZARD_STEPS;
+
+    // Skip description step in edit mode (handled inline)
+    if (isEditing) {
+      return steps.filter(step => step !== 'description');
+    }
+    return steps;
+  }, [toolType, isEditing]);
 
   // Wizard state - skip type selection if defaultToolType is provided
   const skipTypeStep = !isEditing && defaultToolType !== undefined;

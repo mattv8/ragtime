@@ -25,6 +25,8 @@ interface FilesystemIndexCardProps {
   onEdit: (tool: ToolConfig) => void;
   onDelete: (toolId: string) => void;
   onToggle: (toolId: string, enabled: boolean) => void;
+  onRename: (toolName: string, newName: string) => Promise<void>;
+  onDescriptionUpdate: (toolId: string, newDesc: string) => Promise<void>;
   indexing: boolean;
   embeddingDimensions?: number | null;
 }
@@ -38,6 +40,8 @@ function FilesystemIndexCard({
   onEdit,
   onDelete,
   onToggle,
+  onRename,
+  onDescriptionUpdate,
   indexing,
   embeddingDimensions,
 }: FilesystemIndexCardProps) {
@@ -104,26 +108,6 @@ function FilesystemIndexCard({
 
   const actions = (
     <>
-      {/* Indexing controls */}
-      <button
-        type="button"
-        className="btn btn-sm btn-primary"
-        onClick={() => onStartIndex(tool.id, false)}
-        disabled={indexing || isActive || !tool.enabled}
-        title="Start incremental indexing (skip unchanged files)"
-      >
-        {indexing ? 'Starting...' : 'Index'}
-      </button>
-      <button
-        type="button"
-        className="btn btn-sm"
-        onClick={() => onStartIndex(tool.id, true)}
-        disabled={indexing || isActive || !tool.enabled}
-        title="Re-index all files from scratch"
-      >
-        Full
-      </button>
-
       {/* Management controls */}
       <button
         type="button"
@@ -134,16 +118,25 @@ function FilesystemIndexCard({
         Edit
       </button>
 
-      {stats && stats.embedding_count > 0 && !isActive && (
-        <button
-          type="button"
-          className="btn btn-sm btn-warning"
-          onClick={() => onDeleteIndex(tool.id)}
-          title="Delete all indexed embeddings"
-        >
-          Clear
-        </button>
-      )}
+      {/* Indexing controls */}
+      <button
+        type="button"
+        className="btn btn-sm btn-primary"
+        onClick={() => onStartIndex(tool.id, false)}
+        disabled={indexing || isActive || !tool.enabled}
+        title="Start incremental indexing (skip unchanged files)"
+      >
+        {indexing ? 'Starting...' : 'Re-Index'}
+      </button>
+      <button
+        type="button"
+        className="btn btn-sm"
+        onClick={() => onStartIndex(tool.id, true)}
+        disabled={indexing || isActive || !tool.enabled}
+        title="Re-index all files from scratch"
+      >
+        Full Re-Index
+      </button>
 
       {deleteConfirm ? (
         <>
@@ -180,8 +173,11 @@ function FilesystemIndexCard({
   return (
     <IndexCard
       title={tool.name}
+      description={tool.description}
       enabled={tool.enabled}
       onToggle={(checked) => onToggle(tool.id, checked)}
+      onEditTitle={(newName) => onRename(tool.id, newName)}
+      onEditDescription={(newDesc) => onDescriptionUpdate(tool.id, newDesc)}
       className="filesystem-index-item"
       metaPills={metaPills}
       actions={actions}
@@ -385,6 +381,30 @@ export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged, embeddingD
     }
   };
 
+  const handleRename = async (toolId: string, newName: string) => {
+    try {
+      await api.updateToolConfig(toolId, { name: newName });
+      await loadTools();
+      onToolsChanged?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Rename failed');
+      setTimeout(() => setError(null), 3000);
+      throw err;
+    }
+  };
+
+  const handleDescriptionUpdate = async (toolId: string, newDesc: string) => {
+    try {
+      await api.updateToolConfig(toolId, { description: newDesc });
+      await loadTools();
+      onToolsChanged?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Update failed');
+      setTimeout(() => setError(null), 3000);
+      throw err;
+    }
+  };
+
   const handleEdit = (tool: ToolConfig) => {
     setEditingTool(tool);
     setShowWizard(true);
@@ -504,6 +524,8 @@ export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged, embeddingD
           onEdit={handleEdit}
           onDelete={handleDeleteTool}
           onToggle={handleToggleTool}
+          onRename={handleRename}
+          onDescriptionUpdate={handleDescriptionUpdate}
           indexing={indexingToolId === tool.id}
           embeddingDimensions={embeddingDimensions}
         />

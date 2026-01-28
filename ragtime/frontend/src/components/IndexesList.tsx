@@ -111,58 +111,10 @@ function EditWeightModal({ index, onSave, onClose, saving }: WeightModalProps) {
   );
 }
 
-function EditDescriptionModal({ index, onSave, onClose, saving }: EditModalProps) {
-  const [description, setDescription] = useState(index.description);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    await onSave(index.name, description);
-  };
-
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <h3>Edit Description: {index.name}</h3>
-          <button className="modal-close" onClick={onClose}>&times;</button>
-        </div>
-        <form onSubmit={handleSubmit}>
-          <div className="modal-body">
-            <DescriptionField
-              value={description}
-              onChange={setDescription}
-              disabled={saving}
-              rows={4}
-            />
-          </div>
-          <div className="modal-footer">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={onClose}
-              disabled={saving}
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="btn"
-              disabled={saving}
-            >
-              {saving ? 'Saving...' : 'Save'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
-
 export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDescriptionUpdate, onJobCreated, aggregateSearch = true, embeddingDimensions, onNavigateToSettings }: IndexesListProps) {
   const [deleting, setDeleting] = useState<string | null>(null);
   const [toggling, setToggling] = useState<string | null>(null);
-  const [editingIndex, setEditingIndex] = useState<IndexInfo | null>(null);
-  const [savingDescription, setSavingDescription] = useState(false);
+  // editingIndex removed in favor of inline editing
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [deleteConfirmName, setDeleteConfirmName] = useState<string | null>(null);
 
@@ -364,16 +316,25 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
   };
 
   const handleSaveDescription = async (name: string, description: string) => {
-    setSavingDescription(true);
     try {
       await api.updateIndexDescription(name, description);
-      setEditingIndex(null);
       onDescriptionUpdate?.();
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : 'Save failed');
       setTimeout(() => setErrorMessage(null), 5000);
-    } finally {
-      setSavingDescription(false);
+      throw err; // Re-throw to let InlineEdit know it failed
+    }
+  };
+
+  const handleRename = async (currentName: string, newName: string) => {
+    try {
+      await api.renameIndex(currentName, newName);
+      // Trigger list refresh - onToggle does this in App.tsx
+      onToggle?.();
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Rename failed');
+      setTimeout(() => setErrorMessage(null), 5000);
+      throw err;
     }
   };
 
@@ -638,18 +599,16 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
                   <button
                     className="btn btn-sm btn-secondary"
                     onClick={() => setEditingGitIndex(idx)}
-                    title="Edit index configuration (description, patterns, branch, etc.)"
+                    title="Edit index configuration (patterns, branch, etc.)"
                   >
                     Edit
                   </button>
                 ) : (
-                  <button
-                    className="btn btn-sm btn-secondary"
-                    onClick={() => setEditingIndex(idx)}
-                    title="Edit description for AI context"
-                  >
-                    Edit
-                  </button>
+                  // For uploaded indexes, we don't need a separate Edit button anymore as description is inline
+                  // But we might want to keep it if there are other settings?
+                  // Currently uploaded indexes only have description.
+                  // So we can remove the Edit button for non-git indexes.
+                  null
                 )}
                 <button
                   className="btn btn-sm btn-secondary"
@@ -702,23 +661,17 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
               <IndexCard
                 key={idx.name}
                 title={idx.display_name || idx.name}
+                description={idx.description}
                 enabled={effectiveEnabled}
                 onToggle={() => handleToggle(idx.name, idx.enabled, hasError)}
+                onEditTitle={(newName) => handleRename(idx.name, newName)}
+                onEditDescription={(newDesc) => handleSaveDescription(idx.name, newDesc)}
                 metaPills={metaPills}
                 actions={actions}
                 toggleTitle={hasError ? `Load error - click to retry: ${loadError}` : (idx.enabled ? 'Enabled for RAG' : 'Disabled from RAG')}
               />
             );
           })}
-
-          {editingIndex && (
-            <EditDescriptionModal
-              index={editingIndex}
-              onSave={handleSaveDescription}
-              onClose={() => setEditingIndex(null)}
-              saving={savingDescription}
-            />
-          )}
 
           {weightEditIndex && (
             <EditWeightModal

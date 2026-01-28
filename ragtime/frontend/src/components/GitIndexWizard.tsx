@@ -573,26 +573,6 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         </div>
 
         <div className="form-group">
-          <label>Index Display Name</label>
-          <input
-            type="text"
-            value={indexName}
-            onChange={(e) => setIndexName(e.target.value)}
-            placeholder="e.g. My Project"
-            disabled={isLoading}
-          />
-          <small style={{ color: '#888', fontSize: '0.8rem' }}>
-            Display name for this index. Automatically converted to a safe identifier for MCP/API (e.g., "My Project" becomes "my_project").
-          </small>
-        </div>
-
-        <DescriptionField
-          value={description}
-          onChange={setDescription}
-          disabled={isLoading}
-        />
-
-        <div className="form-group">
           <label>
             Branch
             {loadingBranches && (

@@ -1144,6 +1144,12 @@ class FilesystemIndexerService:
 
                 logger.info(f"Found {len(files)} files to process")
 
+                if full_reindex:
+                    logger.info(
+                        f"Full re-index requested. Clearing existing data for index '{config.index_name}'"
+                    )
+                    await self.delete_index(config.index_name)
+
                 base_path = effective_path
 
                 # Process files
@@ -1166,9 +1172,12 @@ class FilesystemIndexerService:
                         current_hash = await asyncio.to_thread(
                             self._compute_file_hash, file_path
                         )
-                        existing_meta = await self._get_file_metadata(
-                            config.index_name, rel_path
-                        )
+
+                        existing_meta = None
+                        if not full_reindex:
+                            existing_meta = await self._get_file_metadata(
+                                config.index_name, rel_path
+                            )
 
                         if (
                             not full_reindex
@@ -1191,8 +1200,8 @@ class FilesystemIndexerService:
                             file_path, config, use_token_chunking
                         )
                         if not chunks:
-                            # No content extracted - count as skipped (empty/unparseable file)
-                            job.skipped_files += 1
+                            # No content extracted - count as processed but empty (avoids "unchanged" status)
+                            job.processed_files += 1
                             await self._update_job(job)
                             await asyncio.sleep(0)
                             continue
@@ -1375,11 +1384,12 @@ class FilesystemIndexerService:
             config: Filesystem connection config with chunk settings
             use_token_chunking: If True, use token-based chunking for accuracy
         """
+        from langchain_text_splitters import Language, RecursiveCharacterTextSplitter
+
         from ragtime.indexer.chunking import (
             _get_file_extension,
             _get_language_for_extension,
         )
-        from langchain_text_splitters import Language, RecursiveCharacterTextSplitter
 
         try:
             # Read file content
@@ -1849,7 +1859,9 @@ class FilesystemIndexerService:
             # Memory formula for pgvector: embeddings * dimensions * 4 bytes (float32)
             # pgvector uses slightly different overhead, estimate 1.15x
             bytes_per_embedding = embedding_dimension * 4 * 1.15
-            estimated_memory_mb = (embedding_count * bytes_per_embedding) / (1024 * 1024)
+            estimated_memory_mb = (embedding_count * bytes_per_embedding) / (
+                1024 * 1024
+            )
 
         return {
             "index_name": index_name,
