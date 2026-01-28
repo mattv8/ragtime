@@ -27,22 +27,33 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from ragtime.core.database import get_db
-from ragtime.core.file_constants import (DOCUMENT_EXTENSIONS,
-                                         PARSEABLE_DOCUMENT_EXTENSIONS,
-                                         UNPARSEABLE_BINARY_EXTENSIONS)
+from ragtime.core.file_constants import (
+    DOCUMENT_EXTENSIONS,
+    PARSEABLE_DOCUMENT_EXTENSIONS,
+    UNPARSEABLE_BINARY_EXTENSIONS,
+)
 from ragtime.core.logging import get_logger
-from ragtime.indexer.document_parser import (OCR_EXTENSIONS, is_ocr_supported,
-                                             is_supported_document)
-from ragtime.indexer.models import (FilesystemAnalysisJob,
-                                    FilesystemAnalysisResult,
-                                    FilesystemAnalysisStatus,
-                                    FilesystemConnectionConfig,
-                                    FilesystemFileMetadata, FilesystemIndexJob,
-                                    FilesystemIndexStatus, FileTypeStats)
+from ragtime.indexer.document_parser import (
+    OCR_EXTENSIONS,
+    is_ocr_supported,
+    is_supported_document,
+)
+from ragtime.indexer.models import (
+    FilesystemAnalysisJob,
+    FilesystemAnalysisResult,
+    FilesystemAnalysisStatus,
+    FilesystemConnectionConfig,
+    FilesystemFileMetadata,
+    FilesystemIndexJob,
+    FilesystemIndexStatus,
+    FileTypeStats,
+)
 from ragtime.indexer.repository import repository
-from ragtime.indexer.vector_utils import (ensure_embedding_column,
-                                          ensure_pgvector_extension,
-                                          get_embeddings_model)
+from ragtime.indexer.vector_utils import (
+    ensure_embedding_column,
+    ensure_pgvector_extension,
+    get_embeddings_model,
+)
 
 logger = get_logger(__name__)
 
@@ -1363,41 +1374,63 @@ class FilesystemIndexerService:
         self,
         file_path: Path,
         config: FilesystemConnectionConfig,
-        use_token_chunking: bool = True,
+        use_token_chunking: bool = True,  # noqa: ARG002 - reserved for future use
     ) -> List[str]:
         """Load a file and split it into chunks.
 
-        Uses semantic/language-aware splitting via unified get_splitter().
+        Uses Chonkie for all text chunking:
+        - CodeChunker for code files (AST-based with Magika detection)
+        - RecursiveChunker for plain text and documents
+
+        Text extraction (PDF, DOCX, images with OCR, etc.) is handled by
+        document_parser via _read_file_content() before chunking.
         """
-        from ragtime.indexer.chunking import get_splitter
+        from ragtime.indexer.chunking import (
+            _chunk_with_chonkie_code,
+            _chunk_with_recursive,
+        )
 
         try:
-            # Read file content
+            file_path_str = str(file_path)
+            metadata = {"source": file_path_str}
+
+            # Read file content (handles PDF, DOCX, images with OCR, etc.)
             content = await asyncio.to_thread(
                 self._read_file_content, file_path, config.enable_ocr
             )
             if not content:
                 return []
 
-            # Determine length function based on settings
-            if use_token_chunking:
-                from ragtime.core.tokenization import get_token_length_function
-
-                length_function = get_token_length_function()
-            else:
-                length_function = len
-
-            # Get appropriate splitter
-            splitter, splitter_type = get_splitter(
-                file_path.suffix.lower(),
-                config.chunk_size,
-                config.chunk_overlap,
-                length_function,
-            )
-
-            logger.debug(f"Using {splitter_type} splitter for {file_path.name}")
-            chunks = splitter.split_text(content)
-            return chunks
+            # Try AST-based code chunking with auto language detection
+            try:
+                docs = await asyncio.to_thread(
+                    _chunk_with_chonkie_code,
+                    content,
+                    config.chunk_size,
+                    metadata,
+                )
+                return [doc.page_content for doc in docs]
+            except (ValueError, RuntimeError, LookupError) as e:
+                # Language not supported by Chonkie - use recursive chunker
+                err_lower = str(e).lower()
+                if (
+                    "not supported" in err_lower
+                    or "detected language" in err_lower
+                    or "could not find language" in err_lower
+                ):
+                    logger.debug(
+                        f"Code chunking not available for {file_path.name}, "
+                        f"using recursive chunker"
+                    )
+                    docs = await asyncio.to_thread(
+                        _chunk_with_recursive,
+                        content,
+                        config.chunk_size,
+                        config.chunk_overlap,
+                        metadata,
+                    )
+                    return [doc.page_content for doc in docs]
+                raise
 
         except Exception as e:
             logger.warning(f"Error loading file {file_path}: {e}")
@@ -1626,8 +1659,9 @@ class FilesystemIndexerService:
                         stats["estimated_chunks"] = stats["file_count"]
 
                 # Get LLM-powered exclusion suggestions
-                from ragtime.indexer.llm_exclusions import \
-                    get_smart_exclusion_suggestions
+                from ragtime.indexer.llm_exclusions import (
+                    get_smart_exclusion_suggestions,
+                )
 
                 smart_exclusions, _used_llm = await get_smart_exclusion_suggestions(
                     ext_stats=dict(ext_stats),
