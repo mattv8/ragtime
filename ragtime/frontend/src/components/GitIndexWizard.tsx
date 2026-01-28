@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '@/api';
 import type { CommitHistoryInfo, IndexAnalysisResult, IndexJob, IndexInfo } from '@/types';
 import { AnalysisStats } from './AnalysisStats';
-import { DescriptionField } from './DescriptionField';
 
 type StatusType = 'info' | 'success' | 'error' | null;
 type WizardStep = 'input' | 'analyzing' | 'review' | 'indexing';

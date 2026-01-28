@@ -1,11 +1,10 @@
 import { useEffect, useState } from 'react';
-import { X, HardDrive, MemoryStick, GitCommitHorizontal, AlertTriangle } from 'lucide-react';
+import { HardDrive, MemoryStick, GitCommitHorizontal, AlertTriangle } from 'lucide-react';
 import { api } from '@/api';
 import { formatSizeMB } from '@/utils';
 import type { IndexInfo, RepoVisibilityResponse, IndexLoadingDetail } from '@/types';
 import { GitIndexWizard } from './GitIndexWizard';
 import { UploadForm } from './UploadForm';
-import { DescriptionField } from './DescriptionField';
 import { IndexCard } from './IndexCard';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
 import { AnimatedCreateButton } from './AnimatedCreateButton';
@@ -27,13 +26,6 @@ interface IndexesListProps {
 }
 
 type SourceType = 'upload' | 'git';
-
-interface EditModalProps {
-  index: IndexInfo;
-  onSave: (name: string, description: string) => Promise<void>;
-  onClose: () => void;
-  saving: boolean;
-}
 
 interface WeightModalProps {
   index: IndexInfo;
@@ -115,7 +107,7 @@ function EditWeightModal({ index, onSave, onClose, saving }: WeightModalProps) {
 
 export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDescriptionUpdate, onJobCreated, aggregateSearch = true, embeddingDimensions, onNavigateToSettings }: IndexesListProps) {
   const [deleting, setDeleting] = useState<string | null>(null);
-  const [toggling, setToggling] = useState<string | null>(null);
+  const [_toggling, setToggling] = useState<string | null>(null);
   // editingIndex removed in favor of inline editing
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 

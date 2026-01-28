@@ -38,7 +38,7 @@ function FilesystemIndexCard({
   activeJob,
   stats,
   onStartIndex,
-  onDeleteIndex,
+  onDeleteIndex: _onDeleteIndex,
   onEdit,
   onDelete,
   onToggle,

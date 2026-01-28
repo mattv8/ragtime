@@ -48,11 +48,6 @@ export function DeleteConfirmButton({
     }
   };
 
-  const cancelConfirm = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setConfirming(false);
-  }
-
   return (
     <button
       type="button"
