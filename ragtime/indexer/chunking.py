@@ -7,17 +7,18 @@ This module provides chunking functionality that:
 3. Uses a ProcessPoolExecutor with max_workers = cpu_count - 1
 
 Language detection strategy:
-- Auto-derives from extension where possible (.go → GO, .ts → TS, .java → JAVA)
-- Uses exception dict for non-obvious mappings (.py → PYTHON, .rs → RUST)
-- Validates against LangChain's Language enum at runtime
+- Auto-derives from LangChain's Language enum at runtime (.go → GO, .cpp → CPP)
+- Uses override dict for non-obvious mappings (.py → PYTHON, .rs → RUST)
+- Custom document-type splitters for parsed documents (PDF, DOCX, etc.)
 - Falls back to RecursiveCharacterTextSplitter for unsupported types
 """
 
 import multiprocessing
 import os
 from concurrent.futures import ProcessPoolExecutor
+from functools import lru_cache
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from langchain_core.documents import Document
 
@@ -29,63 +30,151 @@ logger = get_logger(__name__)
 _process_pool: Optional[ProcessPoolExecutor] = None
 _pool_max_workers: int = 1
 
-# Extension mappings for non-obvious cases only
-# Most extensions are auto-derived (e.g., .go → GO, .ts → TS)
-# This dict handles exceptions where extension != Language enum name
-_EXTENSION_EXCEPTIONS: Dict[str, str] = {
-    # Python variants
+
+@lru_cache(maxsize=1)
+def _get_langchain_languages() -> Set[str]:
+    """
+    Get all available Language enum members from LangChain at runtime.
+
+    This ensures we automatically pick up new languages when LangChain adds them.
+    Cached to avoid repeated imports.
+    """
+    try:
+        from langchain_text_splitters import Language
+
+        return {lang.name for lang in Language}
+    except ImportError:
+        # Fallback if import fails
+        return {
+            "C",
+            "CPP",
+            "GO",
+            "JAVA",
+            "KOTLIN",
+            "JS",
+            "TS",
+            "PHP",
+            "PROTO",
+            "PYTHON",
+            "R",
+            "RST",
+            "RUBY",
+            "RUST",
+            "SCALA",
+            "SWIFT",
+            "MARKDOWN",
+            "LATEX",
+            "HTML",
+            "SOL",
+            "CSHARP",
+            "COBOL",
+            "LUA",
+            "PERL",
+            "HASKELL",
+            "ELIXIR",
+            "POWERSHELL",
+            "VISUALBASIC6",
+            "BASH",
+        }
+
+
+@lru_cache(maxsize=1)
+def _build_auto_language_map() -> Dict[str, str]:
+    """
+    Build extension→Language mapping automatically from LangChain's Language enum.
+
+    Most Language enum values match their file extension (e.g., GO→.go, CPP→.cpp).
+    This creates mappings like {".go": "GO", ".cpp": "CPP", ".js": "JS", ...}
+    """
+    languages = _get_langchain_languages()
+    return {f".{lang.lower()}": lang for lang in languages}
+
+
+# =============================================================================
+# EXTENSION OVERRIDES
+# =============================================================================
+# Only extensions that DON'T match the pattern .{language_name} need to be here.
+# The auto-map handles .go→GO, .cpp→CPP, .js→JS, .ts→TS, .lua→LUA, etc.
+#
+# Categories:
+# 1. Extensions that differ from Language enum name (.py→PYTHON, not .python)
+# 2. Alternate extensions for the same language (.jsx→JS, .tsx→TS)
+# 3. Custom document types not in LangChain (PDF, DOCX, etc.)
+# 4. Extensions that should use default splitter (None)
+# =============================================================================
+
+_EXTENSION_OVERRIDES: Dict[str, Optional[str]] = {
+    # Python: .py != .python
     ".py": "PYTHON",
     ".pyi": "PYTHON",
     ".pyw": "PYTHON",
-    # JavaScript variants (JSX uses JS splitter)
+    # JavaScript variants
     ".jsx": "JS",
     ".mjs": "JS",
     ".cjs": "JS",
     # TypeScript variants
     ".tsx": "TS",
-    # Rust
+    # Rust: .rs != .rust
     ".rs": "RUST",
-    # Ruby
+    # Ruby: .rb != .ruby
     ".rb": "RUBY",
-    # C/C++ variants
-    ".h": "C",
+    # C++ variants (auto-map gets .cpp)
+    ".h": "CPP",  # Treat headers as C++ by default
     ".cc": "CPP",
     ".cxx": "CPP",
     ".hpp": "CPP",
     ".hxx": "CPP",
-    # Kotlin
-    ".kt": "KOTLIN",
+    # Kotlin variants
     ".kts": "KOTLIN",
-    # Perl
+    # Perl: .pl/.pm != .perl
     ".pl": "PERL",
     ".pm": "PERL",
-    # Haskell
+    # Haskell: .hs != .haskell
     ".hs": "HASKELL",
-    # Elixir
-    ".ex": "ELIXIR",
+    # Elixir variants
     ".exs": "ELIXIR",
-    # Erlang (no LangChain support, will fall back)
-    ".erl": None,
-    ".hrl": None,
-    # Solidity
-    ".sol": "SOL",
-    # C#
+    # Solidity: .sol handled by auto-map
+    # Swift: .swift handled by auto-map
+    # C#: .cs != .csharp
     ".cs": "CSHARP",
-    # PowerShell
-    ".ps1": "POWERSHELL",
+    # PowerShell variants
     ".psm1": "POWERSHELL",
-    # Shell (Bash)
+    # Shell variants → BASH
     ".sh": "BASH",
-    ".bash": "BASH",
     ".zsh": "BASH",
-    # Markup
+    # Markup: .md != .markdown
     ".md": "MARKDOWN",
     ".markdown": "MARKDOWN",
+    # HTML variants
     ".htm": "HTML",
     ".vue": "HTML",
     ".svelte": "HTML",
+    # LaTeX: .tex != .latex
     ".tex": "LATEX",
-    # Config/Data - explicitly use default splitter
+    # -----------------------------------------------------------------
+    # Custom document types (not in LangChain Language enum)
+    # -----------------------------------------------------------------
+    ".sql": "SQL",
+    ".pdf": "PDF",
+    ".docx": "DOCX",
+    ".doc": "DOCX",
+    ".pptx": "PPTX",
+    ".ppt": "PPTX",
+    ".xlsx": "XLSX",
+    ".xls": "XLSX",
+    ".csv": "CSV",
+    ".tsv": "CSV",
+    ".odt": "ODT",
+    ".ods": "ODS",
+    ".odp": "ODP",
+    ".rtf": "RTF",
+    ".epub": "EPUB",
+    ".eml": "EMAIL",
+    ".msg": "EMAIL",
+    ".txt": "TXT",
+    # -----------------------------------------------------------------
+    # Extensions that should use default splitter (explicit None)
+    # -----------------------------------------------------------------
     ".json": None,
     ".yaml": None,
     ".yml": None,
@@ -93,40 +182,36 @@ _EXTENSION_EXCEPTIONS: Dict[str, str] = {
     ".xml": None,
     ".css": None,
     ".scss": None,
-    ".sql": None,
+    ".ini": None,
+    ".cfg": None,
+    ".erl": None,  # Erlang - no LangChain support
+    ".hrl": None,
 }
 
 
 def _get_language_for_extension(ext: str) -> Optional[str]:
     """
-    Get LangChain Language name for a file extension.
+    Get Language name (or custom type like 'SQL') for a file extension.
 
     Strategy:
-    1. Check exception dict for non-obvious mappings
-    2. Try direct match: .go → GO, .ts → TS, etc.
-    3. Validate the Language enum actually has this value
-
-    Returns None if no language-specific splitter should be used.
+    1. Check overrides for explicit mappings (including None for default)
+    2. Check auto-derived map from LangChain Language enum
+    3. Return None to use default splitter
     """
-    from langchain_text_splitters import Language
-
     if not ext:
         return None
 
     ext_lower = ext.lower()
 
-    # Check exceptions first (handles .py→PYTHON, .rs→RUST, etc.)
-    if ext_lower in _EXTENSION_EXCEPTIONS:
-        return _EXTENSION_EXCEPTIONS[ext_lower]
+    # Check overrides first (includes explicit None mappings)
+    if ext_lower in _EXTENSION_OVERRIDES:
+        return _EXTENSION_OVERRIDES[ext_lower]
 
-    # Try direct derivation: .go → GO, .cpp → CPP, .java → JAVA
-    derived_name = ext_lower.lstrip(".").upper()
+    # Check auto-derived map from LangChain Language enum
+    auto_map = _build_auto_language_map()
+    if ext_lower in auto_map:
+        return auto_map[ext_lower]
 
-    # Validate it exists in Language enum
-    if hasattr(Language, derived_name):
-        return derived_name
-
-    # No matching language splitter
     return None
 
 
@@ -170,30 +255,265 @@ def _get_file_extension(metadata: dict) -> Optional[str]:
     return None
 
 
-def _create_splitter_for_document(
-    metadata: dict,
+def get_splitter(
+    file_extension: Optional[str],
     chunk_size: int,
     chunk_overlap: int,
-    length_function,
-) -> tuple:
+    length_function: Callable[[str], int],
+) -> Tuple[Any, str]:
     """
-    Create the appropriate splitter based on document type.
+    Create a text splitter optimized for the specific file extension.
 
-    Returns a tuple of (splitter, splitter_type_name) optimized for the document's file type.
+    Supports:
+    - Standard LangChain languages (Python, JS, Go, etc.)
+    - Custom SQL splitting
+    - Markdown / HTML structure-aware splitting
+    - Default recursive character splitting for others
+
+    Returns:
+        Tuple of (splitter_instance, language_name_or_default)
     """
-    from langchain_text_splitters import (
-        Language,
-        RecursiveCharacterTextSplitter,
-    )
+    from langchain_text_splitters import Language, RecursiveCharacterTextSplitter
 
-    ext = _get_file_extension(metadata)
-    lang_name = _get_language_for_extension(ext) if ext else None
-    source = metadata.get("source", "unknown")
+    lang_name = _get_language_for_extension(file_extension) if file_extension else None
 
-    # Special handling for Markdown - split by headers first
-    if ext in (".md", ".markdown"):
-        # We'll use the language-aware splitter for markdown
-        # which respects markdown structure
+    # 1. Custom handling for SQL (not in standard Language enum usually)
+    if lang_name == "SQL":
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            length_function=length_function,
+            separators=[
+                "\n\n",
+                ";\n",  # Statement boundaries
+                "; ",
+                "\n",
+                " ",
+                "",
+            ],
+        )
+        return splitter, "SQL"
+
+    # 2. PDF documents - split on page/section boundaries
+    if lang_name == "PDF":
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            length_function=length_function,
+            separators=[
+                "\n\n\n",  # Page breaks often appear as triple newlines
+                "\n\n",  # Paragraph breaks
+                "\n",
+                ". ",
+                " ",
+                "",
+            ],
+        )
+        return splitter, "PDF"
+
+    # 3. Word documents - paragraph-aware splitting
+    if lang_name == "DOCX":
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            length_function=length_function,
+            separators=[
+                "\n\n\n",  # Section breaks
+                "\n\n",  # Paragraph breaks
+                "\n",
+                ". ",
+                " ",
+                "",
+            ],
+        )
+        return splitter, "DOCX"
+
+    # 4. PowerPoint - slide-aware splitting (slides often separated by double newlines)
+    if lang_name == "PPTX":
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            length_function=length_function,
+            separators=[
+                "\n\n\n",  # Slide boundaries
+                "\n\n",  # Content blocks within slides
+                "\n",
+                ". ",
+                " ",
+                "",
+            ],
+        )
+        return splitter, "PPTX"
+
+    # 5. Excel/Spreadsheets - row-aware splitting
+    if lang_name == "XLSX":
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            length_function=length_function,
+            separators=[
+                "\n\n",  # Sheet boundaries
+                "\n",  # Row boundaries
+                " | ",  # Cell separators (from our extraction)
+                " ",
+                "",
+            ],
+        )
+        return splitter, "XLSX"
+
+    # 6. CSV/TSV - row-based splitting with minimal overlap
+    if lang_name == "CSV":
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=min(
+                chunk_overlap, chunk_size // 10
+            ),  # Minimal overlap for structured data
+            length_function=length_function,
+            separators=[
+                "\n",  # Row boundaries - primary separator
+                ",",  # Cell boundaries (fallback)
+                " ",
+                "",
+            ],
+        )
+        return splitter, "CSV"
+
+    # 7. OpenDocument Text - paragraph-aware (similar to DOCX)
+    if lang_name == "ODT":
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            length_function=length_function,
+            separators=[
+                "\n\n\n",  # Section breaks
+                "\n\n",  # Paragraph breaks
+                "\n",
+                ". ",
+                " ",
+                "",
+            ],
+        )
+        return splitter, "ODT"
+
+    # 8. OpenDocument Spreadsheet - row-aware (similar to XLSX)
+    if lang_name == "ODS":
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            length_function=length_function,
+            separators=[
+                "\n\n",  # Sheet boundaries
+                "\n",  # Row boundaries
+                " | ",  # Cell separators
+                " ",
+                "",
+            ],
+        )
+        return splitter, "ODS"
+
+    # 9. OpenDocument Presentation - slide-aware (similar to PPTX)
+    if lang_name == "ODP":
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            length_function=length_function,
+            separators=[
+                "\n\n\n",  # Slide boundaries
+                "\n\n",  # Content blocks
+                "\n",
+                ". ",
+                " ",
+                "",
+            ],
+        )
+        return splitter, "ODP"
+
+    # 10. RTF documents - paragraph-aware
+    if lang_name == "RTF":
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            length_function=length_function,
+            separators=[
+                "\n\n\n",
+                "\n\n",
+                "\n",
+                ". ",
+                " ",
+                "",
+            ],
+        )
+        return splitter, "RTF"
+
+    # 11. EPUB ebooks - chapter/section aware
+    if lang_name == "EPUB":
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            length_function=length_function,
+            separators=[
+                "\n\n\n\n",  # Chapter breaks
+                "\n\n\n",  # Section breaks
+                "\n\n",  # Paragraph breaks
+                "\n",
+                ". ",
+                " ",
+                "",
+            ],
+        )
+        return splitter, "EPUB"
+
+    # 12. Email messages - header and body aware
+    if lang_name == "EMAIL":
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            length_function=length_function,
+            separators=[
+                "\n\n---",  # Common email separator
+                "\n\n",  # Paragraph breaks
+                "\n",
+                ". ",
+                " ",
+                "",
+            ],
+        )
+        return splitter, "EMAIL"
+
+    # 13. Plain text - sentence and paragraph aware
+    if lang_name == "TXT":
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            length_function=length_function,
+            separators=[
+                "\n\n",  # Paragraph breaks
+                "\n",  # Line breaks
+                ". ",  # Sentence boundaries
+                "! ",
+                "? ",
+                "; ",
+                " ",
+                "",
+            ],
+        )
+        return splitter, "TXT"
+
+    # 14. RST (reStructuredText) - use LangChain's RST splitter
+    if lang_name == "RST":
+        try:
+            splitter = RecursiveCharacterTextSplitter.from_language(
+                language=Language.RST,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                length_function=length_function,
+            )
+            return splitter, "RST"
+        except Exception:
+            pass  # Fallback
+
+    # 15. Markdown (Language.MARKDOWN)
+    if lang_name == "MARKDOWN":
         try:
             splitter = RecursiveCharacterTextSplitter.from_language(
                 language=Language.MARKDOWN,
@@ -203,10 +523,10 @@ def _create_splitter_for_document(
             )
             return splitter, "MARKDOWN"
         except Exception:
-            pass  # Fall through to default
+            pass  # Fallback
 
-    # Special handling for HTML
-    if ext in (".html", ".htm", ".vue", ".svelte"):
+    # 16. HTML (Language.HTML)
+    if lang_name == "HTML":
         try:
             splitter = RecursiveCharacterTextSplitter.from_language(
                 language=Language.HTML,
@@ -216,11 +536,12 @@ def _create_splitter_for_document(
             )
             return splitter, "HTML"
         except Exception:
-            pass  # Fall through to default
+            pass  # Fallback
 
-    # Language-specific code splitter
+    # 17. Standard Language Enum Support (Python, JS, TS, Go, Rust, C, Lua, etc.)
     if lang_name:
         try:
+            # Check if Language enum has this member
             lang_enum = getattr(Language, lang_name, None)
             if lang_enum:
                 splitter = RecursiveCharacterTextSplitter.from_language(
@@ -231,9 +552,9 @@ def _create_splitter_for_document(
                 )
                 return splitter, lang_name
         except Exception:
-            pass  # Fall through to default
+            pass  # Fallback
 
-    # Default: RecursiveCharacterTextSplitter with good separators
+    # 18. Default Fallback
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
@@ -241,6 +562,19 @@ def _create_splitter_for_document(
         separators=["\n\n", "\n", ". ", " ", ""],
     )
     return splitter, "default"
+
+
+def _create_splitter_for_document(
+    metadata: dict,
+    chunk_size: int,
+    chunk_overlap: int,
+    length_function,
+) -> tuple:
+    """
+    Create the appropriate splitter based on document type (internal wrapper).
+    """
+    ext = _get_file_extension(metadata)
+    return get_splitter(ext, chunk_size, chunk_overlap, length_function)
 
 
 def _chunk_document_batch_sync(
@@ -319,7 +653,9 @@ def _chunk_document_batch_sync(
             splitter_counts["fallback"] = splitter_counts.get("fallback", 0) + 1
 
     # Convert back to serializable format
-    return [(chunk.page_content, chunk.metadata) for chunk in all_chunks], splitter_counts
+    return [
+        (chunk.page_content, chunk.metadata) for chunk in all_chunks
+    ], splitter_counts
 
 
 async def chunk_documents_parallel(
@@ -365,15 +701,12 @@ async def chunk_documents_parallel(
 
     # Process in batches
     for i in range(0, total_docs, batch_size):
-        batch_docs = documents[i:i + batch_size]
+        batch_docs = documents[i : i + batch_size]
         batch_num = i // batch_size + 1
         total_batches = (total_docs + batch_size - 1) // batch_size
 
         # Convert to serializable format
-        batch_data = [
-            (doc.page_content, doc.metadata)
-            for doc in batch_docs
-        ]
+        batch_data = [(doc.page_content, doc.metadata) for doc in batch_docs]
 
         # Run in process pool
         loop = asyncio.get_event_loop()
@@ -416,7 +749,8 @@ async def chunk_documents_parallel(
 
     # Log splitter usage summary
     splitter_summary = ", ".join(
-        f"{splitter}: {count}" for splitter, count in sorted(all_splitter_counts.items())
+        f"{splitter}: {count}"
+        for splitter, count in sorted(all_splitter_counts.items())
     )
     logger.info(
         f"Chunking complete: {total_docs} documents -> {len(all_chunks)} chunks "
