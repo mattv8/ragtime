@@ -12,6 +12,7 @@ import type {
   AppSettings,
 } from '@/types';
 import { Icon } from './Icon';
+import { DeleteConfirmButton } from './DeleteConfirmButton';
 
 type PanelTab = 'custom-routes' | 'default-filters';
 
@@ -81,13 +82,11 @@ function RouteCard({ route, tools, onEdit, onDelete, onToggle }: RouteCardProps)
         >
           Edit
         </button>
-        <button
-          type="button"
+        <DeleteConfirmButton
+          onDelete={() => onDelete(route.id)}
+          buttonText="Delete"
           className="btn btn-sm btn-danger"
-          onClick={() => onDelete(route.id)}
-        >
-          Delete
-        </button>
+        />
       </div>
     </div>
   );
@@ -156,13 +155,11 @@ function DefaultFilterCard({ filter, tools, ldapGroups, onEdit, onDelete, onTogg
         >
           Edit
         </button>
-        <button
-          type="button"
+        <DeleteConfirmButton
+          onDelete={() => onDelete(filter.id)}
+          buttonText="Delete"
           className="btn btn-sm btn-danger"
-          onClick={() => onDelete(filter.id)}
-        >
-          Delete
-        </button>
+        />
       </div>
     </div>
   );
@@ -367,7 +364,6 @@ function RouteWizard({
     <div className="wizard-panel">
       <div className="wizard-header">
         <h3>{editingRoute ? 'Edit MCP Route' : 'Create MCP Route'}</h3>
-        <button type="button" className="close-btn" onClick={onCancel}><Icon name="close" size={18} /></button>
       </div>
 
       <form onSubmit={handleSubmit} className="wizard-form">
@@ -894,7 +890,6 @@ function DefaultFilterWizard({
     <div className="wizard-panel">
       <div className="wizard-header">
         <h3>{editingFilter ? 'Edit Default Route Filter' : 'Create Default Route Filter'}</h3>
-        <button type="button" className="close-btn" onClick={onCancel}><Icon name="close" size={18} /></button>
       </div>
 
       <form onSubmit={handleSubmit} className="wizard-form">
@@ -1124,8 +1119,6 @@ export function MCPRoutesPanel({ onClose, ldapConfigured = false, ldapGroups = [
   const [editingFilter, setEditingFilter] = useState<McpDefaultRouteFilter | null>(null);
   const [savingFilter, setSavingFilter] = useState(false);
 
-  const [deleteConfirm, setDeleteConfirm] = useState<{ type: 'route' | 'filter'; id: string } | null>(null);
-
   // Categorize tools
   const filesystemTools = tools.filter(t => t.tool_type === 'filesystem_indexer');
   const schemaTools = tools.filter(t => {
@@ -1198,7 +1191,6 @@ export function MCPRoutesPanel({ onClose, ldapConfigured = false, ldapGroups = [
   const handleDeleteRoute = async (routeId: string) => {
     try {
       await api.deleteMcpRoute(routeId);
-      setDeleteConfirm(null);
       setSuccess('Route deleted successfully');
       await loadData();
       setTimeout(() => setSuccess(null), 3000);
@@ -1249,7 +1241,6 @@ export function MCPRoutesPanel({ onClose, ldapConfigured = false, ldapGroups = [
   const handleDeleteFilter = async (filterId: string) => {
     try {
       await api.deleteMcpDefaultFilter(filterId);
-      setDeleteConfirm(null);
       setSuccess('Filter deleted successfully');
       await loadData();
       setTimeout(() => setSuccess(null), 3000);
@@ -1266,6 +1257,18 @@ export function MCPRoutesPanel({ onClose, ldapConfigured = false, ldapGroups = [
   const handleCreateFilter = () => {
     setEditingFilter(null);
     setShowFilterWizard(true);
+  };
+
+  const handleClose = () => {
+    if (showRouteWizard) {
+      setShowRouteWizard(false);
+      setEditingRoute(null);
+    } else if (showFilterWizard) {
+      setShowFilterWizard(false);
+      setEditingFilter(null);
+    } else {
+      onClose?.();
+    }
   };
 
   if (loading) {
@@ -1330,12 +1333,28 @@ export function MCPRoutesPanel({ onClose, ldapConfigured = false, ldapGroups = [
         ) : (
           <h3>MCP Routes</h3>
         )}
-        {onClose && <button type="button" className="close-btn" onClick={onClose}><Icon name="close" size={18} /></button>}
+        {onClose && <button type="button" className="close-btn" onClick={handleClose}><Icon name="close" size={18} /></button>}
       </div>
 
       <div className="modal-body">
         {error && <div className="error-banner">{error}</div>}
         {success && <div className="success-banner">{success}</div>}
+
+          <>
+            {activeTab === 'custom-routes' && (
+              <>
+                <p className="field-help" style={{ marginBottom: '1rem' }}>
+                  Create custom MCP endpoints that expose specific subsets of tools at custom paths like <code>/mcp/my_tools</code>.
+                </p>
+
+
+                {!showRouteWizard && (
+                  <div className="panel-actions" style={{ marginBottom: '1rem' }}>
+                    <button className="btn" onClick={handleCreateRoute}>
+                      + Add Custom Route
+                    </button>
+                  </div>
+                )}
 
         {showRouteWizard ? (
           <RouteWizard
@@ -1354,7 +1373,52 @@ export function MCPRoutesPanel({ onClose, ldapConfigured = false, ldapGroups = [
             }}
             saving={savingRoute}
           />
-        ) : showFilterWizard ? (
+        ) : (
+          <>
+
+                {routes.length === 0 ? (
+                  <div className="empty-state">
+                    <p>No custom MCP routes configured.</p>
+                    <p className="muted">
+                      Create a route to expose a specific subset of tools at a custom endpoint.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="tools-grid">
+                    {routes.map(route => (
+                      <RouteCard
+                        key={route.id}
+                        route={route}
+                        tools={tools}
+                        onEdit={handleEditRoute}
+                        onDelete={handleDeleteRoute}
+                        onToggle={handleToggleRoute}
+                      />
+                    ))}
+                  </div>
+                )}
+                </>
+                )}
+              </>
+            )}
+
+            {activeTab === 'default-filters' && showDefaultFiltersTab && (
+              <>
+                <p className="field-help" style={{ marginBottom: '1rem' }}>
+                  Configure LDAP group-based tool filtering for the default <code>/mcp</code> route.
+                  Users will only see tools matching their LDAP group membership. Higher priority filters take precedence.
+                </p>
+
+
+                {!showFilterWizard && (
+                  <div className="panel-actions" style={{ marginBottom: '1rem' }}>
+                    <button className="btn" onClick={handleCreateFilter}>
+                      + Add Group Filter
+                    </button>
+                  </div>
+                )}
+
+        {showFilterWizard ? (
           <DefaultFilterWizard
             editingFilter={editingFilter}
             tools={otherTools}
@@ -1372,54 +1436,6 @@ export function MCPRoutesPanel({ onClose, ldapConfigured = false, ldapGroups = [
           />
         ) : (
           <>
-            {activeTab === 'custom-routes' && (
-              <>
-                <p className="field-help" style={{ marginBottom: '1rem' }}>
-                  Create custom MCP endpoints that expose specific subsets of tools at custom paths like <code>/mcp/my_tools</code>.
-                </p>
-
-                <div className="panel-actions" style={{ marginBottom: '1rem' }}>
-                  <button className="btn" onClick={handleCreateRoute}>
-                    + Create Custom Route
-                  </button>
-                </div>
-
-                {routes.length === 0 ? (
-                  <div className="empty-state">
-                    <p>No custom MCP routes configured.</p>
-                    <p className="muted">
-                      Create a route to expose a specific subset of tools at a custom endpoint.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="tools-grid">
-                    {routes.map(route => (
-                      <RouteCard
-                        key={route.id}
-                        route={route}
-                        tools={tools}
-                        onEdit={handleEditRoute}
-                        onDelete={(id) => setDeleteConfirm({ type: 'route', id })}
-                        onToggle={handleToggleRoute}
-                      />
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
-
-            {activeTab === 'default-filters' && showDefaultFiltersTab && (
-              <>
-                <p className="field-help" style={{ marginBottom: '1rem' }}>
-                  Configure LDAP group-based tool filtering for the default <code>/mcp</code> route.
-                  Users will only see tools matching their LDAP group membership. Higher priority filters take precedence.
-                </p>
-
-                <div className="panel-actions" style={{ marginBottom: '1rem' }}>
-                  <button className="btn" onClick={handleCreateFilter}>
-                    + Create Group Filter
-                  </button>
-                </div>
 
                 {filters.length === 0 ? (
                   <div className="empty-state">
@@ -1438,53 +1454,18 @@ export function MCPRoutesPanel({ onClose, ldapConfigured = false, ldapGroups = [
                         tools={tools}
                         ldapGroups={ldapGroups}
                         onEdit={handleEditFilter}
-                        onDelete={(id) => setDeleteConfirm({ type: 'filter', id })}
+                        onDelete={handleDeleteFilter}
                         onToggle={handleToggleFilter}
                       />
                     ))}
                   </div>
                 )}
+                </>
+                )}
               </>
             )}
           </>
-        )}
       </div>
-
-      {/* Delete confirmation modal */}
-      {deleteConfirm && (
-        <div className="modal-overlay" onClick={() => setDeleteConfirm(null)}>
-          <div className="modal-content modal-small" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>Confirm Delete</h3>
-              <button type="button" className="close-btn" onClick={() => setDeleteConfirm(null)}><Icon name="close" size={18} /></button>
-            </div>
-            <div className="modal-body">
-              <p>Are you sure you want to delete this {deleteConfirm.type === 'route' ? 'MCP route' : 'filter'}?</p>
-              <p className="muted">This action cannot be undone.</p>
-            </div>
-            <div className="modal-footer">
-              <button
-                className="btn btn-secondary"
-                onClick={() => setDeleteConfirm(null)}
-              >
-                Cancel
-              </button>
-              <button
-                className="btn btn-danger"
-                onClick={() => {
-                  if (deleteConfirm.type === 'route') {
-                    handleDeleteRoute(deleteConfirm.id);
-                  } else {
-                    handleDeleteFilter(deleteConfirm.id);
-                  }
-                }}
-              >
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </>
   );
 }

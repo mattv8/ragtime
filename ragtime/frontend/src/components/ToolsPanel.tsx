@@ -4,13 +4,8 @@ import type { ToolConfig, HeartbeatStatus, SchemaIndexStats } from '@/types';
 import { TOOL_TYPE_INFO } from '@/types';
 import { ToolWizard } from './ToolWizard';
 import { Icon, getToolIconType } from './Icon';
-
-// Confirmation modal state
-interface ConfirmationState {
-  message: string;
-  onConfirm: () => void;
-  onCancel?: () => void;
-}
+import { DeleteConfirmButton } from './DeleteConfirmButton';
+import { AnimatedCreateButton } from './AnimatedCreateButton';
 
 // Inline field being edited
 type EditingField = 'name' | 'description' | null;
@@ -387,13 +382,11 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
         >
           Edit
         </button>
-        <button
-          type="button"
+        <DeleteConfirmButton
+          onDelete={() => onDelete(tool.id)}
           className="btn btn-sm btn-danger"
-          onClick={() => onDelete(tool.id)}
-        >
-          Delete
-        </button>
+          title="Delete tool"
+        />
       </div>
     </div>
   );
@@ -416,7 +409,6 @@ export function ToolsPanel({ onSchemaJobTriggered }: ToolsPanelProps) {
   const [heartbeats, setHeartbeats] = useState<Record<string, HeartbeatStatus>>({});
   const [schemaStats, setSchemaStats] = useState<Record<string, SchemaIndexStats>>({});
   const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [confirmation, setConfirmation] = useState<ConfirmationState | null>(null);
 
   const loadTools = useCallback(async () => {
     try {
@@ -524,21 +516,14 @@ export function ToolsPanel({ onSchemaJobTriggered }: ToolsPanelProps) {
   };
 
   const handleDeleteTool = async (toolId: string) => {
-    setConfirmation({
-      message: 'Are you sure you want to delete this tool configuration?',
-      onConfirm: async () => {
-        setConfirmation(null);
-        try {
-          await api.deleteToolConfig(toolId);
-          await loadTools();
-          setSuccess('Tool deleted successfully');
-          setTimeout(() => setSuccess(null), 3000);
-        } catch (err) {
-          setError(err instanceof Error ? err.message : 'Failed to delete tool');
-        }
-      },
-      onCancel: () => setConfirmation(null)
-    });
+    try {
+      await api.deleteToolConfig(toolId);
+      await loadTools();
+      setSuccess('Tool deleted successfully');
+      setTimeout(() => setSuccess(null), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete tool');
+    }
   };
 
   const handleToggleTool = async (toolId: string, enabled: boolean) => {
@@ -622,49 +607,27 @@ export function ToolsPanel({ onSchemaJobTriggered }: ToolsPanelProps) {
     }
   };
 
-  if (showWizard) {
-    return (
-      <ToolWizard
-        existingTool={editingTool}
-        onClose={handleWizardClose}
-        onSave={handleWizardSave}
-      />
-    );
-  }
-
   return (
     <div className="tools-panel">
-      {/* Confirmation Modal */}
-      {confirmation && (
-        <div className="modal-overlay" onClick={() => confirmation.onCancel?.()}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>Confirm Action</h3>
-              <button className="modal-close" onClick={() => confirmation.onCancel?.()}>×</button>
-            </div>
-            <div className="modal-body">
-              <p>{confirmation.message}</p>
-            </div>
-            <div className="modal-footer">
-              <button className="btn btn-secondary" onClick={() => confirmation.onCancel?.()}>
-                Cancel
-              </button>
-              <button className="btn btn-danger" onClick={confirmation.onConfirm}>
-                Confirm
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       <div className="card">
         <div className="card-header">
           <h2>Tool Connections</h2>
-          <button type="button" className="btn" onClick={handleAddTool}>
-            Add Tool
-          </button>
+          <AnimatedCreateButton
+            isExpanded={showWizard}
+            onClick={() => showWizard ? handleWizardClose() : handleAddTool()}
+            label="Add Tool"
+          />
         </div>
 
+        {showWizard ? (
+          <ToolWizard
+            existingTool={editingTool} // Note: This might need to check if existingTool is valid for Add vs Edit. Add -> null.
+            onClose={handleWizardClose}
+            onSave={handleWizardSave}
+            embedded={true}
+          />
+        ) : (
+          <>
         {error && <div className="error-banner">{error}</div>}
         {success && <div className="success-banner">{success}</div>}
 
@@ -704,9 +667,11 @@ export function ToolsPanel({ onSchemaJobTriggered }: ToolsPanelProps) {
             ))}
           </div>
         )}
+        </>
+        )}
       </div>
 
-      {tools.length === 0 && (
+      {!showWizard && tools.length === 0 && (
         <div className="card">
           <h2>About Tools</h2>
           <p className="fieldset-help">

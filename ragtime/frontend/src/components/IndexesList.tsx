@@ -7,6 +7,8 @@ import { GitIndexWizard } from './GitIndexWizard';
 import { UploadForm } from './UploadForm';
 import { DescriptionField } from './DescriptionField';
 import { IndexCard } from './IndexCard';
+import { DeleteConfirmButton } from './DeleteConfirmButton';
+import { AnimatedCreateButton } from './AnimatedCreateButton';
 
 interface IndexesListProps {
   indexes: IndexInfo[];
@@ -116,7 +118,6 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
   const [toggling, setToggling] = useState<string | null>(null);
   // editingIndex removed in favor of inline editing
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [deleteConfirmName, setDeleteConfirmName] = useState<string | null>(null);
 
   // Index memory info from health endpoint
   const [indexMemoryMap, setIndexMemoryMap] = useState<Map<string, IndexLoadingDetail>>(new Map());
@@ -259,19 +260,7 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
     onJobCreated?.();
   };
 
-  const handleDelete = async (name: string) => {
-    // If already showing confirmation for this index, cancel it
-    if (deleteConfirmName === name) {
-      setDeleteConfirmName(null);
-      return;
-    }
-
-    // Show inline confirmation
-    setDeleteConfirmName(name);
-  };
-
-  const confirmDelete = async (name: string) => {
-    setDeleteConfirmName(null);
+  const handleDeleteIndex = async (name: string) => {
     setDeleting(name);
     try {
       await api.deleteIndex(name);
@@ -402,21 +391,17 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
           )}
         </div>
         {showCreateWizard ? (
-          <button
-            type="button"
-            className="close-btn"
+          <AnimatedCreateButton
+            isExpanded={true}
             onClick={() => setShowCreateWizard(false)}
-          >
-            <X size={18} />
-          </button>
+            label="Add Document Index"
+          />
         ) : (
-          <button
-            type="button"
-            className="btn"
+          <AnimatedCreateButton
+            isExpanded={false}
             onClick={() => setShowCreateWizard(true)}
-          >
-            Create Document Index
-          </button>
+            label="Add Document Index"
+          />
         )}
       </div>
 
@@ -627,33 +612,12 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
                     Pull &amp; Re-index
                   </button>
                 )}
-                {deleteConfirmName === idx.name ? (
-                  <>
-                    <button
-                      className="btn btn-sm btn-success"
-                      onClick={() => confirmDelete(idx.name)}
-                      title="Confirm delete"
-                      disabled={deleting === idx.name}
-                    >
-                      Confirm
-                    </button>
-                    <button
-                      className="btn btn-sm btn-secondary"
-                      onClick={() => setDeleteConfirmName(null)}
-                      title="Cancel"
-                    >
-                      Cancel
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    className="btn btn-sm btn-danger"
-                    onClick={() => handleDelete(idx.name)}
-                    disabled={deleting === idx.name}
-                  >
-                    {deleting === idx.name ? 'Deleting...' : 'Delete'}
-                  </button>
-                )}
+                <DeleteConfirmButton
+                  onDelete={() => handleDeleteIndex(idx.name)}
+                  deleting={deleting === idx.name}
+                  className="btn btn-sm btn-danger"
+                  title="Delete index"
+                />
               </>
             );
 

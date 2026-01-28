@@ -1787,6 +1787,8 @@ interface ToolWizardProps {
   onClose: () => void;
   onSave: () => void;
   defaultToolType?: ToolType;
+  /** When true, renders without card wrapper and header (for embedding in other panels) */
+  embedded?: boolean;
 }
 
 type WizardStep = 'type' | 'connection' | 'pdm_filtering' | 'execution_constraints' | 'description' | 'options' | 'review';
@@ -1820,7 +1822,7 @@ function getStepTitle(step: WizardStep): string {
   }
 }
 
-export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: ToolWizardProps) {
+export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, embedded = false }: ToolWizardProps) {
   const isEditing = existingTool !== null;
   const progressRef = useRef<HTMLDivElement>(null);
 
@@ -5099,13 +5101,15 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType }: T
   };
 
   return (
-    <div className="card wizard-card">
-      <div className="wizard-header">
-        <h2>{isEditing ? 'Edit Tool' : 'Add Tool'}</h2>
-        <button type="button" className="close-btn" onClick={onClose}>
-          <Icon name="close" size={18} />
-        </button>
-      </div>
+    <div className={`card wizard-card ${embedded ? 'embedded' : ''}`}>
+      {!embedded && (
+        <div className="wizard-header">
+          <h2>{isEditing ? 'Edit Tool' : 'Add Tool'}</h2>
+          <button type="button" className="close-btn" onClick={onClose}>
+            <Icon name="close" size={18} />
+          </button>
+        </div>
+      )}
 
       {/* Progress indicator */}
       <div className="wizard-progress" ref={progressRef}>

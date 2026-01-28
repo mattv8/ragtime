@@ -21,3 +21,4 @@ export { UserMenu } from './UserMenu';
 export { SecurityBanner } from './SecurityBanner';
 export { ConfigurationBanner } from './ConfigurationBanner';
 export * from './IndexCard';
+export { DeleteConfirmButton } from './DeleteConfirmButton';

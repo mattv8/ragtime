@@ -5,6 +5,8 @@ import { formatSizeMB } from '@/utils';
 import type { ToolConfig, FilesystemIndexJob, FilesystemIndexStats } from '@/types';
 import { ToolWizard } from './ToolWizard';
 import { IndexCard } from './IndexCard';
+import { DeleteConfirmButton } from './DeleteConfirmButton';
+import { AnimatedCreateButton } from './AnimatedCreateButton';
 
 // Polling interval for active jobs (2 seconds)
 const ACTIVE_JOB_POLL_INTERVAL = 2000;
@@ -46,18 +48,8 @@ function FilesystemIndexCard({
   embeddingDimensions,
 }: FilesystemIndexCardProps) {
   const config = tool.connection_config as { base_path?: string; index_name?: string };
-  const [deleteConfirm, setDeleteConfirm] = useState(false);
 
   const isActive = activeJob && (activeJob.status === 'pending' || activeJob.status === 'indexing');
-
-  const handleDelete = () => {
-    if (deleteConfirm) {
-      onDelete(tool.id);
-      setDeleteConfirm(false);
-    } else {
-      setDeleteConfirm(true);
-    }
-  };
 
   const metaPills = (
     <>
@@ -138,35 +130,10 @@ function FilesystemIndexCard({
         Full Re-Index
       </button>
 
-      {deleteConfirm ? (
-        <>
-          <button
-            type="button"
-            className="btn btn-sm btn-success"
-            onClick={handleDelete}
-            title="Confirm delete"
-          >
-            Confirm
-          </button>
-          <button
-            type="button"
-            className="btn btn-sm btn-secondary"
-            onClick={() => setDeleteConfirm(false)}
-            title="Cancel"
-          >
-            Cancel
-          </button>
-        </>
-      ) : (
-        <button
-          type="button"
-          className="btn btn-sm btn-danger"
-          onClick={handleDelete}
-          title="Delete this filesystem index configuration"
-        >
-          Delete
-        </button>
-      )}
+      <DeleteConfirmButton
+        onDelete={() => onDelete(tool.id)}
+        title="Delete this filesystem index configuration"
+      />
     </>
   );
 
@@ -429,17 +396,6 @@ export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged, embeddingD
     setTimeout(() => setSuccess(null), 3000);
   };
 
-  if (showWizard) {
-    return (
-      <ToolWizard
-        existingTool={editingTool}
-        onClose={handleWizardClose}
-        onSave={handleWizardSave}
-        defaultToolType="filesystem_indexer"
-      />
-    );
-  }
-
   return (
     <div className="card filesystem-index-panel">
       {/* Confirmation Modal */}
@@ -477,11 +433,23 @@ export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged, embeddingD
             </span>
           )}
         </div>
-        <button type="button" className="btn" onClick={handleAddNew}>
-          Add Filesystem Index
-        </button>
+        <AnimatedCreateButton
+          isExpanded={showWizard}
+          onClick={() => showWizard ? handleWizardClose() : handleAddNew()}
+          label="Add Filesystem Index"
+        />
       </div>
 
+      {showWizard ? (
+        <ToolWizard
+          existingTool={editingTool}
+          onClose={handleWizardClose}
+          onSave={handleWizardSave}
+          defaultToolType="filesystem_indexer"
+          embedded={true}
+        />
+      ) : (
+        <>
       <p className="section-description">
         Index files from mounted volumes (Docker mounts, SMB shares, NFS) for RAG queries.
         Uses pgvector for efficient similarity search.
@@ -530,6 +498,8 @@ export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged, embeddingD
           embeddingDimensions={embeddingDimensions}
         />
       ))}
+        </>
+      )}
     </div>
   );
 }
