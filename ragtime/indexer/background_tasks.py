@@ -132,9 +132,7 @@ class BackgroundTaskService:
             self._schema_reindex_scheduler()
         )
         # Start git re-indexing scheduler
-        self._git_scheduler_task = asyncio.create_task(
-            self._git_reindex_scheduler()
-        )
+        self._git_scheduler_task = asyncio.create_task(self._git_reindex_scheduler())
 
     async def stop(self):
         """Stop the background task service."""
@@ -433,9 +431,7 @@ class BackgroundTaskService:
             db = await repository._get_db()
 
             # Get all git-based index metadata
-            git_indexes = await db.indexmetadata.find_many(
-                where={"sourceType": "git"}
-            )
+            git_indexes = await db.indexmetadata.find_many(where={"sourceType": "git"})
 
             for metadata in git_indexes:
                 try:
@@ -473,10 +469,19 @@ class BackgroundTaskService:
                     # Get stored token (decrypt if needed)
                     from ragtime.core.encryption import decrypt_secret
 
-                    git_token = decrypt_secret(metadata.gitToken) if metadata.gitToken else None
+                    git_token = (
+                        decrypt_secret(metadata.gitToken) if metadata.gitToken else None
+                    )
 
                     # Build config from snapshot
-                    from ragtime.indexer.models import IndexConfig
+                    from ragtime.indexer.models import IndexConfig, OcrMode
+
+                    # Handle legacy enable_ocr field and convert to ocr_mode
+                    ocr_mode_str = config_snapshot.get("ocr_mode", "disabled")
+                    if ocr_mode_str == "disabled" and config_snapshot.get(
+                        "enable_ocr", False
+                    ):
+                        ocr_mode_str = "tesseract"  # Legacy compatibility
 
                     config = IndexConfig(
                         name=metadata.name,
@@ -489,7 +494,8 @@ class BackgroundTaskService:
                         chunk_size=config_snapshot.get("chunk_size", 1000),
                         chunk_overlap=config_snapshot.get("chunk_overlap", 200),
                         max_file_size_kb=config_snapshot.get("max_file_size_kb", 500),
-                        enable_ocr=config_snapshot.get("enable_ocr", False),
+                        ocr_mode=OcrMode(ocr_mode_str),
+                        ocr_vision_model=config_snapshot.get("ocr_vision_model"),
                         git_clone_timeout_minutes=config_snapshot.get(
                             "git_clone_timeout_minutes", 5
                         ),
@@ -510,9 +516,7 @@ class BackgroundTaskService:
                     )
 
                 except Exception as e:
-                    logger.warning(
-                        f"Error checking git index '{metadata.name}': {e}"
-                    )
+                    logger.warning(f"Error checking git index '{metadata.name}': {e}")
 
         except Exception as e:
             logger.error(f"Error in git reindex check: {e}")

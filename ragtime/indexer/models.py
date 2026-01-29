@@ -62,10 +62,6 @@ class IndexConfig(BaseModel):
         description="Maximum file size in KB to include (files larger are skipped). Default 500KB.",
     )
     embedding_model: str = Field(default="text-embedding-3-small")
-    enable_ocr: bool = Field(
-        default=False,
-        description="Enable OCR to extract text from images (slower but captures text in screenshots, scanned docs, etc.)",
-    )
     ocr_mode: OcrMode = Field(
         default=OcrMode.DISABLED,
         description="OCR mode: 'disabled' (skip images), 'tesseract' (fast traditional OCR), or 'ollama' (semantic OCR with vision model)",
@@ -144,7 +140,8 @@ class IndexConfigSnapshot(BaseModel):
     chunk_size: int = Field(default=1000)
     chunk_overlap: int = Field(default=200)
     max_file_size_kb: int = Field(default=500)
-    enable_ocr: bool = Field(default=False)
+    ocr_mode: OcrMode = Field(default=OcrMode.DISABLED)
+    ocr_vision_model: Optional[str] = Field(default=None)
     git_clone_timeout_minutes: int = Field(default=5)
     git_history_depth: int = Field(default=1)
     reindex_interval_hours: int = Field(default=0)
@@ -331,9 +328,13 @@ class AnalyzeIndexRequest(BaseModel):
         le=10000,
         description="Maximum file size in KB to include",
     )
-    enable_ocr: bool = Field(
-        default=False,
-        description="Enable OCR to extract text from images",
+    ocr_mode: OcrMode = Field(
+        default=OcrMode.DISABLED,
+        description="OCR mode: 'disabled' (skip images), 'tesseract' (fast traditional OCR), or 'ollama' (semantic OCR with vision model)",
+    )
+    ocr_vision_model: Optional[str] = Field(
+        default=None,
+        description="Ollama vision model for OCR (e.g., 'qwen3-vl:latest'). Required when ocr_mode is 'ollama'.",
     )
 
 
@@ -1190,17 +1191,13 @@ class FilesystemConnectionConfig(BaseModel):
     max_total_files: int = Field(
         default=10000, ge=1, le=100000, description="Maximum total files to index"
     )
-    enable_ocr: bool = Field(
-        default=False,
-        description="Enable OCR to extract text from images (slower but captures text in screenshots, scanned docs, etc.)",
-    )
     ocr_mode: OcrMode = Field(
         default=OcrMode.DISABLED,
         description="OCR mode: 'disabled' (skip images), 'tesseract' (fast traditional OCR), or 'ollama' (semantic OCR with vision model)",
     )
     ocr_vision_model: Optional[str] = Field(
         default=None,
-        description="Ollama vision model for OCR (e.g., 'granite3.2-vision:2b'). Required when ocr_mode is 'ollama'.",
+        description="Ollama vision model for OCR (e.g., 'qwen3-vl:latest'). Required when ocr_mode is 'ollama'.",
     )
 
     # Re-indexing schedule

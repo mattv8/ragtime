@@ -24,6 +24,17 @@ UNPARSEABLE_BINARY_EXTENSIONS: set[str] = {
     ".bmp",
     ".tiff",
     ".tif",
+    # Raw camera formats (can be processed with OCR if rawpy is installed)
+    ".cr2",  # Canon RAW 2
+    ".cr3",  # Canon RAW 3
+    ".nef",  # Nikon Electronic Format
+    ".arw",  # Sony Alpha RAW
+    ".dng",  # Adobe Digital Negative
+    ".orf",  # Olympus RAW
+    ".rw2",  # Panasonic RAW
+    ".pef",  # Pentax Electronic File
+    ".raf",  # Fujifilm RAW
+    ".srw",  # Samsung RAW
     # Fonts
     ".woff",
     ".woff2",
@@ -120,11 +131,31 @@ PARSEABLE_DOCUMENT_EXTENSIONS: set[str] = {
 }
 
 # =============================================================================
+# RAW CAMERA EXTENSIONS
+# =============================================================================
+# Raw camera formats that require rawpy for processing.
+# These need special handling to convert to standard image formats.
+RAW_CAMERA_EXTENSIONS: set[str] = {
+    ".cr2",  # Canon RAW 2
+    ".cr3",  # Canon RAW 3
+    ".nef",  # Nikon Electronic Format
+    ".arw",  # Sony Alpha RAW
+    ".dng",  # Adobe Digital Negative
+    ".orf",  # Olympus RAW
+    ".rw2",  # Panasonic RAW
+    ".pef",  # Pentax Electronic File
+    ".raf",  # Fujifilm RAW
+    ".srw",  # Samsung RAW
+}
+
+# =============================================================================
 # OCR-CAPABLE EXTENSIONS
 # =============================================================================
 # Image formats that can have text extracted via OCR (when enabled).
 # These are in UNPARSEABLE_BINARY_EXTENSIONS but can be processed with OCR.
+# Includes standard image formats and raw camera formats (requires rawpy).
 OCR_EXTENSIONS: set[str] = {
+    # Standard image formats
     ".png",
     ".jpg",
     ".jpeg",
@@ -133,7 +164,7 @@ OCR_EXTENSIONS: set[str] = {
     ".bmp",
     ".gif",
     ".webp",
-}
+} | RAW_CAMERA_EXTENSIONS  # Include raw camera formats
 
 # =============================================================================
 # NEVER SUGGEST EXCLUDE EXTENSIONS

@@ -1080,7 +1080,8 @@ class FilesystemIndexerService:
                     chunk_overlap=config.chunk_overlap,
                     max_file_size_mb=config.max_file_size_mb,
                     max_total_files=config.max_total_files,
-                    enable_ocr=config.enable_ocr,
+                    ocr_mode=config.ocr_mode,
+                    ocr_vision_model=config.ocr_vision_model,
                 )
 
                 # Collect files to process - run in thread to avoid blocking on network filesystems
@@ -1395,8 +1396,14 @@ class FilesystemIndexerService:
             metadata = {"source": file_path_str}
 
             # Read file content (handles PDF, DOCX, images with OCR, etc.)
-            content = await asyncio.to_thread(
-                self._read_file_content, file_path, config.enable_ocr
+            content = await self._read_file_content_async(
+                file_path,
+                ocr_mode=(
+                    config.ocr_mode.value
+                    if hasattr(config.ocr_mode, "value")
+                    else str(config.ocr_mode)
+                ),
+                ocr_vision_model=config.ocr_vision_model,
             )
             if not content:
                 return []
@@ -1436,11 +1443,33 @@ class FilesystemIndexerService:
             logger.warning(f"Error loading file {file_path}: {e}")
             return []
 
-    def _read_file_content(self, file_path: Path, enable_ocr: bool = False) -> str:
-        """Read file content using the unified document parser (handles OCR, docs, text)."""
-        from ragtime.indexer.document_parser import extract_text_from_file
+    async def _read_file_content_async(
+        self,
+        file_path: Path,
+        ocr_mode: str = "disabled",
+        ocr_vision_model: Optional[str] = None,
+    ) -> str:
+        """Read file content using the unified document parser (handles OCR, docs, text).
 
-        text = extract_text_from_file(file_path, enable_ocr=enable_ocr)
+        Uses async extraction to support Ollama vision OCR.
+        """
+        from ragtime.core.app_settings import get_app_settings
+        from ragtime.indexer.document_parser import extract_text_from_file_async
+
+        # Get Ollama base URL from app settings for vision OCR
+        ollama_base_url = None
+        if ocr_mode == "ollama":
+            app_settings = await get_app_settings()
+            ollama_base_url = app_settings.get(
+                "ollama_base_url", "http://localhost:11434"
+            )
+
+        text = await extract_text_from_file_async(
+            file_path,
+            ocr_mode=ocr_mode,  # type: ignore
+            ocr_vision_model=ocr_vision_model,
+            ollama_base_url=ollama_base_url,
+        )
 
         if text:
             return text
@@ -1705,10 +1734,20 @@ class FilesystemIndexerService:
                     img_count = sum(
                         ext_stats[ext]["file_count"] for ext in ocr_images_found
                     )
-                    if config.enable_ocr:
+                    ocr_mode_str = (
+                        config.ocr_mode.value
+                        if hasattr(config.ocr_mode, "value")
+                        else str(config.ocr_mode)
+                    )
+                    if ocr_mode_str != "disabled":
+                        ocr_method = (
+                            "Tesseract"
+                            if ocr_mode_str == "tesseract"
+                            else f"Ollama Vision ({config.ocr_vision_model or 'not configured'})"
+                        )
                         warnings.append(
                             f"Found {img_count} image files ({', '.join(ocr_images_found)}) - "
-                            "these will be processed with OCR to extract text."
+                            f"these will be processed with {ocr_method} OCR to extract text."
                         )
                     else:
                         warnings.append(

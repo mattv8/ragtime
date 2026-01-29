@@ -25,7 +25,11 @@ import io
 from pathlib import Path
 from typing import Literal, Optional
 
-from ragtime.core.file_constants import DOCUMENT_EXTENSIONS, OCR_EXTENSIONS
+from ragtime.core.file_constants import (
+    DOCUMENT_EXTENSIONS,
+    OCR_EXTENSIONS,
+    RAW_CAMERA_EXTENSIONS,
+)
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -173,7 +177,7 @@ async def extract_text_from_file_async(
                     )
                     return _extract_image_ocr(content)
                 return await _extract_image_vision_ocr(
-                    content, ollama_base_url, ocr_vision_model
+                    content, ollama_base_url, ocr_vision_model, source_format=suffix
                 )
             elif effective_ocr_mode == "tesseract":
                 return _extract_image_ocr(content)
@@ -719,22 +723,26 @@ async def _extract_image_vision_ocr(
     content: bytes,
     ollama_base_url: str,
     vision_model: str,
+    source_format: str | None = None,
     timeout: float = 60.0,
 ) -> str:
     """
     Extract text from image using Ollama vision model (semantic OCR).
 
     This performs semantic OCR - the model understands the image content
-    and extracts text while preserving meaning and structure.
+    and extracts text while preserving meaning and structure. Images are
+    automatically resized and optimized. If no text is found, falls back
+    to image classification for searchable descriptions.
 
     Args:
         content: Raw image bytes
         ollama_base_url: Ollama server URL
-        vision_model: Vision model name (e.g., 'granite3.2-vision:2b')
+        vision_model: Vision model name (e.g., 'qwen3-vl:latest')
+        source_format: Source file extension (e.g., '.cr2' for raw formats)
         timeout: Request timeout in seconds
 
     Returns:
-        Extracted text from the image
+        Extracted text or image classification
     """
     import time
 
@@ -748,6 +756,9 @@ async def _extract_image_vision_ocr(
             base_url=ollama_base_url,
             model=vision_model,
             timeout=timeout,
+            preprocess=True,  # Enable image resizing/optimization
+            source_format=source_format,  # Pass format for raw handling
+            include_classification=True,  # Include image classification for search
         )
         elapsed = time.time() - start_time
         logger.debug(
@@ -757,7 +768,10 @@ async def _extract_image_vision_ocr(
         return text
     except Exception as e:
         logger.warning(f"Vision OCR error with {vision_model}: {e}")
-        # Fall back to tesseract
+        # Fall back to tesseract for standard formats, skip for raw
+        if source_format and source_format.lower() in RAW_CAMERA_EXTENSIONS:
+            logger.info(f"Cannot fall back to Tesseract for raw format {source_format}")
+            return ""
         logger.info("Falling back to Tesseract OCR")
         return _extract_image_ocr(content)
 

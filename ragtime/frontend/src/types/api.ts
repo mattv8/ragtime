@@ -214,6 +214,7 @@ export interface LdapBindDnLookupResponse {
 // =============================================================================
 
 export type IndexStatus = 'pending' | 'processing' | 'completed' | 'failed';
+export type OcrMode = 'disabled' | 'tesseract' | 'ollama';
 
 export interface IndexConfig {
   name: string;
@@ -224,7 +225,8 @@ export interface IndexConfig {
   chunk_overlap: number;
   max_file_size_kb?: number;  // Max file size in KB (default 500)
   embedding_model?: string;
-  enable_ocr?: boolean;  // Enable OCR for images (default false)
+  ocr_mode?: OcrMode;  // OCR mode: disabled, tesseract, or ollama
+  ocr_vision_model?: string;  // Ollama vision model for OCR
   git_clone_timeout_minutes?: number;  // Max time for git clone (default 5 min)
   git_history_depth?: number;  // 1=shallow (default), 0=full history
   reindex_interval_hours?: number;  // Hours between auto pull & re-index (0=manual)
@@ -251,7 +253,9 @@ export interface IndexConfigSnapshot {
   chunk_size: number;
   chunk_overlap: number;
   max_file_size_kb: number;
-  enable_ocr: boolean;
+  ocr_mode?: OcrMode;  // OCR mode: disabled, tesseract, or ollama
+  ocr_vision_model?: string;  // Ollama vision model for OCR
+  enable_ocr?: boolean;  // Legacy - for backward compatibility
   git_clone_timeout_minutes?: number;  // May be absent for older indexes
   git_history_depth?: number;  // 1=shallow (default), 0=full history
   reindex_interval_hours?: number;  // Hours between auto pull & re-index (0=manual)
@@ -286,7 +290,8 @@ export interface UpdateIndexConfigRequest {
   chunk_size?: number;
   chunk_overlap?: number;
   max_file_size_kb?: number;
-  enable_ocr?: boolean;
+  ocr_mode?: OcrMode;
+  ocr_vision_model?: string;
   git_clone_timeout_minutes?: number;
   git_history_depth?: number;
   reindex_interval_hours?: number;
@@ -373,7 +378,8 @@ export interface AnalyzeIndexRequest {
   chunk_size: number;
   chunk_overlap: number;
   max_file_size_kb?: number;
-  enable_ocr?: boolean;
+  ocr_mode?: OcrMode;
+  ocr_vision_model?: string;
 }
 
 // =============================================================================
@@ -778,7 +784,8 @@ export interface FilesystemConnectionConfig {
   // Safety limits
   max_file_size_mb?: number;
   max_total_files?: number;
-  enable_ocr?: boolean;
+  ocr_mode?: OcrMode;  // OCR mode: disabled, tesseract, or ollama
+  ocr_vision_model?: string;  // Ollama vision model for OCR
 
   // Re-indexing schedule
   reindex_interval_hours?: number;

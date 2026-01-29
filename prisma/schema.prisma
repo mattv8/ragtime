@@ -108,6 +108,10 @@ model IndexMetadata {
   gitBranch  String? @map("git_branch") // Branch for git sources
   gitToken   String? @map("git_token") // Token for private repo access (stored for re-indexing)
 
+  // OCR settings (per-index)
+  ocrMode        OcrMode @default(disabled) @map("ocr_mode") // OCR mode for this index
+  ocrVisionModel String? @map("ocr_vision_model") // Ollama vision model (when ocrMode is 'ollama')
+
   // Config snapshot (JSON)
   configSnapshot Json? @map("config_snapshot")
 

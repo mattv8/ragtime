@@ -1,8 +1,9 @@
 import { useState, useCallback, type DragEvent, type ChangeEvent } from 'react';
 import { api } from '@/api';
-import type { IndexJob, IndexAnalysisResult } from '@/types';
+import type { IndexJob, IndexAnalysisResult, OcrMode } from '@/types';
 import { DescriptionField } from './DescriptionField';
 import { AnalysisStats } from './AnalysisStats';
+import { IndexConfigFields } from './IndexConfigFields';
 
 interface UploadFormProps {
   onJobCreated: () => void;
@@ -16,10 +17,8 @@ interface UploadFormProps {
 type StatusType = 'info' | 'success' | 'error' | null;
 type WizardStep = 'upload' | 'analyzing' | 'review' | 'indexing';
 
-// Default file patterns to include all files, and placeholder hints for UI
+// Default file patterns to include all files
 const DEFAULT_FILE_PATTERNS = '**/*';
-const PLACEHOLDER_FILE_PATTERNS = 'e.g. **/*.py, **/*.md (default: all files)';
-const PLACEHOLDER_EXCLUDE_PATTERNS = 'e.g. **/node_modules/**, **/__pycache__/**';
 
 /** Extract index name from archive filename (strip extension) */
 function getIndexNameFromFile(filename: string): string {
@@ -49,7 +48,8 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
   const [chunkSize, setChunkSize] = useState(1000);
   const [chunkOverlap, setChunkOverlap] = useState(200);
   const [maxFileSizeKb, setMaxFileSizeKb] = useState(500);
-  const [enableOcr, setEnableOcr] = useState(false);
+  const [ocrMode, setOcrMode] = useState<OcrMode>('disabled');
+  const [ocrVisionModel, setOcrVisionModel] = useState('');
   const [exclusionsApplied, setExclusionsApplied] = useState(false);
   const [patternsExpanded, setPatternsExpanded] = useState(false);
 
@@ -67,7 +67,8 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
     setChunkSize(1000);
     setChunkOverlap(200);
     setMaxFileSizeKb(500);
-    setEnableOcr(false);
+    setOcrMode('disabled');
+    setOcrVisionModel('');
     setExclusionsApplied(false);
     setPatternsExpanded(false);
   }, []);
@@ -118,7 +119,10 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
       formData.append('chunk_size', String(chunkSize));
       formData.append('chunk_overlap', String(chunkOverlap));
       formData.append('max_file_size_kb', String(maxFileSizeKb));
-      formData.append('enable_ocr', String(enableOcr));
+      formData.append('ocr_mode', ocrMode);
+      if (ocrMode === 'ollama' && ocrVisionModel) {
+        formData.append('ocr_vision_model', ocrVisionModel);
+      }
 
       const result = await api.analyzeUpload(formData);
       setAnalysisResult(result);
@@ -175,7 +179,10 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
       formData.append('exclude_patterns', excludePatterns);
       formData.append('chunk_size', String(chunkSize));
       formData.append('chunk_overlap', String(chunkOverlap));
-      formData.append('enable_ocr', String(enableOcr));
+      formData.append('ocr_mode', ocrMode);
+      if (ocrMode === 'ollama' && ocrVisionModel) {
+        formData.append('ocr_vision_model', ocrVisionModel);
+      }
 
       const job: IndexJob = await api.uploadAndIndex(formData);
       setProgress(100);
@@ -247,80 +254,23 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
 
             <details style={{ marginBottom: '16px' }}>
               <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Options</summary>
-              <div className="row">
-                <div className="form-group">
-                  <label>File Patterns (comma-separated)</label>
-                  <input
-                    type="text"
-                    value={filePatterns}
-                    onChange={(e) => setFilePatterns(e.target.value)}
-                    placeholder={PLACEHOLDER_FILE_PATTERNS}
-                    disabled={isLoading}
-                  />
-                </div>
-                <div className="form-group">
-                  <label>Exclude Patterns</label>
-                  <input
-                    type="text"
-                    value={excludePatterns}
-                    onChange={(e) => setExcludePatterns(e.target.value)}
-                    placeholder={PLACEHOLDER_EXCLUDE_PATTERNS}
-                    disabled={isLoading}
-                  />
-                </div>
-              </div>
-              <div className="row">
-                <div className="form-group">
-                  <label>Chunk Size</label>
-                  <input
-                    type="number"
-                    value={chunkSize}
-                    onChange={(e) => setChunkSize(parseInt(e.target.value, 10) || 1000)}
-                    min={100}
-                    max={4000}
-                    disabled={isLoading}
-                  />
-                </div>
-                <div className="form-group">
-                  <label>Chunk Overlap</label>
-                  <input
-                    type="number"
-                    value={chunkOverlap}
-                    onChange={(e) => setChunkOverlap(parseInt(e.target.value, 10) || 200)}
-                    min={0}
-                    max={1000}
-                    disabled={isLoading}
-                  />
-                </div>
-                <div className="form-group">
-                  <label>Max File Size (KB)</label>
-                  <input
-                    type="number"
-                    value={maxFileSizeKb}
-                    onChange={(e) => setMaxFileSizeKb(parseInt(e.target.value, 10) || 500)}
-                    min={10}
-                    max={10000}
-                    disabled={isLoading}
-                  />
-                  <small style={{ color: '#888', fontSize: '0.8rem' }}>Files larger than this are skipped</small>
-                </div>
-                <div className="form-group">
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <input
-                      type="checkbox"
-                      checked={enableOcr}
-                      onChange={(e) => setEnableOcr(e.target.checked)}
-                      disabled={isLoading}
-                    />
-                    Enable OCR (Extract text from images)
-                  </label>
-                  <small style={{ color: '#888', fontSize: '0.8rem' }}>
-                    {enableOcr
-                      ? 'Images (PNG, JPG, etc.) will be processed with OCR to extract text'
-                      : 'Enable to extract text from screenshots, scanned documents, and other images'}
-                  </small>
-                </div>
-              </div>
+              <IndexConfigFields
+                isLoading={isLoading}
+                filePatterns={filePatterns}
+                setFilePatterns={setFilePatterns}
+                excludePatterns={excludePatterns}
+                setExcludePatterns={setExcludePatterns}
+                chunkSize={chunkSize}
+                setChunkSize={setChunkSize}
+                chunkOverlap={chunkOverlap}
+                setChunkOverlap={setChunkOverlap}
+                maxFileSizeKb={maxFileSizeKb}
+                setMaxFileSizeKb={setMaxFileSizeKb}
+                ocrMode={ocrMode as any}
+                setOcrMode={setOcrMode as any}
+                ocrVisionModel={ocrVisionModel}
+                setOcrVisionModel={setOcrVisionModel}
+              />
             </details>
 
             <div className="wizard-actions">
@@ -482,24 +432,23 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
             compact
           />
 
-          <div className="row">
-            <div className="form-group">
-              <label>File Patterns</label>
-              <input
-                type="text"
-                value={filePatterns}
-                onChange={(e) => setFilePatterns(e.target.value)}
-              />
-            </div>
-            <div className="form-group">
-              <label>Exclude Patterns</label>
-              <input
-                type="text"
-                value={excludePatterns}
-                onChange={(e) => setExcludePatterns(e.target.value)}
-              />
-            </div>
-          </div>
+          <IndexConfigFields
+            isLoading={isLoading}
+            filePatterns={filePatterns}
+            setFilePatterns={setFilePatterns}
+            excludePatterns={excludePatterns}
+            setExcludePatterns={setExcludePatterns}
+            chunkSize={chunkSize}
+            setChunkSize={setChunkSize}
+            chunkOverlap={chunkOverlap}
+            setChunkOverlap={setChunkOverlap}
+            maxFileSizeKb={maxFileSizeKb}
+            setMaxFileSizeKb={setMaxFileSizeKb}
+            ocrMode={ocrMode as any}
+            setOcrMode={setOcrMode as any}
+            ocrVisionModel={ocrVisionModel}
+            setOcrVisionModel={setOcrVisionModel}
+          />
         </details>
 
         {/* Wizard actions */}

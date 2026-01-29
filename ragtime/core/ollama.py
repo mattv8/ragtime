@@ -105,6 +105,22 @@ def is_vision_model_by_capability(details: dict) -> bool:
     return has_capability(details, "vision")
 
 
+def supports_structured_output(details: dict) -> bool:
+    """
+    Check if a model supports structured output (JSON schema) via capabilities API.
+
+    The "tools" capability indicates support for function calling and structured
+    generation, which includes the `format` parameter for JSON schema output.
+
+    Args:
+        details: Full response from /api/show
+
+    Returns:
+        True if the model has "tools" capability (structured output support)
+    """
+    return has_capability(details, "tools")
+
+
 async def is_reachable(
     base_url: str, timeout: float = 10.0
 ) -> tuple[bool, Optional[str]]:

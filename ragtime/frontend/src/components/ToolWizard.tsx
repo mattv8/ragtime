@@ -1965,7 +1965,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           chunk_overlap: 200,
           max_file_size_mb: 10,
           max_total_files: 10000,
-          enable_ocr: false,
+          ocr_mode: 'disabled',
+          ocr_vision_model: undefined,
           reindex_interval_hours: 24,
           last_indexed_at: null,
         }
@@ -4767,20 +4768,38 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           </div>
 
           <div className="form-group" style={{ marginTop: '0.75rem' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={filesystemConfig.enable_ocr || false}
-                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, enable_ocr: e.target.checked })}
-              />
-              Enable OCR (extract text from images)
-            </label>
-            <p className="field-help" style={{ marginLeft: '24px' }}>
-              {filesystemConfig.enable_ocr
-                ? 'Image files (PNG, JPG, etc.) will be processed with OCR to extract text. Ensure file patterns include image extensions.'
-                : 'When disabled, image files matching file patterns will be skipped during indexing.'}
+            <label>OCR Mode</label>
+            <select
+              value={filesystemConfig.ocr_mode || 'disabled'}
+              onChange={(e) => setFilesystemConfig({ ...filesystemConfig, ocr_mode: e.target.value as 'disabled' | 'tesseract' | 'ollama' })}
+            >
+              <option value="disabled">Disabled - Skip image files</option>
+              <option value="tesseract">Tesseract - Fast traditional OCR</option>
+              <option value="ollama">Ollama Vision - Semantic OCR (slower, better quality)</option>
+            </select>
+            <p className="field-help">
+              {filesystemConfig.ocr_mode === 'ollama'
+                ? 'Uses Ollama vision model for semantic text extraction. Slower but better at understanding complex layouts, handwritten text, and tables.'
+                : filesystemConfig.ocr_mode === 'tesseract'
+                ? 'Uses Tesseract for fast basic text extraction from images.'
+                : 'Image files (PNG, JPG, etc.) will be skipped during indexing.'}
             </p>
           </div>
+
+          {filesystemConfig.ocr_mode === 'ollama' && (
+            <div className="form-group" style={{ marginTop: '0.5rem' }}>
+              <label>Ollama Vision Model</label>
+              <input
+                type="text"
+                value={filesystemConfig.ocr_vision_model || ''}
+                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, ocr_vision_model: e.target.value || undefined })}
+                placeholder="e.g., qwen3-vl:latest or llama3.2-vision:latest"
+              />
+              <p className="field-help">
+                Ollama vision model for OCR. Recommended: qwen3-vl (best quality), llama3.2-vision (balanced). Note: Ollama vision OCR is 5-15x slower than Tesseract.
+              </p>
+            </div>
+          )}
         </details>
       </div>
     </div>

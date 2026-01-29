@@ -138,9 +138,13 @@ async def analyze_upload(
     chunk_size: int = Form(default=1000, ge=100, le=4000),
     chunk_overlap: int = Form(default=200, ge=0, le=1000),
     max_file_size_kb: int = Form(default=500, ge=10, le=10000),
-    enable_ocr: bool = Form(
-        default=False,
-        description="Enable OCR to extract text from images",
+    ocr_mode: str = Form(
+        default="disabled",
+        description="OCR mode: 'disabled', 'tesseract', or 'ollama'",
+    ),
+    ocr_vision_model: Optional[str] = Form(
+        default=None,
+        description="Ollama vision model for OCR (e.g., 'qwen3-vl:latest')",
     ),
     _user: User = Depends(require_admin),
 ):
@@ -184,7 +188,8 @@ async def analyze_upload(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             max_file_size_kb=max_file_size_kb,
-            enable_ocr=enable_ocr,
+            ocr_mode=ocr_mode,
+            ocr_vision_model=ocr_vision_model,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -377,9 +382,13 @@ async def upload_and_index(
     ),
     chunk_size: int = Form(default=1000, ge=100, le=4000),
     chunk_overlap: int = Form(default=200, ge=0, le=1000),
-    enable_ocr: bool = Form(
-        default=False,
-        description="Enable OCR to extract text from images (slower but captures text in screenshots, scanned docs, etc.)",
+    ocr_mode: str = Form(
+        default="disabled",
+        description="OCR mode: 'disabled', 'tesseract', or 'ollama'",
+    ),
+    ocr_vision_model: Optional[str] = Form(
+        default=None,
+        description="Ollama vision model for OCR (e.g., 'qwen3-vl:latest')",
     ),
     _user: User = Depends(require_admin),
     _: None = Depends(require_valid_embedding_provider),
@@ -409,6 +418,8 @@ async def upload_and_index(
         p.strip() for p in exclude_patterns.split(",") if p.strip()
     ]
 
+    from ragtime.indexer.models import OcrMode
+
     config = IndexConfig(
         name=name,
         description=description,
@@ -416,7 +427,8 @@ async def upload_and_index(
         exclude_patterns=parsed_exclude_patterns,
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
-        enable_ocr=enable_ocr,
+        ocr_mode=OcrMode(ocr_mode),
+        ocr_vision_model=ocr_vision_model,
     )
 
     try:
@@ -534,6 +546,14 @@ async def reindex_from_git(
     config_data: dict[str, Any] = (
         config_snapshot if isinstance(config_snapshot, dict) else {}
     )
+
+    # Handle legacy enable_ocr field and convert to ocr_mode
+    from ragtime.indexer.models import OcrMode
+
+    ocr_mode_str = config_data.get("ocr_mode", "disabled")
+    if ocr_mode_str == "disabled" and config_data.get("enable_ocr", False):
+        ocr_mode_str = "tesseract"  # Legacy compatibility
+
     config = IndexConfig(
         name=name,
         description=metadata.description or "",
@@ -544,7 +564,8 @@ async def reindex_from_git(
         chunk_size=config_data.get("chunk_size", 1000),
         chunk_overlap=config_data.get("chunk_overlap", 200),
         max_file_size_kb=config_data.get("max_file_size_kb", 500),
-        enable_ocr=config_data.get("enable_ocr", False),
+        ocr_mode=OcrMode(ocr_mode_str),
+        ocr_vision_model=config_data.get("ocr_vision_model"),
         git_clone_timeout_minutes=config_data.get("git_clone_timeout_minutes", 5),
         git_history_depth=config_data.get("git_history_depth", 1),
         reindex_interval_hours=config_data.get("reindex_interval_hours", 0),
@@ -798,8 +819,12 @@ class UpdateIndexConfigRequest(BaseModel):
     max_file_size_kb: Optional[int] = Field(
         default=None, ge=10, le=10000, description="Maximum file size in KB"
     )
-    enable_ocr: Optional[bool] = Field(
-        default=None, description="Enable OCR for images"
+    ocr_mode: Optional[str] = Field(
+        default=None, description="OCR mode: 'disabled', 'tesseract', or 'ollama'"
+    )
+    ocr_vision_model: Optional[str] = Field(
+        default=None,
+        description="Ollama vision model for OCR (e.g., 'qwen3-vl:latest')",
     )
     git_clone_timeout_minutes: Optional[int] = Field(
         default=None,
@@ -856,7 +881,8 @@ async def update_index_config(
         "chunk_size",
         "chunk_overlap",
         "max_file_size_kb",
-        "enable_ocr",
+        "ocr_mode",
+        "ocr_vision_model",
         "git_clone_timeout_minutes",
         "git_history_depth",
         "reindex_interval_hours",
@@ -875,8 +901,10 @@ async def update_index_config(
         new_config["chunk_overlap"] = request.chunk_overlap
     if request.max_file_size_kb is not None:
         new_config["max_file_size_kb"] = request.max_file_size_kb
-    if request.enable_ocr is not None:
-        new_config["enable_ocr"] = request.enable_ocr
+    if request.ocr_mode is not None:
+        new_config["ocr_mode"] = request.ocr_mode
+    if request.ocr_vision_model is not None:
+        new_config["ocr_vision_model"] = request.ocr_vision_model
     if request.git_clone_timeout_minutes is not None:
         new_config["git_clone_timeout_minutes"] = request.git_clone_timeout_minutes
     if request.git_history_depth is not None:

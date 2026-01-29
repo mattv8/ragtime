@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Dict, List, Optional
 
 from ragtime.config import settings
-from ragtime.core.app_settings import invalidate_settings_cache
+from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
 from ragtime.core.embedding_models import get_embedding_models
 from ragtime.core.file_constants import (
     BINARY_EXTENSIONS,
@@ -30,7 +30,7 @@ from ragtime.core.file_constants import (
     UNPARSEABLE_BINARY_EXTENSIONS,
 )
 from ragtime.core.logging import get_logger
-from ragtime.indexer.document_parser import OCR_EXTENSIONS, extract_text_from_file
+from ragtime.indexer.document_parser import OCR_EXTENSIONS
 from ragtime.indexer.llm_exclusions import get_smart_exclusion_suggestions
 from ragtime.indexer.memory_utils import (
     estimate_index_memory,
@@ -49,6 +49,7 @@ from ragtime.indexer.models import (
     IndexJob,
     IndexStatus,
     MemoryEstimate,
+    OcrMode,
 )
 from ragtime.indexer.repository import repository
 from ragtime.tools.git_history import _is_shallow_repository
@@ -829,7 +830,7 @@ class IndexerService:
                     # Build config_snapshot from data if available
                     config_snapshot = None
                     if config_snapshot_data:
-                        from ragtime.indexer.models import IndexConfigSnapshot
+                        from ragtime.indexer.models import IndexConfigSnapshot, OcrMode
 
                         config_snapshot = IndexConfigSnapshot(
                             file_patterns=config_snapshot_data.get(
@@ -845,7 +846,12 @@ class IndexerService:
                             max_file_size_kb=config_snapshot_data.get(
                                 "max_file_size_kb", 500
                             ),
-                            enable_ocr=config_snapshot_data.get("enable_ocr", False),
+                            ocr_mode=OcrMode(
+                                config_snapshot_data.get("ocr_mode", "disabled")
+                            ),
+                            ocr_vision_model=config_snapshot_data.get(
+                                "ocr_vision_model"
+                            ),
                             git_clone_timeout_minutes=config_snapshot_data.get(
                                 "git_clone_timeout_minutes", 5
                             ),
@@ -1131,7 +1137,8 @@ class IndexerService:
                 chunk_size=request.chunk_size,
                 chunk_overlap=request.chunk_overlap,
                 max_file_size_kb=request.max_file_size_kb,
-                enable_ocr=request.enable_ocr,
+                ocr_mode=request.ocr_mode,
+                ocr_vision_model=request.ocr_vision_model,
             )
 
             # Add commit history to the result
@@ -1152,7 +1159,8 @@ class IndexerService:
         chunk_size: int = 1000,
         chunk_overlap: int = 200,
         max_file_size_kb: int = 500,
-        enable_ocr: bool = False,
+        ocr_mode: str = "disabled",
+        ocr_vision_model: Optional[str] = None,
     ) -> IndexAnalysisResult:
         """
         Analyze an uploaded archive to estimate index size and suggest exclusions.
@@ -1193,7 +1201,8 @@ class IndexerService:
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
                 max_file_size_kb=max_file_size_kb,
-                enable_ocr=enable_ocr,
+                ocr_mode=ocr_mode,
+                ocr_vision_model=ocr_vision_model,
             )
 
         finally:
@@ -1208,13 +1217,15 @@ class IndexerService:
         chunk_size: int,
         chunk_overlap: int,
         max_file_size_kb: int = 500,
-        enable_ocr: bool = False,
+        ocr_mode: str = "disabled",
+        ocr_vision_model: Optional[str] = None,
     ) -> IndexAnalysisResult:
         """
         Analyze a directory to estimate indexing results.
         """
         from collections import defaultdict
 
+        ocr_enabled = ocr_mode != "disabled"
         max_file_size_bytes = max_file_size_kb * 1024
 
         # File extension stats
@@ -1365,10 +1376,11 @@ class IndexerService:
         ]
 
         if ocr_images_found:
-            if enable_ocr:
+            if ocr_enabled:
+                ocr_method = "Ollama Vision" if ocr_mode == "ollama" else "Tesseract"
                 warnings.append(
                     f"Found image types ({', '.join(ocr_images_found)}) that will be processed "
-                    "with OCR to extract text."
+                    f"with {ocr_method} to extract text."
                 )
             else:
                 warnings.append(
@@ -2343,26 +2355,44 @@ class IndexerService:
         # it in a thread pool to avoid blocking other async operations.
         documents = []
         skipped_binary = 0
-        enable_ocr = config.enable_ocr
+        ocr_mode = config.ocr_mode
+        ocr_vision_model = config.ocr_vision_model
+        ocr_enabled = ocr_mode != OcrMode.DISABLED
 
-        def load_file_sync(file_path: Path) -> List:
-            """Synchronous file loading - runs in thread pool."""
+        # For Ollama vision mode, we need async extraction and the base URL
+        ollama_base_url = None
+        if ocr_mode == OcrMode.OLLAMA:
+            settings = await get_app_settings()
+            ollama_base_url = settings.ollama_base_url
+
+        async def load_file_async(file_path: Path) -> List:
+            """Async file loading with OCR support."""
             from langchain_core.documents import Document as LangChainDocument
+
+            from ragtime.indexer.document_parser import extract_text_from_file_async
 
             ext_lower = file_path.suffix.lower()
 
             # Use document parser for Office/PDF files and images (when OCR enabled)
             if ext_lower in PARSEABLE_DOCUMENT_EXTENSIONS or (
-                enable_ocr and ext_lower in OCR_EXTENSIONS
+                ocr_enabled and ext_lower in OCR_EXTENSIONS
             ):
-                content = extract_text_from_file(file_path, enable_ocr=enable_ocr)
+                content = await extract_text_from_file_async(
+                    file_path,
+                    ocr_mode=ocr_mode.value,
+                    ocr_vision_model=ocr_vision_model,
+                    ollama_base_url=ollama_base_url,
+                )
                 if content:
                     return [LangChainDocument(page_content=content)]
                 return []
 
-            # Use TextLoader for plain text files
-            loader = TextLoader(str(file_path), autodetect_encoding=True)
-            return loader.load()
+            # Use TextLoader for plain text files (run in thread pool)
+            def load_text():
+                loader = TextLoader(str(file_path), autodetect_encoding=True)
+                return loader.load()
+
+            return await asyncio.to_thread(load_text)
 
         for file_path in all_files:
             # Check for cancellation
@@ -2375,9 +2405,12 @@ class IndexerService:
             # Skip truly unparseable binary files (executables, etc.)
             # When OCR is enabled, allow image files to be processed
             if ext_lower in UNPARSEABLE_BINARY_EXTENSIONS:
-                if enable_ocr and ext_lower in OCR_EXTENSIONS:
+                if ocr_enabled and ext_lower in OCR_EXTENSIONS:
                     # Process image with OCR
-                    logger.debug(f"Processing image {file_path.name} with OCR")
+                    ocr_method = (
+                        "Ollama Vision" if ocr_mode == OcrMode.OLLAMA else "Tesseract"
+                    )
+                    logger.debug(f"Processing image {file_path.name} with {ocr_method}")
                 else:
                     skipped_binary += 1
                     job.processed_files += 1
@@ -2390,8 +2423,8 @@ class IndexerService:
                 )
 
             try:
-                # Run synchronous file loading in thread pool to avoid blocking
-                docs = await asyncio.to_thread(load_file_sync, file_path)
+                # Use async file loading with OCR support
+                docs = await load_file_async(file_path)
 
                 # Add source metadata
                 rel_path_str = str(file_path.relative_to(source_dir))

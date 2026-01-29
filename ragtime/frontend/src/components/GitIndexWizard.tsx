@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '@/api';
 import type { CommitHistoryInfo, IndexAnalysisResult, IndexJob, IndexInfo } from '@/types';
 import { AnalysisStats } from './AnalysisStats';
+import { IndexConfigFields } from './IndexConfigFields';
 
 type StatusType = 'info' | 'success' | 'error' | null;
 type WizardStep = 'input' | 'analyzing' | 'review' | 'indexing';
@@ -105,10 +106,8 @@ interface GitIndexWizardProps {
   onNavigateToSettings?: () => void;
 }
 
-// Default file patterns to include all files, and placeholder hints for UI
+// Default file patterns to include all files
 const DEFAULT_FILE_PATTERNS = '**/*';
-const PLACEHOLDER_FILE_PATTERNS = 'e.g. **/*.py, **/*.md (default: all files)';
-const PLACEHOLDER_EXCLUDE_PATTERNS = 'e.g. **/node_modules/**, **/__pycache__/**';
 
 export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnalysisComplete, editIndex, onConfigSaved, onNavigateToSettings }: GitIndexWizardProps) {
   const isEditMode = !!editIndex;
@@ -143,7 +142,8 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
   const [chunkSize, setChunkSize] = useState(configSnapshot?.chunk_size || 1000);
   const [chunkOverlap, setChunkOverlap] = useState(configSnapshot?.chunk_overlap || 200);
   const [maxFileSizeKb, setMaxFileSizeKb] = useState(configSnapshot?.max_file_size_kb || 500);
-  const [enableOcr, setEnableOcr] = useState(configSnapshot?.enable_ocr || false);
+  const [ocrMode, setOcrMode] = useState<'disabled' | 'tesseract' | 'ollama'>(configSnapshot?.ocr_mode || 'disabled');
+  const [ocrVisionModel, setOcrVisionModel] = useState(configSnapshot?.ocr_vision_model || '');
   const [gitCloneTimeoutMinutes, setGitCloneTimeoutMinutes] = useState(configSnapshot?.git_clone_timeout_minutes || 5);
   const [gitHistoryDepth, setGitHistoryDepth] = useState(configSnapshot?.git_history_depth || 1);
   const [reindexIntervalHours, setReindexIntervalHours] = useState(configSnapshot?.reindex_interval_hours || 0);
@@ -177,7 +177,8 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         setChunkSize(snapshot.chunk_size || 1000);
         setChunkOverlap(snapshot.chunk_overlap || 200);
         setMaxFileSizeKb(snapshot.max_file_size_kb || 500);
-        setEnableOcr(snapshot.enable_ocr || false);
+        setOcrMode(snapshot.ocr_mode || 'disabled');
+        setOcrVisionModel(snapshot.ocr_vision_model || '');
         setReindexIntervalHours(snapshot.reindex_interval_hours || 0);
 
         // Use nullish coalescing - 0 is a valid depth (full history)
@@ -195,7 +196,8 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         setChunkSize(1000);
         setChunkOverlap(200);
         setMaxFileSizeKb(500);
-        setEnableOcr(false);
+        setOcrMode('disabled');
+        setOcrVisionModel('');
         setReindexIntervalHours(0);
         setGitCloneTimeoutMinutes(5);
         setGitHistoryDepth(1);
@@ -255,7 +257,8 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
     setChunkSize(1000);
     setChunkOverlap(200);
     setMaxFileSizeKb(500);
-    setEnableOcr(false);
+    setOcrMode('disabled');
+    setOcrVisionModel('');
     setExclusionsApplied(false);
     setPatternsExpanded(false);
   }, []);
@@ -395,7 +398,8 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         chunk_size: chunkSize,
         chunk_overlap: chunkOverlap,
         max_file_size_kb: maxFileSizeKb,
-        enable_ocr: enableOcr,
+        ocr_mode: ocrMode,
+        ocr_vision_model: ocrVisionModel || undefined,
       });
       setAnalysisResult(result);
       setWizardStep('review');
@@ -453,7 +457,8 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           chunk_size: chunkSize,
           chunk_overlap: chunkOverlap,
           max_file_size_kb: maxFileSizeKb,
-          enable_ocr: enableOcr,
+          ocr_mode: ocrMode,
+          ocr_vision_model: ocrVisionModel || undefined,
           git_clone_timeout_minutes: gitCloneTimeoutMinutes,
           git_history_depth: gitHistoryDepth,
           reindex_interval_hours: reindexIntervalHours,
@@ -520,7 +525,8 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         chunk_size: chunkSize,
         chunk_overlap: chunkOverlap,
         max_file_size_kb: maxFileSizeKb,
-        enable_ocr: enableOcr,
+        ocr_mode: ocrMode,
+        ocr_vision_model: ocrVisionModel || undefined,
         git_clone_timeout_minutes: gitCloneTimeoutMinutes,
         git_history_depth: gitHistoryDepth,
         reindex_interval_hours: reindexIntervalHours,
@@ -536,7 +542,8 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         setChunkSize(snap.chunk_size ?? chunkSize);
         setChunkOverlap(snap.chunk_overlap ?? chunkOverlap);
         setMaxFileSizeKb(snap.max_file_size_kb ?? maxFileSizeKb);
-        setEnableOcr(snap.enable_ocr ?? enableOcr);
+        setOcrMode(snap.ocr_mode ?? ocrMode);
+        setOcrVisionModel(snap.ocr_vision_model ?? ocrVisionModel);
       }
 
       const wasRenamed = currentName !== editIndex.name;
@@ -602,148 +609,30 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           )}
         </div>
 
-        <div className="row">
-          <div className="form-group">
-            <label>File Patterns (comma-separated)</label>
-            <input
-              type="text"
-              value={filePatterns}
-              onChange={(e) => setFilePatterns(e.target.value)}
-              placeholder={PLACEHOLDER_FILE_PATTERNS}
-              disabled={isLoading}
-            />
-          </div>
-          <div className="form-group">
-            <label>Exclude Patterns</label>
-            <input
-              type="text"
-              value={excludePatterns}
-              onChange={(e) => setExcludePatterns(e.target.value)}
-              placeholder={PLACEHOLDER_EXCLUDE_PATTERNS}
-              disabled={isLoading}
-            />
-          </div>
-        </div>
-        <div className="row">
-          <div className="form-group">
-            <label>Chunk Size</label>
-            <input
-              type="number"
-              value={chunkSize}
-              onChange={(e) => setChunkSize(parseInt(e.target.value, 10) || 1000)}
-              min={100}
-              max={4000}
-              disabled={isLoading}
-            />
-          </div>
-          <div className="form-group">
-            <label>Chunk Overlap</label>
-            <input
-              type="number"
-              value={chunkOverlap}
-              onChange={(e) => setChunkOverlap(parseInt(e.target.value, 10) || 200)}
-              min={0}
-              max={1000}
-              disabled={isLoading}
-            />
-          </div>
-          <div className="form-group">
-            <label>Max File Size (KB)</label>
-            <input
-              type="number"
-              value={maxFileSizeKb}
-              onChange={(e) => setMaxFileSizeKb(parseInt(e.target.value, 10) || 500)}
-              min={10}
-              max={10000}
-              disabled={isLoading}
-            />
-            <small style={{ color: '#888', fontSize: '0.8rem' }}>Files larger than this are skipped</small>
-          </div>
-          <div className="form-group">
-            <label>Clone Timeout (min)</label>
-            <input
-              type="number"
-              value={gitCloneTimeoutMinutes}
-              onChange={(e) => {
-                setGitCloneTimeoutMinutes(parseInt(e.target.value, 10) || 5);
-                setTimeoutManuallySet(true);  // User manually changed it
-              }}
-              min={1}
-              max={480}
-              disabled={isLoading}
-            />
-            <small style={{ color: '#888', fontSize: '0.8rem' }}>Auto-scales with history depth (override to customize)</small>
-          </div>
-        </div>
-        <div className="form-group" style={{ marginTop: '12px' }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              checked={enableOcr}
-              onChange={(e) => setEnableOcr(e.target.checked)}
-              disabled={isLoading}
-            />
-            Enable OCR (extract text from images)
-          </label>
-          <small style={{ color: '#888', fontSize: '0.8rem', marginLeft: '24px' }}>
-            {enableOcr
-              ? 'Image files (PNG, JPG, etc.) will be processed with Tesseract OCR to extract text.'
-              : 'When disabled, image files will be skipped during indexing.'}
-          </small>
-        </div>
-
-        <div className="form-group" style={{ marginTop: '12px' }}>
-          <label>Git History Depth</label>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <input
-              type="range"
-              min={1}
-              max={1001}
-              value={gitHistoryDepth === 0 ? 1001 : gitHistoryDepth}
-              onChange={(e) => {
-                const sliderVal = parseInt(e.target.value, 10);
-                // 1 = shallow (depth 1), 1000 = one step below full, 1001 = full history (depth 0)
-                setGitHistoryDepth(sliderVal === 1001 ? 0 : sliderVal);
-              }}
-              disabled={isLoading}
-              style={{ flex: 1 }}
-            />
-            <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'monospace' }}>
-              {gitHistoryDepth === 0 ? 'Full' : gitHistoryDepth === 1 ? '1 (shallow)' : `${gitHistoryDepth} commits`}
-            </span>
-          </div>
-          <small style={{ color: '#888', fontSize: '0.8rem' }}>
-            {gitHistoryDepth === 0
-              ? 'Full history: Indexes all commits. Large repos may take 30+ min to clone.'
-              : gitHistoryDepth === 1
-                ? 'Shallow clone: Only latest commit. Fastest, but no git history search.'
-                : `Indexes last ${gitHistoryDepth} commits. Clone time scales with depth.`}
-          </small>
-        </div>
-
-        <div className="form-group" style={{ marginTop: '12px' }}>
-          <label>Auto Re-index Interval</label>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <select
-              value={reindexIntervalHours}
-              onChange={(e) => setReindexIntervalHours(parseInt(e.target.value, 10))}
-              disabled={isLoading}
-              style={{ flex: 1 }}
-            >
-              <option value={0}>Manual only</option>
-              <option value={1}>Every hour</option>
-              <option value={6}>Every 6 hours</option>
-              <option value={12}>Every 12 hours</option>
-              <option value={24}>Every 24 hours (daily)</option>
-              <option value={168}>Every week</option>
-            </select>
-          </div>
-          <small style={{ color: '#888', fontSize: '0.8rem' }}>
-            {reindexIntervalHours === 0
-              ? 'Re-indexing will only happen when you click "Pull & Re-index".'
-              : `Repository will be automatically pulled and re-indexed every ${reindexIntervalHours} hour${reindexIntervalHours > 1 ? 's' : ''}.`}
-          </small>
-        </div>
+        <IndexConfigFields
+          isLoading={isLoading}
+          filePatterns={filePatterns}
+          setFilePatterns={setFilePatterns}
+          excludePatterns={excludePatterns}
+          setExcludePatterns={setExcludePatterns}
+          chunkSize={chunkSize}
+          setChunkSize={setChunkSize}
+          chunkOverlap={chunkOverlap}
+          setChunkOverlap={setChunkOverlap}
+          maxFileSizeKb={maxFileSizeKb}
+          setMaxFileSizeKb={setMaxFileSizeKb}
+          gitCloneTimeoutMinutes={gitCloneTimeoutMinutes}
+          setGitCloneTimeoutMinutes={setGitCloneTimeoutMinutes}
+          setTimeoutManuallySet={setTimeoutManuallySet}
+          ocrMode={ocrMode}
+          setOcrMode={setOcrMode}
+          ocrVisionModel={ocrVisionModel}
+          setOcrVisionModel={setOcrVisionModel}
+          reindexIntervalHours={reindexIntervalHours}
+          setReindexIntervalHours={setReindexIntervalHours}
+          gitHistoryDepth={gitHistoryDepth}
+          setGitHistoryDepth={setGitHistoryDepth}
+        />
 
         <div className="wizard-actions" style={{ marginTop: '16px' }}>
           {onCancel && (
@@ -888,145 +777,30 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
 
         <details style={{ marginBottom: '16px' }}>
           <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Options</summary>
-          <div className="row">
-            <div className="form-group">
-              <label>File Patterns (comma-separated)</label>
-              <input
-                type="text"
-                value={filePatterns}
-                onChange={(e) => setFilePatterns(e.target.value)}
-                placeholder={PLACEHOLDER_FILE_PATTERNS}
-                disabled={isLoading}
-              />
-            </div>
-            <div className="form-group">
-              <label>Exclude Patterns</label>
-              <input
-                type="text"
-                value={excludePatterns}
-                onChange={(e) => setExcludePatterns(e.target.value)}
-                placeholder={PLACEHOLDER_EXCLUDE_PATTERNS}
-                disabled={isLoading}
-              />
-            </div>
-          </div>
-          <div className="row">
-            <div className="form-group">
-              <label>Chunk Size</label>
-              <input
-                type="number"
-                value={chunkSize}
-                onChange={(e) => setChunkSize(parseInt(e.target.value, 10) || 1000)}
-                min={100}
-                max={4000}
-                disabled={isLoading}
-              />
-            </div>
-            <div className="form-group">
-              <label>Chunk Overlap</label>
-              <input
-                type="number"
-                value={chunkOverlap}
-                onChange={(e) => setChunkOverlap(parseInt(e.target.value, 10) || 200)}
-                min={0}
-                max={1000}
-                disabled={isLoading}
-              />
-            </div>
-            <div className="form-group">
-              <label>Max File Size (KB)</label>
-              <input
-                type="number"
-                value={maxFileSizeKb}
-                onChange={(e) => setMaxFileSizeKb(parseInt(e.target.value, 10) || 500)}
-                min={10}
-                max={10000}
-                disabled={isLoading}
-              />
-              <small style={{ color: '#888', fontSize: '0.8rem' }}>Files larger than this are skipped</small>
-            </div>
-            <div className="form-group">
-              <label>Clone Timeout (min)</label>
-              <input
-                type="number"
-                value={gitCloneTimeoutMinutes}
-                onChange={(e) => {
-                  setGitCloneTimeoutMinutes(parseInt(e.target.value, 10) || 5);
-                  setTimeoutManuallySet(true);  // User manually changed it
-                }}
-                min={1}
-                max={480}
-                disabled={isLoading}
-              />
-              <small style={{ color: '#888', fontSize: '0.8rem' }}>Auto-scales with history depth (override to customize)</small>
-            </div>
-          </div>
-          <div className="form-group" style={{ marginTop: '12px' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={enableOcr}
-                onChange={(e) => setEnableOcr(e.target.checked)}
-                disabled={isLoading}
-              />
-              Enable OCR (extract text from images)
-            </label>
-            <small style={{ color: '#888', fontSize: '0.8rem', marginLeft: '24px' }}>
-              {enableOcr
-                ? 'Image files (PNG, JPG, etc.) will be processed with Tesseract OCR to extract text.'
-                : 'When disabled, image files will be skipped during indexing.'}
-            </small>
-          </div>
-
-          <div className="form-group" style={{ marginTop: '12px' }}>
-            <label>Git History Depth</label>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <input
-                type="range"
-                min={1}
-                max={1001}
-                value={gitHistoryDepth === 0 ? 1001 : gitHistoryDepth}
-                onChange={(e) => {
-                  const sliderVal = parseInt(e.target.value, 10);
-                  // 1 = shallow (depth 1), 1000 = one step below full, 1001 = full history (depth 0)
-                  setGitHistoryDepth(sliderVal === 1001 ? 0 : sliderVal);
-                }}
-                disabled={isLoading}
-                style={{ flex: 1 }}
-              />
-              <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'monospace' }}>
-                {gitHistoryDepth === 0 ? 'Full' : gitHistoryDepth === 1 ? '1 (shallow)' : `${gitHistoryDepth} commits`}
-              </span>
-            </div>
-            <small style={{ color: '#888', fontSize: '0.8rem' }}>
-              {gitHistoryDepth === 0
-                ? 'Full history: Indexes all commits. Large repos may take 30+ min to clone.'
-                : gitHistoryDepth === 1
-                  ? 'Shallow clone: Only latest commit. Fastest, but no git history search.'
-                  : `Indexes last ${gitHistoryDepth} commits. Clone time scales with depth.`}
-            </small>
-          </div>
-
-          <div className="form-group" style={{ marginTop: '12px' }}>
-            <label>Auto Re-index Interval</label>
-            <select
-              value={reindexIntervalHours}
-              onChange={(e) => setReindexIntervalHours(parseInt(e.target.value, 10))}
-              disabled={isLoading}
-            >
-              <option value={0}>Manual only</option>
-              <option value={1}>Every hour</option>
-              <option value={6}>Every 6 hours</option>
-              <option value={12}>Every 12 hours</option>
-              <option value={24}>Every 24 hours (daily)</option>
-              <option value={168}>Every week</option>
-            </select>
-            <small style={{ color: '#888', fontSize: '0.8rem' }}>
-              {reindexIntervalHours === 0
-                ? 'Re-indexing will only happen when you click "Pull & Re-index".'
-                : `Repository will be automatically pulled and re-indexed every ${reindexIntervalHours} hour${reindexIntervalHours > 1 ? 's' : ''}.`}
-            </small>
-          </div>
+          <IndexConfigFields
+            isLoading={isLoading}
+            filePatterns={filePatterns}
+            setFilePatterns={setFilePatterns}
+            excludePatterns={excludePatterns}
+            setExcludePatterns={setExcludePatterns}
+            chunkSize={chunkSize}
+            setChunkSize={setChunkSize}
+            chunkOverlap={chunkOverlap}
+            setChunkOverlap={setChunkOverlap}
+            maxFileSizeKb={maxFileSizeKb}
+            setMaxFileSizeKb={setMaxFileSizeKb}
+            gitCloneTimeoutMinutes={gitCloneTimeoutMinutes}
+            setGitCloneTimeoutMinutes={setGitCloneTimeoutMinutes}
+            setTimeoutManuallySet={setTimeoutManuallySet}
+            ocrMode={ocrMode}
+            setOcrMode={setOcrMode}
+            ocrVisionModel={ocrVisionModel}
+            setOcrVisionModel={setOcrVisionModel}
+            reindexIntervalHours={reindexIntervalHours}
+            setReindexIntervalHours={setReindexIntervalHours}
+            gitHistoryDepth={gitHistoryDepth}
+            setGitHistoryDepth={setGitHistoryDepth}
+          />
         </details>
 
         <div className="wizard-actions">
@@ -1156,146 +930,36 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>
             Edit Patterns & Settings
           </summary>
-          <div className="row">
-            <div className="form-group">
-              <label>File Patterns</label>
-              <input
-                type="text"
-                value={filePatterns}
-                onChange={(e) => setFilePatterns(e.target.value)}
-                disabled={isLoading}
-              />
-            </div>
-            <div className="form-group">
-              <label>Exclude Patterns</label>
-              <input
-                type="text"
-                value={excludePatterns}
-                onChange={(e) => setExcludePatterns(e.target.value)}
-                disabled={isLoading}
-              />
-            </div>
-          </div>
-          <div className="row">
-            <div className="form-group">
-              <label>Chunk Size</label>
-              <input
-                type="number"
-                value={chunkSize}
-                onChange={(e) => setChunkSize(parseInt(e.target.value, 10) || 1000)}
-                min={100}
-                max={4000}
-                disabled={isLoading}
-              />
-            </div>
-            <div className="form-group">
-              <label>Chunk Overlap</label>
-              <input
-                type="number"
-                value={chunkOverlap}
-                onChange={(e) => setChunkOverlap(parseInt(e.target.value, 10) || 200)}
-                min={0}
-                max={1000}
-                disabled={isLoading}
-              />
-            </div>
-            <div className="form-group">
-              <label>Max File Size (KB)</label>
-              <input
-                type="number"
-                value={maxFileSizeKb}
-                onChange={(e) => setMaxFileSizeKb(parseInt(e.target.value, 10) || 500)}
-                min={10}
-                max={10000}
-                disabled={isLoading}
-              />
-            </div>
-            <div className="form-group">
-              <label>Clone Timeout (min)</label>
-              <input
-                type="number"
-                value={gitCloneTimeoutMinutes}
-                onChange={(e) => {
-                  setGitCloneTimeoutMinutes(parseInt(e.target.value, 10) || 5);
-                  setTimeoutManuallySet(true);  // User manually changed it
-                }}
-                min={1}
-                max={480}
-                disabled={isLoading}
-              />
-            </div>
-          </div>
-          <div className="form-group" style={{ marginTop: '12px' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={enableOcr}
-                onChange={(e) => setEnableOcr(e.target.checked)}
-                disabled={isLoading}
-              />
-              Enable OCR (extract text from images)
-            </label>
-            <small style={{ color: '#888', fontSize: '0.8rem', marginLeft: '24px' }}>
-              {enableOcr
-                ? 'Image files (PNG, JPG, etc.) will be processed with Tesseract OCR to extract text.'
-                : 'When disabled, image files will be skipped during indexing.'}
-            </small>
-          </div>
 
-          <div className="form-group" style={{ marginTop: '12px' }}>
-            <label>Git History Depth</label>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <input
-                type="range"
-                min={1}
-                max={1001}
-                value={gitHistoryDepth === 0 ? 1001 : gitHistoryDepth}
-                onChange={(e) => {
-                  const sliderVal = parseInt(e.target.value, 10);
-                  // 1 = shallow (depth 1), 1000 = one step below full, 1001 = full history (depth 0)
-                  setGitHistoryDepth(sliderVal === 1001 ? 0 : sliderVal);
-                }}
-                disabled={isLoading}
-                style={{ flex: 1 }}
-              />
-              <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'monospace' }}>
-                {gitHistoryDepth === 0 ? 'Full' : gitHistoryDepth === 1 ? '1 (shallow)' : `${gitHistoryDepth} commits`}
-              </span>
-            </div>
-            <small style={{ color: '#888', fontSize: '0.8rem' }}>
-              {gitHistoryDepth === 0
-                ? `Full history: Indexes all commits.${analysisResult.commit_history?.total_commits ? ` (${analysisResult.commit_history.total_commits.toLocaleString()} commits)` : ''} Large repos may take 30+ min to clone.`
-                : gitHistoryDepth === 1
-                  ? 'Shallow clone: Only latest commit. Fastest, but no git history search.'
-                  : (() => {
-                      const dateEstimate = getDepthDateEstimate(gitHistoryDepth, analysisResult.commit_history);
-                      return dateEstimate
-                        ? `Indexes last ${gitHistoryDepth} commits (${dateEstimate}). Clone time scales with depth.`
-                        : `Indexes last ${gitHistoryDepth} commits. Clone time scales with depth.`;
-                    })()}
-            </small>
-          </div>
 
-          <div className="form-group" style={{ marginTop: '12px' }}>
-            <label>Auto Re-index Interval</label>
-            <select
-              value={reindexIntervalHours}
-              onChange={(e) => setReindexIntervalHours(parseInt(e.target.value, 10))}
-              disabled={isLoading}
-            >
-              <option value={0}>Manual only</option>
-              <option value={1}>Every hour</option>
-              <option value={6}>Every 6 hours</option>
-              <option value={12}>Every 12 hours</option>
-              <option value={24}>Every 24 hours (daily)</option>
-              <option value={168}>Every week</option>
-            </select>
-            <small style={{ color: '#888', fontSize: '0.8rem' }}>
-              {reindexIntervalHours === 0
-                ? 'Re-indexing will only happen when you click "Pull & Re-index".'
-                : `Repository will be automatically pulled and re-indexed every ${reindexIntervalHours} hour${reindexIntervalHours > 1 ? 's' : ''}.`}
-            </small>
-          </div>
+
+
+          <IndexConfigFields
+            isLoading={isLoading}
+            filePatterns={filePatterns}
+            setFilePatterns={setFilePatterns}
+            excludePatterns={excludePatterns}
+            setExcludePatterns={setExcludePatterns}
+            chunkSize={chunkSize}
+            setChunkSize={setChunkSize}
+            chunkOverlap={chunkOverlap}
+            setChunkOverlap={setChunkOverlap}
+            maxFileSizeKb={maxFileSizeKb}
+            setMaxFileSizeKb={setMaxFileSizeKb}
+            gitCloneTimeoutMinutes={gitCloneTimeoutMinutes}
+            setGitCloneTimeoutMinutes={setGitCloneTimeoutMinutes}
+            setTimeoutManuallySet={setTimeoutManuallySet}
+            ocrMode={ocrMode}
+            setOcrMode={setOcrMode}
+            ocrVisionModel={ocrVisionModel}
+            setOcrVisionModel={setOcrVisionModel}
+            reindexIntervalHours={reindexIntervalHours}
+            setReindexIntervalHours={setReindexIntervalHours}
+            gitHistoryDepth={gitHistoryDepth}
+            setGitHistoryDepth={setGitHistoryDepth}
+            commitHistory={analysisResult.commit_history}
+            getDepthDateEstimate={getDepthDateEstimate}
+          />
 
           <button type="button" className="btn btn-secondary" onClick={handleReanalyze} disabled={isLoading} style={{ marginTop: '8px' }}>
             {isLoading ? 'Re-analyzing...' : 'Re-analyze'}
