@@ -306,6 +306,7 @@ def format_query_result(
     rows: list[dict[str, Any]] | list[tuple[Any, ...]],
     columns: list[str] | None = None,
     max_output_length: int = 50000,
+    include_metadata: bool = True,
 ) -> str:
     """
     Format query results as a readable table string with embedded metadata.
@@ -351,23 +352,25 @@ def format_query_result(
         return "Query executed successfully (no results)"
 
     # Build table metadata for UI clients
-    # Serialize rows as list of lists (more compact than list of dicts)
-    serialized_rows = [
-        [_serialize_value(row.get(col)) for col in columns] for row in row_dicts
-    ]
-    table_metadata = {"columns": columns, "rows": serialized_rows}
+    metadata_line = ""
+    if include_metadata:
+        # Serialize rows as list of lists (more compact than list of dicts)
+        serialized_rows = [
+            [_serialize_value(row.get(col)) for col in columns] for row in row_dicts
+        ]
+        table_metadata = {"columns": columns, "rows": serialized_rows}
 
-    # Limit metadata size to avoid bloating output
-    try:
-        metadata_json = json.dumps(table_metadata, separators=(",", ":"))
-        # If metadata is too large, skip it (ASCII table is still readable)
-        if len(metadata_json) > 30000:
+        # Limit metadata size to avoid bloating output
+        try:
+            metadata_json = json.dumps(table_metadata, separators=(",", ":"))
+            # If metadata is too large, skip it (ASCII table is still readable)
+            if len(metadata_json) > 30000:
+                metadata_line = ""
+            else:
+                metadata_line = f"<!--TABLEDATA:{metadata_json}-->\n"
+        except (TypeError, ValueError):
+            # JSON serialization failed, skip metadata
             metadata_line = ""
-        else:
-            metadata_line = f"<!--TABLEDATA:{metadata_json}-->\n"
-    except (TypeError, ValueError):
-        # JSON serialization failed, skip metadata
-        metadata_line = ""
 
     # Build ASCII table (fallback display)
     lines = []
@@ -400,7 +403,9 @@ def format_query_result(
     return sanitize_output(result, max_output_length)
 
 
-def add_table_metadata_to_psql_output(psql_output: str) -> str:
+def add_table_metadata_to_psql_output(
+    psql_output: str, include_metadata: bool = True
+) -> str:
     """
     Parse psql ASCII table output and add table metadata for UI rendering.
 
@@ -443,10 +448,14 @@ def add_table_metadata_to_psql_output(psql_output: str) -> str:
 
     Args:
         psql_output: Raw output from psql command.
+        include_metadata: Whether to include hidden JSON metadata.
 
     Returns:
         Original output with table metadata prepended (if parseable).
     """
+    if not include_metadata:
+        return psql_output
+
     import json
 
     if not psql_output or "Error" in psql_output[:50]:

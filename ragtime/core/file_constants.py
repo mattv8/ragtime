@@ -307,45 +307,91 @@ DEFAULT_FILE_PATTERNS: list[str] = [
 
 
 # =============================================================================
+# CODE EXTENSIONS
+# =============================================================================
+# Language-specific extensions for code analysis and chunking.
+PYTHON_EXTENSIONS: set[str] = {".py", ".pyi", ".pyx"}
+JS_EXTENSIONS: set[str] = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
+GO_EXTENSIONS: set[str] = {".go"}
+RUST_EXTENSIONS: set[str] = {".rs"}
+JAVA_EXTENSIONS: set[str] = {".java", ".kt", ".kts"}
+
+# =============================================================================
 # ALL DOCUMENT EXTENSIONS
 # =============================================================================
 # Comprehensive list of all supported document extensions including
 # parseable documents, plain text, and code files.
-DOCUMENT_EXTENSIONS: set[str] = PARSEABLE_DOCUMENT_EXTENSIONS | {
-    # Plain text
-    ".txt",
-    ".md",
-    ".rst",
-    ".json",
-    ".xml",
-    ".html",
-    ".htm",
-    ".csv",
-    ".tsv",
-    # Code
-    ".py",
-    ".js",
-    ".ts",
-    ".jsx",
-    ".tsx",
-    ".java",
-    ".c",
-    ".cpp",
-    ".h",
-    ".hpp",
-    ".go",
-    ".rs",
-    ".rb",
-    ".php",
-    ".sql",
-    ".sh",
-    ".bash",
-    ".zsh",
-    ".yaml",
-    ".yml",
-    ".toml",
-    ".ini",
-    ".cfg",
+DOCUMENT_EXTENSIONS: set[str] = (
+    PARSEABLE_DOCUMENT_EXTENSIONS
+    | PYTHON_EXTENSIONS
+    | JS_EXTENSIONS
+    | GO_EXTENSIONS
+    | RUST_EXTENSIONS
+    | JAVA_EXTENSIONS
+    | {
+        # Plain text
+        ".txt",
+        ".md",
+        ".rst",
+        ".json",
+        ".xml",
+        ".html",
+        ".htm",
+        ".csv",
+        ".tsv",
+        # Other Code
+        ".c",
+        ".cpp",
+        ".h",
+        ".hpp",
+        ".rb",
+        ".php",
+        ".sql",
+        ".sh",
+        ".bash",
+        ".zsh",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".ini",
+        ".cfg",
+    }
+)
+
+
+# =============================================================================
+# TREE-SITTER LANGUAGE MAPPING
+# =============================================================================
+# Map extensions to tree-sitter language names
+# Note: These must match names supported by tree-sitter-language-pack
+EXTENSION_TO_LANG: dict[str, str] = {
+    # Python
+    ".py": "python",
+    ".pyi": "python",
+    ".pyx": "python",
+    # JavaScript / TypeScript
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".ts": "typescript",
+    ".tsx": "tsx",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
+    # Go
+    ".go": "go",
+    # Rust
+    ".rs": "rust",
+    # Java
+    ".java": "java",
+    # PHP
+    ".php": "php",
+    # Ruby
+    ".rb": "ruby",
+    # C/C++
+    ".c": "c",
+    ".cpp": "cpp",
+    ".h": "c",  # heuristic, could be cpp
+    ".hpp": "cpp",
+    ".cc": "cpp",
 }
 
 

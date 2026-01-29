@@ -104,6 +104,20 @@ TOOL_INPUT_SCHEMAS: dict[str, dict] = {
         },
         "required": ["query"],
     },
+    "mysql": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "SQL query to execute. Must include LIMIT clause for SELECT queries.",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Brief description of what this query retrieves",
+            },
+        },
+        "required": ["query"],
+    },
     # Knowledge search tool (built-in, always available when indexes exist)
     "knowledge_search": {
         "type": "object",
@@ -515,6 +529,7 @@ class MCPToolAdapter:
         prefixes = {
             "postgres": "query_",
             "mssql": "query_",
+            "mysql": "query_",
             "odoo_shell": "odoo_",
             "ssh_shell": "ssh_",
             "filesystem_indexer": "search_",
@@ -526,7 +541,7 @@ class MCPToolAdapter:
         """Build MCP schema search tool name from config, if applicable."""
         tool_type = config.get("tool_type", "")
         # Only database tools can have schema search
-        if tool_type not in ("postgres", "mssql"):
+        if tool_type not in ("postgres", "mssql", "mysql"):
             return None
 
         # Tool-safe name
@@ -545,7 +560,7 @@ class MCPToolAdapter:
         """
         tool_type = config.get("tool_type", "")
         # Only database tools can have schema search
-        if tool_type not in ("postgres", "mssql"):
+        if tool_type not in ("postgres", "mssql", "mysql"):
             return None
 
         conn_config = config.get("connection_config", {})
@@ -673,11 +688,15 @@ class MCPToolAdapter:
 
         if tool_type == "postgres":
             tool = await rag_temp._create_postgres_tool(
-                config, tool_name, tool_id
+                config, tool_name, tool_id, include_metadata=False
             )  # pyright: ignore[reportPrivateUsage]
         elif tool_type == "mssql":
             tool = await rag_temp._create_mssql_tool(
-                config, tool_name, tool_id
+                config, tool_name, tool_id, include_metadata=False
+            )  # pyright: ignore[reportPrivateUsage]
+        elif tool_type == "mysql":
+            tool = await rag_temp._create_mysql_tool(
+                config, tool_name, tool_id, include_metadata=False
             )  # pyright: ignore[reportPrivateUsage]
         elif tool_type == "odoo_shell":
             tool = await rag_temp._create_odoo_tool(

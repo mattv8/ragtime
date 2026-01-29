@@ -56,6 +56,7 @@ async def execute_mssql_query_async(
     allow_write: bool = False,
     description: str = "",
     ssh_tunnel_config: dict[str, Any] | None = None,
+    include_metadata: bool = True,
 ) -> str:
     """
     Execute a read-only SQL query against MSSQL Server.
@@ -143,7 +144,7 @@ async def execute_mssql_query_async(
                 [col[0] for col in cursor.description] if cursor.description else None
             )
 
-            return format_query_result(rows, columns)
+            return format_query_result(rows, columns, include_metadata=include_metadata)
 
         except pymssql.OperationalError as e:
             error_str = str(e)
@@ -206,6 +207,7 @@ def create_mssql_tool(
     allow_write: bool = False,
     description: str = "",
     ssh_tunnel_config: dict[str, Any] | None = None,
+    include_metadata: bool = True,
 ) -> StructuredTool:
     """
     Create a configured MSSQL query tool for LangChain.
@@ -248,6 +250,7 @@ def create_mssql_tool(
             allow_write=allow_write,
             description=description,
             ssh_tunnel_config=ssh_tunnel_config,
+            include_metadata=include_metadata,
         )
 
     tool_description = f"Query the {name} MSSQL/SQL Server database using SQL."

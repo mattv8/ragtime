@@ -62,188 +62,8 @@ def shutdown_process_pool():
 # CODE CONTEXT EXTRACTION
 # =============================================================================
 
-
-def _extract_imports(text: str, file_ext: str) -> list[str]:
-    """
-    Extract import statements from source code.
-
-    Extracts imports to include in chunk context, helping the LLM understand
-    what external dependencies and internal modules are used.
-
-    Args:
-        text: Source code content
-        file_ext: File extension (e.g., '.py', '.ts', '.js')
-
-    Returns:
-        List of import statement lines
-    """
-    imports = []
-    lines = text.split("\n")
-
-    ext_lower = file_ext.lower() if file_ext else ""
-
-    # Python imports
-    if ext_lower in (".py", ".pyi", ".pyx"):
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith(("import ", "from ")):
-                # Stop at first non-import (after imports block)
-                imports.append(stripped)
-            elif imports and stripped and not stripped.startswith("#"):
-                # Non-empty, non-comment line after imports - stop
-                break
-
-    # JavaScript/TypeScript imports
-    elif ext_lower in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"):
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith(("import ", "export ")) and " from " in stripped:
-                imports.append(stripped)
-            elif stripped.startswith("const ") and " = require(" in stripped:
-                imports.append(stripped)
-            elif imports and stripped and not stripped.startswith("//"):
-                # Non-empty, non-comment line after imports - stop
-                break
-
-    # Go imports
-    elif ext_lower == ".go":
-        in_import_block = False
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith("import ("):
-                in_import_block = True
-                continue
-            elif in_import_block:
-                if stripped == ")":
-                    in_import_block = False
-                    break
-                elif stripped:
-                    imports.append(f"import {stripped}")
-            elif stripped.startswith("import "):
-                imports.append(stripped)
-
-    # Rust imports
-    elif ext_lower == ".rs":
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith("use "):
-                imports.append(stripped)
-            elif imports and stripped and not stripped.startswith("//"):
-                break
-
-    # Java/Kotlin imports
-    elif ext_lower in (".java", ".kt", ".kts"):
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith("import "):
-                imports.append(stripped)
-            elif stripped.startswith("package "):
-                imports.insert(0, stripped)  # Package first
-            elif imports and stripped and not stripped.startswith("//"):
-                break
-
-    return imports
-
-
-def _extract_definitions(text: str, file_ext: str) -> list[str]:
-    """
-    Extract top-level definitions (classes, functions, exports) from source code.
-
-    Used to create a file-level summary chunk for hierarchical retrieval.
-
-    Args:
-        text: Source code content
-        file_ext: File extension (e.g., '.py', '.ts', '.js')
-
-    Returns:
-        List of definition signatures (just the signature line, not body)
-    """
-    definitions = []
-    lines = text.split("\n")
-    ext_lower = file_ext.lower() if file_ext else ""
-
-    # Python definitions
-    if ext_lower in (".py", ".pyi", ".pyx"):
-        for line in lines:
-            stripped = line.strip()
-            # Top-level only (no leading whitespace)
-            if line and not line[0].isspace():
-                if stripped.startswith(("def ", "async def ")):
-                    # Extract just the signature
-                    sig = stripped.split(":")[0] + ":"
-                    definitions.append(sig)
-                elif stripped.startswith("class "):
-                    sig = stripped.split(":")[0] + ":"
-                    definitions.append(sig)
-
-    # JavaScript/TypeScript definitions
-    elif ext_lower in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"):
-        for line in lines:
-            stripped = line.strip()
-            # Look for export, function, class, const declarations
-            if stripped.startswith(
-                ("export ", "function ", "class ", "const ", "let ", "var ")
-            ):
-                # Extract first line of definition
-                sig = stripped.rstrip("{").rstrip()
-                if len(sig) > 100:
-                    sig = sig[:97] + "..."
-                definitions.append(sig)
-
-    # Go definitions
-    elif ext_lower == ".go":
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith(("func ", "type ")):
-                sig = stripped.rstrip("{").rstrip()
-                if len(sig) > 100:
-                    sig = sig[:97] + "..."
-                definitions.append(sig)
-
-    # Rust definitions
-    elif ext_lower == ".rs":
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith(
-                (
-                    "fn ",
-                    "pub fn ",
-                    "struct ",
-                    "pub struct ",
-                    "enum ",
-                    "pub enum ",
-                    "impl ",
-                    "trait ",
-                    "pub trait ",
-                )
-            ):
-                sig = stripped.rstrip("{").rstrip()
-                if len(sig) > 100:
-                    sig = sig[:97] + "..."
-                definitions.append(sig)
-
-    # Java/Kotlin definitions
-    elif ext_lower in (".java", ".kt", ".kts"):
-        for line in lines:
-            stripped = line.strip()
-            if any(
-                stripped.startswith(kw)
-                for kw in (
-                    "public ",
-                    "private ",
-                    "protected ",
-                    "class ",
-                    "interface ",
-                    "fun ",
-                    "data class ",
-                )
-            ):
-                sig = stripped.rstrip("{").rstrip()
-                if len(sig) > 100:
-                    sig = sig[:97] + "..."
-                definitions.append(sig)
-
-    return definitions
+# NOTE: Context extraction is handled by ragtime.indexer.code_extraction
+# to leverage tree-sitter parsers instead of regex heuristics.
 
 
 def _create_file_summary(
@@ -351,8 +171,13 @@ def _chunk_with_chonkie_code(
     source_path = metadata.get("source", "")
     file_ext = "." + source_path.rsplit(".", 1)[-1] if "." in source_path else ""
 
-    # Extract imports for context
-    imports = _extract_imports(text, file_ext) if file_ext else []
+    # Extract imports and definitions for context/summary using Tree-sitter
+    imports: list[str] = []
+    definitions: list[str] = []
+    if file_ext:
+        from ragtime.indexer.code_extraction import extract_metadata
+
+        imports, definitions = extract_metadata(text, file_ext)
 
     # Skip chunking if content is already small enough
     if len(text) <= chunk_size:
@@ -393,7 +218,6 @@ def _chunk_with_chonkie_code(
     # For files with multiple chunks, add a summary chunk first (hierarchical)
     # This helps retrieval find the right file before drilling into details
     if total_chunks > 2 and source_path and file_ext:
-        definitions = _extract_definitions(text, file_ext)
         if definitions:  # Only add summary if we found definitions
             summary = _create_file_summary(
                 source_path, imports, definitions, total_chunks

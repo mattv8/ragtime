@@ -2011,7 +2011,13 @@ class RAGComponents:
 
         return tools
 
-    async def _create_postgres_tool(self, config: dict, tool_name: str, _tool_id: str):
+    async def _create_postgres_tool(
+        self,
+        config: dict,
+        tool_name: str,
+        _tool_id: str,
+        include_metadata: bool = True,
+    ):
         """Create a PostgreSQL query tool from config."""
         conn_config = config.get("connection_config", {})
         timeout = config.get("timeout", 30)
@@ -2110,7 +2116,9 @@ class RAGComponents:
                                 f"({len(rows)} row{'s' if len(rows) != 1 else ''})"
                             )
                             output = "\n".join(lines)
-                            output = add_table_metadata_to_psql_output(output)
+                            output = add_table_metadata_to_psql_output(
+                                output, include_metadata=include_metadata
+                            )
                             return sanitize_output(output)
                         else:
                             return "Query executed successfully (no results)"
@@ -2188,7 +2196,9 @@ class RAGComponents:
 
                 # Add table metadata for UI rendering BEFORE sanitizing
                 # so metadata is extracted from complete data
-                output = add_table_metadata_to_psql_output(output)
+                output = add_table_metadata_to_psql_output(
+                    output, include_metadata=include_metadata
+                )
 
                 # Now sanitize the combined output
                 output = sanitize_output(output)
@@ -2213,7 +2223,13 @@ class RAGComponents:
             args_schema=PostgresInput,
         )
 
-    async def _create_mssql_tool(self, config: dict, tool_name: str, _tool_id: str):
+    async def _create_mssql_tool(
+        self,
+        config: dict,
+        tool_name: str,
+        _tool_id: str,
+        include_metadata: bool = True,
+    ):
         """Create an MSSQL/SQL Server query tool from config."""
 
         conn_config = config.get("connection_config", {})
@@ -2246,9 +2262,16 @@ class RAGComponents:
             allow_write=allow_write,
             description=description,
             ssh_tunnel_config=ssh_tunnel_config,
+            include_metadata=include_metadata,
         )
 
-    async def _create_mysql_tool(self, config: dict, tool_name: str, _tool_id: str):
+    async def _create_mysql_tool(
+        self,
+        config: dict,
+        tool_name: str,
+        _tool_id: str,
+        include_metadata: bool = True,
+    ):
         """Create a MySQL/MariaDB query tool from config."""
 
         conn_config = config.get("connection_config", {})
@@ -2281,6 +2304,7 @@ class RAGComponents:
             allow_write=allow_write,
             description=description,
             ssh_tunnel_config=ssh_tunnel_config,
+            include_metadata=include_metadata,
         )
 
     async def _create_odoo_tool(self, config: dict, tool_name: str, _tool_id: str):
