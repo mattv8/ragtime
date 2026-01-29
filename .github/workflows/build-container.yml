@@ -36,6 +36,7 @@ jobs:
       tags: ${{ steps.meta.outputs.tags }}
       digest: ${{ steps.build-and-push.outputs.digest }}
       image-name: ${{ steps.meta.outputs.image-name }}
+      short-sha: ${{ steps.meta.outputs.short-sha }}
 
     steps:
       - name: Checkout code
@@ -57,16 +58,20 @@ jobs:
         id: meta
         run: |
           BRANCH="${{ steps.extract_branch.outputs.branch }}"
+          SHORT_SHA="${GITHUB_SHA::7}"
 
-          # Default tags include the branch name
+          # Default tags include the branch name and short SHA
           TAGS="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${BRANCH}"
+          TAGS="${TAGS},${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${BRANCH}-${SHORT_SHA}"
 
           # If this is the main branch, also tag as 'latest'
           if [ "$BRANCH" = "main" ]; then
             TAGS="${TAGS},${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+            TAGS="${TAGS},${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SHORT_SHA}"
           fi
 
           echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+          echo "short-sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
           echo "image-name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${BRANCH}" >> $GITHUB_OUTPUT
           echo "Tags to be pushed: ${TAGS}"
 
@@ -273,6 +278,7 @@ jobs:
           echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Branch:** ${{ needs.build-and-push.outputs.branch }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Short SHA:** ${{ needs.build-and-push.outputs.short-sha }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           if [ "$BUILD_PUSH_STATUS" = "success" ]; then
