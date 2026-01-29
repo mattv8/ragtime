@@ -193,9 +193,9 @@ def _chunk_with_chonkie_code(
 
     # language="auto" uses Magika for detection - no extension mapping needed
     chunker = CodeChunker(
-        language="auto",
-        chunk_size=chunk_size,
         tokenizer="character",
+        chunk_size=chunk_size,
+        language="auto",
     )
     chunks = chunker.chunk(text)
 
@@ -263,9 +263,9 @@ def _chunk_with_recursive(
     from chonkie import RecursiveChunker
 
     chunker = RecursiveChunker(
+        tokenizer="character",
         chunk_size=chunk_size,
         min_characters_per_chunk=50,
-        tokenizer="character",
     )
     chunks = chunker.chunk(text)
 
