@@ -44,12 +44,14 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # Install Python dependencies
 # For legacy CPU support, use NumPy 1.x which has better compatibility with older CPUs
-# The -c flag treats requirements-legacy.txt as constraints to override versions
+# Install all deps first, then force-reinstall legacy packages to override numpy 2.x
 COPY requirements.txt requirements-legacy.txt /tmp/
 RUN pip install --no-cache-dir --upgrade pip && \
     if [ "$LEGACY_CPU" = "1" ]; then \
-        echo "Installing dependencies with legacy CPU constraints (NumPy 1.x, rawpy <0.22)..." && \
-        pip install --no-cache-dir -c /tmp/requirements-legacy.txt -r /tmp/requirements.txt; \
+        echo "Installing all dependencies..." && \
+        pip install --no-cache-dir -r /tmp/requirements.txt && \
+        echo "Force-reinstalling legacy CPU packages (NumPy 1.x, rawpy <0.22)..." && \
+        pip install --no-cache-dir --force-reinstall --no-deps -r /tmp/requirements-legacy.txt; \
     else \
         pip install --no-cache-dir -r /tmp/requirements.txt; \
     fi
