@@ -5298,6 +5298,99 @@ async def test_ollama_connection(
 
 
 # -----------------------------------------------------------------------------
+# Ollama Vision Models
+# -----------------------------------------------------------------------------
+
+
+class OllamaVisionModel(BaseModel):
+    """Information about an available Ollama vision model."""
+
+    name: str
+    modified_at: Optional[str] = None
+    size: Optional[int] = None
+    family: Optional[str] = None
+    parameter_size: Optional[str] = None
+    capabilities: Optional[List[str]] = None
+
+
+class OllamaVisionModelsRequest(BaseModel):
+    """Request to list vision-capable Ollama models."""
+
+    protocol: str = Field(default="http", description="Protocol: 'http' or 'https'")
+    host: str = Field(default="localhost", description="Ollama server hostname or IP")
+    port: int = Field(default=11434, ge=1, le=65535, description="Ollama server port")
+
+
+class OllamaVisionModelsResponse(BaseModel):
+    """Response with available vision models."""
+
+    success: bool
+    message: str
+    models: List[OllamaVisionModel] = []
+    base_url: str = ""
+
+
+@router.post(
+    "/ollama/vision-models",
+    response_model=OllamaVisionModelsResponse,
+    tags=["Settings"],
+)
+async def get_ollama_vision_models(
+    request: OllamaVisionModelsRequest, _user: User = Depends(require_admin)
+):
+    """
+    List vision-capable models from an Ollama server.
+
+    Queries Ollama's /api/show endpoint for each model and returns those
+    with "vision" in their capabilities array.
+    """
+    from ragtime.core.vision_models import list_vision_models
+
+    base_url = f"{request.protocol}://{request.host}:{request.port}"
+
+    try:
+        vision_models = await list_vision_models(base_url=base_url)
+
+        models = [
+            OllamaVisionModel(
+                name=m.name,
+                modified_at=m.modified_at,
+                size=m.size,
+                family=m.family,
+                parameter_size=m.parameter_size,
+                capabilities=m.capabilities,
+            )
+            for m in vision_models
+        ]
+
+        return OllamaVisionModelsResponse(
+            success=True,
+            message=f"Found {len(models)} vision-capable model(s).",
+            models=models,
+            base_url=base_url,
+        )
+
+    except httpx.ConnectError:
+        return OllamaVisionModelsResponse(
+            success=False,
+            message=f"Cannot connect to Ollama server at {base_url}. Is Ollama running?",
+            base_url=base_url,
+        )
+    except httpx.TimeoutException:
+        return OllamaVisionModelsResponse(
+            success=False,
+            message=f"Connection to {base_url} timed out.",
+            base_url=base_url,
+        )
+    except Exception as e:
+        return OllamaVisionModelsResponse(
+            success=False,
+            message=f"Failed to list vision models: {str(e)}",
+            base_url=base_url,
+        )
+
+
+# -----------------------------------------------------------------------------
 # Embedding Model Fetching
 # -----------------------------------------------------------------------------
 

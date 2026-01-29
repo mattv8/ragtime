@@ -2,7 +2,7 @@
  * API client for Ragtime Indexer
  */
 
-import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, GetSettingsResponse, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, MysqlDiscoverRequest, MysqlDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse, McpRouteConfig, CreateMcpRouteRequest, UpdateMcpRouteRequest, McpRouteListResponse, HealthResponse } from '@/types';
+import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, GetSettingsResponse, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, OllamaVisionModelsRequest, OllamaVisionModelsResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, MysqlDiscoverRequest, MysqlDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse, McpRouteConfig, CreateMcpRouteRequest, UpdateMcpRouteRequest, McpRouteListResponse, HealthResponse } from '@/types';
 
 const API_BASE = '/indexes';
 const AUTH_BASE = '/auth';
@@ -492,6 +492,18 @@ export const api = {
       body: JSON.stringify(request),
     });
     return handleResponse<OllamaTestResponse>(response);
+  },
+
+  /**
+   * Get vision-capable models from an Ollama server
+   */
+  async getOllamaVisionModels(request: OllamaVisionModelsRequest): Promise<OllamaVisionModelsResponse> {
+    const response = await apiFetch(`${API_BASE}/ollama/vision-models`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<OllamaVisionModelsResponse>(response);
   },
 
   /**

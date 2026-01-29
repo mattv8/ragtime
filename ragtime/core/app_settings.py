@@ -112,6 +112,9 @@ class SettingsCache:
                 "mcp_default_route_auth_method": prisma_settings.mcpDefaultRouteAuthMethod,
                 "mcp_default_route_password": mcp_password,  # Kept encrypted
                 "mcp_default_route_allowed_group": prisma_settings.mcpDefaultRouteAllowedGroup,
+                # OCR settings
+                "default_ocr_mode": getattr(prisma_settings, "defaultOcrMode", "disabled"),
+                "default_ocr_vision_model": getattr(prisma_settings, "defaultOcrVisionModel", None),
             }
             return self._settings
 
@@ -162,6 +165,9 @@ class SettingsCache:
                 "mcp_default_route_auth_method": "password",
                 "mcp_default_route_password": None,
                 "mcp_default_route_allowed_group": None,
+                # OCR settings
+                "default_ocr_mode": "disabled",
+                "default_ocr_vision_model": None,
             }
 
     async def get_tool_configs(self) -> List[dict]:

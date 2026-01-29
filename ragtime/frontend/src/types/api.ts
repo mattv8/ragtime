@@ -474,6 +474,9 @@ export interface AppSettings {
   // Embedding dimension tracking (pgvector)
   embedding_dimension?: number | null;
   embedding_config_hash?: string | null;
+  // OCR Configuration
+  default_ocr_mode: 'disabled' | 'tesseract' | 'ollama';
+  default_ocr_vision_model?: string | null;
   // Performance / Memory Configuration
   sequential_index_loading: boolean;
   // API Tool Output Configuration
@@ -535,6 +538,9 @@ export interface UpdateSettingsRequest {
   ivfflat_lists?: number;
   // Performance / Memory settings
   sequential_index_loading?: boolean;
+  // OCR settings
+  default_ocr_mode?: 'disabled' | 'tesseract' | 'ollama';
+  default_ocr_vision_model?: string | null;
   // API Tool Output settings
   tool_output_mode?: ToolOutputMode;
   // MCP settings
@@ -578,6 +584,29 @@ export interface OllamaTestResponse {
   success: boolean;
   message: string;
   models: OllamaModel[];
+  base_url: string;
+}
+
+// Ollama Vision Models
+export interface OllamaVisionModel {
+  name: string;
+  modified_at?: string;
+  size?: number;
+  family?: string;
+  parameter_size?: string;
+  capabilities?: string[];
+}
+
+export interface OllamaVisionModelsRequest {
+  protocol: 'http' | 'https';
+  host: string;
+  port: number;
+}
+
+export interface OllamaVisionModelsResponse {
+  success: boolean;
+  message: string;
+  models: OllamaVisionModel[];
   base_url: string;
 }
 

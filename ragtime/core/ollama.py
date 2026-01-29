@@ -3,7 +3,8 @@ Centralized Ollama API client for model discovery and metadata.
 
 Provides functions to:
 - List all available models from an Ollama server
-- Filter for embedding-capable models only
+- Check model capabilities via /api/show (embedding, vision, tools, etc.)
+- Filter for embedding-capable or vision-capable models
 - Get model dimensions via /api/show
 
 This module consolidates all Ollama API interactions to ensure consistent
@@ -11,13 +12,16 @@ behavior across the codebase.
 """
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Literal, Optional
 
 import httpx
 
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Ollama capability types from /api/show response
+OllamaCapability = Literal["embedding", "vision", "completion", "tools", "thinking"]
 
 
 @dataclass
@@ -29,7 +33,76 @@ class OllamaModelInfo:
     size: Optional[int] = None
     dimensions: Optional[int] = None
     is_embedding_model: bool = False
+    is_vision_model: bool = False
     family: Optional[str] = None
+    capabilities: list[str] | None = None
+
+
+# -----------------------------------------------------------------------------
+# Capability Detection (centralized for all Ollama model types)
+# -----------------------------------------------------------------------------
+
+
+def extract_capabilities(details: dict) -> list[str]:
+    """
+    Extract capabilities list from Ollama /api/show response.
+
+    The 'capabilities' array is the authoritative source for model capabilities.
+    Possible values: ["embedding", "vision", "completion", "tools", "thinking"]
+
+    Args:
+        details: Full response from /api/show
+
+    Returns:
+        List of capability strings, empty list if none found
+    """
+    capabilities = details.get("capabilities")
+    if isinstance(capabilities, list):
+        return capabilities
+    return []
+
+
+def has_capability(details: dict, capability: OllamaCapability) -> bool:
+    """
+    Check if a model has a specific capability.
+
+    Uses the 'capabilities' array from Ollama's /api/show response.
+    This is the authoritative API-based detection method.
+
+    Args:
+        details: Full response from /api/show
+        capability: The capability to check for ("embedding", "vision", etc.)
+
+    Returns:
+        True if the model has the specified capability
+    """
+    return capability in extract_capabilities(details)
+
+
+def is_embedding_model_by_capability(details: dict) -> bool:
+    """
+    Check if a model is an embedding model via capabilities API.
+
+    Args:
+        details: Full response from /api/show
+
+    Returns:
+        True if the model has "embedding" capability
+    """
+    return has_capability(details, "embedding")
+
+
+def is_vision_model_by_capability(details: dict) -> bool:
+    """
+    Check if a model is a vision/multimodal model via capabilities API.
+
+    Args:
+        details: Full response from /api/show
+
+    Returns:
+        True if the model has "vision" capability
+    """
+    return has_capability(details, "vision")
 
 
 async def is_reachable(
@@ -140,9 +213,10 @@ def is_embedding_capable(details: dict, model_name: str = "") -> bool:
     This detects purpose-built embedding models (like nomic-embed-text, bge, etc.)
     NOT general LLMs that happen to have an embedding layer.
 
-    Detection logic:
-    1. Model family is BERT-based (definitive embedding architecture)
-    2. Model name contains 'embed' (common naming convention)
+    Detection logic (in order):
+    1. Capabilities API (authoritative - Ollama's /api/show 'capabilities' array)
+    2. Model family is BERT-based (fallback for older Ollama versions)
+    3. Model name contains 'embed' (common naming convention)
 
     Note: We do NOT check for embedding_length alone since all LLMs have
     internal embedding layers with this field.
@@ -154,7 +228,12 @@ def is_embedding_capable(details: dict, model_name: str = "") -> bool:
     Returns:
         True if the model is a purpose-built embedding model
     """
-    # Check model family for embedding-specific architectures
+    # Primary: Use capabilities API (authoritative source)
+    if is_embedding_model_by_capability(details):
+        return True
+
+    # Fallback: Check model family for embedding-specific architectures
+    # (for older Ollama versions without capabilities array)
     family = extract_model_family(details)
     if family:
         family_lower = family.lower()
@@ -163,7 +242,7 @@ def is_embedding_capable(details: dict, model_name: str = "") -> bool:
         if any(ef in family_lower for ef in embedding_families):
             return True
 
-    # Check model name for 'embed' pattern (common naming: nomic-embed-text, bge-m3, etc.)
+    # Fallback: Check model name for 'embed' pattern
     name_to_check = model_name.lower() if model_name else ""
     if not name_to_check:
         # Fallback to modelfile content if available

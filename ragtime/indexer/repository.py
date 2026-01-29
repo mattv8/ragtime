@@ -695,6 +695,9 @@ class IndexerRepository:
             # Embedding dimension tracking
             embedding_dimension=getattr(settings, "embeddingDimension", None),
             embedding_config_hash=getattr(settings, "embeddingConfigHash", None),
+            # OCR configuration
+            default_ocr_mode=getattr(settings, "defaultOcrMode", "disabled"),
+            default_ocr_vision_model=getattr(settings, "defaultOcrVisionModel", None),
             updated_at=settings.updatedAt,
         )
 
@@ -756,6 +759,9 @@ class IndexerRepository:
             # Embedding dimension tracking (internal use)
             "embedding_dimension": "embeddingDimension",
             "embedding_config_hash": "embeddingConfigHash",
+            # OCR configuration
+            "default_ocr_mode": "defaultOcrMode",
+            "default_ocr_vision_model": "defaultOcrVisionModel",
         }
 
         # Build update data with only provided fields

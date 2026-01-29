@@ -26,6 +26,13 @@ enum IndexStatus {
   failed
 }
 
+/// OCR mode for extracting text from images
+enum OcrMode {
+  disabled   // No OCR - skip image files
+  tesseract  // Traditional OCR with Tesseract (fast, basic)
+  ollama     // Semantic OCR with Ollama vision model (slower, better understanding)
+}
+
 /// Configuration for creating an index (stored as part of job)
 model IndexConfig {
   id              String   @id @default(uuid())
@@ -188,6 +195,10 @@ model AppSettings {
   embeddingDimension     Int?    @map("embedding_dimension")
   // Hash of provider+model to detect changes (e.g., "ollama:qwen3-embedding:latest")
   embeddingConfigHash    String? @map("embedding_config_hash")
+
+  // OCR Configuration (global defaults for new indexes)
+  defaultOcrMode        OcrMode  @default(disabled) @map("default_ocr_mode") // Default OCR mode for new indexes
+  defaultOcrVisionModel String?  @map("default_ocr_vision_model") // Default Ollama vision model for OCR (e.g., 'granite3.2-vision:2b')
 
   // Timestamps
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")

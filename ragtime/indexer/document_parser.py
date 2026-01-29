@@ -14,34 +14,55 @@ Extracts text content from various document formats:
 - Images with OCR (.png, .jpg, .jpeg, .tiff, .bmp, .gif, .webp)
 - Plain text (.txt, .md, .rst, .json, .xml, .csv)
 - Code files (.py, .js, .ts, etc.)
+
+OCR Modes:
+- disabled: Skip image files
+- tesseract: Traditional OCR (fast, basic text extraction)
+- ollama: Semantic OCR with vision models (slower, better understanding)
 """
 
 import io
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from ragtime.core.file_constants import DOCUMENT_EXTENSIONS, OCR_EXTENSIONS
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Type alias for OCR mode
+OcrModeType = Literal["disabled", "tesseract", "ollama"]
+
 
 def extract_text_from_file(
     file_path: Path,
     content: Optional[bytes] = None,
     enable_ocr: bool = False,
+    ocr_mode: OcrModeType = "disabled",
+    ocr_vision_model: Optional[str] = None,
+    ollama_base_url: Optional[str] = None,
 ) -> str:
     """
     Extract text content from a file based on its extension.
 
+    For async OCR with Ollama vision models, use extract_text_from_file_async instead.
+
     Args:
         file_path: Path to the file
         content: Optional pre-loaded file content (bytes)
-        enable_ocr: Whether to use OCR for image files (slower but extracts text from images)
+        enable_ocr: Legacy flag - if True and ocr_mode is 'disabled', uses tesseract
+        ocr_mode: OCR mode ('disabled', 'tesseract', 'ollama')
+        ocr_vision_model: Ollama vision model for OCR (required when ocr_mode='ollama')
+        ollama_base_url: Ollama server URL (required when ocr_mode='ollama')
 
     Returns:
         Extracted text content as string
     """
+    # Handle legacy enable_ocr flag
+    effective_ocr_mode = ocr_mode
+    if enable_ocr and ocr_mode == "disabled":
+        effective_ocr_mode = "tesseract"
+
     suffix = file_path.suffix.lower()
 
     # Load content if not provided
@@ -82,12 +103,113 @@ def extract_text_from_file(
             return _extract_msg(content)
         elif suffix in {".html", ".htm"}:
             return _extract_html(content)
-        elif suffix in OCR_EXTENSIONS and enable_ocr:
+        elif suffix in OCR_EXTENSIONS and effective_ocr_mode == "tesseract":
+            return _extract_image_ocr(content)
+        elif suffix in OCR_EXTENSIONS and effective_ocr_mode == "ollama":
+            # Ollama vision OCR requires async - log warning and fall back to tesseract
+            logger.warning(
+                f"Ollama vision OCR requires async. Use extract_text_from_file_async() "
+                f"for {file_path.name}. Falling back to tesseract."
+            )
             return _extract_image_ocr(content)
         elif suffix in OCR_EXTENSIONS:
             # OCR disabled, skip image files
             logger.debug(f"Skipping image {file_path.name} - OCR disabled")
             return ""
+        else:
+            # Plain text files
+            return _extract_text(content)
+    except Exception as e:
+        logger.warning(f"Failed to extract text from {file_path}: {e}")
+        return ""
+
+
+async def extract_text_from_file_async(
+    file_path: Path,
+    content: Optional[bytes] = None,
+    enable_ocr: bool = False,
+    ocr_mode: OcrModeType = "disabled",
+    ocr_vision_model: Optional[str] = None,
+    ollama_base_url: Optional[str] = None,
+) -> str:
+    """
+    Async version of extract_text_from_file with Ollama vision OCR support.
+
+    Args:
+        file_path: Path to the file
+        content: Optional pre-loaded file content (bytes)
+        enable_ocr: Legacy flag - if True and ocr_mode is 'disabled', uses tesseract
+        ocr_mode: OCR mode ('disabled', 'tesseract', 'ollama')
+        ocr_vision_model: Ollama vision model for OCR (required when ocr_mode='ollama')
+        ollama_base_url: Ollama server URL (required when ocr_mode='ollama')
+
+    Returns:
+        Extracted text content as string
+    """
+    # Handle legacy enable_ocr flag
+    effective_ocr_mode = ocr_mode
+    if enable_ocr and ocr_mode == "disabled":
+        effective_ocr_mode = "tesseract"
+
+    suffix = file_path.suffix.lower()
+
+    # Load content if not provided
+    if content is None:
+        try:
+            content = file_path.read_bytes()
+        except Exception as e:
+            logger.warning(f"Failed to read file {file_path}: {e}")
+            return ""
+
+    # Route to appropriate parser
+    try:
+        # Handle OCR cases for images
+        if suffix in OCR_EXTENSIONS:
+            if effective_ocr_mode == "ollama":
+                if not ocr_vision_model or not ollama_base_url:
+                    logger.warning(
+                        f"Ollama vision OCR requires model and base_url. "
+                        f"Falling back to tesseract for {file_path.name}"
+                    )
+                    return _extract_image_ocr(content)
+                return await _extract_image_vision_ocr(
+                    content, ollama_base_url, ocr_vision_model
+                )
+            elif effective_ocr_mode == "tesseract":
+                return _extract_image_ocr(content)
+            else:
+                logger.debug(f"Skipping image {file_path.name} - OCR disabled")
+                return ""
+
+        # All other file types are synchronous
+        if suffix == ".pdf":
+            return _extract_pdf(content)
+        elif suffix == ".docx":
+            return _extract_docx(content)
+        elif suffix == ".doc":
+            return _extract_doc_legacy(file_path, content)
+        elif suffix == ".xlsx":
+            return _extract_xlsx(content)
+        elif suffix == ".xls":
+            return _extract_xls(content)
+        elif suffix == ".pptx":
+            return _extract_pptx(content)
+        elif suffix == ".odt":
+            return _extract_odt(content)
+        elif suffix == ".ods":
+            return _extract_ods(content)
+        elif suffix == ".odp":
+            return _extract_odp(content)
+        elif suffix == ".rtf":
+            return _extract_rtf(content)
+        elif suffix == ".epub":
+            return _extract_epub(content)
+        elif suffix == ".eml":
+            return _extract_eml(content)
+        elif suffix == ".msg":
+            return _extract_msg(content)
+        elif suffix in {".html", ".htm"}:
+            return _extract_html(content)
         else:
             # Plain text files
             return _extract_text(content)
@@ -591,6 +713,53 @@ def _extract_image_ocr(content: bytes) -> str:
         else:
             logger.warning(f"OCR extraction error: {e}")
         return ""
+
+
+async def _extract_image_vision_ocr(
+    content: bytes,
+    ollama_base_url: str,
+    vision_model: str,
+    timeout: float = 60.0,
+) -> str:
+    """
+    Extract text from image using Ollama vision model (semantic OCR).
+
+    This performs semantic OCR - the model understands the image content
+    and extracts text while preserving meaning and structure.
+
+    Args:
+        content: Raw image bytes
+        ollama_base_url: Ollama server URL
+        vision_model: Vision model name (e.g., 'granite3.2-vision:2b')
+        timeout: Request timeout in seconds
+
+    Returns:
+        Extracted text from the image
+    """
+    import time
+
+    from ragtime.core.vision_models import extract_text_with_vision
+
+    start_time = time.time()
+
+    try:
+        text = await extract_text_with_vision(
+            image_content=content,
+            base_url=ollama_base_url,
+            model=vision_model,
+            timeout=timeout,
+        )
+        elapsed = time.time() - start_time
+        logger.debug(
+            f"Vision OCR ({vision_model}) completed in {elapsed:.2f}s, "
+            f"extracted {len(text)} chars"
+        )
+        return text
+    except Exception as e:
+        logger.warning(f"Vision OCR error with {vision_model}: {e}")
+        # Fall back to tesseract
+        logger.info("Falling back to Tesseract OCR")
+        return _extract_image_ocr(content)
 
 
 def is_supported_document(file_path: Path) -> bool:

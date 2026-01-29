@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Lock, LockOpen } from 'lucide-react';
+import { Lock, LockOpen, Info } from 'lucide-react';
 import { api } from '@/api';
-import type { AppSettings, UpdateSettingsRequest, OllamaModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus } from '@/types';
+import type { AppSettings, UpdateSettingsRequest, OllamaModel, OllamaVisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus } from '@/types';
 import { MCPRoutesPanel } from './MCPRoutesPanel';
 import { OllamaConnectionForm } from './OllamaConnectionForm';
 import { ModelSelector } from './ModelSelector';
@@ -406,6 +406,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         mcp_default_route_auth_method: data.mcp_default_route_auth_method,
         mcp_default_route_allowed_group: data.mcp_default_route_allowed_group,
         mcp_default_route_password: data.mcp_default_route_password ?? '',
+        // OCR settings
+        default_ocr_mode: data.default_ocr_mode,
+        default_ocr_vision_model: data.default_ocr_vision_model,
       });
       // Reset Ollama connection state (for embeddings)
       setOllamaConnected(false);
@@ -777,6 +780,77 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       setError(err instanceof Error ? err.message : 'Failed to save performance settings');
     } finally {
       setPerformanceSaving(false);
+    }
+  };
+
+  // OCR Configuration
+  const [ocrSaving, setOcrSaving] = useState(false);
+  const [visionModels, setVisionModels] = useState<OllamaVisionModel[]>([]);
+  const [visionModelsLoading, setVisionModelsLoading] = useState(false);
+  const [visionModelsError, setVisionModelsError] = useState<string | null>(null);
+  const [showOcrRecommendations, setShowOcrRecommendations] = useState(false);
+
+  // Fetch vision models when OCR mode is set to 'ollama'
+  const fetchVisionModels = useCallback(async () => {
+    if (!formData.ollama_protocol || !formData.ollama_host || !formData.ollama_port) {
+      return;
+    }
+
+    setVisionModelsLoading(true);
+    setVisionModelsError(null);
+
+    try {
+      const response = await api.getOllamaVisionModels({
+        protocol: formData.ollama_protocol as 'http' | 'https',
+        host: formData.ollama_host,
+        port: formData.ollama_port,
+      });
+
+      if (response.success) {
+        setVisionModels(response.models);
+        if (response.models.length === 0) {
+          setVisionModelsError('No vision-capable models found. Pull a vision model like llava or granite3.2-vision.');
+        }
+      } else {
+        setVisionModelsError(response.message);
+      }
+    } catch (err) {
+      setVisionModelsError(err instanceof Error ? err.message : 'Failed to fetch vision models');
+    } finally {
+      setVisionModelsLoading(false);
+    }
+  }, [formData.ollama_protocol, formData.ollama_host, formData.ollama_port]);
+
+  // Auto-fetch vision models when OCR mode changes to 'ollama'
+  useEffect(() => {
+    if (formData.default_ocr_mode === 'ollama' && visionModels.length === 0 && !visionModelsLoading) {
+      fetchVisionModels();
+    }
+  }, [formData.default_ocr_mode, fetchVisionModels, visionModels.length, visionModelsLoading]);
+
+  const handleSaveOcr = async () => {
+    setOcrSaving(true);
+    setSuccess(null);
+    setError(null);
+
+    try {
+      const dataToSave: UpdateSettingsRequest = {
+        default_ocr_mode: formData.default_ocr_mode,
+        default_ocr_vision_model: formData.default_ocr_vision_model,
+      };
+      const updated = await api.updateSettings(dataToSave);
+      setSettings(updated);
+      setFormData(prev => ({
+        ...prev,
+        default_ocr_mode: updated.default_ocr_mode,
+        default_ocr_vision_model: updated.default_ocr_vision_model,
+      }));
+      setSuccess('OCR settings saved.');
+      setTimeout(() => setSuccess(null), 5000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save OCR settings');
+    } finally {
+      setOcrSaving(false);
     }
   };
 
@@ -2143,6 +2217,149 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
             >
               {performanceSaving ? 'Saving...' : 'Save Performance Settings'}
             </button>
+          </div>
+        </fieldset>
+
+        {/* OCR Configuration */}
+        <fieldset id="setting-ocr">
+          <legend>OCR Settings</legend>
+          <p className="fieldset-help">
+            Configure default OCR (Optical Character Recognition) mode for extracting text from images during indexing.
+          </p>
+
+          <div className="form-group">
+            <label>Default OCR Mode</label>
+            <select
+              value={formData.default_ocr_mode || 'disabled'}
+              onChange={(e) => {
+                const newMode = e.target.value as 'disabled' | 'tesseract' | 'ollama';
+                setFormData({ ...formData, default_ocr_mode: newMode });
+                // Clear vision model error when changing mode
+                if (newMode !== 'ollama') {
+                  setVisionModelsError(null);
+                }
+              }}
+            >
+              <option value="disabled">Disabled (skip images)</option>
+              <option value="tesseract">Tesseract (fast, traditional OCR)</option>
+              <option value="ollama">Ollama Vision (semantic OCR with AI)</option>
+            </select>
+            <p className="field-help">
+              {formData.default_ocr_mode === 'disabled' && (
+                <>Image files will be skipped during indexing.</>
+              )}
+              {formData.default_ocr_mode === 'tesseract' && (
+                <>Fast traditional OCR using Tesseract. Good for screenshots and scanned documents with clear text.</>
+              )}
+              {formData.default_ocr_mode === 'ollama' && (
+                <>
+                  Semantic OCR using Ollama vision models. Better at understanding complex layouts, handwriting, and context.
+                  <br />
+                  <span style={{ color: 'var(--warning-color, #b58900)' }}>
+                    <strong>Performance note:</strong> Vision models are 3-15x slower than Tesseract depending on model size.
+                    <button
+                      type="button"
+                      onClick={() => setShowOcrRecommendations(!showOcrRecommendations)}
+                      title="View model recommendations"
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        cursor: 'pointer',
+                        marginLeft: '4px',
+                        padding: 0,
+                        color: 'inherit',
+                        verticalAlign: 'middle',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                      }}
+                    >
+                      <Info size="1em" />
+                    </button>
+                  </span>
+                  {showOcrRecommendations && (
+                    <div style={{
+                      marginTop: '12px',
+                      padding: '12px',
+                      backgroundColor: 'var(--input-bg, var(--bg-secondary, #f5f5f5))',
+                      border: '1px solid var(--border-color, #ddd)',
+                      borderRadius: '6px',
+                      fontSize: '0.9em',
+                      color: 'var(--text-color, inherit)',
+                    }}>
+                      <strong>Recommended:</strong> <code>llama3.2-vision</code> (10.7B)<br />
+                      Best balance of speed and accuracy, ~6x slower than Tesseract.
+                      <br /><br />
+                      <strong>Other options:</strong><br />
+                      <code>qwen3-vl</code> (8.8B) - Highest accuracy, cleanest output, but ~14x slower.<br />
+                      <code>llava</code> (7B) - Fastest (~2x slower), but may hallucinate on document OCR.
+                    </div>
+                  )}
+                </>
+              )}
+            </p>
+          </div>
+
+          {formData.default_ocr_mode === 'ollama' && (
+            <div className="form-group">
+              <label>Vision Model</label>
+              {visionModelsLoading ? (
+                <p className="muted">Loading vision models...</p>
+              ) : visionModelsError ? (
+                <div>
+                  <p className="error-text" style={{ marginBottom: '8px' }}>{visionModelsError}</p>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={fetchVisionModels}
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : visionModels.length > 0 ? (
+                <select
+                  value={formData.default_ocr_vision_model || ''}
+                  onChange={(e) => setFormData({ ...formData, default_ocr_vision_model: e.target.value || null })}
+                >
+                  <option value="">Select a vision model</option>
+                  {visionModels.map((model) => (
+                    <option key={model.name} value={model.name}>
+                      {model.name}
+                      {model.parameter_size && ` (${model.parameter_size})`}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div>
+                  <p className="muted">No vision models loaded.</p>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={fetchVisionModels}
+                  >
+                    Load Vision Models
+                  </button>
+                </div>
+              )}
+              <p className="field-help">
+                Select an Ollama vision model for semantic OCR.
+              </p>
+            </div>
+          )}
+
+          <div className="form-actions" style={{ borderTop: 'none', paddingTop: 0 }}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={handleSaveOcr}
+              disabled={ocrSaving || (formData.default_ocr_mode === 'ollama' && !formData.default_ocr_vision_model)}
+            >
+              {ocrSaving ? 'Saving...' : 'Save OCR Settings'}
+            </button>
+            {formData.default_ocr_mode === 'ollama' && !formData.default_ocr_vision_model && (
+              <span className="muted" style={{ marginLeft: '1rem' }}>
+                Select a vision model to save
+              </span>
+            )}
           </div>
         </fieldset>
 

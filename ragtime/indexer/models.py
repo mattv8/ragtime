@@ -27,6 +27,16 @@ class ToolOutputMode(str, Enum):
     AUTO = "auto"  # Let AI decide based on relevance
 
 
+class OcrMode(str, Enum):
+    """OCR mode for extracting text from images."""
+
+    DISABLED = "disabled"  # No OCR - skip image files
+    TESSERACT = "tesseract"  # Traditional OCR with Tesseract (fast, basic)
+    OLLAMA = (
+        "ollama"  # Semantic OCR with Ollama vision model (slower, better understanding)
+    )
+
+
 class IndexConfig(BaseModel):
     """Configuration for creating an index."""
 
@@ -55,6 +65,14 @@ class IndexConfig(BaseModel):
     enable_ocr: bool = Field(
         default=False,
         description="Enable OCR to extract text from images (slower but captures text in screenshots, scanned docs, etc.)",
+    )
+    ocr_mode: OcrMode = Field(
+        default=OcrMode.DISABLED,
+        description="OCR mode: 'disabled' (skip images), 'tesseract' (fast traditional OCR), or 'ollama' (semantic OCR with vision model)",
+    )
+    ocr_vision_model: Optional[str] = Field(
+        default=None,
+        description="Ollama vision model for OCR (e.g., 'granite3.2-vision:2b'). Required when ocr_mode is 'ollama'.",
     )
     git_clone_timeout_minutes: int = Field(
         default=5,
@@ -618,6 +636,16 @@ class AppSettings(BaseModel):
         description="Hash of embedding provider+model to detect configuration changes",
     )
 
+    # OCR Configuration (global defaults for new indexes)
+    default_ocr_mode: OcrMode = Field(
+        default=OcrMode.DISABLED,
+        description="Default OCR mode for new indexes: 'disabled' (skip images), 'tesseract' (fast), 'ollama' (semantic)",
+    )
+    default_ocr_vision_model: Optional[str] = Field(
+        default=None,
+        description="Default Ollama vision model for OCR (e.g., 'granite3.2-vision:2b'). Required when ocr_mode is 'ollama'.",
+    )
+
     updated_at: Optional[datetime] = None
 
     def get_embedding_config_hash(self) -> str:
@@ -844,6 +872,15 @@ class UpdateSettingsRequest(BaseModel):
     mcp_default_route_allowed_group: Optional[str] = Field(
         default=None,
         description="LDAP group DN required for OAuth2 access. Set to empty string to clear.",
+    )
+    # OCR configuration
+    default_ocr_mode: Optional[str] = Field(
+        default=None,
+        description="Default OCR mode: 'disabled', 'tesseract', or 'ollama'.",
+    )
+    default_ocr_vision_model: Optional[str] = Field(
+        default=None,
+        description="Default Ollama vision model for OCR (e.g., 'granite3.2-vision:2b').",
     )
 
 
@@ -1156,6 +1193,14 @@ class FilesystemConnectionConfig(BaseModel):
     enable_ocr: bool = Field(
         default=False,
         description="Enable OCR to extract text from images (slower but captures text in screenshots, scanned docs, etc.)",
+    )
+    ocr_mode: OcrMode = Field(
+        default=OcrMode.DISABLED,
+        description="OCR mode: 'disabled' (skip images), 'tesseract' (fast traditional OCR), or 'ollama' (semantic OCR with vision model)",
+    )
+    ocr_vision_model: Optional[str] = Field(
+        default=None,
+        description="Ollama vision model for OCR (e.g., 'granite3.2-vision:2b'). Required when ocr_mode is 'ollama'.",
     )
 
     # Re-indexing schedule
