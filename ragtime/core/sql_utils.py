@@ -333,20 +333,23 @@ def format_query_result(
     """
     import json
 
-    if not rows:
+    # If no rows but columns are provided, we can still render an empty table
+    if not rows and (not columns or not include_metadata):
         return "Query executed successfully (no results)"
 
     # Convert tuples to dicts if needed
-    row_dicts: list[dict[str, Any]]
-    if rows and isinstance(rows[0], tuple):
-        if not columns:
-            columns = [f"col{i}" for i in range(len(rows[0]))]
-        row_dicts = [dict(zip(columns, row)) for row in rows]
-    elif rows and isinstance(rows[0], dict):
-        row_dicts = rows  # type: ignore[assignment]
-        columns = list(rows[0].keys())  # type: ignore[union-attr]
+    row_dicts: list[dict[str, Any]] = []
+    if rows:
+        if isinstance(rows[0], tuple):
+            if not columns:
+                columns = [f"col{i}" for i in range(len(rows[0]))]
+            row_dicts = [dict(zip(columns, row)) for row in rows]
+        elif isinstance(rows[0], dict):
+            row_dicts = rows  # type: ignore[assignment]
+            columns = list(rows[0].keys())  # type: ignore[union-attr]
     else:
-        return "Query executed successfully (no results)"
+        # Rows are empty but columns must be present (checked above)
+        row_dicts = []
 
     if not columns:
         return "Query executed successfully (no results)"
@@ -551,8 +554,10 @@ def add_table_metadata_to_psql_output(
                     parsed_values.append(val)
         rows.append(parsed_values)
 
-    if not rows:
-        return psql_output
+    # Note: Even if rows is empty, we want to return metadata with columns
+    # so the UI can render an empty table with headers.
+    # if not rows:
+    #     return psql_output
 
     # Build metadata JSON
     try:

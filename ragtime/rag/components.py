@@ -2101,8 +2101,9 @@ class RAGComponents:
 
                         if cursor.description:
                             rows = cursor.fetchall()
-                            if not rows:
+                            if not rows and not include_metadata:
                                 return "Query executed successfully (no results)"
+
                             # Format as psql-like output
                             columns = [col.name for col in cursor.description]
                             lines = []
@@ -2192,6 +2193,9 @@ class RAGComponents:
 
                 output = stdout.decode("utf-8", errors="replace").strip()
                 if not output:
+                    return "Query executed successfully (no results)"
+
+                if not include_metadata and "(0 rows)" in output[-20:]:
                     return "Query executed successfully (no results)"
 
                 # Add table metadata for UI rendering BEFORE sanitizing

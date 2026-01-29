@@ -141,13 +141,14 @@ async def execute_mysql_query_async(
 
             # Fetch results
             rows = cursor.fetchall()
-            if not rows:
-                return "Query executed successfully (no results)"
 
             # Get column names from cursor description
             columns = (
                 [col[0] for col in cursor.description] if cursor.description else None
             )
+
+            if not rows and not columns:
+                return "Query executed successfully (no results)"
 
             return format_query_result(rows, columns, include_metadata=include_metadata)
 
