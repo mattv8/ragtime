@@ -128,6 +128,62 @@ def extract_text_from_file(
         return ""
 
 
+async def extract_image_structured_async(
+    file_path: Path,
+    content: Optional[bytes] = None,
+    ocr_vision_model: Optional[str] = None,
+    ollama_base_url: Optional[str] = None,
+):
+    """
+    Extract structured OCR data from an image for semantic chunking.
+
+    Returns VisionOcrResult with semantic segments that can be chunked
+    intelligently (keeping classification metadata together, etc.).
+
+    Args:
+        file_path: Path to the image file
+        content: Optional pre-loaded file content
+        ocr_vision_model: Ollama vision model name
+        ollama_base_url: Ollama server URL
+
+    Returns:
+        VisionOcrResult with structured semantic data, or None if extraction fails
+    """
+    from ragtime.core.vision_models import (
+        VisionOcrResult,
+        extract_text_with_vision_structured,
+    )
+
+    suffix = file_path.suffix.lower()
+
+    if suffix not in OCR_EXTENSIONS:
+        return None
+
+    if not ocr_vision_model or not ollama_base_url:
+        logger.warning("Structured OCR requires vision model and base URL")
+        return None
+
+    # Load content if not provided
+    if content is None:
+        try:
+            content = file_path.read_bytes()
+        except Exception as e:
+            logger.warning(f"Failed to read image {file_path}: {e}")
+            return None
+
+    try:
+        return await extract_text_with_vision_structured(
+            image_content=content,
+            base_url=ollama_base_url,
+            model=ocr_vision_model,
+            source_format=suffix,
+            include_classification=True,
+        )
+    except Exception as e:
+        logger.warning(f"Structured OCR failed for {file_path}: {e}")
+        return None
+
+
 async def extract_text_from_file_async(
     file_path: Path,
     content: Optional[bytes] = None,

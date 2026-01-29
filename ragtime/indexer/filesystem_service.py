@@ -1382,18 +1382,32 @@ class FilesystemIndexerService:
         Uses Chonkie for all text chunking:
         - CodeChunker for code files (AST-based with Magika detection)
         - RecursiveChunker for plain text and documents
+        - Semantic chunking for images (keeps classification with description)
 
         Text extraction (PDF, DOCX, images with OCR, etc.) is handled by
         document_parser via _read_file_content() before chunking.
         """
+        from ragtime.core.file_constants import OCR_EXTENSIONS
         from ragtime.indexer.chunking import (
             _chunk_with_chonkie_code,
             _chunk_with_recursive,
+            chunk_semantic_segments,
         )
 
         try:
             file_path_str = str(file_path)
             metadata = {"source": file_path_str}
+            suffix = file_path.suffix.lower()
+
+            # For images with Ollama OCR: use semantic chunking to keep
+            # classification metadata together with description
+            if suffix in OCR_EXTENSIONS and config.ocr_mode.value == "ollama":
+                docs = await self._load_image_with_semantic_chunks(
+                    file_path, config, metadata
+                )
+                if docs:
+                    return [doc.page_content for doc in docs]
+                # Fall through to standard processing if semantic extraction fails
 
             # Read file content (handles PDF, DOCX, images with OCR, etc.)
             content = await self._read_file_content_async(
@@ -1442,6 +1456,78 @@ class FilesystemIndexerService:
         except Exception as e:
             logger.warning(f"Error loading file {file_path}: {e}")
             return []
+
+    async def _load_image_with_semantic_chunks(
+        self,
+        file_path: Path,
+        config: FilesystemConnectionConfig,
+        metadata: dict,
+    ) -> List:
+        """
+        Load an image and chunk using semantic boundaries from vision OCR.
+
+        Uses structured OCR output to keep related content together:
+        - OCR text stays together (or is chunked if very large)
+        - Classification metadata (description + tags) always stays together
+
+        Args:
+            file_path: Path to image file
+            config: Filesystem indexer config
+            metadata: Base metadata for chunks
+
+        Returns:
+            List of Document objects, or empty list if extraction fails
+        """
+        from ragtime.core.app_settings import get_app_settings
+        from ragtime.indexer.chunking import chunk_semantic_segments
+        from ragtime.indexer.document_parser import extract_image_structured_async
+
+        # Get Ollama base URL
+        app_settings = await get_app_settings()
+        ollama_base_url = app_settings.get("ollama_base_url", "http://localhost:11434")
+
+        # Get structured OCR result
+        result = await extract_image_structured_async(
+            file_path,
+            ocr_vision_model=config.ocr_vision_model,
+            ollama_base_url=ollama_base_url,
+        )
+
+        if not result:
+            logger.debug(f"Structured OCR failed for {file_path}, using fallback")
+            return []
+
+        # Handle raw text fallback (when structured parsing failed)
+        if result.raw_text and not result.extracted_text:
+            from ragtime.indexer.chunking import _chunk_with_recursive
+
+            docs = await asyncio.to_thread(
+                _chunk_with_recursive,
+                result.raw_text,
+                config.chunk_size,
+                config.chunk_overlap,
+                metadata,
+            )
+            return docs
+
+        # Get semantic segments and chunk them
+        segments = result.get_semantic_segments()
+        if not segments:
+            logger.debug(f"No semantic segments extracted from {file_path}")
+            return []
+
+        docs = chunk_semantic_segments(
+            segments,
+            config.chunk_size,
+            config.chunk_overlap,
+            metadata,
+        )
+
+        logger.debug(
+            f"Semantic chunking for {file_path.name}: "
+            f"{len(segments)} segments -> {len(docs)} chunks"
+        )
+        return docs
 
     async def _read_file_content_async(
         self,

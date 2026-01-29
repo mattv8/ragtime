@@ -72,6 +72,12 @@ def _chunk_with_chonkie_code(
     Uses Magika (Google's ML model) to detect language, then tree-sitter for
     AST-based splitting that respects semantic boundaries (functions, classes, etc.)
     """
+    # Skip chunking if content is already small enough
+    if len(text) <= chunk_size:
+        new_meta = metadata.copy()
+        new_meta["chunker"] = "no_chunk_small"
+        return [Document(page_content=text, metadata=new_meta)]
+
     from chonkie import CodeChunker
 
     # language="auto" uses Magika for detection - no extension mapping needed
@@ -98,6 +104,12 @@ def _chunk_with_recursive(
     Note: chunk_overlap is accepted for API compatibility but Chonkie's
     RecursiveChunker uses delimiter-based splitting rather than overlap.
     """
+    # Skip chunking if content is already small enough
+    if len(text) <= chunk_size:
+        new_meta = metadata.copy()
+        new_meta["chunker"] = "no_chunk_small"
+        return [Document(page_content=text, metadata=new_meta)]
+
     from chonkie import RecursiveChunker
 
     chunker = RecursiveChunker(
@@ -112,6 +124,63 @@ def _chunk_with_recursive(
         new_meta = metadata.copy()
         new_meta["chunker"] = "chonkie_recursive"
         docs.append(Document(page_content=c.text, metadata=new_meta))
+    return docs
+
+
+def chunk_semantic_segments(
+    segments: list[tuple[str, str]],
+    chunk_size: int,
+    chunk_overlap: int,
+    metadata: dict,
+) -> list[Document]:
+    """
+    Chunk content by semantic segments, keeping related content together.
+
+    Each segment is chunked independently. Segments smaller than chunk_size
+    stay as single chunks. Larger segments use RecursiveChunker but won't
+    cross segment boundaries.
+
+    This is ideal for vision OCR output where we want to keep:
+    - OCR text separate from classification
+    - Classification metadata (description + tags) always together
+
+    Args:
+        segments: List of (segment_type, content) tuples
+        chunk_size: Max characters per chunk
+        chunk_overlap: Character overlap between chunks (for large segments)
+        metadata: Base metadata to attach to each chunk
+
+    Returns:
+        List of Document objects with semantic chunking
+    """
+    docs = []
+    chunk_index = 0
+
+    for segment_type, content in segments:
+        if not content:
+            continue
+
+        # Create segment-specific metadata
+        seg_meta = metadata.copy()
+        seg_meta["segment_type"] = segment_type
+
+        # If segment fits in one chunk, don't split it
+        if len(content) <= chunk_size:
+            seg_meta["chunker"] = "semantic_single"
+            seg_meta["chunk_index"] = chunk_index
+            docs.append(Document(page_content=content, metadata=seg_meta))
+            chunk_index += 1
+        else:
+            # Large segment - use RecursiveChunker but only within this segment
+            segment_docs = _chunk_with_recursive(
+                content, chunk_size, chunk_overlap, seg_meta
+            )
+            for doc in segment_docs:
+                doc.metadata["chunk_index"] = chunk_index
+                doc.metadata["chunker"] = "semantic_recursive"
+                docs.append(doc)
+                chunk_index += 1
+
     return docs
 
 

@@ -168,6 +168,69 @@ OCR_ONLY_SCHEMA = {
 }
 
 
+def format_classification_metadata(
+    image_type: str | None = None,
+    subject: str | None = None,
+    description: str | None = None,
+    objects: list[str] | None = None,
+    colors: list[str] | None = None,
+    setting: str | None = None,
+    tags: list[str] | None = None,
+) -> list[str]:
+    """
+    Format image classification metadata as labeled lines.
+
+    Centralizes the formatting logic used across classify_image,
+    extract_text_with_vision, VisionOcrResult, etc.
+
+    Args:
+        image_type: Type of image (photo, screenshot, diagram, etc.)
+        subject: Main subject or focus
+        description: Brief factual description
+        objects: List of identifiable objects
+        colors: List of dominant colors
+        setting: Location, environment, or context
+        tags: List of search keywords
+
+    Returns:
+        List of formatted lines with [Label] prefixes
+    """
+    lines = []
+    if image_type:
+        lines.append(f"[ImageType] {image_type}")
+    if subject:
+        lines.append(f"[Subject] {subject}")
+    if description:
+        lines.append(f"[Description] {description}")
+    if objects:
+        lines.append(f"[Objects] {', '.join(objects)}")
+    if colors:
+        lines.append(f"[Colors] {', '.join(colors)}")
+    if setting:
+        lines.append(f"[Setting] {setting}")
+    if tags:
+        lines.append(f"[Tags] {', '.join(tags)}")
+    return lines
+
+
+def format_classification_from_dict(result: dict) -> list[str]:
+    """
+    Format classification metadata from a parsed JSON dict.
+
+    Convenience wrapper for format_classification_metadata that extracts
+    fields from a dict (e.g., LLM response).
+    """
+    return format_classification_metadata(
+        image_type=result.get("image_type"),
+        subject=result.get("subject"),
+        description=result.get("description"),
+        objects=result.get("objects"),
+        colors=result.get("colors"),
+        setting=result.get("setting"),
+        tags=result.get("tags"),
+    )
+
+
 @dataclass
 class VisionModelInfo:
     """Information about an Ollama vision model."""
@@ -450,23 +513,7 @@ async def classify_image(
                 return response_text
 
             # Format for retrieval indexing
-            lines = []
-            if result.get("image_type"):
-                lines.append(f"[ImageType] {result['image_type']}")
-            if result.get("subject"):
-                lines.append(f"[Subject] {result['subject']}")
-            if result.get("description"):
-                lines.append(f"[Description] {result['description']}")
-            if result.get("objects"):
-                lines.append(f"[Objects] {', '.join(result['objects'])}")
-            if result.get("colors"):
-                lines.append(f"[Colors] {', '.join(result['colors'])}")
-            if result.get("setting"):
-                lines.append(f"[Setting] {result['setting']}")
-            if result.get("tags"):
-                lines.append(f"[Tags] {', '.join(result['tags'])}")
-
-            return "\n".join(lines)
+            return "\n".join(format_classification_from_dict(result))
 
     except Exception as e:
         logger.warning(f"Image classification error with {model}: {e}")
@@ -602,29 +649,17 @@ async def extract_text_with_vision(
                 return response_text
 
             # Format extracted text
+            # Note: We strip the element type labels (Title, NarrativeText, etc.) for cleaner output
+            # The labels were useful for semantic chunking but add noise to retrieval results
             lines = []
             for item in result.get("extracted_text", []):
-                text_type = item.get("type", "text")
                 content = item.get("content", "")
                 if content:
-                    lines.append(f"[{text_type.title()}] {content}")
+                    lines.append(content)
 
-            # Append classification if present
+            # Append classification if present (keep labels for these as they're meaningful)
             if include_classification:
-                if result.get("image_type"):
-                    lines.append(f"[ImageType] {result['image_type']}")
-                if result.get("subject"):
-                    lines.append(f"[Subject] {result['subject']}")
-                if result.get("description"):
-                    lines.append(f"[Description] {result['description']}")
-                if result.get("objects"):
-                    lines.append(f"[Objects] {', '.join(result['objects'])}")
-                if result.get("colors"):
-                    lines.append(f"[Colors] {', '.join(result['colors'])}")
-                if result.get("setting"):
-                    lines.append(f"[Setting] {result['setting']}")
-                if result.get("tags"):
-                    lines.append(f"[Tags] {', '.join(result['tags'])}")
+                lines.extend(format_classification_from_dict(result))
 
             return "\n".join(lines)
 
@@ -636,6 +671,191 @@ async def extract_text_with_vision(
         raise
     except Exception as e:
         logger.warning(f"Vision OCR error with {model}: {e}")
+        raise
+
+
+@dataclass
+class VisionOcrResult:
+    """Structured result from vision OCR with semantic element information."""
+
+    # OCR extracted text elements with semantic types
+    extracted_text: list[dict]  # [{type: str, content: str}, ...]
+    # Image classification metadata
+    image_type: str | None = None
+    subject: str | None = None
+    description: str | None = None
+    objects: list[str] | None = None
+    colors: list[str] | None = None
+    setting: str | None = None
+    tags: list[str] | None = None
+    # Raw text fallback (when structured parsing fails)
+    raw_text: str | None = None
+
+    def format_for_indexing(self) -> str:
+        """Format result as plain text for indexing (no element type labels)."""
+        lines = []
+
+        # Add OCR text content (without element type labels)
+        for item in self.extracted_text:
+            content = item.get("content", "")
+            if content:
+                lines.append(content)
+
+        # Add classification metadata (with labels - these are meaningful)
+        lines.extend(self._format_classification())
+
+        return "\n".join(lines)
+
+    def _format_classification(self) -> list[str]:
+        """Format classification metadata using centralized helper."""
+        return format_classification_metadata(
+            image_type=self.image_type,
+            subject=self.subject,
+            description=self.description,
+            objects=self.objects,
+            colors=self.colors,
+            setting=self.setting,
+            tags=self.tags,
+        )
+
+    def get_semantic_segments(self) -> list[tuple[str, str]]:
+        """
+        Get content organized by semantic segments for intelligent chunking.
+
+        Returns list of (segment_type, content) tuples where segment_type is:
+        - 'ocr_text': All OCR extracted text combined
+        - 'classification': Image classification metadata combined
+
+        This groups related content together so chunking can respect semantic
+        boundaries rather than splitting mid-concept.
+        """
+        segments = []
+
+        # Combine all OCR text as one semantic unit
+        ocr_lines = []
+        for item in self.extracted_text:
+            content = item.get("content", "")
+            if content:
+                ocr_lines.append(content)
+        if ocr_lines:
+            segments.append(("ocr_text", "\n".join(ocr_lines)))
+
+        # Combine classification as one semantic unit (always together)
+        class_lines = self._format_classification()
+        if class_lines:
+            segments.append(("classification", "\n".join(class_lines)))
+
+        return segments
+
+
+async def extract_text_with_vision_structured(
+    image_content: bytes,
+    base_url: str,
+    model: str,
+    timeout: float = 60.0,
+    preprocess: bool = True,
+    max_dimension: int = DEFAULT_MAX_IMAGE_DIMENSION,
+    source_format: str | None = None,
+    include_classification: bool = True,
+) -> VisionOcrResult:
+    """
+    Extract text from image with structured output for semantic chunking.
+
+    Like extract_text_with_vision but returns VisionOcrResult with semantic
+    structure preserved. This enables intelligent chunking that respects
+    semantic boundaries (e.g., keeping classification metadata together).
+
+    Args:
+        image_content: Raw image bytes
+        base_url: Ollama server base URL
+        model: Vision model name
+        timeout: Request timeout in seconds
+        preprocess: Whether to resize/optimize the image
+        max_dimension: Max pixels on longest edge when preprocessing
+        source_format: Source file extension hint
+        include_classification: Include image classification
+
+    Returns:
+        VisionOcrResult with structured semantic data
+    """
+    # Preprocess image
+    if preprocess:
+        processed_content, format_used = preprocess_image(
+            image_content,
+            max_dimension=max_dimension,
+            source_format=source_format,
+        )
+        if format_used == "unsupported_raw":
+            return VisionOcrResult(
+                extracted_text=[],
+                raw_text="[UnsupportedFormat] Raw camera format could not be processed",
+            )
+    else:
+        processed_content = image_content
+
+    # Check structured output support
+    use_structured_output = False
+    try:
+        model_details = await get_model_details(model, base_url)
+        if model_details and supports_structured_output(model_details):
+            use_structured_output = True
+    except Exception:
+        pass
+
+    # Select prompt and schema
+    if include_classification:
+        prompt = OCR_WITH_CLASSIFICATION_PROMPT
+        schema = OCR_WITH_CLASSIFICATION_SCHEMA if use_structured_output else None
+    else:
+        prompt = OCR_ONLY_PROMPT
+        schema = OCR_ONLY_SCHEMA if use_structured_output else None
+
+    image_b64 = base64.b64encode(processed_content).decode("utf-8")
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            request_json = {
+                "model": model,
+                "prompt": prompt,
+                "images": [image_b64],
+                "stream": False,
+                "options": {"temperature": 0.1, "num_predict": 4096},
+            }
+            if schema is not None:
+                request_json["format"] = schema
+
+            response = await client.post(f"{base_url}/api/generate", json=request_json)
+            response.raise_for_status()
+            data = response.json()
+
+            response_text = data.get("response", "").strip()
+            thinking_text = data.get("thinking", "").strip()
+            if not response_text and thinking_text:
+                response_text = thinking_text
+
+            # Try to parse structured JSON
+            if schema is not None:
+                try:
+                    result = json.loads(response_text)
+                    return VisionOcrResult(
+                        extracted_text=result.get("extracted_text", []),
+                        image_type=result.get("image_type"),
+                        subject=result.get("subject"),
+                        description=result.get("description"),
+                        objects=result.get("objects"),
+                        colors=result.get("colors"),
+                        setting=result.get("setting"),
+                        tags=result.get("tags"),
+                    )
+                except json.JSONDecodeError:
+                    logger.warning("Failed to parse structured OCR, returning raw")
+                    return VisionOcrResult(extracted_text=[], raw_text=response_text)
+
+            # No schema - return raw text
+            return VisionOcrResult(extracted_text=[], raw_text=response_text)
+
+    except Exception as e:
+        logger.warning(f"Vision OCR error: {e}")
         raise
 
 
