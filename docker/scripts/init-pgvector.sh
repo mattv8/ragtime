@@ -88,6 +88,41 @@ PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAM
     );
 
     -- ==========================================================================
+    -- Ensure pgvector embedding columns exist
+    -- These columns are not in Prisma schema (unsupported type) so db push drops them
+    -- Read dimension from app_settings (set by first indexing operation)
+    -- ==========================================================================
+    DO \$\$
+    DECLARE
+        dim INTEGER;
+    BEGIN
+        -- Get configured dimension from app_settings, default to 768 (nomic-embed-text)
+        SELECT COALESCE(embedding_dimension, 768) INTO dim FROM app_settings LIMIT 1;
+        IF dim IS NULL THEN
+            dim := 768;
+        END IF;
+
+        -- Add embedding columns if missing
+        BEGIN
+            EXECUTE format('ALTER TABLE filesystem_embeddings ADD COLUMN embedding vector(%s)', dim);
+        EXCEPTION
+            WHEN duplicate_column THEN NULL;
+        END;
+
+        BEGIN
+            EXECUTE format('ALTER TABLE schema_embeddings ADD COLUMN embedding vector(%s)', dim);
+        EXCEPTION
+            WHEN duplicate_column THEN NULL;
+        END;
+
+        BEGIN
+            EXECUTE format('ALTER TABLE pdm_embeddings ADD COLUMN embedding vector(%s)', dim);
+        EXCEPTION
+            WHEN duplicate_column THEN NULL;
+        END;
+    END \$\$;
+
+    -- ==========================================================================
     -- Reload Configuration
     -- ==========================================================================
     SELECT pg_reload_conf();

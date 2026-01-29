@@ -69,9 +69,10 @@ fi
 cd /ragtime
 if [ "$DEBUG_MODE" = "true" ]; then
     python -m prisma generate > /dev/null 2>&1
-    # Dev mode: sync schema directly (faster iteration)
+    # Dev mode: use migrations (same as production) to preserve pgvector columns
+    # Note: We can't use "db push" because it drops vector columns not in Prisma schema
     if [ -n "$DATABASE_URL" ]; then
-        python -m prisma db push --skip-generate --accept-data-loss > /dev/null 2>&1 || true
+        python -m prisma migrate deploy > /dev/null 2>&1 || true
     fi
 else
     # Production mode: apply migrations safely
