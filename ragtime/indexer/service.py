@@ -21,36 +21,23 @@ from pathlib import Path
 from typing import Any, BinaryIO, Dict, List, Optional
 
 from ragtime.config import settings
-from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
+from ragtime.core.app_settings import (get_app_settings,
+                                       invalidate_settings_cache)
 from ragtime.core.embedding_models import get_embedding_models
-from ragtime.core.file_constants import (
-    BINARY_EXTENSIONS,
-    MINIFIED_PATTERNS,
-    PARSEABLE_DOCUMENT_EXTENSIONS,
-    UNPARSEABLE_BINARY_EXTENSIONS,
-)
+from ragtime.core.file_constants import (BINARY_EXTENSIONS, MINIFIED_PATTERNS,
+                                         PARSEABLE_DOCUMENT_EXTENSIONS,
+                                         UNPARSEABLE_BINARY_EXTENSIONS)
 from ragtime.core.logging import get_logger
 from ragtime.indexer.document_parser import OCR_EXTENSIONS
 from ragtime.indexer.llm_exclusions import get_smart_exclusion_suggestions
-from ragtime.indexer.memory_utils import (
-    estimate_index_memory,
-    estimate_memory_at_dimensions,
-    get_embedding_dimension,
-)
-from ragtime.indexer.models import (
-    AnalyzeIndexRequest,
-    AppSettings,
-    CommitHistoryInfo,
-    CommitHistorySample,
-    FileTypeStats,
-    IndexAnalysisResult,
-    IndexConfig,
-    IndexInfo,
-    IndexJob,
-    IndexStatus,
-    MemoryEstimate,
-    OcrMode,
-)
+from ragtime.indexer.memory_utils import (estimate_index_memory,
+                                          estimate_memory_at_dimensions,
+                                          get_embedding_dimension)
+from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
+                                    CommitHistoryInfo, CommitHistorySample,
+                                    FileTypeStats, IndexAnalysisResult,
+                                    IndexConfig, IndexInfo, IndexJob,
+                                    IndexStatus, MemoryEstimate, OcrMode)
 from ragtime.indexer.repository import repository
 from ragtime.tools.git_history import _is_shallow_repository
 
@@ -178,9 +165,8 @@ async def generate_index_description(
 
         if provider == "ollama":
             try:
-                from langchain_ollama import (
-                    ChatOllama,
-                )  # type: ignore[reportMissingImports]
+                from langchain_ollama import \
+                    ChatOllama  # type: ignore[reportMissingImports]
 
                 base_url = app_settings.get("ollama_base_url", "http://localhost:11434")
                 model = app_settings.get("llm_model", "llama3.2")
@@ -193,9 +179,8 @@ async def generate_index_description(
             api_key = app_settings.get("anthropic_api_key", "")
             if api_key:
                 try:
-                    from langchain_anthropic import (
-                        ChatAnthropic,
-                    )  # type: ignore[import-untyped]
+                    from langchain_anthropic import \
+                        ChatAnthropic  # type: ignore[import-untyped]
 
                     model = app_settings.get("llm_model", "claude-sonnet-4-20250514")
                     llm = ChatAnthropic(
@@ -629,9 +614,8 @@ class IndexerService:
         )
 
         if provider == "ollama":
-            from langchain_ollama import (
-                OllamaEmbeddings,
-            )  # type: ignore[reportMissingImports]
+            from langchain_ollama import \
+                OllamaEmbeddings  # type: ignore[reportMissingImports]
 
             return OllamaEmbeddings(
                 model=model,
@@ -830,7 +814,8 @@ class IndexerService:
                     # Build config_snapshot from data if available
                     config_snapshot = None
                     if config_snapshot_data:
-                        from ragtime.indexer.models import IndexConfigSnapshot, OcrMode
+                        from ragtime.indexer.models import (
+                            IndexConfigSnapshot, OcrMode)
 
                         config_snapshot = IndexConfigSnapshot(
                             file_patterns=config_snapshot_data.get(
@@ -2349,15 +2334,19 @@ class IndexerService:
 
         # BINARY_EXTENSIONS is imported from ragtime.core.file_constants
 
-        # Load documents
-        # Note: TextLoader.load() is synchronous and can block the event loop,
-        # especially with autodetect_encoding=True which uses chardet. We run
-        # it in a thread pool to avoid blocking other async operations.
+        # Load documents in parallel
+        # Use asyncio.Semaphore to limit concurrent file loads (prevents memory spikes
+        # and I/O saturation). Files are loaded concurrently while respecting limits.
         documents = []
         skipped_binary = 0
         ocr_mode = config.ocr_mode
         ocr_vision_model = config.ocr_vision_model
         ocr_enabled = ocr_mode != OcrMode.DISABLED
+
+        # Concurrency limit: balance between parallelism and resource usage
+        # Higher values improve throughput but increase memory and I/O pressure
+        max_concurrent_loads = min(32, os.cpu_count() or 8)
+        load_semaphore = asyncio.Semaphore(max_concurrent_loads)
 
         # For Ollama vision mode, we need async extraction and the base URL
         ollama_base_url = None
@@ -2365,39 +2354,47 @@ class IndexerService:
             settings = await get_app_settings()
             ollama_base_url = settings.ollama_base_url
 
-        async def load_file_async(file_path: Path) -> List:
-            """Async file loading with OCR support."""
+        async def load_file_async(file_path: Path) -> tuple[Path, List, str | None]:
+            """Async file loading with OCR support. Returns (path, docs, error)."""
             from langchain_core.documents import Document as LangChainDocument
 
-            from ragtime.indexer.document_parser import extract_text_from_file_async
+            from ragtime.indexer.document_parser import \
+                extract_text_from_file_async
 
-            ext_lower = file_path.suffix.lower()
+            async with load_semaphore:
+                try:
+                    ext_lower = file_path.suffix.lower()
 
-            # Use document parser for Office/PDF files and images (when OCR enabled)
-            if ext_lower in PARSEABLE_DOCUMENT_EXTENSIONS or (
-                ocr_enabled and ext_lower in OCR_EXTENSIONS
-            ):
-                content = await extract_text_from_file_async(
-                    file_path,
-                    ocr_mode=ocr_mode.value,
-                    ocr_vision_model=ocr_vision_model,
-                    ollama_base_url=ollama_base_url,
-                )
-                if content:
-                    return [LangChainDocument(page_content=content)]
-                return []
+                    # Use document parser for Office/PDF files and images (when OCR enabled)
+                    if ext_lower in PARSEABLE_DOCUMENT_EXTENSIONS or (
+                        ocr_enabled and ext_lower in OCR_EXTENSIONS
+                    ):
+                        content = await extract_text_from_file_async(
+                            file_path,
+                            ocr_mode=ocr_mode.value,
+                            ocr_vision_model=ocr_vision_model,
+                            ollama_base_url=ollama_base_url,
+                        )
+                        if content:
+                            return (file_path, [LangChainDocument(page_content=content)], None)
+                        return (file_path, [], None)
 
-            # Use TextLoader for plain text files (run in thread pool)
-            def load_text():
-                loader = TextLoader(str(file_path), autodetect_encoding=True)
-                return loader.load()
+                    # Use TextLoader for plain text files (run in thread pool)
+                    def load_text():
+                        loader = TextLoader(str(file_path), autodetect_encoding=True)
+                        return loader.load()
 
-            return await asyncio.to_thread(load_text)
+                    docs = await asyncio.to_thread(load_text)
+                    return (file_path, docs, None)
+                except Exception as e:
+                    return (file_path, [], str(e))
 
+        # Build list of files to load (filtering out unparseable binaries)
+        files_to_load = []
         for file_path in all_files:
-            # Check for cancellation
+            # Check for cancellation before processing
             if self._is_cancelled(job.id):
-                logger.info(f"Job {job.id} was cancelled during file loading")
+                logger.info(f"Job {job.id} was cancelled during file preparation")
                 raise asyncio.CancelledError("Job cancelled by user")
 
             ext_lower = file_path.suffix.lower()
@@ -2411,20 +2408,53 @@ class IndexerService:
                         "Ollama Vision" if ocr_mode == OcrMode.OLLAMA else "Tesseract"
                     )
                     logger.debug(f"Processing image {file_path.name} with {ocr_method}")
+                    files_to_load.append(file_path)
                 else:
                     skipped_binary += 1
                     job.processed_files += 1
+            else:
+                # Log document parsing (no longer a warning since we can parse them)
+                if ext_lower in PARSEABLE_DOCUMENT_EXTENSIONS:
+                    logger.debug(
+                        f"Parsing document file {file_path.name} with document parser"
+                    )
+                files_to_load.append(file_path)
+
+        # Load files in parallel batches
+        # Process in batches to allow periodic progress updates and cancellation checks
+        batch_size = max_concurrent_loads * 2  # 2x concurrency for good pipeline
+        total_to_load = len(files_to_load)
+        logger.info(
+            f"Loading {total_to_load} files with {max_concurrent_loads} concurrent workers"
+        )
+
+        for batch_start in range(0, total_to_load, batch_size):
+            # Check for cancellation at batch boundaries
+            if self._is_cancelled(job.id):
+                logger.info(f"Job {job.id} was cancelled during file loading")
+                raise asyncio.CancelledError("Job cancelled by user")
+
+            batch_end = min(batch_start + batch_size, total_to_load)
+            batch_files = files_to_load[batch_start:batch_end]
+
+            # Load all files in this batch concurrently
+            load_tasks = [load_file_async(fp) for fp in batch_files]
+            results = await asyncio.gather(*load_tasks, return_exceptions=True)
+
+            # Process results
+            for result in results:
+                if isinstance(result, BaseException):
+                    # Unexpected exception during gather
+                    logger.debug(f"File load exception: {result}")
+                    job.processed_files += 1
                     continue
 
-            # Log document parsing (no longer a warning since we can parse them)
-            if ext_lower in PARSEABLE_DOCUMENT_EXTENSIONS:
-                logger.debug(
-                    f"Parsing document file {file_path.name} with document parser"
-                )
-
-            try:
-                # Use async file loading with OCR support
-                docs = await load_file_async(file_path)
+                # result is now guaranteed to be tuple[Path, List, str | None]
+                file_path, docs, error = result
+                if error:
+                    logger.debug(f"Skipped {file_path.name}: {error}")
+                    job.processed_files += 1
+                    continue
 
                 # Add source metadata
                 rel_path_str = str(file_path.relative_to(source_dir))
@@ -2435,15 +2465,12 @@ class IndexerService:
                 documents.extend(docs)
                 job.processed_files += 1
 
-                # Update progress periodically and yield to event loop
-                if job.processed_files % 50 == 0:
-                    await repository.update_job(job)
-                    logger.info(f"Loaded {job.processed_files}/{job.total_files} files")
+            # Update progress after each batch
+            await repository.update_job(job)
+            logger.info(f"Loaded {job.processed_files}/{job.total_files} files")
 
-            except Exception as e:
-                # Debug level for common encoding issues, don't spam logs
-                logger.debug(f"Skipped {file_path.name}: {e}")
-                job.processed_files += 1
+            # Brief yield to event loop between batches
+            await asyncio.sleep(0)
 
         if skipped_binary > 0:
             logger.info(f"Skipped {skipped_binary} binary files")

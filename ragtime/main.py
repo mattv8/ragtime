@@ -11,9 +11,12 @@ Usage:
     python -m ragtime.main
 """
 
+import asyncio
+import os
 import secrets
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import Optional
 from urllib.parse import urlencode
@@ -156,10 +159,29 @@ def _validate_ssl_certificates() -> None:
         )
 
 
+# Global ThreadPoolExecutor for I/O-bound operations
+# Used by asyncio.to_thread() for file operations, encoding detection, etc.
+_io_thread_pool: ThreadPoolExecutor | None = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Async lifespan handler for startup/shutdown."""
+    global _io_thread_pool
+
     logger.info(f"Starting RAG API v{__version__}")
+
+    # Configure a shared ThreadPoolExecutor for I/O-bound operations
+    # This improves thread reuse and allows concurrent file operations
+    cpu_count = os.cpu_count() or 4
+    max_io_workers = min(64, cpu_count * 4)  # 4 threads per core, max 64
+    _io_thread_pool = ThreadPoolExecutor(
+        max_workers=max_io_workers, thread_name_prefix="ragtime-io-"
+    )
+    # Set as the default executor for asyncio.to_thread() calls
+    loop = asyncio.get_event_loop()
+    loop.set_default_executor(_io_thread_pool)
+    logger.info(f"Initialized I/O thread pool with {max_io_workers} workers")
 
     # Security warnings for plaintext credential transmission
     _log_security_warnings()
@@ -224,6 +246,11 @@ async def lifespan(app: FastAPI):
     from ragtime.indexer.chunking import shutdown_process_pool
 
     shutdown_process_pool()
+
+    # Shutdown I/O thread pool
+    if _io_thread_pool is not None:
+        _io_thread_pool.shutdown(wait=False)
+        logger.info("I/O thread pool shut down")
 
     # Stop PDM indexer tasks
     from ragtime.indexer.pdm_service import pdm_indexer
