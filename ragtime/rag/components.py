@@ -1187,6 +1187,12 @@ class RAGComponents:
                 tools.extend(knowledge_tools)
                 logger.info(f"Added {len(knowledge_tools)} per-index search tools")
 
+            # Add file access tools (read_file_from_index, list_files_in_index)
+            file_access_tools = self._create_file_access_tools()
+            if file_access_tools:
+                tools.extend(file_access_tools)
+                logger.info(f"Added {len(file_access_tools)} file access tools")
+
         # Add git history search tool(s) if we have git repos
         git_history_tools = await self._create_git_history_tools()
         if git_history_tools:
@@ -1290,6 +1296,8 @@ class RAGComponents:
         # Add knowledge search tool if we have FAISS retrievers (unless skipped)
         if self.retrievers and not skip_knowledge_tool:
             tools.append(self._create_knowledge_search_tool())
+            # Also add file access tools
+            tools.extend(self._create_file_access_tools())
 
         for config in self._tool_configs or []:
             tool_type = config.get("tool_type")
@@ -1569,6 +1577,205 @@ class RAGComponents:
             description=description,
             args_schema=KnowledgeSearchInput,
         )
+
+    def _create_file_access_tools(self) -> list:
+        """Create tools for direct file access from indexed repositories.
+
+        Provides two tools:
+        - read_file_from_index: Read all chunks of a specific file by path
+        - list_files_in_index: List all indexed files in a repository
+
+        These complement the search tools by allowing direct file access
+        when the AI knows which file it needs.
+        """
+        index_names = list(self.retrievers.keys())
+        if not index_names:
+            return []
+
+        tools = []
+
+        # Tool 1: Read file by path
+        class ReadFileInput(BaseModel):
+            file_path: str = Field(
+                description="Relative path to the file (e.g., 'src/utils/helper.py' or 'ragtime/rag/components.py')"
+            )
+            index_name: str = Field(
+                default="",
+                description=f"Index to read from. Available: {', '.join(index_names)}. Leave empty to search all.",
+            )
+
+        def read_file_from_index(file_path: str, index_name: str = "") -> str:
+            """Read all chunks of a file from an indexed repository by its path."""
+            results = []
+            errors = []
+            target_indexes = [index_name] if index_name else index_names
+
+            for idx_name in target_indexes:
+                retriever = self.retrievers.get(idx_name)
+                faiss_db = self.faiss_dbs.get(idx_name)
+
+                if not faiss_db:
+                    continue
+
+                try:
+                    # Get all documents from the FAISS index
+                    docstore = faiss_db.docstore
+                    index_to_docstore_id = faiss_db.index_to_docstore_id
+
+                    # Find all chunks matching the file path
+                    matching_chunks = []
+                    for idx, doc_id in index_to_docstore_id.items():
+                        doc = docstore.search(doc_id)
+                        if doc and hasattr(doc, "metadata"):
+                            source = doc.metadata.get("source", "")
+                            # Match exact path or path ending
+                            if source == file_path or source.endswith(f"/{file_path}"):
+                                chunk_index = doc.metadata.get("chunk_index", idx)
+                                matching_chunks.append((chunk_index, doc.page_content))
+
+                    if matching_chunks:
+                        # Sort by chunk_index
+                        matching_chunks.sort(key=lambda x: x[0] if x[0] != -1 else -999)
+
+                        # Build result
+                        result_parts = [
+                            f"[{idx_name}] {file_path} ({len(matching_chunks)} chunks):"
+                        ]
+                        for chunk_idx, content in matching_chunks:
+                            if chunk_idx == -1:
+                                result_parts.append(
+                                    f"\n--- File Summary ---\n{content}"
+                                )
+                            else:
+                                result_parts.append(
+                                    f"\n--- Chunk {chunk_idx} ---\n{content}"
+                                )
+
+                        results.append("\n".join(result_parts))
+
+                except Exception as e:
+                    logger.warning(f"Error reading file from {idx_name}: {e}")
+                    errors.append(f"[{idx_name}] Error: {str(e)}")
+
+            if results:
+                return "\n\n".join(results)
+
+            # File not found - suggest similar files
+            if errors:
+                return f"File '{file_path}' not found.\nErrors: " + "; ".join(errors)
+            return f"File '{file_path}' not found in indexed repositories. Use list_files_in_index to see available files, or search_knowledge to find relevant files."
+
+        read_file_tool = StructuredTool.from_function(
+            func=read_file_from_index,
+            name="read_file_from_index",
+            description=(
+                "Read the complete content of a specific file from an indexed repository by its path. "
+                "Use this when you know the exact file path and need to see all of its content. "
+                "Returns all chunks of the file in order. "
+                f"Available indexes: {', '.join(index_names)}."
+            ),
+            args_schema=ReadFileInput,
+        )
+        tools.append(read_file_tool)
+
+        # Tool 2: List files in index
+        class ListFilesInput(BaseModel):
+            index_name: str = Field(
+                default="",
+                description=f"Index to list files from. Available: {', '.join(index_names)}. Leave empty to list all.",
+            )
+            pattern: str = Field(
+                default="",
+                description="Optional filter pattern (e.g., '*.py', 'src/', 'components'). Matches against file path.",
+            )
+            limit: int = Field(
+                default=50,
+                ge=1,
+                le=500,
+                description="Maximum number of files to return (default: 50)",
+            )
+
+        def list_files_in_index(
+            index_name: str = "", pattern: str = "", limit: int = 50
+        ) -> str:
+            """List all indexed files in a repository."""
+            import fnmatch
+
+            results = []
+            target_indexes = [index_name] if index_name else index_names
+
+            for idx_name in target_indexes:
+                faiss_db = self.faiss_dbs.get(idx_name)
+                if not faiss_db:
+                    continue
+
+                try:
+                    docstore = faiss_db.docstore
+                    index_to_docstore_id = faiss_db.index_to_docstore_id
+
+                    # Collect unique file paths
+                    file_paths: set[str] = set()
+                    for doc_id in index_to_docstore_id.values():
+                        doc = docstore.search(doc_id)
+                        if doc and hasattr(doc, "metadata"):
+                            source = doc.metadata.get("source", "")
+                            if source and not source.startswith("git:"):
+                                file_paths.add(source)
+
+                    # Apply pattern filter
+                    if pattern:
+                        pattern_lower = pattern.lower()
+                        filtered = []
+                        for fp in file_paths:
+                            fp_lower = fp.lower()
+                            # Support glob patterns and simple substring match
+                            if "*" in pattern or "?" in pattern:
+                                if fnmatch.fnmatch(fp_lower, pattern_lower):
+                                    filtered.append(fp)
+                            elif pattern_lower in fp_lower:
+                                filtered.append(fp)
+                        file_paths = set(filtered)
+
+                    # Sort and limit
+                    sorted_files = sorted(file_paths)[:limit]
+
+                    if sorted_files:
+                        results.append(
+                            f"[{idx_name}] {len(sorted_files)} files"
+                            + (
+                                f" (of {len(file_paths)} matching)"
+                                if len(file_paths) > limit
+                                else ""
+                            )
+                            + ":\n"
+                            + "\n".join(f"  {fp}" for fp in sorted_files)
+                        )
+                    else:
+                        results.append(
+                            f"[{idx_name}] No files found matching '{pattern}'"
+                            if pattern
+                            else f"[{idx_name}] No files indexed"
+                        )
+
+                except Exception as e:
+                    logger.warning(f"Error listing files from {idx_name}: {e}")
+                    results.append(f"[{idx_name}] Error: {str(e)}")
+
+            return "\n\n".join(results) if results else "No indexes available."
+
+        list_files_tool = StructuredTool.from_function(
+            func=list_files_in_index,
+            name="list_files_in_index",
+            description=(
+                "List all files in an indexed repository. Use this to discover what files are available, "
+                "or to find files matching a pattern (e.g., '*.py', 'components/', 'test'). "
+                f"Available indexes: {', '.join(index_names)}."
+            ),
+            args_schema=ListFilesInput,
+        )
+        tools.append(list_files_tool)
+
+        return tools
 
     async def _create_git_history_tools(self) -> List[Any]:
         """Create git history search tool(s) for git-based indexes.
