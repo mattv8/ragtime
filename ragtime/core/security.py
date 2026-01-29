@@ -634,6 +634,10 @@ def validate_ssh_command(
     if not command or not command.strip():
         return False, "Empty command"
 
+    # If allowed_directory is explicitly root, treat as no restriction
+    if allowed_directory and posixpath.normpath(allowed_directory) == "/":
+        allowed_directory = None
+
     # Directory constraint check
     if allowed_directory:
         # 0. Validate allowed_directory is an absolute path (no ~ or relative paths)
@@ -688,6 +692,8 @@ def validate_ssh_command(
 
         # Base allowed path (normalized)
         base_allowed = posixpath.normpath(allowed_directory)
+        # Prefix for directory containment check (handle root '/' correctly)
+        allowed_prefix = base_allowed if base_allowed == "/" else base_allowed + "/"
 
         # Safe system prefixes that are always allowed (executables, devices, temp)
         # This allows running tools (/usr/bin/git) and using safe resources (/dev/null)
@@ -739,7 +745,7 @@ def validate_ssh_command(
 
             # If not a safe system path, it must be within allowed_directory
             if (
-                not normalized_path.startswith(base_allowed + "/")
+                not normalized_path.startswith(allowed_prefix)
                 and normalized_path != base_allowed
             ):
                 return (
@@ -764,7 +770,7 @@ def validate_ssh_command(
 
                 # Write targets must be within allowed_directory
                 if (
-                    not normalized_target.startswith(base_allowed + "/")
+                    not normalized_target.startswith(allowed_prefix)
                     and normalized_target != base_allowed
                 ):
                     return (
