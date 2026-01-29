@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { HardDrive, MemoryStick, GitCommitHorizontal, AlertTriangle } from 'lucide-react';
 import { api } from '@/api';
 import { formatSizeMB } from '@/utils';
-import type { IndexInfo, RepoVisibilityResponse, IndexLoadingDetail } from '@/types';
+import type { IndexInfo, IndexJob, RepoVisibilityResponse, IndexLoadingDetail } from '@/types';
 import { GitIndexWizard } from './GitIndexWizard';
 import { UploadForm } from './UploadForm';
 import { IndexCard } from './IndexCard';
@@ -11,6 +11,7 @@ import { AnimatedCreateButton } from './AnimatedCreateButton';
 
 interface IndexesListProps {
   indexes: IndexInfo[];
+  jobs?: IndexJob[];
   loading: boolean;
   error: string | null;
   onDelete: () => void;
@@ -105,7 +106,7 @@ function EditWeightModal({ index, onSave, onClose, saving }: WeightModalProps) {
   );
 }
 
-export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDescriptionUpdate, onJobCreated, aggregateSearch = true, embeddingDimensions, onNavigateToSettings }: IndexesListProps) {
+export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onToggle, onDescriptionUpdate, onJobCreated, aggregateSearch = true, embeddingDimensions, onNavigateToSettings }: IndexesListProps) {
   const [deleting, setDeleting] = useState<string | null>(null);
   const [_toggling, setToggling] = useState<string | null>(null);
   // editingIndex removed in favor of inline editing
@@ -544,6 +545,17 @@ export function IndexesList({ indexes, loading, error, onDelete, onToggle, onDes
                     {`Updated ${new Date(idx.last_modified).toLocaleString()}`}
                   </span>
                 )}
+                {(() => {
+                  const activeJob = jobs.find(j => j.name === idx.name && (j.status === 'pending' || j.status === 'processing'));
+                  if (activeJob) {
+                    return (
+                      <span className="meta-pill indexing" title={activeJob.status === 'pending' ? 'Pending...' : `Processing: ${activeJob.progress_percent.toFixed(0)}%`}>
+                        Indexing... {activeJob.progress_percent > 0 ? `${Math.round(activeJob.progress_percent)}%` : ''}
+                      </span>
+                    );
+                  }
+                  return null;
+                })()}
                 {!aggregateSearch && (
                   <span
                     className={`meta-pill weight ${idx.search_weight !== 1.0 ? 'weight-modified' : ''}`}

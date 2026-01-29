@@ -672,6 +672,19 @@ textarea {
   cursor: help;
 }
 
+@keyframes pulse-opacity {
+  0% { opacity: 0.6; }
+  50% { opacity: 1; }
+  100% { opacity: 0.6; }
+}
+
+.meta-pill.indexing {
+  background: var(--color-info-light);
+  border-color: var(--color-info-border);
+  color: var(--color-info);
+  animation: pulse-opacity 2s infinite ease-in-out;
+}
+
 /* =============================================================================
    MODALS
    ============================================================================= */

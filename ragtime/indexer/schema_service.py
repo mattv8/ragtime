@@ -1518,9 +1518,8 @@ class SchemaIndexerService:
                 except Exception as e:
                     logger.warning(f"Error processing table {table.full_name}: {e}")
 
-                # Update progress periodically
-                if job.processed_tables % 10 == 0:
-                    await self._update_job(job)
+                # Update progress for every table to keep UI responsive
+                await self._update_job(job)
 
             # Update schema hash in connection config
             await self._update_schema_hash(job.tool_config_id, schema_hash)

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '@/api';
-import type { ToolConfig, HeartbeatStatus, SchemaIndexStats } from '@/types';
+import type { ToolConfig, HeartbeatStatus, SchemaIndexStats, SchemaIndexJob } from '@/types';
 import { TOOL_TYPE_INFO } from '@/types';
 import { ToolWizard } from './ToolWizard';
 import { Icon, getToolIconType } from './Icon';
@@ -25,11 +25,12 @@ interface ToolCardProps {
   pdmIndexing?: boolean;
   onSchemaReindex?: (toolId: string, fullReindex: boolean) => void;
   schemaIndexing?: boolean;
+  activeSchemaJob?: SchemaIndexJob | null;
   schemaStats?: SchemaIndexStats | null;
   onInlineUpdate?: (toolId: string, updates: { name?: string; description?: string }) => Promise<void>;
 }
 
-function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing, onPdmReindex, pdmIndexing, onSchemaReindex, schemaIndexing, schemaStats, onInlineUpdate }: ToolCardProps) {
+function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing, onPdmReindex, pdmIndexing, onSchemaReindex, schemaIndexing, activeSchemaJob, schemaStats, onInlineUpdate }: ToolCardProps) {
   const typeInfo = TOOL_TYPE_INFO[tool.tool_type];
 
   // Inline editing state
@@ -301,8 +302,16 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
         </div>
       )}
 
-      {((tool.allow_write) || ((tool.tool_type === 'ssh_shell' || tool.tool_type === 'odoo_shell') && (tool.connection_config as any)?.working_directory)) && (
+      {((tool.allow_write) || ((tool.tool_type === 'ssh_shell' || tool.tool_type === 'odoo_shell') && (tool.connection_config as any)?.working_directory) || activeSchemaJob) && (
         <div className="tool-card-constraints">
+          {activeSchemaJob && (
+            <span
+              className="meta-pill indexing"
+              title={activeSchemaJob.status === 'pending' ? 'Pending...' : `Indexing: ${activeSchemaJob.progress_percent.toFixed(0)}%`}
+            >
+              Indexing... {activeSchemaJob.progress_percent > 0 ? `${Math.round(activeSchemaJob.progress_percent)}%` : ''}
+            </span>
+          )}
           {tool.allow_write && (
             <span className="write-enabled-pill">
               <Icon name="alert-triangle" size={12} />
@@ -394,9 +403,10 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
 
 interface ToolsPanelProps {
   onSchemaJobTriggered?: () => void;
+  schemaJobs?: SchemaIndexJob[];
 }
 
-export function ToolsPanel({ onSchemaJobTriggered }: ToolsPanelProps) {
+export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [] }: ToolsPanelProps) {
   const [tools, setTools] = useState<ToolConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -661,6 +671,7 @@ export function ToolsPanel({ onSchemaJobTriggered }: ToolsPanelProps) {
                 pdmIndexing={pdmIndexingToolId === tool.id}
                 onSchemaReindex={handleSchemaReindex}
                 schemaIndexing={schemaIndexingToolId === tool.id}
+                activeSchemaJob={schemaJobs.find(j => j.tool_config_id === tool.id && (j.status === 'pending' || j.status === 'indexing'))}
                 schemaStats={schemaStats[tool.id] || null}
                 onInlineUpdate={handleInlineUpdate}
               />

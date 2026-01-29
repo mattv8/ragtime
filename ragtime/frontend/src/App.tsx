@@ -549,12 +549,13 @@ export function App() {
           authStatus={authStatus}
         />
       ) : activeView === 'tools' ? (
-        <ToolsPanel onSchemaJobTriggered={loadSchemaJobs} />
+        <ToolsPanel onSchemaJobTriggered={loadSchemaJobs} schemaJobs={schemaJobs} />
       ) : (
         <>
           {/* Document Indexes (FAISS) */}
           <IndexesList
             indexes={indexes}
+            jobs={jobs}
             loading={indexesLoading}
             error={indexesError}
             onDelete={loadIndexes}

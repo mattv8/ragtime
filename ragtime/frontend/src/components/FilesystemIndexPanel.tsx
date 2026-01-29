@@ -91,8 +91,10 @@ function FilesystemIndexCard({
           {`Updated ${new Date(stats.last_indexed).toLocaleString()}`}
         </span>
       )}
-      {isActive && (
-        <span className="meta-pill active">Indexing...</span>
+      {isActive && activeJob && (
+         <span className="meta-pill indexing" title={activeJob.status === 'pending' ? 'Pending...' : `Indexing: ${activeJob.progress_percent.toFixed(0)}%`}>
+           Indexing... {activeJob.progress_percent > 0 ? `${Math.round(activeJob.progress_percent)}%` : ''}
+         </span>
       )}
       {!tool.enabled && <span className="meta-pill disabled">Excluded from RAG</span>}
     </>
