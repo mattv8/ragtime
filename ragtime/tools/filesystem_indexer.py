@@ -7,29 +7,37 @@ is handled by the filesystem indexer service; this tool only performs searches.
 """
 
 from typing import Optional
-from pydantic import BaseModel, Field
-from langchain_core.tools import StructuredTool
 
-from ragtime.core.logging import get_logger
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel, Field
+
 from ragtime.core.database import get_db
+from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 class FilesystemSearchInput(BaseModel):
     """Input schema for filesystem search tool."""
+
     query: str = Field(
         description="Natural language search query to find relevant documents/files"
     )
     index_name: Optional[str] = Field(
         default=None,
-        description="Optional: specific index name to search (searches all if not specified)"
+        description="Optional: specific index name to search (searches all if not specified)",
     )
     max_results: int = Field(
         default=10,
         ge=1,
         le=50,
-        description="Maximum number of results to return"
+        description="Maximum number of results to return (1-50, default 10)",
+    )
+    max_chars_per_result: int = Field(
+        default=500,
+        ge=0,
+        le=10000,
+        description="Maximum characters per result (default: 500). Use 0 for full content when you need complete file content. Increase when results are truncated.",
     )
 
 
@@ -37,12 +45,19 @@ async def search_filesystem_index(
     query: str,
     index_name: Optional[str] = None,
     max_results: int = 10,
+    max_chars_per_result: int = 500,
 ) -> str:
     """
     Search the filesystem index using semantic similarity.
 
     This function queries the pgvector embeddings table to find relevant
     document chunks based on the query.
+
+    Args:
+        query: Natural language search query
+        index_name: Optional index to search (searches all if not specified)
+        max_results: Maximum number of results to return (1-50)
+        max_chars_per_result: Maximum characters per result (0 for full content)
     """
     from ragtime.core.app_settings import get_app_settings
 
@@ -75,7 +90,12 @@ async def search_filesystem_index(
             output_parts.append(f"File: {result['file_path']}")
             output_parts.append(f"Index: {result['index_name']}")
             output_parts.append(f"Similarity: {result['similarity']:.3f}")
-            output_parts.append(f"Content:\n{result['content']}\n")
+
+            # Apply content truncation
+            content = result["content"]
+            if max_chars_per_result > 0 and len(content) > max_chars_per_result:
+                content = content[:max_chars_per_result] + "... (truncated)"
+            output_parts.append(f"Content:\n{content}\n")
 
         return "\n".join(output_parts)
 
@@ -93,10 +113,12 @@ async def _get_query_embedding(query: str, app_settings: dict) -> Optional[list]
 
         if provider == "ollama":
             from langchain_ollama import OllamaEmbeddings
+
             base_url = app_settings.get("ollama_base_url", "http://localhost:11434")
             embeddings = OllamaEmbeddings(model=model, base_url=base_url)
         elif provider == "openai":
             from langchain_openai import OpenAIEmbeddings
+
             api_key = app_settings.get("openai_api_key", "")
             if not api_key:
                 logger.error("OpenAI API key not configured for embeddings")
@@ -193,11 +215,14 @@ def create_filesystem_search_tool(
         index_name: Optional index name to restrict searches to
     """
 
-    async def _search(query: str, max_results: int = 10) -> str:
+    async def _search(
+        query: str, max_results: int = 10, max_chars_per_result: int = 500
+    ) -> str:
         return await search_filesystem_index(
             query=query,
             index_name=index_name,
             max_results=max_results,
+            max_chars_per_result=max_chars_per_result,
         )
 
     # Create a specific input schema for this instance
@@ -209,7 +234,13 @@ def create_filesystem_search_tool(
             default=10,
             ge=1,
             le=50,
-            description="Maximum number of results to return"
+            description="Maximum number of results to return (1-50, default 10)",
+        )
+        max_chars_per_result: int = Field(
+            default=500,
+            ge=0,
+            le=10000,
+            description="Maximum characters per result (default: 500). Use 0 for full content when you need complete file content. Increase when results are truncated.",
         )
 
     return StructuredTool.from_function(

@@ -24,13 +24,21 @@ from pydantic import BaseModel, Field
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.logging import get_logger
-from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
-                                   validate_odoo_code, validate_sql_query,
-                                   validate_ssh_command)
+from ragtime.core.security import (
+    _SSH_ENV_VAR_RE,
+    sanitize_output,
+    validate_odoo_code,
+    validate_sql_query,
+    validate_ssh_command,
+)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (SSHConfig, build_ssh_tunnel_config,
-                              execute_ssh_command, expand_env_vars_via_ssh,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.ssh import (
+    SSHConfig,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    expand_env_vars_via_ssh,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
@@ -39,9 +47,11 @@ from ragtime.tools import get_all_tools, get_enabled_tools
 from ragtime.tools.chart import create_chart_tool
 from ragtime.tools.datatable import create_datatable_tool
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (_is_shallow_repository,
-                                       create_aggregate_git_history_tool,
-                                       create_per_index_git_history_tool)
+from ragtime.tools.git_history import (
+    _is_shallow_repository,
+    create_aggregate_git_history_tool,
+    create_per_index_git_history_tool,
+)
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
@@ -2369,16 +2379,28 @@ except Exception as e:
                 default=10,
                 ge=1,
                 le=50,
-                description="Maximum number of results to return",
+                description="Maximum number of results to return (1-50, default 10)",
+            )
+            max_chars_per_result: int = Field(
+                default=500,
+                ge=0,
+                le=10000,
+                description="Maximum characters per result (default: 500). Use 0 for full content when you need complete file content. Increase when results are truncated.",
             )
 
-        async def search_filesystem(query: str, max_results: int = 10, **_: Any) -> str:
+        async def search_filesystem(
+            query: str,
+            max_results: int = 10,
+            max_chars_per_result: int = 500,
+            **_: Any,
+        ) -> str:
             """Search the filesystem index."""
             logger.info(f"[{tool_name}] Filesystem search: {query[:100]}...")
             return await search_filesystem_index(
                 query=query,
                 index_name=index_name,
                 max_results=max_results,
+                max_chars_per_result=max_chars_per_result,
             )
 
         tool_description = (

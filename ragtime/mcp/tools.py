@@ -80,6 +80,13 @@ TOOL_INPUT_SCHEMAS: dict[str, dict] = {
                 "minimum": 1,
                 "maximum": 50,
             },
+            "max_chars_per_result": {
+                "type": "integer",
+                "description": "Maximum characters per result (default: 500). Use 0 for full content when you need complete file content. Increase when results are truncated.",
+                "default": 500,
+                "minimum": 0,
+                "maximum": 10000,
+            },
         },
         "required": ["query"],
     },
