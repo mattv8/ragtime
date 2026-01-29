@@ -59,26 +59,312 @@ def shutdown_process_pool():
 
 
 # =============================================================================
+# CODE CONTEXT EXTRACTION
+# =============================================================================
+
+
+def _extract_imports(text: str, file_ext: str) -> list[str]:
+    """
+    Extract import statements from source code.
+
+    Extracts imports to include in chunk context, helping the LLM understand
+    what external dependencies and internal modules are used.
+
+    Args:
+        text: Source code content
+        file_ext: File extension (e.g., '.py', '.ts', '.js')
+
+    Returns:
+        List of import statement lines
+    """
+    imports = []
+    lines = text.split("\n")
+
+    ext_lower = file_ext.lower() if file_ext else ""
+
+    # Python imports
+    if ext_lower in (".py", ".pyi", ".pyx"):
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith(("import ", "from ")):
+                # Stop at first non-import (after imports block)
+                imports.append(stripped)
+            elif imports and stripped and not stripped.startswith("#"):
+                # Non-empty, non-comment line after imports - stop
+                break
+
+    # JavaScript/TypeScript imports
+    elif ext_lower in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"):
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith(("import ", "export ")) and " from " in stripped:
+                imports.append(stripped)
+            elif stripped.startswith("const ") and " = require(" in stripped:
+                imports.append(stripped)
+            elif imports and stripped and not stripped.startswith("//"):
+                # Non-empty, non-comment line after imports - stop
+                break
+
+    # Go imports
+    elif ext_lower == ".go":
+        in_import_block = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("import ("):
+                in_import_block = True
+                continue
+            elif in_import_block:
+                if stripped == ")":
+                    in_import_block = False
+                    break
+                elif stripped:
+                    imports.append(f"import {stripped}")
+            elif stripped.startswith("import "):
+                imports.append(stripped)
+
+    # Rust imports
+    elif ext_lower == ".rs":
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("use "):
+                imports.append(stripped)
+            elif imports and stripped and not stripped.startswith("//"):
+                break
+
+    # Java/Kotlin imports
+    elif ext_lower in (".java", ".kt", ".kts"):
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("import "):
+                imports.append(stripped)
+            elif stripped.startswith("package "):
+                imports.insert(0, stripped)  # Package first
+            elif imports and stripped and not stripped.startswith("//"):
+                break
+
+    return imports
+
+
+def _extract_definitions(text: str, file_ext: str) -> list[str]:
+    """
+    Extract top-level definitions (classes, functions, exports) from source code.
+
+    Used to create a file-level summary chunk for hierarchical retrieval.
+
+    Args:
+        text: Source code content
+        file_ext: File extension (e.g., '.py', '.ts', '.js')
+
+    Returns:
+        List of definition signatures (just the signature line, not body)
+    """
+    definitions = []
+    lines = text.split("\n")
+    ext_lower = file_ext.lower() if file_ext else ""
+
+    # Python definitions
+    if ext_lower in (".py", ".pyi", ".pyx"):
+        for line in lines:
+            stripped = line.strip()
+            # Top-level only (no leading whitespace)
+            if line and not line[0].isspace():
+                if stripped.startswith(("def ", "async def ")):
+                    # Extract just the signature
+                    sig = stripped.split(":")[0] + ":"
+                    definitions.append(sig)
+                elif stripped.startswith("class "):
+                    sig = stripped.split(":")[0] + ":"
+                    definitions.append(sig)
+
+    # JavaScript/TypeScript definitions
+    elif ext_lower in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"):
+        for line in lines:
+            stripped = line.strip()
+            # Look for export, function, class, const declarations
+            if stripped.startswith(
+                ("export ", "function ", "class ", "const ", "let ", "var ")
+            ):
+                # Extract first line of definition
+                sig = stripped.rstrip("{").rstrip()
+                if len(sig) > 100:
+                    sig = sig[:97] + "..."
+                definitions.append(sig)
+
+    # Go definitions
+    elif ext_lower == ".go":
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith(("func ", "type ")):
+                sig = stripped.rstrip("{").rstrip()
+                if len(sig) > 100:
+                    sig = sig[:97] + "..."
+                definitions.append(sig)
+
+    # Rust definitions
+    elif ext_lower == ".rs":
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith(
+                (
+                    "fn ",
+                    "pub fn ",
+                    "struct ",
+                    "pub struct ",
+                    "enum ",
+                    "pub enum ",
+                    "impl ",
+                    "trait ",
+                    "pub trait ",
+                )
+            ):
+                sig = stripped.rstrip("{").rstrip()
+                if len(sig) > 100:
+                    sig = sig[:97] + "..."
+                definitions.append(sig)
+
+    # Java/Kotlin definitions
+    elif ext_lower in (".java", ".kt", ".kts"):
+        for line in lines:
+            stripped = line.strip()
+            if any(
+                stripped.startswith(kw)
+                for kw in (
+                    "public ",
+                    "private ",
+                    "protected ",
+                    "class ",
+                    "interface ",
+                    "fun ",
+                    "data class ",
+                )
+            ):
+                sig = stripped.rstrip("{").rstrip()
+                if len(sig) > 100:
+                    sig = sig[:97] + "..."
+                definitions.append(sig)
+
+    return definitions
+
+
+def _create_file_summary(
+    file_path: str,
+    imports: list[str],
+    definitions: list[str],
+    total_chunks: int,
+) -> str:
+    """
+    Create a file-level summary chunk for hierarchical retrieval.
+
+    This summary chunk provides an overview of the file contents, helping
+    retrieval find the right file before drilling down into specific chunks.
+
+    Args:
+        file_path: Relative path to the source file
+        imports: List of import statements
+        definitions: List of top-level definitions
+        total_chunks: Total number of chunks for this file
+
+    Returns:
+        Summary content string
+    """
+    lines = [
+        f"# File Summary: {file_path}",
+        f"# This file has {total_chunks} code chunks",
+        "",
+    ]
+
+    if imports:
+        lines.append("## Dependencies:")
+        for imp in imports[:15]:
+            lines.append(f"- {imp}")
+        if len(imports) > 15:
+            lines.append(f"- ... and {len(imports) - 15} more imports")
+        lines.append("")
+
+    if definitions:
+        lines.append("## Definitions:")
+        for defn in definitions[:25]:
+            lines.append(f"- {defn}")
+        if len(definitions) > 25:
+            lines.append(f"- ... and {len(definitions) - 25} more definitions")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _create_chunk_header(
+    file_path: str,
+    imports: list[str] | None = None,
+    chunk_index: int = 0,
+    total_chunks: int = 1,
+) -> str:
+    """
+    Create a header for code chunks with file context.
+
+    This header helps the LLM understand the context of the code chunk,
+    including which file it's from and what dependencies are used.
+
+    Args:
+        file_path: Relative path to the source file
+        imports: List of import statements (for first chunk only)
+        chunk_index: Index of this chunk (0-based)
+        total_chunks: Total number of chunks for this file
+
+    Returns:
+        Header string to prepend to chunk content
+    """
+    lines = [f"# File: {file_path}"]
+
+    if total_chunks > 1:
+        lines.append(f"# Chunk {chunk_index + 1}/{total_chunks}")
+
+    # Include imports only in first chunk (or when there's just one chunk)
+    if imports and chunk_index == 0:
+        lines.append("# Imports:")
+        for imp in imports[:10]:  # Limit to first 10 imports
+            lines.append(f"#   {imp}")
+        if len(imports) > 10:
+            lines.append(f"#   ... and {len(imports) - 10} more")
+
+    return "\n".join(lines) + "\n\n"
+
+
+# =============================================================================
 # CHUNKING IMPLEMENTATIONS
 # =============================================================================
 
 
 def _chunk_with_chonkie_code(
-    text: str, chunk_size: int, metadata: dict
+    text: str, chunk_size: int, chunk_overlap: int, metadata: dict
 ) -> List[Document]:
     """
     Chunk code using Chonkie's AST-based CodeChunker with auto language detection.
 
     Uses Magika (Google's ML model) to detect language, then tree-sitter for
     AST-based splitting that respects semantic boundaries (functions, classes, etc.)
+
+    Features:
+    - Adds file path and import context as header in each chunk
+    - Applies OverlapRefinery to add context from adjacent chunks
+    - Preserves semantic boundaries (functions, classes, blocks)
     """
+    source_path = metadata.get("source", "")
+    file_ext = "." + source_path.rsplit(".", 1)[-1] if "." in source_path else ""
+
+    # Extract imports for context
+    imports = _extract_imports(text, file_ext) if file_ext else []
+
     # Skip chunking if content is already small enough
     if len(text) <= chunk_size:
         new_meta = metadata.copy()
         new_meta["chunker"] = "no_chunk_small"
+        # Add file context header even for small files
+        if source_path:
+            header = _create_chunk_header(source_path, imports, 0, 1)
+            return [Document(page_content=header + text, metadata=new_meta)]
         return [Document(page_content=text, metadata=new_meta)]
 
-    from chonkie import CodeChunker
+    from chonkie import CodeChunker, OverlapRefinery
 
     # language="auto" uses Magika for detection - no extension mapping needed
     chunker = CodeChunker(
@@ -88,11 +374,51 @@ def _chunk_with_chonkie_code(
     )
     chunks = chunker.chunk(text)
 
+    # Apply overlap to add context from adjacent chunks
+    # This helps retrieval when function calls reference other functions
+    if chunk_overlap > 0 and len(chunks) > 1:
+        refinery = OverlapRefinery(
+            tokenizer="character",
+            context_size=chunk_overlap,
+            mode="recursive",  # Use delimiter-aware overlap
+            method="suffix",  # Add context from previous chunk
+            merge=True,
+            inplace=True,
+        )
+        chunks = refinery.refine(chunks)
+
     docs = []
-    for c in chunks:
+    total_chunks = len(chunks)
+
+    # For files with multiple chunks, add a summary chunk first (hierarchical)
+    # This helps retrieval find the right file before drilling into details
+    if total_chunks > 2 and source_path and file_ext:
+        definitions = _extract_definitions(text, file_ext)
+        if definitions:  # Only add summary if we found definitions
+            summary = _create_file_summary(
+                source_path, imports, definitions, total_chunks
+            )
+            summary_meta = metadata.copy()
+            summary_meta["chunker"] = "chonkie_code_summary"
+            summary_meta["chunk_index"] = -1  # Special index for summary
+            summary_meta["total_chunks"] = total_chunks
+            summary_meta["is_summary"] = True
+            docs.append(Document(page_content=summary, metadata=summary_meta))
+
+    for i, c in enumerate(chunks):
         new_meta = metadata.copy()
         new_meta["chunker"] = "chonkie_code"
-        docs.append(Document(page_content=c.text, metadata=new_meta))
+        new_meta["chunk_index"] = i
+        new_meta["total_chunks"] = total_chunks
+
+        # Add file context header
+        if source_path:
+            header = _create_chunk_header(source_path, imports, i, total_chunks)
+            content = header + c.text
+        else:
+            content = c.text
+
+        docs.append(Document(page_content=content, metadata=new_meta))
     return docs
 
 
@@ -210,7 +536,9 @@ def _chunk_document_batch_sync(
         try:
             # Try Chonkie CodeChunker with auto language detection
             try:
-                docs = _chunk_with_chonkie_code(content, chunk_size, metadata)
+                docs = _chunk_with_chonkie_code(
+                    content, chunk_size, chunk_overlap, metadata
+                )
                 splitter_counts["chonkie_code"] = (
                     splitter_counts.get("chonkie_code", 0) + 1
                 )
