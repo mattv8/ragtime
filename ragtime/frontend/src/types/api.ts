@@ -483,6 +483,7 @@ export interface AppSettings {
   // OCR Configuration
   default_ocr_mode: 'disabled' | 'tesseract' | 'ollama';
   default_ocr_vision_model?: string | null;
+  ocr_concurrency_limit: number;
   // Performance / Memory Configuration
   sequential_index_loading: boolean;
   // API Tool Output Configuration
@@ -547,6 +548,7 @@ export interface UpdateSettingsRequest {
   // OCR settings
   default_ocr_mode?: 'disabled' | 'tesseract' | 'ollama';
   default_ocr_vision_model?: string | null;
+  ocr_concurrency_limit?: number;
   // API Tool Output settings
   tool_output_mode?: ToolOutputMode;
   // MCP settings
@@ -662,6 +664,9 @@ export type ToolType = 'postgres' | 'mysql' | 'mssql' | 'odoo_shell' | 'ssh_shel
 
 // Mount type for filesystem indexer
 export type FilesystemMountType = 'docker_volume' | 'smb' | 'nfs' | 'local';
+
+// Vector store type for filesystem indexer
+export type FilesystemVectorStoreType = 'pgvector' | 'faiss';
 
 // SSH Tunnel configuration (shared across database tools)
 export interface SSHTunnelConfig {
@@ -782,6 +787,9 @@ export interface FilesystemConnectionConfig {
   chunk_size?: number;
   chunk_overlap?: number;
 
+  // Vector store backend selection
+  vector_store_type?: FilesystemVectorStoreType;
+
   // Safety limits
   max_file_size_mb?: number;
   max_total_files?: number;
@@ -830,6 +838,7 @@ export interface ToolConfig {
   max_results: number;
   timeout: number;
   allow_write: boolean;
+  disabled_reason?: string;
   last_test_at: string | null;
   last_test_result: boolean | null;
   last_test_error: string | null;
@@ -1082,6 +1091,10 @@ export interface FilesystemIndexStats {
   // Memory usage
   chunk_count?: number;
   estimated_memory_mb?: number;
+  // Vector store info
+  vector_store_type?: 'pgvector' | 'faiss' | 'auto';
+  pgvector_count?: number;
+  faiss_count?: number;
 }
 
 export interface TriggerFilesystemIndexRequest {
@@ -1433,6 +1446,7 @@ export interface MemoryStats {
 export interface IndexLoadingDetail {
   name: string;
   status: 'pending' | 'loading' | 'loaded' | 'error';
+  type?: 'document' | 'filesystem_faiss' | null;
   size_mb?: number | null;
   chunk_count?: number | null;
   load_time_seconds?: number | null;

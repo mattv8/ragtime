@@ -37,6 +37,13 @@ class OcrMode(str, Enum):
     )
 
 
+class FilesystemVectorStoreType(str, Enum):
+    """Vector store backend for filesystem indexes."""
+
+    PGVECTOR = "pgvector"  # PostgreSQL pgvector - persistent, scalable (default)
+    FAISS = "faiss"  # FAISS - in-memory, loaded at startup like document indexes
+
+
 class IndexConfig(BaseModel):
     """Configuration for creating an index."""
 
@@ -646,6 +653,12 @@ class AppSettings(BaseModel):
         default=None,
         description="Default Ollama vision model for OCR (e.g., 'granite3.2-vision:2b'). Required when ocr_mode is 'ollama'.",
     )
+    ocr_concurrency_limit: int = Field(
+        default=1,
+        ge=1,
+        le=10,
+        description="Max concurrent Ollama vision OCR requests. Higher values use more VRAM.",
+    )
 
     updated_at: Optional[datetime] = None
 
@@ -882,6 +895,12 @@ class UpdateSettingsRequest(BaseModel):
     default_ocr_vision_model: Optional[str] = Field(
         default=None,
         description="Default Ollama vision model for OCR (e.g., 'granite3.2-vision:2b').",
+    )
+    ocr_concurrency_limit: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=10,
+        description="Max concurrent Ollama vision OCR requests.",
     )
 
 
@@ -1184,6 +1203,12 @@ class FilesystemConnectionConfig(BaseModel):
         default=200, ge=0, le=1000, description="Overlap between chunks"
     )
 
+    # Vector store backend selection
+    vector_store_type: FilesystemVectorStoreType = Field(
+        default=FilesystemVectorStoreType.PGVECTOR,
+        description="Vector store backend: 'pgvector' (PostgreSQL, persistent) or 'faiss' (in-memory, loaded at startup)",
+    )
+
     # Safety limits
     max_file_size_mb: int = Field(
         default=10, ge=1, le=100, description="Maximum file size to index (MB)"
@@ -1417,6 +1442,11 @@ class ToolConfig(BaseModel):
     )
     timeout: int = Field(default=30, ge=1, le=300, description="Timeout in seconds")
     allow_write: bool = Field(default=False, description="Allow write operations")
+
+    # Transient runtime status (not persisted)
+    disabled_reason: Optional[str] = Field(
+        default=None, description="Reason why the tool is disabled (runtime check)"
+    )
 
     # Test results
     last_test_at: Optional[datetime] = None

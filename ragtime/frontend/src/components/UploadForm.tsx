@@ -1,4 +1,4 @@
-import { useState, useCallback, type DragEvent, type ChangeEvent } from 'react';
+import { useState, useCallback, useEffect, type DragEvent, type ChangeEvent } from 'react';
 import { api } from '@/api';
 import type { IndexJob, IndexAnalysisResult, OcrMode } from '@/types';
 import { DescriptionField } from './DescriptionField';
@@ -50,6 +50,7 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
   const [maxFileSizeKb, setMaxFileSizeKb] = useState(500);
   const [ocrMode, setOcrMode] = useState<OcrMode>('disabled');
   const [ocrVisionModel, setOcrVisionModel] = useState('');
+  const [ollamaAvailable, setOllamaAvailable] = useState(false);  // Whether Ollama is configured as LLM provider
   const [exclusionsApplied, setExclusionsApplied] = useState(false);
   const [patternsExpanded, setPatternsExpanded] = useState(false);
 
@@ -71,6 +72,20 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
     setOcrVisionModel('');
     setExclusionsApplied(false);
     setPatternsExpanded(false);
+  }, []);
+
+  // Fetch settings to check if Ollama OCR is configured
+  useEffect(() => {
+    const loadSettings = async () => {
+      try {
+        const { settings } = await api.getSettings();
+        setOllamaAvailable(settings.default_ocr_mode === 'ollama');
+      } catch {
+        // If settings can't be loaded, Ollama is not available
+        setOllamaAvailable(false);
+      }
+    };
+    loadSettings();
   }, []);
 
   const handleDragOver = useCallback((e: DragEvent) => {
@@ -268,8 +283,7 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
                 setMaxFileSizeKb={setMaxFileSizeKb}
                 ocrMode={ocrMode as any}
                 setOcrMode={setOcrMode as any}
-                ocrVisionModel={ocrVisionModel}
-                setOcrVisionModel={setOcrVisionModel}
+                ollamaAvailable={ollamaAvailable}
               />
             </details>
 
@@ -446,8 +460,7 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
             setMaxFileSizeKb={setMaxFileSizeKb}
             ocrMode={ocrMode as any}
             setOcrMode={setOcrMode as any}
-            ocrVisionModel={ocrVisionModel}
-            setOcrVisionModel={setOcrVisionModel}
+            ollamaAvailable={ollamaAvailable}
           />
         </details>
 

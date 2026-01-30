@@ -19,8 +19,13 @@ interface IndexConfigFieldsProps {
   setMaxFileSizeKb: (val: number) => void;
   ocrMode: 'disabled' | 'tesseract' | 'ollama';
   setOcrMode: (val: 'disabled' | 'tesseract' | 'ollama') => void;
-  ocrVisionModel: string;
-  setOcrVisionModel: (val: string) => void;
+
+  /**
+   * Whether Ollama is available as an LLM provider.
+   * When false, only Tesseract OCR option is shown.
+   * When Ollama is selected, the global OCR vision model setting is used.
+   */
+  ollamaAvailable?: boolean;
 
   // Git-specific props (optional)
   gitCloneTimeoutMinutes?: number;
@@ -62,8 +67,7 @@ export function IndexConfigFields({
   setTimeoutManuallySet,
   ocrMode,
   setOcrMode,
-  ocrVisionModel,
-  setOcrVisionModel,
+  ollamaAvailable = false,
   reindexIntervalHours,
   setReindexIntervalHours,
   gitHistoryDepth,
@@ -171,11 +175,13 @@ export function IndexConfigFields({
           >
             <option value="disabled">Disabled - Skip image files</option>
             <option value="tesseract">Tesseract - Fast traditional OCR</option>
-            <option value="ollama">Ollama Vision - Semantic OCR</option>
+            {ollamaAvailable && (
+              <option value="ollama">Ollama Vision - Semantic OCR (uses global settings)</option>
+            )}
           </select>
           <small style={{ color: '#888', fontSize: '0.8rem' }}>
             {ocrMode === 'ollama'
-              ? 'Semantic text extraction.'
+              ? 'Uses global OCR vision model setting.'
               : ocrMode === 'tesseract'
               ? 'Fast basic text extraction.'
               : 'Skip images.'}
@@ -200,19 +206,6 @@ export function IndexConfigFields({
           </div>
         )}
       </div>
-
-      {ocrMode === 'ollama' && (
-        <div className="form-group" style={{ marginBottom: '16px' }}>
-          <label>Ollama Vision Model</label>
-          <input
-            type="text"
-            value={ocrVisionModel}
-            onChange={(e) => setOcrVisionModel(e.target.value)}
-            placeholder="e.g., qwen3-vl:latest"
-            disabled={isLoading}
-          />
-        </div>
-      )}
 
       {gitHistoryDepth !== undefined && setGitHistoryDepth && (
         <div className="form-group" style={{ marginBottom: '16px' }}>

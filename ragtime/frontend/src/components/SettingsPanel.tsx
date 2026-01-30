@@ -409,6 +409,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         // OCR settings
         default_ocr_mode: data.default_ocr_mode,
         default_ocr_vision_model: data.default_ocr_vision_model,
+        ocr_concurrency_limit: data.ocr_concurrency_limit,
       });
       // Reset Ollama connection state (for embeddings)
       setOllamaConnected(false);
@@ -837,6 +838,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       const dataToSave: UpdateSettingsRequest = {
         default_ocr_mode: formData.default_ocr_mode,
         default_ocr_vision_model: formData.default_ocr_vision_model,
+        ocr_concurrency_limit: formData.ocr_concurrency_limit,
       };
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
@@ -844,6 +846,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         ...prev,
         default_ocr_mode: updated.default_ocr_mode,
         default_ocr_vision_model: updated.default_ocr_vision_model,
+        ocr_concurrency_limit: updated.ocr_concurrency_limit,
       }));
       setSuccess('OCR settings saved.');
       setTimeout(() => setSuccess(null), 5000);
@@ -2240,7 +2243,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
             Configure default OCR (Optical Character Recognition) mode for extracting text from images during indexing.
           </p>
 
-          <div className="form-row">
+          <div className="form-row" style={formData.default_ocr_mode === 'ollama' ? { display: 'flex', flexWrap: 'nowrap', gap: 'var(--space-md)' } : undefined}>
             <div className="form-group" style={{ flex: 1 }}>
               <label>Default OCR Mode</label>
               <select
@@ -2316,6 +2319,23 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                 )}
                 <p className="field-help">
                   Select an Ollama vision model for semantic OCR.
+                </p>
+              </div>
+            )}
+
+            {formData.default_ocr_mode === 'ollama' && (
+              <div className="form-group" style={{ flex: '0 0 120px' }}>
+                <label>Concurrency</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={formData.ocr_concurrency_limit ?? 1}
+                  onChange={(e) => setFormData({ ...formData, ocr_concurrency_limit: Math.max(1, Math.min(10, parseInt(e.target.value) || 1)) })}
+                  style={{ width: '80px' }}
+                />
+                <p className="field-help">
+                  Parallel OCR requests. Higher values use more VRAM.
                 </p>
               </div>
             )}

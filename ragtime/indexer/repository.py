@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, List, Optional, cast
 
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
@@ -44,6 +45,7 @@ from ragtime.indexer.models import (
     ToolOutputMode,
     ToolType,
 )
+from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 
 logger = get_logger(__name__)
 
@@ -906,7 +908,41 @@ class IndexerRepository:
             where=where, order={"createdAt": "desc"}  # type: ignore[arg-type]
         )
 
-        return [self._prisma_tool_config_to_model(c) for c in prisma_configs]
+        configs = [self._prisma_tool_config_to_model(c) for c in prisma_configs]
+
+        # Auto-disable FAISS filesystem indexes if file is missing
+        # This handles cases where indexing failed or was interrupted, preventing
+        # the UI from showing a "green" toggle for a broken index.
+        for config in configs:
+            if config.tool_type == ToolType.FILESYSTEM_INDEXER:
+                conn_config = config.connection_config or {}
+                # Check for explicit 'faiss' type (defaults to pgvector if unset)
+                if conn_config.get("vector_store_type") == "faiss":
+                    index_name = conn_config.get("index_name")
+                    if index_name:
+                        index_dir = FAISS_INDEX_BASE_PATH / index_name
+                        faiss_file = index_dir / "index.faiss"
+
+                        if not faiss_file.exists():
+                            reason = f"FAISS file missing at {faiss_file}"
+                            config.disabled_reason = reason
+
+                            if config.enabled:
+                                logger.warning(
+                                    f"Auto-disabling filesystem index '{config.name}': {reason}"
+                                )
+                                # Update DB
+                                await db.toolconfig.update(
+                                    where={"id": config.id},
+                                    data={"enabled": False},  # type: ignore[arg-type]
+                                )
+                                # Update local object so UI reflects change immediately
+                                config.enabled = False
+
+        if enabled_only:
+            return [c for c in configs if c.enabled]
+
+        return configs
 
     async def update_tool_config(
         self, config_id: str, updates: dict[str, Any]

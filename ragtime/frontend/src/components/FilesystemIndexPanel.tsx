@@ -47,9 +47,24 @@ function FilesystemIndexCard({
   indexing,
   embeddingDimensions,
 }: FilesystemIndexCardProps) {
-  const config = tool.connection_config as { base_path?: string; index_name?: string };
+  const config = tool.connection_config as { base_path?: string; index_name?: string; vector_store_type?: string };
 
-  const isActive = activeJob && (activeJob.status === 'pending' || activeJob.status === 'indexing');
+  const isActive = activeJob ? (activeJob.status === 'pending' || activeJob.status === 'indexing') : false;
+  // Check both stats (active index) and config (intended index) for FAISS type
+  const isFaiss = stats?.vector_store_type === 'faiss' || config.vector_store_type === 'faiss';
+  const [downloading, setDownloading] = useState(false);
+
+  const handleDownload = async () => {
+    const indexName = config.index_name || tool.id;
+    setDownloading(true);
+    try {
+      await api.downloadFilesystemFaissIndex(indexName);
+    } catch (e) {
+      console.error('Failed to download FAISS index:', e);
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   const metaPills = (
     <>
@@ -112,22 +127,37 @@ function FilesystemIndexCard({
         Edit
       </button>
 
+      {/* Download FAISS index */}
+      {isFaiss && stats && stats.embedding_count > 0 && (
+        <button
+          type="button"
+          className="btn btn-sm btn-secondary"
+          onClick={handleDownload}
+          disabled={downloading}
+          title="Download FAISS index as zip"
+        >
+          {downloading ? 'Downloading...' : 'Download'}
+        </button>
+      )}
+
       {/* Indexing controls */}
-      <button
-        type="button"
-        className="btn btn-sm btn-primary"
-        onClick={() => onStartIndex(tool.id, false)}
-        disabled={indexing || isActive || !tool.enabled}
-        title="Start incremental indexing (skip unchanged files)"
-      >
-        {indexing ? 'Starting...' : 'Re-Index'}
-      </button>
+      {!isFaiss && (
+        <button
+          type="button"
+          className="btn btn-sm btn-primary"
+          onClick={() => onStartIndex(tool.id, false)}
+          disabled={indexing || isActive}
+          title="Start incremental indexing (skip unchanged files)"
+        >
+          {indexing ? 'Starting...' : 'Re-Index'}
+        </button>
+      )}
       <button
         type="button"
         className="btn btn-sm"
         onClick={() => onStartIndex(tool.id, true)}
-        disabled={indexing || isActive || !tool.enabled}
-        title="Re-index all files from scratch"
+        disabled={indexing || isActive}
+        title={isFaiss ? "Re-index all files from scratch" : "Force full re-index of all files"}
       >
         Full Re-Index
       </button>
@@ -143,14 +173,20 @@ function FilesystemIndexCard({
     <IndexCard
       title={tool.name}
       description={tool.description}
-      enabled={tool.enabled}
+      enabled={tool.enabled ?? false}
       onToggle={(checked) => onToggle(tool.id, checked)}
       onEditTitle={(newName) => onRename(tool.id, newName)}
       onEditDescription={(newDesc) => onDescriptionUpdate(tool.id, newDesc)}
       className="filesystem-index-item"
       metaPills={metaPills}
       actions={actions}
-      toggleTitle={tool.enabled ? 'Enabled for RAG' : 'Disabled from RAG'}
+      toggleTitle={
+        tool.disabled_reason
+          ? `Disabled: ${tool.disabled_reason}`
+          : tool.enabled
+            ? "Enabled for RAG"
+            : "Disabled from RAG"
+      }
     />
   );
 }

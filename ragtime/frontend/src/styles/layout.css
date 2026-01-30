@@ -602,7 +602,10 @@ body {
   transition: opacity var(--transition-fast);
 }
 
-.index-item.index-disabled {
+.index-item.index-disabled .index-info h3,
+.index-item.index-disabled .index-description,
+.index-item.index-disabled .index-meta-pills,
+.index-item.index-disabled .tool-card-connection-sub {
   opacity: 0.6;
 }
 

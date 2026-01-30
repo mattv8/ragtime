@@ -21,23 +21,36 @@ from pathlib import Path
 from typing import Any, BinaryIO, Dict, List, Optional
 
 from ragtime.config import settings
-from ragtime.core.app_settings import (get_app_settings,
-                                       invalidate_settings_cache)
+from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
 from ragtime.core.embedding_models import get_embedding_models
-from ragtime.core.file_constants import (BINARY_EXTENSIONS, MINIFIED_PATTERNS,
-                                         PARSEABLE_DOCUMENT_EXTENSIONS,
-                                         UNPARSEABLE_BINARY_EXTENSIONS)
+from ragtime.core.file_constants import (
+    BINARY_EXTENSIONS,
+    MINIFIED_PATTERNS,
+    PARSEABLE_DOCUMENT_EXTENSIONS,
+    UNPARSEABLE_BINARY_EXTENSIONS,
+)
 from ragtime.core.logging import get_logger
 from ragtime.indexer.document_parser import OCR_EXTENSIONS
 from ragtime.indexer.llm_exclusions import get_smart_exclusion_suggestions
-from ragtime.indexer.memory_utils import (estimate_index_memory,
-                                          estimate_memory_at_dimensions,
-                                          get_embedding_dimension)
-from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
-                                    CommitHistoryInfo, CommitHistorySample,
-                                    FileTypeStats, IndexAnalysisResult,
-                                    IndexConfig, IndexInfo, IndexJob,
-                                    IndexStatus, MemoryEstimate, OcrMode)
+from ragtime.indexer.memory_utils import (
+    estimate_index_memory,
+    estimate_memory_at_dimensions,
+    get_embedding_dimension,
+)
+from ragtime.indexer.models import (
+    AnalyzeIndexRequest,
+    AppSettings,
+    CommitHistoryInfo,
+    CommitHistorySample,
+    FileTypeStats,
+    IndexAnalysisResult,
+    IndexConfig,
+    IndexInfo,
+    IndexJob,
+    IndexStatus,
+    MemoryEstimate,
+    OcrMode,
+)
 from ragtime.indexer.repository import repository
 from ragtime.tools.git_history import _is_shallow_repository
 
@@ -165,8 +178,9 @@ async def generate_index_description(
 
         if provider == "ollama":
             try:
-                from langchain_ollama import \
-                    ChatOllama  # type: ignore[reportMissingImports]
+                from langchain_ollama import (
+                    ChatOllama,
+                )  # type: ignore[reportMissingImports]
 
                 base_url = app_settings.get("ollama_base_url", "http://localhost:11434")
                 model = app_settings.get("llm_model", "llama3.2")
@@ -179,8 +193,9 @@ async def generate_index_description(
             api_key = app_settings.get("anthropic_api_key", "")
             if api_key:
                 try:
-                    from langchain_anthropic import \
-                        ChatAnthropic  # type: ignore[import-untyped]
+                    from langchain_anthropic import (
+                        ChatAnthropic,
+                    )  # type: ignore[import-untyped]
 
                     model = app_settings.get("llm_model", "claude-sonnet-4-20250514")
                     llm = ChatAnthropic(
@@ -456,6 +471,9 @@ class IndexerService:
 
         Called during application startup.
 
+        Note: This only registers document indexes. Filesystem FAISS indexes
+        are tracked via tool_configs and should not be added to index_metadata.
+
         Returns:
             Number of indexes discovered and registered
         """
@@ -465,12 +483,31 @@ class IndexerService:
         db_metadata = await repository.list_index_metadata()
         known_names = {m.name for m in db_metadata}
 
+        # Get filesystem index names that use FAISS backend (not pgvector)
+        # Only FAISS-backed filesystem indexes have index.faiss files on disk
+        # We must NOT register these as document indexes
+        tool_configs = await repository.list_tool_configs()
+        filesystem_faiss_index_names = set()
+        for tc in tool_configs:
+            if tc.tool_type == "filesystem_indexer":
+                conn_config = tc.connection_config or {}
+                vector_store_type = conn_config.get("vector_store_type", "pgvector")
+                # Only exclude FAISS-backed filesystem indexes
+                if vector_store_type == "faiss":
+                    index_name = conn_config.get("index_name")
+                    if index_name:
+                        filesystem_faiss_index_names.add(index_name)
+
         discovered = 0
 
         for path in self.index_base_path.iterdir():
             if path.is_dir() and not path.name.startswith("."):
-                # Skip if already known
+                # Skip if already known in index_metadata
                 if path.name in known_names:
+                    continue
+
+                # Skip if this is a FAISS-backed filesystem index (tracked in tool_configs)
+                if path.name in filesystem_faiss_index_names:
                     continue
 
                 # Check if it's a valid FAISS index
@@ -614,8 +651,9 @@ class IndexerService:
         )
 
         if provider == "ollama":
-            from langchain_ollama import \
-                OllamaEmbeddings  # type: ignore[reportMissingImports]
+            from langchain_ollama import (
+                OllamaEmbeddings,
+            )  # type: ignore[reportMissingImports]
 
             return OllamaEmbeddings(
                 model=model,
@@ -750,142 +788,106 @@ class IndexerService:
         return self._cancellation_flags.get(job_id, False)
 
     async def list_indexes(self) -> List[IndexInfo]:
-        """List all available indexes, enriching with database metadata."""
+        """List all available document indexes.
+
+        Only returns indexes that exist in index_metadata (document indexes).
+        Filesystem FAISS indexes are managed separately via tool_configs.
+        """
         indexes = []
 
-        # Get metadata from database
+        # Get metadata from database - this is the source of truth for document indexes
         db_metadata = await repository.list_index_metadata()
-        metadata_by_name = {m.name: m for m in db_metadata}
 
-        for path in self.index_base_path.iterdir():
-            if path.is_dir() and not path.name.startswith("."):
-                # Check if it's a valid FAISS index
-                if (path / "index.faiss").exists() or (path / "index.pkl").exists():
-                    size_bytes = sum(
-                        f.stat().st_size for f in path.rglob("*") if f.is_file()
+        for meta in db_metadata:
+            path = Path(meta.path) if meta.path else self.index_base_path / meta.name
+
+            # Skip if directory doesn't exist on disk
+            if not path.exists() or not path.is_dir():
+                logger.warning(f"Index {meta.name} in database but not on disk: {path}")
+                continue
+
+            # Verify it's a valid FAISS index
+            if (
+                not (path / "index.faiss").exists()
+                and not (path / "index.pkl").exists()
+            ):
+                continue
+
+            size_bytes = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+
+            # Extract metadata fields
+            doc_count = meta.documentCount
+            chunk_count = getattr(meta, "chunkCount", 0)
+            created_at = meta.createdAt
+            last_modified = getattr(meta, "lastModified", None)
+            enabled = meta.enabled
+            description = getattr(meta, "description", "")
+            source_type = getattr(meta, "sourceType", "upload")
+            source = getattr(meta, "source", None)
+            git_branch = getattr(meta, "gitBranch", None)
+            search_weight = getattr(meta, "searchWeight", 1.0)
+            config_snapshot_data = getattr(meta, "configSnapshot", None)
+            has_stored_token = bool(getattr(meta, "gitToken", None))
+            display_name = getattr(meta, "displayName", None)
+
+            # Build config_snapshot from data if available
+            config_snapshot = None
+            if config_snapshot_data:
+                from ragtime.indexer.models import IndexConfigSnapshot, OcrMode
+
+                config_snapshot = IndexConfigSnapshot(
+                    file_patterns=config_snapshot_data.get("file_patterns", ["**/*"]),
+                    exclude_patterns=config_snapshot_data.get("exclude_patterns", []),
+                    chunk_size=config_snapshot_data.get("chunk_size", 1000),
+                    chunk_overlap=config_snapshot_data.get("chunk_overlap", 200),
+                    max_file_size_kb=config_snapshot_data.get("max_file_size_kb", 500),
+                    ocr_mode=OcrMode(config_snapshot_data.get("ocr_mode", "disabled")),
+                    ocr_vision_model=config_snapshot_data.get("ocr_vision_model"),
+                    git_clone_timeout_minutes=config_snapshot_data.get(
+                        "git_clone_timeout_minutes", 5
+                    ),
+                    git_history_depth=config_snapshot_data.get("git_history_depth", 1),
+                )
+
+            # Check for git repo directory (git history)
+            git_repo_path = path / ".git_repo"
+            git_repo_size_mb = None
+            has_git_history = False
+            if git_repo_path.exists() and git_repo_path.is_dir():
+                # Check if it has meaningful history using commit count
+                # Repos with depth > 1 still have useful history to search
+                has_git_history = not await _is_shallow_repository(git_repo_path)
+                if has_git_history:
+                    git_repo_size = sum(
+                        f.stat().st_size
+                        for f in git_repo_path.rglob("*")
+                        if f.is_file()
                     )
+                    git_repo_size_mb = round(git_repo_size / (1024 * 1024), 2)
 
-                    # Try to get document count from database metadata first
-                    doc_count = 0
-                    chunk_count = 0
-                    created_at = None
-                    last_modified = None
-                    enabled = True  # Default to enabled
-                    description = ""
-                    source_type = "upload"
-                    source = None
-                    git_branch = None
-                    has_stored_token = False
-                    display_name = None
-
-                    if path.name in metadata_by_name:
-                        meta = metadata_by_name[path.name]
-                        doc_count = meta.documentCount
-                        chunk_count = getattr(meta, "chunkCount", 0)
-                        created_at = meta.createdAt
-                        last_modified = getattr(meta, "lastModified", None)
-                        enabled = meta.enabled
-                        description = getattr(meta, "description", "")
-                        source_type = getattr(meta, "sourceType", "upload")
-                        source = getattr(meta, "source", None)
-                        git_branch = getattr(meta, "gitBranch", None)
-                        search_weight = getattr(meta, "searchWeight", 1.0)
-                        config_snapshot_data = getattr(meta, "configSnapshot", None)
-                        has_stored_token = bool(getattr(meta, "gitToken", None))
-                        display_name = getattr(meta, "displayName", None)
-                    else:
-                        search_weight = 1.0
-                        config_snapshot_data = None
-                        # Fallback to legacy .metadata.json file
-                        meta_file = path / ".metadata.json"
-                        if meta_file.exists():
-                            try:
-                                with open(meta_file, encoding="utf-8") as mf:
-                                    legacy_meta = json.load(mf)
-                                    doc_count = legacy_meta.get("document_count", 0)
-                                    created_at_str = legacy_meta.get("created_at")
-                                    if created_at_str:
-                                        created_at = datetime.fromisoformat(
-                                            created_at_str
-                                        )
-                            except Exception:
-                                pass
-
-                    # Build config_snapshot from data if available
-                    config_snapshot = None
-                    if config_snapshot_data:
-                        from ragtime.indexer.models import (
-                            IndexConfigSnapshot, OcrMode)
-
-                        config_snapshot = IndexConfigSnapshot(
-                            file_patterns=config_snapshot_data.get(
-                                "file_patterns", ["**/*"]
-                            ),
-                            exclude_patterns=config_snapshot_data.get(
-                                "exclude_patterns", []
-                            ),
-                            chunk_size=config_snapshot_data.get("chunk_size", 1000),
-                            chunk_overlap=config_snapshot_data.get(
-                                "chunk_overlap", 200
-                            ),
-                            max_file_size_kb=config_snapshot_data.get(
-                                "max_file_size_kb", 500
-                            ),
-                            ocr_mode=OcrMode(
-                                config_snapshot_data.get("ocr_mode", "disabled")
-                            ),
-                            ocr_vision_model=config_snapshot_data.get(
-                                "ocr_vision_model"
-                            ),
-                            git_clone_timeout_minutes=config_snapshot_data.get(
-                                "git_clone_timeout_minutes", 5
-                            ),
-                            git_history_depth=config_snapshot_data.get(
-                                "git_history_depth", 1
-                            ),
-                        )
-
-                    # Check for git repo directory (git history)
-                    git_repo_path = path / ".git_repo"
-                    git_repo_size_mb = None
-                    has_git_history = False
-                    if git_repo_path.exists() and git_repo_path.is_dir():
-                        # Check if it has meaningful history using commit count
-                        # Repos with depth > 1 still have useful history to search
-                        has_git_history = not await _is_shallow_repository(
-                            git_repo_path
-                        )
-                        if has_git_history:
-                            git_repo_size = sum(
-                                f.stat().st_size
-                                for f in git_repo_path.rglob("*")
-                                if f.is_file()
-                            )
-                            git_repo_size_mb = round(git_repo_size / (1024 * 1024), 2)
-
-                    indexes.append(
-                        IndexInfo(
-                            name=path.name,
-                            display_name=display_name,
-                            path=str(path),
-                            size_mb=round(size_bytes / (1024 * 1024), 2),
-                            document_count=doc_count,
-                            chunk_count=chunk_count,
-                            description=description,
-                            enabled=enabled,
-                            search_weight=search_weight,
-                            source_type=source_type,
-                            source=source,
-                            git_branch=git_branch,
-                            has_stored_token=has_stored_token,
-                            config_snapshot=config_snapshot,
-                            created_at=created_at,
-                            last_modified=last_modified
-                            or datetime.fromtimestamp(path.stat().st_mtime),
-                            git_repo_size_mb=git_repo_size_mb,
-                            has_git_history=has_git_history,
-                        )
-                    )
+            indexes.append(
+                IndexInfo(
+                    name=meta.name,
+                    display_name=display_name,
+                    path=str(path),
+                    size_mb=round(size_bytes / (1024 * 1024), 2),
+                    document_count=doc_count,
+                    chunk_count=chunk_count,
+                    description=description,
+                    enabled=enabled,
+                    search_weight=search_weight,
+                    source_type=source_type,
+                    source=source,
+                    git_branch=git_branch,
+                    has_stored_token=has_stored_token,
+                    config_snapshot=config_snapshot,
+                    created_at=created_at,
+                    last_modified=last_modified
+                    or datetime.fromtimestamp(path.stat().st_mtime),
+                    git_repo_size_mb=git_repo_size_mb,
+                    has_git_history=has_git_history,
+                )
+            )
 
         return indexes
 
@@ -2358,8 +2360,7 @@ class IndexerService:
             """Async file loading with OCR support. Returns (path, docs, error)."""
             from langchain_core.documents import Document as LangChainDocument
 
-            from ragtime.indexer.document_parser import \
-                extract_text_from_file_async
+            from ragtime.indexer.document_parser import extract_text_from_file_async
 
             async with load_semaphore:
                 try:
@@ -2376,7 +2377,11 @@ class IndexerService:
                             ollama_base_url=ollama_base_url,
                         )
                         if content:
-                            return (file_path, [LangChainDocument(page_content=content)], None)
+                            return (
+                                file_path,
+                                [LangChainDocument(page_content=content)],
+                                None,
+                            )
                         return (file_path, [], None)
 
                     # Use TextLoader for plain text files (run in thread pool)

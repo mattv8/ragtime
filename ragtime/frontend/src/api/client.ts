@@ -443,6 +443,37 @@ export const api = {
     window.URL.revokeObjectURL(url);
   },
 
+  /**
+   * Download a filesystem FAISS index as a zip file
+   */
+  async downloadFilesystemFaissIndex(indexName: string): Promise<void> {
+    const response = await apiFetch(`${API_BASE}/filesystem/${encodeURIComponent(indexName)}/download`);
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new ApiError(
+        data.detail || 'Download failed',
+        response.status,
+        data.detail
+      );
+    }
+
+    // Get the filename from the Content-Disposition header
+    const contentDisposition = response.headers.get('content-disposition') || '';
+    const filenameMatch = contentDisposition.match(/filename=([^;]+)/);
+    const filename = filenameMatch ? filenameMatch[1] : `filesystem_${indexName}_index.zip`;
+
+    // Get the blob and create a download link
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  },
+
   // ===========================================================================
   // Health / System Status
   // ===========================================================================

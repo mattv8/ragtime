@@ -176,6 +176,7 @@ class IndexLoadingDetail(BaseModel):
 
     name: str
     status: str  # 'pending', 'loading', 'loaded', 'error'
+    type: Optional[str] = None  # 'document' or 'filesystem_faiss'
     size_mb: Optional[float] = None
     chunk_count: Optional[int] = None
     load_time_seconds: Optional[float] = None

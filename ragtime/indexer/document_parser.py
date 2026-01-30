@@ -790,6 +790,8 @@ async def _extract_image_vision_ocr(
     automatically resized and optimized. If no text is found, falls back
     to image classification for searchable descriptions.
 
+    Concurrency is managed at the vision_models layer via centralized semaphore.
+
     Args:
         content: Raw image bytes
         ollama_base_url: Ollama server URL

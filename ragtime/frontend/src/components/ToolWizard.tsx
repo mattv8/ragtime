@@ -12,6 +12,7 @@ import type {
   SSHShellConnectionConfig,
   FilesystemConnectionConfig,
   FilesystemMountType,
+  FilesystemVectorStoreType,
   ConnectionConfig,
   MountInfo,
   DirectoryEntry,
@@ -1942,35 +1943,63 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   );
 
   // Filesystem Indexer config state
-  const [filesystemConfig, setFilesystemConfig] = useState<FilesystemConnectionConfig>(
-    existingTool?.tool_type === 'filesystem_indexer'
-      ? (existingTool.connection_config as FilesystemConnectionConfig)
-      : {
-          mount_type: 'docker_volume',
-          base_path: '',
-          volume_name: '',
-          smb_host: '',
-          smb_share: '',
-          smb_user: '',
-          smb_password: '',
-          smb_domain: '',
-          nfs_host: '',
-          nfs_export: '',
-          nfs_options: 'ro,noatime',
-          index_name: '',
-          file_patterns: ['**/*.txt', '**/*.md', '**/*.pdf', '**/*.docx', '**/*.xlsx', '**/*.pptx', '**/*.py', '**/*.json', '**/*.png', '**/*.jpg', '**/*.jpeg', '**/*.gif', '**/*.bmp', '**/*.tiff', '**/*.webp'],
-          exclude_patterns: ['**/node_modules/**', '**/__pycache__/**', '**/venv/**', '**/.git/**', '**/.*', '**/*.cloud', '**/*.icloud'],
-          recursive: true,
-          chunk_size: 1000,
-          chunk_overlap: 200,
-          max_file_size_mb: 10,
-          max_total_files: 10000,
-          ocr_mode: 'disabled',
-          ocr_vision_model: undefined,
-          reindex_interval_hours: 24,
-          last_indexed_at: null,
-        }
-  );
+  const [filesystemConfig, setFilesystemConfig] = useState<FilesystemConnectionConfig>(() => {
+    if (existingTool?.tool_type === 'filesystem_indexer') {
+      const existing = existingTool.connection_config as Partial<FilesystemConnectionConfig>;
+      return {
+        mount_type: existing.mount_type ?? 'docker_volume',
+        base_path: existing.base_path ?? '',
+        volume_name: existing.volume_name ?? '',
+        smb_host: existing.smb_host ?? '',
+        smb_share: existing.smb_share ?? '',
+        smb_user: existing.smb_user ?? '',
+        smb_password: existing.smb_password ?? '',
+        smb_domain: existing.smb_domain ?? '',
+        nfs_host: existing.nfs_host ?? '',
+        nfs_export: existing.nfs_export ?? '',
+        nfs_options: existing.nfs_options ?? 'ro,noatime',
+        index_name: existing.index_name ?? '',
+        file_patterns: existing.file_patterns ?? ['**/*.txt', '**/*.md', '**/*.pdf', '**/*.docx', '**/*.xlsx', '**/*.pptx', '**/*.py', '**/*.json', '**/*.png', '**/*.jpg', '**/*.jpeg', '**/*.gif', '**/*.bmp', '**/*.tiff', '**/*.webp'],
+        exclude_patterns: existing.exclude_patterns ?? ['**/node_modules/**', '**/__pycache__/**', '**/venv/**', '**/.git/**', '**/.*', '**/*.cloud', '**/*.icloud'],
+        recursive: existing.recursive ?? true,
+        chunk_size: existing.chunk_size ?? 1000,
+        chunk_overlap: existing.chunk_overlap ?? 200,
+        max_file_size_mb: existing.max_file_size_mb ?? 10,
+        max_total_files: existing.max_total_files ?? 10000,
+        ocr_mode: existing.ocr_mode ?? 'disabled',
+        ocr_vision_model: existing.ocr_vision_model,
+        vector_store_type: existing.vector_store_type ?? 'pgvector',
+        reindex_interval_hours: existing.reindex_interval_hours ?? 24,
+        last_indexed_at: existing.last_indexed_at ?? null,
+      };
+    }
+    return {
+      mount_type: 'docker_volume',
+      base_path: '',
+      volume_name: '',
+      smb_host: '',
+      smb_share: '',
+      smb_user: '',
+      smb_password: '',
+      smb_domain: '',
+      nfs_host: '',
+      nfs_export: '',
+      nfs_options: 'ro,noatime',
+      index_name: '',
+      file_patterns: ['**/*.txt', '**/*.md', '**/*.pdf', '**/*.docx', '**/*.xlsx', '**/*.pptx', '**/*.py', '**/*.json', '**/*.png', '**/*.jpg', '**/*.jpeg', '**/*.gif', '**/*.bmp', '**/*.tiff', '**/*.webp'],
+      exclude_patterns: ['**/node_modules/**', '**/__pycache__/**', '**/venv/**', '**/.git/**', '**/.*', '**/*.cloud', '**/*.icloud'],
+      recursive: true,
+      chunk_size: 1000,
+      chunk_overlap: 200,
+      max_file_size_mb: 10,
+      max_total_files: 10000,
+      ocr_mode: 'disabled',
+      ocr_vision_model: undefined,
+      vector_store_type: 'pgvector',
+      reindex_interval_hours: 24,
+      last_indexed_at: null,
+    };
+  });
 
   // SolidWorks PDM config state
   const [pdmConfig, setPdmConfig] = useState<SolidworksPdmConnectionConfig>(
@@ -2004,6 +2033,23 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   const [pdmSchemaDiscoveryError, setPdmSchemaDiscoveryError] = useState<string | null>(null);
   const [pdmExtensionFilter, setPdmExtensionFilter] = useState('');
   const [pdmVariableFilter, setPdmVariableFilter] = useState('');
+
+  // Ollama availability for OCR mode
+  const [ollamaAvailable, setOllamaAvailable] = useState(false);
+
+  // Fetch settings to check if Ollama OCR is configured
+  useEffect(() => {
+    if (toolType === 'filesystem_indexer' || defaultToolType === 'filesystem_indexer') {
+      api.getSettings()
+        .then(({ settings }) => {
+          setOllamaAvailable(settings.default_ocr_mode === 'ollama');
+        })
+        .catch((err) => {
+          console.warn('Failed to fetch settings for Ollama check:', err);
+          setOllamaAvailable(false);
+        });
+    }
+  }, [toolType, defaultToolType]);
 
   // Auto-generate name from filesystem path basename if not already set
   useEffect(() => {
@@ -4436,7 +4482,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           ))}
         </div>
         )}
-        <p className="field-help">{MOUNT_TYPE_INFO[filesystemConfig.mount_type].description}</p>
+        <p className="field-help">{MOUNT_TYPE_INFO[filesystemConfig.mount_type]?.description ?? 'Select a mount type'}</p>
         {/* Show message when SMB/NFS are not available */}
         {!loadingCapabilities && containerCapabilities && !containerCapabilities.can_mount && (
           <p className="field-help info-message" style={{ marginTop: '0.5rem', color: 'var(--text-muted)' }}>
@@ -4659,6 +4705,48 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           </details>
         )}
 
+        {/* OCR Mode and Vector Store - always visible */}
+        <div className="form-row" style={{ marginTop: '1rem' }}>
+          <div className="form-group" style={{ flex: 1 }}>
+            <label>OCR Mode</label>
+            <select
+              value={filesystemConfig.ocr_mode || 'disabled'}
+              onChange={(e) => setFilesystemConfig({ ...filesystemConfig, ocr_mode: e.target.value as 'disabled' | 'tesseract' | 'ollama' })}
+            >
+              <option value="disabled">Disabled - Skip image files</option>
+              <option value="tesseract">Tesseract - Fast traditional OCR</option>
+              {ollamaAvailable && (
+                <option value="ollama">Ollama Vision - Semantic OCR (uses global settings)</option>
+              )}
+            </select>
+            <p className="field-help">
+              {filesystemConfig.ocr_mode === 'ollama'
+                ? 'Uses global OCR vision model setting for semantic text extraction.'
+                : filesystemConfig.ocr_mode === 'tesseract'
+                ? 'Uses Tesseract for fast basic text extraction from images.'
+                : 'Image files (PNG, JPG, etc.) will be skipped during indexing.'}
+            </p>
+          </div>
+
+          <div className="form-group" style={{ flex: 1 }}>
+            <label>Vector Store</label>
+            <select
+              value={filesystemConfig.vector_store_type || 'pgvector'}
+              onChange={(e) => setFilesystemConfig({ ...filesystemConfig, vector_store_type: e.target.value as FilesystemVectorStoreType })}
+              disabled={isEditing}
+            >
+              <option value="pgvector">pgvector (PostgreSQL)</option>
+              <option value="faiss">FAISS (In-memory)</option>
+            </select>
+            <p className="field-help">
+              {filesystemConfig.vector_store_type === 'faiss'
+                ? 'FAISS stores embeddings in memory with disk persistence. Faster searches but uses more RAM. Good for smaller indexes.'
+                : 'pgvector stores embeddings in PostgreSQL. Persistent and scalable. Recommended for larger indexes.'}
+              {isEditing && ' (Cannot change after creation)'}
+            </p>
+          </div>
+        </div>
+
         {/* Advanced Indexing & Safety - appears after analysis results so "Apply All" can reveal updated exclusions */}
         <details open={fsAdvancedOpen} onToggle={(e) => setFsAdvancedOpen((e.target as HTMLDetailsElement).open)} style={{ marginTop: '1rem' }}>
           <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '0.5rem' }}>
@@ -4767,39 +4855,6 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
             </div>
           </div>
 
-          <div className="form-group" style={{ marginTop: '0.75rem' }}>
-            <label>OCR Mode</label>
-            <select
-              value={filesystemConfig.ocr_mode || 'disabled'}
-              onChange={(e) => setFilesystemConfig({ ...filesystemConfig, ocr_mode: e.target.value as 'disabled' | 'tesseract' | 'ollama' })}
-            >
-              <option value="disabled">Disabled - Skip image files</option>
-              <option value="tesseract">Tesseract - Fast traditional OCR</option>
-              <option value="ollama">Ollama Vision - Semantic OCR (slower, better quality)</option>
-            </select>
-            <p className="field-help">
-              {filesystemConfig.ocr_mode === 'ollama'
-                ? 'Uses Ollama vision model for semantic text extraction. Slower but better at understanding complex layouts, handwritten text, and tables.'
-                : filesystemConfig.ocr_mode === 'tesseract'
-                ? 'Uses Tesseract for fast basic text extraction from images.'
-                : 'Image files (PNG, JPG, etc.) will be skipped during indexing.'}
-            </p>
-          </div>
-
-          {filesystemConfig.ocr_mode === 'ollama' && (
-            <div className="form-group" style={{ marginTop: '0.5rem' }}>
-              <label>Ollama Vision Model</label>
-              <input
-                type="text"
-                value={filesystemConfig.ocr_vision_model || ''}
-                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, ocr_vision_model: e.target.value || undefined })}
-                placeholder="e.g., qwen3-vl:latest or llama3.2-vision:latest"
-              />
-              <p className="field-help">
-                Ollama vision model for OCR. Recommended: qwen3-vl (best quality), llama3.2-vision (balanced). Note: Ollama vision OCR is 5-15x slower than Tesseract.
-              </p>
-            </div>
-          )}
         </details>
       </div>
     </div>

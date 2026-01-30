@@ -172,10 +172,7 @@ function toUnifiedFilesystemJob(job: FilesystemIndexJob): UnifiedJob {
       if (processedTotal < job.total_files) {
         // Still processing files
         progress = Math.round((processedTotal / job.total_files) * 70); // Files = 0-70%
-        phase = `Loading files: ${processedTotal.toLocaleString()}/${job.total_files.toLocaleString()}`;
-        if (job.skipped_files > 0) {
-          phase += ` (${job.skipped_files.toLocaleString()} unchanged)`;
-        }
+        phase = 'Loading files';
       } else if (job.total_chunks === 0) {
         // Files done, chunking
         phase = 'Chunking documents';

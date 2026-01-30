@@ -47,6 +47,7 @@ from ragtime.indexer.models import (
     CreateIndexRequest,
     FetchBranchesRequest,
     FetchBranchesResponse,
+    FilesystemConnectionConfig,
     IndexAnalysisResult,
     IndexConfig,
     IndexInfo,
@@ -1120,6 +1121,66 @@ async def download_index(name: str, _user: User = Depends(require_admin)):
     )
 
 
+@router.get("/filesystem/{name}/download")
+async def download_filesystem_faiss_index(
+    name: str, _user: User = Depends(require_admin)
+):
+    """Download filesystem FAISS index files as a zip archive. Admin only.
+
+    Returns a zip file containing the index.faiss and index.pkl files for a
+    filesystem index that uses FAISS as its vector store.
+    """
+    from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
+
+    # Validate index name (prevent path traversal)
+    if "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(status_code=400, detail="Invalid index name")
+
+    # Get index path
+    index_path = FAISS_INDEX_BASE_PATH / name
+
+    # Ensure the resolved path is within FAISS_INDEX_BASE_PATH (defense in depth)
+    try:
+        index_path = index_path.resolve()
+        if not str(index_path).startswith(str(FAISS_INDEX_BASE_PATH.resolve())):
+            raise HTTPException(status_code=400, detail="Invalid index path")
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid index name") from exc
+
+    # Validate the index exists
+    if not index_path.exists():
+        raise HTTPException(
+            status_code=404, detail=f"Filesystem FAISS index '{name}' not found"
+        )
+
+    # Check that required files exist
+    faiss_file = index_path / "index.faiss"
+    pkl_file = index_path / "index.pkl"
+
+    if not faiss_file.exists() or not pkl_file.exists():
+        raise HTTPException(
+            status_code=400,
+            detail="Index files incomplete - index.faiss or index.pkl not found",
+        )
+
+    # Create zip file in memory
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        # Add both files to zip with a single directory for clarity
+        zf.write(faiss_file, arcname=f"{name}/index.faiss")
+        zf.write(pkl_file, arcname=f"{name}/index.pkl")
+
+    zip_buffer.seek(0)
+
+    return StreamingResponse(
+        iter([zip_buffer.getvalue()]),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f"attachment; filename=filesystem_{name}_index.zip"
+        },
+    )
+
+
 # -----------------------------------------------------------------------------
 # Settings Endpoints (Admin only)
 # -----------------------------------------------------------------------------
@@ -1195,6 +1256,16 @@ async def update_settings(
     # Invalidate cache and reinitialize RAG agent to pick up LLM/embedding changes
     invalidate_settings_cache()
     await rag.initialize()
+
+    # Reset OCR semaphore if concurrency limit was changed
+    if "ocr_concurrency_limit" in updates:
+        from ragtime.core.ollama_concurrency import reset_ollama_semaphore
+
+        reset_ollama_semaphore()
+        logger.info(
+            f"OCR concurrency limit changed to {updates['ocr_concurrency_limit']}, "
+            "semaphore will reinitialize on next use"
+        )
 
     # Notify MCP clients that tools may have changed (e.g., aggregate_search toggle)
     notify_tools_changed()
@@ -1293,6 +1364,21 @@ async def create_tool_config(
     request: CreateToolConfigRequest, _user: User = Depends(require_admin)
 ):
     """Create a new tool configuration. Admin only."""
+    # For FAISS filesystem indexes, check for name conflicts with document indexes
+    if request.tool_type == ToolType.FILESYSTEM_INDEXER:
+        vector_store = request.connection_config.get("vector_store_type", "pgvector")
+        if vector_store == "faiss":
+            index_name = safe_tool_name(request.name)
+            # Check if a document index with this name already exists
+            from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
+
+            index_path = FAISS_INDEX_BASE_PATH / index_name
+            if index_path.exists():
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"An index named '{index_name}' already exists",
+                )
+
     config = ToolConfig(
         name=request.name,
         tool_type=request.tool_type,
@@ -1310,6 +1396,20 @@ async def create_tool_config(
 
     # Notify MCP clients that tools have changed
     notify_tools_changed()
+
+    # Auto-start indexing for filesystem_indexer tools
+    if request.tool_type == ToolType.FILESYSTEM_INDEXER:
+        try:
+            fs_config = FilesystemConnectionConfig(**request.connection_config)
+            await filesystem_indexer.trigger_index(
+                tool_config_id=result.id,
+                config=fs_config,
+                full_reindex=True,
+            )
+            logger.info(f"Auto-started indexing for new filesystem tool: {result.name}")
+        except Exception as e:
+            # Log error but don't fail the tool creation
+            logger.warning(f"Failed to auto-start indexing for {result.name}: {e}")
 
     return result
 
@@ -1422,6 +1522,31 @@ async def update_tool_config(
     if "name" in updates and updates["name"] is not None:
         new_name = updates.pop("name")
         if new_name != original_config.name:
+            # For filesystem_indexer with FAISS, get the old index name before rename
+            old_index_name = None
+            new_index_name = None
+            is_faiss = False
+            if original_config.tool_type == ToolType.FILESYSTEM_INDEXER:
+                old_index_name = (original_config.connection_config or {}).get(
+                    "index_name"
+                )
+                vector_store = (original_config.connection_config or {}).get(
+                    "vector_store_type", "pgvector"
+                )
+                is_faiss = vector_store == "faiss"
+                new_index_name = safe_tool_name(new_name)
+
+                # Check for name conflicts with existing indexes
+                if is_faiss and new_index_name != old_index_name:
+                    from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
+
+                    new_path = FAISS_INDEX_BASE_PATH / new_index_name
+                    if new_path.exists():
+                        raise HTTPException(
+                            status_code=409,
+                            detail=f"An index named '{new_index_name}' already exists",
+                        )
+
             # Use rename_tool_config for comprehensive name updates
             config, update_counts = await repository.rename_tool_config(
                 tool_id, new_name
@@ -1430,6 +1555,23 @@ async def update_tool_config(
                 raise HTTPException(
                     status_code=500, detail="Failed to rename tool configuration"
                 )
+
+            # For FAISS filesystem indexes, rename using the backend
+            if is_faiss and old_index_name and new_index_name:
+                if old_index_name != new_index_name:
+                    from ragtime.indexer.vector_backends import get_faiss_backend
+
+                    faiss_backend = get_faiss_backend()
+                    success = await faiss_backend.rename_index(
+                        old_index_name, new_index_name
+                    )
+                    if success:
+                        # Also update RAG's index tracking
+                        rag.rename_index(old_index_name, new_index_name)
+                    else:
+                        logger.warning(
+                            f"FAISS index rename failed: {old_index_name} -> {new_index_name}"
+                        )
 
             # Log any embedding updates
             total_updates = sum(update_counts.values())
@@ -4821,6 +4963,9 @@ class FilesystemIndexStatsResponse(BaseModel):
     last_indexed: Optional[str] = None
     chunk_count: Optional[int] = None
     estimated_memory_mb: Optional[float] = None
+    vector_store_type: Optional[str] = None
+    pgvector_count: Optional[int] = None
+    faiss_count: Optional[int] = None
 
 
 @router.post(
@@ -5142,7 +5287,9 @@ async def get_filesystem_index_stats(
             status_code=400, detail=f"Invalid filesystem configuration: {str(e)}"
         ) from e
 
-    stats = await filesystem_indexer.get_index_stats(fs_config.index_name)
+    stats = await filesystem_indexer.get_index_stats(
+        fs_config.index_name, fs_config.vector_store_type
+    )
     return FilesystemIndexStatsResponse(
         index_name=stats["index_name"],
         embedding_count=stats["embedding_count"],
@@ -5152,6 +5299,9 @@ async def get_filesystem_index_stats(
         ),
         chunk_count=stats.get("chunk_count"),
         estimated_memory_mb=stats.get("estimated_memory_mb"),
+        vector_store_type=stats.get("vector_store_type"),
+        pgvector_count=stats.get("pgvector_count"),
+        faiss_count=stats.get("faiss_count"),
     )
 
 

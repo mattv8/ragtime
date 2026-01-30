@@ -144,6 +144,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
   const [maxFileSizeKb, setMaxFileSizeKb] = useState(configSnapshot?.max_file_size_kb || 500);
   const [ocrMode, setOcrMode] = useState<'disabled' | 'tesseract' | 'ollama'>(configSnapshot?.ocr_mode || 'disabled');
   const [ocrVisionModel, setOcrVisionModel] = useState(configSnapshot?.ocr_vision_model || '');
+  const [ollamaAvailable, setOllamaAvailable] = useState(false);  // Whether Ollama is configured as LLM provider
   const [gitCloneTimeoutMinutes, setGitCloneTimeoutMinutes] = useState(configSnapshot?.git_clone_timeout_minutes || 5);
   const [gitHistoryDepth, setGitHistoryDepth] = useState(configSnapshot?.git_history_depth || 1);
   const [reindexIntervalHours, setReindexIntervalHours] = useState(configSnapshot?.reindex_interval_hours || 0);
@@ -152,6 +153,20 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
   const [patternsExpanded, setPatternsExpanded] = useState(isEditMode);  // Expand by default in edit mode
   const [description, setDescription] = useState(editIndex?.description || '');
   const [indexName, setIndexName] = useState(editIndex?.display_name || editIndex?.name || '');
+
+  // Fetch settings to check if Ollama OCR is configured
+  useEffect(() => {
+    const loadSettings = async () => {
+      try {
+        const { settings } = await api.getSettings();
+        setOllamaAvailable(settings.default_ocr_mode === 'ollama');
+      } catch {
+        // If settings can't be loaded, Ollama is not available
+        setOllamaAvailable(false);
+      }
+    };
+    loadSettings();
+  }, []);
 
   // Auto-update timeout when depth changes (unless user manually overrode it)
   useEffect(() => {
@@ -626,8 +641,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           setTimeoutManuallySet={setTimeoutManuallySet}
           ocrMode={ocrMode}
           setOcrMode={setOcrMode}
-          ocrVisionModel={ocrVisionModel}
-          setOcrVisionModel={setOcrVisionModel}
+          ollamaAvailable={ollamaAvailable}
           reindexIntervalHours={reindexIntervalHours}
           setReindexIntervalHours={setReindexIntervalHours}
           gitHistoryDepth={gitHistoryDepth}
@@ -794,8 +808,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
             setTimeoutManuallySet={setTimeoutManuallySet}
             ocrMode={ocrMode}
             setOcrMode={setOcrMode}
-            ocrVisionModel={ocrVisionModel}
-            setOcrVisionModel={setOcrVisionModel}
+            ollamaAvailable={ollamaAvailable}
             reindexIntervalHours={reindexIntervalHours}
             setReindexIntervalHours={setReindexIntervalHours}
             gitHistoryDepth={gitHistoryDepth}
@@ -951,8 +964,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
             setTimeoutManuallySet={setTimeoutManuallySet}
             ocrMode={ocrMode}
             setOcrMode={setOcrMode}
-            ocrVisionModel={ocrVisionModel}
-            setOcrVisionModel={setOcrVisionModel}
+            ollamaAvailable={ollamaAvailable}
             reindexIntervalHours={reindexIntervalHours}
             setReindexIntervalHours={setReindexIntervalHours}
             gitHistoryDepth={gitHistoryDepth}

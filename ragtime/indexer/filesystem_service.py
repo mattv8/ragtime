@@ -1,10 +1,10 @@
 """
-Filesystem Indexer Service - Creates and manages pgvector-based filesystem indexes.
+Filesystem Indexer Service - Creates and manages filesystem indexes.
 
 This service handles:
 - Indexing files from Docker volumes, SMB shares, NFS mounts, or local paths
 - Incremental indexing (skip unchanged files based on SHA-256 hash)
-- Storing embeddings in PostgreSQL using pgvector
+- Storing embeddings in PostgreSQL (pgvector) or FAISS (in-memory)
 - Progress tracking and job management
 - Persistent mount management (SMB/NFS shares mounted once, reused across jobs)
 """
@@ -27,33 +27,26 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from ragtime.core.database import get_db
-from ragtime.core.file_constants import (
-    DOCUMENT_EXTENSIONS,
-    PARSEABLE_DOCUMENT_EXTENSIONS,
-    UNPARSEABLE_BINARY_EXTENSIONS,
-)
+from ragtime.core.file_constants import (DOCUMENT_EXTENSIONS,
+                                         PARSEABLE_DOCUMENT_EXTENSIONS,
+                                         UNPARSEABLE_BINARY_EXTENSIONS)
 from ragtime.core.logging import get_logger
-from ragtime.indexer.document_parser import (
-    OCR_EXTENSIONS,
-    is_ocr_supported,
-    is_supported_document,
-)
-from ragtime.indexer.models import (
-    FilesystemAnalysisJob,
-    FilesystemAnalysisResult,
-    FilesystemAnalysisStatus,
-    FilesystemConnectionConfig,
-    FilesystemFileMetadata,
-    FilesystemIndexJob,
-    FilesystemIndexStatus,
-    FileTypeStats,
-)
+from ragtime.indexer.document_parser import (OCR_EXTENSIONS, is_ocr_supported,
+                                             is_supported_document)
+from ragtime.indexer.models import (FilesystemAnalysisJob,
+                                    FilesystemAnalysisResult,
+                                    FilesystemAnalysisStatus,
+                                    FilesystemConnectionConfig,
+                                    FilesystemFileMetadata, FilesystemIndexJob,
+                                    FilesystemIndexStatus,
+                                    FilesystemVectorStoreType, FileTypeStats,
+                                    OcrMode)
 from ragtime.indexer.repository import repository
-from ragtime.indexer.vector_utils import (
-    ensure_embedding_column,
-    ensure_pgvector_extension,
-    get_embeddings_model,
-)
+from ragtime.indexer.vector_backends import (VectorStoreBackend, get_backend,
+                                             get_faiss_backend)
+from ragtime.indexer.vector_utils import (ensure_embedding_column,
+                                          ensure_pgvector_extension,
+                                          get_embeddings_model)
 
 logger = get_logger(__name__)
 
@@ -85,6 +78,7 @@ class FilesystemIndexerService:
         # Persistent mount tracking: tool_config_id -> MountInfo
         self._mounts: Dict[str, MountInfo] = {}
         self._mount_lock = threading.Lock()  # Protect mount operations
+        # Note: Ollama vision OCR uses centralized semaphore from ollama_concurrency
 
     async def _append_embedding_dimension_warning(self, warnings: List[str]) -> None:
         """Warn when embedding dimensions exceed pgvector's 2000-dim index limit."""
@@ -958,12 +952,27 @@ class FilesystemIndexerService:
             },
         )
 
-    async def _delete_file_embeddings(self, index_name: str, file_path: str) -> None:
-        """Delete embeddings for a specific file (before re-indexing)."""
-        db = await get_db()
-        await db.filesystemembedding.delete_many(
-            where={"indexName": index_name, "filePath": file_path}
-        )
+    async def _delete_file_embeddings(
+        self,
+        index_name: str,
+        file_path: str,
+        backend: Optional[VectorStoreBackend] = None,
+    ) -> None:
+        """Delete embeddings for a specific file (before re-indexing).
+
+        Args:
+            index_name: Name of the index
+            file_path: Relative path of the file
+            backend: Vector store backend to use (defaults to pgvector for backward compat)
+        """
+        if backend:
+            await backend.delete_file_embeddings(index_name, file_path)
+        else:
+            # Legacy pgvector path (backward compatibility)
+            db = await get_db()
+            await db.filesystemembedding.delete_many(
+                where={"indexName": index_name, "filePath": file_path}
+            )
 
     async def _insert_embeddings(
         self,
@@ -972,8 +981,27 @@ class FilesystemIndexerService:
         chunks: List[str],
         embeddings: List[List[float]],
         metadata: Dict[str, Any],
+        backend: Optional[VectorStoreBackend] = None,
     ) -> int:
-        """Insert embeddings for a file into pgvector."""
+        """Insert embeddings for a file.
+
+        Args:
+            index_name: Name of the index
+            file_path: Relative path of the file
+            chunks: List of text chunks
+            embeddings: List of embedding vectors
+            metadata: Additional metadata for each chunk
+            backend: Vector store backend to use (defaults to pgvector for backward compat)
+
+        Returns:
+            Number of embeddings inserted
+        """
+        if backend:
+            return await backend.store_embeddings(
+                index_name, file_path, chunks, embeddings, metadata
+            )
+
+        # Legacy pgvector path (backward compatibility)
         import json
 
         db = await get_db()
@@ -1064,10 +1092,36 @@ class FilesystemIndexerService:
             # Initialize embeddings
             embeddings = await self._get_embeddings(app_settings)
 
+            # Get the appropriate vector store backend based on config
+            vector_store_type = getattr(
+                config, "vector_store_type", FilesystemVectorStoreType.PGVECTOR
+            )
+            backend = get_backend(vector_store_type)
+            logger.info(
+                f"Using {vector_store_type.value} backend for index '{config.index_name}'"
+            )
+
             # Mount filesystem if needed (SMB/NFS) and process files
             async with self._mount_filesystem(
                 config, job.tool_config_id
             ) as effective_path:
+                # Resolve OCR vision model - use config value if set, otherwise global default
+                resolved_ocr_vision_model = config.ocr_vision_model
+                if not resolved_ocr_vision_model and config.ocr_mode == OcrMode.OLLAMA:
+                    resolved_ocr_vision_model = app_settings.get(
+                        "default_ocr_vision_model"
+                    )
+
+                # Log OCR mode being used
+                if config.ocr_mode == OcrMode.OLLAMA and resolved_ocr_vision_model:
+                    logger.info(
+                        f"Using Ollama Vision OCR with model: {resolved_ocr_vision_model}"
+                    )
+                elif config.ocr_mode == OcrMode.TESSERACT:
+                    logger.info("Using Tesseract OCR")
+                else:
+                    logger.debug(f"OCR mode: {config.ocr_mode}")
+
                 # Create a working config with the effective path for local access
                 working_config = FilesystemConnectionConfig(
                     mount_type=config.mount_type,
@@ -1081,7 +1135,7 @@ class FilesystemIndexerService:
                     max_file_size_mb=config.max_file_size_mb,
                     max_total_files=config.max_total_files,
                     ocr_mode=config.ocr_mode,
-                    ocr_vision_model=config.ocr_vision_model,
+                    ocr_vision_model=resolved_ocr_vision_model,
                 )
 
                 # Collect files to process - run in thread to avoid blocking on network filesystems
@@ -1158,9 +1212,96 @@ class FilesystemIndexerService:
 
                 base_path = effective_path
 
-                # Process files
-                for file_path in files:
-                    # Check for cancellation at start of each file
+                # Process files in parallel batches (like document indexer)
+                # Concurrency limit: balance between parallelism and resource usage
+                max_concurrent = min(32, os.cpu_count() or 8)
+                file_semaphore = asyncio.Semaphore(max_concurrent)
+                batch_size = max_concurrent * 2  # 2x concurrency for good pipeline
+
+                logger.info(
+                    f"Processing {len(files)} files with {max_concurrent} concurrent workers"
+                )
+
+                # Track OCR files for progress (OCR_EXTENSIONS imported at module level)
+                ocr_file_count = 0
+                ocr_files_processed = 0
+                if config.ocr_mode != OcrMode.DISABLED:
+                    ocr_file_count = sum(
+                        1 for f in files if f.suffix.lower() in OCR_EXTENSIONS
+                    )
+                    if ocr_file_count > 0:
+                        logger.info(
+                            f"Found {ocr_file_count} image files for OCR processing"
+                        )
+
+                # Track files loaded during parallel processing (for progress updates)
+                files_loaded_in_batch = 0
+                files_loaded_lock = asyncio.Lock()
+
+                async def process_single_file(
+                    file_path: Path,
+                ) -> tuple[str, list[str], str | None, str | None]:
+                    """Process a single file: hash, check, load, chunk.
+
+                    Returns: (rel_path, chunks, current_hash, error)
+                    """
+                    nonlocal ocr_files_processed, files_loaded_in_batch
+                    async with file_semaphore:
+                        rel_path = str(file_path.relative_to(base_path))
+                        try:
+                            # Check if file changed (incremental indexing)
+                            current_hash = await asyncio.to_thread(
+                                self._compute_file_hash, file_path
+                            )
+
+                            existing_meta = None
+                            if not full_reindex:
+                                existing_meta = await self._get_file_metadata(
+                                    config.index_name, rel_path
+                                )
+
+                            if (
+                                not full_reindex
+                                and existing_meta
+                                and existing_meta.file_hash == current_hash
+                            ):
+                                # File unchanged, skip
+                                return (rel_path, [], current_hash, "unchanged")
+
+                            # Update progress for OCR files
+                            suffix = file_path.suffix.lower()
+                            is_ocr_file = (
+                                suffix in OCR_EXTENSIONS
+                                and working_config.ocr_mode != OcrMode.DISABLED
+                            )
+                            if is_ocr_file and ocr_file_count > 0:
+                                ocr_files_processed += 1
+                                # Update job status to show OCR progress
+                                job.current_directory = f"Vision OCR: {ocr_files_processed}/{ocr_file_count} images"
+                                await self._update_job(job)
+
+                            # Load and chunk the file
+                            use_token_chunking = app_settings.get(
+                                "chunking_use_tokens", True
+                            )
+                            chunks = await self._load_and_chunk_file(
+                                file_path, working_config, use_token_chunking
+                            )
+
+                            # Track progress - increment counter after loading each file
+                            async with files_loaded_lock:
+                                files_loaded_in_batch += 1
+                                # Update job periodically (every 5 files)
+                                if files_loaded_in_batch % 5 == 0:
+                                    await self._update_job(job)
+
+                            return (rel_path, chunks, current_hash, None)
+                        except Exception as e:
+                            return (rel_path, [], None, str(e))
+
+                # Process files in batches
+                for batch_start in range(0, len(files), batch_size):
+                    # Check for cancellation at batch boundaries
                     if self._is_cancelled(job.id):
                         logger.info(f"Job {job.id} cancelled by user")
                         job.status = FilesystemIndexStatus.CANCELLED
@@ -1170,139 +1311,172 @@ class FilesystemIndexerService:
                         await self._update_job(job)
                         return
 
-                    rel_path = str(file_path.relative_to(base_path))
-                    logger.info(f"Processing file: {rel_path}")
+                    batch_end = min(batch_start + batch_size, len(files))
+                    batch_files = files[batch_start:batch_end]
 
-                    try:
-                        # Check if file changed (incremental indexing) - run in thread for network filesystems
-                        current_hash = await asyncio.to_thread(
-                            self._compute_file_hash, file_path
-                        )
+                    # Reset batch progress counter
+                    files_loaded_in_batch = 0
 
-                        existing_meta = None
-                        if not full_reindex:
-                            existing_meta = await self._get_file_metadata(
-                                config.index_name, rel_path
-                            )
+                    # Initial progress update for this batch
+                    job.current_directory = "Loading files"
+                    await self._update_job(job)
 
-                        if (
-                            not full_reindex
-                            and existing_meta
-                            and existing_meta.file_hash == current_hash
-                        ):
-                            # File unchanged, skip
-                            job.skipped_files += 1
-                            # Update progress every 10 skipped files (they're fast)
-                            if job.skipped_files % 10 == 0:
-                                await self._update_job(job)
-                                await asyncio.sleep(0)  # Yield on skip updates too
-                            continue
+                    # Process batch in parallel
+                    tasks = [process_single_file(fp) for fp in batch_files]
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                        # Load and chunk the file (use token chunking setting from app settings)
-                        use_token_chunking = app_settings.get(
-                            "chunking_use_tokens", True
-                        )
-                        chunks = await self._load_and_chunk_file(
-                            file_path, config, use_token_chunking
-                        )
-                        if not chunks:
-                            # No content extracted - count as processed but empty (avoids "unchanged" status)
+                    # Update progress after file loading phase completes for this batch
+                    job.current_directory = (
+                        f"Embedding batch {batch_start // batch_size + 1}"
+                    )
+                    await self._update_job(job)
+
+                    # Collect chunks for batch embedding
+                    files_to_embed: list[tuple[str, list[str], str, Path]] = []
+
+                    for i, result in enumerate(results):
+                        file_path = batch_files[i]
+                        if isinstance(result, BaseException):
+                            logger.debug(f"File processing exception: {result}")
                             job.processed_files += 1
-                            await self._update_job(job)
-                            await asyncio.sleep(0)
                             continue
 
-                        # Delete old embeddings for this file
-                        await self._delete_file_embeddings(config.index_name, rel_path)
+                        rel_path, chunks, current_hash, error = result
 
-                        # Generate embeddings - run in thread to avoid blocking event loop
-                        chunk_embeddings = await asyncio.to_thread(
-                            embeddings.embed_documents, chunks
+                        if error == "unchanged":
+                            job.skipped_files += 1
+                            continue
+
+                        if error:
+                            logger.debug(f"Skipped {rel_path}: {error}")
+                            job.processed_files += 1
+                            continue
+
+                        if not chunks:
+                            job.processed_files += 1
+                            continue
+
+                        # current_hash is guaranteed to be set when no error
+                        assert current_hash is not None
+                        files_to_embed.append(
+                            (rel_path, chunks, current_hash, file_path)
                         )
 
-                        # Validate embedding dimension against stored tracking
-                        if chunk_embeddings:
-                            current_dim = len(chunk_embeddings[0])
+                    # Update after categorizing results
+                    await self._update_job(job)
+
+                    # Batch embed all chunks from this batch
+                    if files_to_embed:
+                        # Flatten all chunks for batch embedding
+                        all_chunks = []
+                        chunk_file_map = []  # Track which file each chunk belongs to
+                        for rel_path, chunks, _, _ in files_to_embed:
+                            for chunk in chunks:
+                                all_chunks.append(chunk)
+                                chunk_file_map.append(rel_path)
+
+                        # Generate embeddings for all chunks at once
+                        try:
+                            all_embeddings = await asyncio.to_thread(
+                                embeddings.embed_documents, all_chunks
+                            )
+                        except Exception as e:
+                            logger.error(f"Batch embedding failed: {e}")
+                            for rel_path, _, _, _ in files_to_embed:
+                                job.processed_files += 1
+                            await self._update_job(job)
+                            continue
+
+                        # Validate embedding dimension (first in batch)
+                        if all_embeddings and tracking_needs_update:
+                            current_dim = len(all_embeddings[0])
                             if (
                                 settings.embedding_dimension is not None
                                 and settings.embedding_dimension != current_dim
                             ):
                                 if not full_reindex:
                                     job.status = FilesystemIndexStatus.FAILED
-                                    job.error_message = (
-                                        "Embedding dimension changed. A full re-index is required to "
-                                        "rebuild embeddings with the new provider/model."
-                                    )
+                                    job.error_message = "Embedding dimension changed. A full re-index is required."
                                     job.completed_at = datetime.utcnow()
                                     await self._update_job(job)
-                                    logger.error(job.error_message)
                                     return
-                                logger.warning(
-                                    f"Embedding dimension changed {settings.embedding_dimension} -> {current_dim}; "
-                                    "continuing full re-index"
-                                )
                                 settings.embedding_dimension = current_dim
                                 settings.embedding_config_hash = current_config_hash
-                                tracking_needs_update = True
 
-                        # Yield to event loop to keep server responsive
-                        await asyncio.sleep(0)
+                        # Distribute embeddings back to files and insert
+                        embed_idx = 0
+                        for rel_path, chunks, current_hash, file_path in files_to_embed:
+                            chunk_count = len(chunks)
+                            file_embeddings = all_embeddings[
+                                embed_idx : embed_idx + chunk_count
+                            ]
+                            embed_idx += chunk_count
 
-                        # Insert new embeddings
-                        inserted = await self._insert_embeddings(
-                            index_name=config.index_name,
-                            file_path=rel_path,
-                            chunks=chunks,
-                            embeddings=chunk_embeddings,
-                            metadata={"source": rel_path},
+                            try:
+                                # Delete old embeddings for this file
+                                await self._delete_file_embeddings(
+                                    config.index_name, rel_path, backend=backend
+                                )
+
+                                # Insert new embeddings
+                                inserted = await self._insert_embeddings(
+                                    index_name=config.index_name,
+                                    file_path=rel_path,
+                                    chunks=chunks,
+                                    embeddings=file_embeddings,
+                                    metadata={"source": rel_path},
+                                    backend=backend,
+                                )
+
+                                # Update embedding tracking after first success
+                                if inserted > 0 and tracking_needs_update:
+                                    await repo.update_embedding_tracking(
+                                        dimension=len(file_embeddings[0]),
+                                        config_hash=current_config_hash,
+                                    )
+                                    tracking_needs_update = False
+                                    settings.embedding_dimension = len(
+                                        file_embeddings[0]
+                                    )
+                                    settings.embedding_config_hash = current_config_hash
+
+                                # Update file metadata
+                                file_stat = file_path.stat()
+                                await self._upsert_file_metadata(
+                                    FilesystemFileMetadata(
+                                        index_name=config.index_name,
+                                        file_path=rel_path,
+                                        file_hash=current_hash,
+                                        file_size=file_stat.st_size,
+                                        mime_type=mimetypes.guess_type(str(file_path))[
+                                            0
+                                        ],
+                                        chunk_count=chunk_count,
+                                        last_indexed=datetime.utcnow(),
+                                    )
+                                )
+
+                                job.processed_files += 1
+                                job.processed_chunks += chunk_count
+                                job.total_chunks += chunk_count
+
+                            except Exception as e:
+                                logger.warning(
+                                    f"Error inserting embeddings for {rel_path}: {e}"
+                                )
+                                job.processed_files += 1
+
+                    # Update job progress after each batch
+                    await self._update_job(job)
+
+                    if job.processed_files > 0 and job.processed_files % 50 == 0:
+                        logger.info(
+                            f"Processed {job.processed_files}/{job.total_files} files, "
+                            f"skipped {job.skipped_files} unchanged"
                         )
 
-                        # After first successful insert, record embedding dimension and config hash
-                        if inserted > 0 and chunk_embeddings and tracking_needs_update:
-                            await repo.update_embedding_tracking(
-                                dimension=len(chunk_embeddings[0]),
-                                config_hash=current_config_hash,
-                            )
-                            tracking_needs_update = False
-                            settings.embedding_dimension = len(chunk_embeddings[0])
-                            settings.embedding_config_hash = current_config_hash
-
-                        # Update file metadata
-                        file_stat = file_path.stat()
-                        await self._upsert_file_metadata(
-                            FilesystemFileMetadata(
-                                index_name=config.index_name,
-                                file_path=rel_path,
-                                file_hash=current_hash,
-                                file_size=file_stat.st_size,
-                                mime_type=mimetypes.guess_type(str(file_path))[0],
-                                chunk_count=len(chunks),
-                                last_indexed=datetime.utcnow(),
-                            )
-                        )
-
-                        job.processed_files += 1
-                        job.processed_chunks += len(chunks)
-                        job.total_chunks += len(chunks)
-
-                        # Update job progress in database after each file
-                        await self._update_job(job)
-
-                        # Yield to event loop after each file to keep server responsive
-                        await asyncio.sleep(0)
-
-                        if job.processed_files % 10 == 0:
-                            logger.info(
-                                f"Processed {job.processed_files}/{job.total_files} files, "
-                                f"skipped {job.skipped_files} unchanged"
-                            )
-
-                    except Exception as e:
-                        logger.warning(f"Error processing file {rel_path}: {e}")
-                        job.processed_files += 1
-                        # Yield even on errors
-                        await asyncio.sleep(0)
-                        continue
+            # Finalize the vector store (FAISS saves to disk here, pgvector is no-op)
+            await backend.finalize_index(config.index_name)
 
             # Update tool config with last indexed timestamp (after the for loop, inside async with)
             await self._update_tool_config_last_indexed(job.tool_config_id)
@@ -1311,7 +1485,8 @@ class FilesystemIndexerService:
             job.completed_at = datetime.utcnow()
             logger.info(
                 f"Indexing completed: {job.processed_files} processed, "
-                f"{job.skipped_files} skipped, {job.total_chunks} chunks"
+                f"{job.skipped_files} skipped, {job.total_chunks} chunks "
+                f"(backend: {vector_store_type.value})"
             )
 
         except asyncio.CancelledError:
@@ -1344,6 +1519,31 @@ class FilesystemIndexerService:
         else:
             # Success path - update DB and clean up
             await self._update_job(job)
+
+            # Post-completion actions for FAISS indexes
+            if vector_store_type == FilesystemVectorStoreType.FAISS:
+                try:
+                    # 1. Load the new index into memory immediately
+                    from ragtime.indexer.vector_backends import \
+                        get_faiss_backend
+
+                    await get_faiss_backend().load_index(job.index_name, embeddings)
+
+                    # 2. Re-enable tool if it was auto-disabled
+                    tool_config = await repository.get_tool_config(job.tool_config_id)
+                    if tool_config and not tool_config.enabled:
+                        logger.info(
+                            f"Re-enabling filesystem tool {job.tool_config_id} after successful indexing"
+                        )
+                        await repository.update_tool_config(
+                            job.tool_config_id, {"enabled": True}
+                        )
+
+                except Exception as e:
+                    logger.error(
+                        f"Failed to post-process FAISS index after completion: {e}"
+                    )
+
             self._active_jobs.pop(job.id, None)
             self._cancellation_flags.pop(job.id, None)
             self._running_tasks.pop(job.id, None)
@@ -1388,11 +1588,9 @@ class FilesystemIndexerService:
         document_parser via _read_file_content() before chunking.
         """
         from ragtime.core.file_constants import OCR_EXTENSIONS
-        from ragtime.indexer.chunking import (
-            _chunk_with_chonkie_code,
-            _chunk_with_recursive,
-            chunk_semantic_segments,
-        )
+        from ragtime.indexer.chunking import (_chunk_with_chonkie_code,
+                                              _chunk_with_recursive,
+                                              chunk_semantic_segments)
 
         try:
             file_path_str = str(file_path)
@@ -1428,6 +1626,7 @@ class FilesystemIndexerService:
                     _chunk_with_chonkie_code,
                     content,
                     config.chunk_size,
+                    config.chunk_overlap,
                     metadata,
                 )
                 return [doc.page_content for doc in docs]
@@ -1480,13 +1679,14 @@ class FilesystemIndexerService:
         """
         from ragtime.core.app_settings import get_app_settings
         from ragtime.indexer.chunking import chunk_semantic_segments
-        from ragtime.indexer.document_parser import extract_image_structured_async
+        from ragtime.indexer.document_parser import \
+            extract_image_structured_async
 
         # Get Ollama base URL
         app_settings = await get_app_settings()
         ollama_base_url = app_settings.get("ollama_base_url", "http://localhost:11434")
 
-        # Get structured OCR result
+        # Get structured OCR result (semaphore is applied at vision_models level)
         result = await extract_image_structured_async(
             file_path,
             ocr_vision_model=config.ocr_vision_model,
@@ -1540,7 +1740,8 @@ class FilesystemIndexerService:
         Uses async extraction to support Ollama vision OCR.
         """
         from ragtime.core.app_settings import get_app_settings
-        from ragtime.indexer.document_parser import extract_text_from_file_async
+        from ragtime.indexer.document_parser import \
+            extract_text_from_file_async
 
         # Get Ollama base URL from app settings for vision OCR
         ollama_base_url = None
@@ -1550,6 +1751,7 @@ class FilesystemIndexerService:
                 "ollama_base_url", "http://localhost:11434"
             )
 
+        # Semaphore is applied at vision_models level for Ollama requests
         text = await extract_text_from_file_async(
             file_path,
             ocr_mode=ocr_mode,  # type: ignore
@@ -1774,9 +1976,8 @@ class FilesystemIndexerService:
                         stats["estimated_chunks"] = stats["file_count"]
 
                 # Get LLM-powered exclusion suggestions
-                from ragtime.indexer.llm_exclusions import (
-                    get_smart_exclusion_suggestions,
-                )
+                from ragtime.indexer.llm_exclusions import \
+                    get_smart_exclusion_suggestions
 
                 smart_exclusions, _used_llm = await get_smart_exclusion_suggestions(
                     ext_stats=dict(ext_stats),
@@ -1910,36 +2111,74 @@ class FilesystemIndexerService:
             job.error_message = str(e)
             job.completed_at = datetime.now(timezone.utc)
 
-    async def delete_index(self, index_name: str) -> int:
+    async def delete_index(
+        self,
+        index_name: str,
+        vector_store_type: Optional[FilesystemVectorStoreType] = None,
+    ) -> int:
         """
         Delete all embeddings and metadata for an index.
+
+        Args:
+            index_name: Name of the index to delete
+            vector_store_type: Vector store type (auto-detects if not specified)
 
         Returns the number of embeddings deleted.
         """
         db = await get_db()
+        deleted_count = 0
 
-        # Delete embeddings
-        result = await db.filesystemembedding.delete_many(
-            where={"indexName": index_name}
-        )
+        # Delete from pgvector (always try, for backward compatibility)
+        if vector_store_type in (None, FilesystemVectorStoreType.PGVECTOR):
+            result = await db.filesystemembedding.delete_many(
+                where={"indexName": index_name}
+            )
+            deleted_count += result
+            logger.info(f"Deleted {result} pgvector embeddings for '{index_name}'")
 
-        # Delete file metadata
+        # Delete from FAISS if applicable
+        if vector_store_type in (None, FilesystemVectorStoreType.FAISS):
+            faiss_deleted = await get_faiss_backend().delete_index(index_name)
+            if faiss_deleted > 0:
+                deleted_count += faiss_deleted
+                logger.info(f"Deleted FAISS index for '{index_name}'")
+
+        # Delete file metadata (shared between both backends)
         await db.filesystemfilemetadata.delete_many(where={"indexName": index_name})
 
-        logger.info(f"Deleted index '{index_name}': {result} embeddings removed")
-        return result
+        logger.info(f"Deleted index '{index_name}': {deleted_count} embeddings removed")
+        return deleted_count
 
-    async def get_index_stats(self, index_name: str) -> Dict[str, Any]:
-        """Get statistics for a filesystem index."""
+    async def get_index_stats(
+        self,
+        index_name: str,
+        vector_store_type: Optional[FilesystemVectorStoreType] = None,
+    ) -> Dict[str, Any]:
+        """Get statistics for a filesystem index.
+
+        Args:
+            index_name: Name of the index
+            vector_store_type: Vector store type (auto-detects if not specified)
+        """
         from ragtime.core.app_settings import get_app_settings
 
         db = await get_db()
         app_settings = await get_app_settings()
 
-        # Count embeddings
-        embedding_count = await db.filesystemembedding.count(
-            where={"indexName": index_name}
-        )
+        # Count embeddings from both backends
+        pgvector_count = 0
+        faiss_count = 0
+
+        if vector_store_type in (None, FilesystemVectorStoreType.PGVECTOR):
+            pgvector_count = await db.filesystemembedding.count(
+                where={"indexName": index_name}
+            )
+
+        if vector_store_type in (None, FilesystemVectorStoreType.FAISS):
+            faiss_stats = await get_faiss_backend().get_index_stats(index_name)
+            faiss_count = faiss_stats.get("embedding_count", 0)
+
+        embedding_count = pgvector_count + faiss_count
 
         # Count unique files with explicit chunk count sum if possible, or just file count
         # For now, just count files
@@ -1953,17 +2192,22 @@ class FilesystemIndexerService:
             order={"lastIndexed": "desc"},
         )
 
-        # Calculate memory
-        embedding_dimension = app_settings.get("embedding_dimension")
+        # Calculate memory - for FAISS use actual disk size, for pgvector estimate
         estimated_memory_mb = 0.0
 
-        if embedding_dimension and embedding_count > 0:
-            # Memory formula for pgvector: embeddings * dimensions * 4 bytes (float32)
-            # pgvector uses slightly different overhead, estimate 1.15x
-            bytes_per_embedding = embedding_dimension * 4 * 1.15
-            estimated_memory_mb = (embedding_count * bytes_per_embedding) / (
-                1024 * 1024
-            )
+        if faiss_count > 0 and vector_store_type == FilesystemVectorStoreType.FAISS:
+            # For FAISS, use actual disk size from stats
+            faiss_stats = await get_faiss_backend().get_index_stats(index_name)
+            estimated_memory_mb = faiss_stats.get("size_mb") or 0.0
+        elif pgvector_count > 0:
+            # For pgvector, estimate from embedding dimensions
+            embedding_dimension = app_settings.get("embedding_dimension")
+            if embedding_dimension and embedding_count > 0:
+                # Memory formula: embeddings * dimensions * 4 bytes (float32) * overhead
+                bytes_per_embedding = embedding_dimension * 4 * 1.15
+                estimated_memory_mb = (embedding_count * bytes_per_embedding) / (
+                    1024 * 1024
+                )
 
         return {
             "index_name": index_name,
@@ -1972,8 +2216,14 @@ class FilesystemIndexerService:
             "file_count": file_count,
             "last_indexed": latest_file.lastIndexed if latest_file else None,
             "estimated_memory_mb": estimated_memory_mb,
+            "vector_store_type": (
+                vector_store_type.value if vector_store_type else "auto"
+            ),
+            "pgvector_count": pgvector_count,
+            "faiss_count": faiss_count,
         }
 
 
 # Global service instance
+filesystem_indexer = FilesystemIndexerService()
 filesystem_indexer = FilesystemIndexerService()

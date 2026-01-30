@@ -9,6 +9,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
+
 from ragtime import __version__
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings
@@ -85,6 +86,7 @@ async def health_check():
         IndexLoadingDetail(
             name=d["name"],
             status=d["status"],
+            type=d.get("type"),
             size_mb=d.get("size_mb"),
             chunk_count=d.get("chunk_count"),
             load_time_seconds=d.get("load_time_seconds"),

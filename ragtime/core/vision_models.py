@@ -600,27 +600,33 @@ async def extract_text_with_vision(
 
     image_b64 = base64.b64encode(processed_content).decode("utf-8")
 
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            request_json = {
-                "model": model,
-                "prompt": prompt,
-                "images": [image_b64],
-                "stream": False,
-                "options": {
-                    "temperature": 0.1,
-                    "num_predict": 4096,
-                },
-            }
-            if schema is not None:
-                request_json["format"] = schema
+    # Use centralized semaphore to limit concurrent Ollama vision requests
+    from ragtime.core.ollama_concurrency import get_ollama_semaphore
 
-            response = await client.post(
-                f"{base_url}/api/generate",
-                json=request_json,
-            )
-            response.raise_for_status()
-            data = response.json()
+    semaphore = await get_ollama_semaphore()
+
+    try:
+        async with semaphore:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                request_json = {
+                    "model": model,
+                    "prompt": prompt,
+                    "images": [image_b64],
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.1,
+                        "num_predict": 4096,
+                    },
+                }
+                if schema is not None:
+                    request_json["format"] = schema
+
+                response = await client.post(
+                    f"{base_url}/api/generate",
+                    json=request_json,
+                )
+                response.raise_for_status()
+                data = response.json()
 
             # Get response text - some models (like qwen3-vl with "thinking" capability)
             # put structured output in "thinking" field instead of "response"
@@ -812,21 +818,29 @@ async def extract_text_with_vision_structured(
 
     image_b64 = base64.b64encode(processed_content).decode("utf-8")
 
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            request_json = {
-                "model": model,
-                "prompt": prompt,
-                "images": [image_b64],
-                "stream": False,
-                "options": {"temperature": 0.1, "num_predict": 4096},
-            }
-            if schema is not None:
-                request_json["format"] = schema
+    # Use centralized semaphore to limit concurrent Ollama vision requests
+    from ragtime.core.ollama_concurrency import get_ollama_semaphore
 
-            response = await client.post(f"{base_url}/api/generate", json=request_json)
-            response.raise_for_status()
-            data = response.json()
+    semaphore = await get_ollama_semaphore()
+
+    try:
+        async with semaphore:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                request_json = {
+                    "model": model,
+                    "prompt": prompt,
+                    "images": [image_b64],
+                    "stream": False,
+                    "options": {"temperature": 0.1, "num_predict": 4096},
+                }
+                if schema is not None:
+                    request_json["format"] = schema
+
+                response = await client.post(
+                    f"{base_url}/api/generate", json=request_json
+                )
+                response.raise_for_status()
+                data = response.json()
 
             response_text = data.get("response", "").strip()
             thinking_text = data.get("thinking", "").strip()

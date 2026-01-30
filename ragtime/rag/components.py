@@ -559,8 +559,97 @@ class RAGComponents:
             elapsed = time.time() - start_time
             logger.info(
                 f"FAISS indexes loaded in background ({elapsed:.1f}s): "
-                f"{len(self.retrievers)} index(es) ready"
+                f"{len(self.retrievers)} document index(es) ready"
             )
+
+            # Also load any FAISS-based filesystem indexes
+            await self._load_filesystem_faiss_indexes()
+
+    async def _load_filesystem_faiss_indexes(self):
+        """Load FAISS-based filesystem indexes at startup.
+
+        Filesystem indexes can use either pgvector or FAISS. For FAISS-based
+        ones, we need to load them into memory like document indexes.
+
+        Note: Since filesystem and document indexes share the same /data/ folder,
+        we skip any indexes that exist in index_metadata (those are document indexes).
+        """
+        import time
+
+        from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
+
+        if not self._embedding_model:
+            return
+
+        try:
+            faiss_backend = get_faiss_backend()
+            all_disk_indexes = FaissBackend.list_disk_indexes()
+
+            if not all_disk_indexes:
+                logger.debug("No FAISS indexes found on disk")
+                return
+
+            # Filter out document indexes (those in index_metadata)
+            document_index_names = set()
+            if self._index_metadata:
+                document_index_names = {
+                    idx.get("name") for idx in self._index_metadata if idx.get("name")
+                }
+
+            # Filesystem indexes are those not in document index metadata
+            disk_indexes = [
+                name for name in all_disk_indexes if name not in document_index_names
+            ]
+
+            if not disk_indexes:
+                logger.debug("No FAISS filesystem indexes to load")
+                return
+
+            logger.info(f"Loading {len(disk_indexes)} FAISS filesystem index(es)...")
+            loaded = 0
+            for index_name in disk_indexes:
+                try:
+                    start_time = time.time()
+                    success = await faiss_backend.load_index(
+                        index_name, self._embedding_model
+                    )
+                    if success:
+                        loaded += 1
+                        load_time = time.time() - start_time
+                        # Get stats for the loaded index
+                        stats = await faiss_backend.get_index_stats(index_name)
+                        # Track in index_details (same namespace as document indexes)
+                        self._index_details[index_name] = {
+                            "name": index_name,
+                            "display_name": index_name,
+                            "status": "loaded",
+                            "type": "filesystem_faiss",
+                            "chunk_count": stats.get("embedding_count", 0),
+                            "size_mb": stats.get("size_mb"),
+                            "load_time_seconds": load_time,
+                            "error": None,
+                        }
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to load FAISS filesystem index {index_name}: {e}"
+                    )
+                    # Track failed load
+                    self._index_details[index_name] = {
+                        "name": index_name,
+                        "display_name": index_name,
+                        "status": "error",
+                        "type": "filesystem_faiss",
+                        "chunk_count": None,
+                        "size_mb": None,
+                        "load_time_seconds": None,
+                        "error": str(e),
+                    }
+
+            if loaded > 0:
+                logger.info(f"Loaded {loaded} FAISS filesystem index(es)")
+
+        except Exception as e:
+            logger.error(f"Error loading FAISS filesystem indexes: {e}")
 
     async def _init_llm(self):
         """Initialize LLM based on database settings."""
@@ -842,6 +931,7 @@ class RAGComponents:
                 self._index_details[index_name] = {
                     "name": index_name,
                     "status": "pending",
+                    "type": "document",  # Distinguish from filesystem_faiss
                     "size_mb": (
                         idx.get("size_bytes", 0) / (1024 * 1024)
                         if idx.get("size_bytes")
@@ -1032,6 +1122,7 @@ class RAGComponents:
                 self._index_details[index_name] = {
                     "name": index_name,
                     "status": "pending",
+                    "type": "document",  # Distinguish from filesystem_faiss
                     "size_mb": (
                         idx.get("size_bytes", 0) / (1024 * 1024)
                         if idx.get("size_bytes")

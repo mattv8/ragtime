@@ -201,8 +201,9 @@ model AppSettings {
   embeddingConfigHash    String? @map("embedding_config_hash")
 
   // OCR Configuration (global defaults for new indexes)
-  defaultOcrMode        OcrMode  @default(disabled) @map("default_ocr_mode") // Default OCR mode for new indexes
-  defaultOcrVisionModel String?  @map("default_ocr_vision_model") // Default Ollama vision model for OCR (e.g., 'granite3.2-vision:2b')
+  defaultOcrMode           OcrMode  @default(disabled) @map("default_ocr_mode") // Default OCR mode for new indexes
+  defaultOcrVisionModel    String?  @map("default_ocr_vision_model") // Default Ollama vision model for OCR (e.g., 'granite3.2-vision:2b')
+  ocrConcurrencyLimit      Int      @default(1) @map("ocr_concurrency_limit") // Max concurrent Ollama vision OCR requests
 
   // Timestamps
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
@@ -231,6 +232,12 @@ enum FilesystemMountType {
   smb            // SMB/CIFS network share
   nfs            // NFS network mount
   local          // Direct local path (container must have access)
+}
+
+/// Vector store type for filesystem indexes
+enum FilesystemVectorStoreType {
+  pgvector  // PostgreSQL pgvector - persistent, scalable (default)
+  faiss     // FAISS - in-memory, loaded at startup like document indexes
 }
 
 /// Configuration for a tool instance

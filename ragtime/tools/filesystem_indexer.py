@@ -1,9 +1,10 @@
 """
-Filesystem Indexer Tool - Search indexed filesystem content via pgvector.
+Filesystem Indexer Tool - Search indexed filesystem content.
 
 This tool provides semantic search over filesystem content that has been
-indexed into PostgreSQL using pgvector embeddings. The actual indexing
-is handled by the filesystem indexer service; this tool only performs searches.
+indexed using either pgvector (PostgreSQL) or FAISS (in-memory) embeddings.
+The actual indexing is handled by the filesystem indexer service; this tool
+only performs searches.
 """
 
 from typing import Optional
@@ -50,7 +51,7 @@ async def search_filesystem_index(
     """
     Search the filesystem index using semantic similarity.
 
-    This function queries the pgvector embeddings table to find relevant
+    This function queries both pgvector and FAISS backends to find relevant
     document chunks based on the query.
 
     Args:
@@ -60,9 +61,9 @@ async def search_filesystem_index(
         max_chars_per_result: Maximum characters per result (0 for full content)
     """
     from ragtime.core.app_settings import get_app_settings
+    from ragtime.indexer.vector_backends import get_faiss_backend, get_pgvector_backend
 
     try:
-        db = await get_db()
         app_settings = await get_app_settings()
 
         # Get the embedding for the query
@@ -70,18 +71,40 @@ async def search_filesystem_index(
         if embedding is None:
             return "Error: Could not generate query embedding. Check embedding provider settings."
 
-        # Build the search query
-        # We use raw SQL because Prisma doesn't natively support pgvector operations
-        results = await _search_embeddings(
-            db=db,
-            embedding=embedding,
-            index_name=index_name,
-            max_results=max_results,
-        )
+        # Search both backends and combine results
+        all_results = []
 
-        if not results:
+        # Search pgvector
+        try:
+            pgvector_results = await get_pgvector_backend().search(
+                query_embedding=embedding,
+                index_name=index_name,
+                max_results=max_results,
+            )
+            all_results.extend(pgvector_results)
+        except Exception as e:
+            logger.debug(f"pgvector search skipped or failed: {e}")
+
+        # Search FAISS (if any indexes are loaded)
+        try:
+            faiss_backend = get_faiss_backend()
+            if faiss_backend.get_loaded_indexes():
+                faiss_results = await faiss_backend.search(
+                    query_embedding=embedding,
+                    index_name=index_name,
+                    max_results=max_results,
+                )
+                all_results.extend(faiss_results)
+        except Exception as e:
+            logger.debug(f"FAISS search skipped or failed: {e}")
+
+        if not all_results:
             scope = f"in index '{index_name}'" if index_name else "across all indexes"
             return f"No relevant documents found {scope} for query: {query}"
+
+        # Sort by similarity and limit
+        all_results.sort(key=lambda x: x.get("similarity", 0), reverse=True)
+        results = all_results[:max_results]
 
         # Format results
         output_parts = [f"Found {len(results)} relevant document(s):\n"]
@@ -96,6 +119,8 @@ async def search_filesystem_index(
             if max_chars_per_result > 0 and len(content) > max_chars_per_result:
                 content = content[:max_chars_per_result] + "... (truncated)"
             output_parts.append(f"Content:\n{content}\n")
+
+        return "\n".join(output_parts)
 
         return "\n".join(output_parts)
 
