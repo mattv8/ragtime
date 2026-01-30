@@ -130,6 +130,7 @@
 
 .chat-group-name {
   font-weight: 600;
+  flex: 1;
 }
 
 .chat-group-count {
