@@ -867,7 +867,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
                 <tbody>
                   {analysisResult.file_type_stats.slice(0, 15).map((ft) => (
                     <tr key={ft.extension}>
-                      <td style={{ padding: '4px 8px', fontFamily: 'monospace' }}>{ft.extension}</td>
+                      <td style={{ padding: '4px 8px', fontFamily: 'var(--font-mono)' }}>{ft.extension}</td>
                       <td style={{ padding: '4px 8px' }}>{ft.file_count}</td>
                       <td style={{ padding: '4px 8px' }}>{formatBytes(ft.total_size_bytes)}</td>
                       <td style={{ padding: '4px 8px' }}>{ft.estimated_chunks.toLocaleString()}</td>

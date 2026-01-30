@@ -73,6 +73,11 @@
     font-size: var(--text-lg);
   }
 
+  /* Chat Tool Calls */
+  .chat-tool-calls {
+    min-width: 100% !important;
+  }
+
   /* Form layouts */
   .form-row {
     display: flex;

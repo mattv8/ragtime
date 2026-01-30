@@ -1251,7 +1251,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                     setFormData({ ...formData, llm_max_tokens: val });
                   }}
                 />
-                <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'monospace' }}>
+                <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
                   {formData.llm_max_tokens && formData.llm_max_tokens >= 100000 ? 'LLM Max' : (formData.llm_max_tokens || 4096).toLocaleString()}
                 </span>
               </div>
@@ -1277,7 +1277,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                     })
                   }
                 />
-                <span style={{ minWidth: '30px', textAlign: 'right', fontFamily: 'monospace' }}>
+                <span style={{ minWidth: '30px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
                   {formData.max_iterations ?? 30}
                 </span>
               </div>
@@ -1366,7 +1366,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                       : 'var(--bg-secondary, #1e1e1e)',
                     borderRadius: '4px',
                     border: `1px solid ${hasMismatch ? 'var(--warning-color, #ff9800)' : 'var(--border-color, #3c3c3c)'}`,
-                    fontFamily: 'monospace',
+                    fontFamily: 'var(--font-mono)',
                     fontSize: '1.1rem',
                     textAlign: 'center',
                   }}>
@@ -1662,7 +1662,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                     Where to search for users. Select the root domain to search all users, or a specific OU to limit scope.
                   </p>
                   {ldapFormData.user_search_base && (
-                    <p className="field-help" style={{ fontFamily: 'monospace', fontSize: '0.75rem', marginTop: '0.25rem' }}>
+                    <p className="field-help" style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', marginTop: '0.25rem' }}>
                       DN: {ldapFormData.user_search_base}
                     </p>
                   )}

@@ -1515,7 +1515,7 @@ function SSHAuthPanel({
                     readOnly
                     value={config.public_key}
                     rows={3}
-                    style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.8rem' }}
+                    style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: '0.8rem' }}
                   />
                   <button
                     type="button"
@@ -1551,7 +1551,7 @@ function SSHAuthPanel({
                 onChange={(e) => onConfigChange({ ...config, key_content: e.target.value, key_path: '' })}
                 placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;...&#10;-----END RSA PRIVATE KEY-----"
                 rows={6}
-                style={{ fontFamily: 'monospace', fontSize: '0.8rem' }}
+                style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem' }}
               />
               <p className="field-help">Paste your SSH private key content here.</p>
             </div>
@@ -1573,7 +1573,7 @@ function SSHAuthPanel({
                     readOnly
                     value={config.public_key}
                     rows={2}
-                    style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.8rem' }}
+                    style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: '0.8rem' }}
                   />
                   <button
                     type="button"

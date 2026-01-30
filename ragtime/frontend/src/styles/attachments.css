@@ -242,7 +242,7 @@
   border-radius: 4px;
   color: var(--text-primary);
   font-size: 0.8rem;
-  font-family: 'Monaco', 'Courier New', monospace;
+  font-family: var(--font-mono);
 }
 
 .file-path-input:focus {

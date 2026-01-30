@@ -1334,7 +1334,7 @@ fieldset legend {
 }
 
 .mount-path {
-  font-family: monospace;
+  font-family: var(--font-mono);
   flex: 1;
 }
 

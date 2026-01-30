@@ -227,7 +227,7 @@ export function IndexConfigFields({
               disabled={isLoading}
               style={{ flex: 1 }}
             />
-            <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'monospace' }}>
+            <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
               {gitHistoryDepth === 0 ? 'Full' : gitHistoryDepth === 1 ? '1 (shallow)' : `${gitHistoryDepth} commits`}
             </span>
           </div>

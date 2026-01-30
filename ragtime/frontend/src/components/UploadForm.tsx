@@ -386,7 +386,7 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
                 <tbody>
                   {analysisResult.file_type_stats.slice(0, 15).map((stat) => (
                     <tr key={stat.extension} style={{ borderBottom: '1px solid #333' }}>
-                      <td style={{ padding: '4px 8px', fontFamily: 'monospace' }}>{stat.extension}</td>
+                      <td style={{ padding: '4px 8px', fontFamily: 'var(--font-mono)' }}>{stat.extension}</td>
                       <td style={{ padding: '4px 8px' }}>{stat.file_count}</td>
                       <td style={{ padding: '4px 8px' }}>{formatBytes(stat.total_size_bytes)}</td>
                       <td style={{ padding: '4px 8px' }}>{stat.estimated_chunks}</td>
