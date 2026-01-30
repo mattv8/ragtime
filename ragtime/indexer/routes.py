@@ -5658,13 +5658,41 @@ def _group_models(models: List[LLMModel], provider: str) -> List[LLMModel]:
         if not group_models:
             continue
 
-        # Sort: Base Aliases (shorter) FIRST, then Created date (Newer)
-        group_models.sort(key=lambda m: (len(m.id), -(m.created or 0)))
+        # Sort: version (higher first), then created date, then ID length
+        group_models.sort(
+            key=lambda m: (-_extract_version(m.name), -(m.created or 0), len(m.id))
+        )
 
         # Mark first as latest
         group_models[0].is_latest = True
 
     return models
+
+
+def _extract_version(name: str) -> float:
+    """Extract numeric version from model name.
+
+    Handles various naming conventions:
+    - Anthropic: 'Claude Haiku 4.5' -> 4.5
+    - OpenAI display: 'GPT-4.1 Mini' -> 4.1
+    - OpenAI ID: 'gpt-4.1-mini' -> 4.1
+    - Dated versions: 'gpt-4-0613' -> 4.0 (base version, no sub-version)
+    """
+    import re
+
+    name_lower = name.lower()
+
+    # OpenAI: Extract version from gpt-X.Y pattern (e.g., gpt-4.1-mini -> 4.1)
+    gpt_match = re.search(r"gpt-(\d+(?:\.\d+)?)", name_lower)
+    if gpt_match:
+        return float(gpt_match.group(1))
+
+    # Anthropic/general: version at end of name (e.g., 'Claude Haiku 4.5' -> 4.5)
+    end_match = re.search(r"(\d+(?:\.\d+)?)\s*$", name)
+    if end_match:
+        return float(end_match.group(1))
+
+    return 0.0
 
 
 def _assign_model_groups(models: List[AvailableModel]) -> List[AvailableModel]:
@@ -5699,22 +5727,9 @@ def _assign_model_groups(models: List[AvailableModel]) -> List[AvailableModel]:
         if not group_models:
             continue
 
-        # Sort mechanism:
-        # 1. Extract version from model name (higher version = more recent)
-        # 2. Created date (Newer first) as fallback
-        # 3. Shorter ID length as final tiebreaker (base aliases first)
-        def extract_version(m: AvailableModel) -> float:
-            """Extract numeric version from model name like 'Claude Haiku 4.5' -> 4.5"""
-            import re
-
-            # Look for version pattern like "4.5", "3.5", "4" in the name
-            match = re.search(r"(\d+(?:\.\d+)?)\s*$", m.name)
-            if match:
-                return float(match.group(1))
-            return 0.0
-
+        # Sort: version (higher first), then created date, then ID length
         group_models.sort(
-            key=lambda m: (-extract_version(m), -(m.created or 0), len(m.id))
+            key=lambda m: (-_extract_version(m.name), -(m.created or 0), len(m.id))
         )
 
         # Mark the first one as latest

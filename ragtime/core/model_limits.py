@@ -42,8 +42,9 @@ MODEL_FAMILY_PATTERNS = {
         (r"^gpt-5\.2", "GPT-5.2"),
         (r"^gpt-5\.1", "GPT-5.1"),
         (r"^gpt-5", "GPT-5"),
-        # GPT-4.x series
+        # GPT-4.x series (more specific first)
         (r"^gpt-4\.5", "GPT-4.5"),
+        (r"^gpt-4\.1", "GPT-4.1"),
         (r"^gpt-4o", "GPT-4o"),
         (r"^gpt-4-turbo", "GPT-4 Turbo"),
         (r"^gpt-4", "GPT-4"),
