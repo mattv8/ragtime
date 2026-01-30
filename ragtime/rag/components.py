@@ -24,6 +24,8 @@ from pydantic import BaseModel, Field
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.logging import get_logger
+from ragtime.core.model_limits import get_output_limit
+from ragtime.core.ollama import get_model_context_length
 from ragtime.core.security import (
     _SSH_ENV_VAR_RE,
     sanitize_output,
@@ -566,6 +568,44 @@ class RAGComponents:
         provider = self._app_settings.get("llm_provider", "openai").lower()
         model = self._app_settings.get("llm_model", "gpt-4-turbo")
         max_tokens = self._app_settings.get("llm_max_tokens", 4096)
+
+        # Handle "LLM Max" setting (value >= 100000)
+        # We query the model metadata to find the true maximum supported output tokens
+        if max_tokens >= 100000:
+            if provider == "ollama":
+                # For Ollama, try to get context length (as a proxy for max generation)
+                base_url = self._app_settings.get(
+                    "llm_ollama_base_url",
+                    self._app_settings.get("ollama_base_url", "http://localhost:11434"),
+                )
+                detected_limit = await get_model_context_length(model, base_url)
+                if detected_limit:
+                    # For Ollama, num_predict=-1 or context length usually works
+                    # But to be safe we use context_length
+                    max_tokens = detected_limit
+                    logger.info(
+                        f"Using detected context limits for Ollama model {model}: {max_tokens}"
+                    )
+                else:
+                    max_tokens = 4096  # Fallback
+                    logger.warning(
+                        f"Could not detect limits for Ollama model {model}, using default {max_tokens}"
+                    )
+            else:
+                # For Cloud providers (OpenAI, Anthropic), use LiteLLM data
+                detected_limit = await get_output_limit(model)
+                if detected_limit:
+                    max_tokens = detected_limit
+                    logger.info(
+                        f"Using detected output limit for {model}: {max_tokens}"
+                    )
+                else:
+                    # If unknown, 4096 is a safe bet for most modern models
+                    # If the user really wanted 100k, they will be limited to 4k if model is unknown
+                    max_tokens = 4096
+                    logger.warning(
+                        f"Could not detect output limit for {model}, using default {max_tokens}"
+                    )
 
         if provider == "ollama":
             try:

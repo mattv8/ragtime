@@ -18,6 +18,8 @@ LITELLM_MODEL_DATA_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main
 
 # Cache for model limits (populated on first request)
 _model_limits_cache: dict[str, int] = {}
+# Cache for model output limits
+_model_output_limits_cache: dict[str, int] = {}
 # Cache for function calling support
 _model_supports_function_calling: dict[str, bool] = {}
 _cache_lock = asyncio.Lock()
@@ -67,10 +69,11 @@ MODEL_FAMILY_PATTERNS = {
 }
 
 
-async def _fetch_litellm_data() -> dict[str, int]:
+async def _fetch_litellm_data() -> tuple[dict[str, int], dict[str, int]]:
     """Fetch model limits from LiteLLM's dataset."""
     global _model_supports_function_calling
     limits: dict[str, int] = {}
+    output_limits: dict[str, int] = {}
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -87,22 +90,31 @@ async def _fetch_litellm_data() -> dict[str, int]:
                     if ctx and isinstance(ctx, int):
                         limits[model_id] = ctx
 
+                    # LiteLLM uses "max_output_tokens" or "max_completion_tokens"
+                    out = model_info.get("max_output_tokens") or model_info.get(
+                        "max_completion_tokens"
+                    )
+                    if out and isinstance(out, int):
+                        output_limits[model_id] = out
+
                     # Track function calling support
                     supports_fc = model_info.get("supports_function_calling", False)
                     if isinstance(supports_fc, bool):
                         _model_supports_function_calling[model_id] = supports_fc
 
-            logger.info(f"Loaded {len(limits)} model context limits from LiteLLM")
-            return limits
+            logger.info(
+                f"Loaded {len(limits)} context limits and {len(output_limits)} output limits from LiteLLM"
+            )
+            return limits, output_limits
 
     except Exception as e:
         logger.warning(f"Failed to fetch LiteLLM model data: {e}")
-        return {}
+        return {}, {}
 
 
 async def _ensure_cache_loaded() -> None:
     """Ensure the cache is loaded (thread-safe)."""
-    global _cache_loaded, _model_limits_cache
+    global _cache_loaded, _model_limits_cache, _model_output_limits_cache
 
     if _cache_loaded:
         return
@@ -113,10 +125,11 @@ async def _ensure_cache_loaded() -> None:
             return
 
         # Try to fetch from LiteLLM
-        fetched = await _fetch_litellm_data()
+        fetched_limits, fetched_output = await _fetch_litellm_data()
 
-        if fetched:
-            _model_limits_cache = fetched
+        if fetched_limits:
+            _model_limits_cache = fetched_limits
+            _model_output_limits_cache = fetched_output
         else:
             logger.info("Using empty cache as fetch failed")
 
@@ -154,6 +167,27 @@ async def get_context_limits_batch(model_ids: list[str]) -> dict[str, int]:
     return result
 
 
+async def get_output_limit(model_id: str) -> int | None:
+    """
+    Get the output token limit for a model.
+
+    Returns None if not found (let caller decide default).
+    """
+    await _ensure_cache_loaded()
+
+    # Try exact match
+    if model_id in _model_output_limits_cache:
+        return _model_output_limits_cache[model_id]
+
+    # Try partial match
+    model_lower = model_id.lower()
+    for key, value in _model_output_limits_cache.items():
+        if model_lower.startswith(key.lower()) or key.lower() in model_lower:
+            return value
+
+    return None
+
+
 def update_model_limit(model_id: str, limit: int) -> None:
     """Update the context limit for a model in the runtime cache."""
     _model_limits_cache[model_id] = limit
@@ -169,6 +203,7 @@ def invalidate_cache() -> None:
     global _cache_loaded
     _cache_loaded = False
     _model_limits_cache.clear()
+    _model_output_limits_cache.clear()
     _model_supports_function_calling.clear()
 
 

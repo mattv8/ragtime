@@ -1222,42 +1222,55 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           <div className="form-row">
             <div className="form-group" style={{ flex: 2 }}>
               <label>Max Output Tokens</label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  step="1"
-                  style={{ flex: 1 }}
-                  value={(() => {
-                    const val = formData.llm_max_tokens || 4096;
-                    if (val >= 100000) return 100;
-                    const min = 500;
-                    const max = 100000;
-                    const scale = Math.log(max / min);
-                    return (Math.log(val / min) / scale) * 100;
-                  })()}
-                  onChange={(e) => {
-                    const slider = parseInt(e.target.value, 10);
-                    const min = 500;
-                    const max = 100000;
-                    let val;
-                    if (slider === 100) {
-                       val = max;
-                    } else {
-                      const scale = Math.log(max / min);
-                      val = Math.round(min * Math.exp((slider / 100) * scale));
-                    }
-                    setFormData({ ...formData, llm_max_tokens: val });
-                  }}
-                />
-                <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
-                  {formData.llm_max_tokens && formData.llm_max_tokens >= 100000 ? 'LLM Max' : (formData.llm_max_tokens || 4096).toLocaleString()}
-                </span>
-              </div>
-              <p className="field-help">
-                Limit the length of the model's response.
-              </p>
+              {(() => {
+                // Get max output tokens for the selected model
+                // Try llmModels first (OpenAI/Anthropic), then allAvailableModels (includes Ollama)
+                const selectedLlmModel = llmModels.find(m => m.id === formData.llm_model);
+                const selectedAvailableModel = allAvailableModels.find(m => m.id === formData.llm_model);
+                const modelMax = selectedLlmModel?.max_output_tokens
+                  || selectedAvailableModel?.max_output_tokens
+                  || 100000;
+                const sliderMax = modelMax;
+                const sliderMin = 500;
+                const hasModelInfo = !!(selectedLlmModel?.max_output_tokens || selectedAvailableModel?.max_output_tokens);
+
+                return (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="1"
+                        style={{ flex: 1 }}
+                        value={(() => {
+                          const val = formData.llm_max_tokens || 4096;
+                          if (val >= sliderMax) return 100;
+                          const scale = Math.log(sliderMax / sliderMin);
+                          return Math.max(0, Math.min(100, (Math.log(val / sliderMin) / scale) * 100));
+                        })()}
+                        onChange={(e) => {
+                          const slider = parseInt(e.target.value, 10);
+                          let val;
+                          if (slider === 100) {
+                            val = sliderMax;
+                          } else {
+                            const scale = Math.log(sliderMax / sliderMin);
+                            val = Math.round(sliderMin * Math.exp((slider / 100) * scale));
+                          }
+                          setFormData({ ...formData, llm_max_tokens: val });
+                        }}
+                      />
+                      <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                        {formData.llm_max_tokens && formData.llm_max_tokens >= sliderMax ? 'LLM Max' : (formData.llm_max_tokens || 4096).toLocaleString()}
+                      </span>
+                    </div>
+                    <p className="field-help">
+                      Limit the length of the model's response.{hasModelInfo ? ` (Model max: ${modelMax.toLocaleString()})` : ''}
+                    </p>
+                  </>
+                );
+              })()}
             </div>
 
             <div className="form-group" style={{ flex: 1 }}>

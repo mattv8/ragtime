@@ -27,6 +27,7 @@ from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import (
     MODEL_FAMILY_PATTERNS,
     get_context_limit,
+    get_output_limit,
     supports_function_calling,
 )
 from ragtime.core.security import get_current_user, require_admin
@@ -5582,6 +5583,7 @@ class LLMModel(BaseModel):
     created: Optional[int] = None
     group: Optional[str] = None
     is_latest: bool = False
+    max_output_tokens: Optional[int] = None
 
 
 class LLMModelsResponse(BaseModel):
@@ -5600,6 +5602,7 @@ class AvailableModel(BaseModel):
     name: str
     provider: str  # 'openai' or 'anthropic'
     context_limit: int = 8192  # Max context window tokens
+    max_output_tokens: Optional[int] = None  # Max output tokens for this model
     group: Optional[str] = None  # Model group for UI organization
     is_latest: bool = False  # Whether this is the latest version in its group
     created: Optional[int] = None
@@ -5763,9 +5766,13 @@ async def _fetch_openai_models(api_key: str) -> LLMModelsResponse:
                 ):
                     # Check if model supports function calling (indicates chat capability)
                     if await supports_function_calling(model_id):
+                        output_limit = await get_output_limit(model_id)
                         models.append(
                             LLMModel(
-                                id=model_id, name=model_id, created=model.get("created")
+                                id=model_id,
+                                name=model_id,
+                                created=model.get("created"),
+                                max_output_tokens=output_limit,
                             )
                         )
 
@@ -5825,7 +5832,15 @@ async def _fetch_anthropic_models(api_key: str) -> LLMModelsResponse:
                 model_id = model.get("id", "")
                 display_name = model.get("display_name", model_id)
                 # All Claude models support function calling (chat capable)
-                models.append(LLMModel(id=model_id, name=display_name, created=None))
+                output_limit = await get_output_limit(model_id)
+                models.append(
+                    LLMModel(
+                        id=model_id,
+                        name=display_name,
+                        created=None,
+                        max_output_tokens=output_limit,
+                    )
+                )
 
             # Curate models to remove dated duplicates
             models = _group_models(models, "anthropic")
@@ -5922,6 +5937,8 @@ async def _fetch_ollama_llm_models(base_url: str) -> LLMModelsResponse:
                             try:
                                 limit = int(ctx_len)
                                 update_model_limit(models[idx].id, limit)
+                                # For Ollama, context_length is the max output
+                                models[idx].max_output_tokens = limit
                             except (ValueError, TypeError):
                                 pass
         except Exception as e:
@@ -5983,6 +6000,7 @@ async def get_available_chat_models():
                             name=m.name,
                             provider="openai",
                             context_limit=await get_context_limit(m.id),
+                            max_output_tokens=m.max_output_tokens,
                             created=m.created,
                         )
                     )
@@ -6003,6 +6021,7 @@ async def get_available_chat_models():
                             name=m.name,
                             provider="anthropic",
                             context_limit=await get_context_limit(m.id),
+                            max_output_tokens=m.max_output_tokens,
                             created=m.created,
                         )
                     )
@@ -6029,6 +6048,7 @@ async def get_available_chat_models():
                                 name=m.name,
                                 provider="ollama",
                                 context_limit=await get_context_limit(m.id),
+                                max_output_tokens=m.max_output_tokens,
                                 created=m.created,
                             )
                         )
@@ -6083,6 +6103,7 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
                             name=m.name,
                             provider="openai",
                             context_limit=await get_context_limit(m.id),
+                            max_output_tokens=m.max_output_tokens,
                             created=m.created,
                         )
                     )
@@ -6101,6 +6122,7 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
                             name=m.name,
                             provider="anthropic",
                             context_limit=await get_context_limit(m.id),
+                            max_output_tokens=m.max_output_tokens,
                             created=m.created,
                         )
                     )
@@ -6125,6 +6147,7 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
                                 name=m.name,
                                 provider="ollama",
                                 context_limit=await get_context_limit(m.id),
+                                max_output_tokens=m.max_output_tokens,
                                 created=m.created,
                             )
                         )

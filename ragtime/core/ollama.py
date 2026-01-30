@@ -216,6 +216,46 @@ def extract_embedding_dimension(model_info: dict) -> Optional[int]:
     return None
 
 
+def extract_context_length(model_info: dict) -> Optional[int]:
+    """
+    Extract context length from Ollama model_info.
+
+    The length is stored as '<architecture>.context_length' in model_info.
+
+    Args:
+        model_info: The model_info dict from /api/show response
+
+    Returns:
+        Context length if found, None otherwise
+    """
+    for key, value in model_info.items():
+        if key.endswith(".context_length") and isinstance(value, int):
+            return value
+    return None
+
+
+async def get_model_context_length(
+    model_name: str,
+    base_url: str,
+) -> Optional[int]:
+    """
+    Get the context length for an Ollama model.
+
+    Args:
+        model_name: The Ollama model name
+        base_url: Ollama server base URL
+
+    Returns:
+        Context length if found, None otherwise
+    """
+    details = await get_model_details(model_name, base_url)
+    if not details:
+        return None
+
+    model_info = details.get("model_info", {})
+    return extract_context_length(model_info)
+
+
 def extract_model_family(details: dict) -> Optional[str]:
     """Extract model family from Ollama /api/show response."""
     detail_info = details.get("details", {})
