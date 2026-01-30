@@ -979,7 +979,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
             />
           </div>
 
-          <div className="form-actions">
+          <div className="form-actions" style={{ borderTop: 'none', paddingTop: 0, marginTop: 'var(--space-md)' }}>
             <button
               type="button"
               className="btn btn-primary"
@@ -1150,37 +1150,54 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
             </div>
           ) : null}
 
-          {/* Model Selection - for OpenAI and Anthropic only (Ollama has its own section above) */}
-          {formData.llm_provider !== 'ollama' && (
-            <div className="form-group">
-              <label>Model</label>
-              {llmModelsLoaded && llmModels.length > 0 ? (
-                <ModelSelector
-                  models={llmModels}
-                  selectedModelId={formData.llm_model || ''}
-                  onModelChange={(modelId) =>
-                    setFormData({ ...formData, llm_model: modelId })
-                  }
-                  placeholder="Select a model..."
-                  variant="full"
-                />
-              ) : (
-                <input
-                  type="text"
-                  value={formData.llm_model || ''}
-                  onChange={(e) =>
-                    setFormData({ ...formData, llm_model: e.target.value })
-                  }
-                  placeholder="Select a model..."
-                />
-              )}
+          <div className="form-row">
+            {/* Model Selection - for OpenAI and Anthropic only (Ollama has its own section above) */}
+            {formData.llm_provider !== 'ollama' && (
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>Model</label>
+                {llmModelsLoaded && llmModels.length > 0 ? (
+                  <ModelSelector
+                    models={llmModels}
+                    selectedModelId={formData.llm_model || ''}
+                    onModelChange={(modelId) =>
+                      setFormData({ ...formData, llm_model: modelId })
+                    }
+                    placeholder="Select a model..."
+                    variant="full"
+                  />
+                ) : (
+                  <input
+                    type="text"
+                    value={formData.llm_model || ''}
+                    onChange={(e) =>
+                      setFormData({ ...formData, llm_model: e.target.value })
+                    }
+                    placeholder="Select a model..."
+                  />
+                )}
+                <p className="field-help">
+                  {llmModelsLoaded
+                    ? 'Select the model that will be used for chat completions and RAG responses.'
+                    : 'This model ID is sent to the provider API for all chat/RAG requests. Click "Fetch Models" to see available options.'}
+                </p>
+              </div>
+            )}
+
+            {/* Chat Model Filter */}
+            <div className="form-group" style={{ flex: 1 }}>
+              <label>Chat Model Filter</label>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={openModelFilterModal}
+              >
+                Configure Allowed Models
+              </button>
               <p className="field-help">
-                {llmModelsLoaded
-                  ? 'Select the model that will be used for chat completions and RAG responses.'
-                  : 'This model ID is sent to the provider API for all chat/RAG requests. Click "Fetch Models" to see available options.'}
+                Limit which models appear in the Chat view dropdown.
               </p>
             </div>
-          )}
+          </div>
 
           {/* Show OpenAI key field for embeddings if using Anthropic or Ollama for LLM */}
           {(formData.llm_provider === 'anthropic' || formData.llm_provider === 'ollama') && formData.embedding_provider === 'openai' && (
@@ -1203,21 +1220,6 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
               </p>
             </div>
           )}
-
-          {/* Chat Model Filter */}
-          <div className="form-group">
-            <label>Chat Model Filter</label>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={openModelFilterModal}
-            >
-              Configure Allowed Models
-            </button>
-            <p className="field-help">
-              Limit which models appear in the Chat view dropdown.
-            </p>
-          </div>
 
           <div className="form-row">
             <div className="form-group" style={{ flex: 2 }}>
@@ -1656,7 +1658,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           {ldapDiscoveredOus.length > 0 && (
             <>
               <div className="form-row">
-                <div className="form-group" style={{ flex: 2 }}>
+                <div className="form-group" style={{ flex: 1 }}>
                   <label>User Search Base</label>
                   <select
                     value={ldapFormData.user_search_base}
@@ -1680,10 +1682,8 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                     </p>
                   )}
                 </div>
-              </div>
 
-              <div className="form-row">
-                <div className="form-group" style={{ flex: 2 }}>
+                <div className="form-group" style={{ flex: 1 }}>
                   <label>User Search Filter</label>
                   <input
                     type="text"
@@ -2240,121 +2240,129 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
             Configure default OCR (Optical Character Recognition) mode for extracting text from images during indexing.
           </p>
 
-          <div className="form-group">
-            <label>Default OCR Mode</label>
-            <select
-              value={formData.default_ocr_mode || 'disabled'}
-              onChange={(e) => {
-                const newMode = e.target.value as 'disabled' | 'tesseract' | 'ollama';
-                setFormData({ ...formData, default_ocr_mode: newMode });
-                // Clear vision model error when changing mode
-                if (newMode !== 'ollama') {
-                  setVisionModelsError(null);
-                }
-              }}
-            >
-              <option value="disabled">Disabled (skip images)</option>
-              <option value="tesseract">Tesseract (fast, traditional OCR)</option>
-              <option value="ollama">Ollama Vision (semantic OCR with AI)</option>
-            </select>
-            <p className="field-help">
-              {formData.default_ocr_mode === 'disabled' && (
-                <>Image files will be skipped during indexing.</>
-              )}
-              {formData.default_ocr_mode === 'tesseract' && (
-                <>Fast traditional OCR using Tesseract. Good for screenshots and scanned documents with clear text.</>
-              )}
-              {formData.default_ocr_mode === 'ollama' && (
-                <>
-                  Semantic OCR using Ollama vision models. Better at understanding complex layouts, handwriting, and context.
-                  <br />
-                  <span style={{ color: 'var(--warning-color, #b58900)' }}>
-                    <strong>Performance note:</strong> Vision models are 3-15x slower than Tesseract depending on model size.
+          <div className="form-row">
+            <div className="form-group" style={{ flex: 1 }}>
+              <label>Default OCR Mode</label>
+              <select
+                value={formData.default_ocr_mode || 'disabled'}
+                onChange={(e) => {
+                  const newMode = e.target.value as 'disabled' | 'tesseract' | 'ollama';
+                  setFormData({ ...formData, default_ocr_mode: newMode });
+                  // Clear vision model error when changing mode
+                  if (newMode !== 'ollama') {
+                    setVisionModelsError(null);
+                  }
+                }}
+              >
+                <option value="disabled">Disabled (skip images)</option>
+                <option value="tesseract">Tesseract (fast, traditional OCR)</option>
+                <option value="ollama">Ollama Vision (semantic OCR with AI)</option>
+              </select>
+              <p className="field-help">
+                {formData.default_ocr_mode === 'disabled' && (
+                  <>Image files will be skipped during indexing.</>
+                )}
+                {formData.default_ocr_mode === 'tesseract' && (
+                  <>Fast traditional OCR using Tesseract. Good for screenshots and scanned documents with clear text.</>
+                )}
+                {formData.default_ocr_mode === 'ollama' && (
+                  <>
+                    Semantic OCR using Ollama vision models. Better at understanding complex layouts, handwriting, and context.
+                  </>
+                )}
+              </p>
+            </div>
+
+            {formData.default_ocr_mode === 'ollama' && (
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>Vision Model</label>
+                {visionModelsLoading ? (
+                  <p className="muted">Loading vision models...</p>
+                ) : visionModelsError ? (
+                  <div>
+                    <p className="error-text" style={{ marginBottom: '8px' }}>{visionModelsError}</p>
                     <button
                       type="button"
-                      onClick={() => setShowOcrRecommendations(!showOcrRecommendations)}
-                      title="View model recommendations"
-                      style={{
-                        background: 'none',
-                        border: 'none',
-                        cursor: 'pointer',
-                        marginLeft: '4px',
-                        padding: 0,
-                        color: 'inherit',
-                        verticalAlign: 'middle',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                      }}
+                      className="btn btn-secondary btn-sm"
+                      onClick={fetchVisionModels}
                     >
-                      <Info size="1em" />
+                      Retry
                     </button>
-                  </span>
-                  {showOcrRecommendations && (
-                    <div style={{
-                      marginTop: '12px',
-                      padding: '12px',
-                      backgroundColor: 'var(--input-bg, var(--bg-secondary, #f5f5f5))',
-                      border: '1px solid var(--border-color, #ddd)',
-                      borderRadius: '6px',
-                      fontSize: '0.9em',
-                      color: 'var(--text-color, inherit)',
-                    }}>
-                      <strong>Recommended:</strong> <code>llama3.2-vision</code> (10.7B)<br />
-                      Best balance of speed and accuracy, ~6x slower than Tesseract.
-                      <br /><br />
-                      <strong>Other options:</strong><br />
-                      <code>qwen3-vl</code> (8.8B) - Highest accuracy, cleanest output, but ~14x slower.<br />
-                      <code>llava</code> (7B) - Fastest (~2x slower), but may hallucinate on document OCR.
-                    </div>
-                  )}
-                </>
-              )}
-            </p>
+                  </div>
+                ) : visionModels.length > 0 ? (
+                  <select
+                    value={formData.default_ocr_vision_model || ''}
+                    onChange={(e) => setFormData({ ...formData, default_ocr_vision_model: e.target.value || null })}
+                  >
+                    <option value="">Select a vision model</option>
+                    {visionModels.map((model) => (
+                      <option key={model.name} value={model.name}>
+                        {model.name}
+                        {model.parameter_size && ` (${model.parameter_size})`}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div>
+                    <p className="muted">No vision models loaded.</p>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={fetchVisionModels}
+                    >
+                      Load Vision Models
+                    </button>
+                  </div>
+                )}
+                <p className="field-help">
+                  Select an Ollama vision model for semantic OCR.
+                </p>
+              </div>
+            )}
           </div>
 
           {formData.default_ocr_mode === 'ollama' && (
-            <div className="form-group">
-              <label>Vision Model</label>
-              {visionModelsLoading ? (
-                <p className="muted">Loading vision models...</p>
-              ) : visionModelsError ? (
-                <div>
-                  <p className="error-text" style={{ marginBottom: '8px' }}>{visionModelsError}</p>
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    onClick={fetchVisionModels}
-                  >
-                    Retry
-                  </button>
-                </div>
-              ) : visionModels.length > 0 ? (
-                <select
-                  value={formData.default_ocr_vision_model || ''}
-                  onChange={(e) => setFormData({ ...formData, default_ocr_vision_model: e.target.value || null })}
-                >
-                  <option value="">Select a vision model</option>
-                  {visionModels.map((model) => (
-                    <option key={model.name} value={model.name}>
-                      {model.name}
-                      {model.parameter_size && ` (${model.parameter_size})`}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <div>
-                  <p className="muted">No vision models loaded.</p>
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    onClick={fetchVisionModels}
-                  >
-                    Load Vision Models
-                  </button>
-                </div>
-              )}
+            <div className="form-group" style={{ marginTop: '-0.5rem', marginBottom: '1rem' }}>
               <p className="field-help">
-                Select an Ollama vision model for semantic OCR.
+                <span style={{ color: 'var(--warning-color, #b58900)' }}>
+                  <strong>Performance note:</strong> Vision models are 3-15x slower than Tesseract depending on model size.
+                  <button
+                    type="button"
+                    onClick={() => setShowOcrRecommendations(!showOcrRecommendations)}
+                    title="View model recommendations"
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      cursor: 'pointer',
+                      marginLeft: '4px',
+                      padding: 0,
+                      color: 'inherit',
+                      verticalAlign: 'middle',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <Info size="1em" />
+                  </button>
+                </span>
+                {showOcrRecommendations && (
+                  <div style={{
+                    marginTop: '12px',
+                    padding: '12px',
+                    backgroundColor: 'var(--input-bg, var(--bg-secondary, #f5f5f5))',
+                    border: '1px solid var(--border-color, #ddd)',
+                    borderRadius: '6px',
+                    fontSize: '0.9em',
+                    color: 'var(--text-color, inherit)',
+                  }}>
+                    <strong>Recommended:</strong> <code>llama3.2-vision</code> (10.7B)<br />
+                    Best balance of speed and accuracy, ~6x slower than Tesseract.
+                    <br /><br />
+                    <strong>Other options:</strong><br />
+                    <code>qwen3-vl</code> (8.8B) - Highest accuracy, cleanest output, but ~14x slower.<br />
+                    <code>llava</code> (7B) - Fastest (~2x slower), but may hallucinate on document OCR.
+                  </div>
+                )}
               </p>
             </div>
           )}
