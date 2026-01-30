@@ -60,14 +60,13 @@ jobs:
           BRANCH="${{ steps.extract_branch.outputs.branch }}"
           SHORT_SHA="${GITHUB_SHA::7}"
 
-          # Default tags include the branch name and short SHA
+          # Default tags: branch name and 7-char commit SHA
           TAGS="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${BRANCH}"
-          TAGS="${TAGS},${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${BRANCH}-${SHORT_SHA}"
+          TAGS="${TAGS},${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SHORT_SHA}"
 
           # If this is the main branch, also tag as 'latest'
           if [ "$BRANCH" = "main" ]; then
             TAGS="${TAGS},${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
-            TAGS="${TAGS},${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SHORT_SHA}"
           fi
 
           echo "tags=${TAGS}" >> $GITHUB_OUTPUT
