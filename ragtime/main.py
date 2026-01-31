@@ -351,10 +351,11 @@ app.include_router(auth_router)
 # Include indexer routes
 app.include_router(indexer_router)
 # Mount static files for indexer UI assets at root
-if INDEXER_ASSETS_DIR.exists():
-    app.mount(
-        "/assets", StaticFiles(directory=INDEXER_ASSETS_DIR), name="indexer_ui_assets"
-    )
+# Ensure assets directory exists so static file mount always works
+INDEXER_ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount(
+    "/assets", StaticFiles(directory=INDEXER_ASSETS_DIR), name="indexer_ui_assets"
+)
 logger.info("Indexer API enabled at /indexes, UI served at root (/)")
 
 # Include MCP routes (enabled/disabled controlled via database setting)

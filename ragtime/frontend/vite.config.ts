@@ -41,7 +41,7 @@ export default defineConfig({
     https: httpsConfig,
     proxy: {
       // Proxy all API calls to Python backend
-      '^/(indexes|auth|health|docs|redoc|openapi.json|v1|mcp-routes|mcp-debug|mcp)': {
+      '^/(indexes|auth|authorize|token|health|docs|redoc|openapi.json|v1|mcp-routes|mcp-debug|mcp)': {
         target: `${backendProtocol}://127.0.0.1:${backendPort}`,
         changeOrigin: true,
         secure: false, // Allow self-signed certs
