@@ -27,26 +27,40 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from ragtime.core.database import get_db
-from ragtime.core.file_constants import (DOCUMENT_EXTENSIONS,
-                                         PARSEABLE_DOCUMENT_EXTENSIONS,
-                                         UNPARSEABLE_BINARY_EXTENSIONS)
+from ragtime.core.file_constants import (
+    DOCUMENT_EXTENSIONS,
+    PARSEABLE_DOCUMENT_EXTENSIONS,
+    UNPARSEABLE_BINARY_EXTENSIONS,
+)
 from ragtime.core.logging import get_logger
-from ragtime.indexer.document_parser import (OCR_EXTENSIONS, is_ocr_supported,
-                                             is_supported_document)
-from ragtime.indexer.models import (FilesystemAnalysisJob,
-                                    FilesystemAnalysisResult,
-                                    FilesystemAnalysisStatus,
-                                    FilesystemConnectionConfig,
-                                    FilesystemFileMetadata, FilesystemIndexJob,
-                                    FilesystemIndexStatus,
-                                    FilesystemVectorStoreType, FileTypeStats,
-                                    OcrMode)
+from ragtime.indexer.document_parser import (
+    OCR_EXTENSIONS,
+    is_ocr_supported,
+    is_supported_document,
+)
+from ragtime.indexer.models import (
+    FilesystemAnalysisJob,
+    FilesystemAnalysisResult,
+    FilesystemAnalysisStatus,
+    FilesystemConnectionConfig,
+    FilesystemFileMetadata,
+    FilesystemIndexJob,
+    FilesystemIndexStatus,
+    FilesystemVectorStoreType,
+    FileTypeStats,
+    OcrMode,
+)
 from ragtime.indexer.repository import repository
-from ragtime.indexer.vector_backends import (VectorStoreBackend, get_backend,
-                                             get_faiss_backend)
-from ragtime.indexer.vector_utils import (ensure_embedding_column,
-                                          ensure_pgvector_extension,
-                                          get_embeddings_model)
+from ragtime.indexer.vector_backends import (
+    VectorStoreBackend,
+    get_backend,
+    get_faiss_backend,
+)
+from ragtime.indexer.vector_utils import (
+    ensure_embedding_column,
+    ensure_pgvector_extension,
+    get_embeddings_model,
+)
 
 logger = get_logger(__name__)
 
@@ -1524,8 +1538,7 @@ class FilesystemIndexerService:
             if vector_store_type == FilesystemVectorStoreType.FAISS:
                 try:
                     # 1. Load the new index into memory immediately
-                    from ragtime.indexer.vector_backends import \
-                        get_faiss_backend
+                    from ragtime.indexer.vector_backends import get_faiss_backend
 
                     await get_faiss_backend().load_index(job.index_name, embeddings)
 
@@ -1575,7 +1588,7 @@ class FilesystemIndexerService:
         self,
         file_path: Path,
         config: FilesystemConnectionConfig,
-        use_token_chunking: bool = True,  # noqa: ARG002 - reserved for future use
+        use_token_chunking: bool = True,
     ) -> List[str]:
         """Load a file and split it into chunks.
 
@@ -1584,13 +1597,18 @@ class FilesystemIndexerService:
         - RecursiveChunker for plain text and documents
         - Semantic chunking for images (keeps classification with description)
 
+        When use_token_chunking=True, chunk sizes are measured in tokens (tiktoken)
+        rather than characters, ensuring chunks don't exceed embedding model limits.
+
         Text extraction (PDF, DOCX, images with OCR, etc.) is handled by
         document_parser via _read_file_content() before chunking.
         """
         from ragtime.core.file_constants import OCR_EXTENSIONS
-        from ragtime.indexer.chunking import (_chunk_with_chonkie_code,
-                                              _chunk_with_recursive,
-                                              chunk_semantic_segments)
+        from ragtime.indexer.chunking import (
+            _chunk_with_chonkie_code,
+            _chunk_with_recursive,
+            chunk_semantic_segments,
+        )
 
         try:
             file_path_str = str(file_path)
@@ -1628,6 +1646,7 @@ class FilesystemIndexerService:
                     config.chunk_size,
                     config.chunk_overlap,
                     metadata,
+                    use_token_chunking,
                 )
                 return [doc.page_content for doc in docs]
             except (ValueError, RuntimeError, LookupError) as e:
@@ -1648,6 +1667,7 @@ class FilesystemIndexerService:
                         config.chunk_size,
                         config.chunk_overlap,
                         metadata,
+                        use_token_chunking,
                     )
                     return [doc.page_content for doc in docs]
                 raise
@@ -1679,8 +1699,7 @@ class FilesystemIndexerService:
         """
         from ragtime.core.app_settings import get_app_settings
         from ragtime.indexer.chunking import chunk_semantic_segments
-        from ragtime.indexer.document_parser import \
-            extract_image_structured_async
+        from ragtime.indexer.document_parser import extract_image_structured_async
 
         # Get Ollama base URL
         app_settings = await get_app_settings()
@@ -1740,8 +1759,7 @@ class FilesystemIndexerService:
         Uses async extraction to support Ollama vision OCR.
         """
         from ragtime.core.app_settings import get_app_settings
-        from ragtime.indexer.document_parser import \
-            extract_text_from_file_async
+        from ragtime.indexer.document_parser import extract_text_from_file_async
 
         # Get Ollama base URL from app settings for vision OCR
         ollama_base_url = None
@@ -1976,8 +1994,9 @@ class FilesystemIndexerService:
                         stats["estimated_chunks"] = stats["file_count"]
 
                 # Get LLM-powered exclusion suggestions
-                from ragtime.indexer.llm_exclusions import \
-                    get_smart_exclusion_suggestions
+                from ragtime.indexer.llm_exclusions import (
+                    get_smart_exclusion_suggestions,
+                )
 
                 smart_exclusions, _used_llm = await get_smart_exclusion_suggestions(
                     ext_stats=dict(ext_stats),

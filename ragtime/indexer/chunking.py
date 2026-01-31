@@ -25,6 +25,11 @@ from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Tiktoken encoding for token-based chunking
+# cl100k_base is used by GPT-4, text-embedding-3-*, and is a good general-purpose
+# tokenizer that roughly matches most embedding model tokenization
+TIKTOKEN_ENCODING = "cl100k_base"
+
 # Global process pool - initialized lazily
 _process_pool: Optional[ProcessPoolExecutor] = None
 _pool_max_workers: int = 1
@@ -155,7 +160,11 @@ def _create_chunk_header(
 
 
 def _chunk_with_chonkie_code(
-    text: str, chunk_size: int, chunk_overlap: int, metadata: dict
+    text: str,
+    chunk_size: int,
+    chunk_overlap: int,
+    metadata: dict,
+    use_tokens: bool = False,
 ) -> List[Document]:
     """
     Chunk code using Chonkie's AST-based CodeChunker with auto language detection.
@@ -167,6 +176,14 @@ def _chunk_with_chonkie_code(
     - Adds file path and import context as header in each chunk
     - Applies OverlapRefinery to add context from adjacent chunks
     - Preserves semantic boundaries (functions, classes, blocks)
+    - When use_tokens=True, chunk_size is in tokens (not characters)
+
+    Args:
+        text: Source code text to chunk
+        chunk_size: Maximum size per chunk (characters if use_tokens=False, tokens otherwise)
+        chunk_overlap: Overlap context size (characters or tokens)
+        metadata: Metadata dict to attach to chunks
+        use_tokens: If True, use tiktoken-based chunking for accurate token counts
     """
     source_path = metadata.get("source", "")
     file_ext = "." + source_path.rsplit(".", 1)[-1] if "." in source_path else ""
@@ -179,8 +196,13 @@ def _chunk_with_chonkie_code(
 
         imports, definitions = extract_metadata(text, file_ext)
 
+    # Determine tokenizer based on use_tokens setting
+    tokenizer = TIKTOKEN_ENCODING if use_tokens else "character"
+
     # Skip chunking if content is already small enough
-    if len(text) <= chunk_size:
+    # For token mode, estimate tokens as chars/4 for this quick check
+    size_threshold = chunk_size * 4 if use_tokens else chunk_size
+    if len(text) <= size_threshold:
         new_meta = metadata.copy()
         new_meta["chunker"] = "no_chunk_small"
         # Add file context header even for small files
@@ -193,7 +215,7 @@ def _chunk_with_chonkie_code(
 
     # language="auto" uses Magika for detection - no extension mapping needed
     chunker = CodeChunker(
-        tokenizer="character",
+        tokenizer=tokenizer,
         chunk_size=chunk_size,
         language="auto",
     )
@@ -203,7 +225,7 @@ def _chunk_with_chonkie_code(
     # This helps retrieval when function calls reference other functions
     if chunk_overlap > 0 and len(chunks) > 1:
         refinery = OverlapRefinery(
-            tokenizer="character",
+            tokenizer=tokenizer,
             context_size=chunk_overlap,
             mode="recursive",  # Use delimiter-aware overlap
             method="suffix",  # Add context from previous chunk
@@ -247,25 +269,43 @@ def _chunk_with_chonkie_code(
 
 
 def _chunk_with_recursive(
-    text: str, chunk_size: int, chunk_overlap: int, metadata: dict  # noqa: ARG001
+    text: str,
+    chunk_size: int,
+    chunk_overlap: int,  # noqa: ARG001
+    metadata: dict,
+    use_tokens: bool = False,
 ) -> List[Document]:
     """Chunk plain text using Chonkie's RecursiveChunker.
 
     Note: chunk_overlap is accepted for API compatibility but Chonkie's
     RecursiveChunker uses delimiter-based splitting rather than overlap.
+
+    Args:
+        text: Text content to chunk
+        chunk_size: Maximum size per chunk (characters if use_tokens=False, tokens otherwise)
+        chunk_overlap: Unused, kept for API compatibility
+        metadata: Metadata dict to attach to chunks
+        use_tokens: If True, use tiktoken-based chunking for accurate token counts
     """
+    # Determine tokenizer based on use_tokens setting
+    tokenizer = TIKTOKEN_ENCODING if use_tokens else "character"
+
     # Skip chunking if content is already small enough
-    if len(text) <= chunk_size:
+    # For token mode, estimate tokens as chars/4 for this quick check
+    size_threshold = chunk_size * 4 if use_tokens else chunk_size
+    if len(text) <= size_threshold:
         new_meta = metadata.copy()
         new_meta["chunker"] = "no_chunk_small"
         return [Document(page_content=text, metadata=new_meta)]
 
     from chonkie import RecursiveChunker
 
+    # min_characters_per_chunk needs adjustment for token mode
+    min_chars = 20 if use_tokens else 50
     chunker = RecursiveChunker(
-        tokenizer="character",
+        tokenizer=tokenizer,
         chunk_size=chunk_size,
-        min_characters_per_chunk=50,
+        min_characters_per_chunk=min_chars,
     )
     chunks = chunker.chunk(text)
 
@@ -338,7 +378,7 @@ def _chunk_document_batch_sync(
     batch_data: List[Tuple[str, dict]],
     chunk_size: int,
     chunk_overlap: int,
-    use_tokens: bool,  # noqa: ARG001 - reserved for future token-based chunking
+    use_tokens: bool,
 ) -> Tuple[List[Tuple[str, dict]], Dict[str, int]]:
     """
     Synchronous worker function to chunk a batch of documents.
@@ -346,6 +386,12 @@ def _chunk_document_batch_sync(
     Strategy:
     1. Try Chonkie CodeChunker with auto language detection (Magika)
     2. If language not supported, fall back to RecursiveChunker
+
+    Args:
+        batch_data: List of (content, metadata) tuples to chunk
+        chunk_size: Maximum chunk size (tokens if use_tokens=True, else characters)
+        chunk_overlap: Overlap context size (tokens or characters)
+        use_tokens: If True, use tiktoken-based chunking for accurate token counts
 
     Note: Text extraction from documents (PDF, DOCX, images) happens in
     document_parser.py before this function is called. We only chunk text here.
@@ -361,7 +407,7 @@ def _chunk_document_batch_sync(
             # Try Chonkie CodeChunker with auto language detection
             try:
                 docs = _chunk_with_chonkie_code(
-                    content, chunk_size, chunk_overlap, metadata
+                    content, chunk_size, chunk_overlap, metadata, use_tokens
                 )
                 splitter_counts["chonkie_code"] = (
                     splitter_counts.get("chonkie_code", 0) + 1
@@ -380,7 +426,7 @@ def _chunk_document_batch_sync(
                         f"using recursive: {e}"
                     )
                     docs = _chunk_with_recursive(
-                        content, chunk_size, chunk_overlap, metadata
+                        content, chunk_size, chunk_overlap, metadata, use_tokens
                     )
                     splitter_counts["chonkie_recursive"] = (
                         splitter_counts.get("chonkie_recursive", 0) + 1
@@ -391,7 +437,9 @@ def _chunk_document_batch_sync(
         except Exception as e:
             logger.error(f"Chunking failed for {file_path or 'unknown'}: {e}")
             # Last resort: simple recursive text splitting
-            docs = _chunk_with_recursive(content, chunk_size, chunk_overlap, metadata)
+            docs = _chunk_with_recursive(
+                content, chunk_size, chunk_overlap, metadata, use_tokens
+            )
             splitter_counts["chonkie_recursive_error"] = (
                 splitter_counts.get("chonkie_recursive_error", 0) + 1
             )
