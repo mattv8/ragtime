@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo, isValidElement, type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, X, AlertCircle, RefreshCw, FileText } from 'lucide-react';
+import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, X, AlertCircle, RefreshCw, FileText, Menu } from 'lucide-react';
 import { api } from '@/api';
 import type { Conversation, ChatMessage, AvailableModel, ChatTask, User, ContentPart } from '@/types';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
@@ -2124,6 +2124,13 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
             {/* Chat Header */}
             <div className="chat-header">
               <div className="chat-header-info">
+                <button
+                  className="chat-mobile-sidebar-toggle"
+                  onClick={() => setShowSidebar(true)}
+                  title="Show conversations"
+                >
+                  <Menu size={20} />
+                </button>
                 <h2>{activeConversation.title}</h2>
               </div>
               <div className="chat-header-actions">

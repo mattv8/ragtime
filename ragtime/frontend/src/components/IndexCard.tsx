@@ -127,12 +127,12 @@ export function IndexCard({
       className={`index-item ${!enabled ? 'index-disabled' : ''} ${className}`}
       id={id}
     >
-      <div className="index-info" style={{ display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0, flex: 1 }}>
+      <div className="index-info">
         {/* Header Row: Title and Actions */}
-        <div className="index-title-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: '16px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <div className="index-title-row">
+          <div className="index-title-container">
             {editingField === 'title' ? (
-              <div className="inline-edit-field" style={{ flexGrow: 0, minWidth: '200px' }}>
+              <div className="inline-edit-field title-edit">
                 <input
                   ref={inputRef}
                   type="text"
@@ -142,14 +142,12 @@ export function IndexCard({
                   onBlur={handleSaveEdit}
                   disabled={saving}
                   className="inline-edit-input"
-                  style={{ fontSize: '1rem', fontWeight: 600, padding: '2px 4px' }}
                 />
               </div>
             ) : (
               <div
                 className={`editable-field-wrapper name-wrapper ${onEditTitle ? 'editable' : ''}`}
                 onClick={onEditTitle ? () => handleStartEdit('title') : undefined}
-                style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
               >
                 <h3>
                   {title}
@@ -170,9 +168,9 @@ export function IndexCard({
           </div>
 
           {/* Actions moved here */}
-          <div className="index-actions" style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
+          <div className="index-actions">
              {actions}
-             <div className="index-toggle" style={{ margin: 0 }}>
+             <div className="index-toggle">
                 <label
                   className="toggle-switch"
                   title={toggleTitle || (enabled ? 'Enabled' : 'Disabled')}
@@ -190,7 +188,7 @@ export function IndexCard({
 
         {/* Description Row - Full Width */}
         {(description !== undefined || onEditDescription) && (
-          <div className="index-description-row" style={{ width: '100%' }}>
+          <div className="index-description-row">
             {editingField === 'description' ? (
               <div className="inline-edit-field description-edit">
                 <textarea
@@ -206,21 +204,19 @@ export function IndexCard({
                   className="inline-edit-textarea"
                   rows={3}
                   placeholder="Description for AI..."
-                  style={{ width: '100%', minHeight: '60px', fontSize: '0.875rem' }}
                 />
               </div>
             ) : (
               <div
                 className={`editable-field-wrapper description-wrapper ${onEditDescription ? 'editable' : ''}`}
                 onClick={onEditDescription ? () => handleStartEdit('description') : undefined}
-                style={{ cursor: onEditDescription ? 'pointer' : 'default', padding: '4px 8px', marginLeft: '-8px' }}
               >
                 {description ? (
-                  <p className="index-description truncated" style={{ margin: 0, fontSize: '0.875rem', color: 'var(--color-text-secondary)' }} title="Click to edit and view full description">
+                  <p className="index-description truncated" title="Click to edit and view full description">
                     {description}
                   </p>
                 ) : (
-                  onEditDescription && <p className="index-description placeholder" style={{ margin: 0, fontSize: '0.875rem', color: 'var(--color-text-muted)', fontStyle: 'italic' }}>Add description for AI...</p>
+                  onEditDescription && <p className="index-description placeholder">Add description for AI...</p>
                 )}
                 {onEditDescription && (
                   <button

@@ -614,15 +614,36 @@ body {
 }
 
 .index-info {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   flex: 1;
+  min-width: 0;
+}
+
+.index-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: var(--space-md);
+}
+
+.index-title-container {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
   min-width: 0;
 }
 
 .index-info h3 {
   font-size: var(--text-lg);
   font-weight: 600;
-  margin-bottom: var(--space-xs);
+  margin: 0;
   color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .index-meta {
@@ -632,15 +653,19 @@ body {
 
 .index-actions {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
   gap: var(--space-sm);
   flex-shrink: 0;
 }
 
+.index-description-row {
+  width: 100%;
+}
+
 .index-description {
   font-size: var(--text-sm);
   color: var(--color-text-secondary);
-  margin-top: var(--space-sm);
 }
 
 .index-description.truncated {

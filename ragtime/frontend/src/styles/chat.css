@@ -1766,3 +1766,13 @@
   font-size: var(--text-sm);
   line-height: var(--leading-normal);
 }
+
+/* Mobile Toggle */
+.chat-mobile-sidebar-toggle {
+  display: none;
+  background: none;
+  border: none;
+  padding: var(--space-xs);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
