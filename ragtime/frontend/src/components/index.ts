@@ -22,3 +22,4 @@ export { SecurityBanner } from './SecurityBanner';
 export { ConfigurationBanner } from './ConfigurationBanner';
 export * from './IndexCard';
 export { DeleteConfirmButton } from './DeleteConfirmButton';
+export { IndexingPill } from './IndexingPill';

@@ -8,6 +8,7 @@ import { UploadForm } from './UploadForm';
 import { IndexCard } from './IndexCard';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
 import { AnimatedCreateButton } from './AnimatedCreateButton';
+import { IndexingPill } from './IndexingPill';
 
 interface IndexesListProps {
   indexes: IndexInfo[];
@@ -575,11 +576,11 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
                     {`Updated ${new Date(idx.last_modified).toLocaleString()}`}
                   </span>
                 )}
-                {activeJob && (
-                  <span className="meta-pill indexing" title={activeJob.status === 'pending' ? 'Pending...' : `Processing: ${activeJob.progress_percent.toFixed(0)}%`}>
-                    Indexing... {activeJob.progress_percent > 0 ? `${Math.round(activeJob.progress_percent)}%` : ''}
-                  </span>
-                )}
+                <IndexingPill
+                  isOptimistic={isOptimistic}
+                  activeJob={activeJob}
+                  progressLabelPrefix="Processing"
+                />
                 {isFailedOrInterrupted && (
                   <span className="meta-pill warning" title="Indexing was interrupted or failed. Click 'Retry' to resume.">
                     <AlertTriangle size={12} />

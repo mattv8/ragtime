@@ -7,6 +7,7 @@ import { ToolWizard } from './ToolWizard';
 import { IndexCard } from './IndexCard';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
 import { AnimatedCreateButton } from './AnimatedCreateButton';
+import { IndexingPill } from './IndexingPill';
 
 // Polling interval for active jobs (2 seconds)
 const ACTIVE_JOB_POLL_INTERVAL = 2000;
@@ -106,11 +107,11 @@ function FilesystemIndexCard({
           {`Updated ${new Date(stats.last_indexed).toLocaleString()}`}
         </span>
       )}
-      {isActive && activeJob && (
-         <span className="meta-pill indexing" title={activeJob.status === 'pending' ? 'Pending...' : `Indexing: ${activeJob.progress_percent.toFixed(0)}%`}>
-           Indexing... {activeJob.progress_percent > 0 ? `${Math.round(activeJob.progress_percent)}%` : ''}
-         </span>
-      )}
+      <IndexingPill
+        isOptimistic={!stats || stats.embedding_count === 0}
+        activeJob={activeJob}
+        progressLabelPrefix="Indexing"
+      />
       {!tool.enabled && <span className="meta-pill disabled">Excluded from RAG</span>}
     </>
   );

@@ -6,6 +6,7 @@ import { ToolWizard } from './ToolWizard';
 import { Icon, getToolIconType } from './Icon';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
 import { AnimatedCreateButton } from './AnimatedCreateButton';
+import { IndexingPill } from './IndexingPill';
 
 // Inline field being edited
 type EditingField = 'name' | 'description' | null;
@@ -304,14 +305,10 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
 
       {((tool.allow_write) || ((tool.tool_type === 'ssh_shell' || tool.tool_type === 'odoo_shell') && (tool.connection_config as any)?.working_directory) || activeSchemaJob) && (
         <div className="tool-card-constraints">
-          {activeSchemaJob && (
-            <span
-              className="meta-pill indexing"
-              title={activeSchemaJob.status === 'pending' ? 'Pending...' : `Indexing: ${activeSchemaJob.progress_percent.toFixed(0)}%`}
-            >
-              Indexing... {activeSchemaJob.progress_percent > 0 ? `${Math.round(activeSchemaJob.progress_percent)}%` : ''}
-            </span>
-          )}
+          <IndexingPill
+            activeJob={activeSchemaJob}
+            progressLabelPrefix="Indexing"
+          />
           {tool.allow_write && (
             <span className="write-enabled-pill">
               <Icon name="alert-triangle" size={12} />
