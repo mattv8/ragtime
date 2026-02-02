@@ -252,6 +252,7 @@ async def _stream_response_tokens(
 
     # Track active tool for formatting
     current_tool: str | None = None
+    pending_tool_input: dict | None = None  # Buffer tool input until tool_end
 
     def _detect_code_language(tool_name: str, tool_input: dict) -> str:
         """Detect the appropriate code language for syntax highlighting."""
@@ -289,10 +290,12 @@ async def _stream_response_tokens(
                 if suppress_tool_output:
                     continue
 
-                # Format tool start as readable text
+                # Buffer the tool input for the complete details block on tool_end
+                pending_tool_input = tool_input
+
+                # Format tool input for immediate display
                 input_display = ""
                 if tool_input:
-                    # Extract the most relevant input field
                     for field in ["query", "sql", "code", "command", "python_code"]:
                         if field in tool_input and tool_input[field]:
                             input_display = str(tool_input[field])
@@ -300,35 +303,37 @@ async def _stream_response_tokens(
                     if not input_display:
                         input_display = json.dumps(tool_input, indent=2)
 
-                # Detect language for syntax highlighting
                 lang = _detect_code_language(tool_name, tool_input)
 
-                # Collapsible details tag for Open WebUI compatibility
-                header = (
-                    f'\n\n<details type="tool_call" done="false">\n'
-                    f"<summary>Using {tool_name}</summary>\n\n"
-                    f"```{lang}\n{input_display}\n```\n"
+                # Emit collapsible tool call block
+                block = (
+                    f'\n\n<details type="tool_call">\n'
+                    f"<summary>Calling {tool_name}...</summary>\n\n"
+                    f"```{lang}\n{input_display}\n```\n\n"
+                    f"</details>\n"
                 )
-                yield make_chunk(header)
+                yield make_chunk(block)
 
             elif event_type == "tool_end":
                 tool_name = event.get("tool", current_tool or "unknown")
                 tool_output = event.get("output", "")
                 current_tool = None
+                pending_tool_input = None
 
                 # Skip tool output if suppressed
                 if suppress_tool_output:
-                    # Still need to close the details tag
-                    yield make_chunk("\n</details>\n\n")
                     continue
 
                 output_display = _format_tool_output(str(tool_output))
 
-                # Close the details tag with the result
-                footer = (
-                    f"\n**Result:**\n\n```\n{output_display}\n```\n\n</details>\n\n"
+                # Emit result in a collapsible details block
+                block = (
+                    f'\n<details type="tool_result">\n'
+                    f"<summary>Result</summary>\n\n"
+                    f"```\n{output_display}\n```\n\n"
+                    f"</details>\n\n"
                 )
-                yield make_chunk(footer)
+                yield make_chunk(block)
 
             elif event_type == "max_iterations_reached":
                 yield make_chunk("\n\n> **Note:** Reached maximum tool iterations\n")
