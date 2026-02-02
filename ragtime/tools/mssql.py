@@ -24,7 +24,42 @@ from ragtime.core.ssh import SSHTunnel, ssh_tunnel_config_from_dict
 
 logger = get_logger(__name__)
 
+# Maximum timeout for any tool execution (5 minutes)
+# AI can request up to this limit; configured per-tool timeout is the default
+MAX_TOOL_TIMEOUT_SECONDS = 300
 
+
+def create_mssql_query_input(default_timeout: int) -> type[BaseModel]:
+    """Create MssqlQueryInput with dynamic default timeout."""
+
+    class MssqlQueryInput(BaseModel):
+        """Input schema for MSSQL queries."""
+
+        query: str = Field(
+            description=(
+                "SQL SELECT query to execute. Must be read-only and include "
+                "TOP n clause (e.g., SELECT TOP 100 * FROM table). "
+                "For MSSQL, use square brackets for identifiers: [TableName].[ColumnName]"
+            )
+        )
+        description: str = Field(
+            default="",
+            description="Brief description of what this query retrieves (for logging)",
+            alias="reason",
+        )
+        timeout: int = Field(
+            default=default_timeout,
+            ge=5,
+            le=MAX_TOOL_TIMEOUT_SECONDS,
+            description=f"Query timeout in seconds (default: {default_timeout}, max: {MAX_TOOL_TIMEOUT_SECONDS}). Use higher values for complex queries or large result sets.",
+        )
+
+        model_config = {"populate_by_name": True}
+
+    return MssqlQueryInput
+
+
+# Legacy schema for backwards compatibility (default 30s timeout)
 class MssqlQueryInput(BaseModel):
     """Input schema for MSSQL queries."""
 
@@ -39,6 +74,12 @@ class MssqlQueryInput(BaseModel):
         default="",
         description="Brief description of what this query retrieves (for logging)",
         alias="reason",
+    )
+    timeout: int = Field(
+        default=30,
+        ge=5,
+        le=MAX_TOOL_TIMEOUT_SECONDS,
+        description=f"Query timeout in seconds (default: 30, max: {MAX_TOOL_TIMEOUT_SECONDS}). Use higher values for complex queries or large result sets.",
     )
 
     model_config = {"populate_by_name": True}
@@ -220,7 +261,7 @@ def create_mssql_tool(
         user: Database username.
         password: Database password.
         database: Database name.
-        timeout: Query timeout in seconds.
+        timeout: Query timeout in seconds (default for AI).
         max_results: Maximum rows to return.
         allow_write: Whether to allow write operations.
         description: Description for LLM context.
@@ -229,8 +270,12 @@ def create_mssql_tool(
     Returns:
         Configured StructuredTool instance.
     """
+    # Create input schema with this tool's default timeout
+    QueryInput = create_mssql_query_input(timeout)
 
-    async def execute_query(query: str = "", description: str = "", **_: Any) -> str:
+    async def execute_query(
+        query: str = "", description: str = "", timeout: int = timeout, **_: Any
+    ) -> str:
         """Execute MSSQL query using configured connection."""
         if not query or not query.strip():
             return (
@@ -239,6 +284,9 @@ def create_mssql_tool(
         if not description:
             description = "SQL query"
 
+        # Use AI-provided timeout, capped at maximum
+        effective_timeout = min(timeout, MAX_TOOL_TIMEOUT_SECONDS)
+
         return await execute_mssql_query_async(
             query=query,
             host=host,
@@ -246,7 +294,7 @@ def create_mssql_tool(
             user=user,
             password=password,
             database=database,
-            timeout=timeout,
+            timeout=effective_timeout,
             max_results=max_results,
             allow_write=allow_write,
             description=description,
@@ -266,7 +314,7 @@ def create_mssql_tool(
         coroutine=execute_query,
         name=f"query_{name.lower().replace(' ', '_').replace('-', '_')}",
         description=tool_description,
-        args_schema=MssqlQueryInput,
+        args_schema=QueryInput,
     )
 
 

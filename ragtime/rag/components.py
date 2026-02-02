@@ -63,6 +63,10 @@ from ragtime.tools.odoo_shell import filter_odoo_output
 
 logger = get_logger(__name__)
 
+# Maximum timeout for any tool execution (5 minutes)
+# AI can request up to this limit; configured per-tool timeout is the default
+MAX_TOOL_TIMEOUT_SECONDS = 300
+
 
 def get_process_memory_bytes() -> int:
     """Get current process RSS memory in bytes."""
@@ -2157,6 +2161,9 @@ class RAGComponents:
         # Build SSH tunnel config if enabled
         ssh_tunnel_config = build_ssh_tunnel_config(conn_config, host, port)
 
+        # Create input schema with captured timeout value
+        _default_timeout = timeout  # Capture for closure
+
         class PostgresInput(BaseModel):
             query: str = Field(
                 default="",
@@ -2166,7 +2173,18 @@ class RAGComponents:
                 default="", description="Brief description of what this query retrieves"
             )
 
-        async def execute_query(query: str = "", reason: str = "", **_: Any) -> str:
+        # Add timeout field dynamically to avoid scope issues
+        PostgresInput.model_fields["timeout"] = Field(
+            default=_default_timeout,
+            ge=5,
+            le=MAX_TOOL_TIMEOUT_SECONDS,
+            description=f"Query timeout in seconds (default: {_default_timeout}, max: {MAX_TOOL_TIMEOUT_SECONDS}). Use higher values for complex queries, large result sets, or slow connections.",
+        )
+        PostgresInput.model_rebuild()
+
+        async def execute_query(
+            query: str = "", reason: str = "", timeout: int = _default_timeout, **_: Any
+        ) -> str:
             """Execute PostgreSQL query using this tool's configuration."""
             # Validate required fields
             if not query or not query.strip():
@@ -2175,6 +2193,9 @@ class RAGComponents:
                 reason = "SQL query"
 
             logger.info(f"[{tool_name}] Query: {reason}")
+
+            # Use AI-provided timeout, capped at maximum
+            effective_timeout = min(timeout, MAX_TOOL_TIMEOUT_SECONDS)
 
             # Validate query
             is_safe, validation_reason = validate_sql_query(
@@ -2219,7 +2240,7 @@ class RAGComponents:
                             user=user,
                             password=password,
                             dbname=database,
-                            connect_timeout=timeout,
+                            connect_timeout=effective_timeout,
                         )
                         cursor = conn.cursor(
                             cursor_factory=psycopg2.extras.RealDictCursor
@@ -2270,10 +2291,10 @@ class RAGComponents:
                         asyncio.get_event_loop().run_in_executor(
                             None, run_tunnel_query
                         ),
-                        timeout=timeout + 5,
+                        timeout=effective_timeout + 5,
                     )
                 except asyncio.TimeoutError:
-                    return f"Error: Query timed out after {timeout}s"
+                    return f"Error: Query timed out after {effective_timeout}s"
 
             escaped_query = query.replace("'", "'\\''")
 
@@ -2311,7 +2332,7 @@ class RAGComponents:
                     asyncio.create_subprocess_exec(
                         *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
                     ),
-                    timeout=timeout,
+                    timeout=effective_timeout,
                 )
                 stdout, stderr = await process.communicate()
 
@@ -2336,7 +2357,7 @@ class RAGComponents:
                 return output
 
             except asyncio.TimeoutError:
-                return f"Error: Query timed out after {timeout}s"
+                return f"Error: Query timed out after {effective_timeout}s"
             except Exception as e:
                 return f"Error: {str(e)}"
 
@@ -2446,6 +2467,9 @@ class RAGComponents:
         description = config.get("description", "")
         mode = conn_config.get("mode", "docker")  # docker or ssh
 
+        # Capture timeout for closure
+        _default_timeout = timeout
+
         class OdooInput(BaseModel):
             code: str = Field(
                 default="",
@@ -2454,6 +2478,15 @@ class RAGComponents:
             reason: str = Field(
                 default="", description="Brief description of what this code does"
             )
+
+        # Add timeout field dynamically to avoid scope issues
+        OdooInput.model_fields["timeout"] = Field(
+            default=_default_timeout,
+            ge=10,
+            le=MAX_TOOL_TIMEOUT_SECONDS,
+            description=f"Execution timeout in seconds (default: {_default_timeout}, max: {MAX_TOOL_TIMEOUT_SECONDS}). Odoo shell has initialization overhead; use higher values for complex queries.",
+        )
+        OdooInput.model_rebuild()
 
         def _build_docker_command(
             container: str, database: str, config_path: str
@@ -2474,7 +2507,9 @@ class RAGComponents:
                 cmd.extend(["-c", config_path])
             return cmd
 
-        async def execute_odoo(code: str = "", reason: str = "", **_: Any) -> str:
+        async def execute_odoo(
+            code: str = "", reason: str = "", timeout: int = _default_timeout, **_: Any
+        ) -> str:
             """Execute Odoo shell command using this tool's configuration."""
             # Validate required fields
             if not code or not code.strip():
@@ -2483,6 +2518,9 @@ class RAGComponents:
                 reason = "Odoo query"
 
             logger.info(f"[{tool_name}] Odoo ({mode}): {reason}")
+
+            # Use AI-provided timeout, capped at maximum
+            effective_timeout = min(timeout, MAX_TOOL_TIMEOUT_SECONDS)
 
             # Validate code
             is_safe, validation_reason = validate_odoo_code(
@@ -2515,7 +2553,7 @@ except Exception as e:
                             stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT,  # Merge stderr into stdout
                         ),
-                        timeout=timeout,
+                        timeout=effective_timeout,
                     )
                     stdout, _ = await process.communicate(input=full_input.encode())
                     output = stdout.decode("utf-8", errors="replace")
@@ -2528,7 +2566,7 @@ except Exception as e:
                     )
 
                 except asyncio.TimeoutError:
-                    return f"Error: Query timed out after {timeout}s"
+                    return f"Error: Query timed out after {effective_timeout}s"
                 except FileNotFoundError:
                     cmd_name = "SSH" if mode == "ssh" else "Docker"
                     return f"Error: {cmd_name} command not found"
@@ -2551,7 +2589,7 @@ except Exception as e:
                     key_path=conn_config.get("ssh_key_path"),
                     key_content=conn_config.get("ssh_key_content"),
                     key_passphrase=conn_config.get("ssh_key_passphrase"),
-                    timeout=timeout,
+                    timeout=effective_timeout,
                 )
 
                 # Build remote Odoo shell command
@@ -2622,6 +2660,9 @@ except Exception as e:
         description = config.get("description", "")
         working_directory = conn_config.get("working_directory", "")
 
+        # Capture timeout for closure
+        _default_timeout = timeout
+
         class SSHInput(BaseModel):
             command: str = Field(
                 default="", description="Shell command to execute on the remote server"
@@ -2630,7 +2671,21 @@ except Exception as e:
                 default="", description="Brief description of what this command does"
             )
 
-        async def execute_ssh(command: str = "", reason: str = "", **_: Any) -> str:
+        # Add timeout field dynamically to avoid scope issues
+        SSHInput.model_fields["timeout"] = Field(
+            default=_default_timeout,
+            ge=5,
+            le=MAX_TOOL_TIMEOUT_SECONDS,
+            description=f"Command timeout in seconds (default: {_default_timeout}, max: {MAX_TOOL_TIMEOUT_SECONDS}). Use higher values for long-running operations like backups, large file transfers, or data exports.",
+        )
+        SSHInput.model_rebuild()
+
+        async def execute_ssh(
+            command: str = "",
+            reason: str = "",
+            timeout: int = _default_timeout,
+            **_: Any,
+        ) -> str:
             """Execute SSH command using this tool's configuration."""
             # Validate required fields
             if not command or not command.strip():
@@ -2650,6 +2705,9 @@ except Exception as e:
             if not host or not user:
                 return "Error: Host and user are required"
 
+            # Use AI-provided timeout, capped at maximum
+            effective_timeout = min(timeout, MAX_TOOL_TIMEOUT_SECONDS)
+
             # Build SSH config for potential env var expansion
             ssh_config = SSHConfig(
                 host=host,
@@ -2659,7 +2717,7 @@ except Exception as e:
                 key_path=key_path,
                 key_content=key_content,
                 key_passphrase=key_passphrase,
-                timeout=timeout,
+                timeout=effective_timeout,
             )
 
             # If working_directory is set, expand env vars for path validation
