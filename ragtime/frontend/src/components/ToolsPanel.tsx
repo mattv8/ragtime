@@ -628,7 +628,8 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [] }: ToolsPanel
 
         {showWizard ? (
           <ToolWizard
-            existingTool={editingTool} // Note: This might need to check if existingTool is valid for Add vs Edit. Add -> null.
+            key={editingTool?.id ?? 'new'}
+            existingTool={editingTool}
             onClose={handleWizardClose}
             onSave={handleWizardSave}
             embedded={true}

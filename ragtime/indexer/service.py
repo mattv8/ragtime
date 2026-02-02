@@ -802,6 +802,9 @@ class IndexerService:
                         "git_clone_timeout_minutes", 5
                     ),
                     git_history_depth=config_snapshot_data.get("git_history_depth", 1),
+                    reindex_interval_hours=config_snapshot_data.get(
+                        "reindex_interval_hours", 0
+                    ),
                 )
 
             # Check for git repo directory (git history)

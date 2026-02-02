@@ -519,6 +519,7 @@ export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged, embeddingD
 
       {showWizard ? (
         <ToolWizard
+          key={editingTool?.id ?? 'new'}
           existingTool={editingTool}
           onClose={handleWizardClose}
           onSave={handleWizardSave}
