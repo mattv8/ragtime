@@ -324,6 +324,46 @@ async def search_pgvector_embeddings(
         raise
 
 
+async def get_pgvector_table_size_bytes(
+    table_name: str,
+    index_name: str,
+    logger_override=None,
+) -> int:
+    """
+    Calculate the total size in bytes of rows in a pgvector table for a given index.
+
+    Uses PostgreSQL's pg_column_size to calculate the actual storage size of the
+    rows matching the index_name.
+
+    Args:
+        table_name: The pgvector table name (e.g., 'filesystem_embeddings')
+        index_name: The index name to filter by
+        logger_override: Optional logger to use
+
+    Returns:
+        Total size in bytes
+    """
+    log = logger_override or logger
+    try:
+        db = await get_db()
+        safe_index_name = index_name.replace("'", "''")
+
+        result = await db.query_raw(
+            f"""
+            SELECT COALESCE(SUM(pg_column_size(t.*)), 0)::bigint as total_bytes
+            FROM {table_name} t
+            WHERE index_name = '{safe_index_name}'
+        """
+        )
+
+        if result and result[0]["total_bytes"]:
+            return int(result[0]["total_bytes"])
+        return 0
+    except Exception as e:
+        log.error(f"Error calculating size for {table_name} index {index_name}: {e}")
+        return 0
+
+
 # =============================================================================
 # Embedding Dimension Helpers
 # =============================================================================
