@@ -362,61 +362,149 @@ DOCUMENT_EXTENSIONS: set[str] = (
 # =============================================================================
 # TREE-SITTER LANGUAGE MAPPING
 # =============================================================================
-# Map extensions to tree-sitter language names
-# Note: These must match names supported by tree-sitter-language-pack
-EXTENSION_TO_LANG: dict[str, str] = {
-    # Python
-    ".py": "python",
+# Unified mapping for both file extensions AND Magika content types to tree-sitter.
+# This is the SINGLE SOURCE OF TRUTH for language mappings.
+#
+# Keys can be:
+#   - File extensions (e.g., ".py", ".tsx")
+#   - Filenames without extensions (e.g., "makefile", "dockerfile")
+#   - Magika content types (e.g., "shell", "jinja", "objectivec")
+#
+# Values:
+#   - tree-sitter language name (e.g., "python", "bash")
+#   - None = use RecursiveChunker (plain text, no AST benefit)
+#
+# Note: 59+ Magika types auto-map because names match tree-sitter exactly
+# (python, javascript, rust, go, etc.). Only add entries here for:
+#   1. Non-obvious file extensions
+#   2. Magika types that need translation to different tree-sitter names
+#   3. Content that should use RecursiveChunker (None)
+LANG_MAPPING: dict[str, str | None] = {
+    # =========================================================================
+    # FILE EXTENSIONS (non-obvious mappings only)
+    # =========================================================================
+    # Python variants
     ".pyi": "python",
     ".pyx": "python",
-    # JavaScript / TypeScript
-    ".js": "javascript",
+    # JavaScript variants
     ".jsx": "javascript",
-    ".ts": "typescript",
-    ".tsx": "tsx",
     ".mjs": "javascript",
     ".cjs": "javascript",
-    # Go
-    ".go": "go",
-    # Rust
-    ".rs": "rust",
-    # Java
-    ".java": "java",
-    # PHP
-    ".php": "php",
-    # Ruby
-    ".rb": "ruby",
-    # C/C++
-    ".c": "c",
-    ".cpp": "cpp",
-    ".h": "c",  # heuristic, could be cpp
+    # TypeScript
+    ".ts": "typescript",
+    ".tsx": "tsx",
+    # C/C++ ambiguous headers
+    ".h": "c",
     ".hpp": "cpp",
     ".cc": "cpp",
-    # Web
-    ".html": "html",
+    ".hh": "cpp",
+    # C#
+    ".cs": "csharp",
+    # Objective-C
+    ".m": "objc",
+    ".mm": "objc",
+    # Web aliases
     ".htm": "html",
-    ".css": "css",
-    ".scss": "scss",
-    # Template languages -> parse as HTML (preserves tag structure)
-    ".j2": "html",  # Jinja2 templates
+    # Template languages -> HTML
+    ".j2": "html",
     ".jinja": "html",
     ".jinja2": "html",
-    ".twig": "twig",  # Twig templates (has native support)
-    ".ejs": "html",  # EJS templates
-    ".hbs": "html",  # Handlebars templates
-    ".mustache": "html",  # Mustache templates
-    ".njk": "html",  # Nunjucks templates
-    ".liquid": "html",  # Liquid templates
-    # Data/Config
-    ".json": "json",
-    ".yaml": "yaml",
+    ".ejs": "html",
+    ".hbs": "html",
+    ".mustache": "html",
+    ".njk": "html",
+    ".liquid": "html",
+    ".erb": "embeddedtemplate",
+    # Config files
     ".yml": "yaml",
-    ".toml": "toml",
-    ".xml": "xml",
-    ".sql": "sql",
-    # Shell
+    ".conf": "ini",
+    ".cfg": "ini",
+    ".env": "properties",
+    ".properties": "properties",
+    ".editorconfig": "ini",
+    # Shell variants
     ".sh": "bash",
     ".bash": "bash",
+    ".zsh": "bash",
+    ".fish": "fish",
+    ".crontab": "bash",
+    ".bashrc": "bash",
+    ".zshrc": "bash",
+    ".profile": "bash",
+    # Build files
+    ".mk": "make",
+    ".dockerfile": "dockerfile",
+    # Data formats
+    ".jsonl": "json",
+    ".ndjson": "json",
+    # Documentation
+    ".md": "markdown",
+    ".markdown": "markdown",
+    ".tex": "latex",
+    ".bib": "bibtex",
+    # Plain text -> RecursiveChunker
+    ".txt": None,
+    ".text": None,
+    ".log": None,
+    ".csv": None,
+    ".tsv": None,
+    # =========================================================================
+    # FILENAMES (for extensionless files like Makefile)
+    # =========================================================================
+    "makefile": "make",
+    "dockerfile": "dockerfile",
+    "containerfile": "dockerfile",
+    # =========================================================================
+    # MAGIKA CONTENT TYPES (when name differs from tree-sitter)
+    # =========================================================================
+    # Plain text / extracted content
+    "txt": None,
+    "unknown": None,
+    "empty": None,
+    # Binary formats that got parsed to text
+    "pdf": None,
+    "doc": None,
+    "docx": None,
+    "xls": None,
+    "xlsx": None,
+    "ppt": None,
+    "pptx": None,
+    "rtf": None,
+    "jpeg": None,
+    "png": None,
+    "gif": None,
+    "webp": None,
+    "svg": None,
+    # Shell (Magika: shell -> tree-sitter: bash)
+    "shell": "bash",
+    "batch": "bash",
+    "awk": "bash",
+    # C family
+    "cs": "csharp",
+    "objectivec": "objc",
+    # Template languages
+    "jinja": "html",
+    "handlebars": "html",
+    "erb": "embeddedtemplate",
+    # Config/data
+    "htaccess": "ini",
+    "ignorefile": "gitignore",
+    "gitmodules": "ini",
+    "gemfile": "ruby",
+    "gemspec": "ruby",
+    "ipynb": "json",
+    "jsonl": "json",
+    "textproto": "proto",
+    # Markup
+    "sgml": "xml",
+    "rdf": "xml",
+    # Lisp
+    "lisp": "commonlisp",
+    # Build systems
+    "makefile": "make",
+    "bazel": "starlark",
+    "gradle": "groovy",
+    "bib": "bibtex",
 }
 
 

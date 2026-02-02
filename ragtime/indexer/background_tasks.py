@@ -9,7 +9,7 @@ Also handles scheduled filesystem re-indexing tasks.
 
 import asyncio
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -283,7 +283,15 @@ class BackgroundTaskService:
                         next_reindex = last_indexed + timedelta(
                             hours=fs_config.reindex_interval_hours
                         )
-                        if datetime.utcnow() < next_reindex:
+                        # Use timezone-aware comparison (handle both naive and aware)
+                        now = datetime.now(timezone.utc)
+                        # Make last_indexed tz-aware if needed
+                        if last_indexed.tzinfo is None:
+                            last_indexed = last_indexed.replace(tzinfo=timezone.utc)
+                            next_reindex = last_indexed + timedelta(
+                                hours=fs_config.reindex_interval_hours
+                            )
+                        if now < next_reindex:
                             continue  # Not due yet
 
                     # Trigger re-indexing

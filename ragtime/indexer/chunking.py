@@ -24,11 +24,18 @@ from langchain_core.documents import Document
 
 from ragtime.core.logging import get_logger
 
-# Suppress Chonkie's warning about tokenizers library - we use tiktoken intentionally
+# Suppress Chonkie warnings we intentionally trigger:
+# - tokenizers library: we use tiktoken intentionally
+# - auto language: we use auto-detection as fallback when extension not mapped
 warnings.filterwarnings(
     "ignore",
     message="'tokenizers' library not found",
     module="chonkie.tokenizer",
+)
+warnings.filterwarnings(
+    "ignore",
+    message="The language is set to `auto`",
+    module="chonkie.chunker.code",
 )
 
 logger = get_logger(__name__)
@@ -199,45 +206,53 @@ def _estimate_max_header_tokens(
 # CHUNKING IMPLEMENTATIONS
 # =============================================================================
 
-# Mapping of Magika-detected languages to tree-sitter grammar names.
-# This handles template languages and formats that Magika detects but
-# tree-sitter doesn't have a direct grammar for.
-# Note: EXTENSION_TO_LANG in file_constants.py maps file extensions to languages,
-# while this maps detected content types to tree-sitter grammars.
-MAGIKA_TO_TREESITTER: dict[str, str] = {
-    # Template languages -> use HTML parsing (preserves tag structure)
-    "jinja": "html",
-    "jinja2": "html",
-    "django": "html",  # Django templates
-    "mako": "html",  # Mako templates
-    "erb": "embeddedtemplate",  # Ruby ERB templates
-    "ejs": "html",  # EJS templates
-    "mustache": "html",  # Mustache/Handlebars
-    "handlebars": "html",
-    "liquid": "html",  # Liquid templates (Jekyll, Shopify)
-    "nunjucks": "html",  # Nunjucks templates
-    "pug": "html",  # Pug/Jade (close enough)
-    # Config formats
-    "dotenv": "properties",  # .env files
-    "editorconfig": "ini",
-}
+# Cache for the tree-sitter language set
+_treesitter_langs_cache: set[str] | None = None
 
 
-def _get_language_for_file(file_ext: str) -> str | None:
+def _get_treesitter_langs() -> set[str]:
+    """Get the set of supported tree-sitter language names."""
+    global _treesitter_langs_cache
+    if _treesitter_langs_cache is None:
+        try:
+            from tree_sitter_language_pack import SupportedLanguage
+
+            _treesitter_langs_cache = set(SupportedLanguage.__args__)
+        except ImportError:
+            _treesitter_langs_cache = set()
+    return _treesitter_langs_cache
+
+
+def _resolve_language(key: str) -> str | None | str:
     """
-    Get tree-sitter language name for a file extension.
+    Resolve a file extension, filename, or Magika content type to tree-sitter language.
 
-    Uses EXTENSION_TO_LANG from file_constants.py as the source of truth.
+    Uses LANG_MAPPING from file_constants.py as the single source of truth,
+    with auto-mapping for the 59+ Magika types that exactly match tree-sitter names.
 
     Args:
-        file_ext: File extension including dot (e.g., ".py")
+        key: File extension (e.g., ".py"), filename (e.g., "makefile"),
+             or Magika content type (e.g., "shell")
 
     Returns:
-        Tree-sitter language name or None if not mapped
+        - tree-sitter language name if mapped
+        - None if content should use RecursiveChunker
+        - "__unknown__" if no mapping exists
     """
-    from ragtime.core.file_constants import EXTENSION_TO_LANG
+    from ragtime.core.file_constants import LANG_MAPPING
 
-    return EXTENSION_TO_LANG.get(file_ext.lower())
+    key_lower = key.lower()
+
+    # Check unified mapping first
+    if key_lower in LANG_MAPPING:
+        return LANG_MAPPING[key_lower]
+
+    # Check if it auto-maps (exact name match with tree-sitter)
+    # This handles the 59+ Magika types like "python", "javascript", "rust", etc.
+    if key_lower in _get_treesitter_langs():
+        return key_lower
+
+    return "__unknown__"
 
 
 def _chunk_with_chonkie_code(
@@ -267,7 +282,20 @@ def _chunk_with_chonkie_code(
         use_tokens: If True, use tiktoken-based chunking for accurate token counts
     """
     source_path = metadata.get("source", "")
-    file_ext = "." + source_path.rsplit(".", 1)[-1] if "." in source_path else ""
+    # Get extension or filename for extensionless files like Makefile, Dockerfile
+    if "." in source_path.rsplit("/", 1)[-1]:  # Has extension
+        file_ext = "." + source_path.rsplit(".", 1)[-1]
+    else:
+        file_ext = source_path.rsplit("/", 1)[-1]  # Use filename itself
+
+    # Check if extension/filename is explicitly mapped to plain text (None)
+    # If so, raise early to trigger RecursiveChunker fallback
+    if file_ext:
+        from ragtime.core.file_constants import LANG_MAPPING
+
+        ext_lower = file_ext.lower()
+        if ext_lower in LANG_MAPPING and LANG_MAPPING[ext_lower] is None:
+            raise ValueError(f"Extension {ext_lower} mapped to plain text chunker")
 
     # Extract imports and definitions for context/summary using Tree-sitter
     imports: list[str] = []
@@ -310,12 +338,22 @@ def _chunk_with_chonkie_code(
     from chonkie import CodeChunker, OverlapRefinery
 
     # Try to determine the language for tree-sitter
-    # Priority: 1) extension mapping, 2) auto-detection with Magika
+    # Priority: 1) file extension/name mapping, 2) auto-detection with Magika
     language: str = "auto"
     if file_ext:
-        mapped_lang = _get_language_for_file(file_ext)
-        if mapped_lang:
-            language = mapped_lang
+        ext_lang = _resolve_language(file_ext)
+        if ext_lang not in (None, "__unknown__"):
+            language = ext_lang  # type: ignore
+        elif ext_lang is None:
+            # Extension mapped to None = use RecursiveChunker
+            raise ValueError(f"Extension {file_ext} should use RecursiveChunker")
+
+    # Also check filename for special cases (Makefile, Dockerfile, etc.)
+    if language == "auto" and source_path:
+        filename = os.path.basename(source_path)
+        filename_lang = _resolve_language(filename)
+        if filename_lang not in (None, "__unknown__"):
+            language = filename_lang  # type: ignore
 
     # Create chunker - may raise if language not supported
     chunker = CodeChunker(
@@ -337,8 +375,17 @@ def _chunk_with_chonkie_code(
             match = re.search(r"for (\w+)", str(e))
             if match:
                 detected_lang = match.group(1).lower()
-                mapped_lang = MAGIKA_TO_TREESITTER.get(detected_lang)
-                if mapped_lang:
+                # Use unified language resolution
+                mapped_lang = _resolve_language(detected_lang)
+
+                if mapped_lang is None:
+                    # None means use RecursiveChunker (plain text content)
+                    raise
+                elif mapped_lang == "__unknown__":
+                    # No mapping - re-raise for fallback handling
+                    raise
+                else:
+                    # Valid mapping found (manual or auto)
                     logger.debug(
                         f"Mapping detected language '{detected_lang}' to "
                         f"'{mapped_lang}' for {source_path}"
@@ -349,9 +396,6 @@ def _chunk_with_chonkie_code(
                         language=mapped_lang,
                     )
                     chunks = chunker.chunk(text)
-                else:
-                    # No mapping available - re-raise for fallback handling
-                    raise
             else:
                 raise
         else:

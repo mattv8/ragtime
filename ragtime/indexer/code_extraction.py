@@ -19,7 +19,7 @@ from typing import Dict, List
 from tree_sitter import Query, QueryCursor
 from tree_sitter_language_pack import get_language, get_parser
 
-from ragtime.core.file_constants import EXTENSION_TO_LANG
+from ragtime.core.file_constants import LANG_MAPPING
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -139,7 +139,7 @@ def extract_metadata(text: str, file_ext: str) -> tuple[List[str], List[str]]:
     Returns:
         Tuple of (imports list, definitions list)
     """
-    lang_name = EXTENSION_TO_LANG.get(file_ext.lower())
+    lang_name = LANG_MAPPING.get(file_ext.lower())
     if not lang_name:
         return [], []
 
