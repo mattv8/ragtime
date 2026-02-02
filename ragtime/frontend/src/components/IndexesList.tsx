@@ -447,7 +447,6 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
               onAnalysisStart={() => setIsAnalyzing(true)}
               onAnalysisComplete={() => setIsAnalyzing(false)}
               onNavigateToSettings={onNavigateToSettings}
-              existingVectorStoreType={indexes.length > 0 ? indexes[0].vector_store_type ?? null : null}
             />
           ) : (
             <UploadForm
@@ -456,7 +455,6 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
               onAnalysisStart={() => setIsAnalyzing(true)}
               onAnalysisComplete={() => setIsAnalyzing(false)}
               onNavigateToSettings={onNavigateToSettings}
-              existingVectorStoreType={indexes.length > 0 ? indexes[0].vector_store_type ?? null : null}
             />
           )}
         </div>
@@ -487,10 +485,18 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
           )}
 
           {indexes.map((idx) => {
+            // Check if there's an active indexing job for this index
+            const activeJob = jobs.find(j => j.name === idx.name && (j.status === 'pending' || j.status === 'processing'));
+            // Check if this is an optimistic index (0 documents = not yet indexed)
+            const isOptimistic = idx.document_count === 0;
+            // Check if this is a failed/interrupted index (0 documents, no active job)
+            const isFailedOrInterrupted = isOptimistic && !activeJob;
+
             // Check if this index has a load error
             const loadError = getIndexLoadError(idx.name);
-            const hasError = loadError !== null;
-            // Show toggle as off if disabled OR if has load error
+            // Don't show load error if actively indexing - it's expected
+            const hasError = loadError !== null && !activeJob;
+            // Show toggle as off if disabled OR if has load error (but not during indexing)
             const effectiveEnabled = idx.enabled && !hasError;
 
             const metaPills = (
@@ -547,17 +553,17 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
                     {`Updated ${new Date(idx.last_modified).toLocaleString()}`}
                   </span>
                 )}
-                {(() => {
-                  const activeJob = jobs.find(j => j.name === idx.name && (j.status === 'pending' || j.status === 'processing'));
-                  if (activeJob) {
-                    return (
-                      <span className="meta-pill indexing" title={activeJob.status === 'pending' ? 'Pending...' : `Processing: ${activeJob.progress_percent.toFixed(0)}%`}>
-                        Indexing... {activeJob.progress_percent > 0 ? `${Math.round(activeJob.progress_percent)}%` : ''}
-                      </span>
-                    );
-                  }
-                  return null;
-                })()}
+                {activeJob && (
+                  <span className="meta-pill indexing" title={activeJob.status === 'pending' ? 'Pending...' : `Processing: ${activeJob.progress_percent.toFixed(0)}%`}>
+                    Indexing... {activeJob.progress_percent > 0 ? `${Math.round(activeJob.progress_percent)}%` : ''}
+                  </span>
+                )}
+                {isFailedOrInterrupted && (
+                  <span className="meta-pill warning" title="Indexing was interrupted or failed. Click 'Retry' to resume.">
+                    <AlertTriangle size={12} />
+                    Incomplete
+                  </span>
+                )}
                 {!aggregateSearch && (
                   <span
                     className={`meta-pill weight ${idx.search_weight !== 1.0 ? 'weight-modified' : ''}`}
@@ -569,18 +575,12 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
                   </span>
                 )}
                 {!idx.enabled && <span className="meta-pill disabled">Excluded from RAG</span>}
-                {(() => {
-                  const loadError = getIndexLoadError(idx.name);
-                  if (loadError) {
-                    return (
-                      <span className="meta-pill error" title={loadError}>
-                        <AlertTriangle size={12} />
-                        Load Error
-                      </span>
-                    );
-                  }
-                  return null;
-                })()}
+                {hasError && (
+                  <span className="meta-pill error" title={loadError || 'Load error'}>
+                    <AlertTriangle size={12} />
+                    Load Error
+                  </span>
+                )}
               </>
             );
 
@@ -601,15 +601,29 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
                   // So we can remove the Edit button for non-git indexes.
                   null
                 )}
-                <button
-                  className="btn btn-sm btn-secondary"
-                  onClick={() => handleDownload(idx.name)}
-                  disabled={downloading === idx.name}
-                  title="Download FAISS index files as zip"
-                >
-                  {downloading === idx.name ? 'Downloading...' : 'Download'}
-                </button>
-                {idx.source_type === 'git' && idx.source && (
+                {/* Only show Download for completed indexes */}
+                {!isFailedOrInterrupted && (
+                  <button
+                    className="btn btn-sm btn-secondary"
+                    onClick={() => handleDownload(idx.name)}
+                    disabled={downloading === idx.name}
+                    title="Download FAISS index files as zip"
+                  >
+                    {downloading === idx.name ? 'Downloading...' : 'Download'}
+                  </button>
+                )}
+                {/* Retry button for failed/interrupted indexes */}
+                {isFailedOrInterrupted && idx.source_type === 'git' && idx.source && (
+                  <button
+                    className="btn btn-sm btn-primary"
+                    onClick={() => setReindexingIndex(idx)}
+                    title="Retry failed indexing job"
+                  >
+                    Retry
+                  </button>
+                )}
+                {/* Pull & Re-index for completed git indexes */}
+                {!isFailedOrInterrupted && idx.source_type === 'git' && idx.source && (
                   <button
                     className="btn btn-sm btn-primary"
                     onClick={() => setReindexingIndex(idx)}

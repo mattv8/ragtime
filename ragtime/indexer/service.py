@@ -742,8 +742,12 @@ class IndexerService:
             else:
                 vector_store_type = VectorStoreType.FAISS
 
+            # Check if this is an optimistic/in-progress index (0 documents means job hasn't completed yet)
+            is_optimistic = meta.documentCount == 0
+
             # Skip if directory doesn't exist on disk (for FAISS indexes)
-            if vector_store_type == VectorStoreType.FAISS:
+            # But allow optimistic indexes through so they show in UI while job is processing
+            if vector_store_type == VectorStoreType.FAISS and not is_optimistic:
                 if not path.exists() or not path.is_dir():
                     logger.warning(
                         f"Index {meta.name} in database but not on disk: {path}"

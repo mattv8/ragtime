@@ -637,7 +637,37 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           ollamaAvailable={ollamaAvailable}
           vectorStoreType={vectorStoreType}
           setVectorStoreType={setVectorStoreType}
+          vectorStoreDisabled={true}
         />
+
+        {/* Git History Depth - outside Advanced Options for prominence */}
+        <div className="form-group" style={{ marginBottom: '16px' }}>
+          <label>Git History Depth</label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <input
+              type="range"
+              min={1}
+              max={1001}
+              value={gitHistoryDepth === 0 ? 1001 : gitHistoryDepth}
+              onChange={(e) => {
+                const sliderVal = parseInt(e.target.value, 10);
+                setGitHistoryDepth(sliderVal === 1001 ? 0 : sliderVal);
+              }}
+              disabled={isLoading}
+              style={{ flex: 1 }}
+            />
+            <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+              {gitHistoryDepth === 0 ? 'Full' : gitHistoryDepth === 1 ? '1 (shallow)' : `${gitHistoryDepth} commits`}
+            </span>
+          </div>
+          <small style={{ color: '#888', fontSize: '0.8rem' }}>
+            {gitHistoryDepth === 0
+              ? 'Full history: Indexes all commits. Large repos may take 30+ min to clone.'
+              : gitHistoryDepth === 1
+                ? 'Shallow clone: Only latest commit. Fastest, but no git history search.'
+                : `Indexes last ${gitHistoryDepth} commits. Clone time scales with depth.`}
+          </small>
+        </div>
 
         <details style={{ marginBottom: '16px' }}>
           <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Options</summary>
@@ -658,8 +688,6 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
             setTimeoutManuallySet={setTimeoutManuallySet}
             reindexIntervalHours={reindexIntervalHours}
             setReindexIntervalHours={setReindexIntervalHours}
-            gitHistoryDepth={gitHistoryDepth}
-            setGitHistoryDepth={setGitHistoryDepth}
           />
         </details>
 
@@ -814,6 +842,35 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           vectorStoreDisabled={!!existingVectorStoreType}
         />
 
+        {/* Git History Depth - outside Advanced Options for prominence */}
+        <div className="form-group" style={{ marginBottom: '16px' }}>
+          <label>Git History Depth</label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <input
+              type="range"
+              min={1}
+              max={1001}
+              value={gitHistoryDepth === 0 ? 1001 : gitHistoryDepth}
+              onChange={(e) => {
+                const sliderVal = parseInt(e.target.value, 10);
+                setGitHistoryDepth(sliderVal === 1001 ? 0 : sliderVal);
+              }}
+              disabled={isLoading}
+              style={{ flex: 1 }}
+            />
+            <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+              {gitHistoryDepth === 0 ? 'Full' : gitHistoryDepth === 1 ? '1 (shallow)' : `${gitHistoryDepth} commits`}
+            </span>
+          </div>
+          <small style={{ color: '#888', fontSize: '0.8rem' }}>
+            {gitHistoryDepth === 0
+              ? 'Full history: Indexes all commits. Large repos may take 30+ min to clone.'
+              : gitHistoryDepth === 1
+                ? 'Shallow clone: Only latest commit. Fastest, but no git history search.'
+                : `Indexes last ${gitHistoryDepth} commits. Clone time scales with depth.`}
+          </small>
+        </div>
+
         <details style={{ marginBottom: '16px' }}>
           <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Options</summary>
           <IndexConfigFields
@@ -833,8 +890,6 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
             setTimeoutManuallySet={setTimeoutManuallySet}
             reindexIntervalHours={reindexIntervalHours}
             setReindexIntervalHours={setReindexIntervalHours}
-            gitHistoryDepth={gitHistoryDepth}
-            setGitHistoryDepth={setGitHistoryDepth}
           />
         </details>
 
@@ -967,6 +1022,40 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           vectorStoreDisabled={!!existingVectorStoreType}
         />
 
+        {/* Git History Depth - outside Advanced Options for prominence */}
+        <div className="form-group" style={{ marginBottom: '16px' }}>
+          <label>Git History Depth</label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <input
+              type="range"
+              min={1}
+              max={1001}
+              value={gitHistoryDepth === 0 ? 1001 : gitHistoryDepth}
+              onChange={(e) => {
+                const sliderVal = parseInt(e.target.value, 10);
+                setGitHistoryDepth(sliderVal === 1001 ? 0 : sliderVal);
+              }}
+              disabled={isLoading}
+              style={{ flex: 1 }}
+            />
+            <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+              {gitHistoryDepth === 0 ? 'Full' : gitHistoryDepth === 1 ? '1 (shallow)' : `${gitHistoryDepth} commits`}
+            </span>
+          </div>
+          <small style={{ color: '#888', fontSize: '0.8rem' }}>
+            {gitHistoryDepth === 0
+              ? `Full history: Indexes all commits.${analysisResult.commit_history?.total_commits ? ` (${analysisResult.commit_history.total_commits.toLocaleString()} commits)` : ''} Large repos may take 30+ min to clone.`
+              : gitHistoryDepth === 1
+                ? 'Shallow clone: Only latest commit. Fastest, but no git history search.'
+                : (() => {
+                    const dateEstimate = getDepthDateEstimate(gitHistoryDepth, analysisResult.commit_history);
+                    return dateEstimate
+                      ? `Indexes last ${gitHistoryDepth} commits (${dateEstimate}). Clone time scales with depth.`
+                      : `Indexes last ${gitHistoryDepth} commits. Clone time scales with depth.`;
+                  })()}
+          </small>
+        </div>
+
         <details
           style={{ marginBottom: '16px' }}
           open={patternsExpanded}
@@ -993,10 +1082,6 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
             setTimeoutManuallySet={setTimeoutManuallySet}
             reindexIntervalHours={reindexIntervalHours}
             setReindexIntervalHours={setReindexIntervalHours}
-            gitHistoryDepth={gitHistoryDepth}
-            setGitHistoryDepth={setGitHistoryDepth}
-            commitHistory={analysisResult.commit_history}
-            getDepthDateEstimate={getDepthDateEstimate}
           />
 
           <button type="button" className="btn btn-secondary" onClick={handleReanalyze} disabled={isLoading} style={{ marginTop: '8px' }}>

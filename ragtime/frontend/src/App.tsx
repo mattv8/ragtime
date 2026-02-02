@@ -264,7 +264,8 @@ export function App() {
 
   const handleJobCreated = useCallback(() => {
     loadJobs();
-  }, [loadJobs]);
+    loadIndexes(); // Also refresh indexes to show optimistic metadata immediately
+  }, [loadJobs, loadIndexes]);
 
   // Load filesystem tools and their jobs
   const loadFilesystemJobs = useCallback(async () => {
