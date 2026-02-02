@@ -307,19 +307,21 @@ class IndexerService:
         return recovered
 
     async def _cleanup_orphaned_tmp_dirs(self) -> None:
-        """Remove tmp directories for jobs that no longer exist."""
+        """Remove tmp directories for jobs that no longer exist or are completed."""
         if not UPLOAD_TMP_DIR.exists():
             return
 
         jobs = await repository.list_jobs()
-        active_job_ids = {
+        # Keep tmp dirs for: active jobs (pending/processing) and failed upload jobs (for retry)
+        keep_job_ids = {
             j.id
             for j in jobs
             if j.status in (IndexStatus.PENDING, IndexStatus.PROCESSING)
+            or (j.status == IndexStatus.FAILED and j.source_type == "upload")
         }
 
         for tmp_path in UPLOAD_TMP_DIR.iterdir():
-            if tmp_path.is_dir() and tmp_path.name not in active_job_ids:
+            if tmp_path.is_dir() and tmp_path.name not in keep_job_ids:
                 logger.info(f"Cleaning orphaned tmp directory: {tmp_path.name}")
                 await asyncio.to_thread(shutil.rmtree, tmp_path, ignore_errors=True)
 
@@ -1540,6 +1542,68 @@ class IndexerService:
 
         return job
 
+    async def retry_upload_job(self, failed_job: IndexJob) -> IndexJob:
+        """Retry a failed upload job using preserved tmp files.
+
+        Returns a new job that will process the same upload.
+        Raises if tmp files no longer exist.
+        """
+        tmp_path = UPLOAD_TMP_DIR / failed_job.id
+
+        if not tmp_path.exists():
+            raise ValueError(
+                "Upload files no longer available. Please re-upload the file."
+            )
+
+        # Find the archive file (not directories like 'extracted')
+        archive_files = [f for f in tmp_path.iterdir() if f.is_file()]
+        if not archive_files:
+            raise ValueError(
+                "Upload archive file not found. Please re-upload the file."
+            )
+
+        archive_path = archive_files[0]
+
+        # Create new job with same config
+        job_id = str(uuid.uuid4())[:8]
+        job = IndexJob(
+            id=job_id,
+            name=failed_job.name,
+            config=failed_job.config,
+            source_type="upload",
+            source_path=archive_path.name,
+        )
+
+        # Persist to database
+        await repository.create_job(job)
+
+        # Create optimistic metadata
+        await self._create_optimistic_index_metadata(
+            config=failed_job.config,
+            source_type="upload",
+            source=archive_path.name,
+        )
+
+        # Cache for active processing
+        self._active_jobs[job_id] = job
+
+        # Move tmp files to new job id directory
+        new_tmp_dir = UPLOAD_TMP_DIR / job_id
+        await asyncio.to_thread(shutil.move, str(tmp_path), str(new_tmp_dir))
+
+        # Clean any previous extraction attempt
+        extracted_dir = new_tmp_dir / "extracted"
+        if extracted_dir.exists():
+            await asyncio.to_thread(shutil.rmtree, extracted_dir, ignore_errors=True)
+
+        # Update archive path for new location
+        new_archive_path = new_tmp_dir / archive_path.name
+
+        # Start processing in background
+        asyncio.create_task(self._process_upload(job, new_archive_path, new_tmp_dir))
+
+        return job
+
     async def create_index_from_git(
         self,
         git_url: str,
@@ -1630,8 +1694,9 @@ class IndexerService:
                 await self._cleanup_failed_index_metadata(job.name)
 
         finally:
-            # Cleanup temp directory and cancellation flag
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            # Only cleanup temp directory on success (preserve for retry on failure)
+            if job.status == IndexStatus.COMPLETED:
+                shutil.rmtree(temp_dir, ignore_errors=True)
             self._cancellation_flags.pop(job.id, None)
             self._active_jobs.pop(job.id, None)
 

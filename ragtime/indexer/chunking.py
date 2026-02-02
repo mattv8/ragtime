@@ -16,12 +16,20 @@ document_parser.py BEFORE this module is called. This module only chunks text.
 
 import multiprocessing
 import os
+import warnings
 from concurrent.futures import ProcessPoolExecutor
 from typing import Callable, Dict, List, Optional, Tuple
 
 from langchain_core.documents import Document
 
 from ragtime.core.logging import get_logger
+
+# Suppress Chonkie's warning about tokenizers library - we use tiktoken intentionally
+warnings.filterwarnings(
+    "ignore",
+    message="'tokenizers' library not found",
+    module="chonkie.tokenizer",
+)
 
 logger = get_logger(__name__)
 
@@ -191,6 +199,46 @@ def _estimate_max_header_tokens(
 # CHUNKING IMPLEMENTATIONS
 # =============================================================================
 
+# Mapping of Magika-detected languages to tree-sitter grammar names.
+# This handles template languages and formats that Magika detects but
+# tree-sitter doesn't have a direct grammar for.
+# Note: EXTENSION_TO_LANG in file_constants.py maps file extensions to languages,
+# while this maps detected content types to tree-sitter grammars.
+MAGIKA_TO_TREESITTER: dict[str, str] = {
+    # Template languages -> use HTML parsing (preserves tag structure)
+    "jinja": "html",
+    "jinja2": "html",
+    "django": "html",  # Django templates
+    "mako": "html",  # Mako templates
+    "erb": "embeddedtemplate",  # Ruby ERB templates
+    "ejs": "html",  # EJS templates
+    "mustache": "html",  # Mustache/Handlebars
+    "handlebars": "html",
+    "liquid": "html",  # Liquid templates (Jekyll, Shopify)
+    "nunjucks": "html",  # Nunjucks templates
+    "pug": "html",  # Pug/Jade (close enough)
+    # Config formats
+    "dotenv": "properties",  # .env files
+    "editorconfig": "ini",
+}
+
+
+def _get_language_for_file(file_ext: str) -> str | None:
+    """
+    Get tree-sitter language name for a file extension.
+
+    Uses EXTENSION_TO_LANG from file_constants.py as the source of truth.
+
+    Args:
+        file_ext: File extension including dot (e.g., ".py")
+
+    Returns:
+        Tree-sitter language name or None if not mapped
+    """
+    from ragtime.core.file_constants import EXTENSION_TO_LANG
+
+    return EXTENSION_TO_LANG.get(file_ext.lower())
+
 
 def _chunk_with_chonkie_code(
     text: str,
@@ -261,14 +309,53 @@ def _chunk_with_chonkie_code(
 
     from chonkie import CodeChunker, OverlapRefinery
 
-    # language="auto" uses Magika for detection - no extension mapping needed
-    # Use effective_chunk_size to reserve space for headers
+    # Try to determine the language for tree-sitter
+    # Priority: 1) extension mapping, 2) auto-detection with Magika
+    language: str = "auto"
+    if file_ext:
+        mapped_lang = _get_language_for_file(file_ext)
+        if mapped_lang:
+            language = mapped_lang
+
+    # Create chunker - may raise if language not supported
     chunker = CodeChunker(
         tokenizer=tokenizer,
         chunk_size=effective_chunk_size,
-        language="auto",
+        language=language,
     )
-    chunks = chunker.chunk(text)
+
+    try:
+        chunks = chunker.chunk(text)
+    except (ValueError, RuntimeError, LookupError) as e:
+        # Magika detected an unsupported language - check our mapping
+        err_str = str(e).lower()
+        if "could not find language" in err_str or "not supported" in err_str:
+            # Extract the detected language from error message
+            # Format: "Could not find language library for <lang>"
+            import re
+
+            match = re.search(r"for (\w+)", str(e))
+            if match:
+                detected_lang = match.group(1).lower()
+                mapped_lang = MAGIKA_TO_TREESITTER.get(detected_lang)
+                if mapped_lang:
+                    logger.debug(
+                        f"Mapping detected language '{detected_lang}' to "
+                        f"'{mapped_lang}' for {source_path}"
+                    )
+                    chunker = CodeChunker(
+                        tokenizer=tokenizer,
+                        chunk_size=effective_chunk_size,
+                        language=mapped_lang,
+                    )
+                    chunks = chunker.chunk(text)
+                else:
+                    # No mapping available - re-raise for fallback handling
+                    raise
+            else:
+                raise
+        else:
+            raise
 
     # Apply overlap to add context from adjacent chunks
     # This helps retrieval when function calls reference other functions

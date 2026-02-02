@@ -213,7 +213,7 @@ export interface LdapBindDnLookupResponse {
 // Index Types
 // =============================================================================
 
-export type IndexStatus = 'pending' | 'processing' | 'completed' | 'failed';
+export type IndexStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'interrupted';
 export type OcrMode = 'disabled' | 'tesseract' | 'ollama';
 
 export interface IndexConfig {

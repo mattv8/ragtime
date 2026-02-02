@@ -672,10 +672,32 @@ async def retry_failed_job(
         except Exception as e:
             logger.exception("Failed to retry indexing job")
             raise HTTPException(status_code=500, detail=str(e)) from e
+    elif failed_job.source_type == "upload":
+        try:
+            new_job = await indexer.retry_upload_job(failed_job)
+
+            return IndexJobResponse(
+                id=new_job.id,
+                name=new_job.name,
+                status=new_job.status,
+                progress_percent=new_job.progress_percent,
+                total_files=new_job.total_files,
+                processed_files=new_job.processed_files,
+                total_chunks=new_job.total_chunks,
+                error_message=new_job.error_message,
+                created_at=new_job.created_at,
+                started_at=new_job.started_at,
+                completed_at=new_job.completed_at,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except Exception as e:
+            logger.exception("Failed to retry upload job")
+            raise HTTPException(status_code=500, detail=str(e)) from e
     else:
         raise HTTPException(
             status_code=400,
-            detail="Only git-based jobs can be retried. For upload-based indexes, please re-upload the file.",
+            detail=f"Unknown source type: {failed_job.source_type}",
         )
 
 

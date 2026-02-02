@@ -392,6 +392,31 @@ EXTENSION_TO_LANG: dict[str, str] = {
     ".h": "c",  # heuristic, could be cpp
     ".hpp": "cpp",
     ".cc": "cpp",
+    # Web
+    ".html": "html",
+    ".htm": "html",
+    ".css": "css",
+    ".scss": "scss",
+    # Template languages -> parse as HTML (preserves tag structure)
+    ".j2": "html",  # Jinja2 templates
+    ".jinja": "html",
+    ".jinja2": "html",
+    ".twig": "twig",  # Twig templates (has native support)
+    ".ejs": "html",  # EJS templates
+    ".hbs": "html",  # Handlebars templates
+    ".mustache": "html",  # Mustache templates
+    ".njk": "html",  # Nunjucks templates
+    ".liquid": "html",  # Liquid templates
+    # Data/Config
+    ".json": "json",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".toml": "toml",
+    ".xml": "xml",
+    ".sql": "sql",
+    # Shell
+    ".sh": "bash",
+    ".bash": "bash",
 }
 
 

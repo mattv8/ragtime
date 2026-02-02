@@ -357,6 +357,28 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
     }
   };
 
+  const handleRetryIndex = async (idx: IndexInfo) => {
+    // Find the failed job for this index
+    const failedJob = jobs?.find(j => j.name === idx.name && (j.status === 'failed' || j.status === 'interrupted'));
+    if (!failedJob) {
+      setErrorMessage('No failed job found for this index');
+      setTimeout(() => setErrorMessage(null), 5000);
+      return;
+    }
+
+    setReindexing(true);
+    try {
+      await api.retryJob(failedJob.id, reindexToken || undefined);
+      onJobCreated?.();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Retry failed';
+      setErrorMessage(message);
+      setTimeout(() => setErrorMessage(null), 5000);
+    } finally {
+      setReindexing(false);
+    }
+  };
+
   const handleDownload = async (name: string) => {
     setDownloading(name);
     try {
@@ -612,11 +634,11 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
                     {downloading === idx.name ? 'Downloading...' : 'Download'}
                   </button>
                 )}
-                {/* Retry button for failed/interrupted indexes */}
-                {isFailedOrInterrupted && idx.source_type === 'git' && idx.source && (
+                {/* Retry button for failed/interrupted indexes (git or upload) */}
+                {isFailedOrInterrupted && (
                   <button
                     className="btn btn-sm btn-primary"
-                    onClick={() => setReindexingIndex(idx)}
+                    onClick={() => handleRetryIndex(idx)}
                     title="Retry failed indexing job"
                   >
                     Retry
