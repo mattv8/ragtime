@@ -55,6 +55,7 @@ from ragtime.indexer.vector_backends import (
     VectorStoreBackend,
     get_backend,
     get_faiss_backend,
+    get_pgvector_backend,
 )
 from ragtime.indexer.vector_utils import (
     ensure_embedding_column,
@@ -2319,13 +2320,20 @@ class FilesystemIndexerService:
 
         # Calculate memory - for FAISS use actual disk size, for pgvector estimate
         estimated_memory_mb = 0.0
+        pgvector_size_mb: float | None = None
 
         if faiss_count > 0 and vector_store_type == VectorStoreType.FAISS:
             # For FAISS, use actual disk size from stats
             faiss_stats = await get_faiss_backend().get_index_stats(index_name)
             estimated_memory_mb = faiss_stats.get("size_mb") or 0.0
         elif pgvector_count > 0:
-            # For pgvector, estimate from embedding dimensions
+            # For pgvector, calculate actual storage size
+            pgvector_size_bytes = (
+                await get_pgvector_backend().get_pgvector_table_size_bytes(index_name)
+            )
+            pgvector_size_mb = round(pgvector_size_bytes / (1024 * 1024), 2)
+
+            # Also calculate memory estimate from embedding dimensions (for compatibility)
             embedding_dimension = app_settings.get("embedding_dimension")
             if embedding_dimension and embedding_count > 0:
                 # Memory formula: embeddings * dimensions * 4 bytes (float32) * overhead
@@ -2341,6 +2349,7 @@ class FilesystemIndexerService:
             "file_count": file_count,
             "last_indexed": latest_file.lastIndexed if latest_file else None,
             "estimated_memory_mb": estimated_memory_mb,
+            "pgvector_size_mb": pgvector_size_mb,
             "vector_store_type": (
                 vector_store_type.value if vector_store_type else "auto"
             ),

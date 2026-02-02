@@ -282,6 +282,28 @@ class PgVectorBackend(VectorStoreBackend):
             }
         return {"chunk_count": 0, "file_count": 0, "vector_store_type": "pgvector"}
 
+    async def get_pgvector_table_size_bytes(self, index_name: str) -> int:
+        """Calculate pgvector storage size for a specific index.
+
+        Uses PostgreSQL's pg_column_size to estimate storage for this index's rows.
+        """
+        from ragtime.core.database import get_db
+
+        db = await get_db()
+
+        # Calculate actual storage by summing row sizes for this index
+        result = await db.query_raw(
+            f"""
+            SELECT COALESCE(SUM(pg_column_size(t.*)), 0)::bigint as total_bytes
+            FROM filesystem_embeddings t
+            WHERE index_name = '{index_name}'
+        """
+        )
+
+        if result and result[0]["total_bytes"]:
+            return int(result[0]["total_bytes"])
+        return 0
+
     async def finalize_index(self, index_name: str) -> None:
         """No-op for pgvector - data is already persisted."""
         pass

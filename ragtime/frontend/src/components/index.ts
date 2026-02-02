@@ -23,3 +23,8 @@ export { ConfigurationBanner } from './ConfigurationBanner';
 export * from './IndexCard';
 export { DeleteConfirmButton } from './DeleteConfirmButton';
 export { IndexingPill } from './IndexingPill';
+export { FileTypeStatsTable } from './FileTypeStatsTable';
+export { SuggestedExclusionsBanner } from './SuggestedExclusionsBanner';
+export { WarningsBanner } from './WarningsBanner';
+export { OcrVectorStoreFields } from './OcrVectorStoreFields';
+export { IndexConfigFields } from './IndexConfigFields';

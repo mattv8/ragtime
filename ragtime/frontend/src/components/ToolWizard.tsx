@@ -12,16 +12,18 @@ import type {
   SSHShellConnectionConfig,
   FilesystemConnectionConfig,
   FilesystemMountType,
-  VectorStoreType,
   ConnectionConfig,
   MountInfo,
   DirectoryEntry,
-  FileTypeStats,
   SolidworksPdmConnectionConfig,
 } from '@/types';
 import { TOOL_TYPE_INFO, MOUNT_TYPE_INFO } from '@/types';
 import { DisabledPopover } from './Popover';
 import { Icon, getToolIconType } from './Icon';
+import { OcrVectorStoreFields } from './OcrVectorStoreFields';
+import { FileTypeStatsTable } from './FileTypeStatsTable';
+import { SuggestedExclusionsBanner } from './SuggestedExclusionsBanner';
+import { WarningsBanner } from './WarningsBanner';
 
 // System mounts to filter out from the "Available Mounts" display
 // These are internal container mounts not useful for user filesystem indexing
@@ -4613,90 +4615,20 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
 
             <div className="analysis-results" style={{ padding: '1rem', backgroundColor: 'var(--panel-bg)', borderRadius: '4px', marginTop: '0.5rem' }}>
               {/* Warnings */}
-              {fsAnalysisJob.result.warnings.length > 0 && (
-                <div className="analysis-warnings" style={{ marginBottom: '1rem' }}>
-                  <strong>Warnings:</strong>
-                  <ul style={{ margin: '0.5rem 0 0 1.5rem', padding: 0 }}>
-                    {fsAnalysisJob.result.warnings.map((warning: string, i: number) => (
-                      <li key={i} style={{ marginBottom: '0.25rem', color: 'var(--warning, #e09f3e)' }}>{warning}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+              <WarningsBanner warnings={fsAnalysisJob.result.warnings} />
 
               {/* File Type Stats Table */}
               <div style={{ marginBottom: '1rem' }}>
                 <strong>File Types:</strong>
-                <table style={{ width: '100%', marginTop: '0.5rem', fontSize: '0.875rem', borderCollapse: 'collapse' }}>
-                  <thead>
-                    <tr style={{ textAlign: 'left', borderBottom: '1px solid var(--border)' }}>
-                      <th style={{ padding: '0.5rem' }}>Extension</th>
-                      <th style={{ padding: '0.5rem', textAlign: 'right' }}>Files</th>
-                      <th style={{ padding: '0.5rem', textAlign: 'right' }}>Size</th>
-                      <th style={{ padding: '0.5rem', textAlign: 'right' }}>Est. Chunks</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {fsAnalysisJob.result.file_type_stats.slice(0, 10).map((stat: FileTypeStats) => (
-                      <tr key={stat.extension} style={{ borderBottom: '1px solid var(--border-light, #333)' }}>
-                        <td style={{ padding: '0.5rem' }}>{stat.extension}</td>
-                        <td style={{ padding: '0.5rem', textAlign: 'right' }}>{stat.file_count}</td>
-                        <td style={{ padding: '0.5rem', textAlign: 'right' }}>{(stat.total_size_bytes / 1024 / 1024).toFixed(2)} MB</td>
-                        <td style={{ padding: '0.5rem', textAlign: 'right' }}>{stat.estimated_chunks}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {fsAnalysisJob.result.file_type_stats.length > 10 && (
-                  <p style={{ fontSize: '0.85rem', opacity: 0.7, marginTop: '0.5rem' }}>
-                    ... and {fsAnalysisJob.result.file_type_stats.length - 10} more file types
-                  </p>
-                )}
+                <FileTypeStatsTable stats={fsAnalysisJob.result.file_type_stats} maxRows={10} />
               </div>
 
               {/* Suggested Exclusions */}
-              {fsAnalysisJob.result.suggested_exclusions.length > 0 && !fsExclusionsApplied && (
-                <div
-                  style={{
-                    marginBottom: '16px',
-                    background: 'rgba(59, 130, 246, 0.1)',
-                    border: '1px solid rgba(59, 130, 246, 0.3)',
-                    borderRadius: '8px',
-                    padding: '12px',
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                    <strong style={{ color: '#60a5fa' }}>Suggested Exclusions:</strong>
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      style={{ fontSize: '0.8rem', padding: '4px 8px' }}
-                      onClick={handleApplyFsExclusions}
-                    >
-                      Apply All
-                    </button>
-                  </div>
-                  <code style={{ fontSize: '0.85rem', color: '#888' }}>
-                    {fsAnalysisJob.result.suggested_exclusions.join(', ')}
-                  </code>
-                </div>
-              )}
-
-              {fsExclusionsApplied && (
-                <div
-                  style={{
-                    marginBottom: '16px',
-                    background: 'rgba(34, 197, 94, 0.1)',
-                    border: '1px solid rgba(34, 197, 94, 0.3)',
-                    borderRadius: '8px',
-                    padding: '12px',
-                  }}
-                >
-                  <span style={{ color: '#22c55e' }}>
-                    Suggested exclusions applied. Re-run analysis to update estimates.
-                  </span>
-                </div>
-              )}
+              <SuggestedExclusionsBanner
+                exclusions={fsAnalysisJob.result.suggested_exclusions}
+                applied={fsExclusionsApplied}
+                onApply={handleApplyFsExclusions}
+              />
 
               <div style={{ marginTop: '1rem', fontSize: '0.85rem', opacity: 0.7 }}>
                 Analysis completed in {fsAnalysisJob.result.analysis_duration_seconds}s ({fsAnalysisJob.result.directories_scanned} directories scanned)
@@ -4706,46 +4638,15 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
         )}
 
         {/* OCR Mode and Vector Store - always visible */}
-        <div className="form-row" style={{ marginTop: '1rem' }}>
-          <div className="form-group" style={{ flex: 1 }}>
-            <label>OCR Mode</label>
-            <select
-              value={filesystemConfig.ocr_mode || 'disabled'}
-              onChange={(e) => setFilesystemConfig({ ...filesystemConfig, ocr_mode: e.target.value as 'disabled' | 'tesseract' | 'ollama' })}
-            >
-              <option value="disabled">Disabled - Skip image files</option>
-              <option value="tesseract">Tesseract - Fast traditional OCR</option>
-              {ollamaAvailable && (
-                <option value="ollama">Ollama Vision - Semantic OCR (uses global settings)</option>
-              )}
-            </select>
-            <p className="field-help">
-              {filesystemConfig.ocr_mode === 'ollama'
-                ? 'Uses global OCR vision model setting for semantic text extraction.'
-                : filesystemConfig.ocr_mode === 'tesseract'
-                ? 'Uses Tesseract for fast basic text extraction from images.'
-                : 'Image files (PNG, JPG, etc.) will be skipped during indexing.'}
-            </p>
-          </div>
-
-          <div className="form-group" style={{ flex: 1 }}>
-            <label>Vector Store</label>
-            <select
-              value={filesystemConfig.vector_store_type || 'pgvector'}
-              onChange={(e) => setFilesystemConfig({ ...filesystemConfig, vector_store_type: e.target.value as VectorStoreType })}
-              disabled={isEditing}
-            >
-              <option value="pgvector">pgvector (PostgreSQL)</option>
-              <option value="faiss">FAISS (In-memory)</option>
-            </select>
-            <p className="field-help">
-              {filesystemConfig.vector_store_type === 'faiss'
-                ? 'FAISS stores embeddings in memory with disk persistence. Faster searches but uses more RAM. Good for smaller indexes.'
-                : 'pgvector stores embeddings in PostgreSQL. Persistent and scalable. Recommended for larger indexes.'}
-              {isEditing && ' (Cannot change after creation)'}
-            </p>
-          </div>
-        </div>
+        <OcrVectorStoreFields
+          isLoading={false}
+          ocrMode={filesystemConfig.ocr_mode || 'disabled'}
+          setOcrMode={(mode) => setFilesystemConfig({ ...filesystemConfig, ocr_mode: mode })}
+          ollamaAvailable={ollamaAvailable}
+          vectorStoreType={filesystemConfig.vector_store_type || 'pgvector'}
+          setVectorStoreType={(type) => setFilesystemConfig({ ...filesystemConfig, vector_store_type: type })}
+          vectorStoreDisabled={isEditing}
+        />
 
         {/* Advanced Indexing & Safety - appears after analysis results so "Apply All" can reveal updated exclusions */}
         <details open={fsAdvancedOpen} onToggle={(e) => setFsAdvancedOpen((e.target as HTMLDetailsElement).open)} style={{ marginTop: '1rem' }}>

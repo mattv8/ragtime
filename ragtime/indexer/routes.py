@@ -5012,6 +5012,7 @@ class FilesystemIndexStatsResponse(BaseModel):
     last_indexed: Optional[str] = None
     chunk_count: Optional[int] = None
     estimated_memory_mb: Optional[float] = None
+    pgvector_size_mb: Optional[float] = None
     vector_store_type: Optional[str] = None
     pgvector_count: Optional[int] = None
     faiss_count: Optional[int] = None
@@ -5348,6 +5349,7 @@ async def get_filesystem_index_stats(
         ),
         chunk_count=stats.get("chunk_count"),
         estimated_memory_mb=stats.get("estimated_memory_mb"),
+        pgvector_size_mb=stats.get("pgvector_size_mb"),
         vector_store_type=stats.get("vector_store_type"),
         pgvector_count=stats.get("pgvector_count"),
         faiss_count=stats.get("faiss_count"),

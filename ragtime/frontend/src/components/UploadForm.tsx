@@ -5,6 +5,9 @@ import { DescriptionField } from './DescriptionField';
 import { AnalysisStats } from './AnalysisStats';
 import { IndexConfigFields } from './IndexConfigFields';
 import { OcrVectorStoreFields } from './OcrVectorStoreFields';
+import { FileTypeStatsTable } from './FileTypeStatsTable';
+import { SuggestedExclusionsBanner } from './SuggestedExclusionsBanner';
+import { WarningsBanner } from './WarningsBanner';
 
 interface UploadFormProps {
   onJobCreated: () => void;
@@ -234,12 +237,6 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
     onCancel?.();
   };
 
-  const formatBytes = (bytes: number): string => {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  };
-
   // Upload step - file selection
   if (wizardStep === 'upload' || wizardStep === 'analyzing') {
     return (
@@ -328,109 +325,24 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
           Analysis Results for: {file?.name || 'Unknown'}
         </h4>
 
-        {analysisResult.warnings.length > 0 && (
-          <div
-            style={{
-              background: 'rgba(251, 191, 36, 0.1)',
-              border: '1px solid rgba(251, 191, 36, 0.3)',
-              borderRadius: '8px',
-              padding: '12px',
-              marginBottom: '16px',
-            }}
-          >
-            <strong style={{ color: '#fbbf24' }}>Warnings:</strong>
-            <ul style={{ margin: '8px 0 0 0', paddingLeft: '20px' }}>
-              {analysisResult.warnings.map((warning, i) => (
-                <li key={i} style={{ color: '#fbbf24', fontSize: '0.9rem' }}>
-                  {warning}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
+        <WarningsBanner warnings={analysisResult.warnings} />
 
         <AnalysisStats result={analysisResult} onNavigateToSettings={onNavigateToSettings} />
 
         {/* Suggested exclusions */}
-        {analysisResult.suggested_exclusions.length > 0 && !exclusionsApplied && (
-          <div
-            style={{
-              background: 'rgba(96, 165, 250, 0.1)',
-              border: '1px solid rgba(96, 165, 250, 0.3)',
-              borderRadius: '8px',
-              padding: '12px',
-              marginBottom: '16px',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
-              <strong style={{ color: '#60a5fa' }}>Suggested Exclusions:</strong>
-              <button
-                type="button"
-                className="btn btn-sm"
-                onClick={applySuggestedExclusions}
-                style={{ fontSize: '0.8rem', padding: '4px 12px' }}
-              >
-                Apply All
-              </button>
-            </div>
-            <code style={{ fontSize: '0.85rem', color: '#94a3b8', wordBreak: 'break-word' }}>
-              {analysisResult.suggested_exclusions.join(', ')}
-            </code>
-          </div>
-        )}
-
-        {exclusionsApplied && (
-          <div
-            style={{
-              background: 'rgba(34, 197, 94, 0.1)',
-              border: '1px solid rgba(34, 197, 94, 0.3)',
-              borderRadius: '8px',
-              padding: '12px',
-              marginBottom: '16px',
-            }}
-          >
-            <strong style={{ color: '#22c55e' }}>Exclusions applied!</strong>
-            <span style={{ marginLeft: '8px', color: '#94a3b8', fontSize: '0.9rem' }}>
-              Click "Re-analyze" to see the updated estimates.
-            </span>
-          </div>
-        )}
+        <SuggestedExclusionsBanner
+          exclusions={analysisResult.suggested_exclusions}
+          applied={exclusionsApplied}
+          onApply={applySuggestedExclusions}
+        />
 
         {/* File type breakdown */}
-        {analysisResult.file_type_stats.length > 0 && (
-          <details style={{ marginBottom: '16px' }}>
-            <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>
-              File Type Breakdown ({analysisResult.file_type_stats.length} types)
-            </summary>
-            <div style={{ maxHeight: '200px', overflowY: 'auto' }}>
-              <table style={{ width: '100%', fontSize: '0.85rem' }}>
-                <thead>
-                  <tr style={{ textAlign: 'left', borderBottom: '1px solid #444' }}>
-                    <th style={{ padding: '4px 8px' }}>Extension</th>
-                    <th style={{ padding: '4px 8px' }}>Files</th>
-                    <th style={{ padding: '4px 8px' }}>Size</th>
-                    <th style={{ padding: '4px 8px' }}>Est. Chunks</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {analysisResult.file_type_stats.slice(0, 15).map((stat) => (
-                    <tr key={stat.extension} style={{ borderBottom: '1px solid #333' }}>
-                      <td style={{ padding: '4px 8px', fontFamily: 'var(--font-mono)' }}>{stat.extension}</td>
-                      <td style={{ padding: '4px 8px' }}>{stat.file_count}</td>
-                      <td style={{ padding: '4px 8px' }}>{formatBytes(stat.total_size_bytes)}</td>
-                      <td style={{ padding: '4px 8px' }}>{stat.estimated_chunks}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {analysisResult.file_type_stats.length > 15 && (
-                <div style={{ padding: '8px', color: '#888', fontSize: '0.85rem' }}>
-                  ... and {analysisResult.file_type_stats.length - 15} more types
-                </div>
-              )}
-            </div>
-          </details>
-        )}
+        <FileTypeStatsTable
+          stats={analysisResult.file_type_stats}
+          maxRows={15}
+          collapsible={true}
+          summaryLabel={`File Type Breakdown (${analysisResult.file_type_stats.length} types)`}
+        />
 
         {/* Advanced options with current patterns */}
         <details open={patternsExpanded} style={{ marginBottom: '16px' }}>

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { MemoryStick } from 'lucide-react';
+import { MemoryStick, HardDrive } from 'lucide-react';
 import { api } from '@/api';
 import { formatSizeMB } from '@/utils';
 import type { ToolConfig, FilesystemIndexJob, FilesystemIndexStats } from '@/types';
@@ -76,29 +76,49 @@ function FilesystemIndexCard({
         <>
           <span className="meta-pill files">{stats.file_count} files</span>
           {(() => {
-            let ramMb = 0;
+            const isPgvector = stats.vector_store_type === 'pgvector';
 
-            // Use server-side estimate if available, otherwise calculate fallback
-            if (stats.estimated_memory_mb !== undefined && stats.estimated_memory_mb !== null) {
-              ramMb = stats.estimated_memory_mb;
-            } else if (embeddingDimensions && embeddingDimensions > 0) {
-              // Memory formula for pgvector: embeddings * dimensions * 4 bytes (float32)
-              // pgvector uses slightly different overhead, estimate 1.15x
-              const bytesPerEmbedding = embeddingDimensions * 4 * 1.15;
-              ramMb = (stats.embedding_count * bytesPerEmbedding) / (1024 * 1024);
+            // For pgvector, show actual disk storage size; for FAISS, show RAM
+            if (isPgvector) {
+              // pgvector: Show disk storage size
+              const storageMb = stats.pgvector_size_mb;
+              if (storageMb === undefined || storageMb === null) {
+                return null;
+              }
+              return (
+                <span
+                  className="meta-pill size"
+                  title={`pgvector storage: ${formatSizeMB(storageMb)} on disk (${stats.embedding_count.toLocaleString()} embeddings)`}
+                >
+                  <HardDrive size={12} />
+                  {formatSizeMB(storageMb)}
+                </span>
+              );
             } else {
-              return null;
-            }
+              // FAISS: Show RAM usage
+              let ramMb = 0;
 
-            return (
-              <span
-                className={`meta-pill ram ${tool.enabled ? 'ram-loaded' : 'ram-unloaded'}`}
-                title={`${tool.enabled ? 'Loaded in RAM' : 'Not loaded (disabled)'}: ${formatSizeMB(ramMb)} (${stats.embedding_count.toLocaleString()} embeddings)`}
-              >
-                <MemoryStick size={12} />
-                {formatSizeMB(ramMb)}
-              </span>
-            );
+              // Use server-side estimate if available, otherwise calculate fallback
+              if (stats.estimated_memory_mb !== undefined && stats.estimated_memory_mb !== null) {
+                ramMb = stats.estimated_memory_mb;
+              } else if (embeddingDimensions && embeddingDimensions > 0) {
+                // Memory formula: embeddings * dimensions * 4 bytes (float32)
+                const bytesPerEmbedding = embeddingDimensions * 4 * 1.15;
+                ramMb = (stats.embedding_count * bytesPerEmbedding) / (1024 * 1024);
+              } else {
+                return null;
+              }
+
+              return (
+                <span
+                  className={`meta-pill ram ${tool.enabled ? 'ram-loaded' : 'ram-unloaded'}`}
+                  title={`${tool.enabled ? 'Loaded in RAM' : 'Not loaded (disabled)'}: ${formatSizeMB(ramMb)} (${stats.embedding_count.toLocaleString()} embeddings)`}
+                >
+                  <MemoryStick size={12} />
+                  {formatSizeMB(ramMb)}
+                </span>
+              );
+            }
           })()}
         </>
       )}
@@ -214,40 +234,59 @@ export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged, embeddingD
     onConfirm: () => void;
   } | null>(null);
 
-  // Calculate total memory for enabled filesystem indexes
-  const calculateTotalMemory = (): { total: number; enabled: number } | null => {
+  // Calculate total storage/memory for filesystem indexes
+  // For pgvector: show disk storage; for FAISS: show RAM estimate
+  const calculateTotalStorage = (): { totalStorage: number; enabledStorage: number; hasPgvector: boolean; hasFaiss: boolean } | null => {
     let totalMb = 0;
     let enabledMb = 0;
     let hasData = false;
+    let hasPgvector = false;
+    let hasFaiss = false;
 
     for (const tool of tools) {
       const stats = filesystemStats[tool.id];
-      if (stats) {
-        let memory = 0;
-        if (stats.estimated_memory_mb !== undefined && stats.estimated_memory_mb !== null) {
-          memory = stats.estimated_memory_mb;
-          hasData = true;
-        } else if (embeddingDimensions && embeddingDimensions > 0) {
-          // Memory formula for pgvector: embeddings * dimensions * 4 bytes (float32)
-          // pgvector uses slightly different overhead, estimate 1.15x
-          const bytesPerEmbedding = embeddingDimensions * 4 * 1.15;
-          memory = (stats.embedding_count * bytesPerEmbedding) / (1024 * 1024);
-          hasData = true;
-        }
+      if (stats && stats.embedding_count > 0) {
+        const isPgvector = stats.vector_store_type === 'pgvector';
 
-        totalMb += memory;
-        if (tool.enabled) {
-          enabledMb += memory;
+        if (isPgvector) {
+          // pgvector: Use actual disk storage
+          hasPgvector = true;
+          if (stats.pgvector_size_mb !== undefined && stats.pgvector_size_mb !== null) {
+            totalMb += stats.pgvector_size_mb;
+            if (tool.enabled) {
+              enabledMb += stats.pgvector_size_mb;
+            }
+            hasData = true;
+          }
+        } else {
+          // FAISS: Use memory estimate
+          hasFaiss = true;
+          if (stats.estimated_memory_mb !== undefined && stats.estimated_memory_mb !== null) {
+            totalMb += stats.estimated_memory_mb;
+            if (tool.enabled) {
+              enabledMb += stats.estimated_memory_mb;
+            }
+            hasData = true;
+          } else if (embeddingDimensions && embeddingDimensions > 0) {
+            // Fallback memory calculation for FAISS
+            const bytesPerEmbedding = embeddingDimensions * 4 * 1.15;
+            const memory = (stats.embedding_count * bytesPerEmbedding) / (1024 * 1024);
+            totalMb += memory;
+            if (tool.enabled) {
+              enabledMb += memory;
+            }
+            hasData = true;
+          }
         }
       }
     }
 
     if (!hasData) return null;
 
-    return { total: totalMb, enabled: enabledMb };
+    return { totalStorage: totalMb, enabledStorage: enabledMb, hasPgvector, hasFaiss };
   };
 
-  const memoryEstimate = calculateTotalMemory();
+  const storageEstimate = calculateTotalStorage();
 
   // Load filesystem indexer tools
   const loadTools = useCallback(async () => {
@@ -458,11 +497,15 @@ export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged, embeddingD
       <div className="section-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
           <h2>Filesystem Indexes</h2>
-          {memoryEstimate && tools.length > 0 && (
-            <span className="memory-badge" title={`${memoryEstimate.enabled.toFixed(1)} MB active / ${memoryEstimate.total.toFixed(1)} MB total (pgvector)`}>
-              {memoryEstimate.enabled.toFixed(0)} MB
-              {memoryEstimate.enabled !== memoryEstimate.total && (
-                <span className="memory-total"> / {memoryEstimate.total.toFixed(0)}</span>
+          {storageEstimate && tools.length > 0 && (
+            <span
+              className="memory-badge"
+              title={`${storageEstimate.enabledStorage.toFixed(1)} MB active / ${storageEstimate.totalStorage.toFixed(1)} MB total${storageEstimate.hasPgvector && !storageEstimate.hasFaiss ? ' (pgvector disk)' : storageEstimate.hasFaiss && !storageEstimate.hasPgvector ? ' (FAISS RAM)' : ' (mixed)'}`}
+            >
+              <HardDrive size={12} />
+              {storageEstimate.enabledStorage.toFixed(0)} MB
+              {storageEstimate.enabledStorage !== storageEstimate.totalStorage && (
+                <span className="memory-total"> / {storageEstimate.totalStorage.toFixed(0)}</span>
               )}
             </span>
           )}

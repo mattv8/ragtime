@@ -1092,9 +1092,11 @@ export interface FilesystemIndexStats {
   embedding_count: number;
   file_count: number;
   last_indexed: string | null;
-  // Memory usage
+  // Memory usage (FAISS RAM estimate)
   chunk_count?: number;
   estimated_memory_mb?: number;
+  // pgvector disk storage size
+  pgvector_size_mb?: number;
   // Vector store info
   vector_store_type?: 'pgvector' | 'faiss' | 'auto';
   pgvector_count?: number;

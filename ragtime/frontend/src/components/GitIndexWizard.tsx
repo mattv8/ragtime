@@ -4,6 +4,9 @@ import type { CommitHistoryInfo, IndexAnalysisResult, IndexJob, IndexInfo, Vecto
 import { AnalysisStats } from './AnalysisStats';
 import { IndexConfigFields } from './IndexConfigFields';
 import { OcrVectorStoreFields } from './OcrVectorStoreFields';
+import { FileTypeStatsTable } from './FileTypeStatsTable';
+import { SuggestedExclusionsBanner } from './SuggestedExclusionsBanner';
+import { WarningsBanner } from './WarningsBanner';
 
 type StatusType = 'info' | 'success' | 'error' | null;
 type WizardStep = 'input' | 'analyzing' | 'review' | 'indexing';
@@ -580,12 +583,6 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
     }
   };
 
-  const formatBytes = (bytes: number): string => {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  };
-
   // Edit mode: show simplified config editor
   if (isEditMode && wizardStep === 'input') {
     return (
@@ -916,26 +913,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           Analysis Results for: {gitUrl.split('/').pop()?.replace('.git', '')}
         </h4>
 
-        {analysisResult.warnings.length > 0 && (
-          <div
-            style={{
-              background: 'rgba(251, 191, 36, 0.1)',
-              border: '1px solid rgba(251, 191, 36, 0.3)',
-              borderRadius: '8px',
-              padding: '12px',
-              marginBottom: '16px',
-            }}
-          >
-            <strong style={{ color: '#fbbf24' }}>Warnings:</strong>
-            <ul style={{ margin: '8px 0 0 0', paddingLeft: '20px' }}>
-              {analysisResult.warnings.map((warning, i) => (
-                <li key={i} style={{ color: '#fbbf24', fontSize: '0.9rem' }}>
-                  {warning}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
+        <WarningsBanner warnings={analysisResult.warnings} />
 
         <AnalysisStats result={analysisResult} onNavigateToSettings={onNavigateToSettings} />
 
@@ -945,72 +923,16 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
             <div
               style={{ maxHeight: '200px', overflowY: 'auto', background: 'var(--bg-tertiary)', borderRadius: '8px', padding: '8px' }}
             >
-              <table style={{ width: '100%', fontSize: '0.85rem' }}>
-                <thead>
-                  <tr style={{ textAlign: 'left', color: 'var(--text-secondary)' }}>
-                    <th style={{ padding: '4px 8px' }}>Extension</th>
-                    <th style={{ padding: '4px 8px' }}>Files</th>
-                    <th style={{ padding: '4px 8px' }}>Size</th>
-                    <th style={{ padding: '4px 8px' }}>Est. Chunks</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {analysisResult.file_type_stats.slice(0, 15).map((ft) => (
-                    <tr key={ft.extension}>
-                      <td style={{ padding: '4px 8px', fontFamily: 'var(--font-mono)' }}>{ft.extension}</td>
-                      <td style={{ padding: '4px 8px' }}>{ft.file_count}</td>
-                      <td style={{ padding: '4px 8px' }}>{formatBytes(ft.total_size_bytes)}</td>
-                      <td style={{ padding: '4px 8px' }}>{ft.estimated_chunks.toLocaleString()}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <FileTypeStatsTable stats={analysisResult.file_type_stats} maxRows={15} />
             </div>
           </div>
         )}
 
-        {analysisResult.suggested_exclusions.length > 0 && !exclusionsApplied && (
-          <div
-            style={{
-              marginBottom: '16px',
-              background: 'rgba(59, 130, 246, 0.1)',
-              border: '1px solid rgba(59, 130, 246, 0.3)',
-              borderRadius: '8px',
-              padding: '12px',
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-              <strong style={{ color: '#60a5fa' }}>Suggested Exclusions:</strong>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                style={{ fontSize: '0.8rem', padding: '4px 8px' }}
-                onClick={applySuggestedExclusions}
-              >
-                Apply All
-              </button>
-            </div>
-            <code style={{ fontSize: '0.85rem', color: '#888' }}>
-              {analysisResult.suggested_exclusions.join(', ')}
-            </code>
-          </div>
-        )}
-
-        {exclusionsApplied && (
-          <div
-            style={{
-              marginBottom: '16px',
-              background: 'rgba(34, 197, 94, 0.1)',
-              border: '1px solid rgba(34, 197, 94, 0.3)',
-              borderRadius: '8px',
-              padding: '12px',
-            }}
-          >
-            <span style={{ color: '#22c55e' }}>
-              Suggested exclusions applied. Click "Re-analyze" to update estimates.
-            </span>
-          </div>
-        )}
+        <SuggestedExclusionsBanner
+          exclusions={analysisResult.suggested_exclusions}
+          applied={exclusionsApplied}
+          onApply={applySuggestedExclusions}
+        />
 
         <OcrVectorStoreFields
           isLoading={isLoading}
