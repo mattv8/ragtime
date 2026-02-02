@@ -35,6 +35,8 @@ HARDCODED_EXCLUDES = [
     "node_modules/**",
     ".venv/**",
     "venv/**",
+    "**/vendor/**",  # Third-party libraries (JS/PHP/etc.)
+    "**/static/vendor/**",  # Static vendor assets
 ]
 
 
@@ -151,6 +153,34 @@ def matches_pattern(path: str, patterns: List[str]) -> bool:
     return False
 
 
+def separate_patterns(
+    patterns: List[str],
+) -> Tuple[List[str], List[str]]:
+    """
+    Separate patterns into filename patterns and path patterns.
+
+    Filename patterns (*.js, *.min.js) match against the filename only.
+    Path patterns (**/dir/**, etc.) match against the full relative path.
+
+    Args:
+        patterns: List of glob patterns
+
+    Returns:
+        Tuple of (filename_patterns, path_patterns)
+    """
+    filename_patterns = []
+    path_patterns = []
+
+    for pattern in patterns:
+        # Pattern is a filename pattern if it starts with * but has no path separators
+        if pattern.startswith("*") and "/" not in pattern and "\\" not in pattern:
+            filename_patterns.append(pattern)
+        else:
+            path_patterns.append(pattern)
+
+    return filename_patterns, path_patterns
+
+
 def should_include_file(
     file_path: Path,
     base_path: Path,
@@ -187,6 +217,8 @@ def should_include_file(
     except ValueError:
         return False, "path_outside_base"
 
+    filename = file_path.name
+
     # Check file size first (cheap check)
     try:
         size = file_path.stat().st_size
@@ -200,8 +232,20 @@ def should_include_file(
     # Combine user excludes with hardcoded excludes
     all_excludes = list(exclude_patterns) + HARDCODED_EXCLUDES
 
-    # Check exclude patterns first (reject early)
-    if matches_pattern(rel_path_str, all_excludes):
+    # Separate filename patterns (*.js) from path patterns (**/dir/**)
+    filename_excludes, path_excludes = separate_patterns(all_excludes)
+
+    # Add hardcoded minified patterns to filename excludes if skip_minified is enabled
+    if skip_minified:
+        filename_excludes = list(filename_excludes) + list(MINIFIED_PATTERNS)
+
+    # Check filename-based excludes (extension patterns like *.min.js)
+    for exc_pattern in filename_excludes:
+        if fnmatch.fnmatch(filename, exc_pattern):
+            return False, "matched_exclude"
+
+    # Check path-based excludes (directory patterns like **/vendor/**)
+    if matches_pattern(rel_path_str, path_excludes):
         return False, "matched_exclude"
 
     # Check include patterns (must match at least one)
@@ -212,18 +256,11 @@ def should_include_file(
             if fnmatch.fnmatch(rel_path_str, clean_pattern):
                 matched = True
                 break
-            if fnmatch.fnmatch(file_path.name, clean_pattern):
+            if fnmatch.fnmatch(filename, clean_pattern):
                 matched = True
                 break
         if not matched:
             return False, "no_include_match"
-
-    # Check for minified files
-    if skip_minified:
-        name = file_path.name.lower()
-        for minified_pattern in MINIFIED_PATTERNS:
-            if fnmatch.fnmatch(name, minified_pattern):
-                return False, "minified_file"
 
     return True, None
 
@@ -386,6 +423,13 @@ def collect_files_recursive(
     results = []
     all_excludes = list(exclude_patterns) + HARDCODED_EXCLUDES
 
+    # Separate filename patterns (*.js) from path patterns (**/dir/**)
+    filename_excludes, path_excludes = separate_patterns(all_excludes)
+
+    # Add hardcoded minified patterns to filename excludes if skip_minified is enabled
+    if skip_minified:
+        filename_excludes = list(filename_excludes) + list(MINIFIED_PATTERNS)
+
     for pattern in include_patterns:
         # Normalize pattern for rglob
         glob_pattern = pattern.removeprefix("**/").removeprefix("*/")
@@ -408,8 +452,14 @@ def collect_files_recursive(
             except ValueError:
                 continue
 
-            # Check excludes
-            if matches_pattern(rel_path_str, all_excludes):
+            filename = file_path.name
+
+            # Check filename-based excludes (extension patterns like *.min.js)
+            if any(fnmatch.fnmatch(filename, exc) for exc in filename_excludes):
+                continue
+
+            # Check path-based excludes (directory patterns like **/vendor/**)
+            if matches_pattern(rel_path_str, path_excludes):
                 continue
 
             # Check size
@@ -419,12 +469,6 @@ def collect_files_recursive(
                     continue
             except OSError:
                 continue
-
-            # Check minified
-            if skip_minified:
-                name = file_path.name.lower()
-                if any(fnmatch.fnmatch(name, mp) for mp in MINIFIED_PATTERNS):
-                    continue
 
             # Avoid duplicates
             if file_path not in [r[0] for r in results]:

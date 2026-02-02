@@ -2309,6 +2309,21 @@ class IndexerService:
             # Combine user patterns with hardcoded excludes (module-level constant)
             all_excludes = list(config.exclude_patterns) + HARDCODED_EXCLUDES
 
+            # Separate file-extension patterns from path patterns
+            # File-extension patterns (*.js, *.min.js) are matched against filename only
+            # Path patterns (**/, */) are matched against the full relative path
+            filename_excludes = []
+            path_excludes = []
+            for exc in all_excludes:
+                # Pattern is a filename pattern if it starts with * but has no path separators
+                if exc.startswith("*") and "/" not in exc and "\\" not in exc:
+                    filename_excludes.append(exc)
+                else:
+                    path_excludes.append(exc)
+
+            # Add hardcoded minified patterns to filename excludes
+            filename_excludes.extend(MINIFIED_PATTERNS)
+
             for pattern in config.file_patterns:
                 # Use removeprefix instead of lstrip to avoid stripping too many characters
                 # lstrip("**/") on "**/*.py" incorrectly gives ".py", removeprefix gives "*.py"
@@ -2320,14 +2335,26 @@ class IndexerService:
                     if file_path.is_file():
                         rel_path = file_path.relative_to(source_dir)
                         rel_path_str = str(rel_path)
+                        filename = file_path.name
 
-                        # Check excludes - also use removeprefix instead of lstrip
                         skip = False
-                        for exc_pattern in all_excludes:
-                            clean_exc = exc_pattern.removeprefix("**/")
-                            if fnmatch.fnmatch(rel_path_str, clean_exc):
+
+                        # Check filename-based excludes (extension patterns like *.min.js)
+                        for exc_pattern in filename_excludes:
+                            if fnmatch.fnmatch(filename, exc_pattern):
+                                logger.debug(
+                                    f"Skipping file matching pattern {exc_pattern}: {rel_path_str}"
+                                )
                                 skip = True
                                 break
+
+                        # Check path-based excludes (directory patterns like **/vendor/**)
+                        if not skip:
+                            for exc_pattern in path_excludes:
+                                clean_exc = exc_pattern.removeprefix("**/")
+                                if fnmatch.fnmatch(rel_path_str, clean_exc):
+                                    skip = True
+                                    break
 
                         if not skip and file_path not in files:
                             files.append(file_path)
