@@ -2575,6 +2575,7 @@ class IndexerService:
         # Get embedding model context limit dynamically from LiteLLM or Ollama API
         from ragtime.core.embedding_models import get_embedding_model_context_limit
         from ragtime.core.tokenization import count_tokens
+        from ragtime.indexer.chunking import rechunk_oversized_content
 
         max_allowed_tokens = await get_embedding_model_context_limit(
             model_name=app_settings.embedding_model,
@@ -2586,7 +2587,7 @@ class IndexerService:
             f"(provider: {app_settings.embedding_provider}, model: {app_settings.embedding_model})"
         )
 
-        # Validate and truncate oversized chunks before embedding
+        # Re-chunk oversized chunks before embedding
         # Some chunks may exceed the limit due to headers, overlap, or small files
         # that weren't split but combined with headers exceed the limit
         #
@@ -2594,38 +2595,54 @@ class IndexerService:
         # may use different tokenizers (e.g., BERT WordPiece for nomic-embed-text).
         # BERT tokenizers typically produce MORE tokens than tiktoken for the same text
         # because they have smaller vocabularies (~30k vs ~100k tokens).
-        # We use aggressive safety margins to account for this mismatch.
-        truncated_count = 0
+        # We apply safety margins to account for this mismatch.
+        rechunked_count = 0
 
         # Get safety margin based on embedding provider
         safety_margin = get_embedding_safety_margin(app_settings.embedding_provider)
 
+        # Calculate the safe token limit (e.g., 2048 * 0.70 = 1433 for Ollama)
+        # Any chunk exceeding this TIKTOKEN count may exceed the BERT limit
+        safe_token_limit = int(max_allowed_tokens * safety_margin)
+
+        # Process chunks and re-chunk any that exceed the safe limit
+        final_chunks = []
         for chunk in chunks:
             tokens = count_tokens(chunk.page_content)
-            if tokens > max_allowed_tokens:
+            # Re-chunk if tiktoken count exceeds the SAFE limit (not the full limit)
+            # This ensures chunks that are "under" the limit by tiktoken counting
+            # don't exceed the BERT tokenizer's count
+            if tokens > safe_token_limit:
                 source = chunk.metadata.get("source", "unknown")
                 chunker = chunk.metadata.get("chunker", "unknown")
-                # Truncate to fit - use safety margin to account for tokenizer differences
-                content = chunk.page_content
-                target_chars = int(
-                    len(content) * (max_allowed_tokens / tokens) * safety_margin
+
+                # Re-chunk with proper splitting at natural boundaries
+                sub_chunks = rechunk_oversized_content(
+                    chunk.page_content,
+                    safe_token_limit,
+                    metadata=chunk.metadata,
                 )
-                chunk.page_content = content[:target_chars]
+                final_chunks.extend(sub_chunks)
 
-                # Verify the truncated content is under limit (re-count)
-                new_tokens = count_tokens(chunk.page_content)
-                if truncated_count < 5:  # Log first 5
+                if rechunked_count < 5:  # Log first 5
                     logger.warning(
-                        f"Truncated oversized chunk from {tokens} to {new_tokens} tokens "
-                        f"(source: {source}, chunker: {chunker}, target: {max_allowed_tokens})"
+                        f"Re-chunked oversized content from {tokens} tokens into "
+                        f"{len(sub_chunks)} chunks (source: {source}, chunker: {chunker}, "
+                        f"safe_limit: {safe_token_limit})"
                     )
-                truncated_count += 1
+                rechunked_count += 1
+            else:
+                final_chunks.append(chunk)
 
-        if truncated_count > 0:
-            logger.warning(
-                f"Truncated {truncated_count} oversized chunks to fit embedding context limit "
-                f"(safety_margin={safety_margin:.0%})"
+        if rechunked_count > 0:
+            logger.info(
+                f"Re-chunked {rechunked_count} oversized chunks "
+                f"(total chunks: {len(chunks)} -> {len(final_chunks)}, "
+                f"safe_limit: {safe_token_limit}, safety_margin: {safety_margin:.0%})"
             )
+
+        # Use final_chunks for embedding
+        chunks = final_chunks
 
         for i in range(0, len(chunks), batch_size):
             # Check for cancellation

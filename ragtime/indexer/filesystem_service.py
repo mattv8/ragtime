@@ -1438,38 +1438,48 @@ class FilesystemIndexerService:
                         # Flatten all chunks for batch embedding
                         all_chunks = []
                         chunk_file_map = []  # Track which file each chunk belongs to
-                        truncated_count = 0
+                        rechunked_count = 0
 
                         # Get safety margin based on embedding provider
                         provider = app_settings.get("embedding_provider", "ollama")
                         safety_margin = get_embedding_safety_margin(provider)
 
+                        # Calculate safe token limit (e.g., 2048 * 0.70 = 1433 for Ollama)
+                        # Any chunk exceeding this TIKTOKEN count may exceed BERT limit
+                        safe_token_limit = int(embedding_context_limit * safety_margin)
+
+                        # Import rechunk function for oversized content
+                        from ragtime.indexer.chunking import rechunk_oversized_text
+
                         for rel_path, chunks, _, _ in files_to_embed:
                             for chunk in chunks:
-                                # Validate and truncate oversized chunks (same as document indexer)
+                                # Re-chunk if tiktoken count exceeds the SAFE limit
+                                # This ensures chunks don't exceed BERT tokenizer's count
                                 tokens = count_tokens(chunk)
-                                if tokens > embedding_context_limit:
-                                    target_chars = int(
-                                        len(chunk)
-                                        * (embedding_context_limit / tokens)
-                                        * safety_margin
+                                if tokens > safe_token_limit:
+                                    # Re-chunk with proper splitting at natural boundaries
+                                    sub_chunks = rechunk_oversized_text(
+                                        chunk, safe_token_limit
                                     )
-                                    chunk = chunk[:target_chars]
-                                    new_tokens = count_tokens(chunk)
-                                    if truncated_count < 5:  # Log first 5
+                                    if rechunked_count < 5:  # Log first 5
                                         logger.warning(
-                                            f"Truncated oversized chunk from {tokens} to "
-                                            f"{new_tokens} tokens (source: {rel_path}, "
-                                            f"target: {embedding_context_limit})"
+                                            f"Re-chunked oversized content from {tokens} "
+                                            f"tokens into {len(sub_chunks)} chunks "
+                                            f"(source: {rel_path}, safe_limit: {safe_token_limit})"
                                         )
-                                    truncated_count += 1
-                                all_chunks.append(chunk)
-                                chunk_file_map.append(rel_path)
+                                    rechunked_count += 1
+                                    for sub_chunk in sub_chunks:
+                                        all_chunks.append(sub_chunk)
+                                        chunk_file_map.append(rel_path)
+                                else:
+                                    all_chunks.append(chunk)
+                                    chunk_file_map.append(rel_path)
 
-                        if truncated_count > 0:
-                            logger.warning(
-                                f"Truncated {truncated_count} oversized chunks to fit "
-                                f"embedding context limit (safety_margin={safety_margin:.0%})"
+                        if rechunked_count > 0:
+                            logger.info(
+                                f"Re-chunked {rechunked_count} oversized chunks "
+                                f"(safe_limit: {safe_token_limit}, "
+                                f"safety_margin: {safety_margin:.0%})"
                             )
 
                         # Generate embeddings in sub-batches to keep event loop responsive

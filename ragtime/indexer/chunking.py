@@ -711,3 +711,78 @@ async def chunk_documents_parallel(
     logger.info(f"Chunking complete. Splitters used: {summary}")
 
     return all_chunks
+
+
+def rechunk_oversized_content(
+    content: str,
+    safe_token_limit: int,
+    metadata: dict | None = None,
+) -> List[Document]:
+    """
+    Re-chunk oversized content into smaller pieces that fit within the token limit.
+
+    This function properly re-chunks content that exceeds the embedding model's
+    context limit, rather than blindly truncating. It uses RecursiveChunker to
+    split at natural boundaries (paragraphs, sentences) while maintaining overlap.
+
+    Args:
+        content: The oversized text content to re-chunk
+        safe_token_limit: Maximum tokens per chunk (after safety margin applied)
+        metadata: Optional metadata dict to attach to each resulting chunk
+
+    Returns:
+        List of Document objects, each within the token limit
+    """
+    if metadata is None:
+        metadata = {}
+
+    from chonkie import RecursiveChunker
+
+    # Use tiktoken for accurate token counting
+    chunker = RecursiveChunker(
+        tokenizer=TIKTOKEN_ENCODING,
+        chunk_size=safe_token_limit,
+        min_characters_per_chunk=20,
+    )
+
+    chunks = chunker.chunk(content)
+    docs = []
+
+    for i, c in enumerate(chunks):
+        new_meta = metadata.copy()
+        new_meta["chunker"] = "rechunk_oversized"
+        new_meta["rechunk_part"] = i + 1
+        new_meta["rechunk_total"] = len(chunks)
+        docs.append(Document(page_content=c.text, metadata=new_meta))
+
+    return docs
+
+
+def rechunk_oversized_text(
+    content: str,
+    safe_token_limit: int,
+) -> List[str]:
+    """
+    Re-chunk oversized text content into smaller pieces that fit within the token limit.
+
+    Same as rechunk_oversized_content but returns plain strings instead of Documents.
+    Used by filesystem indexer which works with raw text chunks.
+
+    Args:
+        content: The oversized text content to re-chunk
+        safe_token_limit: Maximum tokens per chunk (after safety margin applied)
+
+    Returns:
+        List of text strings, each within the token limit
+    """
+    from chonkie import RecursiveChunker
+
+    # Use tiktoken for accurate token counting
+    chunker = RecursiveChunker(
+        tokenizer=TIKTOKEN_ENCODING,
+        chunk_size=safe_token_limit,
+        min_characters_per_chunk=20,
+    )
+
+    chunks = chunker.chunk(content)
+    return [c.text for c in chunks]
