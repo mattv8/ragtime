@@ -420,6 +420,37 @@ EXTENSION_TO_LANG: dict[str, str] = {
 }
 
 
+# =============================================================================
+# EMBEDDING TOKENIZER SAFETY MARGINS
+# =============================================================================
+# tiktoken (cl100k_base) is used to count tokens, but embedding models may use
+# different tokenizers (e.g., BERT WordPiece for nomic-embed-text).
+# BERT tokenizers typically produce MORE tokens than tiktoken for the same text
+# because they have smaller vocabularies (~30k vs ~100k tokens).
+# We use aggressive safety margins to account for this mismatch when truncating.
+
+# Ollama models typically use BERT-based tokenizers (WordPiece)
+# tiktoken tends to undercount by ~20-30% compared to BERT tokenizers
+EMBEDDING_SAFETY_MARGIN_OLLAMA: float = 0.70
+
+# OpenAI and other providers use tokenizers closer to tiktoken
+EMBEDDING_SAFETY_MARGIN_DEFAULT: float = 0.90
+
+
+def get_embedding_safety_margin(provider: str) -> float:
+    """Get the appropriate safety margin for truncation based on embedding provider.
+
+    Args:
+        provider: The embedding provider name (e.g., 'ollama', 'openai', 'anthropic')
+
+    Returns:
+        Safety margin multiplier (0.0-1.0) to apply when truncating content
+    """
+    if provider.lower() == "ollama":
+        return EMBEDDING_SAFETY_MARGIN_OLLAMA
+    return EMBEDDING_SAFETY_MARGIN_DEFAULT
+
+
 def is_binary_extension(ext: str) -> bool:
     """Check if a file extension indicates a truly unparseable binary file."""
     return ext.lower() in UNPARSEABLE_BINARY_EXTENSIONS

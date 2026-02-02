@@ -26,6 +26,7 @@ from ragtime.core.file_constants import (
     MINIFIED_PATTERNS,
     PARSEABLE_DOCUMENT_EXTENSIONS,
     UNPARSEABLE_BINARY_EXTENSIONS,
+    get_embedding_safety_margin,
 )
 from ragtime.core.logging import get_logger
 from ragtime.indexer.document_parser import OCR_EXTENSIONS
@@ -2559,26 +2560,42 @@ class IndexerService:
         # Validate and truncate oversized chunks before embedding
         # Some chunks may exceed the limit due to headers, overlap, or small files
         # that weren't split but combined with headers exceed the limit
+        #
+        # IMPORTANT: We use tiktoken (cl100k_base) for counting, but embedding models
+        # may use different tokenizers (e.g., BERT WordPiece for nomic-embed-text).
+        # BERT tokenizers typically produce MORE tokens than tiktoken for the same text
+        # because they have smaller vocabularies (~30k vs ~100k tokens).
+        # We use aggressive safety margins to account for this mismatch.
         truncated_count = 0
+
+        # Get safety margin based on embedding provider
+        safety_margin = get_embedding_safety_margin(app_settings.embedding_provider)
+
         for chunk in chunks:
             tokens = count_tokens(chunk.page_content)
             if tokens > max_allowed_tokens:
                 source = chunk.metadata.get("source", "unknown")
                 chunker = chunk.metadata.get("chunker", "unknown")
-                # Truncate to fit - rough estimate based on token ratio
+                # Truncate to fit - use safety margin to account for tokenizer differences
                 content = chunk.page_content
-                target_chars = int(len(content) * (max_allowed_tokens / tokens) * 0.95)
+                target_chars = int(
+                    len(content) * (max_allowed_tokens / tokens) * safety_margin
+                )
                 chunk.page_content = content[:target_chars]
+
+                # Verify the truncated content is under limit (re-count)
+                new_tokens = count_tokens(chunk.page_content)
                 if truncated_count < 5:  # Log first 5
                     logger.warning(
-                        f"Truncated oversized chunk from {tokens} to ~{max_allowed_tokens} tokens "
-                        f"(source: {source}, chunker: {chunker})"
+                        f"Truncated oversized chunk from {tokens} to {new_tokens} tokens "
+                        f"(source: {source}, chunker: {chunker}, target: {max_allowed_tokens})"
                     )
                 truncated_count += 1
 
         if truncated_count > 0:
             logger.warning(
-                f"Truncated {truncated_count} oversized chunks to fit embedding context limit"
+                f"Truncated {truncated_count} oversized chunks to fit embedding context limit "
+                f"(safety_margin={safety_margin:.0%})"
             )
 
         for i in range(0, len(chunks), batch_size):

@@ -29,6 +29,7 @@ from ragtime.core.file_constants import (
     DOCUMENT_EXTENSIONS,
     PARSEABLE_DOCUMENT_EXTENSIONS,
     UNPARSEABLE_BINARY_EXTENSIONS,
+    get_embedding_safety_margin,
 )
 from ragtime.core.logging import get_logger
 from ragtime.indexer.document_parser import (
@@ -1436,6 +1437,11 @@ class FilesystemIndexerService:
                         all_chunks = []
                         chunk_file_map = []  # Track which file each chunk belongs to
                         truncated_count = 0
+
+                        # Get safety margin based on embedding provider
+                        provider = app_settings.get("embedding_provider", "ollama")
+                        safety_margin = get_embedding_safety_margin(provider)
+
                         for rel_path, chunks, _, _ in files_to_embed:
                             for chunk in chunks:
                                 # Validate and truncate oversized chunks (same as document indexer)
@@ -1444,13 +1450,15 @@ class FilesystemIndexerService:
                                     target_chars = int(
                                         len(chunk)
                                         * (embedding_context_limit / tokens)
-                                        * 0.95
+                                        * safety_margin
                                     )
                                     chunk = chunk[:target_chars]
+                                    new_tokens = count_tokens(chunk)
                                     if truncated_count < 5:  # Log first 5
                                         logger.warning(
                                             f"Truncated oversized chunk from {tokens} to "
-                                            f"~{embedding_context_limit} tokens (source: {rel_path})"
+                                            f"{new_tokens} tokens (source: {rel_path}, "
+                                            f"target: {embedding_context_limit})"
                                         )
                                     truncated_count += 1
                                 all_chunks.append(chunk)
@@ -1458,7 +1466,8 @@ class FilesystemIndexerService:
 
                         if truncated_count > 0:
                             logger.warning(
-                                f"Truncated {truncated_count} oversized chunks to fit embedding context limit"
+                                f"Truncated {truncated_count} oversized chunks to fit "
+                                f"embedding context limit (safety_margin={safety_margin:.0%})"
                             )
 
                         # Generate embeddings for all chunks at once
