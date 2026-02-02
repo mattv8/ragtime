@@ -12,7 +12,6 @@ from typing import Optional
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -122,8 +121,6 @@ async def search_filesystem_index(
 
         return "\n".join(output_parts)
 
-        return "\n".join(output_parts)
-
     except Exception as e:
         logger.error(f"Filesystem search error: {e}")
         return f"Error searching filesystem index: {str(e)}"
@@ -131,97 +128,24 @@ async def search_filesystem_index(
 
 async def _get_query_embedding(query: str, app_settings: dict) -> Optional[list]:
     """Generate embedding for the search query using configured provider."""
+    from ragtime.indexer.vector_utils import get_embeddings_model
+
     try:
-        provider = app_settings.get("embedding_provider", "ollama")
-        model = app_settings.get("embedding_model", "nomic-embed-text")
-        dimensions = app_settings.get("embedding_dimensions")
-
-        if provider == "ollama":
-            from langchain_ollama import OllamaEmbeddings
-
-            base_url = app_settings.get("ollama_base_url", "http://localhost:11434")
-            embeddings = OllamaEmbeddings(model=model, base_url=base_url)
-        elif provider == "openai":
-            from langchain_openai import OpenAIEmbeddings
-
-            api_key = app_settings.get("openai_api_key", "")
-            if not api_key:
-                logger.error("OpenAI API key not configured for embeddings")
-                return None
-            # Pass dimensions for text-embedding-3-* models (supports MRL)
-            kwargs = {"model": model, "api_key": api_key}
-            if dimensions and model.startswith("text-embedding-3"):
-                kwargs["dimensions"] = dimensions
-            embeddings = OpenAIEmbeddings(**kwargs)
-        else:
-            logger.error(f"Unknown embedding provider: {provider}")
+        embeddings = await get_embeddings_model(
+            app_settings,
+            return_none_on_error=True,
+            logger_override=logger,
+        )
+        if embeddings is None:
             return None
 
-        # Generate embedding
+        # Generate embedding using async method
         result = await embeddings.aembed_query(query)
         return result
 
     except Exception as e:
         logger.error(f"Error generating query embedding: {e}")
         return None
-
-
-async def _search_embeddings(
-    db,
-    embedding: list,
-    index_name: Optional[str],
-    max_results: int,
-) -> list:
-    """Execute similarity search against pgvector embeddings table."""
-    try:
-        # Build embedding vector string for SQL
-        embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
-
-        # Build WHERE clause
-        where_clause = ""
-        if index_name:
-            where_clause = f"WHERE index_name = '{index_name}'"
-
-        # Use cosine similarity (<=> operator in pgvector)
-        # Note: <=> returns distance, so we compute 1 - distance for similarity
-        query = f"""
-            SELECT
-                id,
-                index_name,
-                file_path,
-                chunk_index,
-                content,
-                metadata,
-                1 - (embedding <=> '{embedding_str}'::vector) as similarity
-            FROM filesystem_embeddings
-            {where_clause}
-            ORDER BY embedding <=> '{embedding_str}'::vector
-            LIMIT {max_results}
-        """
-
-        results = await db.query_raw(query)
-
-        return [
-            {
-                "id": row["id"],
-                "index_name": row["index_name"],
-                "file_path": row["file_path"],
-                "chunk_index": row["chunk_index"],
-                "content": row["content"],
-                "metadata": row["metadata"],
-                "similarity": float(row["similarity"]),
-            }
-            for row in results
-        ]
-
-    except Exception as e:
-        logger.error(f"Error searching embeddings: {e}")
-        # Check if it's a pgvector not installed error
-        if "vector" in str(e).lower() and "type" in str(e).lower():
-            raise RuntimeError(
-                "pgvector extension not installed. Run: CREATE EXTENSION IF NOT EXISTS vector;"
-            ) from e
-        raise
 
 
 # The tool is created dynamically in components.py based on tool configs

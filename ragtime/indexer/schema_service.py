@@ -1777,35 +1777,39 @@ async def search_schema_index(
     Returns:
         Formatted string with matching table schemas
     """
-    try:
-        db = await get_db()
+    from ragtime.indexer.vector_utils import (
+        SCHEMA_COLUMNS,
+        get_embeddings_model,
+        search_pgvector_embeddings,
+    )
 
+    try:
         # Get embedding model
         settings = await repository.get_settings()
         if settings is None:
             return "Error: Application settings not configured"
 
-        embeddings = await schema_indexer._get_embeddings(settings)
+        embeddings = await get_embeddings_model(
+            settings,
+            return_none_on_error=True,
+            logger_override=logger,
+        )
 
         if embeddings is None:
-            return "Error: No embedding provider configured. Please configure OpenAI, Anthropic, or Ollama in Settings."
+            return "Error: No embedding provider configured. Please configure OpenAI or Ollama in Settings."
 
         # Generate query embedding
         query_embedding = await asyncio.to_thread(embeddings.embed_documents, [query])
         embedding = query_embedding[0]
-        embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
 
-        # Search using pgvector similarity
-        results = await db.query_raw(
-            f"""
-            SELECT
-                id, index_name, table_name, table_schema, content, metadata,
-                1 - (embedding <=> '{embedding_str}'::vector) as similarity
-            FROM schema_embeddings
-            WHERE index_name = '{index_name}'
-            ORDER BY embedding <=> '{embedding_str}'::vector
-            LIMIT {max_results}
-        """
+        # Search using centralized pgvector search
+        results = await search_pgvector_embeddings(
+            table_name="schema_embeddings",
+            query_embedding=embedding,
+            index_name=index_name,
+            max_results=max_results,
+            columns=SCHEMA_COLUMNS,
+            logger_override=logger,
         )
 
         if not results:

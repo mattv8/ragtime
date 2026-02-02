@@ -554,42 +554,34 @@ class IndexerService:
 
     async def _get_embeddings(self, app_settings: AppSettings):
         """Get the configured embedding model based on app settings."""
-        provider = app_settings.embedding_provider.lower()
-        model = app_settings.embedding_model
-        dimensions = getattr(app_settings, "embedding_dimensions", None)
+        from ragtime.indexer.vector_utils import get_embeddings_model
 
+        # Use dict-safe access for logging (app_settings may be dict or object)
+        provider = (
+            app_settings.get("embedding_provider")
+            if isinstance(app_settings, dict)
+            else getattr(app_settings, "embedding_provider", None)
+        )
+        model = (
+            app_settings.get("embedding_model")
+            if isinstance(app_settings, dict)
+            else getattr(app_settings, "embedding_model", None)
+        )
+        dims = (
+            app_settings.get("embedding_dimensions")
+            if isinstance(app_settings, dict)
+            else getattr(app_settings, "embedding_dimensions", None)
+        )
         logger.info(
-            f"Getting embeddings: provider={provider}, model={model}, dimensions={dimensions}"
+            f"Getting embeddings: provider={provider}, model={model}, dimensions={dims}"
         )
 
-        if provider == "ollama":
-            from langchain_ollama import (
-                OllamaEmbeddings,
-            )  # type: ignore[reportMissingImports]
-
-            return OllamaEmbeddings(
-                model=model,
-                base_url=app_settings.ollama_base_url,
-            )
-        elif provider == "openai":
-            from langchain_openai import OpenAIEmbeddings
-
-            if not app_settings.openai_api_key:
-                raise ValueError(
-                    "OpenAI embeddings selected but no API key configured in Settings"
-                )
-            # Pass dimensions for text-embedding-3-* models (supports MRL)
-            kwargs: dict = {
-                "model": model,
-                "api_key": app_settings.openai_api_key,  # type: ignore[arg-type]
-            }
-            if dimensions and model.startswith("text-embedding-3"):
-                kwargs["dimensions"] = dimensions
-            return OpenAIEmbeddings(**kwargs)
-        else:
-            raise ValueError(
-                f"Unknown embedding provider: {provider}. Use 'ollama' or 'openai'."
-            )
+        return await get_embeddings_model(
+            app_settings,
+            allow_missing_api_key=False,
+            return_none_on_error=False,
+            logger_override=logger,
+        )
 
     def _is_rate_limit_error(self, exc: Exception) -> bool:
         """Detect OpenAI rate limit errors across libraries."""
@@ -631,36 +623,9 @@ class IndexerService:
 
     async def _append_embedding_dimension_warning(self, warnings: List[str]) -> None:
         """Warn when configured embeddings exceed pgvector's 2000-dim index limit."""
-        try:
-            app_settings = await repository.get_settings()
-        except Exception as e:
-            logger.debug(f"Could not load settings for embedding warning: {e}")
-            return
+        from ragtime.indexer.vector_utils import append_embedding_dimension_warning
 
-        provider = app_settings.embedding_provider.lower()
-        model = app_settings.embedding_model
-        configured_dim = getattr(app_settings, "embedding_dimensions", None)
-        tracked_dim = app_settings.embedding_dimension
-
-        # Prefer explicit configuration, otherwise use tracked dimension from previous runs
-        dimension = configured_dim or tracked_dim
-
-        # Heuristic defaults for OpenAI text-embedding-3 models when dimension not set
-        if provider == "openai" and dimension is None:
-            if model.startswith("text-embedding-3-large"):
-                dimension = 3072
-            elif model.startswith("text-embedding-3-small"):
-                dimension = 1536
-
-        limit = 2000
-        if dimension is not None and dimension > limit:
-            warning = (
-                f"Embedding dimension {dimension} exceeds pgvector's {limit}-dim index limit. "
-                "Search will fall back to exact (non-indexed). "
-                "Use a <=2000-dim model (e.g., set Embedding Dimensions to 1536 for OpenAI text-embedding-3-*) "
-                "or choose a lower-dimension embedding model."
-            )
-            warnings.insert(0, warning)
+        await append_embedding_dimension_warning(warnings, logger_override=logger)
 
     async def get_job(self, job_id: str) -> Optional[IndexJob]:
         """Get a job by ID (checks cache first, then database)."""
@@ -698,6 +663,59 @@ class IndexerService:
     def _is_cancelled(self, job_id: str) -> bool:
         """Check if a job has been cancelled."""
         return self._cancellation_flags.get(job_id, False)
+
+    async def _cleanup_failed_index_metadata(self, name: str) -> None:
+        """Clean up optimistic index_metadata if a NEW index job fails.
+
+        Only deletes metadata if the index has no actual data (chunk_count=0),
+        indicating it was just created optimistically and the job failed before
+        any real data was indexed. This preserves existing indexes on re-index failures.
+        """
+        try:
+            metadata = await repository.get_index_metadata(name)
+            if metadata and metadata.chunkCount == 0:
+                # This was an optimistic placeholder - safe to clean up
+                logger.info(f"Cleaning up optimistic metadata for failed index: {name}")
+                await repository.delete_index_metadata(name)
+        except Exception as e:
+            # Don't fail the job cleanup if metadata cleanup fails
+            logger.warning(f"Failed to cleanup metadata for {name}: {e}")
+
+    async def _create_optimistic_index_metadata(
+        self,
+        config: IndexConfig,
+        source_type: str,
+        source: str | None,
+        git_branch: str | None = None,
+        git_token: str | None = None,
+    ) -> None:
+        """Create optimistic index_metadata so the index shows up in UI immediately.
+
+        Values will be updated when job completes; if job fails, metadata will be
+        cleaned up by _cleanup_failed_index_metadata().
+
+        Args:
+            config: Index configuration
+            source_type: "upload" or "git"
+            source: Source path/URL (filename for upload, git URL for git)
+            git_branch: Git branch (for git source only)
+            git_token: Git token (for git source only)
+        """
+        index_path = self.index_base_path / config.name
+        await repository.upsert_index_metadata(
+            name=config.name,
+            path=str(index_path),
+            document_count=0,
+            chunk_count=0,
+            size_bytes=0,
+            source_type=source_type,
+            source=source,
+            config_snapshot=config.model_dump(),
+            description=config.description or "",
+            git_branch=git_branch,
+            git_token=git_token,
+            vector_store_type=config.vector_store_type,
+        )
 
     async def list_indexes(self) -> List[IndexInfo]:
         """List all available document indexes.
@@ -1475,6 +1493,13 @@ class IndexerService:
         # Persist to database FIRST (before any processing)
         await repository.create_job(job)
 
+        # Create optimistic metadata so index shows up in UI immediately
+        await self._create_optimistic_index_metadata(
+            config=config,
+            source_type="upload",
+            source=filename,
+        )
+
         # Cache for active processing
         self._active_jobs[job_id] = job
 
@@ -1505,6 +1530,8 @@ class IndexerService:
             self._active_jobs.pop(job_id, None)
             if "tmp_dir" in locals():
                 shutil.rmtree(tmp_dir, ignore_errors=True)
+            # Clean up optimistic metadata for failed new indexes
+            await self._cleanup_failed_index_metadata(config.name)
             raise
 
         return job
@@ -1531,6 +1558,15 @@ class IndexerService:
 
         # Persist to database
         await repository.create_job(job)
+
+        # Create optimistic metadata so index shows up in UI immediately
+        await self._create_optimistic_index_metadata(
+            config=config,
+            source_type="git",
+            source=git_url,
+            git_branch=branch,
+            git_token=git_token,
+        )
 
         # Cache for active processing
         self._active_jobs[job_id] = job
@@ -1578,12 +1614,16 @@ class IndexerService:
         except asyncio.CancelledError:
             # Job was cancelled - status already set by cancel_job()
             logger.info(f"Job {job.id} processing stopped due to cancellation")
+            # Clean up optimistic metadata for cancelled new indexes
+            await self._cleanup_failed_index_metadata(job.name)
 
         except Exception as e:
             if not self._is_cancelled(job.id):
                 logger.exception(f"Failed to process upload for job {job.id}")
                 job.status = IndexStatus.FAILED
                 job.error_message = str(e)
+                # Clean up optimistic metadata for failed new indexes
+                await self._cleanup_failed_index_metadata(job.name)
 
         finally:
             # Cleanup temp directory and cancellation flag
@@ -1678,12 +1718,16 @@ class IndexerService:
         except asyncio.CancelledError:
             # Job was cancelled - status already set by cancel_job()
             logger.info(f"Job {job.id} processing stopped due to cancellation")
+            # Clean up optimistic metadata for cancelled new indexes
+            await self._cleanup_failed_index_metadata(job.name)
 
         except Exception as e:
             if not self._is_cancelled(job.id):
                 logger.exception(f"Failed to process git for job {job.id}")
                 job.status = IndexStatus.FAILED
                 job.error_message = str(e)
+                # Clean up optimistic metadata for failed new indexes
+                await self._cleanup_failed_index_metadata(job.name)
 
         finally:
             # Clean up temp marker directory
@@ -2246,7 +2290,7 @@ class IndexerService:
         ollama_base_url = None
         if ocr_mode == OcrMode.OLLAMA:
             settings = await get_app_settings()
-            ollama_base_url = settings.ollama_base_url
+            ollama_base_url = settings.get("ollama_base_url")
 
         async def load_file_async(file_path: Path) -> tuple[Path, List, str | None]:
             """Async file loading with OCR support. Returns (path, docs, error)."""

@@ -244,45 +244,20 @@ class PgVectorBackend(VectorStoreBackend):
         index_name: Optional[str] = None,
         max_results: int = 10,
     ) -> List[Dict[str, Any]]:
-        """Search using cosine similarity."""
-        from ragtime.core.database import get_db
+        """Search using cosine similarity via centralized search function."""
+        from ragtime.indexer.vector_utils import (
+            FILESYSTEM_COLUMNS,
+            search_pgvector_embeddings,
+        )
 
-        db = await get_db()
-        embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
-
-        where_clause = ""
-        if index_name:
-            where_clause = f"WHERE index_name = '{index_name}'"
-
-        query = f"""
-            SELECT
-                id,
-                index_name,
-                file_path,
-                chunk_index,
-                content,
-                metadata,
-                1 - (embedding <=> '{embedding_str}'::vector) as similarity
-            FROM filesystem_embeddings
-            {where_clause}
-            ORDER BY embedding <=> '{embedding_str}'::vector
-            LIMIT {max_results}
-        """
-
-        results = await db.query_raw(query)
-
-        return [
-            {
-                "id": row["id"],
-                "index_name": row["index_name"],
-                "file_path": row["file_path"],
-                "chunk_index": row["chunk_index"],
-                "content": row["content"],
-                "metadata": row["metadata"],
-                "similarity": float(row["similarity"]),
-            }
-            for row in results
-        ]
+        return await search_pgvector_embeddings(
+            table_name="filesystem_embeddings",
+            query_embedding=query_embedding,
+            index_name=index_name,
+            max_results=max_results,
+            columns=FILESYSTEM_COLUMNS,
+            logger_override=logger,
+        )
 
     async def get_index_stats(self, index_name: str) -> Dict[str, Any]:
         """Get index statistics from database."""
@@ -392,7 +367,12 @@ class FaissBackend(VectorStoreBackend):
         return original_count - len(pending["texts"])
 
     async def delete_index(self, index_name: str) -> int:
-        """Delete the entire FAISS index from disk and memory."""
+        """Delete the entire FAISS index from disk and memory.
+
+        Returns:
+            Count of deleted items (from pending buffer) plus 1 if disk was deleted,
+            or 0 if nothing was deleted.
+        """
         import shutil
 
         deleted = 0
@@ -401,16 +381,32 @@ class FaissBackend(VectorStoreBackend):
         if index_name in self._pending:
             deleted = len(self._pending[index_name]["texts"])
             del self._pending[index_name]
+            logger.info(
+                f"Cleared {deleted} pending embeddings for FAISS index: {index_name}"
+            )
 
         # Clear from loaded indexes
         if index_name in self._loaded_indexes:
             del self._loaded_indexes[index_name]
+            logger.info(f"Cleared loaded FAISS index from memory: {index_name}")
 
         # Delete from disk
         index_path = self._get_index_path(index_name)
         if index_path.exists():
-            await asyncio.to_thread(shutil.rmtree, index_path, ignore_errors=True)
-            logger.info(f"Deleted FAISS filesystem index from disk: {index_name}")
+            try:
+                await asyncio.to_thread(shutil.rmtree, index_path)
+                logger.info(f"Deleted FAISS filesystem index from disk: {index_path}")
+                # Count disk deletion as at least 1 to signal success to caller
+                if deleted == 0:
+                    deleted = 1
+            except Exception as e:
+                logger.error(
+                    f"Failed to delete FAISS index directory {index_path}: {e}"
+                )
+        else:
+            logger.debug(
+                f"FAISS index path does not exist, nothing to delete: {index_path}"
+            )
 
         return deleted
 
@@ -534,7 +530,7 @@ class FaissBackend(VectorStoreBackend):
                 logger.debug(f"Error getting FAISS stats for {index_name}: {e}")
 
         # Calculate file size on disk
-        index_path = FAISS_INDEX_BASE_PATH / index_name
+        index_path = self._get_index_path(index_name)
         if index_path.exists():
             total_size = 0
             faiss_file = index_path / "index.faiss"

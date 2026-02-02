@@ -1368,14 +1368,18 @@ async def search_pdm_index(
     Returns:
         Formatted string with matching PDM documents
     """
-    try:
-        db: Any = await get_db()
+    from ragtime.indexer.vector_utils import PDM_COLUMNS, search_pgvector_embeddings
 
+    try:
         # Get embedding model
         from ragtime.core.app_settings import get_app_settings
 
         app_settings = await get_app_settings()
-        embeddings = await _get_search_embeddings(app_settings)
+        embeddings = await get_embeddings_model(
+            app_settings,
+            return_none_on_error=True,
+            logger_override=logger,
+        )
 
         if embeddings is None:
             return "Error: No embedding provider configured"
@@ -1383,26 +1387,21 @@ async def search_pdm_index(
         # Generate query embedding
         query_embedding = await asyncio.to_thread(embeddings.embed_documents, [query])
         embedding = query_embedding[0]
-        embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
 
         # Build document type filter
-        type_filter = ""
+        extra_where = None
         if document_type:
-            type_filter = f"AND document_type = '{document_type.upper()}'"
+            extra_where = f"document_type = '{document_type.upper()}'"
 
-        # Search using pgvector similarity
-        results = await db.query_raw(
-            f"""
-            SELECT
-                id, index_name, document_id, document_type, content,
-                part_number, filename, folder_path, metadata,
-                1 - (embedding <=> '{embedding_str}'::vector) as similarity
-            FROM pdm_embeddings
-            WHERE index_name = '{index_name}'
-                {type_filter}
-            ORDER BY embedding <=> '{embedding_str}'::vector
-            LIMIT {max_results}
-        """
+        # Search using centralized pgvector search
+        results = await search_pgvector_embeddings(
+            table_name="pdm_embeddings",
+            query_embedding=embedding,
+            index_name=index_name,
+            max_results=max_results,
+            columns=PDM_COLUMNS,
+            extra_where=extra_where,
+            logger_override=logger,
         )
 
         if not results:
@@ -1428,35 +1427,3 @@ async def search_pdm_index(
     except Exception as e:
         logger.error(f"Error searching PDM index: {e}")
         return f"Error searching PDM: {str(e)}"
-
-
-async def _get_search_embeddings(app_settings: dict):
-    """Get the configured embedding model based on app settings for search."""
-    provider = app_settings.get("embedding_provider", "ollama").lower()
-    model = app_settings.get("embedding_model", "nomic-embed-text")
-    dimensions = app_settings.get("embedding_dimensions")
-
-    if provider == "ollama":
-        import importlib
-
-        ollama_module = importlib.import_module("langchain_ollama")
-        OllamaEmbeddings = getattr(ollama_module, "OllamaEmbeddings")
-
-        return OllamaEmbeddings(
-            model=model,
-            base_url=app_settings.get("ollama_base_url", "http://localhost:11434"),
-        )
-    elif provider == "openai":
-        from langchain_openai import OpenAIEmbeddings
-
-        api_key = app_settings.get("openai_api_key", "")
-        if not api_key:
-            raise ValueError(
-                "OpenAI embeddings selected but no API key configured in Settings"
-            )
-        kwargs = {"model": model, "api_key": api_key}
-        if dimensions and model.startswith("text-embedding-3"):
-            kwargs["dimensions"] = dimensions
-        return OpenAIEmbeddings(**kwargs)
-    else:
-        raise ValueError(f"Unknown embedding provider: {provider}")

@@ -1339,6 +1339,7 @@ from ragtime.indexer.models import (
     ToolTestRequest,
     ToolType,
     UpdateToolConfigRequest,
+    VectorStoreType,
 )
 
 
@@ -1683,14 +1684,26 @@ async def delete_tool_config(tool_id: str, _user: User = Depends(require_admin))
     # Cleanup embeddings BEFORE deleting tool config (while we still have the config)
     if tool.tool_type == "filesystem_indexer":
         try:
-            # Get index name from connection config
+            # Get index name and vector store type from connection config
             index_name = (
                 tool.connection_config.get("index_name")
                 if tool.connection_config
                 else None
             )
+            vector_store_type_str = (
+                tool.connection_config.get("vector_store_type")
+                if tool.connection_config
+                else None
+            )
+            vector_store_type = (
+                VectorStoreType(vector_store_type_str)
+                if vector_store_type_str
+                else None
+            )
             if index_name:
-                deleted = await filesystem_indexer.delete_index(index_name)
+                deleted = await filesystem_indexer.delete_index(
+                    index_name, vector_store_type=vector_store_type
+                )
                 logger.info(
                     f"Cleaned up {deleted} filesystem embeddings for tool {tool_id}"
                 )
@@ -5341,7 +5354,9 @@ async def delete_filesystem_index(tool_id: str, _user: User = Depends(require_ad
             status_code=400, detail=f"Invalid filesystem configuration: {str(e)}"
         ) from e
 
-    deleted_count = await filesystem_indexer.delete_index(fs_config.index_name)
+    deleted_count = await filesystem_indexer.delete_index(
+        fs_config.index_name, vector_store_type=fs_config.vector_store_type
+    )
     return {
         "success": True,
         "message": f"Deleted {deleted_count} embeddings from index '{fs_config.index_name}'",
