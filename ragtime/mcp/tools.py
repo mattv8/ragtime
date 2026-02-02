@@ -13,10 +13,16 @@ import asyncio
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from ragtime.config.settings import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.logging import get_logger
+from ragtime.indexer.schema_service import search_schema_index
+from ragtime.rag import rag
+from ragtime.rag.components import RAGComponents
+from ragtime.tools.git_history import search_git_history
 
 logger = get_logger(__name__)
 
@@ -465,7 +471,10 @@ class MCPToolAdapter:
             return self._heartbeat_cache
 
         # Import here to avoid circular imports
-        from ragtime.indexer.routes import _heartbeat_check
+        try:
+            from ragtime.indexer.routes import _heartbeat_check
+        except ImportError:
+            pass  # Expected circular import context
 
         async def check_single(config: dict) -> tuple[str, ToolHealthStatus]:
             tool_id = config.get("id", "")
@@ -590,8 +599,6 @@ class MCPToolAdapter:
         # Create executor
         async def search_schema(prompt: str, limit: int = 5, **_: Any) -> str:
             """Execute schema search."""
-            from ragtime.indexer.schema_service import search_schema_index
-
             logger.debug(f"MCP schema search for {db_name}: {prompt[:100]}")
             result = await search_schema_index(
                 query=prompt,
@@ -670,8 +677,6 @@ class MCPToolAdapter:
         This reuses the existing tool execution logic from components.py.
         """
         # Import components for execution logic
-        from ragtime.rag.components import RAGComponents
-
         # Create a temporary RAGComponents instance to build the tool
         # This is a bit wasteful but ensures we reuse all validation/security logic
         rag_temp = RAGComponents()
@@ -744,8 +749,6 @@ class MCPToolAdapter:
             selected_indexes: Optional list of index names to include.
                               None = all indexes, [] = no indexes, list = specific indexes
         """
-        from ragtime.rag import rag
-
         # Allow partial availability - core ready is enough, indexes may still be loading
         if not rag.is_ready:
             return None
@@ -935,8 +938,6 @@ class MCPToolAdapter:
             selected_indexes: Optional list of index names to include.
                               None = all indexes, [] = no indexes, list = specific indexes
         """
-        from ragtime.rag import rag
-
         # Allow partial availability - core ready is enough
         if not rag.is_ready:
             return []
@@ -1121,12 +1122,6 @@ class MCPToolAdapter:
         When aggregate_search is enabled: creates a single search_git_history tool
         When aggregate_search is disabled: creates search_git_history_<name> per index
         """
-        from pathlib import Path
-
-        from ragtime.config.settings import settings
-        from ragtime.rag import rag
-        from ragtime.tools.git_history import search_git_history
-
         tools: list[MCPToolDefinition] = []
         index_base = Path(settings.index_data_path)
 

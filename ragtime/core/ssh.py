@@ -9,6 +9,7 @@ Supports:
 
 import io
 import socket
+import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -517,8 +518,6 @@ class SSHTunnel:
         self._running = True
 
         # Start forwarding thread
-        import threading
-
         self._forward_thread = threading.Thread(target=self._forward_loop, daemon=True)
         self._forward_thread.start()
 
@@ -532,8 +531,6 @@ class SSHTunnel:
 
     def _forward_loop(self) -> None:
         """Accept connections and forward them through SSH."""
-        import threading
-
         while self._running:
             try:
                 client_socket, addr = self._server_socket.accept()

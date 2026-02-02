@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
 
 from prisma import Prisma
+
 from ragtime.config import settings
 from ragtime.core.logging import get_logger
 

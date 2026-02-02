@@ -41,6 +41,7 @@ from ragtime.indexer.vector_utils import (
     ensure_pgvector_extension,
     get_embeddings_model,
 )
+from ragtime.indexer.vector_utils import PDM_COLUMNS, search_pgvector_embeddings
 
 # pylint: disable=not-callable
 
@@ -1371,8 +1372,6 @@ async def search_pdm_index(
     Returns:
         Formatted string with matching PDM documents
     """
-    from ragtime.indexer.vector_utils import PDM_COLUMNS, search_pgvector_embeddings
-
     try:
         # Get embedding model
         from ragtime.core.app_settings import get_app_settings

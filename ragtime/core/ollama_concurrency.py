@@ -19,6 +19,7 @@ Usage:
 import asyncio
 from typing import Optional
 
+from ragtime.core.app_settings import get_app_settings
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -35,8 +36,6 @@ async def _get_concurrency_limit() -> int:
     Returns:
         Maximum concurrent Ollama vision OCR requests (default: 1)
     """
-    from ragtime.core.app_settings import get_app_settings
-
     try:
         settings = await get_app_settings()
         limit = settings.get("ocr_concurrency_limit", 1)

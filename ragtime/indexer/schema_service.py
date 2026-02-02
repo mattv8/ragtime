@@ -19,12 +19,18 @@ Each table becomes one embedding chunk containing:
 import asyncio
 import hashlib
 import json
+import subprocess
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
+from ragtime.core.ssh import (
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.indexer.models import (
     SchemaIndexConfig,
     SchemaIndexJob,
@@ -34,6 +40,11 @@ from ragtime.indexer.models import (
 )
 from ragtime.indexer.repository import repository
 from ragtime.indexer.utils import safe_tool_name
+from ragtime.indexer.vector_utils import (
+    SCHEMA_COLUMNS,
+    get_embeddings_model,
+    search_pgvector_embeddings,
+)
 from ragtime.indexer.vector_utils import (
     ensure_embedding_column,
     ensure_pgvector_extension,
@@ -555,8 +566,6 @@ class SchemaIndexerService:
         self, connection_config: dict
     ) -> List[TableSchemaInfo]:
         """Introspect PostgreSQL database schema."""
-        import subprocess
-
         host = connection_config.get("host", "")
         port = connection_config.get("port", 5432)
         user = connection_config.get("user", "")
@@ -651,8 +660,6 @@ class SchemaIndexerService:
         container: str,
     ) -> List[dict]:
         """Execute a PostgreSQL query and return results as list of dicts."""
-        import subprocess
-
         # Escape the query for shell
         escaped_query = query.replace("'", "'\\''")
 
@@ -894,8 +901,6 @@ class SchemaIndexerService:
         container: str,
     ) -> List[dict]:
         """Execute a simple PostgreSQL query with known columns."""
-        import subprocess
-
         escaped_query = query.replace("'", "'\\''")
 
         if host:
@@ -1136,12 +1141,6 @@ class SchemaIndexerService:
             import pymysql.cursors
         except ImportError:
             raise RuntimeError("pymysql not installed for MySQL schema introspection")
-
-        from ragtime.core.ssh import (
-            SSHTunnel,
-            build_ssh_tunnel_config,
-            ssh_tunnel_config_from_dict,
-        )
 
         host = connection_config.get("host", "")
         port = connection_config.get("port", 3306)
@@ -1777,12 +1776,6 @@ async def search_schema_index(
     Returns:
         Formatted string with matching table schemas
     """
-    from ragtime.indexer.vector_utils import (
-        SCHEMA_COLUMNS,
-        get_embeddings_model,
-        search_pgvector_embeddings,
-    )
-
     try:
         # Get embedding model
         settings = await repository.get_settings()

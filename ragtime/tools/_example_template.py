@@ -15,9 +15,9 @@ at http://localhost:8001/indexes/ui
 
 import asyncio
 from typing import Optional
-from pydantic import BaseModel, Field
 
 from langchain_core.tools import StructuredTool
+from pydantic import BaseModel, Field
 
 from ragtime.config import settings
 from ragtime.core.logging import get_logger

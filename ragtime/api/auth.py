@@ -4,9 +4,11 @@ Authentication API routes.
 Endpoints for login, logout, user info, and LDAP configuration.
 """
 
+import base64
 import hashlib
 import time
 from typing import Optional
+from urllib.parse import urlparse
 
 from fastapi import (
     APIRouter,
@@ -18,11 +20,11 @@ from fastapi import (
     status,
 )
 from fastapi.responses import HTMLResponse, RedirectResponse
+from prisma import Json
 from prisma.enums import UserRole
 from prisma.models import User
 from pydantic import BaseModel, Field
 
-from prisma import Json
 from ragtime.config.settings import settings
 from ragtime.core.auth import (
     authenticate,
@@ -67,10 +69,6 @@ def validate_redirect_uri(redirect_uri: str) -> bool:
     - http://localhost:<port>/<path>
     - http://[::1]:<port>/<path>
     """
-    from urllib.parse import urlparse
-
-    from ragtime.config.settings import settings
-
     try:
         parsed = urlparse(redirect_uri)
 
@@ -428,8 +426,6 @@ def _verify_pkce(code_verifier: str, code_challenge: str) -> bool:
     # S256: BASE64URL(SHA256(code_verifier)) == code_challenge
     digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
     # Base64url encoding without padding
-    import base64
-
     computed = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
     return computed == code_challenge
 

@@ -10,6 +10,7 @@ This service handles:
 """
 
 import asyncio
+import json
 import mimetypes
 import os
 import shutil
@@ -17,13 +18,18 @@ import stat
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
+from prisma.errors import TableNotFoundError
+
+from ragtime.core.app_settings import get_app_settings
 from ragtime.core.database import get_db
 from ragtime.core.file_constants import (
     DOCUMENT_EXTENSIONS,
@@ -31,12 +37,21 @@ from ragtime.core.file_constants import (
     UNPARSEABLE_BINARY_EXTENSIONS,
     get_embedding_safety_margin,
 )
+from ragtime.core.file_constants import OCR_EXTENSIONS
 from ragtime.core.logging import get_logger
+from ragtime.indexer.chunking import (
+    _chunk_with_chonkie_code,
+    _chunk_with_recursive,
+    chunk_semantic_segments,
+)
+from ragtime.indexer.chunking import chunk_semantic_segments
 from ragtime.indexer.document_parser import (
     OCR_EXTENSIONS,
     is_ocr_supported,
     is_supported_document,
 )
+from ragtime.indexer.document_parser import extract_image_structured_async
+from ragtime.indexer.document_parser import extract_text_from_file_async
 from ragtime.indexer.file_utils import compute_file_hash, matches_pattern
 from ragtime.indexer.models import (
     FilesystemAnalysisJob,
@@ -50,6 +65,7 @@ from ragtime.indexer.models import (
     OcrMode,
     VectorStoreType,
 )
+from ragtime.indexer.repository import IndexerRepository
 from ragtime.indexer.repository import repository
 from ragtime.indexer.vector_backends import (
     VectorStoreBackend,
@@ -518,8 +534,6 @@ class FilesystemIndexerService:
             limit: Maximum number of files to collect
             progress_callback: Optional callback(files_found, current_dir) for progress updates
         """
-        import os
-
         base_path = Path(config.base_path)
         matching_files: List[Path] = []
         max_size_bytes = config.max_file_size_mb * 1024 * 1024
@@ -837,8 +851,6 @@ class FilesystemIndexerService:
             The new job if successful, None if the original job wasn't found
             or wasn't in a retryable state.
         """
-        from ragtime.indexer.repository import IndexerRepository
-
         repo = IndexerRepository()
 
         # Get the failed job
@@ -1044,8 +1056,6 @@ class FilesystemIndexerService:
             )
 
         # Legacy pgvector path (backward compatibility)
-        import json
-
         db = await get_db()
 
         # Ensure embedding column exists with correct dimensions
@@ -1721,13 +1731,6 @@ class FilesystemIndexerService:
         Text extraction (PDF, DOCX, images with OCR, etc.) is handled by
         document_parser via _read_file_content() before chunking.
         """
-        from ragtime.core.file_constants import OCR_EXTENSIONS
-        from ragtime.indexer.chunking import (
-            _chunk_with_chonkie_code,
-            _chunk_with_recursive,
-            chunk_semantic_segments,
-        )
-
         try:
             file_path_str = str(file_path)
             metadata = {"source": file_path_str}
@@ -1815,10 +1818,6 @@ class FilesystemIndexerService:
         Returns:
             List of Document objects, or empty list if extraction fails
         """
-        from ragtime.core.app_settings import get_app_settings
-        from ragtime.indexer.chunking import chunk_semantic_segments
-        from ragtime.indexer.document_parser import extract_image_structured_async
-
         # Get Ollama base URL
         app_settings = await get_app_settings()
         ollama_base_url = app_settings.get("ollama_base_url", "http://localhost:11434")
@@ -1876,9 +1875,6 @@ class FilesystemIndexerService:
 
         Uses async extraction to support Ollama vision OCR.
         """
-        from ragtime.core.app_settings import get_app_settings
-        from ragtime.indexer.document_parser import extract_text_from_file_async
-
         # Get Ollama base URL from app settings for vision OCR
         ollama_base_url = None
         if ocr_mode == "ollama":
@@ -1944,9 +1940,6 @@ class FilesystemIndexerService:
         config: FilesystemConnectionConfig,
     ) -> None:
         """Run filesystem analysis with progress tracking."""
-        import time
-        from collections import defaultdict
-
         start_time = time.time()
 
         try:
@@ -2289,10 +2282,6 @@ class FilesystemIndexerService:
             index_name: Name of the index
             vector_store_type: Vector store type (auto-detects if not specified)
         """
-        from prisma.errors import TableNotFoundError
-
-        from ragtime.core.app_settings import get_app_settings
-
         db = await get_db()
         app_settings = await get_app_settings()
 

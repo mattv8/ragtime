@@ -21,7 +21,11 @@ OCR Modes:
 - ollama: Semantic OCR with vision models (slower, better understanding)
 """
 
+import email
 import io
+import subprocess
+import time
+from email.policy import default
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -31,6 +35,11 @@ from ragtime.core.file_constants import (
     RAW_CAMERA_EXTENSIONS,
 )
 from ragtime.core.logging import get_logger
+from ragtime.core.vision_models import (
+    VisionOcrResult,
+    extract_text_with_vision_structured,
+)
+from ragtime.core.vision_models import extract_text_with_vision
 
 logger = get_logger(__name__)
 
@@ -149,11 +158,6 @@ async def extract_image_structured_async(
     Returns:
         VisionOcrResult with structured semantic data, or None if extraction fails
     """
-    from ragtime.core.vision_models import (
-        VisionOcrResult,
-        extract_text_with_vision_structured,
-    )
-
     suffix = file_path.suffix.lower()
 
     if suffix not in OCR_EXTENSIONS:
@@ -335,8 +339,6 @@ def _extract_doc_legacy(file_path: Path, content: bytes) -> str:
     """Extract text from legacy Word DOC file."""
     # Legacy .doc files are more complex
     # Try antiword if available, otherwise skip
-    import subprocess
-
     try:
         result = subprocess.run(
             ["antiword", str(file_path)], capture_output=True, text=True, timeout=30
@@ -604,9 +606,6 @@ def _extract_epub(content: bytes) -> str:
 
 def _extract_eml(content: bytes) -> str:
     """Extract text from email EML file."""
-    import email
-    from email.policy import default
-
     try:
         msg = email.message_from_bytes(content, policy=default)
         text_parts = []
@@ -802,10 +801,6 @@ async def _extract_image_vision_ocr(
     Returns:
         Extracted text or image classification
     """
-    import time
-
-    from ragtime.core.vision_models import extract_text_with_vision
-
     start_time = time.time()
 
     try:

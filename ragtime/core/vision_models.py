@@ -30,6 +30,7 @@ from ragtime.core.ollama import (
     is_vision_model_by_capability,
     supports_structured_output,
 )
+from ragtime.core.ollama_concurrency import get_ollama_semaphore
 
 logger = get_logger(__name__)
 
@@ -601,8 +602,6 @@ async def extract_text_with_vision(
     image_b64 = base64.b64encode(processed_content).decode("utf-8")
 
     # Use centralized semaphore to limit concurrent Ollama vision requests
-    from ragtime.core.ollama_concurrency import get_ollama_semaphore
-
     semaphore = await get_ollama_semaphore()
 
     try:
@@ -819,8 +818,6 @@ async def extract_text_with_vision_structured(
     image_b64 = base64.b64encode(processed_content).decode("utf-8")
 
     # Use centralized semaphore to limit concurrent Ollama vision requests
-    from ragtime.core.ollama_concurrency import get_ollama_semaphore
-
     semaphore = await get_ollama_semaphore()
 
     try:

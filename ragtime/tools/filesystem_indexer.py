@@ -12,7 +12,10 @@ from typing import Optional
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from ragtime.core.app_settings import get_app_settings
 from ragtime.core.logging import get_logger
+from ragtime.indexer.vector_backends import get_faiss_backend, get_pgvector_backend
+from ragtime.indexer.vector_utils import get_embeddings_model
 
 logger = get_logger(__name__)
 
@@ -59,9 +62,6 @@ async def search_filesystem_index(
         max_results: Maximum number of results to return (1-50)
         max_chars_per_result: Maximum characters per result (0 for full content)
     """
-    from ragtime.core.app_settings import get_app_settings
-    from ragtime.indexer.vector_backends import get_faiss_backend, get_pgvector_backend
-
     try:
         app_settings = await get_app_settings()
 
@@ -128,8 +128,6 @@ async def search_filesystem_index(
 
 async def _get_query_embedding(query: str, app_settings: dict) -> Optional[list]:
     """Generate embedding for the search query using configured provider."""
-    from ragtime.indexer.vector_utils import get_embeddings_model
-
     try:
         embeddings = await get_embeddings_model(
             app_settings,

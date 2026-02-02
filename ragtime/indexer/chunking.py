@@ -14,14 +14,19 @@ Text extraction from documents (PDF, DOCX, images, etc.) is handled by
 document_parser.py BEFORE this module is called. This module only chunks text.
 """
 
+import asyncio
 import multiprocessing
 import os
 import warnings
 from concurrent.futures import ProcessPoolExecutor
 from typing import Callable, Dict, List, Optional, Tuple
 
+from chonkie import CodeChunker, OverlapRefinery
+from chonkie import OverlapRefinery, RecursiveChunker
+from chonkie import RecursiveChunker
 from langchain_core.documents import Document
 
+from ragtime.core.file_constants import LANG_MAPPING
 from ragtime.core.logging import get_logger
 
 # Suppress Chonkie warnings we intentionally trigger:
@@ -239,8 +244,6 @@ def _resolve_language(key: str) -> str | None | str:
         - None if content should use RecursiveChunker
         - "__unknown__" if no mapping exists
     """
-    from ragtime.core.file_constants import LANG_MAPPING
-
     key_lower = key.lower()
 
     # Check unified mapping first
@@ -334,8 +337,6 @@ def _chunk_with_chonkie_code(
             header = _create_chunk_header(source_path, imports, 0, 1)
             return [Document(page_content=header + text, metadata=new_meta)]
         return [Document(page_content=text, metadata=new_meta)]
-
-    from chonkie import CodeChunker, OverlapRefinery
 
     # Try to determine the language for tree-sitter
     # Priority: 1) file extension/name mapping, 2) auto-detection with Magika
@@ -489,8 +490,6 @@ def _chunk_with_recursive(
         new_meta = metadata.copy()
         new_meta["chunker"] = "no_chunk_small"
         return [Document(page_content=text, metadata=new_meta)]
-
-    from chonkie import RecursiveChunker
 
     # min_characters_per_chunk needs adjustment for token mode
     min_chars = 20 if use_tokens else 50
@@ -657,8 +656,6 @@ async def chunk_documents_parallel(
     """
     Chunk documents in parallel processes using Chonkie/Unstructured.
     """
-    import asyncio
-
     if not documents:
         return []
 
@@ -739,8 +736,6 @@ def rechunk_oversized_content(
     if metadata is None:
         metadata = {}
 
-    from chonkie import OverlapRefinery, RecursiveChunker
-
     # Account for overlap in the chunk size - overlap adds tokens to each chunk
     # so we need to reduce the base chunk size
     effective_chunk_size = max(100, safe_token_limit - chunk_overlap)
@@ -796,8 +791,6 @@ def rechunk_oversized_text(
     Returns:
         List of text strings, each within the token limit
     """
-    from chonkie import OverlapRefinery, RecursiveChunker
-
     # Account for overlap in the chunk size
     effective_chunk_size = max(100, safe_token_limit - chunk_overlap)
 

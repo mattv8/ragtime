@@ -3,6 +3,7 @@ RAG Components - FAISS Vector Store and LangChain Agent setup.
 """
 
 import asyncio
+import fnmatch
 import os
 import re
 import resource
@@ -36,6 +37,7 @@ from ragtime.core.security import (
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
 from ragtime.core.ssh import (
     SSHConfig,
+    SSHTunnel,
     build_ssh_tunnel_config,
     execute_ssh_command,
     expand_env_vars_via_ssh,
@@ -45,6 +47,7 @@ from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
+from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
 from ragtime.tools import get_all_tools, get_enabled_tools
 from ragtime.tools.chart import create_chart_tool
 from ragtime.tools.datatable import create_datatable_tool
@@ -574,10 +577,6 @@ class RAGComponents:
         Note: Since filesystem and document indexes share the same /data/ folder,
         we skip any indexes that exist in index_metadata (those are document indexes).
         """
-        import time
-
-        from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
-
         if not self._embedding_model:
             return
 
@@ -1742,7 +1741,6 @@ class RAGComponents:
             target_indexes = [index_name] if index_name else index_names
 
             for idx_name in target_indexes:
-                retriever = self.retrievers.get(idx_name)
                 faiss_db = self.faiss_dbs.get(idx_name)
 
                 if not faiss_db:
@@ -1830,8 +1828,6 @@ class RAGComponents:
             index_name: str = "", pattern: str = "", limit: int = 50
         ) -> str:
             """List all indexed files in a repository."""
-            import fnmatch
-
             results = []
             target_indexes = [index_name] if index_name else index_names
 

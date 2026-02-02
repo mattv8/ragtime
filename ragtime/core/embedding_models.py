@@ -13,6 +13,7 @@ from typing import Optional
 import httpx
 
 from ragtime.core.logging import get_logger
+from ragtime.core.ollama import get_model_embedding_dimension
 
 logger = get_logger(__name__)
 
@@ -237,6 +238,4 @@ async def get_ollama_model_dimensions(
     Returns:
         The embedding dimension if found, None otherwise
     """
-    from ragtime.core.ollama import get_model_embedding_dimension
-
     return await get_model_embedding_dimension(model_name, ollama_base_url)

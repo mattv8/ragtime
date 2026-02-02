@@ -13,15 +13,21 @@ Features:
 - Extensible architecture for adding new tool types
 """
 
+import argparse
 import asyncio
+import logging
+import sys
 from typing import Any
 
 from mcp.server import Server
 from mcp.types import TextContent, Tool
 
 from ragtime.core.app_settings import get_app_settings
+from ragtime.core.database import connect_db, disconnect_db
+from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 from ragtime.mcp.tools import McpRouteFilter, MCPToolAdapter, mcp_tool_adapter
+from ragtime.rag import rag
 
 logger = get_logger(__name__)
 
@@ -167,8 +173,6 @@ async def get_custom_route_server(
         Tuple of (Server, MCPToolAdapter, require_auth, auth_password, auth_method, allowed_group)
         or None if route not found
     """
-    from ragtime.core.database import get_db
-
     # Check cache first
     if route_path in _custom_route_servers:
         adapter = _custom_route_adapters.get(route_path, mcp_tool_adapter)
@@ -253,8 +257,6 @@ async def get_default_route_filtered_server(
     Returns:
         Tuple of (Server, MCPToolAdapter) or None if filter not found
     """
-    from ragtime.core.database import get_db
-
     # Check cache first
     if filter_id in _default_filter_servers:
         adapter = _default_filter_adapters.get(filter_id, mcp_tool_adapter)
@@ -317,9 +319,6 @@ async def run_mcp_server(transport: str = "stdio") -> None:
     Args:
         transport: "stdio" for Claude Desktop, "sse" for web clients
     """
-    from ragtime.core.database import connect_db, disconnect_db
-    from ragtime.rag import rag
-
     logger.info(f"Starting MCP server with {transport} transport")
 
     # Initialize database connection
@@ -355,9 +354,6 @@ async def run_mcp_server(transport: str = "stdio") -> None:
 
 def main() -> None:
     """Entry point for running MCP server from command line."""
-    import argparse
-    import sys
-
     parser = argparse.ArgumentParser(description="Ragtime MCP Server")
     parser.add_argument(
         "--transport",
@@ -368,8 +364,6 @@ def main() -> None:
     args = parser.parse_args()
 
     # Set up basic logging for standalone mode
-    import logging
-
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",

@@ -9,6 +9,7 @@ Features:
 """
 
 import os
+import socket
 import subprocess
 from pathlib import Path
 
@@ -397,8 +398,6 @@ def _validate_ssl_files(result: SSLValidationResult) -> None:
 
 def _generate_self_signed_cert(cert_path: Path, key_path: Path) -> None:
     """Generate a self-signed SSL certificate using openssl."""
-    import socket
-
     cert_path.parent.mkdir(parents=True, exist_ok=True)
     hostname = socket.gethostname()
     subject = f"/CN={hostname}/O=Ragtime/OU=Self-Signed"

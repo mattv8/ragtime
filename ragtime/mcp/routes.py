@@ -31,6 +31,9 @@ from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
 from ragtime.core.app_settings import get_app_settings
+from ragtime.core.auth import validate_session
+from ragtime.core.database import get_db
+from ragtime.core.encryption import decrypt_secret
 from ragtime.core.logging import get_logger
 from ragtime.core.security import require_admin
 from ragtime.mcp.server import (
@@ -224,8 +227,6 @@ async def _validate_bearer_token(scope: Scope) -> bool:
     Returns:
         True if valid, False otherwise
     """
-    from ragtime.core.auth import validate_session
-
     # Get Authorization header
     headers = dict(scope.get("headers", []))
     auth_header = headers.get(b"authorization", b"").decode()
@@ -261,9 +262,6 @@ async def _validate_oauth2_token(
         LDAP group membership. Regular local users are denied if group restriction
         is configured.
     """
-    from ragtime.core.auth import validate_session
-    from ragtime.core.database import get_db
-
     # Get Authorization header
     headers = dict(scope.get("headers", []))
     auth_header = headers.get(b"authorization", b"").decode()
@@ -410,9 +408,6 @@ async def _get_user_matching_filter(scope: Scope) -> str | None:
     Returns:
         Filter ID if a matching filter is found, None otherwise (show all tools)
     """
-    from ragtime.core.auth import validate_session
-    from ragtime.core.database import get_db
-
     logger.debug("_get_user_matching_filter: Starting filter check")
 
     # Get Authorization header
@@ -583,8 +578,6 @@ async def _validate_route_password(scope: Scope, encrypted_password: str) -> boo
     Returns:
         True if valid, False otherwise
     """
-    from ragtime.core.encryption import decrypt_secret
-
     # Get headers
     headers = dict(scope.get("headers", []))
 
@@ -973,8 +966,6 @@ async def list_mcp_routes_debug(_user: User = Depends(require_admin)):
 
     Returns configured custom routes and their settings.
     """
-    from ragtime.core.database import get_db
-
     db = await get_db()
     routes = await db.mcprouteconfig.find_many(
         order={"createdAt": "desc"},

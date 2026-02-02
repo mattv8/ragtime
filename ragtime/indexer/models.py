@@ -2,12 +2,19 @@
 Indexer data models and schemas.
 """
 
+
+import hashlib
+import json
 from datetime import datetime
 from enum import Enum
 from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from ragtime.core.embedding_models import (
+    get_embedding_models,
+    get_model_dimensions_sync,
+)
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -694,11 +701,6 @@ class AppSettings(BaseModel):
         Returns:
             List of configuration warnings
         """
-        from ragtime.core.embedding_models import (
-            get_embedding_models,
-            get_model_dimensions_sync,
-        )
-
         warnings: List["ConfigurationWarning"] = []
 
         # Fetch LiteLLM model data for intelligent checks
@@ -2276,9 +2278,6 @@ class PdmDocumentInfo(BaseModel):
 
     def compute_metadata_hash(self) -> str:
         """Compute a hash of the document metadata for change detection."""
-        import hashlib
-        import json
-
         data = {
             "filename": self.filename,
             "revision_no": self.revision_no,

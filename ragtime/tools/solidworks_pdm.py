@@ -20,6 +20,7 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from ragtime.core.logging import get_logger
+from ragtime.indexer.pdm_service import search_pdm_index
 
 logger = get_logger(__name__)
 
@@ -61,8 +62,6 @@ async def execute_pdm_search(
     Returns:
         Formatted string with matching PDM documents
     """
-    from ragtime.indexer.pdm_service import search_pdm_index
-
     logger.info(f"PDM Search: {query[:100]}...")
     if document_type:
         logger.debug(f"  Filter: document_type={document_type}")

@@ -7,6 +7,7 @@ This module centralizes:
 - Embedding dimension warnings
 """
 
+import asyncio
 from typing import Any, Dict, List, Mapping, Optional
 
 from ragtime.core.database import get_db
@@ -217,8 +218,6 @@ async def embed_documents_subbatched(
     Returns:
         List of embedding vectors matching the input texts
     """
-    import asyncio
-
     log = logger_override or logger
 
     if not texts:

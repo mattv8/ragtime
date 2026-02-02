@@ -9,14 +9,16 @@ Supports:
 - Role-based access control (user/admin)
 """
 
+import asyncio
 import hashlib
+import re
 import ssl
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-from ldap3 import AUTO_BIND_NO_TLS  # type: ignore[import-untyped]
 from ldap3 import ALL, AUTO_BIND_TLS_BEFORE_BIND, SUBTREE, Connection, Server, Tls
+from ldap3 import AUTO_BIND_NO_TLS  # type: ignore[import-untyped]
 from ldap3.core.exceptions import (  # type: ignore[import-untyped]
     LDAPBindError,
     LDAPException,
@@ -324,9 +326,6 @@ async def discover_ldap_structure(
 
     Uses asyncio executor with timeout to prevent blocking the event loop.
     """
-    import asyncio
-    import re
-
     # Parse host and port from server URL for pre-check
     match = re.match(r"ldaps?://([^:]+)(?::(\d+))?", server_url)
     if not match:

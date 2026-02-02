@@ -7,18 +7,33 @@ from __future__ import annotations
 import asyncio
 import importlib
 import io
+import json
 import os
+import re
+import shlex
 import shutil
+import socket
+import subprocess
+import tempfile
+import time
 import zipfile
+from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional
 
 import httpx
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
 from ragtime.core.app_settings import invalidate_settings_cache
+from ragtime.core.embedding_models import (
+    OPENAI_EMBEDDING_PRIORITY,
+    get_embedding_models,
+)
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.git import check_repo_visibility as git_check_visibility
@@ -29,7 +44,12 @@ from ragtime.core.model_limits import (
     get_context_limit,
     get_output_limit,
     supports_function_calling,
+    update_model_function_calling,
+    update_model_limit,
 )
+from ragtime.core.ollama import get_model_details, is_reachable
+from ragtime.core.ollama import list_models
+from ragtime.core.ollama import list_models as ollama_list_models
 from ragtime.core.security import get_current_user, require_admin
 from ragtime.core.sql_utils import (
     MssqlConnectionError,
@@ -37,39 +57,81 @@ from ragtime.core.sql_utils import (
     mssql_connect,
     mysql_connect,
 )
+from ragtime.core.ssh import (
+    SSHConfig,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    ssh_tunnel_config_from_dict,
+    test_ssh_connection,
+)
 from ragtime.core.validation import require_valid_embedding_provider
+from ragtime.core.vision_models import list_vision_models
+from ragtime.indexer.background_tasks import background_task_service
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import (
     AnalyzeIndexRequest,
     AppSettings,
+    ChatMessage,
+    ChatTaskResponse,
+    ChatTaskStatus,
     CheckRepoVisibilityRequest,
     ConfigurationWarning,
+    Conversation,
+    ConversationResponse,
+    CreateConversationRequest,
     CreateIndexRequest,
+    CreateToolConfigRequest,
+    EmbeddingStatus,
     FetchBranchesRequest,
     FetchBranchesResponse,
+    FilesystemAnalysisJobResponse,
     FilesystemConnectionConfig,
+    FilesystemIndexJobResponse,
     IndexAnalysisResult,
     IndexConfig,
     IndexInfo,
     IndexJobResponse,
     IndexStatus,
+    MssqlDiscoverRequest,
+    MssqlDiscoverResponse,
+    MysqlDiscoverRequest,
+    MysqlDiscoverResponse,
+    OcrMode,
+    PdmDiscoverRequest,
+    PdmDiscoverResponse,
     PdmIndexJobResponse,
+    PostgresDiscoverRequest,
+    PostgresDiscoverResponse,
     RepoVisibilityResponse,
     RetryVisualizationRequest,
     RetryVisualizationResponse,
     SchemaIndexJobResponse,
+    SendMessageRequest,
+    ToolConfig,
+    ToolTestRequest,
+    ToolType,
+    TriggerFilesystemIndexRequest,
     TriggerPdmIndexRequest,
     TriggerSchemaIndexRequest,
     UpdateSettingsRequest,
+    UpdateToolConfigRequest,
+    VectorStoreType,
 )
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
 from ragtime.indexer.service import indexer
+from ragtime.indexer.title_generation import schedule_title_generation
 from ragtime.indexer.utils import safe_tool_name
+from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 from ragtime.indexer.vector_utils import ensure_pgvector_extension
 from ragtime.mcp.server import notify_tools_changed
 from ragtime.rag import rag
+from ragtime.tools.chart import create_chart
+from ragtime.tools.datatable import create_datatable
+from ragtime.tools.mssql import test_mssql_connection
+from ragtime.tools.mysql import test_mysql_connection
 
 if TYPE_CHECKING:
     from prisma.models import User
@@ -424,8 +486,6 @@ async def upload_and_index(
         p.strip() for p in exclude_patterns.split(",") if p.strip()
     ]
 
-    from ragtime.indexer.models import OcrMode, VectorStoreType
-
     config = IndexConfig(
         name=name,
         description=description,
@@ -557,8 +617,6 @@ async def reindex_from_git(
     )
 
     # Handle legacy enable_ocr field and convert to ocr_mode
-    from ragtime.indexer.models import OcrMode
-
     ocr_mode_str = config_data.get("ocr_mode", "disabled")
     if ocr_mode_str == "disabled" and config_data.get("enable_ocr", False):
         ocr_mode_str = "tesseract"  # Legacy compatibility
@@ -1159,8 +1217,6 @@ async def download_filesystem_faiss_index(
     Returns a zip file containing the index.faiss and index.pkl files for a
     filesystem index that uses FAISS as its vector store.
     """
-    from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
-
     # Validate index name (prevent path traversal)
     if "/" in name or "\\" in name or ".." in name:
         raise HTTPException(status_code=400, detail="Invalid index name")
@@ -1302,9 +1358,6 @@ async def update_settings(
     return UpdateSettingsResponse(settings=result, embedding_warning=embedding_warning)
 
 
-from ragtime.indexer.models import EmbeddingStatus
-
-
 @router.get(
     "/settings/embedding-status", response_model=EmbeddingStatus, tags=["Settings"]
 )
@@ -1346,23 +1399,6 @@ async def get_embedding_status(_user: User = Depends(require_admin)):
 # -----------------------------------------------------------------------------
 # Tool Configuration Endpoints (Admin only)
 # -----------------------------------------------------------------------------
-
-from ragtime.indexer.models import (
-    CreateToolConfigRequest,
-    MssqlDiscoverRequest,
-    MssqlDiscoverResponse,
-    MysqlDiscoverRequest,
-    MysqlDiscoverResponse,
-    PdmDiscoverRequest,
-    PdmDiscoverResponse,
-    PostgresDiscoverRequest,
-    PostgresDiscoverResponse,
-    ToolConfig,
-    ToolTestRequest,
-    ToolType,
-    UpdateToolConfigRequest,
-    VectorStoreType,
-)
 
 
 class SSHKeyPairResponse(BaseModel):
@@ -1475,8 +1511,6 @@ async def check_tool_heartbeats(_user: User = Depends(require_admin)):
     Returns quick connectivity status without updating database test results.
     Designed for frequent polling (every 10-30 seconds).
     """
-    from datetime import datetime, timezone
-
     tools = await repository.list_tool_configs(enabled_only=True)
     statuses: dict[str, HeartbeatStatus] = {}
 
@@ -1940,10 +1974,6 @@ async def discover_postgres_databases(
     Connects to the server and lists all accessible databases.
     Supports SSH tunnel for remote database access.
     """
-    import subprocess
-
-    from ragtime.core.ssh import SSHTunnel, ssh_tunnel_config_from_dict
-
     tunnel = None
     try:
         # Determine host and port (may be overridden by SSH tunnel)
@@ -2043,8 +2073,6 @@ async def discover_mssql_databases(
     Connects to the server and lists all accessible databases.
     Supports SSH tunnel for remote database access.
     """
-    from ragtime.core.ssh import SSHTunnel, ssh_tunnel_config_from_dict
-
     tunnel = None
 
     def discover_databases(
@@ -2148,8 +2176,6 @@ async def discover_mysql_databases(
     Connects to the server and lists all accessible databases.
     Supports direct connections, Docker containers, and SSH tunnels.
     """
-    from ragtime.core.ssh import SSHTunnel, ssh_tunnel_config_from_dict
-
     tunnel = None
 
     def discover_databases(
@@ -2385,8 +2411,6 @@ async def discover_pdm_schema(
     Returns available file extensions and variable names.
     Supports SSH tunnel connections for remote database access.
     """
-    from ragtime.core.ssh import SSHTunnel, ssh_tunnel_config_from_dict
-
     tunnel = None
     try:
         # Set up connection parameters
@@ -2538,9 +2562,6 @@ async def generate_ssh_keypair(
         comment: Comment for the key (appears in public key)
         passphrase: Optional passphrase to encrypt the private key
     """
-    import subprocess
-    import tempfile
-
     try:
         # Create temp directory for key generation
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2605,7 +2626,6 @@ async def generate_ssh_keypair(
 # =============================================================================
 # Filesystem Indexer Routes (must be before {tool_id} routes)
 # =============================================================================
-from ragtime.indexer.models import FilesystemConnectionConfig
 
 
 class FilesystemTestResponse(BaseModel):
@@ -2720,12 +2740,6 @@ def _start_ssh_tunnel_if_enabled(
     config: dict, host: str, port: int
 ) -> tuple[Optional["SSHTunnel"], str, int]:
     """Start SSH tunnel if enabled and return (tunnel, host, port)."""
-    from ragtime.core.ssh import (
-        SSHTunnel,
-        build_ssh_tunnel_config,
-        ssh_tunnel_config_from_dict,
-    )
-
     tunnel_cfg_dict = build_ssh_tunnel_config(config, host, port)
     if not tunnel_cfg_dict:
         return None, host, port
@@ -2740,8 +2754,6 @@ def _start_ssh_tunnel_if_enabled(
 
 async def _heartbeat_postgres(config: dict) -> ToolTestResponse:
     """Quick PostgreSQL heartbeat check."""
-    import subprocess
-
     host = config.get("host", "")
     port = _coerce_int(config.get("port", 5432), 5432)
     user = config.get("user", "")
@@ -2807,9 +2819,6 @@ async def _heartbeat_postgres(config: dict) -> ToolTestResponse:
 
 async def _heartbeat_mysql(config: dict) -> ToolTestResponse:
     """Quick MySQL/MariaDB heartbeat check."""
-    from ragtime.core.ssh import build_ssh_tunnel_config
-    from ragtime.tools.mysql import test_mysql_connection
-
     host = config.get("host", "")
     port = _coerce_int(config.get("port", 3306), 3306)
     user = config.get("user", "")
@@ -2843,9 +2852,6 @@ async def _heartbeat_mysql(config: dict) -> ToolTestResponse:
 
 async def _heartbeat_mssql(config: dict) -> ToolTestResponse:
     """Quick MSSQL heartbeat check."""
-    from ragtime.core.ssh import build_ssh_tunnel_config
-    from ragtime.tools.mssql import test_mssql_connection
-
     host = config.get("host", "")
     port = _coerce_int(config.get("port", 1433), 1433)
     user = config.get("user", "")
@@ -2875,8 +2881,6 @@ async def _heartbeat_mssql(config: dict) -> ToolTestResponse:
 
 async def _heartbeat_odoo(config: dict) -> ToolTestResponse:
     """Quick Odoo container/SSH heartbeat check."""
-    import subprocess
-
     mode = config.get("mode", "docker")
 
     if mode == "ssh":
@@ -2954,8 +2958,6 @@ async def _deep_ssh_credential_check(config: dict) -> ToolTestResponse:
     This is slower but verifies that credentials are correct.
     Results are cached for 15 seconds to avoid repeated checks.
     """
-    from ragtime.core.ssh import SSHConfig, test_ssh_connection
-
     host = config.get("host", "")
     port = config.get("port", 22)
     user = config.get("user", "")
@@ -3006,8 +3008,6 @@ async def _heartbeat_ssh(config: dict) -> ToolTestResponse:
     blocking the UI while still validating that credentials are correct.
     Falls back to quick port check if cache is being refreshed.
     """
-    import time
-
     host = config.get("host", "")
     port = config.get("port", 22)
     user = config.get("user", "")
@@ -3159,10 +3159,6 @@ async def _heartbeat_pdm(config: dict) -> ToolTestResponse:
 
 async def _test_postgres_connection(config: dict) -> ToolTestResponse:
     """Test PostgreSQL connection. Supports direct, Docker container, and SSH tunnel modes."""
-    import subprocess
-
-    from ragtime.core.ssh import SSHTunnel, ssh_tunnel_config_from_dict
-
     host = config.get("host", "")
     port = config.get("port", 5432)
     user = config.get("user", "")
@@ -3359,8 +3355,6 @@ async def _test_postgres_connection(config: dict) -> ToolTestResponse:
 
 async def _test_mssql_connection(config: dict) -> ToolTestResponse:
     """Test MSSQL/SQL Server connection. Supports direct and SSH tunnel modes."""
-    from ragtime.tools.mssql import test_mssql_connection
-
     ssh_tunnel_enabled = config.get("ssh_tunnel_enabled", False)
 
     if ssh_tunnel_enabled:
@@ -3440,8 +3434,6 @@ async def _test_mssql_connection(config: dict) -> ToolTestResponse:
 
 async def _test_mysql_connection(config: dict) -> ToolTestResponse:
     """Test MySQL/MariaDB connection. Supports direct, Docker container, and SSH tunnel modes."""
-    from ragtime.tools.mysql import test_mysql_connection
-
     container = config.get("container", "")
     ssh_tunnel_enabled = config.get("ssh_tunnel_enabled", False)
 
@@ -3547,8 +3539,6 @@ async def _test_odoo_connection(config: dict) -> ToolTestResponse:
 async def _test_odoo_ssh_connection(config: dict) -> ToolTestResponse:
     """Test Odoo shell connection via SSH using Paramiko."""
 
-    from ragtime.core.ssh import SSHConfig, execute_ssh_command, test_ssh_connection
-
     ssh_host = config.get("ssh_host", "")
     ssh_port = config.get("ssh_port", 22)
     ssh_user = config.get("ssh_user", "")
@@ -3631,8 +3621,6 @@ async def _test_odoo_ssh_connection(config: dict) -> ToolTestResponse:
 
 async def _test_odoo_docker_connection(config: dict) -> ToolTestResponse:
     """Test Odoo shell connection via Docker."""
-    import subprocess
-
     container = config.get("container", "")
     database = config.get("database", "odoo")
     config_path = config.get("config_path", "")
@@ -3769,8 +3757,6 @@ async def _test_odoo_docker_connection(config: dict) -> ToolTestResponse:
 async def _test_ssh_connection(config: dict) -> ToolTestResponse:
     """Test SSH shell connection using Paramiko."""
 
-    from ragtime.core.ssh import SSHConfig, test_ssh_connection
-
     host = config.get("host", "")
     port = config.get("port", 22)
     user = config.get("user", "")
@@ -3858,9 +3844,6 @@ async def discover_docker_resources(_user: User = Depends(require_admin)):
     Returns available networks, running containers, and which containers have Odoo.
     Also detects the current ragtime container's network.
     """
-    import json
-    import subprocess
-
     networks = []
     containers = []
     current_network = None
@@ -4025,8 +4008,6 @@ async def connect_to_network(network_name: str, _user: User = Depends(require_ad
 
     This enables container-to-container communication with services on that network.
     """
-    import subprocess
-
     # Get current container name
     container_name = os.environ.get("HOSTNAME", "ragtime-dev")
 
@@ -4088,8 +4069,6 @@ async def disconnect_from_network(
 
     Used for cleanup when removing tools that required network access.
     """
-    import subprocess
-
     # Get current container name
     container_name = os.environ.get("HOSTNAME", "ragtime-dev")
 
@@ -4318,8 +4297,6 @@ async def discover_mounts(_user: User = Depends(require_admin)):
 
     Returns mounted paths and example docker-compose configuration for adding new mounts.
     """
-    import subprocess
-
     mounts = []
     hostname = os.environ.get("HOSTNAME", "")
 
@@ -4407,10 +4384,6 @@ async def browse_ssh_filesystem(
     """
     Browse a remote directory path via SSH.
     """
-    import shlex
-
-    from ragtime.core.ssh import SSHConfig, execute_ssh_command
-
     config = SSHConfig(
         host=request.host,
         user=request.user,
@@ -4610,8 +4583,6 @@ async def discover_nfs_exports(
 
     Uses showmount to list available exports on the target NFS server.
     """
-    import subprocess
-
     if not host:
         return NFSDiscoveryResponse(success=False, error="Host is required")
 
@@ -4683,8 +4654,6 @@ async def discover_smb_shares(
     """
     Discover SMB/CIFS shares from a remote server using pysmb.
     """
-    import socket
-
     if not host:
         return SMBDiscoveryResponse(success=False, error="Host is required")
 
@@ -4776,8 +4745,6 @@ async def browse_nfs_export(
     """
     Browse an NFS export using nfs-ls (userspace, no mount required).
     """
-    import subprocess
-
     if not host or not export_path:
         return BrowseResponse(
             path=path, entries=[], error="Host and export path are required"
@@ -4896,8 +4863,6 @@ async def browse_smb_share(
     """
     Browse an SMB share using pysmb (userspace, no mount required).
     """
-    import socket
-
     if not host or not share:
         return BrowseResponse(
             path=path, entries=[], error="Host and share are required"
@@ -4995,12 +4960,6 @@ async def browse_smb_share(
 # -----------------------------------------------------------------------------
 # Filesystem Indexer Endpoints (Admin only)
 # -----------------------------------------------------------------------------
-
-from ragtime.indexer.models import (
-    FilesystemAnalysisJobResponse,
-    FilesystemIndexJobResponse,
-    TriggerFilesystemIndexRequest,
-)
 
 
 class FilesystemIndexStatsResponse(BaseModel):
@@ -5475,8 +5434,6 @@ async def test_ollama_connection(
 
     Queries Ollama's /api/show endpoint to get accurate dimension info.
     """
-    from ragtime.core.ollama import list_models
-
     base_url = f"{request.protocol}://{request.host}:{request.port}"
 
     try:
@@ -5576,8 +5533,6 @@ async def get_ollama_vision_models(
     Queries Ollama's /api/show endpoint for each model and returns those
     with "vision" in their capabilities array.
     """
-    from ragtime.core.vision_models import list_vision_models
-
     base_url = f"{request.protocol}://{request.host}:{request.port}"
 
     try:
@@ -5653,11 +5608,6 @@ class EmbeddingModelsResponse(BaseModel):
 
 # OpenAI embedding models - prioritized list (from LiteLLM community data)
 # These are the recommended models for most use cases
-from ragtime.core.embedding_models import (
-    OPENAI_EMBEDDING_PRIORITY,
-    get_embedding_models,
-)
-
 OPENAI_DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
 
@@ -5831,9 +5781,6 @@ def _group_models(models: List[LLMModel], provider: str) -> List[LLMModel]:
     Does NOT remove dated versions, but marks grouping metadata.
     """
     # Use the same logic as _assign_model_groups but for LLMModel
-    import re
-    from collections import defaultdict
-
     for model in models:
         mid = model.id.lower()
         provider_patterns = MODEL_FAMILY_PATTERNS.get(provider, [])
@@ -5881,8 +5828,6 @@ def _extract_version(name: str) -> float:
     - OpenAI ID: 'gpt-4.1-mini' -> 4.1
     - Dated versions: 'gpt-4-0613' -> 4.0 (base version, no sub-version)
     """
-    import re
-
     name_lower = name.lower()
 
     # OpenAI: Extract version from gpt-X.Y pattern (e.g., gpt-4.1-mini -> 4.1)
@@ -5900,9 +5845,6 @@ def _extract_version(name: str) -> float:
 
 def _assign_model_groups(models: List[AvailableModel]) -> List[AvailableModel]:
     """Assign UI group labels to models for better organization."""
-    import re
-    from collections import defaultdict
-
     for model in models:
         mid = model.id.lower()
         provider_patterns = MODEL_FAMILY_PATTERNS.get(model.provider, [])
@@ -6099,13 +6041,6 @@ async def _fetch_anthropic_models(api_key: str) -> LLMModelsResponse:
 
 async def _fetch_ollama_llm_models(base_url: str) -> LLMModelsResponse:
     """Fetch available models from Ollama server for LLM use."""
-    from ragtime.core.model_limits import (
-        update_model_function_calling,
-        update_model_limit,
-    )
-    from ragtime.core.ollama import get_model_details, is_reachable
-    from ragtime.core.ollama import list_models as ollama_list_models
-
     try:
         # Check reachability first
         reachable, error_msg = await is_reachable(base_url)
@@ -6179,15 +6114,6 @@ async def _fetch_ollama_llm_models(base_url: str) -> LLMModelsResponse:
 # =============================================================================
 # Conversation/Chat Endpoints
 # =============================================================================
-
-from ragtime.indexer.models import (
-    ChatMessage,
-    Conversation,
-    ConversationResponse,
-    CreateConversationRequest,
-    SendMessageRequest,
-)
-from ragtime.indexer.title_generation import schedule_title_generation
 
 
 @router.get(
@@ -6576,10 +6502,6 @@ async def send_message(
     Send a message to a conversation and get a response.
     Non-streaming version.
     """
-    from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-
-    from ragtime.rag import rag
-
     # Check access
     has_access = await repository.check_conversation_access(
         conversation_id, user.id, is_admin=(user.role == "admin")
@@ -6647,14 +6569,6 @@ async def send_message_stream(
     Send a message to a conversation and stream the response.
     Returns SSE stream of tokens.
     """
-    import json
-    import time
-
-    from fastapi.responses import StreamingResponse
-    from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-
-    from ragtime.rag import rag
-
     # Check access
     has_access = await repository.check_conversation_access(
         conversation_id, user.id, is_admin=(user.role == "admin")
@@ -6919,9 +6833,6 @@ async def retry_visualization(
     For datatables, source_data should be: {"columns": [...], "rows": [...]}
     For charts, source_data should be: {"labels": [...], "datasets": [...], "chart_type": "..."}
     """
-    from ragtime.tools.chart import create_chart
-    from ragtime.tools.datatable import create_datatable
-
     # Check access
     has_access = await repository.check_conversation_access(
         conversation_id, user.id, is_admin=(user.role == "admin")
@@ -6991,8 +6902,6 @@ async def retry_visualization(
 # Background Chat Task Endpoints
 # =============================================================================
 
-from ragtime.indexer.models import ChatTaskResponse, ChatTaskStatus
-
 
 @router.post(
     "/conversations/{conversation_id}/messages/background",
@@ -7007,9 +6916,6 @@ async def send_message_background(
     Send a message to a conversation and process it in the background.
     Returns a task object that can be polled for status and results.
     """
-    from ragtime.indexer.background_tasks import background_task_service
-    from ragtime.rag import rag
-
     # Check access
     has_access = await repository.check_conversation_access(
         conversation_id, user.id, is_admin=(user.role == "admin")
@@ -7203,15 +7109,6 @@ async def stream_chat_task(
     """
     Stream updates for a chat task via SSE.
     """
-    import asyncio
-    import json
-
-    from fastapi.responses import StreamingResponse
-
-    from ragtime.core.event_bus import task_event_bus
-    from ragtime.indexer.models import ChatTaskStatus
-    from ragtime.indexer.repository import repository
-
     # Verify task exists and user has access
     task = await repository.get_chat_task(task_id)
     if not task:
@@ -7277,10 +7174,6 @@ async def conversation_events(
     """
     Subscribe to conversation events (e.g. title updates).
     """
-    import json
-
-    from ragtime.indexer.repository import repository
-
     # Check conversation access
     has_access = await repository.check_conversation_access(
         conversation_id, user.id, is_admin=(user.role == "admin")
@@ -7312,8 +7205,6 @@ async def cancel_chat_task(task_id: str):
     """
     Cancel a running chat task.
     """
-    from ragtime.indexer.background_tasks import background_task_service
-
     task = await repository.get_chat_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")

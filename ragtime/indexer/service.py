@@ -10,16 +10,23 @@ import asyncio
 import fnmatch
 import json
 import os
+import pickle
 import re
 import shutil
 import subprocess
 import uuid
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, BinaryIO, Dict, List, Optional
 
+from langchain_community.document_loaders import TextLoader
+from langchain_community.vectorstores import FAISS
+from langchain_core.documents import Document as LangChainDocument
+
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
+from ragtime.core.embedding_models import get_embedding_model_context_limit
 from ragtime.core.embedding_models import get_embedding_models
 from ragtime.core.file_constants import (
     BINARY_EXTENSIONS,
@@ -29,7 +36,11 @@ from ragtime.core.file_constants import (
     get_embedding_safety_margin,
 )
 from ragtime.core.logging import get_logger
+from ragtime.core.tokenization import count_tokens
+from ragtime.indexer.chunking import chunk_documents_parallel
+from ragtime.indexer.chunking import rechunk_oversized_content
 from ragtime.indexer.document_parser import OCR_EXTENSIONS
+from ragtime.indexer.document_parser import extract_text_from_file_async
 from ragtime.indexer.file_utils import (
     HARDCODED_EXCLUDES,
     build_authenticated_git_url,
@@ -58,6 +69,9 @@ from ragtime.indexer.models import (
     VectorStoreType,
 )
 from ragtime.indexer.repository import repository
+from ragtime.indexer.vector_utils import EMBEDDING_SUB_BATCH_SIZE
+from ragtime.indexer.vector_utils import append_embedding_dimension_warning
+from ragtime.indexer.vector_utils import get_embeddings_model
 from ragtime.tools.git_history import _is_shallow_repository
 
 logger = get_logger(__name__)
@@ -392,8 +406,6 @@ class IndexerService:
         Returns:
             Number of indexes discovered and registered
         """
-        import pickle
-
         # Get existing metadata from database
         db_metadata = await repository.list_index_metadata()
         known_names = {m.name for m in db_metadata}
@@ -557,8 +569,6 @@ class IndexerService:
 
     async def _get_embeddings(self, app_settings: AppSettings):
         """Get the configured embedding model based on app settings."""
-        from ragtime.indexer.vector_utils import get_embeddings_model
-
         # Use dict-safe access for logging (app_settings may be dict or object)
         provider = (
             app_settings.get("embedding_provider")
@@ -626,8 +636,6 @@ class IndexerService:
 
     async def _append_embedding_dimension_warning(self, warnings: List[str]) -> None:
         """Warn when configured embeddings exceed pgvector's 2000-dim index limit."""
-        from ragtime.indexer.vector_utils import append_embedding_dimension_warning
-
         await append_embedding_dimension_warning(warnings, logger_override=logger)
 
     async def get_job(self, job_id: str) -> Optional[IndexJob]:
@@ -1173,8 +1181,6 @@ class IndexerService:
         """
         Analyze a directory to estimate indexing results.
         """
-        from collections import defaultdict
-
         ocr_enabled = ocr_mode != "disabled"
         max_file_size_bytes = max_file_size_kb * 1024
 
@@ -2136,8 +2142,6 @@ class IndexerService:
         Returns:
             List of LangChain Document objects with commit information
         """
-        from langchain_core.documents import Document as LangChainDocument
-
         documents: List[LangChainDocument] = []
 
         try:
@@ -2294,9 +2298,6 @@ class IndexerService:
         self, job: IndexJob, source_dir: Path, git_token: Optional[str] = None
     ):
         """Create FAISS index from source directory."""
-        from langchain_community.document_loaders import TextLoader
-        from langchain_community.vectorstores import FAISS
-
         config = job.config
 
         # Collect all files to process (run in thread pool as rglob can be slow on large repos)
@@ -2394,10 +2395,6 @@ class IndexerService:
 
         async def load_file_async(file_path: Path) -> tuple[Path, List, str | None]:
             """Async file loading with OCR support. Returns (path, docs, error)."""
-            from langchain_core.documents import Document as LangChainDocument
-
-            from ragtime.indexer.document_parser import extract_text_from_file_async
-
             async with load_semaphore:
                 try:
                     ext_lower = file_path.suffix.lower()
@@ -2544,8 +2541,6 @@ class IndexerService:
         # Split into chunks using parallel process pool
         # This runs CPU-intensive tiktoken work in separate processes,
         # leaving the main event loop responsive for API/UI/MCP
-        from ragtime.indexer.chunking import chunk_documents_parallel
-
         chunks = await chunk_documents_parallel(
             documents=documents,
             chunk_size=config.chunk_size,
@@ -2568,18 +2563,12 @@ class IndexerService:
         )
 
         # Process in batches to show progress and throttle embedding calls
-        from ragtime.indexer.vector_utils import EMBEDDING_SUB_BATCH_SIZE
-
         batch_size = EMBEDDING_SUB_BATCH_SIZE
         batch_pause_seconds = 0.5
         max_retries = 5
         db = None
 
         # Get embedding model context limit dynamically from LiteLLM or Ollama API
-        from ragtime.core.embedding_models import get_embedding_model_context_limit
-        from ragtime.core.tokenization import count_tokens
-        from ragtime.indexer.chunking import rechunk_oversized_content
-
         max_allowed_tokens = await get_embedding_model_context_limit(
             model_name=app_settings.embedding_model,
             provider=app_settings.embedding_provider,

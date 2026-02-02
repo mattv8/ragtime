@@ -42,22 +42,29 @@ from ragtime.api.auth import oauth2_token as _oauth2_token_handler
 from ragtime.api.auth import router as auth_router
 from ragtime.api.auth import validate_redirect_uri
 from ragtime.config import settings
+from ragtime.core.auth import create_access_token, create_session, validate_session
 from ragtime.core.database import connect_db, disconnect_db, get_db
-from ragtime.core.logging import get_logger, setup_logging
-from ragtime.core.rate_limit import limiter
-
-# Import indexer routes (always available now that it's part of ragtime)
+from ragtime.core.logging import setup_logging
+from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, limiter
+from ragtime.core.ssl import setup_ssl
+from ragtime.indexer.background_tasks import background_task_service
+from ragtime.indexer.chunking import shutdown_process_pool
+from ragtime.indexer.filesystem_service import filesystem_indexer
+from ragtime.indexer.pdm_service import pdm_indexer
+from ragtime.indexer.repository import repository
 from ragtime.indexer.routes import ASSETS_DIR as INDEXER_ASSETS_DIR
 from ragtime.indexer.routes import DIST_DIR
 from ragtime.indexer.routes import router as indexer_router
+from ragtime.indexer.schema_service import schema_indexer
+from ragtime.indexer.service import indexer
 from ragtime.mcp.config_routes import default_filter_router as mcp_default_filter_router
 from ragtime.mcp.config_routes import router as mcp_config_router
-
-# Import MCP routes and transport for HTTP API access
-from ragtime.mcp.routes import get_mcp_routes, mcp_lifespan_manager, mcp_transport_route
+from ragtime.mcp.routes import get_mcp_routes, mcp_lifespan_manager
 from ragtime.mcp.routes import router as mcp_router
 from ragtime.rag import rag
 
+# Import indexer routes (always available now that it's part of ragtime)
+# Import MCP routes and transport for HTTP API access
 # Load environment variables
 load_dotenv()
 
@@ -143,8 +150,6 @@ def _validate_ssl_certificates() -> None:
     if not settings.enable_https:
         return
 
-    from ragtime.core.ssl import setup_ssl
-
     # Run SSL validation - this logs any errors/warnings
     result = setup_ssl(
         cert_file=settings.ssl_cert_file,
@@ -196,25 +201,17 @@ async def lifespan(app: FastAPI):
     await rag.initialize()
 
     # Recover any interrupted indexing jobs (survives hot-reloads)
-    from ragtime.indexer.service import indexer
-
     recovered = await indexer.recover_interrupted_jobs()
     if recovered > 0:
         logger.info(f"Recovered {recovered} interrupted indexing job(s)")
 
     # Clean up any orphaned filesystem indexing jobs from previous runs
-    from ragtime.indexer.filesystem_service import filesystem_indexer
-
     await filesystem_indexer._cleanup_stale_jobs()
 
     # Clean up any orphaned schema indexing jobs from previous runs
-    from ragtime.indexer.schema_service import schema_indexer
-
     await schema_indexer._cleanup_stale_jobs()
 
     # Clean up any orphaned PDM indexing jobs from previous runs
-    from ragtime.indexer.pdm_service import pdm_indexer
-
     await pdm_indexer._cleanup_stale_jobs()
 
     # Discover orphan indexes (FAISS files without database metadata)
@@ -223,16 +220,12 @@ async def lifespan(app: FastAPI):
         logger.info(f"Discovered {discovered} orphan index(es) on disk")
 
     # Garbage collect orphaned pgvector embeddings
-    from ragtime.indexer.repository import repository
-
     gc_results = await repository.cleanup_orphaned_embeddings()
     gc_total = sum(gc_results.values())
     if gc_total > 0:
         logger.info(f"Garbage collected {gc_total} orphaned embedding(s)")
 
     # Start background task service for chat
-    from ragtime.indexer.background_tasks import background_task_service
-
     await background_task_service.start()
 
     # Start MCP session manager (enable/disable checked at request time)
@@ -243,8 +236,6 @@ async def lifespan(app: FastAPI):
     await background_task_service.stop()
 
     # Shutdown chunking process pool
-    from ragtime.indexer.chunking import shutdown_process_pool
-
     shutdown_process_pool()
 
     # Shutdown I/O thread pool
@@ -253,8 +244,6 @@ async def lifespan(app: FastAPI):
         logger.info("I/O thread pool shut down")
 
     # Stop PDM indexer tasks
-    from ragtime.indexer.pdm_service import pdm_indexer
-
     await pdm_indexer.shutdown()
 
     # Stop schema indexer (schema_indexer imported above)
@@ -389,8 +378,6 @@ async def register_client(request: Request):
     Rate limited and capped to prevent abuse.
     """
     # Rate limit: reuse the login rate limiter
-    from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, limiter
-
     try:
         await limiter.check(
             "register", request.client.host if request.client else "unknown"
@@ -566,8 +553,6 @@ async def authorize_get(
 
     # Redirect to frontend with OAuth params preserved
     # The frontend will detect these params and show the OAuth login form
-    from urllib.parse import urlencode
-
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
@@ -636,8 +621,6 @@ async def authorize_post(
     logger.info(f"OAuth2 authorization code issued for '{result.username}'")
 
     # Create session for the user (so they stay logged in to Ragtime)
-    from ragtime.core.auth import create_access_token, create_session
-
     token = create_access_token(result.user_id, result.username, result.role)
 
     await create_session(
@@ -688,9 +671,6 @@ async def authorize_with_session(
     For already-authenticated users, this endpoint issues an auth code
     using their session cookie instead of requiring username/password.
     """
-    from ragtime.core.auth import validate_session
-    from ragtime.core.database import get_db
-
     # Validate redirect_uri (security: prevent open redirect attacks)
     if not validate_redirect_uri(redirect_uri):
         return JSONResponse(
@@ -757,8 +737,6 @@ async def authorize_with_session(
 # OAuth2 Token Endpoint (RFC 6749 Section 3.2)
 # =============================================================================
 
-from ragtime.api.auth import oauth2_token as _oauth2_token_handler
-
 
 @app.post("/token", include_in_schema=False)
 async def token_endpoint(
@@ -798,8 +776,6 @@ async def token_endpoint(
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def root():
     """Serve the Indexer UI at root, or return API info if UI not available."""
-    from ragtime.indexer.routes import DIST_DIR
-
     dist_index = DIST_DIR / "index.html"
 
     # In production, serve the built React app

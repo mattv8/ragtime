@@ -8,14 +8,30 @@ to use either FAISS (in-memory) or pgvector (PostgreSQL).
 
 import asyncio
 import json
+import re
+import shutil
 import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from langchain_community.vectorstores import FAISS
+
 from ragtime.config import settings
+from ragtime.core.app_settings import get_app_settings
+from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 from ragtime.indexer.models import VectorStoreType
+from ragtime.indexer.vector_utils import (
+    FILESYSTEM_COLUMNS,
+    search_pgvector_embeddings,
+)
+from ragtime.indexer.vector_utils import (
+    ensure_embedding_column,
+    ensure_pgvector_extension,
+)
+from ragtime.indexer.vector_utils import get_embeddings_model
+from ragtime.indexer.vector_utils import get_pgvector_table_size_bytes
 
 logger = get_logger(__name__)
 
@@ -129,12 +145,6 @@ class PgVectorBackend(VectorStoreBackend):
 
     async def _ensure_dimension(self, embedding_dim: int) -> None:
         """Ensure the embedding column has the correct dimension."""
-        from ragtime.core.app_settings import get_app_settings
-        from ragtime.indexer.vector_utils import (
-            ensure_embedding_column,
-            ensure_pgvector_extension,
-        )
-
         # Check if already ensured for this dimension
         if self._dimension_ensured.get("dim") == embedding_dim:
             return
@@ -166,8 +176,6 @@ class PgVectorBackend(VectorStoreBackend):
         Uses batch INSERT with multiple VALUES for better performance.
         Batches are sized to avoid exceeding PostgreSQL query limits.
         """
-        from ragtime.core.database import get_db
-
         if not embeddings:
             return 0
 
@@ -215,8 +223,6 @@ class PgVectorBackend(VectorStoreBackend):
 
     async def delete_file_embeddings(self, index_name: str, file_path: str) -> int:
         """Delete embeddings for a specific file."""
-        from ragtime.core.database import get_db
-
         db = await get_db()
         result = await db.execute_raw(
             f"""
@@ -228,8 +234,6 @@ class PgVectorBackend(VectorStoreBackend):
 
     async def delete_index(self, index_name: str) -> int:
         """Delete all embeddings for an index."""
-        from ragtime.core.database import get_db
-
         db = await get_db()
         result = await db.execute_raw(
             f"""
@@ -245,11 +249,6 @@ class PgVectorBackend(VectorStoreBackend):
         max_results: int = 10,
     ) -> List[Dict[str, Any]]:
         """Search using cosine similarity via centralized search function."""
-        from ragtime.indexer.vector_utils import (
-            FILESYSTEM_COLUMNS,
-            search_pgvector_embeddings,
-        )
-
         return await search_pgvector_embeddings(
             table_name="filesystem_embeddings",
             query_embedding=query_embedding,
@@ -261,8 +260,6 @@ class PgVectorBackend(VectorStoreBackend):
 
     async def get_index_stats(self, index_name: str) -> Dict[str, Any]:
         """Get index statistics from database."""
-        from ragtime.core.database import get_db
-
         db = await get_db()
         result = await db.query_raw(
             f"""
@@ -287,8 +284,6 @@ class PgVectorBackend(VectorStoreBackend):
 
         Uses PostgreSQL's pg_column_size to estimate storage for this index's rows.
         """
-        from ragtime.indexer.vector_utils import get_pgvector_table_size_bytes
-
         return await get_pgvector_table_size_bytes("filesystem_embeddings", index_name)
 
     async def finalize_index(self, index_name: str) -> None:
@@ -307,8 +302,6 @@ class FaissBackend(VectorStoreBackend):
 
     def _sanitize_index_name(self, index_name: str) -> str:
         """Sanitize index name for safe filesystem usage."""
-        import re
-
         # Replace any non-alphanumeric chars (except underscore/hyphen) with underscore
         safe_name = re.sub(r"[^a-zA-Z0-9_-]+", "_", index_name).strip("_").lower()
         return safe_name or "default"
@@ -382,8 +375,6 @@ class FaissBackend(VectorStoreBackend):
             Count of deleted items (from pending buffer) plus 1 if disk was deleted,
             or 0 if nothing was deleted.
         """
-        import shutil
-
         deleted = 0
 
         # Clear from pending
@@ -421,8 +412,6 @@ class FaissBackend(VectorStoreBackend):
 
     async def rename_index(self, old_name: str, new_name: str) -> bool:
         """Rename a FAISS index on disk and update in-memory tracking."""
-        import shutil
-
         old_path = self._get_index_path(old_name)
         new_path = self._get_index_path(new_name)
 
@@ -554,10 +543,6 @@ class FaissBackend(VectorStoreBackend):
 
     async def finalize_index(self, index_name: str) -> None:
         """Build and save the FAISS index to disk."""
-        from langchain_community.vectorstores import FAISS
-
-        from ragtime.indexer.vector_utils import get_embeddings_model
-
         if index_name not in self._pending:
             logger.warning(f"No pending data for FAISS index {index_name}")
             return
@@ -577,8 +562,6 @@ class FaissBackend(VectorStoreBackend):
         text_embeddings = list(zip(pending["texts"], pending["embeddings"]))
 
         # Get embedding model for FAISS (needed for later searches)
-        from ragtime.core.app_settings import get_app_settings
-
         app_settings = await get_app_settings()
         embeddings_model = await get_embeddings_model(
             app_settings, return_none_on_error=True, logger_override=logger
@@ -609,8 +592,6 @@ class FaissBackend(VectorStoreBackend):
 
     async def load_index(self, index_name: str, embeddings_model: Any) -> bool:
         """Load a FAISS index from disk into memory."""
-        from langchain_community.vectorstores import FAISS
-
         index_path = self._get_index_path(index_name)
 
         if not index_path.exists():

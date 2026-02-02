@@ -7,6 +7,8 @@ These constants are shared between:
 - Analysis endpoints for pre-indexing estimates
 """
 
+import fnmatch
+
 # =============================================================================
 # UNPARSEABLE BINARY EXTENSIONS
 # =============================================================================
@@ -551,8 +553,6 @@ def is_parseable_document(ext: str) -> bool:
 
 def should_exclude_minified(filename: str) -> bool:
     """Check if a filename matches minified/bundle patterns."""
-    import fnmatch
-
     for pattern in MINIFIED_PATTERNS:
         if fnmatch.fnmatch(filename, pattern):
             return True

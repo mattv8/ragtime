@@ -16,9 +16,12 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.logging import get_logger
+from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import ChatTaskStatus, FilesystemConnectionConfig
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES
+from ragtime.indexer.schema_service import schema_indexer
+from ragtime.indexer.service import indexer
 from ragtime.indexer.utils import safe_tool_name
 
 logger = get_logger(__name__)
@@ -251,8 +254,6 @@ class BackgroundTaskService:
 
     async def _check_and_trigger_filesystem_reindex(self):
         """Check filesystem indexer tools and trigger re-indexing if due."""
-        from ragtime.indexer.filesystem_service import filesystem_indexer
-
         try:
             db = await repository._get_db()
 
@@ -336,8 +337,6 @@ class BackgroundTaskService:
 
     async def _check_and_trigger_schema_reindex(self):
         """Check SQL database tools and trigger schema re-indexing if due."""
-        from ragtime.indexer.schema_service import schema_indexer
-
         try:
             # Use repository to get properly decrypted tool configs
             all_tools = await repository.list_tool_configs(enabled_only=True)
@@ -433,8 +432,6 @@ class BackgroundTaskService:
 
     async def _check_and_trigger_git_reindex(self):
         """Check git-based indexes and trigger pull & re-indexing if due."""
-        from ragtime.indexer.service import indexer
-
         try:
             db = await repository._get_db()
 

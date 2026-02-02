@@ -9,6 +9,7 @@ Tools are auto-discovered from this package. To add a new tool:
 See registry.py for the discovery mechanism.
 """
 
+from .postgres import postgres_tool, PostgresQueryInput, execute_postgres_query
 from .registry import (
     register_tool,
     get_tool,
@@ -19,8 +20,6 @@ from .registry import (
 
 # Re-export individual tools for direct import if needed
 # NOTE: odoo_tool is deprecated - use tool configs instead
-from .postgres import postgres_tool, PostgresQueryInput, execute_postgres_query
-
 __all__ = [
     # Registry functions
     "register_tool",

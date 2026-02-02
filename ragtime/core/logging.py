@@ -2,12 +2,12 @@
 Logging configuration for the application.
 """
 
+
 import logging
 import sys
 from typing import Optional
 
 from ragtime.config import settings
-
 
 def setup_logging(name: Optional[str] = None) -> logging.Logger:
     """

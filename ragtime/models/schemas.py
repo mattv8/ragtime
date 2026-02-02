@@ -3,10 +3,10 @@ Pydantic models for API requests and responses.
 OpenAI API compatible schemas.
 """
 
+
 from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
-
 
 class TextContent(BaseModel):
     """Text content in a multimodal message."""

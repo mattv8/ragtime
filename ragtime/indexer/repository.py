@@ -8,11 +8,13 @@ replacing the previous JSON file-based storage.
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, cast
 
+from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexStatus as PrismaIndexStatus
 from prisma.enums import ToolType as PrismaToolType
@@ -20,7 +22,6 @@ from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
-from prisma import Json, Prisma
 from ragtime.core.database import get_db
 from ragtime.core.encryption import (
     CONNECTION_CONFIG_PASSWORD_FIELDS,
@@ -47,6 +48,7 @@ from ragtime.indexer.models import (
     ToolType,
     VectorStoreType,
 )
+from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 
 logger = get_logger(__name__)
@@ -549,8 +551,6 @@ class IndexerRepository:
         Returns:
             True if rename succeeded, False otherwise
         """
-        import os
-
         db = await self._get_db()
 
         try:
@@ -1045,8 +1045,6 @@ class IndexerRepository:
         Returns:
             Tuple of (updated ToolConfig or None, dict of update counts)
         """
-        from ragtime.indexer.utils import safe_tool_name
-
         db = await self._get_db()
         update_counts: dict[str, int] = {
             "schema_embeddings": 0,

@@ -7,7 +7,10 @@ Handles query validation, result limiting, and output formatting.
 
 from __future__ import annotations
 
+import json
 import re
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
 
 from ragtime.core.logging import get_logger
@@ -274,9 +277,6 @@ def _serialize_value(value: Any) -> Any:
 
     Handles datetime, date, Decimal, bytes, and other non-JSON types.
     """
-    from datetime import date, datetime
-    from decimal import Decimal
-
     if value is None:
         return None
     if isinstance(value, (str, int, float, bool)):
@@ -331,8 +331,6 @@ def format_query_result(
     Returns:
         Formatted table string with embedded metadata.
     """
-    import json
-
     # If no rows but columns are provided, we can still render an empty table
     if not rows and (not columns or not include_metadata):
         return "Query executed successfully (no results)"
@@ -458,8 +456,6 @@ def add_table_metadata_to_psql_output(
     """
     if not include_metadata:
         return psql_output
-
-    import json
 
     if not psql_output or "Error" in psql_output[:50]:
         return psql_output

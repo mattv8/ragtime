@@ -15,6 +15,7 @@ from typing import Dict, List, Optional
 
 from langchain_core.tools import StructuredTool
 
+import ragtime.tools as tools_package
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -67,8 +68,6 @@ def discover_tools() -> None:
     Looks for StructuredTool instances in each module that follow
     the naming convention: <module_name>_tool
     """
-    import ragtime.tools as tools_package
-
     logger.info("Discovering tools...")
 
     for importer, modname, ispkg in pkgutil.iter_modules(tools_package.__path__):

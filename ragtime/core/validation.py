@@ -9,8 +9,10 @@ from dataclasses import dataclass
 from typing import Optional
 
 import httpx
+from fastapi import HTTPException
 
 from ragtime.core.logging import get_logger
+from ragtime.core.ollama import is_reachable, list_models
 
 logger = get_logger(__name__)
 
@@ -81,8 +83,6 @@ async def validate_embedding_provider() -> ValidationResult:
 
 async def _validate_ollama_embeddings(settings: dict, model: str) -> ValidationResult:
     """Validate Ollama embedding provider is reachable and model exists."""
-    from ragtime.core.ollama import is_reachable, list_models
-
     base_url = settings.get("ollama_base_url", "http://localhost:11434")
 
     try:
@@ -237,8 +237,6 @@ async def require_valid_embedding_provider() -> None:
         ):
             ...
     """
-    from fastapi import HTTPException
-
     result = await validate_embedding_provider()
     if not result.valid:
         detail = result.error

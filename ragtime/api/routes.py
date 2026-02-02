@@ -6,6 +6,7 @@ import json
 import time
 from typing import Optional
 
+import psutil
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
@@ -25,7 +26,6 @@ from ragtime.models import (
     Message,
     ModelInfo,
     ModelsResponse,
-    Usage,
 )
 from ragtime.rag import rag
 
@@ -57,8 +57,6 @@ async def health_check():
     - memory: Real-time process memory statistics
     - index_details: Per-index loading status with timing info
     """
-    import psutil
-
     app_settings = await get_app_settings()
     loading_status = rag.loading_status
 
