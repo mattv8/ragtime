@@ -525,6 +525,20 @@ class AppSettings(BaseModel):
         description="Maximum agent iterations before stopping tool calls",
     )
 
+    # Token optimization settings
+    max_tool_output_chars: int = Field(
+        default=5000,
+        ge=0,
+        le=100000,
+        description="Maximum characters per tool output before truncation. 0=unlimited. Reduces quadratic token growth in multi-tool loops.",
+    )
+    scratchpad_window_size: int = Field(
+        default=6,
+        ge=0,
+        le=100,
+        description="Keep last N tool calls in full detail; older steps are summarized. 0=keep all (no compression).",
+    )
+
     # Search configuration
     search_results_k: int = Field(
         default=5,

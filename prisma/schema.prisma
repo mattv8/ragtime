@@ -169,6 +169,10 @@ model AppSettings {
   queryTimeout      Int      @default(30) @map("query_timeout")
   maxIterations     Int      @default(30) @map("max_iterations") // Agent iteration limit
 
+  // Agent Token Optimization
+  maxToolOutputChars    Int      @default(5000) @map("max_tool_output_chars") // Max chars per tool output before truncation (0=unlimited)
+  scratchpadWindowSize  Int      @default(6) @map("scratchpad_window_size") // Keep last N tool calls in full detail; older ones are summarized (0=keep all)
+
   // Search Configuration
   searchResultsK       Int      @default(5) @map("search_results_k") // Number of results per vector search (k)
   aggregateSearch      Boolean  @default(true) @map("aggregate_search") // If true, use single search_knowledge; if false, create per-index tools

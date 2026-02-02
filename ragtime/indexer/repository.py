@@ -747,6 +747,9 @@ class IndexerRepository:
             "anthropic_api_key": "anthropicApiKey",
             "allowed_chat_models": "allowedChatModels",
             "max_iterations": "maxIterations",
+            # Token optimization settings
+            "max_tool_output_chars": "maxToolOutputChars",
+            "scratchpad_window_size": "scratchpadWindowSize",
             # Tool settings
             "enabled_tools": "enabledTools",
             "odoo_container": "odooContainer",

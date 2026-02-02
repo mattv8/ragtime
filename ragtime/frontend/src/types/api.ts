@@ -472,6 +472,9 @@ export interface AppSettings {
   anthropic_api_key: string;
   allowed_chat_models: string[];
   max_iterations: number;
+  // Token optimization settings
+  max_tool_output_chars: number;
+  scratchpad_window_size: number;
   // Search Configuration
   search_results_k: number;
   aggregate_search: boolean;
@@ -538,6 +541,9 @@ export interface UpdateSettingsRequest {
   anthropic_api_key?: string;
   allowed_chat_models?: string[];
   max_iterations?: number;
+  // Token optimization settings
+  max_tool_output_chars?: number;
+  scratchpad_window_size?: number;
   // Search settings
   search_results_k?: number;
   aggregate_search?: boolean;

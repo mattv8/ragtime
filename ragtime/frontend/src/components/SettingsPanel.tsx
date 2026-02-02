@@ -389,6 +389,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         openai_api_key: data.openai_api_key,
         anthropic_api_key: data.anthropic_api_key,
         max_iterations: data.max_iterations,
+        // Token optimization settings
+        max_tool_output_chars: data.max_tool_output_chars,
+        scratchpad_window_size: data.scratchpad_window_size,
         // Search settings
         search_results_k: data.search_results_k,
         aggregate_search: data.aggregate_search,
@@ -661,6 +664,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         anthropic_api_key: formData.anthropic_api_key,
         allowed_chat_models: formData.allowed_chat_models,
         max_iterations: formData.max_iterations,
+        // Token optimization settings
+        max_tool_output_chars: formData.max_tool_output_chars,
+        scratchpad_window_size: formData.scratchpad_window_size,
       };
       // Include LLM Ollama connection fields when using Ollama provider
       if (formData.llm_provider === 'ollama') {
@@ -1301,6 +1307,61 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
               </div>
               <p className="field-help">
                 Maximum number of agent tool-calling steps.
+              </p>
+            </div>
+          </div>
+
+          {/* Token Optimization Settings */}
+          <div className="form-row" style={{ marginTop: '1rem' }}>
+            <div className="form-group" style={{ flex: 1 }}>
+              <label>Max Tool Output (chars)</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <input
+                  type="range"
+                  min="0"
+                  max="50000"
+                  step="1000"
+                  style={{ flex: 1 }}
+                  value={formData.max_tool_output_chars ?? 5000}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      max_tool_output_chars: parseInt(e.target.value, 10),
+                    })
+                  }
+                />
+                <span style={{ minWidth: '60px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                  {(formData.max_tool_output_chars ?? 5000) === 0 ? 'Off' : `${((formData.max_tool_output_chars ?? 5000) / 1000).toFixed(0)}K`}
+                </span>
+              </div>
+              <p className="field-help">
+                Truncate tool outputs to save tokens (0 = no limit). Reduces O(N^2) token growth in long tool loops.
+              </p>
+            </div>
+
+            <div className="form-group" style={{ flex: 1 }}>
+              <label>Context Window (steps)</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <input
+                  type="range"
+                  min="0"
+                  max="30"
+                  step="1"
+                  style={{ flex: 1 }}
+                  value={formData.scratchpad_window_size ?? 6}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      scratchpad_window_size: parseInt(e.target.value, 10),
+                    })
+                  }
+                />
+                <span style={{ minWidth: '40px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                  {(formData.scratchpad_window_size ?? 6) === 0 ? 'All' : formData.scratchpad_window_size ?? 6}
+                </span>
+              </div>
+              <p className="field-help">
+                Keep last N tool calls in full detail; older steps summarized (0 = keep all).
               </p>
             </div>
           </div>

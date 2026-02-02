@@ -13,9 +13,12 @@ from pathlib import Path
 from typing import Any, List, Optional, Union
 
 from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
+                                     SystemMessage, ToolMessage)
+from langchain_core.messages import ToolMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -27,22 +30,13 @@ from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_output_limit
 from ragtime.core.ollama import get_model_context_length
-from ragtime.core.security import (
-    _SSH_ENV_VAR_RE,
-    sanitize_output,
-    validate_odoo_code,
-    validate_sql_query,
-    validate_ssh_command,
-)
+from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
+                                   validate_odoo_code, validate_sql_query,
+                                   validate_ssh_command)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (
-    SSHConfig,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    execute_ssh_command,
-    expand_env_vars_via_ssh,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
+                              execute_ssh_command, expand_env_vars_via_ssh,
+                              ssh_tunnel_config_from_dict)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
@@ -52,11 +46,9 @@ from ragtime.tools import get_all_tools, get_enabled_tools
 from ragtime.tools.chart import create_chart_tool
 from ragtime.tools.datatable import create_datatable_tool
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (
-    _is_shallow_repository,
-    create_aggregate_git_history_tool,
-    create_per_index_git_history_tool,
-)
+from ragtime.tools.git_history import (_is_shallow_repository,
+                                       create_aggregate_git_history_tool,
+                                       create_per_index_git_history_tool)
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
@@ -66,6 +58,178 @@ logger = get_logger(__name__)
 # Maximum timeout for any tool execution (5 minutes)
 # AI can request up to this limit; configured per-tool timeout is the default
 MAX_TOOL_TIMEOUT_SECONDS = 300
+
+# =============================================================================
+# TOKEN OPTIMIZATION UTILITIES
+# =============================================================================
+
+
+def truncate_tool_output(output: str, max_chars: int) -> str:
+    """
+    Truncate tool output to a maximum character limit.
+
+    Preserves the beginning and end of the output for context, adding a
+    truncation notice in the middle. This helps maintain useful information
+    while reducing token consumption.
+
+    Args:
+        output: The tool output string to truncate.
+        max_chars: Maximum allowed characters (0 = no limit).
+
+    Returns:
+        Truncated output string, or original if under limit.
+    """
+    if max_chars <= 0 or len(output) <= max_chars:
+        return output
+
+    # Keep 60% from start, 30% from end (leaving 10% for truncation notice)
+    head_chars = int(max_chars * 0.6)
+    tail_chars = int(max_chars * 0.3)
+    omitted = len(output) - head_chars - tail_chars
+
+    return (
+        output[:head_chars]
+        + f"\n\n... [{omitted:,} characters omitted] ...\n\n"
+        + output[-tail_chars:]
+    )
+
+
+def wrap_tool_with_truncation(tool: StructuredTool, max_chars: int) -> StructuredTool:
+    """
+    Wrap a LangChain tool to truncate its output before returning to the agent.
+
+    This reduces token consumption in the agent's scratchpad by limiting
+    how much of each tool's output is retained for context.
+
+    Args:
+        tool: The LangChain StructuredTool to wrap.
+        max_chars: Maximum characters for tool output (0 = no limit).
+
+    Returns:
+        A new StructuredTool with truncated output behavior.
+    """
+    if max_chars <= 0:
+        return tool
+
+    original_func = tool.func
+    original_coroutine = tool.coroutine
+
+    def truncating_func(*args, **kwargs):
+        result = original_func(*args, **kwargs)
+        if isinstance(result, str):
+            return truncate_tool_output(result, max_chars)
+        return result
+
+    async def truncating_coroutine(*args, **kwargs):
+        result = await original_coroutine(*args, **kwargs)
+        if isinstance(result, str):
+            return truncate_tool_output(result, max_chars)
+        return result
+
+    # Create a new tool with the same config but wrapped functions
+    return StructuredTool(
+        name=tool.name,
+        description=tool.description,
+        func=truncating_func if original_func else None,
+        coroutine=truncating_coroutine if original_coroutine else None,
+        args_schema=tool.args_schema,
+        return_direct=tool.return_direct,
+        handle_tool_error=tool.handle_tool_error,
+    )
+
+
+def compress_intermediate_step(
+    action: Any, observation: str, max_summary_chars: int = 200
+) -> str:
+    """
+    Compress a single intermediate step into a brief summary.
+
+    Used for the rolling window to summarize older tool calls while
+    keeping recent ones in full detail.
+
+    Args:
+        action: The agent action (tool call).
+        observation: The tool output.
+        max_summary_chars: Maximum characters for the observation summary.
+
+    Returns:
+        A compressed summary of the step.
+    """
+    tool_name = getattr(action, "tool", "unknown")
+    tool_input = getattr(action, "tool_input", {})
+
+    # Summarize input
+    if isinstance(tool_input, dict):
+        # Extract key fields for common tool types
+        input_summary_parts = []
+        for key in ["query", "code", "command", "prompt", "sql"]:
+            if key in tool_input:
+                val = str(tool_input[key])[:100]
+                input_summary_parts.append(f"{key}={val}...")
+                break
+        if not input_summary_parts:
+            input_summary = str(tool_input)[:100]
+        else:
+            input_summary = ", ".join(input_summary_parts)
+    else:
+        input_summary = str(tool_input)[:100]
+
+    # Summarize output
+    obs_str = str(observation)
+    if len(obs_str) > max_summary_chars:
+        obs_summary = obs_str[:max_summary_chars] + "..."
+    else:
+        obs_summary = obs_str
+
+    return f"[{tool_name}] Input: {input_summary} -> Output: {obs_summary}"
+
+
+def format_scratchpad_with_window(
+    intermediate_steps: list,
+    window_size: int,
+    format_func: Any,
+) -> list:
+    """
+    Format intermediate steps with a rolling window compression.
+
+    Keeps the last `window_size` steps in full detail, compresses older
+    steps into brief summaries to reduce token consumption.
+
+    Args:
+        intermediate_steps: List of (action, observation) tuples.
+        window_size: Number of recent steps to keep in full detail (0 = keep all).
+        format_func: Original formatting function for full-detail steps.
+
+    Returns:
+        List of messages representing the formatted scratchpad.
+    """
+    if window_size <= 0 or len(intermediate_steps) <= window_size:
+        # No compression needed
+        return format_func(intermediate_steps)
+
+    # Split into old (to compress) and recent (keep full)
+    old_steps = intermediate_steps[:-window_size]
+    recent_steps = intermediate_steps[-window_size:]
+
+    messages = []
+
+    # Add compressed summary of older steps
+    if old_steps:
+        summaries = []
+        for action, observation in old_steps:
+            summaries.append(compress_intermediate_step(action, observation))
+        summary_text = (
+            f"[Prior tool calls ({len(old_steps)} steps, summarized for brevity)]\n"
+            + "\n".join(summaries)
+        )
+        # Add as a system-like message in the scratchpad
+        messages.append(AIMessage(content=summary_text))
+
+    # Add recent steps in full detail
+    recent_formatted = format_func(recent_steps)
+    messages.extend(recent_formatted)
+
+    return messages
 
 
 def get_process_memory_bytes() -> int:
@@ -348,6 +512,8 @@ class RAGComponents:
             {}
         )  # name -> {status, size_mb, chunk_count, load_time, error}
         self._loading_index: Optional[str] = None  # Currently loading index name
+        # Token optimization settings
+        self._scratchpad_window_size: int = 6  # Default, updated from settings
 
     @property
     def is_ready(self) -> bool:
@@ -1363,6 +1529,109 @@ class RAGComponents:
         except (TypeError, ValueError):
             max_iterations = 15
 
+        # Get token optimization settings
+        max_tool_output_chars = int(
+            self._app_settings.get("max_tool_output_chars", 5000)
+        )
+        scratchpad_window_size = int(
+            self._app_settings.get("scratchpad_window_size", 6)
+        )
+
+        # Wrap all tools with output truncation (if enabled)
+        # This reduces token consumption in the agent's scratchpad
+        if max_tool_output_chars > 0:
+            tools = [wrap_tool_with_truncation(t, max_tool_output_chars) for t in tools]
+            logger.info(
+                f"Wrapped {len(tools)} tools with output truncation "
+                f"(max {max_tool_output_chars:,} chars)"
+            )
+
+        # Store window size for scratchpad compression
+        self._scratchpad_window_size = scratchpad_window_size
+
+        # Create windowed message formatter for scratchpad compression
+        # This reduces token consumption by compressing older tool results
+        def create_windowed_formatter(window_size: int):
+            """
+            Create a message formatter that compresses old tool results.
+
+            Anthropic requires strict tool_use/tool_result pairing, so we can't
+            drop old steps entirely. Instead, we keep all pairs but aggressively
+            compress the content of old tool_result messages.
+            """
+
+            def windowed_format(intermediate_steps):
+                num_steps = len(intermediate_steps)
+
+                if window_size <= 0 or num_steps <= window_size:
+                    result = format_to_tool_messages(intermediate_steps)
+                    if num_steps > 0:
+                        total_chars = sum(len(str(m.content)) for m in result)
+                        logger.debug(
+                            f"Scratchpad: {num_steps} steps, {len(result)} messages, "
+                            f"{total_chars:,} chars (no compression needed)"
+                        )
+                    return result
+
+                # Format all steps first
+                all_msgs = format_to_tool_messages(intermediate_steps)
+                full_chars = sum(len(str(m.content)) for m in all_msgs)
+
+                # Compress old tool results (messages beyond recent window)
+                # Each step produces 2 messages: AIMessage + ToolMessage
+                # So window_size steps = window_size * 2 messages from the end
+                recent_msg_count = window_size * 2
+                old_msg_count = len(all_msgs) - recent_msg_count
+
+                if old_msg_count > 0:
+                    compressed_msgs = []
+                    for i, msg in enumerate(all_msgs):
+                        if i < old_msg_count and isinstance(msg, ToolMessage):
+                            # Compress old tool results to brief summary
+                            content = str(msg.content)
+                            if len(content) > 200:
+                                summary = content[:150] + "... [truncated]"
+                            else:
+                                summary = content
+                            # Preserve tool_call_id for Anthropic pairing
+                            compressed_msgs.append(
+                                ToolMessage(
+                                    content=summary,
+                                    tool_call_id=msg.tool_call_id,
+                                )
+                            )
+                        else:
+                            compressed_msgs.append(msg)
+                    all_msgs = compressed_msgs
+
+                compressed_chars = sum(len(str(m.content)) for m in all_msgs)
+                reduction = (
+                    100 * (1 - compressed_chars / full_chars) if full_chars > 0 else 0
+                )
+
+                if old_msg_count > 0:
+                    logger.info(
+                        f"Scratchpad compression: {num_steps} steps | "
+                        f"{old_msg_count // 2} old results compressed | "
+                        f"{full_chars:,} -> {compressed_chars:,} chars ({reduction:.1f}% reduction)"
+                    )
+
+                return all_msgs
+
+            return windowed_format
+
+        # Create the message formatter (or None for default behavior)
+        message_formatter = (
+            create_windowed_formatter(scratchpad_window_size)
+            if scratchpad_window_size > 0
+            else None  # Use default formatter when disabled
+        )
+
+        if scratchpad_window_size > 0:
+            logger.info(
+                f"Using windowed scratchpad formatter (window={scratchpad_window_size})"
+            )
+
         # Create standard agent (for API/MCP)
         prompt = ChatPromptTemplate.from_messages(
             [
@@ -1375,7 +1644,13 @@ class RAGComponents:
 
         if tools:
             # Use create_tool_calling_agent which works with both OpenAI and Anthropic
-            agent = create_tool_calling_agent(self.llm, tools, prompt)
+            # Pass custom message_formatter for scratchpad window compression
+            agent = create_tool_calling_agent(
+                self.llm,
+                tools,
+                prompt,
+                message_formatter=message_formatter or format_to_tool_messages,
+            )
             self.agent_executor = AgentExecutor(
                 agent=agent,
                 tools=tools,
@@ -1388,6 +1663,8 @@ class RAGComponents:
             self.agent_executor = None
 
         # Create UI agent (with visualization tools and UI prompt)
+        # Note: create_chart_tool and create_datatable_tool are NOT wrapped with
+        # truncation because their JSON output must be complete for rendering
         ui_tools = tools + [create_chart_tool, create_datatable_tool]
 
         prompt_ui = ChatPromptTemplate.from_messages(
@@ -1400,7 +1677,13 @@ class RAGComponents:
         )
 
         if ui_tools:
-            agent_ui = create_tool_calling_agent(self.llm, ui_tools, prompt_ui)
+            # Pass same message_formatter for consistent behavior
+            agent_ui = create_tool_calling_agent(
+                self.llm,
+                ui_tools,
+                prompt_ui,
+                message_formatter=message_formatter or format_to_tool_messages,
+            )
             self.agent_executor_ui = AgentExecutor(
                 agent=agent_ui,
                 tools=ui_tools,

@@ -78,6 +78,13 @@ class SettingsCache:
                 "max_query_results": prisma_settings.maxQueryResults,
                 "query_timeout": prisma_settings.queryTimeout,
                 "enable_write_ops": prisma_settings.enableWriteOps,
+                # Token optimization settings
+                "max_tool_output_chars": getattr(
+                    prisma_settings, "maxToolOutputChars", 5000
+                ),
+                "scratchpad_window_size": getattr(
+                    prisma_settings, "scratchpadWindowSize", 6
+                ),
                 # Search configuration
                 "search_results_k": prisma_settings.searchResultsK,
                 "aggregate_search": prisma_settings.aggregateSearch,
@@ -113,8 +120,12 @@ class SettingsCache:
                 "mcp_default_route_password": mcp_password,  # Kept encrypted
                 "mcp_default_route_allowed_group": prisma_settings.mcpDefaultRouteAllowedGroup,
                 # OCR settings
-                "default_ocr_mode": getattr(prisma_settings, "defaultOcrMode", "disabled"),
-                "default_ocr_vision_model": getattr(prisma_settings, "defaultOcrVisionModel", None),
+                "default_ocr_mode": getattr(
+                    prisma_settings, "defaultOcrMode", "disabled"
+                ),
+                "default_ocr_vision_model": getattr(
+                    prisma_settings, "defaultOcrVisionModel", None
+                ),
             }
             return self._settings
 
@@ -135,6 +146,9 @@ class SettingsCache:
                 "max_query_results": 100,
                 "query_timeout": 30,
                 "enable_write_ops": False,
+                # Token optimization settings
+                "max_tool_output_chars": 5000,
+                "scratchpad_window_size": 6,
                 # Search configuration
                 "search_results_k": 5,
                 "aggregate_search": True,
