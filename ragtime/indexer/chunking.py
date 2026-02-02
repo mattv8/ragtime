@@ -605,13 +605,17 @@ def _chunk_document_batch_sync(
                     splitter_counts.get("chonkie_code", 0) + 1
                 )
             except (ValueError, RuntimeError, LookupError) as e:
-                # Magika couldn't detect a supported language, or tree-sitter
-                # grammar not available - use recursive chunker
+                # Expected cases for falling back to RecursiveChunker:
+                # - Extension explicitly mapped to plain text (e.g., .txt, .csv)
+                # - Magika couldn't detect a supported language
+                # - tree-sitter grammar not available
                 err_lower = str(e).lower()
                 if (
                     "not supported" in err_lower
                     or "detected language" in err_lower
                     or "could not find language" in err_lower
+                    or "mapped to plain text" in err_lower
+                    or "should use recursivechunker" in err_lower
                 ):
                     logger.debug(
                         f"Code chunking not available for {file_path}, "
