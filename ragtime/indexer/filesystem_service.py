@@ -1458,8 +1458,11 @@ class FilesystemIndexerService:
                                 tokens = count_tokens(chunk)
                                 if tokens > safe_token_limit:
                                     # Re-chunk with proper splitting at natural boundaries
+                                    # Honor user-configured chunk_overlap for context
                                     sub_chunks = rechunk_oversized_text(
-                                        chunk, safe_token_limit
+                                        chunk,
+                                        safe_token_limit,
+                                        chunk_overlap=config.chunk_overlap,
                                     )
                                     if rechunked_count < 5:  # Log first 5
                                         logger.warning(

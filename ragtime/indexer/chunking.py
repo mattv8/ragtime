@@ -716,6 +716,7 @@ async def chunk_documents_parallel(
 def rechunk_oversized_content(
     content: str,
     safe_token_limit: int,
+    chunk_overlap: int = 0,
     metadata: dict | None = None,
 ) -> List[Document]:
     """
@@ -723,11 +724,13 @@ def rechunk_oversized_content(
 
     This function properly re-chunks content that exceeds the embedding model's
     context limit, rather than blindly truncating. It uses RecursiveChunker to
-    split at natural boundaries (paragraphs, sentences) while maintaining overlap.
+    split at natural boundaries (paragraphs, sentences) and applies overlap
+    using OverlapRefinery.
 
     Args:
         content: The oversized text content to re-chunk
         safe_token_limit: Maximum tokens per chunk (after safety margin applied)
+        chunk_overlap: Token overlap between chunks (user-configured)
         metadata: Optional metadata dict to attach to each resulting chunk
 
     Returns:
@@ -736,18 +739,34 @@ def rechunk_oversized_content(
     if metadata is None:
         metadata = {}
 
-    from chonkie import RecursiveChunker
+    from chonkie import OverlapRefinery, RecursiveChunker
+
+    # Account for overlap in the chunk size - overlap adds tokens to each chunk
+    # so we need to reduce the base chunk size
+    effective_chunk_size = max(100, safe_token_limit - chunk_overlap)
 
     # Use tiktoken for accurate token counting
     chunker = RecursiveChunker(
         tokenizer=TIKTOKEN_ENCODING,
-        chunk_size=safe_token_limit,
+        chunk_size=effective_chunk_size,
         min_characters_per_chunk=20,
     )
 
     chunks = chunker.chunk(content)
-    docs = []
 
+    # Apply overlap to add context from adjacent chunks
+    if chunk_overlap > 0 and len(chunks) > 1:
+        refinery = OverlapRefinery(
+            tokenizer=TIKTOKEN_ENCODING,
+            context_size=chunk_overlap,
+            mode="recursive",  # Use delimiter-aware overlap
+            method="suffix",  # Add context from previous chunk
+            merge=True,
+            inplace=True,
+        )
+        chunks = refinery.refine(chunks)
+
+    docs = []
     for i, c in enumerate(chunks):
         new_meta = metadata.copy()
         new_meta["chunker"] = "rechunk_oversized"
@@ -761,6 +780,7 @@ def rechunk_oversized_content(
 def rechunk_oversized_text(
     content: str,
     safe_token_limit: int,
+    chunk_overlap: int = 0,
 ) -> List[str]:
     """
     Re-chunk oversized text content into smaller pieces that fit within the token limit.
@@ -771,18 +791,35 @@ def rechunk_oversized_text(
     Args:
         content: The oversized text content to re-chunk
         safe_token_limit: Maximum tokens per chunk (after safety margin applied)
+        chunk_overlap: Token overlap between chunks (user-configured)
 
     Returns:
         List of text strings, each within the token limit
     """
-    from chonkie import RecursiveChunker
+    from chonkie import OverlapRefinery, RecursiveChunker
+
+    # Account for overlap in the chunk size
+    effective_chunk_size = max(100, safe_token_limit - chunk_overlap)
 
     # Use tiktoken for accurate token counting
     chunker = RecursiveChunker(
         tokenizer=TIKTOKEN_ENCODING,
-        chunk_size=safe_token_limit,
+        chunk_size=effective_chunk_size,
         min_characters_per_chunk=20,
     )
 
     chunks = chunker.chunk(content)
+
+    # Apply overlap to add context from adjacent chunks
+    if chunk_overlap > 0 and len(chunks) > 1:
+        refinery = OverlapRefinery(
+            tokenizer=TIKTOKEN_ENCODING,
+            context_size=chunk_overlap,
+            mode="recursive",
+            method="suffix",
+            merge=True,
+            inplace=True,
+        )
+        chunks = refinery.refine(chunks)
+
     return [c.text for c in chunks]

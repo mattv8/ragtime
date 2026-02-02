@@ -2620,9 +2620,11 @@ class IndexerService:
                 chunker = chunk.metadata.get("chunker", "unknown")
 
                 # Re-chunk with proper splitting at natural boundaries
+                # Honor user-configured chunk_overlap for context preservation
                 sub_chunks = rechunk_oversized_content(
                     chunk.page_content,
                     safe_token_limit,
+                    chunk_overlap=config.chunk_overlap,
                     metadata=chunk.metadata,
                 )
                 final_chunks.extend(sub_chunks)
