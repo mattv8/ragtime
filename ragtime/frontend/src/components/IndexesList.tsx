@@ -447,6 +447,7 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
               onAnalysisStart={() => setIsAnalyzing(true)}
               onAnalysisComplete={() => setIsAnalyzing(false)}
               onNavigateToSettings={onNavigateToSettings}
+              existingVectorStoreType={indexes.length > 0 ? indexes[0].vector_store_type ?? null : null}
             />
           ) : (
             <UploadForm
@@ -455,6 +456,7 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
               onAnalysisStart={() => setIsAnalyzing(true)}
               onAnalysisComplete={() => setIsAnalyzing(false)}
               onNavigateToSettings={onNavigateToSettings}
+              existingVectorStoreType={indexes.length > 0 ? indexes[0].vector_store_type ?? null : null}
             />
           )}
         </div>

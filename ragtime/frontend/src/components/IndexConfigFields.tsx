@@ -5,6 +5,10 @@ import type { CommitHistoryInfo } from '@/types';
 const PLACEHOLDER_FILE_PATTERNS = 'e.g. **/*.py, **/*.md (default: all files)';
 const PLACEHOLDER_EXCLUDE_PATTERNS = 'e.g. **/node_modules/**, **/__pycache__/**';
 
+/**
+ * IndexConfigFields renders ADVANCED indexing options (patterns, chunking, timeouts).
+ * OCR Mode and Vector Store are handled by OcrVectorStoreFields for prominent visibility.
+ */
 interface IndexConfigFieldsProps {
   isLoading: boolean;
   filePatterns: string;
@@ -17,15 +21,6 @@ interface IndexConfigFieldsProps {
   setChunkOverlap: (val: number) => void;
   maxFileSizeKb: number;
   setMaxFileSizeKb: (val: number) => void;
-  ocrMode: 'disabled' | 'tesseract' | 'ollama';
-  setOcrMode: (val: 'disabled' | 'tesseract' | 'ollama') => void;
-
-  /**
-   * Whether Ollama is available as an LLM provider.
-   * When false, only Tesseract OCR option is shown.
-   * When Ollama is selected, the global OCR vision model setting is used.
-   */
-  ollamaAvailable?: boolean;
 
   // Git-specific props (optional)
   gitCloneTimeoutMinutes?: number;
@@ -65,9 +60,6 @@ export function IndexConfigFields({
   gitCloneTimeoutMinutes,
   setGitCloneTimeoutMinutes,
   setTimeoutManuallySet,
-  ocrMode,
-  setOcrMode,
-  ollamaAvailable = false,
   reindexIntervalHours,
   setReindexIntervalHours,
   gitHistoryDepth,
@@ -75,10 +67,6 @@ export function IndexConfigFields({
   commitHistory,
   getDepthDateEstimate
 }: IndexConfigFieldsProps) {
-
-  const handleOcrModeChange = (e: ChangeEvent<HTMLSelectElement>) => {
-    setOcrMode(e.target.value as 'disabled' | 'tesseract' | 'ollama');
-  };
 
   const handleHistoryChange = (e: ChangeEvent<HTMLInputElement>) => {
     if (setGitHistoryDepth) {
@@ -165,28 +153,6 @@ export function IndexConfigFields({
             <small style={{ color: '#888', fontSize: '0.8rem' }}>Auto-scales with history depth</small>
           </div>
         )}
-
-        <div className="form-group">
-          <label>OCR Mode</label>
-          <select
-            value={ocrMode}
-            onChange={handleOcrModeChange}
-            disabled={isLoading}
-          >
-            <option value="disabled">Disabled - Skip image files</option>
-            <option value="tesseract">Tesseract - Fast traditional OCR</option>
-            {ollamaAvailable && (
-              <option value="ollama">Ollama Vision - Semantic OCR (uses global settings)</option>
-            )}
-          </select>
-          <small style={{ color: '#888', fontSize: '0.8rem' }}>
-            {ocrMode === 'ollama'
-              ? 'Uses global OCR vision model setting.'
-              : ocrMode === 'tesseract'
-              ? 'Fast basic text extraction.'
-              : 'Skip images.'}
-          </small>
-        </div>
 
         {reindexIntervalHours !== undefined && setReindexIntervalHours && (
           <div className="form-group">

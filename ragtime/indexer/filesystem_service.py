@@ -10,8 +10,6 @@ This service handles:
 """
 
 import asyncio
-import fnmatch
-import hashlib
 import mimetypes
 import os
 import shutil
@@ -38,6 +36,7 @@ from ragtime.indexer.document_parser import (
     is_ocr_supported,
     is_supported_document,
 )
+from ragtime.indexer.file_utils import compute_file_hash, matches_pattern
 from ragtime.indexer.models import (
     FilesystemAnalysisJob,
     FilesystemAnalysisResult,
@@ -46,9 +45,9 @@ from ragtime.indexer.models import (
     FilesystemFileMetadata,
     FilesystemIndexJob,
     FilesystemIndexStatus,
-    FilesystemVectorStoreType,
     FileTypeStats,
     OcrMode,
+    VectorStoreType,
 )
 from ragtime.indexer.repository import repository
 from ragtime.indexer.vector_backends import (
@@ -523,26 +522,8 @@ class FilesystemIndexerService:
         max_size_bytes = config.max_file_size_mb * 1024 * 1024
         dirs_scanned = 0
 
-        # Build exclude patterns for matching
+        # Build exclude patterns for matching - uses shared matches_pattern from file_utils
         exclude_patterns = config.exclude_patterns
-
-        def should_exclude(rel_path: str) -> bool:
-            for pattern in exclude_patterns:
-                clean_pattern = pattern.removeprefix("**/")
-                if fnmatch.fnmatch(rel_path, clean_pattern) or fnmatch.fnmatch(
-                    rel_path, pattern
-                ):
-                    return True
-            return False
-
-        def matches_file_pattern(filename: str) -> bool:
-            """Check if filename matches any of the file patterns."""
-            for pattern in config.file_patterns:
-                # Remove recursive prefix for matching
-                clean_pattern = pattern.removeprefix("**/").removeprefix("*/")
-                if fnmatch.fnmatch(filename, clean_pattern):
-                    return True
-            return False
 
         # Use os.walk for better control and progress tracking
         walker = (
@@ -592,8 +573,8 @@ class FilesystemIndexerService:
                     if not file_path.is_file():
                         continue
 
-                    # Check if file matches patterns
-                    if not matches_file_pattern(filename):
+                    # Check if file matches patterns (use shared matches_pattern)
+                    if not matches_pattern(filename, config.file_patterns):
                         continue
 
                     # Check file size and skip zero-byte files
@@ -604,9 +585,9 @@ class FilesystemIndexerService:
                     if file_size > max_size_bytes:
                         continue
 
-                    # Check exclude patterns
+                    # Check exclude patterns (use shared matches_pattern)
                     rel_path = str(file_path.relative_to(base_path))
-                    if should_exclude(rel_path):
+                    if matches_pattern(rel_path, exclude_patterns):
                         continue
 
                     matching_files.append(file_path)
@@ -631,18 +612,6 @@ class FilesystemIndexerService:
             progress_callback(len(matching_files), "Complete")
 
         return matching_files
-
-    def _compute_file_hash(self, file_path: Path) -> str:
-        """Compute SHA-256 hash of a file for change detection."""
-        sha256 = hashlib.sha256()
-        try:
-            with open(file_path, "rb") as f:
-                for chunk in iter(lambda: f.read(8192), b""):
-                    sha256.update(chunk)
-            return sha256.hexdigest()
-        except Exception as e:
-            logger.warning(f"Error hashing file {file_path}: {e}")
-            return ""
 
     async def trigger_index(
         self,
@@ -1108,7 +1077,7 @@ class FilesystemIndexerService:
 
             # Get the appropriate vector store backend based on config
             vector_store_type = getattr(
-                config, "vector_store_type", FilesystemVectorStoreType.PGVECTOR
+                config, "vector_store_type", VectorStoreType.PGVECTOR
             )
             backend = get_backend(vector_store_type)
             logger.info(
@@ -1265,7 +1234,7 @@ class FilesystemIndexerService:
                         try:
                             # Check if file changed (incremental indexing)
                             current_hash = await asyncio.to_thread(
-                                self._compute_file_hash, file_path
+                                compute_file_hash, file_path
                             )
 
                             existing_meta = None
@@ -1535,7 +1504,7 @@ class FilesystemIndexerService:
             await self._update_job(job)
 
             # Post-completion actions for FAISS indexes
-            if vector_store_type == FilesystemVectorStoreType.FAISS:
+            if vector_store_type == VectorStoreType.FAISS:
                 try:
                     # 1. Load the new index into memory immediately
                     from ragtime.indexer.vector_backends import get_faiss_backend
@@ -1877,15 +1846,7 @@ class FilesystemIndexerService:
                 )
 
                 max_size_bytes = config.max_file_size_mb * 1024 * 1024
-
-                def should_exclude(rel_path: str) -> bool:
-                    for pattern in config.exclude_patterns:
-                        clean_pattern = pattern.removeprefix("**/")
-                        if fnmatch.fnmatch(rel_path, clean_pattern) or fnmatch.fnmatch(
-                            rel_path, pattern
-                        ):
-                            return True
-                    return False
+                exclude_patterns = config.exclude_patterns
 
                 total_files = 0
                 total_size = 0
@@ -1933,8 +1894,8 @@ class FilesystemIndexerService:
                             ext = file_path.suffix.lower() or "(no extension)"
                             rel_path = str(file_path.relative_to(base_path))
 
-                            # Check exclude patterns
-                            if should_exclude(rel_path):
+                            # Check exclude patterns (use shared matches_pattern)
+                            if matches_pattern(rel_path, exclude_patterns):
                                 skipped_excluded += 1
                                 continue
 
@@ -2133,7 +2094,7 @@ class FilesystemIndexerService:
     async def delete_index(
         self,
         index_name: str,
-        vector_store_type: Optional[FilesystemVectorStoreType] = None,
+        vector_store_type: Optional[VectorStoreType] = None,
     ) -> int:
         """
         Delete all embeddings and metadata for an index.
@@ -2148,7 +2109,7 @@ class FilesystemIndexerService:
         deleted_count = 0
 
         # Delete from pgvector (always try, for backward compatibility)
-        if vector_store_type in (None, FilesystemVectorStoreType.PGVECTOR):
+        if vector_store_type in (None, VectorStoreType.PGVECTOR):
             result = await db.filesystemembedding.delete_many(
                 where={"indexName": index_name}
             )
@@ -2156,7 +2117,7 @@ class FilesystemIndexerService:
             logger.info(f"Deleted {result} pgvector embeddings for '{index_name}'")
 
         # Delete from FAISS if applicable
-        if vector_store_type in (None, FilesystemVectorStoreType.FAISS):
+        if vector_store_type in (None, VectorStoreType.FAISS):
             faiss_deleted = await get_faiss_backend().delete_index(index_name)
             if faiss_deleted > 0:
                 deleted_count += faiss_deleted
@@ -2171,7 +2132,7 @@ class FilesystemIndexerService:
     async def get_index_stats(
         self,
         index_name: str,
-        vector_store_type: Optional[FilesystemVectorStoreType] = None,
+        vector_store_type: Optional[VectorStoreType] = None,
     ) -> Dict[str, Any]:
         """Get statistics for a filesystem index.
 
@@ -2179,42 +2140,55 @@ class FilesystemIndexerService:
             index_name: Name of the index
             vector_store_type: Vector store type (auto-detects if not specified)
         """
+        from prisma.errors import TableNotFoundError
+
         from ragtime.core.app_settings import get_app_settings
 
         db = await get_db()
         app_settings = await get_app_settings()
 
         # Count embeddings from both backends
+        # Tables may not exist if no indexing has been done yet
         pgvector_count = 0
         faiss_count = 0
 
-        if vector_store_type in (None, FilesystemVectorStoreType.PGVECTOR):
-            pgvector_count = await db.filesystemembedding.count(
-                where={"indexName": index_name}
-            )
+        if vector_store_type in (None, VectorStoreType.PGVECTOR):
+            try:
+                pgvector_count = await db.filesystemembedding.count(
+                    where={"indexName": index_name}
+                )
+            except TableNotFoundError:
+                # Table doesn't exist yet - no embeddings
+                pgvector_count = 0
 
-        if vector_store_type in (None, FilesystemVectorStoreType.FAISS):
+        if vector_store_type in (None, VectorStoreType.FAISS):
             faiss_stats = await get_faiss_backend().get_index_stats(index_name)
             faiss_count = faiss_stats.get("embedding_count", 0)
 
         embedding_count = pgvector_count + faiss_count
 
-        # Count unique files with explicit chunk count sum if possible, or just file count
-        # For now, just count files
-        file_count = await db.filesystemfilemetadata.count(
-            where={"indexName": index_name}
-        )
+        # Count unique files - table may not exist yet
+        file_count = 0
+        latest_file = None
+        try:
+            file_count = await db.filesystemfilemetadata.count(
+                where={"indexName": index_name}
+            )
 
-        # Get latest indexed timestamp
-        latest_file = await db.filesystemfilemetadata.find_first(
-            where={"indexName": index_name},
-            order={"lastIndexed": "desc"},
-        )
+            # Get latest indexed timestamp
+            latest_file = await db.filesystemfilemetadata.find_first(
+                where={"indexName": index_name},
+                order={"lastIndexed": "desc"},
+            )
+        except TableNotFoundError:
+            # Table doesn't exist yet - no files indexed
+            file_count = 0
+            latest_file = None
 
         # Calculate memory - for FAISS use actual disk size, for pgvector estimate
         estimated_memory_mb = 0.0
 
-        if faiss_count > 0 and vector_store_type == FilesystemVectorStoreType.FAISS:
+        if faiss_count > 0 and vector_store_type == VectorStoreType.FAISS:
             # For FAISS, use actual disk size from stats
             faiss_stats = await get_faiss_backend().get_index_stats(index_name)
             estimated_memory_mb = faiss_stats.get("size_mb") or 0.0
@@ -2244,5 +2218,4 @@ class FilesystemIndexerService:
 
 
 # Global service instance
-filesystem_indexer = FilesystemIndexerService()
 filesystem_indexer = FilesystemIndexerService()

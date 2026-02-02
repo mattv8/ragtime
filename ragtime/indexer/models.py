@@ -37,11 +37,11 @@ class OcrMode(str, Enum):
     )
 
 
-class FilesystemVectorStoreType(str, Enum):
-    """Vector store backend for filesystem indexes."""
+class VectorStoreType(str, Enum):
+    """Vector store backend for indexes (both document and filesystem)."""
 
-    PGVECTOR = "pgvector"  # PostgreSQL pgvector - persistent, scalable (default)
-    FAISS = "faiss"  # FAISS - in-memory, loaded at startup like document indexes
+    PGVECTOR = "pgvector"  # PostgreSQL pgvector - persistent, scalable
+    FAISS = "faiss"  # FAISS - in-memory, loaded at startup
 
 
 class IndexConfig(BaseModel):
@@ -69,6 +69,10 @@ class IndexConfig(BaseModel):
         description="Maximum file size in KB to include (files larger are skipped). Default 500KB.",
     )
     embedding_model: str = Field(default="text-embedding-3-small")
+    vector_store_type: VectorStoreType = Field(
+        default=VectorStoreType.FAISS,
+        description="Vector store backend: 'faiss' (in-memory, default for document indexes) or 'pgvector' (PostgreSQL, persistent)",
+    )
     ocr_mode: OcrMode = Field(
         default=OcrMode.DISABLED,
         description="OCR mode: 'disabled' (skip images), 'tesseract' (fast traditional OCR), or 'ollama' (semantic OCR with vision model)",
@@ -183,6 +187,8 @@ class IndexInfo(BaseModel):
     # Git history info (for git-sourced indexes)
     git_repo_size_mb: Optional[float] = None  # Size of .git_repo directory (disk)
     has_git_history: bool = False  # True if .git_repo exists with history
+    # Vector store backend
+    vector_store_type: VectorStoreType = VectorStoreType.FAISS
 
 
 class CreateIndexRequest(BaseModel):
@@ -360,6 +366,7 @@ class IndexJobResponse(BaseModel):
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    vector_store_type: VectorStoreType = VectorStoreType.FAISS
 
 
 # -----------------------------------------------------------------------------
@@ -1204,8 +1211,8 @@ class FilesystemConnectionConfig(BaseModel):
     )
 
     # Vector store backend selection
-    vector_store_type: FilesystemVectorStoreType = Field(
-        default=FilesystemVectorStoreType.PGVECTOR,
+    vector_store_type: VectorStoreType = Field(
+        default=VectorStoreType.PGVECTOR,
         description="Vector store backend: 'pgvector' (PostgreSQL, persistent) or 'faiss' (in-memory, loaded at startup)",
     )
 

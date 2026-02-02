@@ -154,6 +154,39 @@ def _create_chunk_header(
     return "\n".join(lines) + "\n\n"
 
 
+def _estimate_max_header_tokens(
+    file_path: str,
+    imports: list[str] | None = None,
+    use_tokens: bool = False,
+) -> int:
+    """
+    Estimate the maximum header size to reserve space before chunking.
+
+    This calculates the worst-case header size (first chunk with imports)
+    so we can reduce the effective chunk_size and ensure chunks with
+    headers never exceed the embedding model's context limit.
+
+    Args:
+        file_path: Relative path to the source file
+        imports: List of import statements
+        use_tokens: If True, return token count; otherwise character count
+
+    Returns:
+        Size to reserve for headers (tokens or characters)
+    """
+    # Generate worst-case header (first chunk with imports, assuming multi-chunk)
+    sample_header = _create_chunk_header(
+        file_path, imports, chunk_index=0, total_chunks=99
+    )
+
+    if use_tokens:
+        from ragtime.core.tokenization import count_tokens
+
+        return count_tokens(sample_header, TIKTOKEN_ENCODING)
+
+    return len(sample_header)
+
+
 # =============================================================================
 # CHUNKING IMPLEMENTATIONS
 # =============================================================================
@@ -199,9 +232,24 @@ def _chunk_with_chonkie_code(
     # Determine tokenizer based on use_tokens setting
     tokenizer = TIKTOKEN_ENCODING if use_tokens else "character"
 
+    # Reserve space for headers BEFORE chunking to ensure chunks with headers
+    # never exceed the embedding model's context limit
+    header_reserve = 0
+    if source_path:
+        header_reserve = _estimate_max_header_tokens(source_path, imports, use_tokens)
+        # Add 10% safety margin for tokenizer variations
+        header_reserve = int(header_reserve * 1.1)
+
+    # Also account for overlap refinement which adds chunk_overlap to each chunk
+    # The final chunk size = base_chunk + overlap + header
+    total_reserve = header_reserve + chunk_overlap
+
+    # Effective chunk size after reserving header and overlap space
+    effective_chunk_size = max(100, chunk_size - total_reserve)  # Minimum 100
+
     # Skip chunking if content is already small enough
     # For token mode, estimate tokens as chars/4 for this quick check
-    size_threshold = chunk_size * 4 if use_tokens else chunk_size
+    size_threshold = effective_chunk_size * 4 if use_tokens else effective_chunk_size
     if len(text) <= size_threshold:
         new_meta = metadata.copy()
         new_meta["chunker"] = "no_chunk_small"
@@ -214,9 +262,10 @@ def _chunk_with_chonkie_code(
     from chonkie import CodeChunker, OverlapRefinery
 
     # language="auto" uses Magika for detection - no extension mapping needed
+    # Use effective_chunk_size to reserve space for headers
     chunker = CodeChunker(
         tokenizer=tokenizer,
-        chunk_size=chunk_size,
+        chunk_size=effective_chunk_size,
         language="auto",
     )
     chunks = chunker.chunk(text)
@@ -244,6 +293,18 @@ def _chunk_with_chonkie_code(
             summary = _create_file_summary(
                 source_path, imports, definitions, total_chunks
             )
+            # Truncate summary if it exceeds chunk_size
+            if use_tokens:
+                from ragtime.core.tokenization import count_tokens
+
+                summary_tokens = count_tokens(summary, TIKTOKEN_ENCODING)
+                if summary_tokens > chunk_size:
+                    # Truncate to fit - rough estimate
+                    ratio = chunk_size / summary_tokens
+                    summary = summary[: int(len(summary) * ratio * 0.9)]
+            elif len(summary) > chunk_size:
+                summary = summary[: int(chunk_size * 0.9)]
+
             summary_meta = metadata.copy()
             summary_meta["chunker"] = "chonkie_code_summary"
             summary_meta["chunk_index"] = -1  # Special index for summary

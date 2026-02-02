@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '@/api';
-import type { CommitHistoryInfo, IndexAnalysisResult, IndexJob, IndexInfo } from '@/types';
+import type { CommitHistoryInfo, IndexAnalysisResult, IndexJob, IndexInfo, VectorStoreType } from '@/types';
 import { AnalysisStats } from './AnalysisStats';
 import { IndexConfigFields } from './IndexConfigFields';
+import { OcrVectorStoreFields } from './OcrVectorStoreFields';
 
 type StatusType = 'info' | 'success' | 'error' | null;
 type WizardStep = 'input' | 'analyzing' | 'review' | 'indexing';
@@ -104,12 +105,14 @@ interface GitIndexWizardProps {
   onConfigSaved?: () => void;
   /** Called when user wants to navigate to settings */
   onNavigateToSettings?: () => void;
+  /** If set, vector store type is locked (for consistency with existing indexes) */
+  existingVectorStoreType?: VectorStoreType | null;
 }
 
 // Default file patterns to include all files
 const DEFAULT_FILE_PATTERNS = '**/*';
 
-export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnalysisComplete, editIndex, onConfigSaved, onNavigateToSettings }: GitIndexWizardProps) {
+export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnalysisComplete, editIndex, onConfigSaved, onNavigateToSettings, existingVectorStoreType }: GitIndexWizardProps) {
   const isEditMode = !!editIndex;
 
   const [isLoading, setIsLoading] = useState(false);
@@ -144,6 +147,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
   const [maxFileSizeKb, setMaxFileSizeKb] = useState(configSnapshot?.max_file_size_kb || 500);
   const [ocrMode, setOcrMode] = useState<'disabled' | 'tesseract' | 'ollama'>(configSnapshot?.ocr_mode || 'disabled');
   const [ocrVisionModel, setOcrVisionModel] = useState(configSnapshot?.ocr_vision_model || '');
+  const [vectorStoreType, setVectorStoreType] = useState<VectorStoreType>(existingVectorStoreType ?? editIndex?.vector_store_type ?? 'faiss');
   const [ollamaAvailable, setOllamaAvailable] = useState(false);  // Whether Ollama is configured as LLM provider
   const [gitCloneTimeoutMinutes, setGitCloneTimeoutMinutes] = useState(configSnapshot?.git_clone_timeout_minutes || 5);
   const [gitHistoryDepth, setGitHistoryDepth] = useState(configSnapshot?.git_history_depth || 1);
@@ -274,6 +278,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
     setMaxFileSizeKb(500);
     setOcrMode('disabled');
     setOcrVisionModel('');
+    setVectorStoreType('faiss');
     setExclusionsApplied(false);
     setPatternsExpanded(false);
   }, []);
@@ -472,6 +477,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           chunk_size: chunkSize,
           chunk_overlap: chunkOverlap,
           max_file_size_kb: maxFileSizeKb,
+          vector_store_type: vectorStoreType,
           ocr_mode: ocrMode,
           ocr_vision_model: ocrVisionModel || undefined,
           git_clone_timeout_minutes: gitCloneTimeoutMinutes,
@@ -624,29 +630,38 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           )}
         </div>
 
-        <IndexConfigFields
+        <OcrVectorStoreFields
           isLoading={isLoading}
-          filePatterns={filePatterns}
-          setFilePatterns={setFilePatterns}
-          excludePatterns={excludePatterns}
-          setExcludePatterns={setExcludePatterns}
-          chunkSize={chunkSize}
-          setChunkSize={setChunkSize}
-          chunkOverlap={chunkOverlap}
-          setChunkOverlap={setChunkOverlap}
-          maxFileSizeKb={maxFileSizeKb}
-          setMaxFileSizeKb={setMaxFileSizeKb}
-          gitCloneTimeoutMinutes={gitCloneTimeoutMinutes}
-          setGitCloneTimeoutMinutes={setGitCloneTimeoutMinutes}
-          setTimeoutManuallySet={setTimeoutManuallySet}
           ocrMode={ocrMode}
           setOcrMode={setOcrMode}
           ollamaAvailable={ollamaAvailable}
-          reindexIntervalHours={reindexIntervalHours}
-          setReindexIntervalHours={setReindexIntervalHours}
-          gitHistoryDepth={gitHistoryDepth}
-          setGitHistoryDepth={setGitHistoryDepth}
+          vectorStoreType={vectorStoreType}
+          setVectorStoreType={setVectorStoreType}
         />
+
+        <details style={{ marginBottom: '16px' }}>
+          <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Options</summary>
+          <IndexConfigFields
+            isLoading={isLoading}
+            filePatterns={filePatterns}
+            setFilePatterns={setFilePatterns}
+            excludePatterns={excludePatterns}
+            setExcludePatterns={setExcludePatterns}
+            chunkSize={chunkSize}
+            setChunkSize={setChunkSize}
+            chunkOverlap={chunkOverlap}
+            setChunkOverlap={setChunkOverlap}
+            maxFileSizeKb={maxFileSizeKb}
+            setMaxFileSizeKb={setMaxFileSizeKb}
+            gitCloneTimeoutMinutes={gitCloneTimeoutMinutes}
+            setGitCloneTimeoutMinutes={setGitCloneTimeoutMinutes}
+            setTimeoutManuallySet={setTimeoutManuallySet}
+            reindexIntervalHours={reindexIntervalHours}
+            setReindexIntervalHours={setReindexIntervalHours}
+            gitHistoryDepth={gitHistoryDepth}
+            setGitHistoryDepth={setGitHistoryDepth}
+          />
+        </details>
 
         <div className="wizard-actions" style={{ marginTop: '16px' }}>
           {onCancel && (
@@ -789,6 +804,16 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           </div>
         )}
 
+        <OcrVectorStoreFields
+          isLoading={isLoading}
+          ocrMode={ocrMode}
+          setOcrMode={setOcrMode}
+          ollamaAvailable={ollamaAvailable}
+          vectorStoreType={vectorStoreType}
+          setVectorStoreType={setVectorStoreType}
+          vectorStoreDisabled={!!existingVectorStoreType}
+        />
+
         <details style={{ marginBottom: '16px' }}>
           <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Options</summary>
           <IndexConfigFields
@@ -806,9 +831,6 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
             gitCloneTimeoutMinutes={gitCloneTimeoutMinutes}
             setGitCloneTimeoutMinutes={setGitCloneTimeoutMinutes}
             setTimeoutManuallySet={setTimeoutManuallySet}
-            ocrMode={ocrMode}
-            setOcrMode={setOcrMode}
-            ollamaAvailable={ollamaAvailable}
             reindexIntervalHours={reindexIntervalHours}
             setReindexIntervalHours={setReindexIntervalHours}
             gitHistoryDepth={gitHistoryDepth}
@@ -935,17 +957,24 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           </div>
         )}
 
+        <OcrVectorStoreFields
+          isLoading={isLoading}
+          ocrMode={ocrMode}
+          setOcrMode={setOcrMode}
+          ollamaAvailable={ollamaAvailable}
+          vectorStoreType={vectorStoreType}
+          setVectorStoreType={setVectorStoreType}
+          vectorStoreDisabled={!!existingVectorStoreType}
+        />
+
         <details
           style={{ marginBottom: '16px' }}
           open={patternsExpanded}
           onToggle={(e) => setPatternsExpanded((e.target as HTMLDetailsElement).open)}
         >
           <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>
-            Edit Patterns & Settings
+            Advanced Options
           </summary>
-
-
-
 
           <IndexConfigFields
             isLoading={isLoading}
@@ -962,9 +991,6 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
             gitCloneTimeoutMinutes={gitCloneTimeoutMinutes}
             setGitCloneTimeoutMinutes={setGitCloneTimeoutMinutes}
             setTimeoutManuallySet={setTimeoutManuallySet}
-            ocrMode={ocrMode}
-            setOcrMode={setOcrMode}
-            ollamaAvailable={ollamaAvailable}
             reindexIntervalHours={reindexIntervalHours}
             setReindexIntervalHours={setReindexIntervalHours}
             gitHistoryDepth={gitHistoryDepth}

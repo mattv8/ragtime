@@ -42,6 +42,7 @@ class EmbeddingModelInfo:
     max_input_tokens: Optional[int] = None
     output_vector_size: Optional[int] = None
 
+
 async def _fetch_litellm_embedding_models() -> dict[str, EmbeddingModelInfo]:
     """Fetch embedding models from LiteLLM's dataset."""
     models: dict[str, EmbeddingModelInfo] = {}
@@ -159,6 +160,64 @@ def get_model_dimensions_sync(
     if model_info:
         return model_info.output_vector_size
     return None
+
+
+async def get_embedding_model_context_limit(
+    model_name: str,
+    provider: str,
+    ollama_base_url: str | None = None,
+) -> int:
+    """
+    Get the context/input token limit for an embedding model.
+
+    For Ollama models, queries /api/show for context_length.
+    For OpenAI/other models, uses LiteLLM's max_input_tokens data.
+
+    Args:
+        model_name: The embedding model name
+        provider: The provider ('ollama', 'openai', etc.)
+        ollama_base_url: Ollama server URL (required for Ollama models)
+
+    Returns:
+        Maximum input tokens for the model. Returns a safe default of 2048
+        if the limit cannot be determined (conservative for most models).
+    """
+    # Conservative default - most embedding models support at least 2048
+    default_limit = 2048
+
+    if provider == "ollama":
+        if not ollama_base_url:
+            logger.warning("No Ollama base URL provided, using default context limit")
+            return default_limit
+
+        from ragtime.core.ollama import get_model_context_length
+
+        context_len = await get_model_context_length(model_name, ollama_base_url)
+        if context_len:
+            return context_len
+        # Fallback for Ollama models without context_length in API
+        logger.debug(
+            f"Could not get context_length for {model_name}, using default {default_limit}"
+        )
+        return default_limit
+
+    # For OpenAI and other providers, check LiteLLM data
+    models = await get_embedding_models()
+    model_info = models.get(model_name)
+    if model_info and model_info.max_input_tokens:
+        return model_info.max_input_tokens
+
+    # Try partial match for versioned models (e.g., "text-embedding-3-small" might
+    # be stored without version suffix)
+    for key, info in models.items():
+        if model_name in key or key in model_name:
+            if info.max_input_tokens:
+                return info.max_input_tokens
+
+    logger.debug(
+        f"Could not get max_input_tokens for {model_name}, using default {default_limit}"
+    )
+    return default_limit
 
 
 async def get_ollama_model_dimensions(

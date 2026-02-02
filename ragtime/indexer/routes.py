@@ -392,11 +392,15 @@ async def upload_and_index(
         default=None,
         description="Ollama vision model for OCR (e.g., 'qwen3-vl:latest')",
     ),
+    vector_store_type: str = Form(
+        default="faiss",
+        description="Vector store backend: 'faiss' (in-memory, default) or 'pgvector' (PostgreSQL)",
+    ),
     _user: User = Depends(require_admin),
     _: None = Depends(require_valid_embedding_provider),
 ):
     """
-    Upload an archive file and create a FAISS index from it. Admin only.
+    Upload an archive file and create a vector index from it. Admin only.
 
     Supported formats: .zip, .tar, .tar.gz, .tar.bz2
     The archive should contain source code files. Large codebases are supported.
@@ -420,7 +424,7 @@ async def upload_and_index(
         p.strip() for p in exclude_patterns.split(",") if p.strip()
     ]
 
-    from ragtime.indexer.models import OcrMode
+    from ragtime.indexer.models import OcrMode, VectorStoreType
 
     config = IndexConfig(
         name=name,
@@ -431,6 +435,7 @@ async def upload_and_index(
         chunk_overlap=chunk_overlap,
         ocr_mode=OcrMode(ocr_mode),
         ocr_vision_model=ocr_vision_model,
+        vector_store_type=VectorStoreType(vector_store_type),
     )
 
     try:
@@ -448,6 +453,7 @@ async def upload_and_index(
             created_at=job.created_at,
             started_at=job.started_at,
             completed_at=job.completed_at,
+            vector_store_type=job.config.vector_store_type,
         )
     except Exception as e:
         logger.exception("Failed to start indexing job")
@@ -461,7 +467,7 @@ async def index_from_git(
     _: None = Depends(require_valid_embedding_provider),
 ):
     """
-    Create a FAISS index from a git repository. Admin only.
+    Create a vector index from a git repository. Admin only.
 
     Clones the repository and indexes the source files.
     Processing happens in the background - check /jobs/{id} for status.
@@ -492,6 +498,7 @@ async def index_from_git(
             created_at=job.created_at,
             started_at=job.started_at,
             completed_at=job.completed_at,
+            vector_store_type=job.config.vector_store_type,
         )
     except Exception as e:
         logger.exception("Failed to start git indexing job")
@@ -1364,26 +1371,32 @@ async def create_tool_config(
     request: CreateToolConfigRequest, _user: User = Depends(require_admin)
 ):
     """Create a new tool configuration. Admin only."""
-    # For FAISS filesystem indexes, check for name conflicts with document indexes
+    connection_config = request.connection_config.copy()
+
+    # For filesystem indexers, ensure index_name is sanitized for safe filesystem/DB usage
     if request.tool_type == ToolType.FILESYSTEM_INDEXER:
-        vector_store = request.connection_config.get("vector_store_type", "pgvector")
+        # Sanitize the index_name to prevent issues with spaces/special chars
+        raw_index_name = connection_config.get("index_name", request.name)
+        sanitized_index_name = safe_tool_name(raw_index_name or request.name)
+        connection_config["index_name"] = sanitized_index_name
+
+        vector_store = connection_config.get("vector_store_type", "pgvector")
         if vector_store == "faiss":
-            index_name = safe_tool_name(request.name)
             # Check if a document index with this name already exists
             from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 
-            index_path = FAISS_INDEX_BASE_PATH / index_name
+            index_path = FAISS_INDEX_BASE_PATH / sanitized_index_name
             if index_path.exists():
                 raise HTTPException(
                     status_code=409,
-                    detail=f"An index named '{index_name}' already exists",
+                    detail=f"An index named '{sanitized_index_name}' already exists",
                 )
 
     config = ToolConfig(
         name=request.name,
         tool_type=request.tool_type,
         description=request.description,
-        connection_config=request.connection_config,
+        connection_config=connection_config,
         max_results=request.max_results,
         timeout=request.timeout,
         allow_write=request.allow_write,
@@ -1400,7 +1413,8 @@ async def create_tool_config(
     # Auto-start indexing for filesystem_indexer tools
     if request.tool_type == ToolType.FILESYSTEM_INDEXER:
         try:
-            fs_config = FilesystemConnectionConfig(**request.connection_config)
+            # Use the sanitized connection_config
+            fs_config = FilesystemConnectionConfig(**connection_config)
             await filesystem_indexer.trigger_index(
                 tool_config_id=result.id,
                 config=fs_config,

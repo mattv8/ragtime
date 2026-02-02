@@ -13,9 +13,7 @@ import os
 import re
 import shutil
 import subprocess
-import tarfile
 import uuid
-import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, BinaryIO, Dict, List, Optional
@@ -31,6 +29,12 @@ from ragtime.core.file_constants import (
 )
 from ragtime.core.logging import get_logger
 from ragtime.indexer.document_parser import OCR_EXTENSIONS
+from ragtime.indexer.file_utils import (
+    HARDCODED_EXCLUDES,
+    build_authenticated_git_url,
+    extract_archive,
+    find_source_dir,
+)
 from ragtime.indexer.llm_exclusions import get_smart_exclusion_suggestions
 from ragtime.indexer.memory_utils import (
     estimate_index_memory,
@@ -50,6 +54,7 @@ from ragtime.indexer.models import (
     IndexStatus,
     MemoryEstimate,
     OcrMode,
+    VectorStoreType,
 )
 from ragtime.indexer.repository import repository
 from ragtime.tools.git_history import _is_shallow_repository
@@ -58,99 +63,6 @@ logger = get_logger(__name__)
 
 # Persistent storage for uploaded files
 UPLOAD_TMP_DIR = Path(settings.index_data_path) / "_tmp"
-
-# Always exclude these directories regardless of user config
-HARDCODED_EXCLUDES = [
-    ".git/**",
-    "__pycache__/**",
-    "node_modules/**",
-    ".venv/**",
-    "venv/**",
-]
-
-
-# =============================================================================
-# Git Provider Token Authentication
-# =============================================================================
-# Supported platforms and their HTTPS clone URL token formats:
-#
-# GitHub (github.com):
-#   - Token prefixes: ghp_, gho_, ghu_, ghs_, ghr_, github_pat_
-#   - Format: https://x-access-token:{token}@github.com/owner/repo.git
-#   - Docs: https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens
-#
-# GitLab (gitlab.com and self-hosted):
-#   - Token prefixes: glpat-, glptt-, gldt-, glsoat-
-#   - Format: https://oauth2:{token}@{host}/owner/repo.git
-#   - Note: Username can be any non-empty string; "oauth2" is conventional
-#   - Docs: https://docs.gitlab.com/ee/user/profile/personal_access_tokens.html
-#
-# Bitbucket (bitbucket.org):
-#   - Token prefixes: (no standard prefix - API tokens)
-#   - Format: https://x-bitbucket-api-token-auth:{token}@bitbucket.org/workspace/repo.git
-#   - Docs: https://support.atlassian.com/bitbucket-cloud/docs/using-api-tokens/
-#
-# Generic (Gitea, Gogs, Forgejo, etc.):
-#   - Format: https://{token}@{host}/owner/repo.git
-#   - Most self-hosted Git servers accept token as username
-# =============================================================================
-
-# Token prefix patterns for provider detection (case-sensitive)
-_GITHUB_TOKEN_PREFIXES = ("ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_")
-_GITLAB_TOKEN_PREFIXES = ("glpat-", "glptt-", "gldt-", "glsoat-")
-
-
-def _build_authenticated_git_url(git_url: str, token: Optional[str] = None) -> str:
-    """
-    Build a Git clone URL with embedded token authentication.
-
-    Detects the Git provider from the URL hostname or token prefix and applies
-    the appropriate authentication format.
-
-    Args:
-        git_url: The original HTTPS Git URL (e.g., https://github.com/owner/repo.git)
-        token: Optional personal access token for authentication
-
-    Returns:
-        The URL with embedded credentials, or the original URL if no token provided
-    """
-    if not token:
-        return git_url
-
-    # Parse URL: protocol://host/path
-    match = re.match(r"(https?://)([^/]+)(/.*)$", git_url)
-    if not match:
-        # Not a standard HTTP(S) URL, return as-is
-        return git_url
-
-    protocol, host, path = match.groups()
-    host_lower = host.lower()
-
-    # Priority 1: Detect by hostname (most reliable)
-    if "github.com" in host_lower:
-        # GitHub: https://x-access-token:{token}@github.com/...
-        return f"{protocol}x-access-token:{token}@{host}{path}"
-
-    if "gitlab" in host_lower:
-        # GitLab (hosted or self-hosted with "gitlab" in hostname)
-        return f"{protocol}oauth2:{token}@{host}{path}"
-
-    if "bitbucket.org" in host_lower:
-        # Bitbucket Cloud: https://x-bitbucket-api-token-auth:{token}@bitbucket.org/...
-        return f"{protocol}x-bitbucket-api-token-auth:{token}@{host}{path}"
-
-    # Priority 2: Detect by token prefix (for self-hosted instances)
-    if token.startswith(_GITHUB_TOKEN_PREFIXES):
-        # GitHub Enterprise or similar using GitHub token format
-        return f"{protocol}x-access-token:{token}@{host}{path}"
-
-    if token.startswith(_GITLAB_TOKEN_PREFIXES):
-        # Self-hosted GitLab (e.g., git.example.com) detected by token prefix
-        return f"{protocol}oauth2:{token}@{host}{path}"
-
-    # Priority 3: Generic fallback
-    # Most Git servers (Gitea, Gogs, Forgejo, etc.) accept token as username
-    return f"{protocol}{token}@{host}{path}"
 
 
 async def generate_index_description(
@@ -801,19 +713,37 @@ class IndexerService:
         for meta in db_metadata:
             path = Path(meta.path) if meta.path else self.index_base_path / meta.name
 
-            # Skip if directory doesn't exist on disk
-            if not path.exists() or not path.is_dir():
-                logger.warning(f"Index {meta.name} in database but not on disk: {path}")
-                continue
+            # Determine vector store type from database
+            vector_store_type_str = getattr(meta, "vectorStoreType", None)
+            if vector_store_type_str:
+                # Handle both string and enum values from database
+                if hasattr(vector_store_type_str, "value"):
+                    vector_store_type = VectorStoreType(vector_store_type_str.value)
+                else:
+                    vector_store_type = VectorStoreType(vector_store_type_str)
+            else:
+                vector_store_type = VectorStoreType.FAISS
 
-            # Verify it's a valid FAISS index
-            if (
-                not (path / "index.faiss").exists()
-                and not (path / "index.pkl").exists()
-            ):
-                continue
+            # Skip if directory doesn't exist on disk (for FAISS indexes)
+            if vector_store_type == VectorStoreType.FAISS:
+                if not path.exists() or not path.is_dir():
+                    logger.warning(
+                        f"Index {meta.name} in database but not on disk: {path}"
+                    )
+                    continue
 
-            size_bytes = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+                # Verify it's a valid FAISS index
+                if (
+                    not (path / "index.faiss").exists()
+                    and not (path / "index.pkl").exists()
+                ):
+                    continue
+
+            size_bytes = (
+                sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+                if path.exists()
+                else 0
+            )
 
             # Extract metadata fields
             doc_count = meta.documentCount
@@ -883,9 +813,14 @@ class IndexerService:
                     config_snapshot=config_snapshot,
                     created_at=created_at,
                     last_modified=last_modified
-                    or datetime.fromtimestamp(path.stat().st_mtime),
+                    or (
+                        datetime.fromtimestamp(path.stat().st_mtime)
+                        if path.exists()
+                        else datetime.utcnow()
+                    ),
                     git_repo_size_mb=git_repo_size_mb,
                     has_git_history=has_git_history,
+                    vector_store_type=vector_store_type,
                 )
             )
 
@@ -924,7 +859,7 @@ class IndexerService:
         """
         try:
             # Get total commit count from remote (fast, uses refs)
-            clone_url = _build_authenticated_git_url(git_url, git_token)
+            clone_url = build_authenticated_git_url(git_url, git_token)
 
             # Fetch commit count from remote
             count_result = subprocess.run(
@@ -1082,7 +1017,7 @@ class IndexerService:
             temp_dir.mkdir(parents=True, exist_ok=True)
 
             # Build authenticated URL if token provided
-            clone_url = _build_authenticated_git_url(request.git_url, request.git_token)
+            clone_url = build_authenticated_git_url(request.git_url, request.git_token)
 
             # Shallow clone (depth=1) for speed
             logger.info(f"Shallow cloning {request.git_url} for analysis")
@@ -1175,10 +1110,10 @@ class IndexerService:
             # Extract archive
             extract_dir = temp_dir / "extracted"
             extract_dir.mkdir(parents=True, exist_ok=True)
-            self._extract_archive(archive_path, extract_dir)
+            extract_archive(archive_path, extract_dir)
 
             # Find actual source directory
-            source_dir = self._find_source_dir(extract_dir)
+            source_dir = find_source_dir(extract_dir)
 
             # Scan and analyze files
             return await self._analyze_directory(
@@ -1622,7 +1557,7 @@ class IndexerService:
             extract_dir.mkdir()
 
             logger.info(f"Extracting {archive_path} to {extract_dir}")
-            self._extract_archive(archive_path, extract_dir)
+            extract_archive(archive_path, extract_dir)
 
             # Check for cancellation after extraction
             if self._is_cancelled(job.id):
@@ -1630,7 +1565,7 @@ class IndexerService:
                 return
 
             # Find the actual source directory (handle nested zips)
-            source_dir = self._find_source_dir(extract_dir)
+            source_dir = find_source_dir(extract_dir)
 
             # Create the index
             await self._create_faiss_index(job, source_dir)
@@ -1795,7 +1730,7 @@ class IndexerService:
         if repo_dir.exists():
             await asyncio.to_thread(shutil.rmtree, repo_dir)
 
-        clone_url = _build_authenticated_git_url(job.git_url, job.git_token)
+        clone_url = build_authenticated_git_url(job.git_url, job.git_token)
         env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
 
         clone_timeout_minutes = self._compute_clone_timeout_minutes(job.config)
@@ -1888,7 +1823,7 @@ class IndexerService:
         await repository.update_job(job)
 
         # Update remote URL with current token (in case token changed)
-        fetch_url = _build_authenticated_git_url(job.git_url, job.git_token)
+        fetch_url = build_authenticated_git_url(job.git_url, job.git_token)
         subprocess.run(
             ["git", "remote", "set-url", "origin", fetch_url],
             cwd=repo_dir,
@@ -1992,49 +1927,6 @@ class IndexerService:
             raise RuntimeError(f"Git reset failed: {reset_result.stderr}")
 
         logger.info("Fetch complete")
-
-    def _extract_archive(self, archive_path: Path, extract_dir: Path) -> None:
-        """Extract an archive file (zip, tar, tar.gz, tar.bz2) to a directory."""
-        filename_lower = archive_path.name.lower()
-
-        if filename_lower.endswith(".zip"):
-            with zipfile.ZipFile(archive_path, "r") as zf:
-                zf.extractall(extract_dir)
-        elif filename_lower.endswith((".tar.gz", ".tgz")):
-            with tarfile.open(archive_path, "r:gz") as tf:
-                tf.extractall(extract_dir, filter="data")
-        elif filename_lower.endswith((".tar.bz2", ".tbz2")):
-            with tarfile.open(archive_path, "r:bz2") as tf:
-                tf.extractall(extract_dir, filter="data")
-        elif filename_lower.endswith(".tar"):
-            with tarfile.open(archive_path, "r:") as tf:
-                tf.extractall(extract_dir, filter="data")
-        else:
-            raise ValueError(f"Unsupported archive format: {archive_path.name}")
-
-    def _find_source_dir(self, extract_dir: Path) -> Path:
-        """Find the actual source directory in extracted content."""
-        # If there's a single directory, use that
-        items = list(extract_dir.iterdir())
-        if len(items) == 1 and items[0].is_dir():
-            return items[0]
-        return extract_dir
-
-    def _should_include_file(self, file_path: Path, config: IndexConfig) -> bool:
-        """Check if a file should be included based on patterns."""
-        rel_path = str(file_path)
-
-        # Check excludes first
-        for pattern in config.exclude_patterns:
-            if fnmatch.fnmatch(rel_path, pattern):
-                return False
-
-        # Check includes
-        for pattern in config.file_patterns:
-            if fnmatch.fnmatch(rel_path, pattern):
-                return True
-
-        return False
 
     async def _stream_clone_progress(
         self, process: Any, job: IndexJob, timeout_seconds: int
@@ -2537,6 +2429,45 @@ class IndexerService:
         max_retries = 5
         db = None
 
+        # Get embedding model context limit dynamically from LiteLLM or Ollama API
+        from ragtime.core.embedding_models import get_embedding_model_context_limit
+        from ragtime.core.tokenization import count_tokens
+
+        max_allowed_tokens = await get_embedding_model_context_limit(
+            model_name=app_settings.embedding_model,
+            provider=app_settings.embedding_provider,
+            ollama_base_url=app_settings.ollama_base_url,
+        )
+        logger.debug(
+            f"Embedding model context limit: {max_allowed_tokens} tokens "
+            f"(provider: {app_settings.embedding_provider}, model: {app_settings.embedding_model})"
+        )
+
+        # Validate and truncate oversized chunks before embedding
+        # Some chunks may exceed the limit due to headers, overlap, or small files
+        # that weren't split but combined with headers exceed the limit
+        truncated_count = 0
+        for chunk in chunks:
+            tokens = count_tokens(chunk.page_content)
+            if tokens > max_allowed_tokens:
+                source = chunk.metadata.get("source", "unknown")
+                chunker = chunk.metadata.get("chunker", "unknown")
+                # Truncate to fit - rough estimate based on token ratio
+                content = chunk.page_content
+                target_chars = int(len(content) * (max_allowed_tokens / tokens) * 0.95)
+                chunk.page_content = content[:target_chars]
+                if truncated_count < 5:  # Log first 5
+                    logger.warning(
+                        f"Truncated oversized chunk from {tokens} to ~{max_allowed_tokens} tokens "
+                        f"(source: {source}, chunker: {chunker})"
+                    )
+                truncated_count += 1
+
+        if truncated_count > 0:
+            logger.warning(
+                f"Truncated {truncated_count} oversized chunks to fit embedding context limit"
+            )
+
         for i in range(0, len(chunks), batch_size):
             # Check for cancellation
             if self._is_cancelled(job.id):
@@ -2622,6 +2553,7 @@ class IndexerService:
             description=description,
             git_branch=job.git_branch if job.source_type == "git" else None,
             git_token=git_token,
+            vector_store_type=config.vector_store_type,
         )
 
         logger.info(f"Index {job.name} created successfully!")

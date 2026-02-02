@@ -1,9 +1,10 @@
 import { useState, useCallback, useEffect, type DragEvent, type ChangeEvent } from 'react';
 import { api } from '@/api';
-import type { IndexJob, IndexAnalysisResult, OcrMode } from '@/types';
+import type { IndexJob, IndexAnalysisResult, OcrMode, VectorStoreType } from '@/types';
 import { DescriptionField } from './DescriptionField';
 import { AnalysisStats } from './AnalysisStats';
 import { IndexConfigFields } from './IndexConfigFields';
+import { OcrVectorStoreFields } from './OcrVectorStoreFields';
 
 interface UploadFormProps {
   onJobCreated: () => void;
@@ -12,6 +13,8 @@ interface UploadFormProps {
   onAnalysisComplete?: () => void;
   /** Called when user wants to navigate to settings */
   onNavigateToSettings?: () => void;
+  /** If set, locks vector store type to match existing indexes */
+  existingVectorStoreType?: VectorStoreType | null;
 }
 
 type StatusType = 'info' | 'success' | 'error' | null;
@@ -28,7 +31,7 @@ function getIndexNameFromFile(filename: string): string {
     .toLowerCase();
 }
 
-export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysisComplete, onNavigateToSettings }: UploadFormProps) {
+export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysisComplete, onNavigateToSettings, existingVectorStoreType }: UploadFormProps) {
   const [file, setFile] = useState<File | null>(null);
   const [indexName, setIndexName] = useState('');
   const [description, setDescription] = useState('');
@@ -50,6 +53,8 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
   const [maxFileSizeKb, setMaxFileSizeKb] = useState(500);
   const [ocrMode, setOcrMode] = useState<OcrMode>('disabled');
   const [ocrVisionModel, setOcrVisionModel] = useState('');
+  // Use existing vector store type if available (locked after first index), otherwise default to 'faiss'
+  const [vectorStoreType, setVectorStoreType] = useState<VectorStoreType>(existingVectorStoreType ?? 'faiss');
   const [ollamaAvailable, setOllamaAvailable] = useState(false);  // Whether Ollama is configured as LLM provider
   const [exclusionsApplied, setExclusionsApplied] = useState(false);
   const [patternsExpanded, setPatternsExpanded] = useState(false);
@@ -70,9 +75,11 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
     setMaxFileSizeKb(500);
     setOcrMode('disabled');
     setOcrVisionModel('');
+    // Reset to existing vector store type or default
+    setVectorStoreType(existingVectorStoreType ?? 'faiss');
     setExclusionsApplied(false);
     setPatternsExpanded(false);
-  }, []);
+  }, [existingVectorStoreType]);
 
   // Fetch settings to check if Ollama OCR is configured
   useEffect(() => {
@@ -195,6 +202,7 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
       formData.append('chunk_size', String(chunkSize));
       formData.append('chunk_overlap', String(chunkOverlap));
       formData.append('ocr_mode', ocrMode);
+      formData.append('vector_store_type', vectorStoreType);
       if (ocrMode === 'ollama' && ocrVisionModel) {
         formData.append('ocr_vision_model', ocrVisionModel);
       }
@@ -267,6 +275,16 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
               Index name will be derived from the archive filename. Click "Analyze" to preview the index before creating.
             </p>
 
+            <OcrVectorStoreFields
+              isLoading={isLoading}
+              ocrMode={ocrMode}
+              setOcrMode={setOcrMode}
+              ollamaAvailable={ollamaAvailable}
+              vectorStoreType={vectorStoreType}
+              setVectorStoreType={setVectorStoreType}
+              vectorStoreDisabled={!!existingVectorStoreType}
+            />
+
             <details style={{ marginBottom: '16px' }}>
               <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Options</summary>
               <IndexConfigFields
@@ -281,9 +299,6 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
                 setChunkOverlap={setChunkOverlap}
                 maxFileSizeKb={maxFileSizeKb}
                 setMaxFileSizeKb={setMaxFileSizeKb}
-                ocrMode={ocrMode as any}
-                setOcrMode={setOcrMode as any}
-                ollamaAvailable={ollamaAvailable}
               />
             </details>
 
@@ -446,22 +461,32 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
             compact
           />
 
-          <IndexConfigFields
+          <OcrVectorStoreFields
             isLoading={isLoading}
-            filePatterns={filePatterns}
-            setFilePatterns={setFilePatterns}
-            excludePatterns={excludePatterns}
-            setExcludePatterns={setExcludePatterns}
-            chunkSize={chunkSize}
-            setChunkSize={setChunkSize}
-            chunkOverlap={chunkOverlap}
-            setChunkOverlap={setChunkOverlap}
-            maxFileSizeKb={maxFileSizeKb}
-            setMaxFileSizeKb={setMaxFileSizeKb}
-            ocrMode={ocrMode as any}
-            setOcrMode={setOcrMode as any}
+            ocrMode={ocrMode}
+            setOcrMode={setOcrMode}
             ollamaAvailable={ollamaAvailable}
+            vectorStoreType={vectorStoreType}
+            setVectorStoreType={setVectorStoreType}
+            vectorStoreDisabled={!!existingVectorStoreType}
           />
+
+          <details style={{ marginBottom: '16px' }}>
+            <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Options</summary>
+            <IndexConfigFields
+              isLoading={isLoading}
+              filePatterns={filePatterns}
+              setFilePatterns={setFilePatterns}
+              excludePatterns={excludePatterns}
+              setExcludePatterns={setExcludePatterns}
+              chunkSize={chunkSize}
+              setChunkSize={setChunkSize}
+              chunkOverlap={chunkOverlap}
+              setChunkOverlap={setChunkOverlap}
+              maxFileSizeKb={maxFileSizeKb}
+              setMaxFileSizeKb={setMaxFileSizeKb}
+            />
+          </details>
         </details>
 
         {/* Wizard actions */}

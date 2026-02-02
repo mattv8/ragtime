@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ragtime.config import settings
 from ragtime.core.logging import get_logger
-from ragtime.indexer.models import FilesystemVectorStoreType
+from ragtime.indexer.models import VectorStoreType
 
 logger = get_logger(__name__)
 
@@ -306,9 +306,19 @@ class FaissBackend(VectorStoreBackend):
         # Loaded FAISS indexes: {index_name: FAISS vectorstore}
         self._loaded_indexes: Dict[str, Any] = {}
 
+    def _sanitize_index_name(self, index_name: str) -> str:
+        """Sanitize index name for safe filesystem usage."""
+        import re
+
+        # Replace any non-alphanumeric chars (except underscore/hyphen) with underscore
+        safe_name = re.sub(r"[^a-zA-Z0-9_-]+", "_", index_name).strip("_").lower()
+        return safe_name or "default"
+
     def _get_index_path(self, index_name: str) -> Path:
         """Get the filesystem path for a FAISS index."""
-        return FAISS_INDEX_BASE_PATH / index_name
+        # Sanitize index name to prevent filesystem issues with spaces/special chars
+        safe_name = self._sanitize_index_name(index_name)
+        return FAISS_INDEX_BASE_PATH / safe_name
 
     async def store_embeddings(
         self,
@@ -642,8 +652,8 @@ def get_faiss_backend() -> FaissBackend:
     return _faiss_backend
 
 
-def get_backend(vector_store_type: FilesystemVectorStoreType) -> VectorStoreBackend:
+def get_backend(vector_store_type: VectorStoreType) -> VectorStoreBackend:
     """Get the appropriate backend for the given type."""
-    if vector_store_type == FilesystemVectorStoreType.FAISS:
+    if vector_store_type == VectorStoreType.FAISS:
         return get_faiss_backend()
     return get_pgvector_backend()

@@ -225,6 +225,7 @@ export interface IndexConfig {
   chunk_overlap: number;
   max_file_size_kb?: number;  // Max file size in KB (default 500)
   embedding_model?: string;
+  vector_store_type?: VectorStoreType;  // Vector store backend: faiss (default) or pgvector
   ocr_mode?: OcrMode;  // OCR mode: disabled, tesseract, or ollama
   ocr_vision_model?: string;  // Ollama vision model for OCR
   git_clone_timeout_minutes?: number;  // Max time for git clone (default 5 min)
@@ -245,6 +246,7 @@ export interface IndexJob {
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
+  vector_store_type?: VectorStoreType;  // Vector store backend used
 }
 
 export interface IndexConfigSnapshot {
@@ -281,6 +283,8 @@ export interface IndexInfo {
   // Git history info
   git_repo_size_mb: number | null;  // Size of .git_repo directory (disk)
   has_git_history: boolean;  // True if .git_repo exists with history
+  // Vector store backend
+  vector_store_type?: VectorStoreType;  // faiss (default) or pgvector
 }
 
 export interface UpdateIndexConfigRequest {
@@ -665,8 +669,8 @@ export type ToolType = 'postgres' | 'mysql' | 'mssql' | 'odoo_shell' | 'ssh_shel
 // Mount type for filesystem indexer
 export type FilesystemMountType = 'docker_volume' | 'smb' | 'nfs' | 'local';
 
-// Vector store type for filesystem indexer
-export type FilesystemVectorStoreType = 'pgvector' | 'faiss';
+// Vector store type for indexes (document and filesystem)
+export type VectorStoreType = 'pgvector' | 'faiss';
 
 // SSH Tunnel configuration (shared across database tools)
 export interface SSHTunnelConfig {
@@ -788,7 +792,7 @@ export interface FilesystemConnectionConfig {
   chunk_overlap?: number;
 
   // Vector store backend selection
-  vector_store_type?: FilesystemVectorStoreType;
+  vector_store_type?: VectorStoreType;
 
   // Safety limits
   max_file_size_mb?: number;

@@ -12,7 +12,7 @@ import type {
   SSHShellConnectionConfig,
   FilesystemConnectionConfig,
   FilesystemMountType,
-  FilesystemVectorStoreType,
+  VectorStoreType,
   ConnectionConfig,
   MountInfo,
   DirectoryEntry,
@@ -4732,7 +4732,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
             <label>Vector Store</label>
             <select
               value={filesystemConfig.vector_store_type || 'pgvector'}
-              onChange={(e) => setFilesystemConfig({ ...filesystemConfig, vector_store_type: e.target.value as FilesystemVectorStoreType })}
+              onChange={(e) => setFilesystemConfig({ ...filesystemConfig, vector_store_type: e.target.value as VectorStoreType })}
               disabled={isEditing}
             >
               <option value="pgvector">pgvector (PostgreSQL)</option>

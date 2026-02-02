@@ -83,7 +83,7 @@ model IndexJob {
   @@map("index_jobs")
 }
 
-/// Metadata for a FAISS index on disk
+/// Metadata for a document index (upload or git source)
 model IndexMetadata {
   id            String   @id @default(uuid())
   name          String   @unique // Safe tool name (lowercase, alphanumeric with underscores)
@@ -95,6 +95,9 @@ model IndexMetadata {
   sizeBytes     BigInt   @default(0) @map("size_bytes")
   enabled       Boolean  @default(true) // Include in RAG context
   searchWeight  Float    @default(1.0) @map("search_weight") // Weighting for search prioritization (0.0-10.0)
+
+  // Vector store backend selection
+  vectorStoreType VectorStoreType @default(faiss) @map("vector_store_type") // faiss (default) or pgvector
 
   // Memory tracking (observed during loading)
   embeddingDimension  Int?    @map("embedding_dimension") // Dimension of vectors in this index
@@ -234,10 +237,10 @@ enum FilesystemMountType {
   local          // Direct local path (container must have access)
 }
 
-/// Vector store type for filesystem indexes
-enum FilesystemVectorStoreType {
-  pgvector  // PostgreSQL pgvector - persistent, scalable (default)
-  faiss     // FAISS - in-memory, loaded at startup like document indexes
+/// Vector store type for indexes (document and filesystem)
+enum VectorStoreType {
+  pgvector  // PostgreSQL pgvector - persistent, scalable
+  faiss     // FAISS - in-memory, loaded at startup
 }
 
 /// Configuration for a tool instance

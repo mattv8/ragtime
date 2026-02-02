@@ -16,6 +16,7 @@ from typing import Any, List, Optional, cast
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexStatus as PrismaIndexStatus
 from prisma.enums import ToolType as PrismaToolType
+from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
@@ -44,6 +45,7 @@ from ragtime.indexer.models import (
     ToolConfig,
     ToolOutputMode,
     ToolType,
+    VectorStoreType,
 )
 from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 
@@ -126,6 +128,20 @@ def _to_prisma_index_status(status: IndexStatus) -> PrismaIndexStatus:
 def _to_prisma_tool_type(tool_type: ToolType) -> PrismaToolType:
     """Convert model ToolType to Prisma ToolType."""
     return PrismaToolType(tool_type.value)
+
+
+def _to_prisma_vector_store_type(
+    store_type: VectorStoreType,
+) -> PrismaVectorStoreType:
+    """Convert model VectorStoreType to Prisma enum."""
+    return PrismaVectorStoreType(store_type.value)
+
+
+def _from_prisma_vector_store_type(
+    store_type: PrismaVectorStoreType,
+) -> VectorStoreType:
+    """Convert Prisma vector store enum to model VectorStoreType."""
+    return VectorStoreType(store_type.value)
 
 
 def _to_prisma_task_status(status: ChatTaskStatus) -> PrismaChatTaskStatus:
@@ -320,6 +336,7 @@ class IndexerRepository:
         git_branch: Optional[str] = None,
         git_token: Optional[str] = None,
         display_name: Optional[str] = None,
+        vector_store_type: VectorStoreType = VectorStoreType.FAISS,
     ) -> None:
         """Create or update index metadata."""
         db = await self._get_db()
@@ -327,6 +344,7 @@ class IndexerRepository:
         # Build create/update data - only include configSnapshot if it has a value
         # Encrypt gitToken for secure storage
         encrypted_git_token = encrypt_secret(git_token) if git_token else None
+        prisma_vector_store_type = _to_prisma_vector_store_type(vector_store_type)
 
         create_data: dict = {
             "name": name,
@@ -340,6 +358,7 @@ class IndexerRepository:
             "source": source,
             "gitBranch": git_branch,
             "gitToken": encrypted_git_token,
+            "vectorStoreType": prisma_vector_store_type,
             "createdAt": datetime.utcnow(),
             "lastModified": datetime.utcnow(),
         }
@@ -353,6 +372,7 @@ class IndexerRepository:
             "source": source,
             "gitBranch": git_branch,
             "gitToken": encrypted_git_token,
+            "vectorStoreType": prisma_vector_store_type,
             "lastModified": datetime.utcnow(),
         }
 
