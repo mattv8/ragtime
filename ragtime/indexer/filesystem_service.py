@@ -58,6 +58,7 @@ from ragtime.indexer.vector_backends import (
     get_pgvector_backend,
 )
 from ragtime.indexer.vector_utils import (
+    embed_documents_subbatched,
     ensure_embedding_column,
     ensure_pgvector_extension,
     get_embeddings_model,
@@ -1471,10 +1472,12 @@ class FilesystemIndexerService:
                                 f"embedding context limit (safety_margin={safety_margin:.0%})"
                             )
 
-                        # Generate embeddings for all chunks at once
+                        # Generate embeddings in sub-batches to keep event loop responsive
                         try:
-                            all_embeddings = await asyncio.to_thread(
-                                embeddings.embed_documents, all_chunks
+                            all_embeddings = await embed_documents_subbatched(
+                                embeddings,
+                                all_chunks,
+                                logger_override=logger,
                             )
                         except Exception as e:
                             logger.error(f"Batch embedding failed: {e}")

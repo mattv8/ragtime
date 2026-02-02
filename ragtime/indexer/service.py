@@ -2538,7 +2538,9 @@ class IndexerService:
         )
 
         # Process in batches to show progress and throttle embedding calls
-        batch_size = 50
+        from ragtime.indexer.vector_utils import EMBEDDING_SUB_BATCH_SIZE
+
+        batch_size = EMBEDDING_SUB_BATCH_SIZE
         batch_pause_seconds = 0.5
         max_retries = 5
         db = None

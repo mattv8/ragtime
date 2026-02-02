@@ -35,6 +35,8 @@ from ragtime.indexer.models import (
 )
 from ragtime.indexer.repository import repository
 from ragtime.indexer.vector_utils import (
+    EMBEDDING_SUB_BATCH_SIZE,
+    embed_documents_subbatched,
     ensure_embedding_column,
     ensure_pgvector_extension,
     get_embeddings_model,
@@ -950,7 +952,6 @@ class PdmIndexerService:
 
             # Process documents in batches using optimized extraction
             extraction_batch_size = 1000  # Documents per SQL batch
-            embedding_batch_size = 50  # Documents per embedding batch
             processed = 0
             skipped = 0
             extracted = 0
@@ -997,7 +998,7 @@ class PdmIndexerService:
                     embedding_batch.append(doc)
 
                     # Process embedding batch when full
-                    if len(embedding_batch) >= embedding_batch_size:
+                    if len(embedding_batch) >= EMBEDDING_SUB_BATCH_SIZE:
                         job.current_step = (
                             f"Generating embeddings ({processed}/{doc_count - skipped})"
                         )
@@ -1081,8 +1082,10 @@ class PdmIndexerService:
         # Generate text content for each document
         texts = [doc.to_embedding_text() for doc in documents]
 
-        # Generate embeddings
-        doc_embeddings = await asyncio.to_thread(embeddings.embed_documents, texts)
+        # Generate embeddings in sub-batches to keep event loop responsive
+        doc_embeddings = await embed_documents_subbatched(
+            embeddings, texts, logger_override=logger
+        )
 
         # Store embeddings and metadata
         for doc, text, embedding in zip(documents, texts, doc_embeddings):

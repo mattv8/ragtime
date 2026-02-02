@@ -188,6 +188,69 @@ async def ensure_embedding_column(
         raise RuntimeError(error_msg) from exc
 
 
+# =============================================================================
+# Sub-batched Embedding (Event Loop Friendly)
+# =============================================================================
+
+# Maximum chunks per embedding API call to avoid blocking too long
+EMBEDDING_SUB_BATCH_SIZE = 50
+
+
+async def embed_documents_subbatched(
+    embeddings,
+    texts: List[str],
+    *,
+    sub_batch_size: int = EMBEDDING_SUB_BATCH_SIZE,
+    logger_override=None,
+) -> List[List[float]]:
+    """Generate embeddings in sub-batches with event loop yields.
+
+    This prevents long-running embedding calls from blocking the event loop,
+    keeping the server responsive during large indexing jobs.
+
+    Args:
+        embeddings: The embedding model instance (OllamaEmbeddings, OpenAIEmbeddings, etc.)
+        texts: List of text chunks to embed
+        sub_batch_size: Number of chunks per API call (default 50)
+        logger_override: Optional logger for sub-batch progress
+
+    Returns:
+        List of embedding vectors matching the input texts
+    """
+    import asyncio
+
+    log = logger_override or logger
+
+    if not texts:
+        return []
+
+    all_embeddings: List[List[float]] = []
+    total = len(texts)
+
+    for batch_start in range(0, total, sub_batch_size):
+        batch_end = min(batch_start + sub_batch_size, total)
+        batch_texts = texts[batch_start:batch_end]
+
+        # Generate embeddings for this sub-batch
+        batch_embeddings = await asyncio.to_thread(
+            embeddings.embed_documents, batch_texts
+        )
+        all_embeddings.extend(batch_embeddings)
+
+        # Yield to event loop after each sub-batch to keep server responsive
+        await asyncio.sleep(0)
+
+        # Log progress for large batches
+        if total > sub_batch_size * 2:
+            log.debug(
+                f"Embedded sub-batch {batch_start // sub_batch_size + 1}/"
+                f"{(total + sub_batch_size - 1) // sub_batch_size} "
+                f"({batch_end}/{total} chunks)"
+            )
+
+    return all_embeddings
+
+
 async def get_embeddings_model(
     settings: Any,
     *,
