@@ -72,17 +72,14 @@ export function App() {
   // Filesystem indexer state
   const [_filesystemTools, setFilesystemTools] = useState<ToolConfig[]>([]);
   const [filesystemJobs, setFilesystemJobs] = useState<FilesystemIndexJob[]>([]);
-  const filesystemPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [aggregateSearch, setAggregateSearch] = useState(true);
   const [embeddingDimensions, setEmbeddingDimensions] = useState<number | null>(null);
 
   // Schema indexer state
   const [schemaJobs, setSchemaJobs] = useState<SchemaIndexJob[]>([]);
-  const schemaPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // PDM indexer state
   const [pdmJobs, setPdmJobs] = useState<PdmIndexJob[]>([]);
-  const pdmPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Configuration warnings state
   const [configurationWarnings, setConfigurationWarnings] = useState<ConfigurationWarning[]>([]);
@@ -336,7 +333,7 @@ export function App() {
     }
   }, [currentUser, isAdmin, loadJobs, loadIndexes, loadFilesystemJobs, loadSchemaJobs, loadPdmJobs]);
 
-  // Fast polling for active filesystem jobs
+  // Auto-refresh: fast polling when filesystem jobs are active, slow background refresh otherwise
   useEffect(() => {
     if (!currentUser || !isAdmin) return;
 
@@ -344,23 +341,16 @@ export function App() {
       j => j.status === 'pending' || j.status === 'indexing'
     );
 
-    if (hasActiveFilesystemJob) {
-      filesystemPollRef.current = setInterval(loadFilesystemJobs, 2000);
-    } else {
-      if (filesystemPollRef.current) {
-        clearInterval(filesystemPollRef.current);
-        filesystemPollRef.current = null;
-      }
-    }
+    const pollInterval = hasActiveFilesystemJob ? 2000 : 30000;
 
-    return () => {
-      if (filesystemPollRef.current) {
-        clearInterval(filesystemPollRef.current);
-      }
-    };
+    const interval = setInterval(() => {
+      loadFilesystemJobs();
+    }, pollInterval);
+
+    return () => clearInterval(interval);
   }, [currentUser, isAdmin, filesystemJobs, loadFilesystemJobs]);
 
-  // Fast polling for active schema jobs
+  // Auto-refresh: fast polling when schema jobs are active, slow background refresh otherwise
   useEffect(() => {
     if (!currentUser || !isAdmin) return;
 
@@ -368,23 +358,16 @@ export function App() {
       j => j.status === 'pending' || j.status === 'indexing'
     );
 
-    if (hasActiveSchemaJob) {
-      schemaPollRef.current = setInterval(loadSchemaJobs, 2000);
-    } else {
-      if (schemaPollRef.current) {
-        clearInterval(schemaPollRef.current);
-        schemaPollRef.current = null;
-      }
-    }
+    const pollInterval = hasActiveSchemaJob ? 2000 : 30000;
 
-    return () => {
-      if (schemaPollRef.current) {
-        clearInterval(schemaPollRef.current);
-      }
-    };
+    const interval = setInterval(() => {
+      loadSchemaJobs();
+    }, pollInterval);
+
+    return () => clearInterval(interval);
   }, [currentUser, isAdmin, schemaJobs, loadSchemaJobs]);
 
-  // Fast polling for active PDM jobs
+  // Auto-refresh: fast polling when PDM jobs are active, slow background refresh otherwise
   useEffect(() => {
     if (!currentUser || !isAdmin) return;
 
@@ -392,20 +375,13 @@ export function App() {
       j => j.status === 'pending' || j.status === 'indexing'
     );
 
-    if (hasActivePdmJob) {
-      pdmPollRef.current = setInterval(loadPdmJobs, 2000);
-    } else {
-      if (pdmPollRef.current) {
-        clearInterval(pdmPollRef.current);
-        pdmPollRef.current = null;
-      }
-    }
+    const pollInterval = hasActivePdmJob ? 2000 : 30000;
 
-    return () => {
-      if (pdmPollRef.current) {
-        clearInterval(pdmPollRef.current);
-      }
-    };
+    const interval = setInterval(() => {
+      loadPdmJobs();
+    }, pollInterval);
+
+    return () => clearInterval(interval);
   }, [currentUser, isAdmin, pdmJobs, loadPdmJobs]);
 
   // Auto-refresh: fast polling when jobs are active, slow background refresh otherwise
