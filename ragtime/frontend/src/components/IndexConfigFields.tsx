@@ -26,8 +26,6 @@ interface IndexConfigFieldsProps {
   gitCloneTimeoutMinutes?: number;
   setGitCloneTimeoutMinutes?: (val: number) => void;
   setTimeoutManuallySet?: (val: boolean) => void;
-  reindexIntervalHours?: number;
-  setReindexIntervalHours?: (val: number) => void;
   gitHistoryDepth?: number;
   setGitHistoryDepth?: (val: number) => void;
 
@@ -60,8 +58,6 @@ export function IndexConfigFields({
   gitCloneTimeoutMinutes,
   setGitCloneTimeoutMinutes,
   setTimeoutManuallySet,
-  reindexIntervalHours,
-  setReindexIntervalHours,
   gitHistoryDepth,
   setGitHistoryDepth,
   commitHistory,
@@ -151,24 +147,6 @@ export function IndexConfigFields({
               disabled={isLoading}
             />
             <small style={{ color: '#888', fontSize: '0.8rem' }}>Auto-scales with history depth</small>
-          </div>
-        )}
-
-        {reindexIntervalHours !== undefined && setReindexIntervalHours && (
-          <div className="form-group">
-            <label>Auto Re-index Interval</label>
-            <select
-              value={reindexIntervalHours}
-              onChange={(e) => setReindexIntervalHours(parseInt(e.target.value, 10))}
-              disabled={isLoading}
-            >
-              <option value={0}>Manual only</option>
-              <option value={1}>Every hour</option>
-              <option value={6}>Every 6 hours</option>
-              <option value={12}>Every 12 hours</option>
-              <option value={24}>Every 24 hours (daily)</option>
-              <option value={168}>Every week</option>
-            </select>
           </div>
         )}
       </div>

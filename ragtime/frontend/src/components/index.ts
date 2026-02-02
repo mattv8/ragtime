@@ -28,3 +28,4 @@ export { SuggestedExclusionsBanner } from './SuggestedExclusionsBanner';
 export { WarningsBanner } from './WarningsBanner';
 export { OcrVectorStoreFields } from './OcrVectorStoreFields';
 export { IndexConfigFields } from './IndexConfigFields';
+export { ReindexIntervalSelect } from './ReindexIntervalSelect';

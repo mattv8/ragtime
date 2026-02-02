@@ -24,6 +24,7 @@ import { OcrVectorStoreFields } from './OcrVectorStoreFields';
 import { FileTypeStatsTable } from './FileTypeStatsTable';
 import { SuggestedExclusionsBanner } from './SuggestedExclusionsBanner';
 import { WarningsBanner } from './WarningsBanner';
+import { ReindexIntervalSelect } from './ReindexIntervalSelect';
 
 // System mounts to filter out from the "Available Mounts" display
 // These are internal container mounts not useful for user filesystem indexing
@@ -4648,6 +4649,13 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           vectorStoreDisabled={isEditing}
         />
 
+        {/* Auto Re-index Interval - visible outside Advanced section */}
+        <ReindexIntervalSelect
+          value={filesystemConfig.reindex_interval_hours ?? 24}
+          onChange={(val) => setFilesystemConfig({ ...filesystemConfig, reindex_interval_hours: val })}
+          style={{ marginTop: '1rem', marginBottom: '1rem', maxWidth: '300px' }}
+        />
+
         {/* Advanced Indexing & Safety - appears after analysis results so "Apply All" can reveal updated exclusions */}
         <details open={fsAdvancedOpen} onToggle={(e) => setFsAdvancedOpen((e.target as HTMLDetailsElement).open)} style={{ marginTop: '1rem' }}>
           <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '0.5rem' }}>
@@ -4742,17 +4750,6 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 min={1}
                 max={100000}
               />
-            </div>
-            <div className="form-group" style={{ flex: 1 }}>
-              <label>Re-index Interval (hours)</label>
-              <input
-                type="number"
-                value={filesystemConfig.reindex_interval_hours || 24}
-                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, reindex_interval_hours: parseInt(e.target.value) || 24 })}
-                min={0}
-                max={8760}
-              />
-              <p className="field-help">0 = manual only</p>
             </div>
           </div>
 

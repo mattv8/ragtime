@@ -7,6 +7,7 @@ import { OcrVectorStoreFields } from './OcrVectorStoreFields';
 import { FileTypeStatsTable } from './FileTypeStatsTable';
 import { SuggestedExclusionsBanner } from './SuggestedExclusionsBanner';
 import { WarningsBanner } from './WarningsBanner';
+import { ReindexIntervalSelect } from './ReindexIntervalSelect';
 
 type StatusType = 'info' | 'success' | 'error' | null;
 type WizardStep = 'input' | 'analyzing' | 'review' | 'indexing';
@@ -596,35 +597,43 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           <div><strong>Source:</strong> {editIndex.source}</div>
         </div>
 
-        <div className="form-group">
-          <label>
-            Branch
-            {loadingBranches && (
-              <span style={{ marginLeft: '0.5rem', color: '#888', fontSize: '0.85em' }}>(loading...)</span>
+        <div style={{ display: 'flex', gap: '16px', marginBottom: '16px' }}>
+          <div className="form-group" style={{ flex: 2 }}>
+            <label>
+              Branch
+              {loadingBranches && (
+                <span style={{ marginLeft: '0.5rem', color: '#888', fontSize: '0.85em' }}>(loading...)</span>
+              )}
+            </label>
+            {branches.length > 0 ? (
+              <select
+                value={selectedBranch}
+                onChange={(e) => setSelectedBranch(e.target.value)}
+                style={{ width: '100%' }}
+                disabled={isLoading}
+              >
+                {branches.map((branch) => (
+                  <option key={branch} value={branch}>
+                    {branch}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={selectedBranch}
+                onChange={(e) => setSelectedBranch(e.target.value)}
+                placeholder={branchError ? 'Enter branch name' : 'main'}
+                disabled={isLoading}
+              />
             )}
-          </label>
-          {branches.length > 0 ? (
-            <select
-              value={selectedBranch}
-              onChange={(e) => setSelectedBranch(e.target.value)}
-              style={{ width: '100%' }}
-              disabled={isLoading}
-            >
-              {branches.map((branch) => (
-                <option key={branch} value={branch}>
-                  {branch}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <input
-              type="text"
-              value={selectedBranch}
-              onChange={(e) => setSelectedBranch(e.target.value)}
-              placeholder={branchError ? 'Enter branch name' : 'main'}
-              disabled={isLoading}
-            />
-          )}
+          </div>
+          <ReindexIntervalSelect
+            value={reindexIntervalHours}
+            onChange={setReindexIntervalHours}
+            disabled={isLoading}
+            style={{ flex: 1 }}
+          />
         </div>
 
         <OcrVectorStoreFields
@@ -683,8 +692,6 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
             gitCloneTimeoutMinutes={gitCloneTimeoutMinutes}
             setGitCloneTimeoutMinutes={setGitCloneTimeoutMinutes}
             setTimeoutManuallySet={setTimeoutManuallySet}
-            reindexIntervalHours={reindexIntervalHours}
-            setReindexIntervalHours={setReindexIntervalHours}
           />
         </details>
 
@@ -707,7 +714,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
   if (wizardStep === 'input' || wizardStep === 'analyzing') {
     return (
       <div>
-        <div className="row">
+        <div style={{ display: 'flex', gap: '16px', marginBottom: '16px' }}>
           <div className="form-group" style={{ flex: 2 }}>
             <label>Git URL *</label>
             <input
@@ -753,6 +760,12 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
               </small>
             )}
           </div>
+          <ReindexIntervalSelect
+            value={reindexIntervalHours}
+            onChange={setReindexIntervalHours}
+            disabled={isLoading}
+            style={{ flex: 1 }}
+          />
         </div>
 
         <p className="field-help" style={{ marginBottom: '16px' }}>
@@ -885,8 +898,6 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
             gitCloneTimeoutMinutes={gitCloneTimeoutMinutes}
             setGitCloneTimeoutMinutes={setGitCloneTimeoutMinutes}
             setTimeoutManuallySet={setTimeoutManuallySet}
-            reindexIntervalHours={reindexIntervalHours}
-            setReindexIntervalHours={setReindexIntervalHours}
           />
         </details>
 
@@ -942,6 +953,14 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           vectorStoreType={vectorStoreType}
           setVectorStoreType={setVectorStoreType}
           vectorStoreDisabled={!!existingVectorStoreType}
+        />
+
+        {/* Auto Re-index Interval - visible outside Advanced Options */}
+        <ReindexIntervalSelect
+          value={reindexIntervalHours}
+          onChange={setReindexIntervalHours}
+          disabled={isLoading}
+          style={{ marginBottom: '16px', maxWidth: '300px' }}
         />
 
         {/* Git History Depth - outside Advanced Options for prominence */}
@@ -1002,8 +1021,6 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
             gitCloneTimeoutMinutes={gitCloneTimeoutMinutes}
             setGitCloneTimeoutMinutes={setGitCloneTimeoutMinutes}
             setTimeoutManuallySet={setTimeoutManuallySet}
-            reindexIntervalHours={reindexIntervalHours}
-            setReindexIntervalHours={setReindexIntervalHours}
           />
 
           <button type="button" className="btn btn-secondary" onClick={handleReanalyze} disabled={isLoading} style={{ marginTop: '8px' }}>
