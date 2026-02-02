@@ -303,9 +303,11 @@ async def _stream_response_tokens(
                 # Detect language for syntax highlighting
                 lang = _detect_code_language(tool_name, tool_input)
 
-                # Simple blockquote format - universally compatible
+                # Collapsible details tag for Open WebUI compatibility
                 header = (
-                    f"\n\n> **Using {tool_name}**\n\n```{lang}\n{input_display}\n```\n"
+                    f'\n\n<details type="tool_call" done="false">\n'
+                    f"<summary>Using {tool_name}</summary>\n\n"
+                    f"```{lang}\n{input_display}\n```\n"
                 )
                 yield make_chunk(header)
 
@@ -316,12 +318,16 @@ async def _stream_response_tokens(
 
                 # Skip tool output if suppressed
                 if suppress_tool_output:
+                    # Still need to close the details tag
+                    yield make_chunk("\n</details>\n\n")
                     continue
 
                 output_display = _format_tool_output(str(tool_output))
 
-                # Simple format for result
-                footer = f"\n> **Result:**\n\n```\n{output_display}\n```\n\n"
+                # Close the details tag with the result
+                footer = (
+                    f"\n**Result:**\n\n```\n{output_display}\n```\n\n</details>\n\n"
+                )
                 yield make_chunk(footer)
 
             elif event_type == "max_iterations_reached":
