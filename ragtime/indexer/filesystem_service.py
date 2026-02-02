@@ -935,6 +935,62 @@ class FilesystemIndexerService:
             },
         )
 
+    async def _upsert_file_metadata_batch(
+        self, metadata_list: List[FilesystemFileMetadata]
+    ) -> int:
+        """Batch upsert file metadata for tracking.
+
+        Uses raw SQL with ON CONFLICT for efficient batch upserts.
+        Returns the number of records upserted.
+        """
+        if not metadata_list:
+            return 0
+
+        db = await get_db()
+        batch_size = 100
+        total_upserted = 0
+
+        for batch_start in range(0, len(metadata_list), batch_size):
+            batch = metadata_list[batch_start : batch_start + batch_size]
+            values_list = []
+
+            for meta in batch:
+                meta_id = meta.id or str(uuid.uuid4())
+                escaped_index = meta.index_name.replace("'", "''")
+                escaped_path = meta.file_path.replace("'", "''")
+                escaped_hash = meta.file_hash.replace("'", "''")
+                mime_type = (
+                    f"'{meta.mime_type.replace(chr(39), chr(39)+chr(39))}'"
+                    if meta.mime_type
+                    else "NULL"
+                )
+                indexed_at = meta.last_indexed.strftime("%Y-%m-%d %H:%M:%S")
+
+                values_list.append(
+                    f"('{meta_id}', '{escaped_index}', '{escaped_path}', "
+                    f"'{escaped_hash}', {meta.file_size}, {mime_type}, "
+                    f"{meta.chunk_count}, '{indexed_at}')"
+                )
+
+            if values_list:
+                values_sql = ",\n".join(values_list)
+                await db.execute_raw(
+                    f"""
+                    INSERT INTO filesystem_file_metadata
+                    (id, index_name, file_path, file_hash, file_size, mime_type, chunk_count, last_indexed)
+                    VALUES {values_sql}
+                    ON CONFLICT (index_name, file_path) DO UPDATE SET
+                        file_hash = EXCLUDED.file_hash,
+                        file_size = EXCLUDED.file_size,
+                        mime_type = EXCLUDED.mime_type,
+                        chunk_count = EXCLUDED.chunk_count,
+                        last_indexed = EXCLUDED.last_indexed
+                    """
+                )
+                total_upserted += len(batch)
+
+        return total_upserted
+
     async def _delete_file_embeddings(
         self,
         index_name: str,
@@ -1005,30 +1061,40 @@ class FilesystemIndexerService:
 
         # Serialize metadata to JSON string
         metadata_json = json.dumps(metadata).replace("'", "''")
+        escaped_file_path = file_path.replace("'", "''")
 
+        # Batch insert for better performance
+        batch_size = 100
         inserted = 0
-        for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-            embedding_id = str(uuid.uuid4())
-            embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
 
-            # Insert using raw SQL because Prisma doesn't support vector type
-            await db.execute_raw(
-                f"""
-                INSERT INTO filesystem_embeddings
-                (id, index_name, file_path, chunk_index, content, metadata, embedding, created_at)
-                VALUES (
-                    '{embedding_id}',
-                    '{index_name}',
-                    '{file_path.replace("'", "''")}',
-                    {i},
-                    '{chunk.replace("'", "''")}',
-                    '{metadata_json}'::jsonb,
-                    '{embedding_str}'::vector,
-                    NOW()
+        for batch_start in range(0, len(chunks), batch_size):
+            batch_end = min(batch_start + batch_size, len(chunks))
+            values_list = []
+
+            for i in range(batch_start, batch_end):
+                chunk = chunks[i]
+                embedding = embeddings[i]
+                embedding_id = str(uuid.uuid4())
+                embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
+                escaped_chunk = chunk.replace("'", "''")
+
+                values_list.append(
+                    f"('{embedding_id}', '{index_name}', '{escaped_file_path}', {i}, "
+                    f"'{escaped_chunk}', '{metadata_json}'::jsonb, "
+                    f"'{embedding_str}'::vector, NOW())"
                 )
-            """
-            )
-            inserted += 1
+
+            if values_list:
+                values_sql = ",\n".join(values_list)
+                # Insert using raw SQL because Prisma doesn't support vector type
+                await db.execute_raw(
+                    f"""
+                    INSERT INTO filesystem_embeddings
+                    (id, index_name, file_path, chunk_index, content, metadata, embedding, created_at)
+                    VALUES {values_sql}
+                    """
+                )
+                inserted += len(values_list)
 
         return inserted
 
@@ -1074,6 +1140,22 @@ class FilesystemIndexerService:
 
             # Initialize embeddings
             embeddings = await self._get_embeddings(app_settings)
+
+            # Get embedding model context limit for chunk validation
+            # (same as document indexer to ensure oversized chunks are truncated)
+            from ragtime.core.embedding_models import get_embedding_model_context_limit
+            from ragtime.core.tokenization import count_tokens
+
+            embedding_context_limit = await get_embedding_model_context_limit(
+                model_name=app_settings.get("embedding_model", "nomic-embed-text"),
+                provider=app_settings.get("embedding_provider", "ollama"),
+                ollama_base_url=app_settings.get(
+                    "ollama_base_url", "http://localhost:11434"
+                ),
+            )
+            logger.debug(
+                f"Embedding model context limit: {embedding_context_limit} tokens"
+            )
 
             # Get the appropriate vector store backend based on config
             vector_store_type = getattr(
@@ -1353,10 +1435,31 @@ class FilesystemIndexerService:
                         # Flatten all chunks for batch embedding
                         all_chunks = []
                         chunk_file_map = []  # Track which file each chunk belongs to
+                        truncated_count = 0
                         for rel_path, chunks, _, _ in files_to_embed:
                             for chunk in chunks:
+                                # Validate and truncate oversized chunks (same as document indexer)
+                                tokens = count_tokens(chunk)
+                                if tokens > embedding_context_limit:
+                                    target_chars = int(
+                                        len(chunk)
+                                        * (embedding_context_limit / tokens)
+                                        * 0.95
+                                    )
+                                    chunk = chunk[:target_chars]
+                                    if truncated_count < 5:  # Log first 5
+                                        logger.warning(
+                                            f"Truncated oversized chunk from {tokens} to "
+                                            f"~{embedding_context_limit} tokens (source: {rel_path})"
+                                        )
+                                    truncated_count += 1
                                 all_chunks.append(chunk)
                                 chunk_file_map.append(rel_path)
+
+                        if truncated_count > 0:
+                            logger.warning(
+                                f"Truncated {truncated_count} oversized chunks to fit embedding context limit"
+                            )
 
                         # Generate embeddings for all chunks at once
                         try:
@@ -1385,6 +1488,9 @@ class FilesystemIndexerService:
                                     return
                                 settings.embedding_dimension = current_dim
                                 settings.embedding_config_hash = current_config_hash
+
+                        # Collect metadata for batch upsert
+                        metadata_to_upsert: List[FilesystemFileMetadata] = []
 
                         # Distribute embeddings back to files and insert
                         embed_idx = 0
@@ -1423,9 +1529,9 @@ class FilesystemIndexerService:
                                     )
                                     settings.embedding_config_hash = current_config_hash
 
-                                # Update file metadata
+                                # Collect file metadata for batch upsert
                                 file_stat = file_path.stat()
-                                await self._upsert_file_metadata(
+                                metadata_to_upsert.append(
                                     FilesystemFileMetadata(
                                         index_name=config.index_name,
                                         file_path=rel_path,
@@ -1448,6 +1554,23 @@ class FilesystemIndexerService:
                                     f"Error inserting embeddings for {rel_path}: {e}"
                                 )
                                 job.processed_files += 1
+
+                        # Batch upsert all file metadata for this batch
+                        if metadata_to_upsert:
+                            try:
+                                await self._upsert_file_metadata_batch(
+                                    metadata_to_upsert
+                                )
+                            except Exception as e:
+                                logger.warning(f"Batch metadata upsert failed: {e}")
+                                # Fall back to individual upserts
+                                for meta in metadata_to_upsert:
+                                    try:
+                                        await self._upsert_file_metadata(meta)
+                                    except Exception as inner_e:
+                                        logger.warning(
+                                            f"Individual metadata upsert failed for {meta.file_path}: {inner_e}"
+                                        )
 
                     # Update job progress after each batch
                     await self._update_job(job)

@@ -161,7 +161,11 @@ class PgVectorBackend(VectorStoreBackend):
         embeddings: List[List[float]],
         metadata: Dict[str, Any],
     ) -> int:
-        """Store embeddings in pgvector table."""
+        """Store embeddings in pgvector table using batch inserts.
+
+        Uses batch INSERT with multiple VALUES for better performance.
+        Batches are sized to avoid exceeding PostgreSQL query limits.
+        """
         from ragtime.core.database import get_db
 
         if not embeddings:
@@ -172,29 +176,40 @@ class PgVectorBackend(VectorStoreBackend):
 
         db = await get_db()
         metadata_json = json.dumps(metadata).replace("'", "''")
+        escaped_file_path = file_path.replace("'", "''")
 
+        # Batch insert for better performance
+        # PostgreSQL has limits on query size, so we batch ~100 rows at a time
+        batch_size = 100
         inserted = 0
-        for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-            embedding_id = str(uuid.uuid4())
-            embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
 
-            await db.execute_raw(
-                f"""
-                INSERT INTO filesystem_embeddings
-                (id, index_name, file_path, chunk_index, content, metadata, embedding, created_at)
-                VALUES (
-                    '{embedding_id}',
-                    '{index_name}',
-                    '{file_path.replace("'", "''")}',
-                    {i},
-                    '{chunk.replace("'", "''")}',
-                    '{metadata_json}'::jsonb,
-                    '{embedding_str}'::vector,
-                    NOW()
+        for batch_start in range(0, len(chunks), batch_size):
+            batch_end = min(batch_start + batch_size, len(chunks))
+            values_list = []
+
+            for i in range(batch_start, batch_end):
+                chunk = chunks[i]
+                embedding = embeddings[i]
+                embedding_id = str(uuid.uuid4())
+                embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
+                escaped_chunk = chunk.replace("'", "''")
+
+                values_list.append(
+                    f"('{embedding_id}', '{index_name}', '{escaped_file_path}', {i}, "
+                    f"'{escaped_chunk}', '{metadata_json}'::jsonb, "
+                    f"'{embedding_str}'::vector, NOW())"
                 )
-            """
-            )
-            inserted += 1
+
+            if values_list:
+                values_sql = ",\n".join(values_list)
+                await db.execute_raw(
+                    f"""
+                    INSERT INTO filesystem_embeddings
+                    (id, index_name, file_path, chunk_index, content, metadata, embedding, created_at)
+                    VALUES {values_sql}
+                    """
+                )
+                inserted += len(values_list)
 
         return inserted
 
