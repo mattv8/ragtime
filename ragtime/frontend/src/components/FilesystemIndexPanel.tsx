@@ -359,21 +359,16 @@ export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged, embeddingD
   };
 
   const handleDeleteTool = async (toolId: string) => {
-    setConfirmation({
-      message: 'Are you sure you want to delete this filesystem index configuration?',
-      onConfirm: async () => {
-        setConfirmation(null);
-        try {
-          await api.deleteToolConfig(toolId);
-          await loadTools();
-          onToolsChanged?.();
-          setSuccess('Filesystem index deleted');
-          setTimeout(() => setSuccess(null), 3000);
-        } catch (err) {
-          setError(err instanceof Error ? err.message : 'Failed to delete');
-        }
-      },
-    });
+    // No confirmation modal - DeleteConfirmButton already has countdown confirmation
+    try {
+      await api.deleteToolConfig(toolId);
+      await loadTools();
+      onToolsChanged?.();
+      setSuccess('Filesystem index deleted');
+      setTimeout(() => setSuccess(null), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete');
+    }
   };
 
   const handleToggleTool = async (toolId: string, enabled: boolean) => {
