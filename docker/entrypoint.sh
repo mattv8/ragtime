@@ -116,7 +116,18 @@ if [ "$DEBUG_MODE" = "true" ]; then
     fi
 
     $UVICORN_CMD &
-    sleep 2
+
+    # Wait for backend to be ready (up to 30s) before starting frontend
+    echo "Waiting for backend to be ready on port $PORT..."
+    timeout=30
+    while ! curl -s -k "$PROTOCOL://localhost:$PORT/health" > /dev/null; do
+        sleep 1
+        timeout=$((timeout - 1))
+        if [ "$timeout" -le 0 ]; then
+            echo "Warning: Timed out waiting for backend to start."
+            break
+        fi
+    done
 
     echo "  UI:         $PROTOCOL://localhost:$API_PORT"
     echo "  API:        $PROTOCOL://localhost:$PORT"
