@@ -1386,6 +1386,100 @@ interface SSHAuthConfig {
 
 type SSHAuthMode = 'generate' | 'upload' | 'path' | 'password';
 
+// -----------------------------------------------------------------------------
+// Helper components to reduce duplication within SSHAuthPanel
+// -----------------------------------------------------------------------------
+
+/** SSH Password field for key-based auth modes (servers requiring both key + password) */
+function SSHKeyPasswordField({
+  password,
+  onChange,
+}: {
+  password: string;
+  onChange: (password: string) => void;
+}) {
+  return (
+    <div className="form-group" style={{ marginTop: '1rem' }}>
+      <label>SSH Password (optional)</label>
+      <input
+        type="password"
+        value={password}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Leave blank if not required"
+      />
+      <p className="field-help">Some servers require both SSH key and password. Fill in both if needed.</p>
+    </div>
+  );
+}
+
+/** Key passphrase field with configurable help text */
+function KeyPassphraseField({
+  passphrase,
+  onChange,
+  helpText,
+  placeholder = 'Leave blank if key is not encrypted',
+  style,
+}: {
+  passphrase: string;
+  onChange: (passphrase: string) => void;
+  helpText: React.ReactNode;
+  placeholder?: string;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <div className="form-group" style={style}>
+      <label>Key Passphrase (optional)</label>
+      <input
+        type="password"
+        value={passphrase}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+      />
+      <p className="field-help">{helpText}</p>
+    </div>
+  );
+}
+
+/** Public key display with copy button */
+function PublicKeyDisplay({
+  publicKey,
+  keyCopied,
+  onCopyPublicKey,
+  rows = 3,
+  label = 'Public Key (add to remote server):',
+}: {
+  publicKey: string;
+  keyCopied: boolean;
+  onCopyPublicKey: () => void;
+  rows?: number;
+  label?: string;
+}) {
+  return (
+    <div className="public-key-display" style={{ marginTop: '1rem' }}>
+      <label>{label}</label>
+      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
+        <textarea
+          readOnly
+          value={publicKey}
+          rows={rows}
+          style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: '0.8rem' }}
+        />
+        <button
+          type="button"
+          className={`btn ${keyCopied ? 'btn-success' : 'btn-secondary'}`}
+          onClick={onCopyPublicKey}
+          title="Copy to clipboard"
+          style={keyCopied ? { backgroundColor: '#28a745', borderColor: '#28a745', color: 'white' } : undefined}
+        >
+          {keyCopied ? <><Icon name="check" size={14} /> Copied!</> : 'Copy'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// -----------------------------------------------------------------------------
+
 interface SSHAuthPanelProps {
   config: SSHAuthConfig;
   onConfigChange: (config: SSHAuthConfig) => void;
@@ -1488,20 +1582,15 @@ function SSHAuthPanel({
               Generate a new SSH keypair. The private key will be stored securely with this tool configuration.
               Copy the public key to the remote server's <code>~/.ssh/authorized_keys</code>.
             </p>
-            <div className="form-group" style={{ marginTop: '0.5rem' }}>
-              <label>Key Passphrase (optional)</label>
-              <input
-                type="password"
-                value={config.key_passphrase || ''}
-                onChange={(e) => onConfigChange({ ...config, key_passphrase: e.target.value })}
-                placeholder="Leave blank for no passphrase"
-              />
-              <p className="field-help">
-                {config.key_content
-                  ? 'Enter a new passphrase to regenerate the key, or leave blank for no passphrase.'
-                  : 'Optionally encrypt the private key with a passphrase.'}
-              </p>
-            </div>
+            <KeyPassphraseField
+              passphrase={config.key_passphrase || ''}
+              onChange={(passphrase) => onConfigChange({ ...config, key_passphrase: passphrase })}
+              placeholder="Leave blank for no passphrase"
+              helpText={config.key_content
+                ? 'Enter a new passphrase to regenerate the key, or leave blank for no passphrase.'
+                : 'Optionally encrypt the private key with a passphrase.'}
+              style={{ marginTop: '0.5rem' }}
+            />
             <button
               type="button"
               className="btn btn-primary"
@@ -1512,37 +1601,17 @@ function SSHAuthPanel({
               {generatingKey ? 'Generating...' : (config.key_content ? 'Regenerate SSH Keypair' : 'Generate SSH Keypair')}
             </button>
             {config.public_key && (
-              <div className="public-key-display" style={{ marginTop: '1rem' }}>
-                <label>Public Key (add to remote server):</label>
-                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
-                  <textarea
-                    readOnly
-                    value={config.public_key}
-                    rows={3}
-                    style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: '0.8rem' }}
-                  />
-                  <button
-                    type="button"
-                    className={`btn ${keyCopied ? 'btn-success' : 'btn-secondary'}`}
-                    onClick={onCopyPublicKey}
-                    title="Copy to clipboard"
-                    style={keyCopied ? { backgroundColor: '#28a745', borderColor: '#28a745', color: 'white' } : undefined}
-                  >
-                    {keyCopied ? <><Icon name="check" size={14} /> Copied!</> : 'Copy'}
-                  </button>
-                </div>
-              </div>
-            )}
-            <div className="form-group" style={{ marginTop: '1rem' }}>
-              <label>SSH Password (optional)</label>
-              <input
-                type="password"
-                value={config.password || ''}
-                onChange={(e) => onConfigChange({ ...config, password: e.target.value })}
-                placeholder="Leave blank if not required"
+              <PublicKeyDisplay
+                publicKey={config.public_key}
+                keyCopied={keyCopied}
+                onCopyPublicKey={onCopyPublicKey}
+                rows={3}
               />
-              <p className="field-help">Some servers require both SSH key and password. Fill in both if needed.</p>
-            </div>
+            )}
+            <SSHKeyPasswordField
+              password={config.password || ''}
+              onChange={(password) => onConfigChange({ ...config, password })}
+            />
           </div>
         )}
 
@@ -1559,47 +1628,24 @@ function SSHAuthPanel({
               />
               <p className="field-help">Paste your SSH private key content here.</p>
             </div>
-            <div className="form-group">
-              <label>Key Passphrase (optional)</label>
-              <input
-                type="password"
-                value={config.key_passphrase || ''}
-                onChange={(e) => onConfigChange({ ...config, key_passphrase: e.target.value })}
-                placeholder="Leave blank if key is not encrypted"
-              />
-              <p className="field-help">If your private key is encrypted with a passphrase, enter it here.</p>
-            </div>
+            <KeyPassphraseField
+              passphrase={config.key_passphrase || ''}
+              onChange={(passphrase) => onConfigChange({ ...config, key_passphrase: passphrase })}
+              helpText="If your private key is encrypted with a passphrase, enter it here."
+            />
             {config.public_key && (
-              <div className="form-group">
-                <label>Public Key (for reference):</label>
-                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
-                  <textarea
-                    readOnly
-                    value={config.public_key}
-                    rows={2}
-                    style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: '0.8rem' }}
-                  />
-                  <button
-                    type="button"
-                    className={`btn ${keyCopied ? 'btn-success' : 'btn-secondary'}`}
-                    onClick={onCopyPublicKey}
-                    style={keyCopied ? { backgroundColor: '#28a745', borderColor: '#28a745', color: 'white' } : undefined}
-                  >
-                    {keyCopied ? <><Icon name="check" size={14} /> Copied!</> : 'Copy'}
-                  </button>
-                </div>
-              </div>
-            )}
-            <div className="form-group">
-              <label>SSH Password (optional)</label>
-              <input
-                type="password"
-                value={config.password || ''}
-                onChange={(e) => onConfigChange({ ...config, password: e.target.value })}
-                placeholder="Leave blank if not required"
+              <PublicKeyDisplay
+                publicKey={config.public_key}
+                keyCopied={keyCopied}
+                onCopyPublicKey={onCopyPublicKey}
+                rows={2}
+                label="Public Key (for reference):"
               />
-              <p className="field-help">Some servers require both SSH key and password. Fill in both if needed.</p>
-            </div>
+            )}
+            <SSHKeyPasswordField
+              password={config.password || ''}
+              onChange={(password) => onConfigChange({ ...config, password })}
+            />
           </div>
         )}
 
@@ -1618,26 +1664,15 @@ function SSHAuthPanel({
                 Host keys from ~/.ssh are mounted at /root/.ssh/
               </p>
             </div>
-            <div className="form-group">
-              <label>Key Passphrase (optional)</label>
-              <input
-                type="password"
-                value={config.key_passphrase || ''}
-                onChange={(e) => onConfigChange({ ...config, key_passphrase: e.target.value })}
-                placeholder="Leave blank if key is not encrypted"
-              />
-              <p className="field-help">If your private key is encrypted with a passphrase, enter it here.</p>
-            </div>
-            <div className="form-group">
-              <label>SSH Password (optional)</label>
-              <input
-                type="password"
-                value={config.password || ''}
-                onChange={(e) => onConfigChange({ ...config, password: e.target.value })}
-                placeholder="Leave blank if not required"
-              />
-              <p className="field-help">Some servers require both SSH key and password. Fill in both if needed.</p>
-            </div>
+            <KeyPassphraseField
+              passphrase={config.key_passphrase || ''}
+              onChange={(passphrase) => onConfigChange({ ...config, key_passphrase: passphrase })}
+              helpText="If your private key is encrypted with a passphrase, enter it here."
+            />
+            <SSHKeyPasswordField
+              password={config.password || ''}
+              onChange={(password) => onConfigChange({ ...config, password })}
+            />
           </div>
         )}
 

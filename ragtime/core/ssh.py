@@ -121,12 +121,7 @@ def _load_private_key(
     key_path: Optional[str] = None,
     passphrase: Optional[str] = None,
 ) -> paramiko.PKey:
-    """
-    Load a private key from content or file path.
-
-    Supports RSA, Ed25519, ECDSA, and DSA key types.
-    Handles keys with or without passphrases.
-    """
+    """Load a private key from content or file path."""
     if key_content:
         key_data = key_content
     elif key_path:
@@ -135,10 +130,8 @@ def _load_private_key(
     else:
         raise ValueError("Either key_content or key_path must be provided")
 
-    # Try different key types
     key_file = io.StringIO(key_data)
     passphrase_bytes = passphrase.encode() if passphrase else None
-
     key_classes = [
         paramiko.RSAKey,
         paramiko.Ed25519Key,
@@ -151,14 +144,45 @@ def _load_private_key(
         try:
             key_file.seek(0)
             return key_class.from_private_key(key_file, password=passphrase_bytes)
-        except paramiko.ssh_exception.SSHException as e:
-            last_error = e
-            continue
         except Exception as e:
             last_error = e
-            continue
-
     raise ValueError(f"Failed to load private key: {last_error}")
+
+
+def _build_connect_kwargs(config: SSHConfig) -> dict:
+    """Build paramiko connect kwargs from SSHConfig."""
+    kwargs = {
+        "hostname": config.host,
+        "port": config.port,
+        "username": config.user,
+        "timeout": config.timeout,
+        "allow_agent": False,
+        "look_for_keys": False,
+    }
+
+    if config.auth_method == SSHAuthMethod.PASSWORD:
+        kwargs["password"] = config.password
+    else:
+        kwargs["pkey"] = _load_private_key(
+            key_content=config.key_content,
+            key_path=config.key_path,
+            passphrase=config.key_passphrase,
+        )
+        if config.password:
+            kwargs["password"] = config.password
+
+    return kwargs
+
+
+def _create_ssh_client(config: SSHConfig) -> paramiko.SSHClient:
+    """Create and connect an SSH client."""
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    logger.debug(
+        f"SSH connecting to {config.user}@{config.host}:{config.port} using {config.auth_method.value}"
+    )
+    client.connect(**_build_connect_kwargs(config))
+    return client
 
 
 def _drain_channel(
@@ -193,41 +217,10 @@ def execute_ssh_command(
         SSHResult with stdout, stderr, exit_code, and success flag
     """
     config.validate()
-
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client = None
 
     try:
-        # Build connection kwargs
-        connect_kwargs = {
-            "hostname": config.host,
-            "port": config.port,
-            "username": config.user,
-            "timeout": config.timeout,
-            "allow_agent": False,
-            "look_for_keys": False,
-        }
-
-        # Add authentication
-        auth_method = config.auth_method
-        logger.debug(
-            f"SSH connecting to {config.user}@{config.host}:{config.port} using {auth_method.value}"
-        )
-
-        if auth_method == SSHAuthMethod.PASSWORD:
-            connect_kwargs["password"] = config.password
-        else:
-            # Key-based auth (either from content or file)
-            pkey = _load_private_key(
-                key_content=config.key_content,
-                key_path=config.key_path,
-                passphrase=config.key_passphrase,
-            )
-            connect_kwargs["pkey"] = pkey
-            # If password is also provided with key, it may be used for passphrase
-            # but paramiko handles this in the key loading
-
-        client.connect(**connect_kwargs)
+        client = _create_ssh_client(config)
 
         # Execute command
         stdin, stdout, stderr = client.exec_command(command, timeout=config.timeout)
@@ -308,7 +301,8 @@ def execute_ssh_command(
         logger.error(f"SSH error: {e}")
         return _error_result(f"SSH error: {e}")
     finally:
-        client.close()
+        if client:
+            client.close()
 
 
 def test_ssh_connection(config: SSHConfig) -> SSHResult:
@@ -474,37 +468,8 @@ class SSHTunnel:
             The local port number to connect to.
         """
         self.config.validate()
-
-        self._client = paramiko.SSHClient()
-        self._client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-        # Build connection kwargs
         ssh_config = self.config.to_ssh_config()
-        connect_kwargs = {
-            "hostname": ssh_config.host,
-            "port": ssh_config.port,
-            "username": ssh_config.user,
-            "timeout": ssh_config.timeout,
-            "allow_agent": False,
-            "look_for_keys": False,
-        }
-
-        auth_method = ssh_config.auth_method
-        logger.debug(
-            f"SSH tunnel connecting to {ssh_config.user}@{ssh_config.host}:{ssh_config.port}"
-        )
-
-        if auth_method == SSHAuthMethod.PASSWORD:
-            connect_kwargs["password"] = ssh_config.password
-        else:
-            pkey = _load_private_key(
-                key_content=ssh_config.key_content,
-                key_path=ssh_config.key_path,
-                passphrase=ssh_config.key_passphrase,
-            )
-            connect_kwargs["pkey"] = pkey
-
-        self._client.connect(**connect_kwargs)
+        self._client = _create_ssh_client(ssh_config)
         self._transport = self._client.get_transport()
 
         # Create local server socket
@@ -710,32 +675,9 @@ def test_ssh_tunnel(config: SSHTunnelConfig) -> tuple[bool, str]:
     except ValueError as e:
         return False, str(e)
 
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
+    client = None
     try:
-        ssh_config = config.to_ssh_config()
-        connect_kwargs = {
-            "hostname": ssh_config.host,
-            "port": ssh_config.port,
-            "username": ssh_config.user,
-            "timeout": ssh_config.timeout,
-            "allow_agent": False,
-            "look_for_keys": False,
-        }
-
-        auth_method = ssh_config.auth_method
-        if auth_method == SSHAuthMethod.PASSWORD:
-            connect_kwargs["password"] = ssh_config.password
-        else:
-            pkey = _load_private_key(
-                key_content=ssh_config.key_content,
-                key_path=ssh_config.key_path,
-                passphrase=ssh_config.key_passphrase,
-            )
-            connect_kwargs["pkey"] = pkey
-
-        client.connect(**connect_kwargs)
+        client = _create_ssh_client(config.to_ssh_config())
         transport = client.get_transport()
 
         # Try to open a channel to verify the remote endpoint is reachable
@@ -773,7 +715,8 @@ def test_ssh_tunnel(config: SSHTunnelConfig) -> tuple[bool, str]:
     except Exception as e:
         return False, f"SSH tunnel test failed: {e}"
     finally:
-        client.close()
+        if client:
+            client.close()
 
 
 def build_ssh_tunnel_config(config: dict, host: str, port: int) -> dict | None:
