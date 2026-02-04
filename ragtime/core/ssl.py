@@ -13,7 +13,7 @@ import socket
 import subprocess
 from pathlib import Path
 
-from ragtime.core.logging import get_logger
+from ragtime.core.logging import get_logger, get_ui_width
 
 logger = get_logger(__name__)
 
@@ -116,17 +116,18 @@ def setup_ssl(
         logger.warning(f"SSL: {warning}")
 
     if not result.valid:
-        logger.error("=" * 60)
+        width = get_ui_width()
+        logger.error("=" * width)
         logger.error("SSL CERTIFICATE ERRORS")
-        logger.error("=" * 60)
+        logger.error("=" * width)
         for error in result.errors:
             logger.error(f"  - {error}")
-        logger.error("-" * 60)
+        logger.error("-" * width)
         logger.error(
             "Fix these issues or remove the certificates to auto-generate new ones."
         )
         logger.error("Falling back to HTTP")
-        logger.error("=" * 60)
+        logger.error("=" * width)
         return None
 
     logger.info(f"SSL certificates validated: {result.cert_path}")

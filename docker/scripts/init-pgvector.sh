@@ -13,39 +13,33 @@
 
 set -e
 
+# Set Logger prefix
+LOG_PREFIX="ragtime.db.init"
+
+# Source functions helper
+SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
+if [ -f "$SCRIPT_DIR/functions.sh" ]; then
+    source "$SCRIPT_DIR/functions.sh"
+elif [ -f "/docker-scripts/functions.sh" ]; then
+    source "/docker-scripts/functions.sh"
+fi
+
 # Parse DATABASE_URL to extract connection details
 # Format: postgresql://user:password@host:port/database
-if [ -z "$DATABASE_URL" ]; then
-    echo "DATABASE_URL not set, skipping pgvector configuration"
+if ! parse_database_url; then
+    log "WARNING" "DATABASE_URL not set, skipping pgvector configuration"
     exit 0
 fi
 
-# Extract components from DATABASE_URL
-DB_USER=$(echo "$DATABASE_URL" | sed -n 's|.*://\([^:]*\):.*|\1|p')
-DB_PASS=$(echo "$DATABASE_URL" | sed -n 's|.*://[^:]*:\([^@]*\)@.*|\1|p')
-DB_HOST=$(echo "$DATABASE_URL" | sed -n 's|.*@\([^:]*\):.*|\1|p')
-DB_PORT=$(echo "$DATABASE_URL" | sed -n 's|.*:\([0-9]*\)/.*|\1|p')
-DB_NAME=$(echo "$DATABASE_URL" | sed -n 's|.*/\([^?]*\).*|\1|p')
-
-# Fallback defaults
-DB_PORT=${DB_PORT:-5432}
-
 # Wait for PostgreSQL to be ready
-echo "Waiting for PostgreSQL at $DB_HOST:$DB_PORT..."
-for i in {1..30}; do
-    if PGPASSWORD="$DB_PASS" pg_isready -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" >/dev/null 2>&1; then
-        break
-    fi
-    if [ $i -eq 30 ]; then
-        echo "PostgreSQL not ready after 30 attempts, skipping pgvector configuration"
-        exit 0
-    fi
-    sleep 1
-done
+if ! wait_for_postgres 30; then
+    log "WARNING" "Skipping pgvector configuration"
+    exit 0
+fi
 
-echo "Configuring pgvector optimizations..."
+log "INFO" "Configuring pgvector optimizations..."
 
-PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=0 <<-EOSQL
+PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=0 -o /dev/null <<-EOSQL
     -- ==========================================================================
     -- Session/Query Settings (set defaults for all connections)
     -- ==========================================================================
@@ -129,4 +123,4 @@ PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAM
 
 EOSQL
 
-echo "pgvector optimizations applied successfully"
+log "INFO" "pgvector optimizations applied successfully"

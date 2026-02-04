@@ -72,46 +72,6 @@ load_dotenv()
 logger = setup_logging("rag_api")
 
 
-def _log_security_warnings() -> None:
-    """Log security warnings for potential plaintext credential transmission."""
-    warnings = []
-
-    # Check if API key is not set
-    if not settings.api_key:
-        warnings.append(
-            "API_KEY is not set. The OpenAI-compatible API endpoint is unprotected. "
-            "Anyone with network access can use your LLM, which may incur costs."
-        )
-
-    # Check for wildcard CORS origins
-    if settings.allowed_origins == "*":
-        warnings.append(
-            "ALLOWED_ORIGINS=* allows requests from any origin. "
-            "Consider restricting to specific domains."
-        )
-
-    # Check for HTTP without HTTPS or reverse proxy
-    if not settings.session_cookie_secure and not settings.enable_https:
-        warnings.append(
-            "SESSION_COOKIE_SECURE=false and ENABLE_HTTPS=false. "
-            "Credentials and API keys may be transmitted in plaintext. "
-            "Set ENABLE_HTTPS=true or use an HTTPS reverse proxy."
-        )
-
-    if warnings:
-        logger.warning("=" * 70)
-        logger.warning("SECURITY WARNINGS")
-        logger.warning("=" * 70)
-        for warning in warnings:
-            logger.warning(f"  - {warning}")
-        logger.warning("-" * 70)
-        logger.warning(
-            "If you have network-level protection (VPN, firewall, HTTPS proxy), "
-            "you can ignore these warnings."
-        )
-        logger.warning("=" * 70)
-
-
 def get_external_base_url(request: Request) -> str:
     """
     Get the external base URL for OAuth endpoints.
@@ -187,9 +147,6 @@ async def lifespan(app: FastAPI):
     loop = asyncio.get_event_loop()
     loop.set_default_executor(_io_thread_pool)
     logger.info(f"Initialized I/O thread pool with {max_io_workers} workers")
-
-    # Security warnings for plaintext credential transmission
-    _log_security_warnings()
 
     # Validate SSL certificates if HTTPS is enabled
     _validate_ssl_certificates()
@@ -370,6 +327,7 @@ MAX_REGISTERED_CLIENTS = 1000  # Prevent memory exhaustion
 
 
 @app.post("/register", include_in_schema=False)
+@limiter.limit(LOGIN_RATE_LIMIT)
 async def register_client(request: Request):
     """
     OAuth2 Dynamic Client Registration (RFC 7591).
@@ -377,13 +335,6 @@ async def register_client(request: Request):
     Allows MCP clients to register themselves and obtain a client_id.
     Rate limited and capped to prevent abuse.
     """
-    # Rate limit: reuse the login rate limiter
-    try:
-        await limiter.check(
-            "register", request.client.host if request.client else "unknown"
-        )
-    except Exception:
-        pass  # Continue even if rate limit check fails
 
     # Prevent memory exhaustion
     if len(_registered_clients) >= MAX_REGISTERED_CLIENTS:
@@ -567,6 +518,7 @@ async def authorize_get(
 
 
 @app.post("/authorize", include_in_schema=False)
+@limiter.limit(LOGIN_RATE_LIMIT)
 async def authorize_post(
     request: Request,
     client_id: str = Form(...),
@@ -582,6 +534,8 @@ async def authorize_post(
     OAuth2 Authorization Endpoint - POST request handles login.
     Returns JSON with redirect_url on success (frontend navigates).
     Returns JSON error on failure.
+
+    Rate limited to prevent brute-force attacks on OAuth login.
     """
     # Validate redirect_uri (security: prevent open redirect attacks)
     if not validate_redirect_uri(redirect_uri):
