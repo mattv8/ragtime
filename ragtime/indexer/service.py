@@ -26,8 +26,10 @@ from langchain_core.documents import Document as LangChainDocument
 
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
-from ragtime.core.embedding_models import get_embedding_model_context_limit
-from ragtime.core.embedding_models import get_embedding_models
+from ragtime.core.embedding_models import (
+    get_embedding_model_context_limit,
+    get_embedding_models,
+)
 from ragtime.core.file_constants import (
     BINARY_EXTENSIONS,
     MINIFIED_PATTERNS,
@@ -37,10 +39,8 @@ from ragtime.core.file_constants import (
 )
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
-from ragtime.indexer.chunking import chunk_documents_parallel
-from ragtime.indexer.chunking import rechunk_oversized_content
-from ragtime.indexer.document_parser import OCR_EXTENSIONS
-from ragtime.indexer.document_parser import extract_text_from_file_async
+from ragtime.indexer.chunking import chunk_documents_parallel, rechunk_oversized_content
+from ragtime.indexer.document_parser import OCR_EXTENSIONS, extract_text_from_file_async
 from ragtime.indexer.file_utils import (
     HARDCODED_EXCLUDES,
     build_authenticated_git_url,
@@ -69,9 +69,11 @@ from ragtime.indexer.models import (
     VectorStoreType,
 )
 from ragtime.indexer.repository import repository
-from ragtime.indexer.vector_utils import EMBEDDING_SUB_BATCH_SIZE
-from ragtime.indexer.vector_utils import append_embedding_dimension_warning
-from ragtime.indexer.vector_utils import get_embeddings_model
+from ragtime.indexer.vector_utils import (
+    EMBEDDING_SUB_BATCH_SIZE,
+    append_embedding_dimension_warning,
+    get_embeddings_model,
+)
 from ragtime.tools.git_history import _is_shallow_repository
 
 logger = get_logger(__name__)
@@ -892,24 +894,35 @@ class IndexerService:
 
         Uses remote refs to get total commit count and samples commits at
         logarithmically distributed depths (1, 10, 50, 100, 500, 1000, etc).
+
+        All git subprocess calls are run in a thread pool to avoid blocking
+        the event loop.
         """
+
+        def _run_git(*args, timeout: int = 30) -> subprocess.CompletedProcess:
+            """Helper to run git commands with consistent options."""
+            return subprocess.run(
+                ["git", *args],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+
         try:
             # Get total commit count from remote (fast, uses refs)
             clone_url = build_authenticated_git_url(git_url, git_token)
 
-            # Fetch commit count from remote
-            count_result = subprocess.run(
-                ["git", "rev-list", "--count", f"origin/{git_branch}"],
-                cwd=repo_dir,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
+            # Fetch commit count from remote - run in thread to avoid blocking
+            count_result = await asyncio.to_thread(
+                _run_git, "rev-list", "--count", f"origin/{git_branch}", timeout=30
             )
 
             if count_result.returncode != 0:
                 # Fallback: try to get count from ls-remote
-                ls_result = subprocess.run(
+                ls_result = await asyncio.to_thread(
+                    subprocess.run,
                     [
                         "git",
                         "ls-remote",
@@ -933,25 +946,15 @@ class IndexerService:
             if total_commits == 0:
                 # Try fetching just enough history to sample
                 # Fetch 1001 commits to sample at various depths
-                fetch_result = subprocess.run(
-                    ["git", "fetch", "--deepen=1000", "origin", git_branch],
-                    cwd=repo_dir,
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                    check=False,
+                fetch_result = await asyncio.to_thread(
+                    _run_git, "fetch", "--deepen=1000", "origin", git_branch, timeout=60
                 )
                 if fetch_result.returncode != 0:
                     logger.warning(f"Could not deepen fetch: {fetch_result.stderr}")
 
                 # Now count local commits
-                count_result = subprocess.run(
-                    ["git", "rev-list", "--count", f"origin/{git_branch}"],
-                    cwd=repo_dir,
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    check=False,
+                count_result = await asyncio.to_thread(
+                    _run_git, "rev-list", "--count", f"origin/{git_branch}", timeout=30
                 )
                 if count_result.returncode == 0:
                     total_commits = int(count_result.stdout.strip())
@@ -967,20 +970,14 @@ class IndexerService:
 
             for depth in available_depths:
                 # Get commit at this depth: git log --skip=N -1 --format="%H %aI"
-                log_result = subprocess.run(
-                    [
-                        "git",
-                        "log",
-                        f"--skip={depth}",
-                        "-1",
-                        "--format=%H %aI",
-                        f"origin/{git_branch}",
-                    ],
-                    cwd=repo_dir,
-                    capture_output=True,
-                    text=True,
+                log_result = await asyncio.to_thread(
+                    _run_git,
+                    "log",
+                    f"--skip={depth}",
+                    "-1",
+                    "--format=%H %aI",
+                    f"origin/{git_branch}",
                     timeout=10,
-                    check=False,
                 )
 
                 if log_result.returncode == 0 and log_result.stdout.strip():
@@ -999,23 +996,20 @@ class IndexerService:
                             newest_date = date
                         oldest_date = date  # Keep updating to get the oldest
 
+                # Yield to event loop after each git operation
+                await asyncio.sleep(0)
+
             # If we have samples, also try to get the actual oldest commit
             if total_commits > 0 and total_commits > sample_depths[-1]:
                 # Get the very last commit
-                log_result = subprocess.run(
-                    [
-                        "git",
-                        "log",
-                        "--reverse",
-                        "-1",
-                        "--format=%H %aI",
-                        f"origin/{git_branch}",
-                    ],
-                    cwd=repo_dir,
-                    capture_output=True,
-                    text=True,
+                log_result = await asyncio.to_thread(
+                    _run_git,
+                    "log",
+                    "--reverse",
+                    "-1",
+                    "--format=%H %aI",
+                    f"origin/{git_branch}",
                     timeout=10,
-                    check=False,
                 )
                 if log_result.returncode == 0 and log_result.stdout.strip():
                     parts = log_result.stdout.strip().split(" ", 1)
@@ -1055,27 +1049,36 @@ class IndexerService:
             # Build authenticated URL if token provided
             clone_url = build_authenticated_git_url(request.git_url, request.git_token)
 
-            # Shallow clone (depth=1) for speed
+            # Shallow clone (depth=1) for speed - use async subprocess to avoid blocking
             logger.info(f"Shallow cloning {request.git_url} for analysis")
-            result = subprocess.run(
-                [
-                    "git",
-                    "clone",
-                    "--depth",
-                    "1",
-                    "--branch",
-                    request.git_branch,
-                    clone_url,
-                    str(temp_dir / "repo"),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=120,  # 2 minute timeout for clone
-                check=False,  # We handle the error ourselves
+            env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+            process = await asyncio.create_subprocess_exec(
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                "--branch",
+                request.git_branch,
+                clone_url,
+                str(temp_dir / "repo"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
             )
+            try:
+                _, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=120  # 2 minute timeout for clone
+                )
+            except asyncio.TimeoutError as exc:
+                process.kill()
+                await process.wait()
+                raise RuntimeError(
+                    "Git clone timed out after 2 minutes. "
+                    "The repository may be too large for analysis."
+                ) from exc
 
-            if result.returncode != 0:
-                raise RuntimeError(f"Git clone failed: {result.stderr}")
+            if process.returncode != 0:
+                raise RuntimeError(f"Git clone failed: {stderr.decode()}")
 
             repo_dir = temp_dir / "repo"
 
@@ -1946,8 +1949,10 @@ class IndexerService:
         await repository.update_job(job)
 
         # Update remote URL with current token (in case token changed)
+        # Run in thread to avoid blocking event loop
         fetch_url = build_authenticated_git_url(job.git_url, job.git_token)
-        subprocess.run(
+        await asyncio.to_thread(
+            subprocess.run,
             ["git", "remote", "set-url", "origin", fetch_url],
             cwd=repo_dir,
             capture_output=True,
@@ -1961,8 +1966,9 @@ class IndexerService:
         clone_timeout_seconds = clone_timeout_minutes * 60
         history_depth = getattr(job.config, "git_history_depth", 1)
 
-        # Check current depth of repo
-        depth_result = subprocess.run(
+        # Check current depth of repo - run in thread to avoid blocking
+        depth_result = await asyncio.to_thread(
+            subprocess.run,
             ["git", "rev-list", "--count", "HEAD"],
             cwd=repo_dir,
             capture_output=True,
@@ -2037,8 +2043,9 @@ class IndexerService:
                 )
             raise RuntimeError(f"Git fetch failed: {error_msg}")
 
-        # Reset to the fetched branch
-        reset_result = subprocess.run(
+        # Reset to the fetched branch - run in thread to avoid blocking
+        reset_result = await asyncio.to_thread(
+            subprocess.run,
             ["git", "reset", "--hard", f"origin/{branch}"],
             cwd=repo_dir,
             capture_output=True,

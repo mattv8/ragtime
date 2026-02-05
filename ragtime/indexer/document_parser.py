@@ -37,9 +37,9 @@ from ragtime.core.file_constants import (
 from ragtime.core.logging import get_logger
 from ragtime.core.vision_models import (
     VisionOcrResult,
+    extract_text_with_vision,
     extract_text_with_vision_structured,
 )
-from ragtime.core.vision_models import extract_text_with_vision
 
 logger = get_logger(__name__)
 
@@ -199,6 +199,9 @@ async def extract_text_from_file_async(
     """
     Async version of extract_text_from_file with Ollama vision OCR support.
 
+    Document parsing is run in a thread pool to avoid blocking the event loop,
+    keeping the server responsive during indexing.
+
     Args:
         file_path: Path to the file
         content: Optional pre-loaded file content (bytes)
@@ -210,6 +213,8 @@ async def extract_text_from_file_async(
     Returns:
         Extracted text content as string
     """
+    import asyncio
+
     # Handle legacy enable_ocr flag
     effective_ocr_mode = ocr_mode
     if enable_ocr and ocr_mode == "disabled":
@@ -217,10 +222,10 @@ async def extract_text_from_file_async(
 
     suffix = file_path.suffix.lower()
 
-    # Load content if not provided
+    # Load content if not provided - run file I/O in thread
     if content is None:
         try:
-            content = file_path.read_bytes()
+            content = await asyncio.to_thread(file_path.read_bytes)
         except Exception as e:
             logger.warning(f"Failed to read file {file_path}: {e}")
             return ""
@@ -235,47 +240,47 @@ async def extract_text_from_file_async(
                         f"Ollama vision OCR requires model and base_url. "
                         f"Falling back to tesseract for {file_path.name}"
                     )
-                    return _extract_image_ocr(content)
+                    return await asyncio.to_thread(_extract_image_ocr, content)
                 return await _extract_image_vision_ocr(
                     content, ollama_base_url, ocr_vision_model, source_format=suffix
                 )
             elif effective_ocr_mode == "tesseract":
-                return _extract_image_ocr(content)
+                return await asyncio.to_thread(_extract_image_ocr, content)
             else:
                 logger.debug(f"Skipping image {file_path.name} - OCR disabled")
                 return ""
 
-        # All other file types are synchronous
+        # All other file types run in thread pool to avoid blocking event loop
         if suffix == ".pdf":
-            return _extract_pdf(content)
+            return await asyncio.to_thread(_extract_pdf, content)
         elif suffix == ".docx":
-            return _extract_docx(content)
+            return await asyncio.to_thread(_extract_docx, content)
         elif suffix == ".doc":
-            return _extract_doc_legacy(file_path, content)
+            return await asyncio.to_thread(_extract_doc_legacy, file_path, content)
         elif suffix == ".xlsx":
-            return _extract_xlsx(content)
+            return await asyncio.to_thread(_extract_xlsx, content)
         elif suffix == ".xls":
-            return _extract_xls(content)
+            return await asyncio.to_thread(_extract_xls, content)
         elif suffix == ".pptx":
-            return _extract_pptx(content)
+            return await asyncio.to_thread(_extract_pptx, content)
         elif suffix == ".odt":
-            return _extract_odt(content)
+            return await asyncio.to_thread(_extract_odt, content)
         elif suffix == ".ods":
-            return _extract_ods(content)
+            return await asyncio.to_thread(_extract_ods, content)
         elif suffix == ".odp":
-            return _extract_odp(content)
+            return await asyncio.to_thread(_extract_odp, content)
         elif suffix == ".rtf":
-            return _extract_rtf(content)
+            return await asyncio.to_thread(_extract_rtf, content)
         elif suffix == ".epub":
-            return _extract_epub(content)
+            return await asyncio.to_thread(_extract_epub, content)
         elif suffix == ".eml":
-            return _extract_eml(content)
+            return await asyncio.to_thread(_extract_eml, content)
         elif suffix == ".msg":
-            return _extract_msg(content)
+            return await asyncio.to_thread(_extract_msg, content)
         elif suffix in {".html", ".htm"}:
-            return _extract_html(content)
+            return await asyncio.to_thread(_extract_html, content)
         else:
-            # Plain text files
+            # Plain text files - fast enough to run inline
             return _extract_text(content)
     except Exception as e:
         logger.warning(f"Failed to extract text from {file_path}: {e}")

@@ -2562,8 +2562,9 @@ async def generate_ssh_keypair(
         comment: Comment for the key (appears in public key)
         passphrase: Optional passphrase to encrypt the private key
     """
-    try:
-        # Create temp directory for key generation
+
+    def _generate_keypair() -> tuple[str, str, str]:
+        """Generate keypair in thread to avoid blocking event loop."""
         with tempfile.TemporaryDirectory() as tmpdir:
             key_path = os.path.join(tmpdir, "id_rsa")
 
@@ -2578,7 +2579,7 @@ async def generate_ssh_keypair(
                     "-f",
                     key_path,
                     "-N",
-                    passphrase,  # Passphrase (empty string = no passphrase)
+                    passphrase,
                     "-C",
                     comment,
                 ],
@@ -2589,10 +2590,7 @@ async def generate_ssh_keypair(
             )
 
             if process.returncode != 0:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Failed to generate keypair: {process.stderr}",
-                )
+                raise RuntimeError(f"Failed to generate keypair: {process.stderr}")
 
             # Read the generated keys
             with open(key_path, "r", encoding="utf-8") as f:
@@ -2612,9 +2610,16 @@ async def generate_ssh_keypair(
                 fp_process.stdout.strip() if fp_process.returncode == 0 else "unknown"
             )
 
-            return SSHKeyPairResponse(
-                private_key=private_key, public_key=public_key, fingerprint=fingerprint
-            )
+            return private_key, public_key, fingerprint
+
+    try:
+        # Run keypair generation in thread to avoid blocking event loop
+        private_key, public_key, fingerprint = await asyncio.to_thread(
+            _generate_keypair
+        )
+        return SSHKeyPairResponse(
+            private_key=private_key, public_key=public_key, fingerprint=fingerprint
+        )
 
     except subprocess.TimeoutExpired as e:
         raise HTTPException(status_code=500, detail="Key generation timed out") from e
