@@ -54,7 +54,18 @@ class ColoredFormatter(logging.Formatter):
         # Get standard formatted message
         log_fmt = self.FORMATS.get(record.levelno, self.FMT)
         formatter = logging.Formatter(log_fmt, datefmt=self.DATE_FMT)
+
+        # Temporarily suppress exception/stack info then append the exception with custom coloring later
+        record_exc_info = record.exc_info
+        record_stack_info = getattr(record, "stack_info", None)
+        record.exc_info = None
+        record.stack_info = None
+
         formatted_message = formatter.format(record)
+
+        # Restore exception/stack info
+        record.exc_info = record_exc_info
+        record.stack_info = record_stack_info
 
         # Highlight keywords
         level_color = self.get_level_color(record.levelno)
@@ -66,6 +77,35 @@ class ColoredFormatter(logging.Formatter):
                 # Color the keyword and then resume the level's base color
                 replacement = f"{color}{keyword}{RESET}{level_color}"
                 formatted_message = re.sub(pattern, replacement, formatted_message)
+
+        # Append exception info colored
+        if record.exc_info:
+            # Cache the traceback text to avoid converting it multiple times
+            if not record.exc_text:
+                record.exc_text = formatter.formatException(record.exc_info)
+
+        if record.exc_text:
+            if formatted_message[-1:] != "\n":
+                formatted_message += "\n"
+            # Color each line individually so Docker log drivers preserve color
+            colored_lines = [
+                f"{level_color}{line}{RESET}" for line in record.exc_text.splitlines()
+            ]
+            formatted_message += "\n".join(colored_lines)
+
+        if record_stack_info:
+            if formatted_message[-1:] != "\n":
+                formatted_message += "\n"
+            # Color each line individually so Docker log drivers preserve color
+            stack_text = (
+                record_stack_info
+                if isinstance(record_stack_info, str)
+                else formatter.formatStack(record_stack_info)
+            )
+            colored_lines = [
+                f"{level_color}{line}{RESET}" for line in stack_text.splitlines()
+            ]
+            formatted_message += "\n".join(colored_lines)
 
         return formatted_message
 
@@ -106,6 +146,9 @@ class UvicornAccessFilter(logging.Filter):
             if any(path in message for path in self.QUIET_PATHS):
                 record.levelno = logging.DEBUG
                 record.levelname = "DEBUG"
+                # If we are not in debug mode, suppress these now-debug logs
+                if not settings.debug_mode:
+                    return False
         return True
 
 
@@ -147,6 +190,8 @@ def setup_logging(name: Optional[str] = None) -> logging.Logger:
     logging.getLogger("openai").setLevel(logging.WARNING)
     logging.getLogger("langchain").setLevel(logging.WARNING)
     logging.getLogger("prisma").setLevel(logging.WARNING)
+    # SSE library logs raw frames with \r\n characters
+    logging.getLogger("sse_starlette").setLevel(logging.WARNING)
     # SSH/SFTP libraries - authentication success messages are noisy
     # logging.getLogger("paramiko").setLevel(logging.WARNING)
     # logging.getLogger("paramiko.transport").setLevel(logging.WARNING)
