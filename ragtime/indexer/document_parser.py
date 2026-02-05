@@ -21,6 +21,7 @@ OCR Modes:
 - ollama: Semantic OCR with vision models (slower, better understanding)
 """
 
+import asyncio
 import email
 import io
 import subprocess
@@ -213,8 +214,6 @@ async def extract_text_from_file_async(
     Returns:
         Extracted text content as string
     """
-    import asyncio
-
     # Handle legacy enable_ocr flag
     effective_ocr_mode = ocr_mode
     if enable_ocr and ocr_mode == "disabled":

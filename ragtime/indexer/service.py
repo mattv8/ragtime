@@ -25,55 +25,39 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document as LangChainDocument
 
 from ragtime.config import settings
-from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
-from ragtime.core.embedding_models import (
-    get_embedding_model_context_limit,
-    get_embedding_models,
-)
-from ragtime.core.file_constants import (
-    BINARY_EXTENSIONS,
-    MINIFIED_PATTERNS,
-    PARSEABLE_DOCUMENT_EXTENSIONS,
-    UNPARSEABLE_BINARY_EXTENSIONS,
-    get_embedding_safety_margin,
-)
+from ragtime.core.app_settings import (get_app_settings,
+                                       invalidate_settings_cache)
+from ragtime.core.embedding_models import (get_embedding_model_context_limit,
+                                           get_embedding_models)
+from ragtime.core.file_constants import (BINARY_EXTENSIONS, MINIFIED_PATTERNS,
+                                         PARSEABLE_DOCUMENT_EXTENSIONS,
+                                         UNPARSEABLE_BINARY_EXTENSIONS,
+                                         get_embedding_safety_margin)
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
-from ragtime.indexer.chunking import chunk_documents_parallel, rechunk_oversized_content
-from ragtime.indexer.document_parser import OCR_EXTENSIONS, extract_text_from_file_async
-from ragtime.indexer.file_utils import (
-    HARDCODED_EXCLUDES,
-    build_authenticated_git_url,
-    extract_archive,
-    find_source_dir,
-)
+from ragtime.indexer.chunking import (chunk_documents_parallel,
+                                      is_context_length_error,
+                                      rechunk_documents_batch,
+                                      rechunk_oversized_content)
+from ragtime.indexer.document_parser import (OCR_EXTENSIONS,
+                                             extract_text_from_file_async)
+from ragtime.indexer.file_utils import (HARDCODED_EXCLUDES,
+                                        build_authenticated_git_url,
+                                        extract_archive, find_source_dir)
 from ragtime.indexer.llm_exclusions import get_smart_exclusion_suggestions
-from ragtime.indexer.memory_utils import (
-    estimate_index_memory,
-    estimate_memory_at_dimensions,
-    get_embedding_dimension,
-)
-from ragtime.indexer.models import (
-    AnalyzeIndexRequest,
-    AppSettings,
-    CommitHistoryInfo,
-    CommitHistorySample,
-    FileTypeStats,
-    IndexAnalysisResult,
-    IndexConfig,
-    IndexInfo,
-    IndexJob,
-    IndexStatus,
-    MemoryEstimate,
-    OcrMode,
-    VectorStoreType,
-)
+from ragtime.indexer.memory_utils import (estimate_index_memory,
+                                          estimate_memory_at_dimensions,
+                                          get_embedding_dimension)
+from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
+                                    CommitHistoryInfo, CommitHistorySample,
+                                    FileTypeStats, IndexAnalysisResult,
+                                    IndexConfig, IndexInfo, IndexJob,
+                                    IndexStatus, MemoryEstimate, OcrMode,
+                                    VectorStoreType)
 from ragtime.indexer.repository import repository
-from ragtime.indexer.vector_utils import (
-    EMBEDDING_SUB_BATCH_SIZE,
-    append_embedding_dimension_warning,
-    get_embeddings_model,
-)
+from ragtime.indexer.vector_utils import (EMBEDDING_SUB_BATCH_SIZE,
+                                          append_embedding_dimension_warning,
+                                          get_embeddings_model)
 from ragtime.tools.git_history import _is_shallow_repository
 
 logger = get_logger(__name__)
@@ -107,9 +91,8 @@ async def generate_index_description(
 
         if provider == "ollama":
             try:
-                from langchain_ollama import (
-                    ChatOllama,
-                )  # type: ignore[reportMissingImports]
+                from langchain_ollama import \
+                    ChatOllama  # type: ignore[reportMissingImports]
 
                 base_url = app_settings.get("ollama_base_url", "http://localhost:11434")
                 model = app_settings.get("llm_model", "llama3.2")
@@ -122,9 +105,8 @@ async def generate_index_description(
             api_key = app_settings.get("anthropic_api_key", "")
             if api_key:
                 try:
-                    from langchain_anthropic import (
-                        ChatAnthropic,
-                    )  # type: ignore[import-untyped]
+                    from langchain_anthropic import \
+                        ChatAnthropic  # type: ignore[import-untyped]
 
                     model = app_settings.get("llm_model", "claude-sonnet-4-20250514")
                     llm = ChatAnthropic(
@@ -2436,11 +2418,14 @@ class IndexerService:
 
         # Build list of files to load (filtering out unparseable binaries)
         files_to_load = []
-        for file_path in all_files:
-            # Check for cancellation before processing
-            if self._is_cancelled(job.id):
-                logger.info(f"Job {job.id} was cancelled during file preparation")
-                raise asyncio.CancelledError("Job cancelled by user")
+        for idx, file_path in enumerate(all_files):
+            # Check for cancellation periodically
+            if idx % 500 == 0:
+                if self._is_cancelled(job.id):
+                    logger.info(f"Job {job.id} was cancelled during file preparation")
+                    raise asyncio.CancelledError("Job cancelled by user")
+                # Yield to event loop every 500 files to keep server responsive
+                await asyncio.sleep(0)
 
             ext_lower = file_path.suffix.lower()
 
@@ -2605,35 +2590,10 @@ class IndexerService:
         safe_token_limit = int(max_allowed_tokens * safety_margin)
 
         # Process chunks and re-chunk any that exceed the safe limit
-        final_chunks = []
-        for chunk in chunks:
-            tokens = count_tokens(chunk.page_content)
-            # Re-chunk if tiktoken count exceeds the SAFE limit (not the full limit)
-            # This ensures chunks that are "under" the limit by tiktoken counting
-            # don't exceed the BERT tokenizer's count
-            if tokens > safe_token_limit:
-                source = chunk.metadata.get("source", "unknown")
-                chunker = chunk.metadata.get("chunker", "unknown")
-
-                # Re-chunk with proper splitting at natural boundaries
-                # Honor user-configured chunk_overlap for context preservation
-                sub_chunks = rechunk_oversized_content(
-                    chunk.page_content,
-                    safe_token_limit,
-                    chunk_overlap=config.chunk_overlap,
-                    metadata=chunk.metadata,
-                )
-                final_chunks.extend(sub_chunks)
-
-                if rechunked_count < 5:  # Log first 5
-                    logger.warning(
-                        f"Re-chunked oversized content from {tokens} tokens into "
-                        f"{len(sub_chunks)} chunks (source: {source}, chunker: {chunker}, "
-                        f"safe_limit: {safe_token_limit})"
-                    )
-                rechunked_count += 1
-            else:
-                final_chunks.append(chunk)
+        # Run in thread pool to avoid blocking event loop with count_tokens on 50K+ chunks
+        final_chunks, rechunked_count = await asyncio.to_thread(
+            rechunk_documents_batch, chunks, safe_token_limit, config.chunk_overlap
+        )
 
         if rechunked_count > 0:
             logger.info(
@@ -2645,15 +2605,21 @@ class IndexerService:
         # Use final_chunks for embedding
         chunks = final_chunks
 
-        for i in range(0, len(chunks), batch_size):
+        # Use larger batches for FAISS to reduce merge overhead
+        # Each FAISS.from_documents call has fixed overhead, so larger batches
+        # are more efficient (fewer merges, less index fragmentation)
+        faiss_batch_size = max(batch_size, 500)
+
+        for i in range(0, len(chunks), faiss_batch_size):
             # Check for cancellation
             if self._is_cancelled(job.id):
                 logger.info(f"Job {job.id} was cancelled during embedding")
                 raise asyncio.CancelledError("Job cancelled by user")
 
-            batch = chunks[i : i + batch_size]
+            batch = chunks[i : i + faiss_batch_size]
             batch_db = None
             attempt = 0
+            context_length_retry = False
 
             while True:
                 try:
@@ -2664,27 +2630,66 @@ class IndexerService:
                 except Exception as e:
                     if self._is_rate_limit_error(e) and attempt < max_retries:
                         wait_seconds = self._retry_delay_seconds(e, attempt)
-                        job.error_message = f"OpenAI rate limit hit, retrying batch {i // batch_size + 1} in {wait_seconds:.1f}s"
+                        job.error_message = f"OpenAI rate limit hit, retrying batch {i // faiss_batch_size + 1} in {wait_seconds:.1f}s"
                         await repository.update_job(job)
                         logger.warning(job.error_message)
                         await asyncio.sleep(wait_seconds)
                         attempt += 1
                         continue
+
+                    # Handle context length errors by re-chunking oversized chunks
+                    # This is a safety net for chunks that passed the rechunking pass
+                    # but still exceed the model's BERT tokenizer limit.
+                    # We re-chunk (not truncate) so no information is lost.
+                    if is_context_length_error(e) and not context_length_retry:
+                        context_length_retry = True
+                        # Use more aggressive limit (50% of original safe limit)
+                        # to ensure we're well under the BERT tokenizer limit
+                        aggressive_limit = int(safe_token_limit * 0.70)
+
+                        rechunked_in_batch = 0
+                        new_batch = []
+                        for doc in batch:
+                            tokens = count_tokens(doc.page_content)
+                            if tokens > aggressive_limit:
+                                # Re-chunk into smaller pieces (no data loss)
+                                sub_docs = rechunk_oversized_content(
+                                    doc.page_content,
+                                    aggressive_limit,
+                                    chunk_overlap=config.chunk_overlap,
+                                    metadata=doc.metadata,
+                                )
+                                new_batch.extend(sub_docs)
+                                rechunked_in_batch += 1
+                            else:
+                                new_batch.append(doc)
+
+                        if rechunked_in_batch > 0:
+                            logger.warning(
+                                f"Context length error in batch {i // faiss_batch_size + 1}: "
+                                f"re-chunked {rechunked_in_batch} chunks at aggressive "
+                                f"limit {aggressive_limit} tokens "
+                                f"({len(batch)} -> {len(new_batch)} chunks), retrying"
+                            )
+                            batch = new_batch
+                            continue
+
                     raise
 
+            # Merge FAISS indexes in thread to avoid blocking event loop
             if db is None:
                 db = batch_db
             else:
-                db.merge_from(batch_db)
+                await asyncio.to_thread(db.merge_from, batch_db)
 
             # Update processed chunks progress
             job.error_message = None
-            job.processed_chunks = min(i + batch_size, len(chunks))
+            job.processed_chunks = min(i + faiss_batch_size, len(chunks))
             await repository.update_job(job)
             logger.info(f"Embedded {job.processed_chunks}/{len(chunks)} chunks")
 
             # Small pause between batches to stay under provider TPM limits
-            if batch_pause_seconds > 0 and (i + batch_size) < len(chunks):
+            if batch_pause_seconds > 0 and (i + faiss_batch_size) < len(chunks):
                 await asyncio.sleep(batch_pause_seconds)
 
         if db is None:

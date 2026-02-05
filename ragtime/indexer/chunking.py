@@ -21,13 +21,12 @@ import warnings
 from concurrent.futures import ProcessPoolExecutor
 from typing import Callable, Dict, List, Optional, Tuple
 
-from chonkie import CodeChunker, OverlapRefinery
-from chonkie import OverlapRefinery, RecursiveChunker
-from chonkie import RecursiveChunker
+from chonkie import CodeChunker, OverlapRefinery, RecursiveChunker
 from langchain_core.documents import Document
 
 from ragtime.core.file_constants import LANG_MAPPING
 from ragtime.core.logging import get_logger
+from ragtime.core.tokenization import count_tokens
 
 # Suppress Chonkie warnings we intentionally trigger:
 # - tokenizers library: we use tiktoken intentionally
@@ -655,6 +654,9 @@ async def chunk_documents_parallel(
 ) -> List[Document]:
     """
     Chunk documents in parallel processes using Chonkie/Unstructured.
+
+    Submits multiple batches concurrently to the process pool to fully utilize
+    all worker processes, rather than submitting one batch at a time.
     """
     if not documents:
         return []
@@ -663,20 +665,26 @@ async def chunk_documents_parallel(
     total_docs = len(documents)
     all_chunks: List[Document] = []
     all_splitter_counts: Dict[str, int] = {}
-    processed_docs = 0
 
     logger.debug(
         f"Starting parallel chunking: {total_docs} docs, batch_size={batch_size}, "
         f"workers={_pool_max_workers}"
     )
 
-    for i in range(0, total_docs, batch_size):
-        batch_docs = documents[i : i + batch_size]
-        batch_data = [(doc.page_content, doc.metadata) for doc in batch_docs]
+    loop = asyncio.get_event_loop()
 
-        loop = asyncio.get_event_loop()
-        try:
-            result_chunks, splitter_counts = await loop.run_in_executor(
+    # Submit batches in waves of pool_workers to keep all workers busy
+    wave_size = _pool_max_workers
+    batch_ranges = list(range(0, total_docs, batch_size))
+
+    for wave_start in range(0, len(batch_ranges), wave_size):
+        wave_indices = batch_ranges[wave_start : wave_start + wave_size]
+        futures = []
+
+        for i in wave_indices:
+            batch_docs = documents[i : i + batch_size]
+            batch_data = [(doc.page_content, doc.metadata) for doc in batch_docs]
+            future = loop.run_in_executor(
                 pool,
                 _chunk_document_batch_sync,
                 batch_data,
@@ -684,23 +692,26 @@ async def chunk_documents_parallel(
                 chunk_overlap,
                 use_tokens,
             )
+            futures.append(future)
 
+        # Await all futures in this wave concurrently
+        try:
+            results = await asyncio.gather(*futures)
+        except Exception as e:
+            logger.error(f"Batch chunking error: {e}")
+            raise
+
+        for result_chunks, splitter_counts in results:
             for content, meta in result_chunks:
                 all_chunks.append(Document(page_content=content, metadata=meta))
-
             for k, v in splitter_counts.items():
                 all_splitter_counts[k] = all_splitter_counts.get(k, 0) + v
 
-        except Exception as e:
-            logger.error(f"Batch chunking error: {e}")
-            # Continue with next batch? or re-raise?
-            # Re-raising is safer to avoid silent data loss
-            raise e
-
-        processed_docs = min(i + batch_size, total_docs)
+        processed_docs = min(wave_indices[-1] + batch_size, total_docs)
         if progress_callback:
             progress_callback(processed_docs, total_docs)
 
+        # Yield to event loop between waves
         await asyncio.sleep(0)
 
     # Log summary
@@ -780,7 +791,7 @@ def rechunk_oversized_text(
     """
     Re-chunk oversized text content into smaller pieces that fit within the token limit.
 
-    Same as rechunk_oversized_content but returns plain strings instead of Documents.
+    Thin wrapper around rechunk_oversized_content that returns plain strings.
     Used by filesystem indexer which works with raw text chunks.
 
     Args:
@@ -791,28 +802,123 @@ def rechunk_oversized_text(
     Returns:
         List of text strings, each within the token limit
     """
-    # Account for overlap in the chunk size
-    effective_chunk_size = max(100, safe_token_limit - chunk_overlap)
+    docs = rechunk_oversized_content(content, safe_token_limit, chunk_overlap)
+    return [doc.page_content for doc in docs]
 
-    # Use tiktoken for accurate token counting
-    chunker = RecursiveChunker(
-        tokenizer=TIKTOKEN_ENCODING,
-        chunk_size=effective_chunk_size,
-        min_characters_per_chunk=20,
+
+# =============================================================================
+# BATCH RECHUNKING (shared by git indexer and filesystem indexer)
+# =============================================================================
+
+
+def rechunk_documents_batch(
+    chunks: List[Document],
+    safe_token_limit: int,
+    chunk_overlap: int = 0,
+    max_warnings: int = 5,
+) -> tuple[List[Document], int]:
+    """
+    Re-chunk oversized Document chunks that exceed the safe token limit.
+
+    CPU-bound function intended to run in a thread pool. Iterates all chunks,
+    re-chunks any that exceed the limit, and returns the full list with
+    oversized chunks replaced by their smaller sub-chunks.
+
+    Used by the git/upload (FAISS) indexer in service.py.
+
+    Args:
+        chunks: List of Document chunks to check and re-chunk
+        safe_token_limit: Maximum tiktoken token count per chunk
+        chunk_overlap: Token overlap between re-chunked pieces
+        max_warnings: Number of individual re-chunk warnings to log
+
+    Returns:
+        Tuple of (result_chunks, rechunked_count)
+    """
+    result_chunks = []
+    rc_count = 0
+    for chunk in chunks:
+        tokens = count_tokens(chunk.page_content)
+        if tokens > safe_token_limit:
+            source = chunk.metadata.get("source", "unknown")
+            chunker_name = chunk.metadata.get("chunker", "unknown")
+
+            sub_chunks = rechunk_oversized_content(
+                chunk.page_content,
+                safe_token_limit,
+                chunk_overlap=chunk_overlap,
+                metadata=chunk.metadata,
+            )
+            result_chunks.extend(sub_chunks)
+
+            if rc_count < max_warnings:
+                logger.warning(
+                    f"Re-chunked oversized content from {tokens} tokens into "
+                    f"{len(sub_chunks)} chunks (source: {source}, chunker: {chunker_name}, "
+                    f"safe_limit: {safe_token_limit})"
+                )
+            rc_count += 1
+        else:
+            result_chunks.append(chunk)
+    return result_chunks, rc_count
+
+
+def rechunk_texts_batch(
+    files_data: list[tuple[str, list[str], ...]],
+    safe_token_limit: int,
+    chunk_overlap: int = 0,
+    max_warnings: int = 5,
+) -> tuple[list[str], list[str], int]:
+    """
+    Re-chunk oversized text chunks that exceed the safe token limit.
+
+    CPU-bound function intended to run in a thread pool. Processes file data
+    tuples from the filesystem indexer, maintaining a parallel file_map for
+    tracking which file each chunk belongs to.
+
+    Used by the filesystem indexer in filesystem_service.py.
+
+    Args:
+        files_data: List of (rel_path, chunks, hash, file_path) tuples
+        safe_token_limit: Maximum tiktoken token count per chunk
+        chunk_overlap: Token overlap between re-chunked pieces
+        max_warnings: Number of individual re-chunk warnings to log
+
+    Returns:
+        Tuple of (result_chunks, file_map, rechunked_count)
+    """
+    result_chunks: list[str] = []
+    file_map: list[str] = []
+    rc_count = 0
+    for rel_path, chunks, *_ in files_data:
+        for chunk in chunks:
+            tokens = count_tokens(chunk)
+            if tokens > safe_token_limit:
+                sub_chunks = rechunk_oversized_text(
+                    chunk, safe_token_limit, chunk_overlap=chunk_overlap
+                )
+                if rc_count < max_warnings:
+                    logger.warning(
+                        f"Re-chunked oversized content from {tokens} "
+                        f"tokens into {len(sub_chunks)} chunks "
+                        f"(source: {rel_path}, safe_limit: {safe_token_limit})"
+                    )
+                rc_count += 1
+                for sub_chunk in sub_chunks:
+                    result_chunks.append(sub_chunk)
+                    file_map.append(rel_path)
+            else:
+                result_chunks.append(chunk)
+                file_map.append(rel_path)
+    return result_chunks, file_map, rc_count
+
+
+def is_context_length_error(exc: Exception) -> bool:
+    """Detect embedding context length errors from Ollama and other providers."""
+    text = str(exc).lower()
+    return (
+        "input length exceeds" in text
+        or "context length" in text
+        or "maximum context length" in text
+        or "token limit" in text
     )
-
-    chunks = chunker.chunk(content)
-
-    # Apply overlap to add context from adjacent chunks
-    if chunk_overlap > 0 and len(chunks) > 1:
-        refinery = OverlapRefinery(
-            tokenizer=TIKTOKEN_ENCODING,
-            context_size=chunk_overlap,
-            mode="recursive",
-            method="suffix",
-            merge=True,
-            inplace=True,
-        )
-        chunks = refinery.refine(chunks)
-
-    return [c.text for c in chunks]

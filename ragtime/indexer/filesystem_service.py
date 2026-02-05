@@ -31,54 +31,38 @@ from prisma.errors import TableNotFoundError
 
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.database import get_db
-from ragtime.core.file_constants import (
-    DOCUMENT_EXTENSIONS,
-    PARSEABLE_DOCUMENT_EXTENSIONS,
-    UNPARSEABLE_BINARY_EXTENSIONS,
-    get_embedding_safety_margin,
-)
-from ragtime.core.file_constants import OCR_EXTENSIONS
+from ragtime.core.file_constants import (DOCUMENT_EXTENSIONS, OCR_EXTENSIONS,
+                                         PARSEABLE_DOCUMENT_EXTENSIONS,
+                                         UNPARSEABLE_BINARY_EXTENSIONS,
+                                         get_embedding_safety_margin)
 from ragtime.core.logging import get_logger
-from ragtime.indexer.chunking import (
-    _chunk_with_chonkie_code,
-    _chunk_with_recursive,
-    chunk_semantic_segments,
-)
-from ragtime.indexer.chunking import chunk_semantic_segments
-from ragtime.indexer.document_parser import (
-    OCR_EXTENSIONS,
-    is_ocr_supported,
-    is_supported_document,
-)
-from ragtime.indexer.document_parser import extract_image_structured_async
-from ragtime.indexer.document_parser import extract_text_from_file_async
+from ragtime.indexer.chunking import (_chunk_with_chonkie_code,
+                                      _chunk_with_recursive,
+                                      chunk_semantic_segments,
+                                      is_context_length_error,
+                                      rechunk_oversized_text,
+                                      rechunk_texts_batch)
+from ragtime.indexer.document_parser import (OCR_EXTENSIONS,
+                                             extract_image_structured_async,
+                                             extract_text_from_file_async,
+                                             is_ocr_supported,
+                                             is_supported_document)
 from ragtime.indexer.file_utils import compute_file_hash, matches_pattern
-from ragtime.indexer.models import (
-    FilesystemAnalysisJob,
-    FilesystemAnalysisResult,
-    FilesystemAnalysisStatus,
-    FilesystemConnectionConfig,
-    FilesystemFileMetadata,
-    FilesystemIndexJob,
-    FilesystemIndexStatus,
-    FileTypeStats,
-    OcrMode,
-    VectorStoreType,
-)
-from ragtime.indexer.repository import IndexerRepository
-from ragtime.indexer.repository import repository
-from ragtime.indexer.vector_backends import (
-    VectorStoreBackend,
-    get_backend,
-    get_faiss_backend,
-    get_pgvector_backend,
-)
-from ragtime.indexer.vector_utils import (
-    embed_documents_subbatched,
-    ensure_embedding_column,
-    ensure_pgvector_extension,
-    get_embeddings_model,
-)
+from ragtime.indexer.models import (FilesystemAnalysisJob,
+                                    FilesystemAnalysisResult,
+                                    FilesystemAnalysisStatus,
+                                    FilesystemConnectionConfig,
+                                    FilesystemFileMetadata, FilesystemIndexJob,
+                                    FilesystemIndexStatus, FileTypeStats,
+                                    OcrMode, VectorStoreType)
+from ragtime.indexer.repository import IndexerRepository, repository
+from ragtime.indexer.vector_backends import (VectorStoreBackend, get_backend,
+                                             get_faiss_backend,
+                                             get_pgvector_backend)
+from ragtime.indexer.vector_utils import (embed_documents_subbatched,
+                                          ensure_embedding_column,
+                                          ensure_pgvector_extension,
+                                          get_embeddings_model)
 
 logger = get_logger(__name__)
 
@@ -1156,7 +1140,8 @@ class FilesystemIndexerService:
 
             # Get embedding model context limit for chunk validation
             # (same as document indexer to ensure oversized chunks are truncated)
-            from ragtime.core.embedding_models import get_embedding_model_context_limit
+            from ragtime.core.embedding_models import \
+                get_embedding_model_context_limit
             from ragtime.core.tokenization import count_tokens
 
             embedding_context_limit = await get_embedding_model_context_limit(
@@ -1445,11 +1430,6 @@ class FilesystemIndexerService:
 
                     # Batch embed all chunks from this batch
                     if files_to_embed:
-                        # Flatten all chunks for batch embedding
-                        all_chunks = []
-                        chunk_file_map = []  # Track which file each chunk belongs to
-                        rechunked_count = 0
-
                         # Get safety margin based on embedding provider
                         provider = app_settings.get("embedding_provider", "ollama")
                         safety_margin = get_embedding_safety_margin(provider)
@@ -1458,35 +1438,15 @@ class FilesystemIndexerService:
                         # Any chunk exceeding this TIKTOKEN count may exceed BERT limit
                         safe_token_limit = int(embedding_context_limit * safety_margin)
 
-                        # Import rechunk function for oversized content
-                        from ragtime.indexer.chunking import rechunk_oversized_text
-
-                        for rel_path, chunks, _, _ in files_to_embed:
-                            for chunk in chunks:
-                                # Re-chunk if tiktoken count exceeds the SAFE limit
-                                # This ensures chunks don't exceed BERT tokenizer's count
-                                tokens = count_tokens(chunk)
-                                if tokens > safe_token_limit:
-                                    # Re-chunk with proper splitting at natural boundaries
-                                    # Honor user-configured chunk_overlap for context
-                                    sub_chunks = rechunk_oversized_text(
-                                        chunk,
-                                        safe_token_limit,
-                                        chunk_overlap=config.chunk_overlap,
-                                    )
-                                    if rechunked_count < 5:  # Log first 5
-                                        logger.warning(
-                                            f"Re-chunked oversized content from {tokens} "
-                                            f"tokens into {len(sub_chunks)} chunks "
-                                            f"(source: {rel_path}, safe_limit: {safe_token_limit})"
-                                        )
-                                    rechunked_count += 1
-                                    for sub_chunk in sub_chunks:
-                                        all_chunks.append(sub_chunk)
-                                        chunk_file_map.append(rel_path)
-                                else:
-                                    all_chunks.append(chunk)
-                                    chunk_file_map.append(rel_path)
+                        # Run re-chunking in thread to avoid blocking event loop
+                        all_chunks, chunk_file_map, rechunked_count = (
+                            await asyncio.to_thread(
+                                rechunk_texts_batch,
+                                files_to_embed,
+                                safe_token_limit,
+                                config.chunk_overlap,
+                            )
+                        )
 
                         if rechunked_count > 0:
                             logger.info(
@@ -1496,6 +1456,8 @@ class FilesystemIndexerService:
                             )
 
                         # Generate embeddings in sub-batches to keep event loop responsive
+                        # Retry once with aggressive re-chunking on context length errors
+                        context_length_retried = False
                         try:
                             all_embeddings = await embed_documents_subbatched(
                                 embeddings,
@@ -1503,11 +1465,49 @@ class FilesystemIndexerService:
                                 logger_override=logger,
                             )
                         except Exception as e:
-                            logger.error(f"Batch embedding failed: {e}")
-                            for rel_path, _, _, _ in files_to_embed:
-                                job.processed_files += 1
-                            await self._update_job(job)
-                            continue
+                            if is_context_length_error(e) and not context_length_retried:
+                                context_length_retried = True
+                                aggressive_limit = int(safe_token_limit * 0.70)
+                                logger.warning(
+                                    f"Context length error during embedding, "
+                                    f"re-chunking at aggressive limit {aggressive_limit} tokens"
+                                )
+                                from ragtime.core.tokenization import \
+                                    count_tokens
+
+                                new_chunks: list[str] = []
+                                new_file_map: list[str] = []
+                                for chunk_text, rel in zip(all_chunks, chunk_file_map):
+                                    tokens = count_tokens(chunk_text)
+                                    if tokens > aggressive_limit:
+                                        sub = rechunk_oversized_text(
+                                            chunk_text, aggressive_limit, config.chunk_overlap
+                                        )
+                                        new_chunks.extend(sub)
+                                        new_file_map.extend([rel] * len(sub))
+                                    else:
+                                        new_chunks.append(chunk_text)
+                                        new_file_map.append(rel)
+                                all_chunks = new_chunks
+                                chunk_file_map = new_file_map
+                                try:
+                                    all_embeddings = await embed_documents_subbatched(
+                                        embeddings,
+                                        all_chunks,
+                                        logger_override=logger,
+                                    )
+                                except Exception as e2:
+                                    logger.error(f"Batch embedding failed after aggressive re-chunk: {e2}")
+                                    for rel_path, _, _, _ in files_to_embed:
+                                        job.processed_files += 1
+                                    await self._update_job(job)
+                                    continue
+                            else:
+                                logger.error(f"Batch embedding failed: {e}")
+                                for rel_path, _, _, _ in files_to_embed:
+                                    job.processed_files += 1
+                                await self._update_job(job)
+                                continue
 
                         # Validate embedding dimension (first in batch)
                         if all_embeddings and tracking_needs_update:
@@ -1666,7 +1666,8 @@ class FilesystemIndexerService:
             if vector_store_type == VectorStoreType.FAISS:
                 try:
                     # 1. Load the new index into memory immediately
-                    from ragtime.indexer.vector_backends import get_faiss_backend
+                    from ragtime.indexer.vector_backends import \
+                        get_faiss_backend
 
                     await get_faiss_backend().load_index(job.index_name, embeddings)
 
@@ -2097,9 +2098,8 @@ class FilesystemIndexerService:
                         stats["estimated_chunks"] = stats["file_count"]
 
                 # Get LLM-powered exclusion suggestions
-                from ragtime.indexer.llm_exclusions import (
-                    get_smart_exclusion_suggestions,
-                )
+                from ragtime.indexer.llm_exclusions import \
+                    get_smart_exclusion_suggestions
 
                 smart_exclusions, _used_llm = await get_smart_exclusion_suggestions(
                     ext_stats=dict(ext_stats),
@@ -2364,4 +2364,5 @@ class FilesystemIndexerService:
 
 
 # Global service instance
+filesystem_indexer = FilesystemIndexerService()
 filesystem_indexer = FilesystemIndexerService()
