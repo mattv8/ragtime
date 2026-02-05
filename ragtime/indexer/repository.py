@@ -282,6 +282,16 @@ class IndexerRepository:
             return self._prisma_job_to_model(prisma_job)
         return None
 
+    async def count_completed_jobs(self, name: str) -> int:
+        """Count how many successfully completed jobs exist for an index name."""
+        db = await self._get_db()
+        return await db.indexjob.count(
+            where={  # type: ignore[arg-type]
+                "name": name,
+                "status": PrismaIndexStatus.completed,
+            }
+        )
+
     def _prisma_job_to_model(self, prisma_job: PrismaIndexJob) -> IndexJob:
         """Convert Prisma job to Pydantic model."""
         if prisma_job.config is None:

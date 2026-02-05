@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import uuid
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO, Dict, List, Optional
 
@@ -25,39 +25,60 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document as LangChainDocument
 
 from ragtime.config import settings
-from ragtime.core.app_settings import (get_app_settings,
-                                       invalidate_settings_cache)
-from ragtime.core.embedding_models import (get_embedding_model_context_limit,
-                                           get_embedding_models)
-from ragtime.core.file_constants import (BINARY_EXTENSIONS, MINIFIED_PATTERNS,
-                                         PARSEABLE_DOCUMENT_EXTENSIONS,
-                                         UNPARSEABLE_BINARY_EXTENSIONS,
-                                         get_embedding_safety_margin)
+from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
+from ragtime.core.embedding_models import (
+    get_embedding_model_context_limit,
+    get_embedding_models,
+)
+from ragtime.core.file_constants import (
+    BINARY_EXTENSIONS,
+    MINIFIED_PATTERNS,
+    PARSEABLE_DOCUMENT_EXTENSIONS,
+    UNPARSEABLE_BINARY_EXTENSIONS,
+    get_embedding_safety_margin,
+)
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
-from ragtime.indexer.chunking import (chunk_documents_parallel,
-                                      is_context_length_error,
-                                      rechunk_documents_batch,
-                                      rechunk_oversized_content)
-from ragtime.indexer.document_parser import (OCR_EXTENSIONS,
-                                             extract_text_from_file_async)
-from ragtime.indexer.file_utils import (HARDCODED_EXCLUDES,
-                                        build_authenticated_git_url,
-                                        extract_archive, find_source_dir)
+from ragtime.indexer.chunking import (
+    chunk_documents_parallel,
+    is_context_length_error,
+    rechunk_documents_batch,
+    rechunk_oversized_content,
+)
+from ragtime.indexer.document_parser import OCR_EXTENSIONS, extract_text_from_file_async
+from ragtime.indexer.file_utils import (
+    HARDCODED_EXCLUDES,
+    build_authenticated_git_url,
+    extract_archive,
+    find_source_dir,
+)
 from ragtime.indexer.llm_exclusions import get_smart_exclusion_suggestions
-from ragtime.indexer.memory_utils import (estimate_index_memory,
-                                          estimate_memory_at_dimensions,
-                                          get_embedding_dimension)
-from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
-                                    CommitHistoryInfo, CommitHistorySample,
-                                    FileTypeStats, IndexAnalysisResult,
-                                    IndexConfig, IndexInfo, IndexJob,
-                                    IndexStatus, MemoryEstimate, OcrMode,
-                                    VectorStoreType)
+from ragtime.indexer.memory_utils import (
+    estimate_index_memory,
+    estimate_memory_at_dimensions,
+    get_embedding_dimension,
+)
+from ragtime.indexer.models import (
+    AnalyzeIndexRequest,
+    AppSettings,
+    CommitHistoryInfo,
+    CommitHistorySample,
+    FileTypeStats,
+    IndexAnalysisResult,
+    IndexConfig,
+    IndexInfo,
+    IndexJob,
+    IndexStatus,
+    MemoryEstimate,
+    OcrMode,
+    VectorStoreType,
+)
 from ragtime.indexer.repository import repository
-from ragtime.indexer.vector_utils import (EMBEDDING_SUB_BATCH_SIZE,
-                                          append_embedding_dimension_warning,
-                                          get_embeddings_model)
+from ragtime.indexer.vector_utils import (
+    EMBEDDING_SUB_BATCH_SIZE,
+    append_embedding_dimension_warning,
+    get_embeddings_model,
+)
 from ragtime.tools.git_history import _is_shallow_repository
 
 logger = get_logger(__name__)
@@ -91,8 +112,9 @@ async def generate_index_description(
 
         if provider == "ollama":
             try:
-                from langchain_ollama import \
-                    ChatOllama  # type: ignore[reportMissingImports]
+                from langchain_ollama import (
+                    ChatOllama,
+                )  # type: ignore[reportMissingImports]
 
                 base_url = app_settings.get("ollama_base_url", "http://localhost:11434")
                 model = app_settings.get("llm_model", "llama3.2")
@@ -105,8 +127,9 @@ async def generate_index_description(
             api_key = app_settings.get("anthropic_api_key", "")
             if api_key:
                 try:
-                    from langchain_anthropic import \
-                        ChatAnthropic  # type: ignore[import-untyped]
+                    from langchain_anthropic import (
+                        ChatAnthropic,
+                    )  # type: ignore[import-untyped]
 
                     model = app_settings.get("llm_model", "claude-sonnet-4-20250514")
                     llm = ChatAnthropic(
@@ -662,16 +685,30 @@ class IndexerService:
     async def _cleanup_failed_index_metadata(self, name: str) -> None:
         """Clean up optimistic index_metadata if a NEW index job fails.
 
-        Only deletes metadata if the index has no actual data (chunk_count=0),
-        indicating it was just created optimistically and the job failed before
-        any real data was indexed. This preserves existing indexes on re-index failures.
+        Checks if there are any successfully completed jobs for this index name.
+        If NO completed jobs exist, we assume this was a fresh optimistic index
+        that failed on its first attempt, and thus we should clean up the metadata
+        to avoid a "broken" index entry.
+
+        If completed jobs EXIST, this is likely a failed re-index, so we PRESERVE
+        the metadata (even if it currently has 0 chunks due to optimistic update).
         """
         try:
             metadata = await repository.get_index_metadata(name)
             if metadata and metadata.chunkCount == 0:
-                # This was an optimistic placeholder - safe to clean up
-                logger.info(f"Cleaning up optimistic metadata for failed index: {name}")
-                await repository.delete_index_metadata(name)
+                # Check history: have we EVER successfully indexed this?
+                completed_count = await repository.count_completed_jobs(name)
+
+                if completed_count == 0:
+                    logger.info(
+                        f"Cleaning up optimistic metadata for failed index '{name}' (no successful jobs found)"
+                    )
+                    await repository.delete_index_metadata(name)
+                else:
+                    logger.info(
+                        f"Preserving metadata for '{name}' despite failure (found {completed_count} completed jobs)"
+                    )
+
         except Exception as e:
             # Don't fail the job cleanup if metadata cleanup fails
             logger.warning(f"Failed to cleanup metadata for {name}: {e}")
@@ -1739,7 +1776,11 @@ class IndexerService:
                 logger.info(f"Job {job.id} was cancelled before cloning")
                 return
 
-            # Preserve token for metadata storage before clearing from job object
+            # Preserve token for metadata storage
+            # We used to clear job.git_token here, but that causes issues on resume/retry
+            # because the token is cleared from DB and not available for the resumed job.
+            # Since gitToken is encrypted in IndexJob (repository.create_job handles encryption),
+            # it is safe to leave it in the DB record.
             stored_token = job.git_token
 
             # Determine if we have an existing repo to update
@@ -1758,9 +1799,6 @@ class IndexerService:
                 await self._clone_git_repo(job, repo_dir)
                 clone_complete_marker.parent.mkdir(parents=True, exist_ok=True)
                 clone_complete_marker.touch()
-
-            # Clear token from job object (not needed in memory after we have stored_token)
-            job.git_token = None
 
             # Clear cloning status, update to scanning phase
             job.error_message = None
