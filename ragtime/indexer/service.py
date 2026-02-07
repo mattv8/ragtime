@@ -25,40 +25,61 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document as LangChainDocument
 
 from ragtime.config import settings
-from ragtime.core.app_settings import (get_app_settings,
-                                       invalidate_settings_cache)
-from ragtime.core.embedding_models import (get_embedding_model_context_limit,
-                                           get_embedding_models)
-from ragtime.core.file_constants import (BINARY_EXTENSIONS, MINIFIED_PATTERNS,
-                                         PARSEABLE_DOCUMENT_EXTENSIONS,
-                                         UNPARSEABLE_BINARY_EXTENSIONS,
-                                         get_embedding_safety_margin)
+from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
+from ragtime.core.embedding_models import (
+    get_embedding_model_context_limit,
+    get_embedding_models,
+)
+from ragtime.core.file_constants import (
+    BINARY_EXTENSIONS,
+    MINIFIED_PATTERNS,
+    PARSEABLE_DOCUMENT_EXTENSIONS,
+    UNPARSEABLE_BINARY_EXTENSIONS,
+    get_embedding_safety_margin,
+)
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
-from ragtime.indexer.chunking import (chunk_documents_parallel,
-                                      is_context_length_error,
-                                      rechunk_documents_batch,
-                                      rechunk_oversized_content,
-                                      shutdown_process_pool)
-from ragtime.indexer.document_parser import (OCR_EXTENSIONS,
-                                             extract_text_from_file_async)
-from ragtime.indexer.file_utils import (HARDCODED_EXCLUDES,
-                                        build_authenticated_git_url,
-                                        extract_archive, find_source_dir)
+from ragtime.indexer.chunking import (
+    chunk_documents_parallel,
+    is_context_length_error,
+    rechunk_documents_batch,
+    rechunk_oversized_content,
+    shutdown_process_pool,
+)
+from ragtime.indexer.document_parser import OCR_EXTENSIONS, extract_text_from_file_async
+from ragtime.indexer.file_utils import (
+    HARDCODED_EXCLUDES,
+    build_authenticated_git_url,
+    extract_archive,
+    find_source_dir,
+)
 from ragtime.indexer.llm_exclusions import get_smart_exclusion_suggestions
-from ragtime.indexer.memory_utils import (estimate_index_memory,
-                                          estimate_memory_at_dimensions,
-                                          get_embedding_dimension)
-from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
-                                    CommitHistoryInfo, CommitHistorySample,
-                                    FileTypeStats, IndexAnalysisResult,
-                                    IndexConfig, IndexInfo, IndexJob,
-                                    IndexStatus, MemoryEstimate, OcrMode,
-                                    VectorStoreType)
+from ragtime.indexer.memory_utils import (
+    estimate_index_memory,
+    estimate_memory_at_dimensions,
+    get_embedding_dimension,
+)
+from ragtime.indexer.models import (
+    AnalyzeIndexRequest,
+    AppSettings,
+    CommitHistoryInfo,
+    CommitHistorySample,
+    FileTypeStats,
+    IndexAnalysisResult,
+    IndexConfig,
+    IndexInfo,
+    IndexJob,
+    IndexStatus,
+    MemoryEstimate,
+    OcrMode,
+    VectorStoreType,
+)
 from ragtime.indexer.repository import repository
-from ragtime.indexer.vector_utils import (EMBEDDING_SUB_BATCH_SIZE,
-                                          append_embedding_dimension_warning,
-                                          get_embeddings_model)
+from ragtime.indexer.vector_utils import (
+    EMBEDDING_SUB_BATCH_SIZE,
+    append_embedding_dimension_warning,
+    get_embeddings_model,
+)
 from ragtime.tools.git_history import _is_shallow_repository
 
 logger = get_logger(__name__)
@@ -92,8 +113,9 @@ async def generate_index_description(
 
         if provider == "ollama":
             try:
-                from langchain_ollama import \
-                    ChatOllama  # type: ignore[reportMissingImports]
+                from langchain_ollama import (
+                    ChatOllama,
+                )  # type: ignore[reportMissingImports]
 
                 base_url = app_settings.get("ollama_base_url", "http://localhost:11434")
                 model = app_settings.get("llm_model", "llama3.2")
@@ -106,8 +128,9 @@ async def generate_index_description(
             api_key = app_settings.get("anthropic_api_key", "")
             if api_key:
                 try:
-                    from langchain_anthropic import \
-                        ChatAnthropic  # type: ignore[import-untyped]
+                    from langchain_anthropic import (
+                        ChatAnthropic,
+                    )  # type: ignore[import-untyped]
 
                     model = app_settings.get("llm_model", "claude-sonnet-4-20250514")
                     llm = ChatAnthropic(
@@ -801,6 +824,9 @@ class IndexerService:
         Values will be updated when job completes; if job fails, metadata will be
         cleaned up by _cleanup_failed_index_metadata().
 
+        On re-index, preserves existing description and config_snapshot to avoid
+        overwriting user customizations with defaults.
+
         Args:
             config: Index configuration
             source_type: "upload" or "git"
@@ -809,6 +835,36 @@ class IndexerService:
             git_token: Git token (for git source only)
         """
         index_path = self.index_base_path / config.name
+
+        # Check if this is a re-index (existing metadata)
+        existing_metadata = await repository.get_index_metadata(config.name)
+
+        # Preserve existing description and config_snapshot on re-index
+        # to avoid overwriting user customizations with defaults
+        if existing_metadata:
+            # Preserve non-empty descriptions, but allow empty ones to be regenerated
+            # This ensures user-set descriptions are kept while still allowing AI generation
+            existing_desc = existing_metadata.description
+            if existing_desc and existing_desc.strip():
+                description = existing_desc
+            else:
+                # Empty or whitespace-only description - allow regeneration at job completion
+                description = config.description or ""
+
+            # Always preserve existing config_snapshot to maintain user customizations
+            # (e.g., git_history_depth, chunk settings, reindex_interval_hours)
+            config_snapshot = (
+                getattr(existing_metadata, "configSnapshot", None)
+                or config.model_dump()
+            )
+            logger.debug(f"Re-indexing '{config.name}': preserving existing metadata")
+        else:
+            description = config.description or ""
+            config_snapshot = config.model_dump()
+            logger.debug(
+                f"Creating new index '{config.name}': using config from request"
+            )
+
         await repository.upsert_index_metadata(
             name=config.name,
             path=str(index_path),
@@ -817,8 +873,8 @@ class IndexerService:
             size_bytes=0,
             source_type=source_type,
             source=source,
-            config_snapshot=config.model_dump(),
-            description=config.description or "",
+            config_snapshot=config_snapshot,
+            description=description,
             git_branch=git_branch,
             git_token=git_token,
             vector_store_type=config.vector_store_type,
