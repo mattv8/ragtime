@@ -16,9 +16,13 @@ from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
-                                     SystemMessage, ToolMessage)
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -30,13 +34,22 @@ from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_output_limit
 from ragtime.core.ollama import get_model_context_length
-from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
-                                   validate_odoo_code, validate_sql_query,
-                                   validate_ssh_command)
+from ragtime.core.security import (
+    _SSH_ENV_VAR_RE,
+    sanitize_output,
+    validate_odoo_code,
+    validate_sql_query,
+    validate_ssh_command,
+)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
-                              execute_ssh_command, expand_env_vars_via_ssh,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.ssh import (
+    SSHConfig,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    expand_env_vars_via_ssh,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
@@ -46,9 +59,11 @@ from ragtime.tools import get_all_tools, get_enabled_tools
 from ragtime.tools.chart import create_chart_tool
 from ragtime.tools.datatable import create_datatable_tool
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (_is_shallow_repository,
-                                       create_aggregate_git_history_tool,
-                                       create_per_index_git_history_tool)
+from ragtime.tools.git_history import (
+    _is_shallow_repository,
+    create_aggregate_git_history_tool,
+    create_per_index_git_history_tool,
+)
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
@@ -1703,6 +1718,7 @@ class RAGComponents:
         Build LangChain tools from ToolConfig entries.
 
         Creates dynamic tool wrappers for each configured tool instance.
+        Tool configs are built in parallel to avoid sequential delays.
 
         Args:
             skip_knowledge_tool: If True, don't add the search_knowledge tool
@@ -1716,52 +1732,74 @@ class RAGComponents:
             # Also add file access tools
             tools.extend(self._create_file_access_tools())
 
-        for config in self._tool_configs or []:
+        async def _build_single_tool(config: dict) -> List[Any]:
+            """Build tool(s) from a single config entry with timeout."""
             tool_type = config.get("tool_type")
-            # Convert the user-provided tool name into a tool-safe identifier
             raw_name = (config.get("name", "") or "").strip()
-            # Lowercase and replace any non-alphanumeric sequence with a single underscore
             tool_name = re.sub(r"[^a-zA-Z0-9]+", "_", raw_name).strip("_").lower()
             tool_id = config.get("id") or ""
+            result_tools = []
 
-            if tool_type == "postgres":
-                tool = await self._create_postgres_tool(config, tool_name, tool_id)
-                # Also create schema search tool if schema indexing is enabled
-                schema_tool = await self._create_schema_search_tool(
-                    config, tool_name, tool_id
-                )
-                if schema_tool:
-                    tools.append(schema_tool)
-            elif tool_type == "mssql":
-                tool = await self._create_mssql_tool(config, tool_name, tool_id)
-                # Also create schema search tool if schema indexing is enabled
-                schema_tool = await self._create_schema_search_tool(
-                    config, tool_name, tool_id
-                )
-                if schema_tool:
-                    tools.append(schema_tool)
-            elif tool_type == "mysql":
-                tool = await self._create_mysql_tool(config, tool_name, tool_id)
-                # Also create schema search tool if schema indexing is enabled
-                schema_tool = await self._create_schema_search_tool(
-                    config, tool_name, tool_id
-                )
-                if schema_tool:
-                    tools.append(schema_tool)
-            elif tool_type == "odoo_shell":
-                tool = await self._create_odoo_tool(config, tool_name, tool_id)
-            elif tool_type == "ssh_shell":
-                tool = await self._create_ssh_tool(config, tool_name, tool_id)
-            elif tool_type == "filesystem_indexer":
-                tool = await self._create_filesystem_tool(config, tool_name, tool_id)
-            elif tool_type == "solidworks_pdm":
-                tool = await self._create_pdm_search_tool(config, tool_name, tool_id)
-            else:
-                logger.warning(f"Unknown tool type: {tool_type}")
-                continue
+            try:
+                if tool_type == "postgres":
+                    tool = await self._create_postgres_tool(config, tool_name, tool_id)
+                    schema_tool = await self._create_schema_search_tool(
+                        config, tool_name, tool_id
+                    )
+                    if schema_tool:
+                        result_tools.append(schema_tool)
+                elif tool_type == "mssql":
+                    tool = await self._create_mssql_tool(config, tool_name, tool_id)
+                    schema_tool = await self._create_schema_search_tool(
+                        config, tool_name, tool_id
+                    )
+                    if schema_tool:
+                        result_tools.append(schema_tool)
+                elif tool_type == "mysql":
+                    tool = await self._create_mysql_tool(config, tool_name, tool_id)
+                    schema_tool = await self._create_schema_search_tool(
+                        config, tool_name, tool_id
+                    )
+                    if schema_tool:
+                        result_tools.append(schema_tool)
+                elif tool_type == "odoo_shell":
+                    tool = await self._create_odoo_tool(config, tool_name, tool_id)
+                elif tool_type == "ssh_shell":
+                    tool = await self._create_ssh_tool(config, tool_name, tool_id)
+                elif tool_type == "filesystem_indexer":
+                    tool = await self._create_filesystem_tool(
+                        config, tool_name, tool_id
+                    )
+                elif tool_type == "solidworks_pdm":
+                    tool = await self._create_pdm_search_tool(
+                        config, tool_name, tool_id
+                    )
+                else:
+                    logger.warning(f"Unknown tool type: {tool_type}")
+                    return []
 
-            if tool:
-                tools.append(tool)
+                if tool:
+                    result_tools.insert(0, tool)
+                return result_tools
+
+            except Exception as e:
+                logger.warning(f"Failed to build {tool_type} tool '{raw_name}': {e}")
+                return []
+
+        # Build all tool configs in parallel
+        if self._tool_configs:
+            build_tasks = [_build_single_tool(config) for config in self._tool_configs]
+            results = await asyncio.gather(*build_tasks, return_exceptions=True)
+
+            for i, result in enumerate(results):
+                config = self._tool_configs[i]
+                if isinstance(result, BaseException):
+                    logger.warning(
+                        f"Tool '{config.get('name', '?')}' ({config.get('tool_type')}) "
+                        f"build failed: {result}"
+                    )
+                elif isinstance(result, list) and result:
+                    tools.extend(result)
 
         return tools
 
