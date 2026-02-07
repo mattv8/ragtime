@@ -641,6 +641,103 @@ class IndexerService:
 
         return min(30.0, base_delay * (2**attempt))
 
+    async def _embed_batch_with_fallback(
+        self,
+        batch: list,
+        embeddings,
+    ) -> "FAISS | None":
+        """
+        Embed a batch using micro-batches, falling back to individual chunks.
+
+        Called when progressive re-chunking retries are exhausted. Processes
+        chunks in small micro-batches to isolate problematic chunks, then
+        embeds those individually. As a last resort, truncates content that
+        still exceeds the embedding model's context limit.
+
+        Args:
+            batch: List of Document objects to embed
+            embeddings: Embedding model instance
+
+        Returns:
+            Merged FAISS index, or None if all chunks failed
+        """
+        result_db = None
+        skipped = 0
+        micro_batch_size = 50
+
+        for j in range(0, len(batch), micro_batch_size):
+            micro_batch = batch[j : j + micro_batch_size]
+            try:
+                micro_db = await asyncio.to_thread(
+                    FAISS.from_documents, micro_batch, embeddings
+                )
+            except Exception as e:
+                if not is_context_length_error(e):
+                    raise
+
+                # Micro-batch failed - process chunks individually
+                logger.info(
+                    f"Micro-batch {j // micro_batch_size + 1} failed, "
+                    f"processing {len(micro_batch)} chunks individually"
+                )
+                micro_db = None
+                for doc in micro_batch:
+                    try:
+                        single_db = await asyncio.to_thread(
+                            FAISS.from_documents, [doc], embeddings
+                        )
+                    except Exception as single_e:
+                        if not is_context_length_error(single_e):
+                            raise
+
+                        # This chunk exceeds model context limit - log details
+                        # and truncate as last resort
+                        tokens = count_tokens(doc.page_content)
+                        source = doc.metadata.get("source", "unknown")
+                        logger.warning(
+                            f"Chunk exceeds embedding context limit at "
+                            f"{tokens} tiktoken tokens, {len(doc.page_content)} "
+                            f"chars - source: {source} - truncating"
+                        )
+
+                        # Binary character truncation
+                        single_db = None
+                        content = doc.page_content
+                        for pct in (0.75, 0.50, 0.25):
+                            doc.page_content = content[: int(len(content) * pct)]
+                            try:
+                                single_db = await asyncio.to_thread(
+                                    FAISS.from_documents, [doc], embeddings
+                                )
+                                break
+                            except Exception:
+                                pass
+
+                        if single_db is None:
+                            logger.error(
+                                f"Skipping chunk after all truncation "
+                                f"attempts - source: {source}"
+                            )
+                            skipped += 1
+                            continue
+
+                    if result_db is None:
+                        result_db = single_db
+                    else:
+                        await asyncio.to_thread(result_db.merge_from, single_db)
+
+                continue  # Skip the merge below, already handled
+
+            if result_db is None:
+                result_db = micro_db
+            else:
+                await asyncio.to_thread(result_db.merge_from, micro_db)
+
+        if skipped > 0:
+            logger.warning(f"Skipped {skipped} chunks that couldn't be embedded")
+
+        return result_db
+
     async def _append_embedding_dimension_warning(self, warnings: List[str]) -> None:
         """Warn when configured embeddings exceed pgvector's 2000-dim index limit."""
         await append_embedding_dimension_warning(warnings, logger_override=logger)
@@ -2657,7 +2754,13 @@ class IndexerService:
             batch = chunks[i : i + faiss_batch_size]
             batch_db = None
             attempt = 0
-            context_length_retry = False
+            context_retries = 0
+            batch_num = i // faiss_batch_size + 1
+
+            # Progressive retry factors for context length errors.
+            # Each level uses a more aggressive token limit to handle
+            # tiktoken/BERT tokenizer mismatch for different content types.
+            context_retry_factors = [0.70, 0.50, 0.35]
 
             while True:
                 try:
@@ -2668,49 +2771,68 @@ class IndexerService:
                 except Exception as e:
                     if self._is_rate_limit_error(e) and attempt < max_retries:
                         wait_seconds = self._retry_delay_seconds(e, attempt)
-                        job.error_message = f"OpenAI rate limit hit, retrying batch {i // faiss_batch_size + 1} in {wait_seconds:.1f}s"
+                        job.error_message = f"OpenAI rate limit hit, retrying batch {batch_num} in {wait_seconds:.1f}s"
                         await repository.update_job(job)
                         logger.warning(job.error_message)
                         await asyncio.sleep(wait_seconds)
                         attempt += 1
                         continue
 
-                    # Handle context length errors by re-chunking oversized chunks
-                    # This is a safety net for chunks that passed the rechunking pass
-                    # but still exceed the model's BERT tokenizer limit.
-                    # We re-chunk (not truncate) so no information is lost.
-                    if is_context_length_error(e) and not context_length_retry:
-                        context_length_retry = True
-                        # Use more aggressive limit (50% of original safe limit)
-                        # to ensure we're well under the BERT tokenizer limit
-                        aggressive_limit = int(safe_token_limit * 0.70)
+                    # Handle context length errors by progressively re-chunking.
+                    # tiktoken (cl100k_base) and BERT (WordPiece) tokenizers count
+                    # differently, so chunks under the tiktoken limit can still
+                    # exceed BERT's 2048 context. We try progressively lower
+                    # thresholds, then fall back to micro-batch processing.
+                    if is_context_length_error(e):
+                        # Try progressively lower limits
+                        modified = False
+                        while context_retries < len(context_retry_factors):
+                            factor = context_retry_factors[context_retries]
+                            context_retries += 1
+                            aggressive_limit = int(safe_token_limit * factor)
 
-                        rechunked_in_batch = 0
-                        new_batch = []
-                        for doc in batch:
-                            tokens = count_tokens(doc.page_content)
-                            if tokens > aggressive_limit:
-                                # Re-chunk into smaller pieces (no data loss)
-                                sub_docs = rechunk_oversized_content(
-                                    doc.page_content,
-                                    aggressive_limit,
-                                    chunk_overlap=config.chunk_overlap,
-                                    metadata=doc.metadata,
+                            rechunked_in_batch = 0
+                            new_batch = []
+                            for doc in batch:
+                                tokens = count_tokens(doc.page_content)
+                                if tokens > aggressive_limit:
+                                    sub_docs = rechunk_oversized_content(
+                                        doc.page_content,
+                                        aggressive_limit,
+                                        chunk_overlap=config.chunk_overlap,
+                                        metadata=doc.metadata,
+                                    )
+                                    new_batch.extend(sub_docs)
+                                    rechunked_in_batch += 1
+                                else:
+                                    new_batch.append(doc)
+
+                            if rechunked_in_batch > 0:
+                                logger.warning(
+                                    f"Context length error in batch {batch_num}: "
+                                    f"re-chunked {rechunked_in_batch} chunks at "
+                                    f"limit {aggressive_limit} tokens "
+                                    f"({len(batch)} -> {len(new_batch)} chunks), "
+                                    f"retry {context_retries}/{len(context_retry_factors)}"
                                 )
-                                new_batch.extend(sub_docs)
-                                rechunked_in_batch += 1
-                            else:
-                                new_batch.append(doc)
+                                batch = new_batch
+                                modified = True
+                                break  # Break inner loop, continue outer embed loop
 
-                        if rechunked_in_batch > 0:
-                            logger.warning(
-                                f"Context length error in batch {i // faiss_batch_size + 1}: "
-                                f"re-chunked {rechunked_in_batch} chunks at aggressive "
-                                f"limit {aggressive_limit} tokens "
-                                f"({len(batch)} -> {len(new_batch)} chunks), retrying"
-                            )
-                            batch = new_batch
-                            continue
+                        if modified:
+                            continue  # Retry embedding with re-chunked batch
+
+                        # All retry levels exhausted - fall back to micro-batch
+                        # processing to isolate the problematic chunk(s)
+                        logger.warning(
+                            f"Context length retries exhausted for batch {batch_num} "
+                            f"({len(batch)} chunks), falling back to "
+                            f"micro-batch processing"
+                        )
+                        batch_db = await self._embed_batch_with_fallback(
+                            batch, embeddings
+                        )
+                        break
 
                     raise
 

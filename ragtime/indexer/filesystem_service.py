@@ -1012,6 +1012,89 @@ class FilesystemIndexerService:
                 where={"indexName": index_name, "filePath": file_path}
             )
 
+    async def _embed_chunks_with_fallback(
+        self,
+        embeddings,
+        chunks: list[str],
+    ) -> list[list[float]]:
+        """
+        Embed chunks using micro-batches, falling back to individual chunks.
+
+        Called when progressive re-chunking retries are exhausted. Processes
+        chunks in small sub-batches to isolate problematic chunks, then embeds
+        those individually. As a last resort, truncates content.
+
+        Args:
+            embeddings: Embedding model instance
+            chunks: List of text chunks to embed
+
+        Returns:
+            List of embedding vectors (one per chunk). Skipped chunks get
+            a placeholder embedding from ".".
+        """
+        all_embeddings: list[list[float]] = []
+        skipped = 0
+        sub_batch_size = 10
+
+        for j in range(0, len(chunks), sub_batch_size):
+            sub = chunks[j : j + sub_batch_size]
+            try:
+                embs = await asyncio.to_thread(embeddings.embed_documents, sub)
+                all_embeddings.extend(embs)
+                continue
+            except Exception as e:
+                if not is_context_length_error(e):
+                    raise
+
+            # Sub-batch failed - process chunks individually
+            for chunk in sub:
+                try:
+                    emb = await asyncio.to_thread(embeddings.embed_documents, [chunk])
+                    all_embeddings.extend(emb)
+                except Exception as single_e:
+                    if not is_context_length_error(single_e):
+                        raise
+
+                    from ragtime.core.tokenization import count_tokens
+
+                    tokens = count_tokens(chunk)
+                    logger.warning(
+                        f"Chunk exceeds embedding context limit at "
+                        f"{tokens} tiktoken tokens, {len(chunk)} chars "
+                        f"- truncating"
+                    )
+
+                    # Progressive character truncation
+                    embedded = False
+                    for pct in (0.75, 0.50, 0.25):
+                        try:
+                            emb = await asyncio.to_thread(
+                                embeddings.embed_documents,
+                                [chunk[: int(len(chunk) * pct)]],
+                            )
+                            all_embeddings.extend(emb)
+                            embedded = True
+                            break
+                        except Exception:
+                            pass
+
+                    if not embedded:
+                        # Embed placeholder to maintain alignment
+                        try:
+                            emb = await asyncio.to_thread(
+                                embeddings.embed_documents, ["."]
+                            )
+                            all_embeddings.extend(emb)
+                        except Exception:
+                            dim = len(all_embeddings[0]) if all_embeddings else 768
+                            all_embeddings.append([0.0] * dim)
+                        skipped += 1
+
+        if skipped > 0:
+            logger.warning(f"Skipped {skipped} chunks that couldn't be embedded")
+
+        return all_embeddings
+
     async def _insert_embeddings(
         self,
         index_name: str,
@@ -1456,58 +1539,87 @@ class FilesystemIndexerService:
                             )
 
                         # Generate embeddings in sub-batches to keep event loop responsive
-                        # Retry once with aggressive re-chunking on context length errors
-                        context_length_retried = False
-                        try:
-                            all_embeddings = await embed_documents_subbatched(
-                                embeddings,
-                                all_chunks,
-                                logger_override=logger,
-                            )
-                        except Exception as e:
-                            if is_context_length_error(e) and not context_length_retried:
-                                context_length_retried = True
-                                aggressive_limit = int(safe_token_limit * 0.70)
-                                logger.warning(
-                                    f"Context length error during embedding, "
-                                    f"re-chunking at aggressive limit {aggressive_limit} tokens"
+                        # Progressive retry with increasingly aggressive re-chunking
+                        # on context length errors (tiktoken/BERT tokenizer mismatch)
+                        context_retry_factors = [0.70, 0.50, 0.35]
+                        context_retries = 0
+                        all_embeddings = None
+                        embedding_failed = False
+
+                        while True:
+                            try:
+                                all_embeddings = await embed_documents_subbatched(
+                                    embeddings,
+                                    all_chunks,
+                                    logger_override=logger,
                                 )
+                                break  # Success
+                            except Exception as e:
+                                if not is_context_length_error(e):
+                                    logger.error(f"Batch embedding failed: {e}")
+                                    embedding_failed = True
+                                    break
+
+                                # Progressive re-chunking at lower limits
                                 from ragtime.core.tokenization import \
                                     count_tokens
 
-                                new_chunks: list[str] = []
-                                new_file_map: list[str] = []
-                                for chunk_text, rel in zip(all_chunks, chunk_file_map):
-                                    tokens = count_tokens(chunk_text)
-                                    if tokens > aggressive_limit:
-                                        sub = rechunk_oversized_text(
-                                            chunk_text, aggressive_limit, config.chunk_overlap
+                                modified = False
+                                while context_retries < len(context_retry_factors):
+                                    factor = context_retry_factors[context_retries]
+                                    context_retries += 1
+                                    aggressive_limit = int(safe_token_limit * factor)
+
+                                    rechunked = 0
+                                    new_chunks: list[str] = []
+                                    new_file_map: list[str] = []
+                                    for chunk_text, rel in zip(
+                                        all_chunks, chunk_file_map
+                                    ):
+                                        tokens = count_tokens(chunk_text)
+                                        if tokens > aggressive_limit:
+                                            sub = rechunk_oversized_text(
+                                                chunk_text,
+                                                aggressive_limit,
+                                                config.chunk_overlap,
+                                            )
+                                            new_chunks.extend(sub)
+                                            new_file_map.extend([rel] * len(sub))
+                                            rechunked += 1
+                                        else:
+                                            new_chunks.append(chunk_text)
+                                            new_file_map.append(rel)
+
+                                    if rechunked > 0:
+                                        logger.warning(
+                                            f"Context length error: re-chunked "
+                                            f"{rechunked} chunks at limit "
+                                            f"{aggressive_limit} tokens, retry "
+                                            f"{context_retries}/{len(context_retry_factors)}"
                                         )
-                                        new_chunks.extend(sub)
-                                        new_file_map.extend([rel] * len(sub))
-                                    else:
-                                        new_chunks.append(chunk_text)
-                                        new_file_map.append(rel)
-                                all_chunks = new_chunks
-                                chunk_file_map = new_file_map
-                                try:
-                                    all_embeddings = await embed_documents_subbatched(
-                                        embeddings,
-                                        all_chunks,
-                                        logger_override=logger,
-                                    )
-                                except Exception as e2:
-                                    logger.error(f"Batch embedding failed after aggressive re-chunk: {e2}")
-                                    for rel_path, _, _, _ in files_to_embed:
-                                        job.processed_files += 1
-                                    await self._update_job(job)
-                                    continue
-                            else:
-                                logger.error(f"Batch embedding failed: {e}")
-                                for rel_path, _, _, _ in files_to_embed:
-                                    job.processed_files += 1
-                                await self._update_job(job)
-                                continue
+                                        all_chunks = new_chunks
+                                        chunk_file_map = new_file_map
+                                        modified = True
+                                        break
+
+                                if modified:
+                                    continue  # Retry embedding
+
+                                # All retries exhausted - individual chunk fallback
+                                logger.warning(
+                                    "Context length retries exhausted, "
+                                    "falling back to per-chunk embedding"
+                                )
+                                all_embeddings = await self._embed_chunks_with_fallback(
+                                    embeddings, all_chunks
+                                )
+                                break
+
+                        if embedding_failed or all_embeddings is None:
+                            for rel_path, _, _, _ in files_to_embed:
+                                job.processed_files += 1
+                            await self._update_job(job)
+                            continue
 
                         # Validate embedding dimension (first in batch)
                         if all_embeddings and tracking_needs_update:
@@ -2364,5 +2476,4 @@ class FilesystemIndexerService:
 
 
 # Global service instance
-filesystem_indexer = FilesystemIndexerService()
 filesystem_indexer = FilesystemIndexerService()
