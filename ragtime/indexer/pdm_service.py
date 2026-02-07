@@ -36,12 +36,13 @@ from ragtime.indexer.models import (
 from ragtime.indexer.repository import repository
 from ragtime.indexer.vector_utils import (
     EMBEDDING_SUB_BATCH_SIZE,
+    PDM_COLUMNS,
     embed_documents_subbatched,
     ensure_embedding_column,
     ensure_pgvector_extension,
     get_embeddings_model,
+    search_pgvector_embeddings,
 )
-from ragtime.indexer.vector_utils import PDM_COLUMNS, search_pgvector_embeddings
 
 # pylint: disable=not-callable
 
@@ -1050,7 +1051,7 @@ class PdmIndexerService:
             job.status = PdmIndexStatus.FAILED
             job.completed_at = datetime.now(timezone.utc)
             job.current_step = "Failed"
-            job.error_message = str(e)[:500]
+            job.error_message = str(e)
 
             # Only try to update DB if not shutting down
             if not self._shutdown:

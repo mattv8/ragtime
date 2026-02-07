@@ -282,24 +282,6 @@ export const api = {
   },
 
   /**
-   * Delete a job record
-   */
-  async deleteJob(jobId: string): Promise<void> {
-    const response = await apiFetch(`${API_BASE}/jobs/${jobId}`, {
-      method: 'DELETE',
-
-    });
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new ApiError(
-        data.detail || 'Delete failed',
-        response.status,
-        data.detail
-      );
-    }
-  },
-
-  /**
    * Upload an archive and create an index
    */
   async uploadAndIndex(formData: FormData): Promise<IndexJob> {

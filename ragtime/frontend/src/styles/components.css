@@ -1127,18 +1127,6 @@ fieldset legend {
   color: white;
 }
 
-.action-btn-delete {
-  background: var(--color-surface-hover);
-  color: var(--color-text-muted);
-  border-color: var(--color-border);
-}
-
-.action-btn-delete:hover {
-  background: var(--color-error-light);
-  color: var(--color-error);
-  border-color: var(--color-error-border);
-}
-
 .action-btn-confirm {
   background: var(--color-success-light);
   color: var(--color-success);

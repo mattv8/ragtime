@@ -350,7 +350,6 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [cancelConfirmId, setCancelConfirmId] = useState<string | null>(null);
-  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [retryConfirmId, setRetryConfirmId] = useState<string | null>(null);
   const [copiedErrorId, setCopiedErrorId] = useState<string | null>(null);
 
@@ -408,29 +407,6 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
       }
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : 'Failed to cancel job');
-      setTimeout(() => setErrorMessage(null), 5000);
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
-  const handleDelete = async (jobId: string) => {
-    // Show inline confirmation
-    if (deleteConfirmId === jobId) {
-      setDeleteConfirmId(null);
-      return;
-    }
-    setDeleteConfirmId(jobId);
-  };
-
-  const confirmDelete = async (jobId: string) => {
-    setDeleteConfirmId(null);
-    setActionLoading(jobId);
-    try {
-      await api.deleteJob(jobId);
-      onJobsChanged?.();
-    } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : 'Failed to delete job');
       setTimeout(() => setErrorMessage(null), 5000);
     } finally {
       setActionLoading(null);
@@ -782,34 +758,7 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
                               </button>
                             )
                           )}
-                          {job.type === 'document' && (job.status === 'completed' || job.status === 'failed') && (
-                            deleteConfirmId === job.id ? (
-                              <div style={{ display: 'flex', gap: '4px' }}>
-                                <button
-                                  className="action-btn action-btn-confirm"
-                                  onClick={() => confirmDelete(job.id)}
-                                  title="Confirm delete"
-                                >
-                                  Confirm
-                                </button>
-                                <button
-                                  className="action-btn action-btn-secondary"
-                                  onClick={() => setDeleteConfirmId(null)}
-                                  title="Cancel"
-                                >
-                                  Back
-                                </button>
-                              </div>
-                            ) : (
-                              <button
-                                className="action-btn action-btn-delete"
-                                onClick={() => handleDelete(job.id)}
-                                title="Delete this job record"
-                              >
-                                Delete
-                              </button>
-                            )
-                          )}
+
                         </>
                       )}
                       </div>

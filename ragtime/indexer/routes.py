@@ -405,22 +405,6 @@ async def cancel_job(job_id: str, _user: User = Depends(require_admin)):
     return {"message": f"Job '{job_id}' cancelled successfully"}
 
 
-@router.delete("/jobs/{job_id}")
-async def delete_job(job_id: str, _user: User = Depends(require_admin)):
-    """Delete a job record (must be completed, failed, or cancelled). Admin only."""
-    job = await indexer.get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    if job.status in [IndexStatus.PENDING, IndexStatus.PROCESSING]:
-        raise HTTPException(
-            status_code=400, detail="Cannot delete active job. Cancel it first."
-        )
-
-    await repository.delete_job(job_id)
-    return {"message": f"Job '{job_id}' deleted successfully"}
-
-
 # Supported archive extensions
 SUPPORTED_ARCHIVE_EXTENSIONS = (".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2")
 

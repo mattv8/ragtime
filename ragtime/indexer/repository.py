@@ -14,7 +14,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, cast
 
-from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexStatus as PrismaIndexStatus
 from prisma.enums import ToolType as PrismaToolType
@@ -22,6 +21,7 @@ from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
+from prisma import Json, Prisma
 from ragtime.core.database import get_db
 from ragtime.core.encryption import (
     CONNECTION_CONFIG_PASSWORD_FIELDS,
@@ -245,18 +245,6 @@ class IndexerRepository:
 
         logger.debug(f"Updated job {job.id} in database")
         return job
-
-    async def delete_job(self, job_id: str) -> bool:
-        """Delete a job by ID."""
-        db = await self._get_db()
-
-        try:
-            await db.indexjob.delete(where={"id": job_id})
-            logger.debug(f"Deleted job {job_id} from database")
-            return True
-        except Exception as e:
-            logger.warning(f"Failed to delete job {job_id}: {e}")
-            return False
 
     async def get_active_job_for_index(self, name: str) -> Optional[IndexJob]:
         """Get an active (pending/processing) job for the given index name.
