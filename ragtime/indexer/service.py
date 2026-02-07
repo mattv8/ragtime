@@ -1030,10 +1030,17 @@ class IndexerService:
             # Get total commit count from remote (fast, uses refs)
             clone_url = build_authenticated_git_url(git_url, git_token)
 
-            # Fetch commit count from remote - run in thread to avoid blocking
-            count_result = await asyncio.to_thread(
-                _run_git, "rev-list", "--count", f"origin/{git_branch}", timeout=30
-            )
+            # Fetch commit count from remote - run in thread to avoid blocking.
+            # Use 10s timeout to avoid blocking on very large repos.
+            try:
+                count_result = await asyncio.to_thread(
+                    _run_git, "rev-list", "--count", f"origin/{git_branch}", timeout=10
+                )
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    "git rev-list --count timed out for commit history sampling"
+                )
+                return None
 
             if count_result.returncode != 0:
                 # Fallback: try to get count from ls-remote
@@ -1070,7 +1077,7 @@ class IndexerService:
 
                 # Now count local commits
                 count_result = await asyncio.to_thread(
-                    _run_git, "rev-list", "--count", f"origin/{git_branch}", timeout=30
+                    _run_git, "rev-list", "--count", f"origin/{git_branch}", timeout=10
                 )
                 if count_result.returncode == 0:
                     total_commits = int(count_result.stdout.strip())
@@ -2083,19 +2090,27 @@ class IndexerService:
         clone_timeout_seconds = clone_timeout_minutes * 60
         history_depth = getattr(job.config, "git_history_depth", 1)
 
-        # Check current depth of repo - run in thread to avoid blocking
-        depth_result = await asyncio.to_thread(
-            subprocess.run,
-            ["git", "rev-list", "--count", "HEAD"],
-            cwd=repo_dir,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        current_depth = (
-            int(depth_result.stdout.strip()) if depth_result.returncode == 0 else 1
-        )
+        # Check current depth of repo - run in thread to avoid blocking.
+        # Use a short timeout (10s) because rev-list --count can take
+        # very long on large repos (e.g., Odoo with 100k+ commits).
+        try:
+            depth_result = await asyncio.to_thread(
+                subprocess.run,
+                ["git", "rev-list", "--count", "HEAD"],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            current_depth = (
+                int(depth_result.stdout.strip()) if depth_result.returncode == 0 else 1
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "git rev-list --count timed out (large repo), assuming deep history"
+            )
+            current_depth = 999999  # Assume large depth so we don't re-clone
 
         # Check if repo is shallow
         is_shallow = (repo_dir / ".git" / "shallow").exists()
@@ -2506,9 +2521,9 @@ class IndexerService:
         ocr_vision_model = config.ocr_vision_model
         ocr_enabled = ocr_mode != OcrMode.DISABLED
 
-        # Concurrency limit: balance between parallelism and resource usage
-        # Higher values improve throughput but increase memory and I/O pressure
-        max_concurrent_loads = min(32, os.cpu_count() or 8)
+        # Concurrency limit: scale with hardware but leave headroom for
+        # the chunking process pool and embedding work
+        max_concurrent_loads = min(os.cpu_count() // 2 or 4, 16)
         load_semaphore = asyncio.Semaphore(max_concurrent_loads)
 
         # For Ollama vision mode, we need async extraction and the base URL
@@ -2740,10 +2755,10 @@ class IndexerService:
         # Use final_chunks for embedding
         chunks = final_chunks
 
-        # Use larger batches for FAISS to reduce merge overhead
-        # Each FAISS.from_documents call has fixed overhead, so larger batches
-        # are more efficient (fewer merges, less index fragmentation)
-        faiss_batch_size = max(batch_size, 500)
+        # Balance batch size: larger batches reduce FAISS merge overhead but
+        # block the event loop longer during asyncio.to_thread calls.
+        # Cap at 200 to keep yields frequent enough for UI responsiveness.
+        faiss_batch_size = min(max(batch_size, 100), 200)
 
         for i in range(0, len(chunks), faiss_batch_size):
             # Check for cancellation
@@ -2848,9 +2863,11 @@ class IndexerService:
             await repository.update_job(job)
             logger.info(f"Embedded {job.processed_chunks}/{len(chunks)} chunks")
 
-            # Small pause between batches to stay under provider TPM limits
-            if batch_pause_seconds > 0 and (i + faiss_batch_size) < len(chunks):
-                await asyncio.sleep(batch_pause_seconds)
+            # Pause between batches for two reasons:
+            # 1. Stay under embedding provider TPM rate limits
+            # 2. Give the event loop real time to serve HTTP/UI requests
+            if (i + faiss_batch_size) < len(chunks):
+                await asyncio.sleep(max(batch_pause_seconds, 0.1))
 
         if db is None:
             raise ValueError("No documents were embedded - FAISS index creation failed")

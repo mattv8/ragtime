@@ -11,6 +11,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/ragtime
 
 # Install system dependencies including Node.js for frontend dev
+# tini provides proper zombie process reaping when running as PID 1
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
@@ -27,6 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libnfs14 \
     libnfs-utils \
     libnfs-dev \
+    tini \
     tesseract-ocr \
     libraw-dev \
     # Add PostgreSQL APT repository for version 18 client
@@ -73,4 +75,4 @@ RUN dos2unix /entrypoint.sh /docker-scripts/backup-restore.sh /docker-scripts/in
 # Expose ports (API on 8000, Vite dev server on 8001)
 EXPOSE 8000 8001
 
-ENTRYPOINT ["/entrypoint.sh"]
+ENTRYPOINT ["tini", "--", "/entrypoint.sh"]

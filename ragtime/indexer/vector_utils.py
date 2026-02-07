@@ -236,8 +236,10 @@ async def embed_documents_subbatched(
         )
         all_embeddings.extend(batch_embeddings)
 
-        # Yield to event loop after each sub-batch to keep server responsive
-        await asyncio.sleep(0)
+        # Yield to event loop after each sub-batch with a real time delay.
+        # asyncio.sleep(0) only switches to ready coroutines; a small delay
+        # ensures uvicorn can actually process pending HTTP requests.
+        await asyncio.sleep(0.01)
 
         # Log progress for large batches
         if total > sub_batch_size * 2:

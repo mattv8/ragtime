@@ -73,8 +73,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/opt/venv/bin:$PATH"
 
 # Install runtime dependencies
+# tini: lightweight init for zombie process reaping (uvicorn as PID 1 doesn't reap children)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    tini \
     dos2unix \
     git \
     gnupg \
@@ -146,5 +148,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 # Switch to non-root user (commented out for docker access)
 # USER ragtime
 
-ENTRYPOINT ["/entrypoint.sh"]
+# Use tini as PID 1 to reap zombie processes (healthcheck curl, git subprocesses)
+ENTRYPOINT ["tini", "--", "/entrypoint.sh"]
 CMD ["uvicorn", "ragtime.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -55,19 +55,27 @@ _pool_max_workers: int = 1
 
 
 def _get_process_pool() -> ProcessPoolExecutor:
-    """Get or create the shared process pool."""
+    """Get or create the shared process pool.
+
+    Workers are capped at 4 to prevent CPU saturation during background
+    indexing jobs. On high-core-count machines, using cpu_count-1 workers
+    starves the main event loop (uvicorn/API/UI/MCP) of CPU time.
+    """
     global _process_pool, _pool_max_workers
 
     if _process_pool is None:
         cpu_count = os.cpu_count() or 2
-        _pool_max_workers = max(1, cpu_count - 1)
+        # Cap at 4 workers to keep the main event loop responsive.
+        # Background chunking is I/O + CPU mixed; 4 workers provide good
+        # throughput without starving HTTP request handling.
+        _pool_max_workers = min(4, max(1, cpu_count // 4))
         _process_pool = ProcessPoolExecutor(
             max_workers=_pool_max_workers,
             mp_context=multiprocessing.get_context("spawn"),
         )
         logger.info(
             f"Created process pool for chunking: {_pool_max_workers} workers "
-            f"(leaving 1 core for API/UI/MCP)"
+            f"(capped to keep API/UI/MCP responsive, {cpu_count} cores available)"
         )
 
     return _process_pool
@@ -711,8 +719,10 @@ async def chunk_documents_parallel(
         if progress_callback:
             progress_callback(processed_docs, total_docs)
 
-        # Yield to event loop between waves
-        await asyncio.sleep(0)
+        # Yield to event loop between waves with a real time delay
+        # asyncio.sleep(0) only switches coroutines but doesn't free CPU
+        # for HTTP request processing; a small delay ensures responsiveness
+        await asyncio.sleep(0.05)
 
     # Log summary
     summary = ", ".join(f"{k}:{v}" for k, v in sorted(all_splitter_counts.items()))

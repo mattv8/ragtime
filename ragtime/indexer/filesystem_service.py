@@ -31,38 +31,55 @@ from prisma.errors import TableNotFoundError
 
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.database import get_db
-from ragtime.core.file_constants import (DOCUMENT_EXTENSIONS, OCR_EXTENSIONS,
-                                         PARSEABLE_DOCUMENT_EXTENSIONS,
-                                         UNPARSEABLE_BINARY_EXTENSIONS,
-                                         get_embedding_safety_margin)
+from ragtime.core.file_constants import (
+    DOCUMENT_EXTENSIONS,
+    OCR_EXTENSIONS,
+    PARSEABLE_DOCUMENT_EXTENSIONS,
+    UNPARSEABLE_BINARY_EXTENSIONS,
+    get_embedding_safety_margin,
+)
 from ragtime.core.logging import get_logger
-from ragtime.indexer.chunking import (_chunk_with_chonkie_code,
-                                      _chunk_with_recursive,
-                                      chunk_semantic_segments,
-                                      is_context_length_error,
-                                      rechunk_oversized_text,
-                                      rechunk_texts_batch)
-from ragtime.indexer.document_parser import (OCR_EXTENSIONS,
-                                             extract_image_structured_async,
-                                             extract_text_from_file_async,
-                                             is_ocr_supported,
-                                             is_supported_document)
+from ragtime.indexer.chunking import (
+    _chunk_with_chonkie_code,
+    _chunk_with_recursive,
+    chunk_semantic_segments,
+    is_context_length_error,
+    rechunk_oversized_text,
+    rechunk_texts_batch,
+)
+from ragtime.indexer.document_parser import (
+    OCR_EXTENSIONS,
+    extract_image_structured_async,
+    extract_text_from_file_async,
+    is_ocr_supported,
+    is_supported_document,
+)
 from ragtime.indexer.file_utils import compute_file_hash, matches_pattern
-from ragtime.indexer.models import (FilesystemAnalysisJob,
-                                    FilesystemAnalysisResult,
-                                    FilesystemAnalysisStatus,
-                                    FilesystemConnectionConfig,
-                                    FilesystemFileMetadata, FilesystemIndexJob,
-                                    FilesystemIndexStatus, FileTypeStats,
-                                    OcrMode, VectorStoreType)
+from ragtime.indexer.models import (
+    FilesystemAnalysisJob,
+    FilesystemAnalysisResult,
+    FilesystemAnalysisStatus,
+    FilesystemConnectionConfig,
+    FilesystemFileMetadata,
+    FilesystemIndexJob,
+    FilesystemIndexStatus,
+    FileTypeStats,
+    OcrMode,
+    VectorStoreType,
+)
 from ragtime.indexer.repository import IndexerRepository, repository
-from ragtime.indexer.vector_backends import (VectorStoreBackend, get_backend,
-                                             get_faiss_backend,
-                                             get_pgvector_backend)
-from ragtime.indexer.vector_utils import (embed_documents_subbatched,
-                                          ensure_embedding_column,
-                                          ensure_pgvector_extension,
-                                          get_embeddings_model)
+from ragtime.indexer.vector_backends import (
+    VectorStoreBackend,
+    get_backend,
+    get_faiss_backend,
+    get_pgvector_backend,
+)
+from ragtime.indexer.vector_utils import (
+    embed_documents_subbatched,
+    ensure_embedding_column,
+    ensure_pgvector_extension,
+    get_embeddings_model,
+)
 
 logger = get_logger(__name__)
 
@@ -1223,8 +1240,7 @@ class FilesystemIndexerService:
 
             # Get embedding model context limit for chunk validation
             # (same as document indexer to ensure oversized chunks are truncated)
-            from ragtime.core.embedding_models import \
-                get_embedding_model_context_limit
+            from ragtime.core.embedding_models import get_embedding_model_context_limit
             from ragtime.core.tokenization import count_tokens
 
             embedding_context_limit = await get_embedding_model_context_limit(
@@ -1338,8 +1354,8 @@ class FilesystemIndexerService:
                 job.total_files = len(files)
                 await self._update_job(job)
 
-                # Yield after file collection
-                await asyncio.sleep(0)
+                # Yield after file collection with real delay for HTTP handling
+                await asyncio.sleep(0.05)
 
                 if not files:
                     job.status = FilesystemIndexStatus.COMPLETED
@@ -1359,8 +1375,9 @@ class FilesystemIndexerService:
                 base_path = effective_path
 
                 # Process files in parallel batches (like document indexer)
-                # Concurrency limit: balance between parallelism and resource usage
-                max_concurrent = min(32, os.cpu_count() or 8)
+                # Concurrency limit: scale with hardware but leave headroom for
+                # the chunking process pool and embedding work
+                max_concurrent = min(os.cpu_count() // 2 or 4, 16)
                 file_semaphore = asyncio.Semaphore(max_concurrent)
                 batch_size = max_concurrent * 2  # 2x concurrency for good pipeline
 
@@ -1561,8 +1578,7 @@ class FilesystemIndexerService:
                                     break
 
                                 # Progressive re-chunking at lower limits
-                                from ragtime.core.tokenization import \
-                                    count_tokens
+                                from ragtime.core.tokenization import count_tokens
 
                                 modified = False
                                 while context_retries < len(context_retry_factors):
@@ -1778,8 +1794,7 @@ class FilesystemIndexerService:
             if vector_store_type == VectorStoreType.FAISS:
                 try:
                     # 1. Load the new index into memory immediately
-                    from ragtime.indexer.vector_backends import \
-                        get_faiss_backend
+                    from ragtime.indexer.vector_backends import get_faiss_backend
 
                     await get_faiss_backend().load_index(job.index_name, embeddings)
 
@@ -2210,8 +2225,9 @@ class FilesystemIndexerService:
                         stats["estimated_chunks"] = stats["file_count"]
 
                 # Get LLM-powered exclusion suggestions
-                from ragtime.indexer.llm_exclusions import \
-                    get_smart_exclusion_suggestions
+                from ragtime.indexer.llm_exclusions import (
+                    get_smart_exclusion_suggestions,
+                )
 
                 smart_exclusions, _used_llm = await get_smart_exclusion_suggestions(
                     ext_stats=dict(ext_stats),
