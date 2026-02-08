@@ -110,7 +110,11 @@ print_banner() {
     local api_port=$2
 
     # ASCII Banner
-    term_width=$(tput cols 2>/dev/null || echo 80)
+    if [ -t 1 ]; then
+        term_width=$(tput cols 2>/dev/null || echo 0)
+    else
+        term_width=0
+    fi
     banner_lines=(
         "    ____              __  _                "
         "   / __ \____ _____ _/ /_(_)___ ___  ___   "
