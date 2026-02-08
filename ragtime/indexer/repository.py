@@ -14,7 +14,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, cast
 
-from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexStatus as PrismaIndexStatus
 from prisma.enums import ToolType as PrismaToolType
@@ -22,6 +21,7 @@ from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
+from prisma import Json, Prisma
 from ragtime.core.database import get_db
 from ragtime.core.encryption import (
     CONNECTION_CONFIG_PASSWORD_FIELDS,
@@ -990,6 +990,17 @@ class IndexerRepository:
             if snake_key in updates and updates[snake_key] is not None:
                 value = updates[snake_key]
                 if snake_key == "connection_config":
+                    # Preserve non-password fields from existing config
+                    # This ensures metadata like last_schema_indexed_at is not lost
+                    existing_config = await db.toolconfig.find_unique(
+                        where={"id": config_id}
+                    )
+                    if existing_config and existing_config.connectionConfig:
+                        merged_config = dict(existing_config.connectionConfig)
+                        # Update only the fields provided in the request
+                        merged_config.update(value)
+                        value = merged_config
+
                     # Encrypt password fields
                     value = encrypt_json_passwords(
                         value, CONNECTION_CONFIG_PASSWORD_FIELDS

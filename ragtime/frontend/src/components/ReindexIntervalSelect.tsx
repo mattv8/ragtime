@@ -31,6 +31,8 @@ export function ReindexIntervalSelect({
         <option value={12}>Every 12 hours</option>
         <option value={24}>Every 24 hours (daily)</option>
         <option value={168}>Every week</option>
+        <option value={336}>Every 2 weeks</option>
+        <option value={720}>Every 30 days</option>
       </select>
     </div>
   );

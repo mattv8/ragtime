@@ -3112,23 +3112,14 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           </label>
 
           {postgresConfig.schema_index_enabled && (
-            <div className="form-group" style={{ marginTop: '1rem' }}>
-              <label>Re-index interval (hours)</label>
-              <input
-                type="number"
-                value={postgresConfig.schema_index_interval_hours ?? 24}
-                onChange={(e) => setPostgresConfig({
-                  ...postgresConfig,
-                  schema_index_interval_hours: parseInt(e.target.value) || 24
-                })}
-                min={1}
-                max={168}
-                style={{ maxWidth: '120px' }}
-              />
-              <p className="field-help">
-                How often to automatically re-index the database schema (1-168 hours).
-              </p>
-            </div>
+            <ReindexIntervalSelect
+              value={postgresConfig.schema_index_interval_hours ?? 24}
+              onChange={(val) => setPostgresConfig({
+                ...postgresConfig,
+                schema_index_interval_hours: val
+              })}
+              style={{ marginTop: '1rem' }}
+            />
           )}
         </div>
       </div>
@@ -3296,23 +3287,14 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           </label>
 
           {mssqlConfig.schema_index_enabled && (
-            <div className="form-group" style={{ marginTop: '1rem' }}>
-              <label>Re-index interval (hours)</label>
-              <input
-                type="number"
-                value={mssqlConfig.schema_index_interval_hours ?? 24}
-                onChange={(e) => setMssqlConfig({
-                  ...mssqlConfig,
-                  schema_index_interval_hours: parseInt(e.target.value) || 24
-                })}
-                min={1}
-                max={168}
-                style={{ maxWidth: '120px' }}
-              />
-              <p className="field-help">
-                How often to automatically re-index the database schema (1-168 hours).
-              </p>
-            </div>
+            <ReindexIntervalSelect
+              value={mssqlConfig.schema_index_interval_hours ?? 24}
+              onChange={(val) => setMssqlConfig({
+                ...mssqlConfig,
+                schema_index_interval_hours: val
+              })}
+              style={{ marginTop: '1rem' }}
+            />
           )}
         </div>
       </div>
@@ -3580,23 +3562,14 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           </label>
 
           {mysqlConfig.schema_index_enabled && (
-            <div className="form-group" style={{ marginTop: '1rem' }}>
-              <label>Re-index interval (hours)</label>
-              <input
-                type="number"
-                value={mysqlConfig.schema_index_interval_hours ?? 24}
-                onChange={(e) => setMysqlConfig({
-                  ...mysqlConfig,
-                  schema_index_interval_hours: parseInt(e.target.value) || 24
-                })}
-                min={1}
-                max={168}
-                style={{ maxWidth: '120px' }}
-              />
-              <p className="field-help">
-                How often to automatically re-index the database schema (1-168 hours).
-              </p>
-            </div>
+            <ReindexIntervalSelect
+              value={mysqlConfig.schema_index_interval_hours ?? 24}
+              onChange={(val) => setMysqlConfig({
+                ...mysqlConfig,
+                schema_index_interval_hours: val
+              })}
+              style={{ marginTop: '1rem' }}
+            />
           )}
         </div>
       </div>
