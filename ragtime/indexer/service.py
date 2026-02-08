@@ -1874,7 +1874,7 @@ class IndexerService:
             if not self._is_cancelled(job.id):
                 logger.exception(f"Failed to process upload for job {job.id}")
                 job.status = IndexStatus.FAILED
-                job.error_message = str(e)
+                job.error_message = str(e) or repr(e)
                 # Clean up optimistic metadata for failed new indexes
                 await self._cleanup_failed_index_metadata(job.name)
 
@@ -1989,7 +1989,7 @@ class IndexerService:
             if not self._is_cancelled(job.id):
                 logger.exception(f"Failed to process git for job {job.id}")
                 job.status = IndexStatus.FAILED
-                job.error_message = str(e)
+                job.error_message = str(e) or repr(e)
                 # Clean up optimistic metadata for failed new indexes
                 await self._cleanup_failed_index_metadata(job.name)
 
@@ -2711,7 +2711,14 @@ class IndexerService:
                 job.processed_files += 1
 
             # Update progress after each batch
-            await repository.update_job(job)
+            # Wrap in try/except so transient DB errors don't kill the job
+            try:
+                await repository.update_job(job)
+            except Exception as progress_err:
+                logger.warning(
+                    f"Job {job.id}: Progress update failed "
+                    f"({job.processed_files}/{job.total_files}), continuing: {progress_err}"
+                )
             logger.info(f"Loaded {job.processed_files}/{job.total_files} files")
 
             # Brief yield to event loop between batches
@@ -2940,7 +2947,13 @@ class IndexerService:
             # Update processed chunks progress
             job.error_message = None
             job.processed_chunks = min(i + faiss_batch_size, len(chunks))
-            await repository.update_job(job)
+            try:
+                await repository.update_job(job)
+            except Exception as progress_err:
+                logger.warning(
+                    f"Job {job.id}: Chunk progress update failed "
+                    f"({job.processed_chunks}/{len(chunks)}), continuing: {progress_err}"
+                )
             logger.info(f"Embedded {job.processed_chunks}/{len(chunks)} chunks")
 
             # Pause between batches for two reasons:
