@@ -2242,46 +2242,54 @@ class RAGComponents:
         # Only include repos where git_history_depth != 1 (shallow clone has no history)
         git_repos: List[tuple[str, Path, str]] = []  # (name, path, description)
 
-        if index_base.exists():
-            for index_dir in index_base.iterdir():
-                if not index_dir.is_dir():
-                    continue
-
-                git_repo = index_dir / ".git_repo"
-                if git_repo.exists() and (git_repo / ".git").exists():
-                    # Get metadata including config_snapshot to check git_history_depth
-                    description = ""
-                    git_history_depth = 0  # Default to full history
-                    for idx in self._index_metadata or []:
-                        if idx.get("name") == index_dir.name:
-                            description = idx.get("description", "")
-                            # Get git_history_depth from config_snapshot
-                            config = idx.get("config_snapshot") or {}
-                            git_history_depth = config.get("git_history_depth", 0)
-                            break
-
-                    # Only expose git history tool if depth != 1
-                    # depth=0 means full history, depth>1 means we have commits to search
-                    # depth=1 is a shallow clone with only the latest commit (not useful)
-                    if git_history_depth == 1:
-                        logger.debug(
-                            f"Skipping git history tool for {index_dir.name}: "
-                            "shallow clone (depth=1 in config)"
-                        )
+        def _discover_git_repos() -> List[tuple[str, Path]]:
+            """Discover git repo directories on disk (blocking I/O)."""
+            repos: List[tuple[str, Path]] = []
+            if index_base.exists():
+                for index_dir in index_base.iterdir():
+                    if not index_dir.is_dir():
                         continue
+                    git_repo = index_dir / ".git_repo"
+                    if git_repo.exists() and (git_repo / ".git").exists():
+                        repos.append((index_dir.name, git_repo))
+            return repos
 
-                    # Also check actual repo state - it may have minimal history
-                    # even if config doesn't reflect this (e.g., cloned externally)
-                    # Note: _is_shallow_repository checks commit count, not just
-                    # whether it's technically shallow - depth > 1 is still useful
-                    if await _is_shallow_repository(git_repo):
-                        logger.debug(
-                            f"Skipping git history tool for {index_dir.name}: "
-                            "minimal commit history (1-2 commits)"
-                        )
-                        continue
+        disk_repos = await asyncio.to_thread(_discover_git_repos)
 
-                    git_repos.append((index_dir.name, git_repo, description))
+        for repo_name, git_repo in disk_repos:
+            # Get metadata including config_snapshot to check git_history_depth
+            description = ""
+            git_history_depth = 0  # Default to full history
+            for idx in self._index_metadata or []:
+                if idx.get("name") == repo_name:
+                    description = idx.get("description", "")
+                    # Get git_history_depth from config_snapshot
+                    config = idx.get("config_snapshot") or {}
+                    git_history_depth = config.get("git_history_depth", 0)
+                    break
+
+            # Only expose git history tool if depth != 1
+            # depth=0 means full history, depth>1 means we have commits to search
+            # depth=1 is a shallow clone with only the latest commit (not useful)
+            if git_history_depth == 1:
+                logger.debug(
+                    f"Skipping git history tool for {repo_name}: "
+                    "shallow clone (depth=1 in config)"
+                )
+                continue
+
+            # Also check actual repo state - it may have minimal history
+            # even if config doesn't reflect this (e.g., cloned externally)
+            # Note: _is_shallow_repository checks commit count, not just
+            # whether it's technically shallow - depth > 1 is still useful
+            if await _is_shallow_repository(git_repo):
+                logger.debug(
+                    f"Skipping git history tool for {repo_name}: "
+                    "minimal commit history (1-2 commits)"
+                )
+                continue
+
+            git_repos.append((repo_name, git_repo, description))
 
         if not git_repos:
             return []

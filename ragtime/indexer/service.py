@@ -25,40 +25,61 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document as LangChainDocument
 
 from ragtime.config import settings
-from ragtime.core.app_settings import (get_app_settings,
-                                       invalidate_settings_cache)
-from ragtime.core.embedding_models import (get_embedding_model_context_limit,
-                                           get_embedding_models)
-from ragtime.core.file_constants import (BINARY_EXTENSIONS, MINIFIED_PATTERNS,
-                                         PARSEABLE_DOCUMENT_EXTENSIONS,
-                                         UNPARSEABLE_BINARY_EXTENSIONS,
-                                         get_embedding_safety_margin)
+from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
+from ragtime.core.embedding_models import (
+    get_embedding_model_context_limit,
+    get_embedding_models,
+)
+from ragtime.core.file_constants import (
+    BINARY_EXTENSIONS,
+    MINIFIED_PATTERNS,
+    PARSEABLE_DOCUMENT_EXTENSIONS,
+    UNPARSEABLE_BINARY_EXTENSIONS,
+    get_embedding_safety_margin,
+)
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
-from ragtime.indexer.chunking import (chunk_documents_parallel,
-                                      is_context_length_error,
-                                      rechunk_documents_batch,
-                                      rechunk_oversized_content,
-                                      shutdown_process_pool)
-from ragtime.indexer.document_parser import (OCR_EXTENSIONS,
-                                             extract_text_from_file_async)
-from ragtime.indexer.file_utils import (HARDCODED_EXCLUDES,
-                                        build_authenticated_git_url,
-                                        extract_archive, find_source_dir)
+from ragtime.indexer.chunking import (
+    chunk_documents_parallel,
+    is_context_length_error,
+    rechunk_documents_batch,
+    rechunk_oversized_content,
+    shutdown_process_pool,
+)
+from ragtime.indexer.document_parser import OCR_EXTENSIONS, extract_text_from_file_async
+from ragtime.indexer.file_utils import (
+    HARDCODED_EXCLUDES,
+    build_authenticated_git_url,
+    extract_archive,
+    find_source_dir,
+)
 from ragtime.indexer.llm_exclusions import get_smart_exclusion_suggestions
-from ragtime.indexer.memory_utils import (estimate_index_memory,
-                                          estimate_memory_at_dimensions,
-                                          get_embedding_dimension)
-from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
-                                    CommitHistoryInfo, CommitHistorySample,
-                                    FileTypeStats, IndexAnalysisResult,
-                                    IndexConfig, IndexInfo, IndexJob,
-                                    IndexStatus, MemoryEstimate, OcrMode,
-                                    VectorStoreType)
+from ragtime.indexer.memory_utils import (
+    estimate_index_memory,
+    estimate_memory_at_dimensions,
+    get_embedding_dimension,
+)
+from ragtime.indexer.models import (
+    AnalyzeIndexRequest,
+    AppSettings,
+    CommitHistoryInfo,
+    CommitHistorySample,
+    FileTypeStats,
+    IndexAnalysisResult,
+    IndexConfig,
+    IndexInfo,
+    IndexJob,
+    IndexStatus,
+    MemoryEstimate,
+    OcrMode,
+    VectorStoreType,
+)
 from ragtime.indexer.repository import repository
-from ragtime.indexer.vector_utils import (EMBEDDING_SUB_BATCH_SIZE,
-                                          append_embedding_dimension_warning,
-                                          get_embeddings_model)
+from ragtime.indexer.vector_utils import (
+    EMBEDDING_SUB_BATCH_SIZE,
+    append_embedding_dimension_warning,
+    get_embeddings_model,
+)
 from ragtime.tools.git_history import _is_shallow_repository
 
 logger = get_logger(__name__)
@@ -92,8 +113,9 @@ async def generate_index_description(
 
         if provider == "ollama":
             try:
-                from langchain_ollama import \
-                    ChatOllama  # type: ignore[reportMissingImports]
+                from langchain_ollama import (
+                    ChatOllama,
+                )  # type: ignore[reportMissingImports]
 
                 base_url = app_settings.get("ollama_base_url", "http://localhost:11434")
                 model = app_settings.get("llm_model", "llama3.2")
@@ -106,8 +128,9 @@ async def generate_index_description(
             api_key = app_settings.get("anthropic_api_key", "")
             if api_key:
                 try:
-                    from langchain_anthropic import \
-                        ChatAnthropic  # type: ignore[import-untyped]
+                    from langchain_anthropic import (
+                        ChatAnthropic,
+                    )  # type: ignore[import-untyped]
 
                     model = app_settings.get("llm_model", "claude-sonnet-4-20250514")
                     llm = ChatAnthropic(
@@ -457,11 +480,7 @@ class IndexerService:
 
                 # Calculate size in thread to avoid blocking event loop
                 def _calc_orphan_size(p=path):
-                    return sum(
-                        f.stat().st_size
-                        for f in p.rglob("*")
-                        if f.is_file()
-                    )
+                    return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
 
                 size_bytes = await asyncio.to_thread(_calc_orphan_size)
 
@@ -868,12 +887,11 @@ class IndexerService:
         Only returns indexes that exist in index_metadata (document indexes).
         Filesystem FAISS indexes are managed separately via tool_configs.
         """
-        indexes = []
-
         # Get metadata from database - this is the source of truth for document indexes
         db_metadata = await repository.list_index_metadata()
 
-        for meta in db_metadata:
+        async def _build_index_info(meta) -> Optional[IndexInfo]:
+            """Build IndexInfo for a single index. Returns None if index should be skipped."""
             path = Path(meta.path) if meta.path else self.index_base_path / meta.name
 
             # Determine vector store type from database
@@ -897,26 +915,22 @@ class IndexerService:
                     logger.warning(
                         f"Index {meta.name} in database but not on disk: {path}"
                     )
-                    continue
+                    return None
 
                 # Verify it's a valid FAISS index
                 if (
                     not (path / "index.faiss").exists()
                     and not (path / "index.pkl").exists()
                 ):
-                    continue
+                    return None
 
             # Calculate size in non-blocking way for responsiveness
             if path.exists():
-                # Capture path in closure to avoid cell variable warning
-                _path = path
 
-                def calc_path_size():
-                    return sum(
-                        f.stat().st_size for f in _path.rglob("*") if f.is_file()
-                    )
+                def _calc_size(p=path):
+                    return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
 
-                size_bytes = await asyncio.to_thread(calc_path_size)
+                size_bytes = await asyncio.to_thread(_calc_size)
             else:
                 size_bytes = 0
 
@@ -966,48 +980,57 @@ class IndexerService:
                 # Repos with depth > 1 still have useful history to search
                 has_git_history = not await _is_shallow_repository(git_repo_path)
                 if has_git_history:
-                    # Calculate git repo size in thread to avoid blocking
-                    # Capture in closure to avoid cell variable warning
-                    _git_repo_path = git_repo_path
 
-                    def calc_git_size():
+                    def _calc_git_size(p=git_repo_path):
                         return sum(
-                            f.stat().st_size
-                            for f in _git_repo_path.rglob("*")
-                            if f.is_file()
+                            f.stat().st_size for f in p.rglob("*") if f.is_file()
                         )
 
-                    git_repo_size = await asyncio.to_thread(calc_git_size)
+                    git_repo_size = await asyncio.to_thread(_calc_git_size)
                     git_repo_size_mb = round(git_repo_size / (1024 * 1024), 2)
 
-            indexes.append(
-                IndexInfo(
-                    name=meta.name,
-                    display_name=display_name,
-                    path=str(path),
-                    size_mb=round(size_bytes / (1024 * 1024), 2),
-                    document_count=doc_count,
-                    chunk_count=chunk_count,
-                    description=description,
-                    enabled=enabled,
-                    search_weight=search_weight,
-                    source_type=source_type,
-                    source=source,
-                    git_branch=git_branch,
-                    has_stored_token=has_stored_token,
-                    config_snapshot=config_snapshot,
-                    created_at=created_at,
-                    last_modified=last_modified
-                    or (
-                        datetime.fromtimestamp(path.stat().st_mtime)
-                        if path.exists()
-                        else datetime.utcnow()
-                    ),
-                    git_repo_size_mb=git_repo_size_mb,
-                    has_git_history=has_git_history,
-                    vector_store_type=vector_store_type,
-                )
+            return IndexInfo(
+                name=meta.name,
+                display_name=display_name,
+                path=str(path),
+                size_mb=round(size_bytes / (1024 * 1024), 2),
+                document_count=doc_count,
+                chunk_count=chunk_count,
+                description=description,
+                enabled=enabled,
+                search_weight=search_weight,
+                source_type=source_type,
+                source=source,
+                git_branch=git_branch,
+                has_stored_token=has_stored_token,
+                config_snapshot=config_snapshot,
+                created_at=created_at,
+                last_modified=last_modified
+                or (
+                    datetime.fromtimestamp(path.stat().st_mtime)
+                    if path.exists()
+                    else datetime.utcnow()
+                ),
+                git_repo_size_mb=git_repo_size_mb,
+                has_git_history=has_git_history,
+                vector_store_type=vector_store_type,
             )
+
+        # Process all indexes in parallel to avoid sequential I/O bottleneck.
+        # Each index requires disk size calculation + git history check (subprocess),
+        # which can take seconds per index when done sequentially.
+        results = await asyncio.gather(
+            *[_build_index_info(meta) for meta in db_metadata],
+            return_exceptions=True,
+        )
+
+        indexes = []
+        for result in results:
+            if isinstance(result, BaseException):
+                logger.warning(f"Error building index info: {result}")
+                continue
+            if result is not None:
+                indexes.append(result)
 
         return indexes
 

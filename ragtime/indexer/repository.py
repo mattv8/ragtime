@@ -7,6 +7,7 @@ replacing the previous JSON file-based storage.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import uuid
@@ -14,6 +15,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, cast
 
+from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexStatus as PrismaIndexStatus
 from prisma.enums import ToolType as PrismaToolType
@@ -21,7 +23,6 @@ from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
-from prisma import Json, Prisma
 from ragtime.core.database import get_db
 from ragtime.core.encryption import (
     CONNECTION_CONFIG_PASSWORD_FIELDS,
@@ -944,7 +945,7 @@ class IndexerRepository:
                         index_dir = FAISS_INDEX_BASE_PATH / index_name
                         faiss_file = index_dir / "index.faiss"
 
-                        if not faiss_file.exists():
+                        if not await asyncio.to_thread(faiss_file.exists):
                             reason = f"FAISS file missing at {faiss_file}"
                             config.disabled_reason = reason
 

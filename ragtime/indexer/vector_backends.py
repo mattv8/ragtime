@@ -24,14 +24,12 @@ from ragtime.core.logging import get_logger
 from ragtime.indexer.models import VectorStoreType
 from ragtime.indexer.vector_utils import (
     FILESYSTEM_COLUMNS,
-    search_pgvector_embeddings,
-)
-from ragtime.indexer.vector_utils import (
     ensure_embedding_column,
     ensure_pgvector_extension,
+    get_embeddings_model,
+    get_pgvector_table_size_bytes,
+    search_pgvector_embeddings,
 )
-from ragtime.indexer.vector_utils import get_embeddings_model
-from ragtime.indexer.vector_utils import get_pgvector_table_size_bytes
 
 logger = get_logger(__name__)
 
@@ -527,9 +525,12 @@ class FaissBackend(VectorStoreBackend):
             except Exception as e:
                 logger.debug(f"Error getting FAISS stats for {index_name}: {e}")
 
-        # Calculate file size on disk
+        # Calculate file size on disk (blocking I/O, run in thread)
         index_path = self._get_index_path(index_name)
-        if index_path.exists():
+
+        def _calc_size() -> float | None:
+            if not index_path.exists():
+                return None
             total_size = 0
             faiss_file = index_path / "index.faiss"
             pkl_file = index_path / "index.pkl"
@@ -537,7 +538,11 @@ class FaissBackend(VectorStoreBackend):
                 total_size += faiss_file.stat().st_size
             if pkl_file.exists():
                 total_size += pkl_file.stat().st_size
-            stats["size_mb"] = total_size / (1024 * 1024)
+            return total_size / (1024 * 1024)
+
+        size_mb = await asyncio.to_thread(_calc_size)
+        if size_mb is not None:
+            stats["size_mb"] = size_mb
 
         return stats
 

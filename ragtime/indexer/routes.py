@@ -1086,7 +1086,7 @@ async def rename_index(
 
     if old_path.exists():
         try:
-            shutil.move(str(old_path), str(new_path))
+            await asyncio.to_thread(shutil.move, str(old_path), str(new_path))
             logger.info(f"Renamed index directory: {old_path} -> {new_path}")
         except Exception as e:
             logger.exception(f"Failed to rename index directory: {e}")
@@ -1103,7 +1103,7 @@ async def rename_index(
         # Try to rollback the directory rename
         if new_path.exists():
             try:
-                shutil.move(str(new_path), str(old_path))
+                await asyncio.to_thread(shutil.move, str(new_path), str(old_path))
             except Exception:
                 logger.error("Failed to rollback directory rename")
         raise HTTPException(
@@ -1176,14 +1176,16 @@ async def download_index(name: str, _user: User = Depends(require_admin)):
             detail="Index files incomplete - index.faiss or index.pkl not found",
         )
 
-    # Create zip file in memory
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        # Add both files to zip with a single directory for clarity
-        zf.write(faiss_file, arcname=f"{name}/index.faiss")
-        zf.write(pkl_file, arcname=f"{name}/index.pkl")
+    # Create zip file in memory (can be large, run in thread)
+    def _create_zip() -> io.BytesIO:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(faiss_file, arcname=f"{name}/index.faiss")
+            zf.write(pkl_file, arcname=f"{name}/index.pkl")
+        buf.seek(0)
+        return buf
 
-    zip_buffer.seek(0)
+    zip_buffer = await asyncio.to_thread(_create_zip)
 
     return StreamingResponse(
         iter([zip_buffer.getvalue()]),
@@ -1232,14 +1234,16 @@ async def download_filesystem_faiss_index(
             detail="Index files incomplete - index.faiss or index.pkl not found",
         )
 
-    # Create zip file in memory
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        # Add both files to zip with a single directory for clarity
-        zf.write(faiss_file, arcname=f"{name}/index.faiss")
-        zf.write(pkl_file, arcname=f"{name}/index.pkl")
+    # Create zip file in memory (can be large, run in thread)
+    def _create_zip() -> io.BytesIO:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(faiss_file, arcname=f"{name}/index.faiss")
+            zf.write(pkl_file, arcname=f"{name}/index.pkl")
+        buf.seek(0)
+        return buf
 
-    zip_buffer.seek(0)
+    zip_buffer = await asyncio.to_thread(_create_zip)
 
     return StreamingResponse(
         iter([zip_buffer.getvalue()]),
@@ -3068,28 +3072,29 @@ async def _heartbeat_filesystem(config: dict) -> ToolTestResponse:
     if not base_path:
         return ToolTestResponse(success=False, message="Filesystem path not configured")
 
-    path = Path(base_path)
-    if not path.exists():
-        return ToolTestResponse(
-            success=False, message=f"Path does not exist: {base_path}"
-        )
-    if not path.is_dir():
-        return ToolTestResponse(
-            success=False, message=f"Path is not a directory: {base_path}"
-        )
+    def _check_fs() -> ToolTestResponse:
+        path = Path(base_path)
+        if not path.exists():
+            return ToolTestResponse(
+                success=False, message=f"Path does not exist: {base_path}"
+            )
+        if not path.is_dir():
+            return ToolTestResponse(
+                success=False, message=f"Path is not a directory: {base_path}"
+            )
+        try:
+            entries = list(path.iterdir())[:5]
+            return ToolTestResponse(
+                success=True, message=f"OK - {len(entries)} entries accessible"
+            )
+        except PermissionError:
+            return ToolTestResponse(
+                success=False, message=f"Permission denied: {base_path}"
+            )
+        except Exception as e:
+            return ToolTestResponse(success=False, message=str(e)[:100])
 
-    try:
-        # Quick check - list first few entries to verify read access
-        entries = list(path.iterdir())[:5]
-        return ToolTestResponse(
-            success=True, message=f"OK - {len(entries)} entries accessible"
-        )
-    except PermissionError:
-        return ToolTestResponse(
-            success=False, message=f"Permission denied: {base_path}"
-        )
-    except Exception as e:
-        return ToolTestResponse(success=False, message=str(e)[:100])
+    return await asyncio.to_thread(_check_fs)
 
 
 async def _heartbeat_pdm(config: dict) -> ToolTestResponse:
@@ -4400,7 +4405,7 @@ async def browse_ssh_filesystem(
     # Execute SSH command
     try:
         # We need to make sure we don't hang if it prompts for anything (SSHConfig handles timeouts)
-        result = execute_ssh_command(config, cmd)
+        result = await asyncio.to_thread(execute_ssh_command, config, cmd)
     except Exception as e:
         return BrowseResponse(
             path=path,
@@ -4474,52 +4479,54 @@ async def browse_filesystem(path: str = "/mnt", _: User = Depends(require_admin)
             error=f"Access denied. Only paths under {', '.join(allowed_prefixes)} are browsable.",
         )
 
-    if not path_obj.exists():
-        return BrowseResponse(
-            path=path,
-            entries=[],
-            error=f"Path does not exist: {path}",
-        )
+    def _browse() -> BrowseResponse:
+        if not path_obj.exists():
+            return BrowseResponse(
+                path=path,
+                entries=[],
+                error=f"Path does not exist: {path}",
+            )
 
-    if not path_obj.is_dir():
-        return BrowseResponse(
-            path=path,
-            entries=[],
-            error=f"Not a directory: {path}",
-        )
+        if not path_obj.is_dir():
+            return BrowseResponse(
+                path=path,
+                entries=[],
+                error=f"Not a directory: {path}",
+            )
 
-    try:
-        entries = []
-        for entry in sorted(
-            path_obj.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())
-        ):
-            try:
-                entries.append(
-                    DirectoryEntry(
-                        name=entry.name,
-                        path=str(entry),
-                        is_dir=entry.is_dir(),
-                        size=entry.stat().st_size if entry.is_file() else None,
+        try:
+            entries = []
+            for entry in sorted(
+                path_obj.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())
+            ):
+                try:
+                    entries.append(
+                        DirectoryEntry(
+                            name=entry.name,
+                            path=str(entry),
+                            is_dir=entry.is_dir(),
+                            size=entry.stat().st_size if entry.is_file() else None,
+                        )
                     )
-                )
-            except (PermissionError, OSError):
-                # Skip entries we can't access
-                continue
+                except (PermissionError, OSError):
+                    continue
 
-        return BrowseResponse(path=str(path_obj), entries=entries)
+            return BrowseResponse(path=str(path_obj), entries=entries)
 
-    except PermissionError:
-        return BrowseResponse(
-            path=path,
-            entries=[],
-            error=f"Permission denied: {path}",
-        )
-    except Exception as e:
-        return BrowseResponse(
-            path=path,
-            entries=[],
-            error=str(e),
-        )
+        except PermissionError:
+            return BrowseResponse(
+                path=path,
+                entries=[],
+                error=f"Permission denied: {path}",
+            )
+        except Exception as e:
+            return BrowseResponse(
+                path=path,
+                entries=[],
+                error=str(e),
+            )
+
+    return await asyncio.to_thread(_browse)
 
 
 # -----------------------------------------------------------------------------

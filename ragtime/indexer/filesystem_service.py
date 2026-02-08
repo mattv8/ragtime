@@ -226,7 +226,7 @@ class FilesystemIndexerService:
         except Exception as e:
             logger.warning(f"Error unmounting {mount_point}: {e}")
         try:
-            shutil.rmtree(mount_point, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, mount_point, True)
         except Exception as e:
             logger.warning(f"Error cleaning up mount point {mount_point}: {e}")
 
@@ -291,7 +291,7 @@ class FilesystemIndexerService:
             elif mount_type == "nfs":
                 await self._do_mount_nfs(config, mount_point)
             else:
-                shutil.rmtree(mount_point, ignore_errors=True)
+                await asyncio.to_thread(shutil.rmtree, mount_point, True)
                 raise ValueError(f"Unknown mount type: {mount_type}")
 
             # Calculate effective path
@@ -323,7 +323,7 @@ class FilesystemIndexerService:
 
         except Exception:
             # Only cleanup on mount failure, not on job completion
-            shutil.rmtree(mount_point, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, mount_point, True)
             raise
 
     async def unmount_tool(self, tool_config_id: str) -> bool:
