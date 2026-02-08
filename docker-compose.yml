@@ -62,8 +62,7 @@ services:
       ragtime-db:
         condition: service_healthy
     healthcheck:
-      # -k allows self-signed certs; checks http first, falls back gracefully
-      test: ["CMD", "sh", "-c", "curl -fsk https://localhost:8000/health 2>/dev/null || curl -fs http://localhost:8000/health"]
+      test: ["CMD", "sh", "-c", "if [ \"$ENABLE_HTTPS\" = \"true\" ]; then curl -fsk https://localhost:8000/health; else curl -fs http://localhost:8000/health; fi"]
       interval: 30s
       timeout: 10s
       retries: 3
