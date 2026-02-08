@@ -25,61 +25,40 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document as LangChainDocument
 
 from ragtime.config import settings
-from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
-from ragtime.core.embedding_models import (
-    get_embedding_model_context_limit,
-    get_embedding_models,
-)
-from ragtime.core.file_constants import (
-    BINARY_EXTENSIONS,
-    MINIFIED_PATTERNS,
-    PARSEABLE_DOCUMENT_EXTENSIONS,
-    UNPARSEABLE_BINARY_EXTENSIONS,
-    get_embedding_safety_margin,
-)
+from ragtime.core.app_settings import (get_app_settings,
+                                       invalidate_settings_cache)
+from ragtime.core.embedding_models import (get_embedding_model_context_limit,
+                                           get_embedding_models)
+from ragtime.core.file_constants import (BINARY_EXTENSIONS, MINIFIED_PATTERNS,
+                                         PARSEABLE_DOCUMENT_EXTENSIONS,
+                                         UNPARSEABLE_BINARY_EXTENSIONS,
+                                         get_embedding_safety_margin)
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
-from ragtime.indexer.chunking import (
-    chunk_documents_parallel,
-    is_context_length_error,
-    rechunk_documents_batch,
-    rechunk_oversized_content,
-    shutdown_process_pool,
-)
-from ragtime.indexer.document_parser import OCR_EXTENSIONS, extract_text_from_file_async
-from ragtime.indexer.file_utils import (
-    HARDCODED_EXCLUDES,
-    build_authenticated_git_url,
-    extract_archive,
-    find_source_dir,
-)
+from ragtime.indexer.chunking import (chunk_documents_parallel,
+                                      is_context_length_error,
+                                      rechunk_documents_batch,
+                                      rechunk_oversized_content,
+                                      shutdown_process_pool)
+from ragtime.indexer.document_parser import (OCR_EXTENSIONS,
+                                             extract_text_from_file_async)
+from ragtime.indexer.file_utils import (HARDCODED_EXCLUDES,
+                                        build_authenticated_git_url,
+                                        extract_archive, find_source_dir)
 from ragtime.indexer.llm_exclusions import get_smart_exclusion_suggestions
-from ragtime.indexer.memory_utils import (
-    estimate_index_memory,
-    estimate_memory_at_dimensions,
-    get_embedding_dimension,
-)
-from ragtime.indexer.models import (
-    AnalyzeIndexRequest,
-    AppSettings,
-    CommitHistoryInfo,
-    CommitHistorySample,
-    FileTypeStats,
-    IndexAnalysisResult,
-    IndexConfig,
-    IndexInfo,
-    IndexJob,
-    IndexStatus,
-    MemoryEstimate,
-    OcrMode,
-    VectorStoreType,
-)
+from ragtime.indexer.memory_utils import (estimate_index_memory,
+                                          estimate_memory_at_dimensions,
+                                          get_embedding_dimension)
+from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
+                                    CommitHistoryInfo, CommitHistorySample,
+                                    FileTypeStats, IndexAnalysisResult,
+                                    IndexConfig, IndexInfo, IndexJob,
+                                    IndexStatus, MemoryEstimate, OcrMode,
+                                    VectorStoreType)
 from ragtime.indexer.repository import repository
-from ragtime.indexer.vector_utils import (
-    EMBEDDING_SUB_BATCH_SIZE,
-    append_embedding_dimension_warning,
-    get_embeddings_model,
-)
+from ragtime.indexer.vector_utils import (EMBEDDING_SUB_BATCH_SIZE,
+                                          append_embedding_dimension_warning,
+                                          get_embeddings_model)
 from ragtime.tools.git_history import _is_shallow_repository
 
 logger = get_logger(__name__)
@@ -113,9 +92,8 @@ async def generate_index_description(
 
         if provider == "ollama":
             try:
-                from langchain_ollama import (
-                    ChatOllama,
-                )  # type: ignore[reportMissingImports]
+                from langchain_ollama import \
+                    ChatOllama  # type: ignore[reportMissingImports]
 
                 base_url = app_settings.get("ollama_base_url", "http://localhost:11434")
                 model = app_settings.get("llm_model", "llama3.2")
@@ -128,9 +106,8 @@ async def generate_index_description(
             api_key = app_settings.get("anthropic_api_key", "")
             if api_key:
                 try:
-                    from langchain_anthropic import (
-                        ChatAnthropic,
-                    )  # type: ignore[import-untyped]
+                    from langchain_anthropic import \
+                        ChatAnthropic  # type: ignore[import-untyped]
 
                     model = app_settings.get("llm_model", "claude-sonnet-4-20250514")
                     llm = ChatAnthropic(
@@ -478,10 +455,15 @@ class IndexerService:
                         f"  Could not extract doc count from {path.name}: {e}"
                     )
 
-                # Calculate size
-                size_bytes = sum(
-                    p.stat().st_size for p in path.rglob("*") if p.is_file()
-                )
+                # Calculate size in thread to avoid blocking event loop
+                def _calc_orphan_size(p=path):
+                    return sum(
+                        f.stat().st_size
+                        for f in p.rglob("*")
+                        if f.is_file()
+                    )
+
+                size_bytes = await asyncio.to_thread(_calc_orphan_size)
 
                 # Check for legacy metadata file
                 legacy_meta: dict[str, Any] = {}
@@ -924,11 +906,19 @@ class IndexerService:
                 ):
                     continue
 
-            size_bytes = (
-                sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
-                if path.exists()
-                else 0
-            )
+            # Calculate size in non-blocking way for responsiveness
+            if path.exists():
+                # Capture path in closure to avoid cell variable warning
+                _path = path
+
+                def calc_path_size():
+                    return sum(
+                        f.stat().st_size for f in _path.rglob("*") if f.is_file()
+                    )
+
+                size_bytes = await asyncio.to_thread(calc_path_size)
+            else:
+                size_bytes = 0
 
             # Extract metadata fields
             doc_count = meta.documentCount
@@ -976,11 +966,18 @@ class IndexerService:
                 # Repos with depth > 1 still have useful history to search
                 has_git_history = not await _is_shallow_repository(git_repo_path)
                 if has_git_history:
-                    git_repo_size = sum(
-                        f.stat().st_size
-                        for f in git_repo_path.rglob("*")
-                        if f.is_file()
-                    )
+                    # Calculate git repo size in thread to avoid blocking
+                    # Capture in closure to avoid cell variable warning
+                    _git_repo_path = git_repo_path
+
+                    def calc_git_size():
+                        return sum(
+                            f.stat().st_size
+                            for f in _git_repo_path.rglob("*")
+                            if f.is_file()
+                        )
+
+                    git_repo_size = await asyncio.to_thread(calc_git_size)
                     git_repo_size_mb = round(git_repo_size / (1024 * 1024), 2)
 
             indexes.append(
@@ -1020,7 +1017,9 @@ class IndexerService:
         deleted_files = False
 
         if index_path.exists() and index_path.is_dir():
-            shutil.rmtree(index_path)
+            # Use thread pool to avoid blocking event loop
+            # Large indexes with 100K+ files can take seconds to delete
+            await asyncio.to_thread(shutil.rmtree, index_path)
             logger.info(f"Deleted index files: {name}")
             deleted_files = True
 
@@ -1265,8 +1264,8 @@ class IndexerService:
             return analysis_result
 
         finally:
-            # Cleanup
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            # Cleanup in thread to avoid blocking event loop
+            await asyncio.to_thread(shutil.rmtree, temp_dir, True)
 
     async def analyze_upload(
         self,
@@ -1296,17 +1295,22 @@ class IndexerService:
         try:
             temp_dir.mkdir(parents=True, exist_ok=True)
 
-            # Save uploaded file temporarily
+            # Save uploaded file temporarily - use thread pool to avoid blocking event loop
+            # Large archives (100MB+) can take seconds to copy
             archive_path = temp_dir / filename
-            with open(archive_path, "wb") as f:
-                shutil.copyfileobj(file, f)
+
+            def copy_archive():
+                with open(archive_path, "wb") as f:
+                    shutil.copyfileobj(file, f)
+
+            await asyncio.to_thread(copy_archive)
 
             logger.info(f"Saved archive for analysis: {archive_path}")
 
-            # Extract archive
+            # Extract archive in thread to avoid blocking event loop
             extract_dir = temp_dir / "extracted"
             extract_dir.mkdir(parents=True, exist_ok=True)
-            extract_archive(archive_path, extract_dir)
+            await asyncio.to_thread(extract_archive, archive_path, extract_dir)
 
             # Find actual source directory
             source_dir = find_source_dir(extract_dir)
@@ -1324,8 +1328,8 @@ class IndexerService:
             )
 
         finally:
-            # Cleanup
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            # Cleanup in thread to avoid blocking event loop
+            await asyncio.to_thread(shutil.rmtree, temp_dir, True)
 
     async def _analyze_directory(
         self,
@@ -1397,27 +1401,34 @@ class IndexerService:
                     return True
             return False
 
-        # Walk the directory
-        for file_path in source_dir.rglob("*"):
-            if not file_path.is_file():
-                continue
+        # Walk the directory in a thread to avoid blocking the event loop.
+        # rglob + stat on large repos (10K+ files) can take seconds.
+        _source_dir = source_dir
+        _file_patterns = file_patterns
+        _max_file_size_bytes = max_file_size_bytes
 
-            # Skip excluded
-            if is_excluded(file_path):
-                continue
+        def _collect_file_entries():
+            """Collect file metadata in a background thread."""
+            entries = []
+            for fp in _source_dir.rglob("*"):
+                if not fp.is_file():
+                    continue
+                if is_excluded(fp):
+                    continue
+                match_result = matches_include(fp)
+                if not match_result[0]:
+                    continue
+                try:
+                    st_size = fp.stat().st_size
+                except OSError:
+                    continue
+                entries.append((fp, st_size, match_result[1]))
+            return entries
 
-            # Check if matches include patterns
-            matches, pattern = matches_include(file_path)
-            if not matches:
-                continue
+        file_entries = await asyncio.to_thread(_collect_file_entries)
 
+        for file_path, size, pattern in file_entries:
             matched_patterns.add(pattern)
-
-            # Get file stats
-            try:
-                size = file_path.stat().st_size
-            except OSError:
-                continue
 
             # Skip zero-byte files
             if size == 0:
@@ -1689,8 +1700,12 @@ class IndexerService:
 
             archive_path = tmp_dir / filename
 
-            with open(archive_path, "wb") as f:
-                shutil.copyfileobj(file, f)
+            # Copy in thread to avoid blocking event loop on large uploads
+            def _copy_upload():
+                with open(archive_path, "wb") as f:
+                    shutil.copyfileobj(file, f)
+
+            await asyncio.to_thread(_copy_upload)
 
             logger.info(
                 f"Saved upload to tmp directory for job {job_id}: {archive_path}"
@@ -1705,7 +1720,7 @@ class IndexerService:
             await repository.update_job(job)
             self._active_jobs.pop(job_id, None)
             if "tmp_dir" in locals():
-                shutil.rmtree(tmp_dir, ignore_errors=True)
+                await asyncio.to_thread(shutil.rmtree, tmp_dir, True)
             # Clean up optimistic metadata for failed new indexes
             await self._cleanup_failed_index_metadata(config.name)
             raise
@@ -1831,7 +1846,7 @@ class IndexerService:
             extract_dir.mkdir()
 
             logger.info(f"Extracting {archive_path} to {extract_dir}")
-            extract_archive(archive_path, extract_dir)
+            await asyncio.to_thread(extract_archive, archive_path, extract_dir)
 
             # Check for cancellation after extraction
             if self._is_cancelled(job.id):
@@ -1866,7 +1881,7 @@ class IndexerService:
         finally:
             # Only cleanup temp directory on success (preserve for retry on failure)
             if job.status == IndexStatus.COMPLETED:
-                shutil.rmtree(temp_dir, ignore_errors=True)
+                await asyncio.to_thread(shutil.rmtree, temp_dir, True)
             self._cancellation_flags.pop(job.id, None)
             self._active_jobs.pop(job.id, None)
 
@@ -2858,19 +2873,32 @@ class IndexerService:
 
                             rechunked_in_batch = 0
                             new_batch = []
-                            for doc in batch:
-                                tokens = count_tokens(doc.page_content)
-                                if tokens > aggressive_limit:
-                                    sub_docs = rechunk_oversized_content(
-                                        doc.page_content,
-                                        aggressive_limit,
-                                        chunk_overlap=config.chunk_overlap,
-                                        metadata=doc.metadata,
-                                    )
-                                    new_batch.extend(sub_docs)
-                                    rechunked_in_batch += 1
-                                else:
-                                    new_batch.append(doc)
+                            # Capture variables to avoid cell variable warnings
+                            _batch = batch
+                            _aggressive_limit = aggressive_limit
+                            _chunk_overlap = config.chunk_overlap
+
+                            def rechunk_batch():
+                                batch_result = []
+                                rechunked = 0
+                                for doc in _batch:
+                                    tokens = count_tokens(doc.page_content)
+                                    if tokens > _aggressive_limit:
+                                        sub_docs = rechunk_oversized_content(
+                                            doc.page_content,
+                                            _aggressive_limit,
+                                            chunk_overlap=_chunk_overlap,
+                                            metadata=doc.metadata,
+                                        )
+                                        batch_result.extend(sub_docs)
+                                        rechunked += 1
+                                    else:
+                                        batch_result.append(doc)
+                                return batch_result, rechunked
+
+                            new_batch, rechunked_in_batch = await asyncio.to_thread(
+                                rechunk_batch
+                            )
 
                             if rechunked_in_batch > 0:
                                 logger.warning(
@@ -2882,6 +2910,8 @@ class IndexerService:
                                 )
                                 batch = new_batch
                                 modified = True
+                                # Yield to event loop after CPU-intensive rechunking
+                                await asyncio.sleep(0)
                                 break  # Break inner loop, continue outer embed loop
 
                         if modified:
@@ -2929,8 +2959,11 @@ class IndexerService:
         logger.info(f"Saving index to {index_path}")
         await asyncio.to_thread(db.save_local, str(index_path))
 
-        # Calculate index size
-        size_bytes = sum(f.stat().st_size for f in index_path.rglob("*") if f.is_file())
+        # Calculate index size in thread to avoid blocking event loop
+        def calc_size():
+            return sum(f.stat().st_size for f in index_path.rglob("*") if f.is_file())
+
+        size_bytes = await asyncio.to_thread(calc_size)
 
         # Auto-generate description if not provided, but preserve existing description if available
         description = getattr(config, "description", "")
