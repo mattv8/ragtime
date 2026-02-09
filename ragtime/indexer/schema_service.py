@@ -42,13 +42,10 @@ from ragtime.indexer.repository import repository
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_utils import (
     SCHEMA_COLUMNS,
-    get_embeddings_model,
-    search_pgvector_embeddings,
-)
-from ragtime.indexer.vector_utils import (
     ensure_embedding_column,
     ensure_pgvector_extension,
     get_embeddings_model,
+    search_pgvector_embeddings,
 )
 
 logger = get_logger(__name__)
@@ -500,19 +497,43 @@ class SchemaIndexerService:
         """
         try:
             if tool_type == DB_TYPE_POSTGRES:
-                # Simple SELECT 1 to verify connection
-                result = await self._execute_postgres_query(
-                    "SELECT 1 AS ok",
-                    connection_config.get("host", ""),
-                    connection_config.get("port", 5432),
-                    connection_config.get("user", ""),
-                    connection_config.get("password", ""),
-                    connection_config.get("database", ""),
-                    connection_config.get("container", ""),
-                )
-                if not result:
-                    return False, "Connection test returned no results"
-                return True, None
+                host = connection_config.get("host", "")
+                port = connection_config.get("port", 5432)
+                user = connection_config.get("user", "")
+                password = connection_config.get("password", "")
+                database = connection_config.get("database", "")
+                container = connection_config.get("container", "")
+
+                # Set up SSH tunnel if configured
+                tunnel: SSHTunnel | None = None
+                tunnel_cfg_dict = build_ssh_tunnel_config(connection_config, host, port)
+                if tunnel_cfg_dict and host:
+                    tunnel_cfg = ssh_tunnel_config_from_dict(
+                        tunnel_cfg_dict, default_remote_port=5432
+                    )
+                    if tunnel_cfg:
+                        tunnel = SSHTunnel(tunnel_cfg)
+                        local_port = tunnel.start()
+                        host = "127.0.0.1"
+                        port = local_port
+
+                try:
+                    # Simple SELECT 1 to verify connection
+                    result = await self._execute_postgres_query(
+                        "SELECT 1 AS ok",
+                        host,
+                        port,
+                        user,
+                        password,
+                        database,
+                        container,
+                    )
+                    if not result:
+                        return False, "Connection test returned no results"
+                    return True, None
+                finally:
+                    if tunnel:
+                        tunnel.stop()
             elif tool_type == DB_TYPE_MSSQL:
                 # For MSSQL, we'll test during introspection
                 # as it uses pymssql which handles connection testing
@@ -572,6 +593,42 @@ class SchemaIndexerService:
         password = connection_config.get("password", "")
         database = connection_config.get("database", "")
         container = connection_config.get("container", "")
+
+        # Set up SSH tunnel if configured
+        tunnel: SSHTunnel | None = None
+        tunnel_cfg_dict = build_ssh_tunnel_config(connection_config, host, port)
+        if tunnel_cfg_dict and host:
+            tunnel_cfg = ssh_tunnel_config_from_dict(
+                tunnel_cfg_dict, default_remote_port=5432
+            )
+            if tunnel_cfg:
+                tunnel = SSHTunnel(tunnel_cfg)
+                local_port = tunnel.start()
+                logger.debug(
+                    f"SSH tunnel established: localhost:{local_port} -> "
+                    f"{tunnel_cfg.remote_host}:{tunnel_cfg.remote_port}"
+                )
+                host = "127.0.0.1"
+                port = local_port
+
+        try:
+            return await self._introspect_postgres_impl(
+                host, port, user, password, database, container
+            )
+        finally:
+            if tunnel:
+                tunnel.stop()
+
+    async def _introspect_postgres_impl(
+        self,
+        host: str,
+        port: int,
+        user: str,
+        password: str,
+        database: str,
+        container: str,
+    ) -> List[TableSchemaInfo]:
+        """Internal PostgreSQL introspection (after tunnel setup)."""
 
         # Build the introspection query
         # This gets tables, columns, constraints in one query per table type
@@ -969,166 +1026,196 @@ class SchemaIndexerService:
         password = connection_config.get("password", "")
         database = connection_config.get("database", "")
 
+        # Build SSH tunnel config dict from top-level ssh_tunnel_* fields
+        tunnel_cfg_dict = build_ssh_tunnel_config(connection_config, host, port)
+
         tables = []
 
         def run_introspection() -> List[TableSchemaInfo]:
-            conn = pymssql.connect(
-                server=host,
-                port=str(port),
-                user=user,
-                password=password,
-                database=database,
-                login_timeout=30,
-                timeout=60,
-            )
-            cursor = conn.cursor(as_dict=True)
+            tunnel: SSHTunnel | None = None
+            actual_host = host
+            actual_port = port
 
-            # Get all tables and views
-            cursor.execute(
-                """
-                SELECT
-                    s.name AS table_schema,
-                    t.name AS table_name,
-                    CASE WHEN t.type = 'V' THEN 'VIEW' ELSE 'TABLE' END AS table_type,
-                    p.rows AS row_estimate
-                FROM sys.tables t
-                INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
-                LEFT JOIN sys.partitions p ON t.object_id = p.object_id AND p.index_id IN (0, 1)
-                UNION ALL
-                SELECT
-                    s.name AS table_schema,
-                    v.name AS table_name,
-                    'VIEW' AS table_type,
-                    NULL AS row_estimate
-                FROM sys.views v
-                INNER JOIN sys.schemas s ON v.schema_id = s.schema_id
-                ORDER BY table_schema, table_name
-            """
-            )
-
-            table_rows = cursor.fetchall()
-            result_tables = []
-
-            for row in table_rows:
-                schema = row["table_schema"]
-                table_name = row["table_name"]
-                table_type = row["table_type"]
-                row_estimate = row.get("row_estimate")
-                full_name = f"{schema}.{table_name}"
-
-                # Get columns
-                cursor.execute(
-                    f"""
-                    SELECT
-                        c.name AS column_name,
-                        t.name + CASE
-                            WHEN t.name IN ('varchar', 'nvarchar', 'char', 'nchar')
-                                THEN '(' + CASE WHEN c.max_length = -1 THEN 'MAX' ELSE CAST(c.max_length AS VARCHAR) END + ')'
-                            WHEN t.name IN ('decimal', 'numeric')
-                                THEN '(' + CAST(c.precision AS VARCHAR) + ',' + CAST(c.scale AS VARCHAR) + ')'
-                            ELSE ''
-                        END AS data_type,
-                        c.is_nullable,
-                        OBJECT_DEFINITION(c.default_object_id) AS column_default
-                    FROM sys.columns c
-                    INNER JOIN sys.types t ON c.user_type_id = t.user_type_id
-                    WHERE c.object_id = OBJECT_ID('{schema}.{table_name}')
-                    ORDER BY c.column_id
-                """
-                )
-                columns = [
-                    {
-                        "name": c["column_name"],
-                        "type": c["data_type"],
-                        "nullable": c["is_nullable"],
-                        "default": c["column_default"],
-                    }
-                    for c in cursor.fetchall()
-                ]
-
-                # Get primary key
-                cursor.execute(
-                    f"""
-                    SELECT col.name AS column_name
-                    FROM sys.indexes idx
-                    INNER JOIN sys.index_columns ic ON idx.object_id = ic.object_id AND idx.index_id = ic.index_id
-                    INNER JOIN sys.columns col ON ic.object_id = col.object_id AND ic.column_id = col.column_id
-                    WHERE idx.object_id = OBJECT_ID('{schema}.{table_name}')
-                        AND idx.is_primary_key = 1
-                    ORDER BY ic.key_ordinal
-                """
-                )
-                pk = [r["column_name"] for r in cursor.fetchall()]
-
-                # Get foreign keys
-                cursor.execute(
-                    f"""
-                    SELECT
-                        fk.name AS constraint_name,
-                        COL_NAME(fkc.parent_object_id, fkc.parent_column_id) AS column_name,
-                        OBJECT_SCHEMA_NAME(fkc.referenced_object_id) + '.' + OBJECT_NAME(fkc.referenced_object_id) AS references_table,
-                        COL_NAME(fkc.referenced_object_id, fkc.referenced_column_id) AS references_column
-                    FROM sys.foreign_keys fk
-                    INNER JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
-                    WHERE fk.parent_object_id = OBJECT_ID('{schema}.{table_name}')
-                """
-                )
-
-                fk_map: Dict[str, dict] = {}
-                for r in cursor.fetchall():
-                    name = r["constraint_name"]
-                    if name not in fk_map:
-                        fk_map[name] = {
-                            "name": name,
-                            "columns": [],
-                            "references_table": r["references_table"],
-                            "references_columns": [],
-                        }
-                    fk_map[name]["columns"].append(r["column_name"])
-                    fk_map[name]["references_columns"].append(r["references_column"])
-                fks = list(fk_map.values())
-
-                # Get indexes (non-primary key)
-                cursor.execute(
-                    f"""
-                    SELECT
-                        idx.name AS index_name,
-                        idx.is_unique,
-                        STRING_AGG(col.name, ',') WITHIN GROUP (ORDER BY ic.key_ordinal) AS columns
-                    FROM sys.indexes idx
-                    INNER JOIN sys.index_columns ic ON idx.object_id = ic.object_id AND idx.index_id = ic.index_id
-                    INNER JOIN sys.columns col ON ic.object_id = col.object_id AND ic.column_id = col.column_id
-                    WHERE idx.object_id = OBJECT_ID('{schema}.{table_name}')
-                        AND idx.is_primary_key = 0
-                        AND idx.name IS NOT NULL
-                    GROUP BY idx.name, idx.is_unique
-                """
-                )
-                indexes = [
-                    {
-                        "name": r["index_name"],
-                        "unique": r["is_unique"],
-                        "columns": r["columns"].split(",") if r["columns"] else [],
-                    }
-                    for r in cursor.fetchall()
-                ]
-
-                result_tables.append(
-                    TableSchemaInfo(
-                        table_schema=schema,
-                        table_name=table_name,
-                        full_name=full_name,
-                        table_type=table_type,
-                        columns=columns,
-                        primary_key=pk,
-                        foreign_keys=fks,
-                        indexes=indexes,
-                        row_count_estimate=int(row_estimate) if row_estimate else None,
+            try:
+                # Set up SSH tunnel if configured
+                if tunnel_cfg_dict:
+                    tunnel_cfg = ssh_tunnel_config_from_dict(
+                        tunnel_cfg_dict, default_remote_port=1433
                     )
+                    if tunnel_cfg:
+                        tunnel = SSHTunnel(tunnel_cfg)
+                        local_port = tunnel.start()
+                        actual_host = "127.0.0.1"
+                        actual_port = local_port
+                        logger.debug(
+                            f"SSH tunnel established: localhost:{local_port} -> "
+                            f"{tunnel_cfg.remote_host}:{tunnel_cfg.remote_port}"
+                        )
+
+                conn = pymssql.connect(
+                    server=actual_host,
+                    port=str(actual_port),
+                    user=user,
+                    password=password,
+                    database=database,
+                    login_timeout=30,
+                    timeout=60,
+                )
+                cursor = conn.cursor(as_dict=True)
+
+                # Get all tables and views
+                cursor.execute(
+                    """
+                    SELECT
+                        s.name AS table_schema,
+                        t.name AS table_name,
+                        CASE WHEN t.type = 'V' THEN 'VIEW' ELSE 'TABLE' END AS table_type,
+                        p.rows AS row_estimate
+                    FROM sys.tables t
+                    INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+                    LEFT JOIN sys.partitions p ON t.object_id = p.object_id AND p.index_id IN (0, 1)
+                    UNION ALL
+                    SELECT
+                        s.name AS table_schema,
+                        v.name AS table_name,
+                        'VIEW' AS table_type,
+                        NULL AS row_estimate
+                    FROM sys.views v
+                    INNER JOIN sys.schemas s ON v.schema_id = s.schema_id
+                    ORDER BY table_schema, table_name
+                """
                 )
 
-            conn.close()
-            return result_tables
+                table_rows = cursor.fetchall()
+                result_tables = []
+
+                for row in table_rows:
+                    schema = row["table_schema"]
+                    table_name = row["table_name"]
+                    table_type = row["table_type"]
+                    row_estimate = row.get("row_estimate")
+                    full_name = f"{schema}.{table_name}"
+
+                    # Get columns
+                    cursor.execute(
+                        f"""
+                        SELECT
+                            c.name AS column_name,
+                            t.name + CASE
+                                WHEN t.name IN ('varchar', 'nvarchar', 'char', 'nchar')
+                                    THEN '(' + CASE WHEN c.max_length = -1 THEN 'MAX' ELSE CAST(c.max_length AS VARCHAR) END + ')'
+                                WHEN t.name IN ('decimal', 'numeric')
+                                    THEN '(' + CAST(c.precision AS VARCHAR) + ',' + CAST(c.scale AS VARCHAR) + ')'
+                                ELSE ''
+                            END AS data_type,
+                            c.is_nullable,
+                            OBJECT_DEFINITION(c.default_object_id) AS column_default
+                        FROM sys.columns c
+                        INNER JOIN sys.types t ON c.user_type_id = t.user_type_id
+                        WHERE c.object_id = OBJECT_ID('{schema}.{table_name}')
+                        ORDER BY c.column_id
+                    """
+                    )
+                    columns = [
+                        {
+                            "name": c["column_name"],
+                            "type": c["data_type"],
+                            "nullable": c["is_nullable"],
+                            "default": c["column_default"],
+                        }
+                        for c in cursor.fetchall()
+                    ]
+
+                    # Get primary key
+                    cursor.execute(
+                        f"""
+                        SELECT col.name AS column_name
+                        FROM sys.indexes idx
+                        INNER JOIN sys.index_columns ic ON idx.object_id = ic.object_id AND idx.index_id = ic.index_id
+                        INNER JOIN sys.columns col ON ic.object_id = col.object_id AND ic.column_id = col.column_id
+                        WHERE idx.object_id = OBJECT_ID('{schema}.{table_name}')
+                            AND idx.is_primary_key = 1
+                        ORDER BY ic.key_ordinal
+                    """
+                    )
+                    pk = [r["column_name"] for r in cursor.fetchall()]
+
+                    # Get foreign keys
+                    cursor.execute(
+                        f"""
+                        SELECT
+                            fk.name AS constraint_name,
+                            COL_NAME(fkc.parent_object_id, fkc.parent_column_id) AS column_name,
+                            OBJECT_SCHEMA_NAME(fkc.referenced_object_id) + '.' + OBJECT_NAME(fkc.referenced_object_id) AS references_table,
+                            COL_NAME(fkc.referenced_object_id, fkc.referenced_column_id) AS references_column
+                        FROM sys.foreign_keys fk
+                        INNER JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
+                        WHERE fk.parent_object_id = OBJECT_ID('{schema}.{table_name}')
+                    """
+                    )
+
+                    fk_map: Dict[str, dict] = {}
+                    for r in cursor.fetchall():
+                        name = r["constraint_name"]
+                        if name not in fk_map:
+                            fk_map[name] = {
+                                "name": name,
+                                "columns": [],
+                                "references_table": r["references_table"],
+                                "references_columns": [],
+                            }
+                        fk_map[name]["columns"].append(r["column_name"])
+                        fk_map[name]["references_columns"].append(
+                            r["references_column"]
+                        )
+                    fks = list(fk_map.values())
+
+                    # Get indexes (non-primary key)
+                    cursor.execute(
+                        f"""
+                        SELECT
+                            idx.name AS index_name,
+                            idx.is_unique,
+                            STRING_AGG(col.name, ',') WITHIN GROUP (ORDER BY ic.key_ordinal) AS columns
+                        FROM sys.indexes idx
+                        INNER JOIN sys.index_columns ic ON idx.object_id = ic.object_id AND idx.index_id = ic.index_id
+                        INNER JOIN sys.columns col ON ic.object_id = col.object_id AND ic.column_id = col.column_id
+                        WHERE idx.object_id = OBJECT_ID('{schema}.{table_name}')
+                            AND idx.is_primary_key = 0
+                            AND idx.name IS NOT NULL
+                        GROUP BY idx.name, idx.is_unique
+                    """
+                    )
+                    indexes = [
+                        {
+                            "name": r["index_name"],
+                            "unique": r["is_unique"],
+                            "columns": r["columns"].split(",") if r["columns"] else [],
+                        }
+                        for r in cursor.fetchall()
+                    ]
+
+                    result_tables.append(
+                        TableSchemaInfo(
+                            table_schema=schema,
+                            table_name=table_name,
+                            full_name=full_name,
+                            table_type=table_type,
+                            columns=columns,
+                            primary_key=pk,
+                            foreign_keys=fks,
+                            indexes=indexes,
+                            row_count_estimate=(
+                                int(row_estimate) if row_estimate else None
+                            ),
+                        )
+                    )
+
+                conn.close()
+                return result_tables
+            finally:
+                if tunnel:
+                    tunnel.stop()
 
         tables = await asyncio.to_thread(run_introspection)
         logger.info(f"Introspected {len(tables)} tables/views from MSSQL")
