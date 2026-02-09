@@ -304,16 +304,18 @@ class MCPToolAdapter:
             tool_id = config.get("id", "")
             tool_type = config.get("tool_type", "")
             enabled = config.get("enabled", True)
+            tool_name = config.get("name", "Unknown")
 
             # Skip disabled tools
             if not enabled:
+                logger.info(f"MCP: Skipping disabled tool: {tool_name}")
                 continue
 
             # Skip unhealthy tools unless explicitly requested
             status = health_status.get(tool_id)
             if status and not status.alive and not include_unhealthy:
-                logger.debug(
-                    f"Skipping unhealthy tool: {config.get('name')} ({status.error})"
+                logger.info(
+                    f"MCP: Skipping unhealthy tool: {tool_name} ({status.error})"
                 )
                 continue
 
@@ -327,6 +329,11 @@ class MCPToolAdapter:
             tool_def = await self._create_tool_definition(config)
             if tool_def:
                 tools.append(tool_def)
+                logger.info(f"MCP: Added tool: {tool_def.name} (type: {tool_type})")
+            else:
+                logger.info(
+                    f"MCP: Failed to create tool definition for: {tool_name} (type: {tool_type})"
+                )
 
             # Create schema search tool if schema indexing is enabled for this tool
             # Apply selected_schema_indexes filter if provided
@@ -477,15 +484,14 @@ class MCPToolAdapter:
             pass  # Expected circular import context
 
         async def check_single(config: dict) -> tuple[str, ToolHealthStatus]:
-            tool_id = config.get("id", "")
-            tool_type = config.get("tool_type", "")
-            conn_config = config.get("connection_config", {})
-            start_time = asyncio.get_event_loop().time()
+            # SSH tunnel connections need more time to authenticate and establish
+            has_ssh_tunnel = conn_config.get("ssh_tunnel_enabled", False)
+            heartbeat_timeout = 15.0 if has_ssh_tunnel else 5.0
 
             try:
                 result = await asyncio.wait_for(
                     _heartbeat_check(tool_type, conn_config),
-                    timeout=5.0,
+                    timeout=heartbeat_timeout,
                 )
                 latency = (asyncio.get_event_loop().time() - start_time) * 1000
 
@@ -497,10 +503,11 @@ class MCPToolAdapter:
                     checked_at=now,
                 )
             except asyncio.TimeoutError:
+                timeout_msg = f"Heartbeat timeout ({int(heartbeat_timeout)}s)"
                 return tool_id, ToolHealthStatus(
                     tool_id=tool_id,
                     alive=False,
-                    error="Heartbeat timeout (5s)",
+                    error=timeout_msg,
                     checked_at=now,
                 )
             except Exception as e:
