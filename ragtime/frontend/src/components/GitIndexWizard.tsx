@@ -154,7 +154,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
   const [vectorStoreType, setVectorStoreType] = useState<VectorStoreType>(existingVectorStoreType ?? editIndex?.vector_store_type ?? 'faiss');
   const [ollamaAvailable, setOllamaAvailable] = useState(false);  // Whether Ollama is configured as LLM provider
   const [gitCloneTimeoutMinutes, setGitCloneTimeoutMinutes] = useState(configSnapshot?.git_clone_timeout_minutes || 5);
-  const [gitHistoryDepth, setGitHistoryDepth] = useState(configSnapshot?.git_history_depth || 1);
+  const [gitHistoryDepth, setGitHistoryDepth] = useState(configSnapshot?.git_history_depth ?? 1);
   const [reindexIntervalHours, setReindexIntervalHours] = useState(configSnapshot?.reindex_interval_hours || 0);
   const [timeoutManuallySet, setTimeoutManuallySet] = useState(false);  // Track if user overrode timeout
   const [exclusionsApplied, setExclusionsApplied] = useState(false);

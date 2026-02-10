@@ -647,6 +647,7 @@ class IndexerService:
         self,
         batch: list,
         embeddings,
+        job_id: str = "",
     ) -> "FAISS | None":
         """
         Embed a batch using micro-batches, falling back to individual chunks.
@@ -659,6 +660,7 @@ class IndexerService:
         Args:
             batch: List of Document objects to embed
             embeddings: Embedding model instance
+            job_id: Job ID for cancellation checks
 
         Returns:
             Merged FAISS index, or None if all chunks failed
@@ -668,6 +670,10 @@ class IndexerService:
         micro_batch_size = 50
 
         for j in range(0, len(batch), micro_batch_size):
+            # Check for cancellation between micro-batches
+            if job_id and self._is_cancelled(job_id):
+                raise asyncio.CancelledError("Job cancelled by user")
+
             micro_batch = batch[j : j + micro_batch_size]
             try:
                 micro_db = await asyncio.to_thread(
@@ -684,6 +690,10 @@ class IndexerService:
                 )
                 micro_db = None
                 for doc in micro_batch:
+                    # Check for cancellation between individual chunks
+                    if job_id and self._is_cancelled(job_id):
+                        raise asyncio.CancelledError("Job cancelled by user")
+
                     try:
                         single_db = await asyncio.to_thread(
                             FAISS.from_documents, [doc], embeddings
@@ -762,11 +772,13 @@ class IndexerService:
         if not job:
             return False
 
-        # Set cancellation flag for cooperative cancellation
+        # Set cancellation flag for cooperative cancellation.
+        # The background task checks this flag at multiple points and will
+        # raise asyncio.CancelledError, which triggers cleanup in its finally
+        # block (including popping _active_jobs and shutting down the pool).
+        # We intentionally do NOT pop _active_jobs here to avoid triggering
+        # premature shutdown_process_pool calls while workers are still busy.
         self._cancellation_flags[job_id] = True
-
-        # Remove from active jobs cache
-        self._active_jobs.pop(job_id, None)
 
         # Update status in database
         job.status = IndexStatus.FAILED
@@ -2785,6 +2797,7 @@ class IndexerService:
             use_tokens=use_tokens,
             batch_size=100,  # Larger batches for efficiency
             progress_callback=None,  # Progress logged from the function itself
+            is_cancelled=lambda: self._is_cancelled(job.id),
         )
 
         job.total_chunks = len(chunks)
@@ -2837,7 +2850,12 @@ class IndexerService:
         # Process chunks and re-chunk any that exceed the safe limit
         # Run in thread pool to avoid blocking event loop with count_tokens on 50K+ chunks
         final_chunks, rechunked_count = await asyncio.to_thread(
-            rechunk_documents_batch, chunks, safe_token_limit, config.chunk_overlap
+            rechunk_documents_batch,
+            chunks,
+            safe_token_limit,
+            config.chunk_overlap,
+            5,  # max_warnings
+            lambda: self._is_cancelled(job.id),  # cancellation check
         )
 
         if rechunked_count > 0:
@@ -2885,6 +2903,9 @@ class IndexerService:
                         await repository.update_job(job)
                         logger.warning(job.error_message)
                         await asyncio.sleep(wait_seconds)
+                        # Check for cancellation after rate-limit sleep
+                        if self._is_cancelled(job.id):
+                            raise asyncio.CancelledError("Job cancelled by user")
                         attempt += 1
                         continue
 
@@ -2955,7 +2976,7 @@ class IndexerService:
                             f"micro-batch processing"
                         )
                         batch_db = await self._embed_batch_with_fallback(
-                            batch, embeddings
+                            batch, embeddings, job_id=job.id
                         )
                         break
 
@@ -3003,9 +3024,9 @@ class IndexerService:
 
         # Auto-generate description if not provided, but preserve existing description if available
         description = getattr(config, "description", "")
+        existing_metadata = await repository.get_index_metadata(job.name)
         if not description:
             # Check if there's an existing description in the database
-            existing_metadata = await repository.get_index_metadata(job.name)
             if existing_metadata and existing_metadata.description:
                 description = existing_metadata.description
                 logger.info(f"Preserving existing description for {job.name}")
@@ -3018,6 +3039,35 @@ class IndexerService:
                 )
                 logger.info(f"Generated new description for {job.name}")
 
+        # Build config_snapshot for metadata.
+        # Re-read the LATEST config_snapshot from the database to preserve any
+        # user edits made while this job was running (e.g., user changed
+        # git_history_depth via the edit modal during a scheduled re-index).
+        # The job's config reflects what was in the DB when the job STARTED,
+        # but user settings like depth/interval/patterns may have been updated
+        # since then. We merge: latest DB snapshot wins for user-configurable
+        # fields, job config provides the fallback.
+        job_config_snapshot = config.model_dump()
+        if existing_metadata:
+            db_snapshot = getattr(existing_metadata, "configSnapshot", None)
+            if isinstance(db_snapshot, dict):
+                # User-configurable fields that should be preserved from DB
+                user_config_keys = [
+                    "file_patterns",
+                    "exclude_patterns",
+                    "chunk_size",
+                    "chunk_overlap",
+                    "max_file_size_kb",
+                    "ocr_mode",
+                    "ocr_vision_model",
+                    "git_clone_timeout_minutes",
+                    "git_history_depth",
+                    "reindex_interval_hours",
+                ]
+                for key in user_config_keys:
+                    if key in db_snapshot:
+                        job_config_snapshot[key] = db_snapshot[key]
+
         # Save metadata to database
         await repository.upsert_index_metadata(
             name=job.name,
@@ -3027,7 +3077,7 @@ class IndexerService:
             size_bytes=size_bytes,
             source_type=job.source_type,
             source=job.git_url or job.source_path,
-            config_snapshot=config.model_dump(),
+            config_snapshot=job_config_snapshot,
             description=description,
             git_branch=job.git_branch if job.source_type == "git" else None,
             git_token=git_token,

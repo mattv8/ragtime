@@ -659,12 +659,17 @@ async def chunk_documents_parallel(
     use_tokens: bool,
     batch_size: int = 50,
     progress_callback: Optional[Callable[[int, int], None]] = None,
+    is_cancelled: Optional[Callable[[], bool]] = None,
 ) -> List[Document]:
     """
     Chunk documents in parallel processes using Chonkie/Unstructured.
 
     Submits multiple batches concurrently to the process pool to fully utilize
     all worker processes, rather than submitting one batch at a time.
+
+    Args:
+        is_cancelled: Optional callback that returns True if the job has been cancelled.
+                      Checked between waves to allow early exit.
     """
     if not documents:
         return []
@@ -686,11 +691,20 @@ async def chunk_documents_parallel(
     batch_ranges = list(range(0, total_docs, batch_size))
 
     for wave_start in range(0, len(batch_ranges), wave_size):
+        # Check for cancellation before submitting each wave
+        if is_cancelled and is_cancelled():
+            logger.info("Chunking cancelled, stopping early")
+            raise asyncio.CancelledError("Job cancelled by user")
+
         wave_indices = batch_ranges[wave_start : wave_start + wave_size]
         futures = []
 
         for i in wave_indices:
             batch_docs = documents[i : i + batch_size]
+            # Prepare serializable data for the subprocess.
+            # This list comprehension and the subsequent run_in_executor submit()
+            # both run in the event loop thread (ProcessPoolExecutor pickles args
+            # synchronously). Keep batch_size reasonable (100) to limit blocking.
             batch_data = [(doc.page_content, doc.metadata) for doc in batch_docs]
             future = loop.run_in_executor(
                 pool,
@@ -710,8 +724,13 @@ async def chunk_documents_parallel(
             raise
 
         for result_chunks, splitter_counts in results:
-            for content, meta in result_chunks:
+            # Collect results in batches, yielding periodically to keep the
+            # event loop responsive. Creating 50K+ Document objects in a tight
+            # loop without yielding blocks HTTP/UI/MCP request handling.
+            for idx, (content, meta) in enumerate(result_chunks):
                 all_chunks.append(Document(page_content=content, metadata=meta))
+                if idx % 5000 == 4999:
+                    await asyncio.sleep(0)
             for k, v in splitter_counts.items():
                 all_splitter_counts[k] = all_splitter_counts.get(k, 0) + v
 
@@ -826,6 +845,7 @@ def rechunk_documents_batch(
     safe_token_limit: int,
     chunk_overlap: int = 0,
     max_warnings: int = 5,
+    is_cancelled: Optional[Callable[[], bool]] = None,
 ) -> tuple[List[Document], int]:
     """
     Re-chunk oversized Document chunks that exceed the safe token limit.
@@ -841,13 +861,20 @@ def rechunk_documents_batch(
         safe_token_limit: Maximum tiktoken token count per chunk
         chunk_overlap: Token overlap between re-chunked pieces
         max_warnings: Number of individual re-chunk warnings to log
+        is_cancelled: Optional callback that returns True if the job
+                      has been cancelled. Checked periodically to allow
+                      early exit from long-running re-chunking.
 
     Returns:
         Tuple of (result_chunks, rechunked_count)
     """
     result_chunks = []
     rc_count = 0
-    for chunk in chunks:
+    for idx, chunk in enumerate(chunks):
+        # Check for cancellation every 5000 chunks to avoid overhead
+        if is_cancelled and idx % 5000 == 0 and is_cancelled():
+            raise asyncio.CancelledError("Job cancelled by user")
+
         tokens = count_tokens(chunk.page_content)
         if tokens > safe_token_limit:
             source = chunk.metadata.get("source", "unknown")
