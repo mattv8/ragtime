@@ -17,10 +17,13 @@ from langchain_core.messages import AIMessage, HumanMessage
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.logging import get_logger
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import ChatTaskStatus, FilesystemConnectionConfig
+from ragtime.indexer.models import (
+    ChatTaskStatus,
+    FilesystemConnectionConfig,
+    SchemaIndexConfig,
+)
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES
-from ragtime.indexer.schema_service import schema_indexer
+from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
 from ragtime.indexer.service import indexer
 from ragtime.indexer.utils import safe_tool_name
 
@@ -354,44 +357,36 @@ class BackgroundTaskService:
                     if not isinstance(connection_config, dict):
                         continue
 
-                    # Check if schema indexing is enabled
-                    schema_index_enabled = connection_config.get(
-                        "schema_index_enabled", False
-                    )
-                    if not schema_index_enabled:
+                    # Parse into SchemaIndexConfig to handle type coercion and validation
+                    # This properly handles cases where numeric values are stored as strings
+                    try:
+                        schema_config = SchemaIndexConfig(**connection_config)
+                    except Exception:
                         continue
 
-                    # Get interval (default 24 hours)
-                    interval_hours = connection_config.get(
-                        "schema_index_interval_hours", 24
-                    )
-                    if interval_hours <= 0:
+                    if not schema_config.schema_index_enabled:
+                        continue
+
+                    if schema_config.schema_index_interval_hours <= 0:
                         continue  # Manual only
 
                     # Check if re-indexing is due
-                    last_indexed_str = connection_config.get("last_schema_indexed_at")
-                    if last_indexed_str:
-                        try:
-                            # Parse ISO format datetime
-                            if isinstance(last_indexed_str, str):
-                                last_indexed = datetime.fromisoformat(
-                                    last_indexed_str.replace("Z", "+00:00")
-                                )
-                            else:
-                                last_indexed = last_indexed_str
+                    last_indexed = schema_config.last_schema_indexed_at
+                    if last_indexed:
+                        # Ensure timezone awareness for comparison
+                        if last_indexed.tzinfo is None:
+                            last_indexed = last_indexed.replace(tzinfo=timezone.utc)
 
-                            next_reindex = last_indexed + timedelta(
-                                hours=interval_hours
-                            )
-                            if datetime.now(last_indexed.tzinfo or None) < next_reindex:
-                                continue  # Not due yet
-                        except (ValueError, TypeError):
-                            pass  # Invalid date, trigger reindex
+                        next_reindex = last_indexed + timedelta(
+                            hours=schema_config.schema_index_interval_hours
+                        )
+                        if datetime.now(timezone.utc) < next_reindex:
+                            continue  # Not due yet
 
                     # Trigger schema re-indexing
                     logger.info(
                         f"Triggering scheduled schema re-index for '{config.name}' "
-                        f"(last indexed: {last_indexed_str or 'never'})"
+                        f"(last indexed: {last_indexed or 'never'})"
                     )
                     await schema_indexer.trigger_index(
                         tool_config_id=config.id,

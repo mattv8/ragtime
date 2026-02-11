@@ -1420,6 +1420,29 @@ async def create_tool_config(
     """Create a new tool configuration. Admin only."""
     connection_config = request.connection_config.copy()
 
+    # Sanitize integer fields in connection_config
+    # This addresses an issue where the frontend might send them as strings (storing "24" in JSON)
+    # causing runtime type errors when consumed by backend services
+    int_fields = [
+        "port",
+        "ssh_tunnel_port",
+        "ssh_port",
+        "chunk_size",
+        "chunk_overlap",
+        "max_file_size_mb",
+        "max_total_files",
+        "schema_index_interval_hours",
+        "reindex_interval_hours",
+    ]
+
+    for field in int_fields:
+        if field in connection_config:
+            try:
+                # Convert to int if possible associated with numeric fields
+                connection_config[field] = int(connection_config[field])
+            except (ValueError, TypeError):
+                pass  # Keep original value if conversion fails
+
     # For filesystem indexers, ensure index_name is sanitized for safe filesystem/DB usage
     if request.tool_type == ToolType.FILESYSTEM_INDEXER:
         # Sanitize the index_name to prevent issues with spaces/special chars
@@ -1571,6 +1594,34 @@ async def update_tool_config(
     to maintain consistency.
     """
     updates = request.model_dump(exclude_unset=True)
+
+    # Sanitize connection_config if present
+    if "connection_config" in updates and isinstance(
+        updates["connection_config"], dict
+    ):
+        cc = updates["connection_config"]
+        # Sanitize integer fields in connection_config
+        # This addresses an issue where the frontend might send them as strings (storing "24" in JSON)
+        # causing runtime type errors when consumed by backend services
+        int_fields = [
+            "port",
+            "ssh_tunnel_port",
+            "ssh_port",
+            "chunk_size",
+            "chunk_overlap",
+            "max_file_size_mb",
+            "max_total_files",
+            "schema_index_interval_hours",
+            "reindex_interval_hours",
+        ]
+
+        for field in int_fields:
+            if field in cc:
+                try:
+                    cc[field] = int(cc[field])
+                except (ValueError, TypeError):
+                    pass  # Keep original value if conversion fails
+        updates["connection_config"] = cc
 
     # Capture the current config to detect changes (e.g., schema indexing enablement)
     original_config = await repository.get_tool_config(tool_id)
