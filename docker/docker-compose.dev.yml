@@ -31,9 +31,6 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.dev
     container_name: ragtime-dev
-    # init: true provides tini for zombie reaping as a fallback
-    # (Dockerfile.dev also includes tini in ENTRYPOINT)
-    init: true
     ports:
       - "${PORT:-8000}:8000"
       - "${API_PORT:-8001}:${API_PORT:-8001}"
