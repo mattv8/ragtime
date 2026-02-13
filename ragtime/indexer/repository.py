@@ -404,6 +404,32 @@ class IndexerRepository:
         db = await self._get_db()
         return await db.indexmetadata.find_unique(where={"name": name})
 
+    async def update_index_metadata_counts(
+        self,
+        name: str,
+        document_count: int,
+        chunk_count: int,
+        size_bytes: int,
+    ) -> None:
+        """Update only the document/chunk/size counts for an index.
+
+        Used to restore counts after a failed re-index without overwriting
+        other metadata fields like description, config_snapshot, etc.
+        """
+        db = await self._get_db()
+        await db.indexmetadata.update(
+            where={"name": name},
+            data={
+                "documentCount": document_count,
+                "chunkCount": chunk_count,
+                "sizeBytes": size_bytes,
+                "lastModified": datetime.utcnow(),
+            },
+        )
+        logger.debug(
+            f"Updated counts for index {name}: {document_count} docs, {chunk_count} chunks"
+        )
+
     async def list_index_metadata(self) -> list[PrismaIndexMetadata]:
         """List all index metadata."""
         db = await self._get_db()

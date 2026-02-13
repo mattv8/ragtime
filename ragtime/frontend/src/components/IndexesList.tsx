@@ -510,10 +510,12 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
           {indexes.map((idx) => {
             // Check if there's an active indexing job for this index
             const activeJob = jobs.find(j => j.name === idx.name && (j.status === 'pending' || j.status === 'processing'));
-            // Check if this is an optimistic index (0 documents = not yet indexed)
+            // Check if this is an optimistic index (0 documents = not yet indexed or re-index in progress)
             const isOptimistic = idx.document_count === 0;
             // Check if this is a failed/interrupted index (0 documents, no active job)
-            const isFailedOrInterrupted = isOptimistic && !activeJob;
+            // Also check if the index has a failed/interrupted job in the jobs list
+            const failedJob = jobs?.find(j => j.name === idx.name && (j.status === 'failed' || j.status === 'interrupted'));
+            const isFailedOrInterrupted = (isOptimistic && !activeJob) || (!activeJob && failedJob !== undefined);
 
             // Check if this index has a load error
             const loadError = getIndexLoadError(idx.name);

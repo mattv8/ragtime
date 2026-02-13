@@ -803,30 +803,67 @@ class IndexerService:
         return self._cancellation_flags.get(job_id, False)
 
     async def _cleanup_failed_index_metadata(self, name: str) -> None:
-        """Clean up optimistic index_metadata if a NEW index job fails.
+        """Handle index_metadata when an index job fails.
 
-        Checks if there are any successfully completed jobs for this index name.
-        If NO completed jobs exist, we assume this was a fresh optimistic index
-        that failed on its first attempt, and thus we should clean up the metadata
-        to avoid a "broken" index entry.
+        For both new and re-indexed indexes, metadata is preserved so the index
+        remains visible in the UI with an "Incomplete" badge and Retry button.
 
-        If completed jobs EXIST, this is likely a failed re-index, so we PRESERVE
-        the metadata (even if it currently has 0 chunks due to optimistic update).
+        For re-indexes with previous successful data on disk, attempts to restore
+        the document/chunk counts from FAISS files so the old data remains searchable.
         """
         try:
             metadata = await repository.get_index_metadata(name)
-            if metadata and metadata.chunkCount == 0:
-                # Check history: have we EVER successfully indexed this?
+            if not metadata:
+                return
+
+            if metadata.chunkCount == 0:
                 completed_count = await repository.count_completed_jobs(name)
 
                 if completed_count == 0:
+                    # First-time index that failed — preserve metadata so the
+                    # index card stays visible with Retry button in the UI.
                     logger.info(
-                        f"Cleaning up optimistic metadata for failed index '{name}' (no successful jobs found)"
+                        f"Preserving metadata for failed new index '{name}' "
+                        f"(visible in UI with Retry button)"
                     )
-                    await repository.delete_index_metadata(name)
                 else:
+                    # Re-index failed but previous data may still exist on disk.
+                    # Try to restore counts from FAISS files.
+                    index_path = self.index_base_path / name
+                    pkl_file = index_path / "index.pkl"
+                    if pkl_file.exists():
+                        try:
+                            with open(pkl_file, "rb") as f:
+                                data = pickle.load(f)
+                            if isinstance(data, tuple) and len(data) >= 2:
+                                docstore = data[0]
+                                if hasattr(docstore, "_dict"):
+                                    doc_count = len(getattr(docstore, "_dict", {}))
+                                    # Calculate disk size
+                                    size_bytes = sum(
+                                        f.stat().st_size
+                                        for f in index_path.rglob("*")
+                                        if f.is_file()
+                                    )
+                                    logger.info(
+                                        f"Restoring metadata counts for '{name}' from FAISS data: "
+                                        f"{doc_count} chunks, {size_bytes} bytes"
+                                    )
+                                    await repository.update_index_metadata_counts(
+                                        name=name,
+                                        document_count=doc_count,
+                                        chunk_count=doc_count,
+                                        size_bytes=size_bytes,
+                                    )
+                                    return
+                        except Exception as pkl_err:
+                            logger.warning(
+                                f"Could not restore counts from FAISS for '{name}': {pkl_err}"
+                            )
+
                     logger.info(
-                        f"Preserving metadata for '{name}' despite failure (found {completed_count} completed jobs)"
+                        f"Preserving metadata for '{name}' despite failure "
+                        f"(found {completed_count} completed jobs, no FAISS data to restore from)"
                     )
 
         except Exception as e:
@@ -879,10 +916,22 @@ class IndexerService:
                 getattr(existing_metadata, "configSnapshot", None)
                 or config.model_dump()
             )
+
+            # Preserve existing document/chunk counts on re-index so that if the
+            # new job fails or is cancelled, the metadata still reflects the
+            # previously indexed data rather than showing 0 documents.
+            # Counts are only updated to new values when the job completes.
+            document_count = existing_metadata.documentCount or 0
+            chunk_count = existing_metadata.chunkCount or 0
+            size_bytes = existing_metadata.sizeBytes or 0
+
             logger.debug(f"Re-indexing '{config.name}': preserving existing metadata")
         else:
             description = config.description or ""
             config_snapshot = config.model_dump()
+            document_count = 0
+            chunk_count = 0
+            size_bytes = 0
             logger.debug(
                 f"Creating new index '{config.name}': using config from request"
             )
@@ -890,9 +939,9 @@ class IndexerService:
         await repository.upsert_index_metadata(
             name=config.name,
             path=str(index_path),
-            document_count=0,
-            chunk_count=0,
-            size_bytes=0,
+            document_count=document_count,
+            chunk_count=chunk_count,
+            size_bytes=size_bytes,
             source_type=source_type,
             source=source,
             config_snapshot=config_snapshot,

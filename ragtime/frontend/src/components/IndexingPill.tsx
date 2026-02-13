@@ -18,20 +18,21 @@ interface IndexingPillProps {
 }
 
 /**
- * Renders an "Indexing..." pill when there's an active job or the index is optimistic.
- * Returns null if no indexing activity detected.
+ * Renders an "Indexing..." pill when there's an active job.
+ * Only shows during actual indexing activity, not for indexes that merely have 0 documents.
+ * Returns null if no active indexing job.
  */
 export function IndexingPill({
-  isOptimistic = false,
   activeJob,
   pendingLabel = 'Pending...',
   progressLabelPrefix = 'Indexing',
 }: IndexingPillProps) {
   const isActive = activeJob && (activeJob.status === 'pending' || activeJob.status === 'processing' || activeJob.status === 'indexing');
 
-  // Show indexing pill if there's an active job OR if it's optimistic (newly created)
-  // For optimistic indexes without a job yet, show a "Indexing..." placeholder
-  if (!isActive && !isOptimistic) {
+  // Only show indexing pill when there's an active job.
+  // An optimistic index (0 docs) without an active job is a failed/incomplete index,
+  // not one that's currently indexing - that case is handled by the Incomplete badge.
+  if (!isActive) {
     return null;
   }
 

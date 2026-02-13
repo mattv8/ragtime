@@ -1018,7 +1018,9 @@ class RAGComponents:
         # Try to load from database metadata (preferred)
         if self._index_metadata:
             enabled_indexes = [
-                idx for idx in self._index_metadata if idx.get("enabled", True)
+                idx
+                for idx in self._index_metadata
+                if idx.get("enabled", True) and idx.get("chunk_count", 0) > 0
             ]
 
             if enabled_indexes:
@@ -1083,7 +1085,9 @@ class RAGComponents:
             return
 
         enabled_indexes = [
-            idx for idx in self._index_metadata if idx.get("enabled", True)
+            idx
+            for idx in self._index_metadata
+            if idx.get("enabled", True) and idx.get("chunk_count", 0) > 0
         ]
 
         if not enabled_indexes:
@@ -1270,7 +1274,9 @@ class RAGComponents:
             return
 
         enabled_indexes = [
-            idx for idx in self._index_metadata if idx.get("enabled", True)
+            idx
+            for idx in self._index_metadata
+            if idx.get("enabled", True) and idx.get("chunk_count", 0) > 0
         ]
 
         if not enabled_indexes:

@@ -621,12 +621,12 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
                               {job.type === 'schema' ? (
                                 // Schema jobs: show appropriate progress based on phase
                                 job.phase.startsWith('Embedding') ? (
-                                  <>{job.processedTables}/{job.totalTables} tables</>
+                                  <>{job.processedTables}/{job.totalTables ?? 0} tables</>
                                 ) : job.phase.startsWith('Introspecting') || job.phase.startsWith('Discovering') || job.phase.startsWith('Connecting') ? (
-                                  job.totalTables > 0
+                                  (job.totalTables ?? 0) > 0
                                     ? <>{job.totalTables} tables found</>
                                     : null
-                                ) : job.totalTables > 0 ? (
+                                ) : (job.totalTables ?? 0) > 0 ? (
                                   <>{job.processedTables}/{job.totalTables} tables</>
                                 ) : null
                               ) : job.type === 'filesystem' ? (
