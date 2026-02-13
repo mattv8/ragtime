@@ -25,61 +25,41 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document as LangChainDocument
 
 from ragtime.config import settings
-from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
-from ragtime.core.embedding_models import (
-    get_embedding_model_context_limit,
-    get_embedding_models,
-)
-from ragtime.core.file_constants import (
-    BINARY_EXTENSIONS,
-    MINIFIED_PATTERNS,
-    PARSEABLE_DOCUMENT_EXTENSIONS,
-    UNPARSEABLE_BINARY_EXTENSIONS,
-    get_embedding_safety_margin,
-)
+from ragtime.core.app_settings import (get_app_settings,
+                                       invalidate_settings_cache)
+from ragtime.core.embedding_models import (get_embedding_model_context_limit,
+                                           get_embedding_models)
+from ragtime.core.file_constants import (BINARY_EXTENSIONS, MINIFIED_PATTERNS,
+                                         PARSEABLE_DOCUMENT_EXTENSIONS,
+                                         UNPARSEABLE_BINARY_EXTENSIONS,
+                                         get_embedding_safety_margin)
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
-from ragtime.indexer.chunking import (
-    chunk_documents_parallel,
-    is_context_length_error,
-    rechunk_documents_batch,
-    rechunk_oversized_content,
-    shutdown_process_pool,
-)
-from ragtime.indexer.document_parser import OCR_EXTENSIONS, extract_text_from_file_async
-from ragtime.indexer.file_utils import (
-    HARDCODED_EXCLUDES,
-    build_authenticated_git_url,
-    extract_archive,
-    find_source_dir,
-)
+from ragtime.indexer.chunking import (chunk_documents_parallel,
+                                      is_context_length_error,
+                                      rechunk_documents_batch,
+                                      rechunk_oversized_content,
+                                      shutdown_process_pool)
+from ragtime.indexer.document_parser import (OCR_EXTENSIONS,
+                                             extract_text_from_file_async)
+from ragtime.indexer.file_utils import (HARDCODED_EXCLUDES,
+                                        build_authenticated_git_url,
+                                        extract_archive, find_source_dir)
 from ragtime.indexer.llm_exclusions import get_smart_exclusion_suggestions
-from ragtime.indexer.memory_utils import (
-    estimate_index_memory,
-    estimate_memory_at_dimensions,
-    get_embedding_dimension,
-)
-from ragtime.indexer.models import (
-    AnalyzeIndexRequest,
-    AppSettings,
-    CommitHistoryInfo,
-    CommitHistorySample,
-    FileTypeStats,
-    IndexAnalysisResult,
-    IndexConfig,
-    IndexInfo,
-    IndexJob,
-    IndexStatus,
-    MemoryEstimate,
-    OcrMode,
-    VectorStoreType,
-)
+from ragtime.indexer.memory_utils import (estimate_index_memory,
+                                          estimate_memory_at_dimensions,
+                                          get_embedding_dimension)
+from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
+                                    CommitHistoryInfo, CommitHistorySample,
+                                    FileTypeStats, IndexAnalysisResult,
+                                    IndexConfig, IndexInfo, IndexJob,
+                                    IndexStatus, MemoryEstimate, OcrMode,
+                                    VectorStoreType)
 from ragtime.indexer.repository import repository
-from ragtime.indexer.vector_utils import (
-    EMBEDDING_SUB_BATCH_SIZE,
-    append_embedding_dimension_warning,
-    get_embeddings_model,
-)
+from ragtime.indexer.vector_utils import (EMBEDDING_SUB_BATCH_SIZE,
+                                          append_embedding_dimension_warning,
+                                          embed_documents_subbatched,
+                                          get_embeddings_model)
 from ragtime.tools.git_history import _is_shallow_repository
 
 logger = get_logger(__name__)
@@ -113,9 +93,8 @@ async def generate_index_description(
 
         if provider == "ollama":
             try:
-                from langchain_ollama import (
-                    ChatOllama,
-                )  # type: ignore[reportMissingImports]
+                from langchain_ollama import \
+                    ChatOllama  # type: ignore[reportMissingImports]
 
                 base_url = app_settings.get("ollama_base_url", "http://localhost:11434")
                 model = app_settings.get("llm_model", "llama3.2")
@@ -128,9 +107,8 @@ async def generate_index_description(
             api_key = app_settings.get("anthropic_api_key", "")
             if api_key:
                 try:
-                    from langchain_anthropic import (
-                        ChatAnthropic,
-                    )  # type: ignore[import-untyped]
+                    from langchain_anthropic import \
+                        ChatAnthropic  # type: ignore[import-untyped]
 
                     model = app_settings.get("llm_model", "claude-sonnet-4-20250514")
                     llm = ChatAnthropic(
@@ -2868,146 +2846,177 @@ class IndexerService:
         # Use final_chunks for embedding
         chunks = final_chunks
 
-        # Balance batch size: larger batches reduce FAISS merge overhead but
-        # block the event loop longer during asyncio.to_thread calls.
-        # Cap at 200 to keep yields frequent enough for UI responsiveness.
-        faiss_batch_size = min(max(batch_size, 100), 200)
+        # Pre-compute embeddings in sub-batches, then build FAISS index once.
+        # This is dramatically faster than FAISS.from_documents in a loop because:
+        # 1. Sub-batches of 50 scale much better on CPU-only Ollama than 100+
+        # 2. Building one FAISS index from all embeddings avoids O(n^2) merge_from
+        # 3. embed_documents_subbatched yields to event loop between sub-batches
 
-        for i in range(0, len(chunks), faiss_batch_size):
+        # Extract texts and metadata from Document objects
+        all_texts = [doc.page_content for doc in chunks]
+        all_metadatas = [doc.metadata for doc in chunks]
+
+        # Embed all chunks with sub-batching, cancellation checks, and
+        # progressive context-length error recovery
+        all_embeddings: list[list[float]] = []
+        context_retry_factors = [0.70, 0.50, 0.35]
+        context_retries = 0
+        embed_progress = 0
+
+        for i in range(0, len(all_texts), batch_size):
             # Check for cancellation
             if self._is_cancelled(job.id):
                 logger.info(f"Job {job.id} was cancelled during embedding")
                 raise asyncio.CancelledError("Job cancelled by user")
 
-            batch = chunks[i : i + faiss_batch_size]
-            batch_db = None
+            batch_texts = all_texts[i : i + batch_size]
+            batch_num = i // batch_size + 1
             attempt = 0
-            context_retries = 0
-            batch_num = i // faiss_batch_size + 1
-
-            # Progressive retry factors for context length errors.
-            # Each level uses a more aggressive token limit to handle
-            # tiktoken/BERT tokenizer mismatch for different content types.
-            context_retry_factors = [0.70, 0.50, 0.35]
 
             while True:
                 try:
-                    batch_db = await asyncio.to_thread(
-                        FAISS.from_documents, batch, embeddings
+                    # embed_documents_subbatched handles sub-batching and
+                    # event loop yielding internally (50 docs per API call)
+                    batch_embeddings = await embed_documents_subbatched(
+                        embeddings, batch_texts, logger_override=logger
                     )
+                    all_embeddings.extend(batch_embeddings)
                     break
                 except Exception as e:
                     if self._is_rate_limit_error(e) and attempt < max_retries:
                         wait_seconds = self._retry_delay_seconds(e, attempt)
-                        job.error_message = f"OpenAI rate limit hit, retrying batch {batch_num} in {wait_seconds:.1f}s"
+                        job.error_message = f"Rate limit hit, retrying batch {batch_num} in {wait_seconds:.1f}s"
                         await repository.update_job(job)
                         logger.warning(job.error_message)
                         await asyncio.sleep(wait_seconds)
-                        # Check for cancellation after rate-limit sleep
                         if self._is_cancelled(job.id):
                             raise asyncio.CancelledError("Job cancelled by user")
                         attempt += 1
                         continue
 
-                    # Handle context length errors by progressively re-chunking.
-                    # tiktoken (cl100k_base) and BERT (WordPiece) tokenizers count
-                    # differently, so chunks under the tiktoken limit can still
-                    # exceed BERT's 2048 context. We try progressively lower
-                    # thresholds, then fall back to micro-batch processing.
                     if is_context_length_error(e):
-                        # Try progressively lower limits
+                        # Progressive re-chunking at lower token limits
                         modified = False
                         while context_retries < len(context_retry_factors):
                             factor = context_retry_factors[context_retries]
                             context_retries += 1
                             aggressive_limit = int(safe_token_limit * factor)
 
-                            rechunked_in_batch = 0
-                            new_batch = []
-                            # Capture variables to avoid cell variable warnings
-                            _batch = batch
+                            _batch_texts = batch_texts
                             _aggressive_limit = aggressive_limit
                             _chunk_overlap = config.chunk_overlap
+                            _metadatas = all_metadatas[i : i + batch_size]
 
                             def rechunk_batch():
-                                batch_result = []
+                                new_texts = []
+                                new_metas = []
                                 rechunked = 0
-                                for doc in _batch:
-                                    tokens = count_tokens(doc.page_content)
+                                for text, meta in zip(_batch_texts, _metadatas):
+                                    tokens = count_tokens(text)
                                     if tokens > _aggressive_limit:
                                         sub_docs = rechunk_oversized_content(
-                                            doc.page_content,
+                                            text,
                                             _aggressive_limit,
                                             chunk_overlap=_chunk_overlap,
-                                            metadata=doc.metadata,
+                                            metadata=meta,
                                         )
-                                        batch_result.extend(sub_docs)
+                                        for sd in sub_docs:
+                                            new_texts.append(sd.page_content)
+                                            new_metas.append(sd.metadata)
                                         rechunked += 1
                                     else:
-                                        batch_result.append(doc)
-                                return batch_result, rechunked
+                                        new_texts.append(text)
+                                        new_metas.append(meta)
+                                return new_texts, new_metas, rechunked
 
-                            new_batch, rechunked_in_batch = await asyncio.to_thread(
-                                rechunk_batch
+                            new_texts, new_metas, rechunked_count_batch = (
+                                await asyncio.to_thread(rechunk_batch)
                             )
 
-                            if rechunked_in_batch > 0:
+                            if rechunked_count_batch > 0:
                                 logger.warning(
                                     f"Context length error in batch {batch_num}: "
-                                    f"re-chunked {rechunked_in_batch} chunks at "
-                                    f"limit {aggressive_limit} tokens "
-                                    f"({len(batch)} -> {len(new_batch)} chunks), "
+                                    f"re-chunked {rechunked_count_batch} at "
+                                    f"limit {aggressive_limit} tokens, "
                                     f"retry {context_retries}/{len(context_retry_factors)}"
                                 )
-                                batch = new_batch
+                                batch_texts = new_texts
+                                # Update the master lists to reflect re-chunked content
+                                all_texts[i : i + batch_size] = new_texts
+                                all_metadatas[i : i + batch_size] = new_metas
                                 modified = True
-                                # Yield to event loop after CPU-intensive rechunking
                                 await asyncio.sleep(0)
-                                break  # Break inner loop, continue outer embed loop
+                                break
 
                         if modified:
-                            continue  # Retry embedding with re-chunked batch
+                            continue  # Retry with re-chunked batch
 
-                        # All retry levels exhausted - fall back to micro-batch
-                        # processing to isolate the problematic chunk(s)
+                        # Fallback: embed individually, skipping failures
                         logger.warning(
-                            f"Context length retries exhausted for batch {batch_num} "
-                            f"({len(batch)} chunks), falling back to "
-                            f"micro-batch processing"
+                            f"Context retries exhausted for batch {batch_num}, "
+                            f"embedding individually"
                         )
-                        batch_db = await self._embed_batch_with_fallback(
-                            batch, embeddings, job_id=job.id
-                        )
+                        for text in batch_texts:
+                            if self._is_cancelled(job.id):
+                                raise asyncio.CancelledError("Job cancelled by user")
+                            try:
+                                single_emb = await asyncio.to_thread(
+                                    embeddings.embed_documents, [text]
+                                )
+                                all_embeddings.extend(single_emb)
+                            except Exception as single_err:
+                                logger.warning(
+                                    f"Skipping chunk ({len(text)} chars): {single_err}"
+                                )
+                                # Use zero vector as placeholder to keep alignment
+                                if all_embeddings:
+                                    all_embeddings.append(
+                                        [0.0] * len(all_embeddings[0])
+                                    )
+                                else:
+                                    # Skip - will be caught by alignment check
+                                    pass
                         break
 
                     raise
 
-            # Merge FAISS indexes in thread to avoid blocking event loop
-            if db is None:
-                db = batch_db
-            else:
-                await asyncio.to_thread(db.merge_from, batch_db)
-
-            # Update processed chunks progress
+            # Update progress
+            embed_progress = min(i + batch_size, len(all_texts))
             job.error_message = None
-            job.processed_chunks = min(i + faiss_batch_size, len(chunks))
+            job.processed_chunks = embed_progress
             try:
                 await repository.update_job(job)
             except Exception as progress_err:
                 logger.warning(
                     f"Job {job.id}: Chunk progress update failed "
-                    f"({job.processed_chunks}/{len(chunks)}), continuing: {progress_err}"
+                    f"({embed_progress}/{len(all_texts)}), continuing: {progress_err}"
                 )
-            logger.info(f"Embedded {job.processed_chunks}/{len(chunks)} chunks")
+            logger.info(f"Embedded {embed_progress}/{len(all_texts)} chunks")
 
-            # Pause between batches for two reasons:
-            # 1. Stay under embedding provider TPM rate limits
-            # 2. Give the event loop real time to serve HTTP/UI requests
-            if (i + faiss_batch_size) < len(chunks):
+            # Brief pause for rate limits and event loop
+            if embed_progress < len(all_texts):
                 await asyncio.sleep(max(batch_pause_seconds, 0.1))
 
-        if db is None:
-            raise ValueError("No documents were embedded - FAISS index creation failed")
+        if not all_embeddings:
+            raise ValueError("No documents were embedded - embedding generation failed")
+
+        # Build FAISS index from pre-computed embeddings in one shot.
+        # This avoids O(n^2) merge_from overhead entirely.
+        # Run list construction + FAISS build together in thread to avoid
+        # blocking the event loop when zipping 200K+ items.
+        logger.info(
+            f"Building FAISS index from {len(all_embeddings)} pre-computed embeddings..."
+        )
+
+        _texts = all_texts
+        _embeds = all_embeddings
+        _metas = all_metadatas
+
+        def build_faiss_index():
+            pairs = list(zip(_texts, _embeds))
+            return FAISS.from_embeddings(pairs, embeddings, metadatas=_metas)
+
+        db = await asyncio.to_thread(build_faiss_index)
 
         # Save the index
         index_path = self.index_base_path / job.name

@@ -948,7 +948,9 @@ class RAGComponents:
                 "ollama_base_url", "http://localhost:11434"
             )
             logger.info(f"Using Ollama embeddings: {model} at {base_url}")
-            return OllamaEmbeddings(model=model, base_url=base_url)
+            return OllamaEmbeddings(
+                model=model, base_url=base_url, num_gpu=-1, keep_alive=-1
+            )
         elif provider == "openai":
             api_key = self._app_settings.get("openai_api_key", "")
             if not api_key:

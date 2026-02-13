@@ -270,7 +270,13 @@ async def get_embeddings_model(
         from langchain_ollama import OllamaEmbeddings
 
         base_url = _get_setting(settings, "ollama_base_url", "http://localhost:11434")
-        return OllamaEmbeddings(model=model, base_url=base_url)
+        # num_gpu=-1: offload all model layers to GPU (if available).
+        # Without this, Ollama may default to CPU-only on some systems.
+        # keep_alive=-1: keep the model loaded indefinitely so it isn't
+        # evicted between embedding batches during long indexing jobs.
+        return OllamaEmbeddings(
+            model=model, base_url=base_url, num_gpu=-1, keep_alive=-1
+        )
 
     if provider == "openai":
         from langchain_openai import OpenAIEmbeddings
