@@ -279,8 +279,9 @@ async def extract_text_from_file_async(
         elif suffix in {".html", ".htm"}:
             return await asyncio.to_thread(_extract_html, content)
         else:
-            # Plain text files - fast enough to run inline
-            return _extract_text(content)
+            # Plain text - offload to thread for large files to avoid
+            # blocking the event loop during decode + whitespace cleanup.
+            return await asyncio.to_thread(_extract_text, content)
     except Exception as e:
         logger.warning(f"Failed to extract text from {file_path}: {e}")
         return ""

@@ -193,24 +193,30 @@ async def _find_git_repos(index_name: Optional[str] = None) -> List[tuple[str, P
     if not index_base.exists():
         return repos
 
-    for index_dir in index_base.iterdir():
-        if not index_dir.is_dir():
+    def _scan_dirs() -> List[tuple[str, Path]]:
+        """Blocking directory scan offloaded to a thread."""
+        found: List[tuple[str, Path]] = []
+        for d in index_base.iterdir():
+            if not d.is_dir():
+                continue
+            gr = d / ".git_repo"
+            if gr.exists() and (gr / ".git").exists():
+                if index_name and d.name != index_name:
+                    continue
+                found.append((d.name, gr))
+        return found
+
+    candidates = await asyncio.to_thread(_scan_dirs)
+
+    for dir_name, git_repo in candidates:
+        # Skip shallow clones - they have no meaningful history to search
+        if await _is_shallow_repository(git_repo):
+            logger.debug(
+                f"Skipping shallow git repo for {dir_name}: no meaningful history available"
+            )
             continue
 
-        git_repo = index_dir / ".git_repo"
-        if git_repo.exists() and (git_repo / ".git").exists():
-            # Filter by index name if specified
-            if index_name and index_dir.name != index_name:
-                continue
-
-            # Skip shallow clones - they have no meaningful history to search
-            if await _is_shallow_repository(git_repo):
-                logger.debug(
-                    f"Skipping shallow git repo for {index_dir.name}: no meaningful history available"
-                )
-                continue
-
-            repos.append((index_dir.name, git_repo))
+        repos.append((dir_name, git_repo))
 
     return repos
 

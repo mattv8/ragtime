@@ -837,13 +837,24 @@ class MCPToolAdapter:
                         f"MCP searching index '{name}' with query: {query[:50] if query else ''}..., k={k}"
                     )
                     # Use MMR or similarity search based on settings
+                    # FAISS search embeds the query then scans the index --
+                    # both are blocking, so offload to a thread to keep the
+                    # event loop (and MCP) responsive.
                     if use_mmr:
                         fetch_k = max(k * 4, 20)  # Get more candidates for diversity
-                        docs = db.max_marginal_relevance_search(
-                            query, k=k, fetch_k=fetch_k, lambda_mult=mmr_lambda
+                        docs = await asyncio.to_thread(
+                            db.max_marginal_relevance_search,
+                            query,
+                            k=k,
+                            fetch_k=fetch_k,
+                            lambda_mult=mmr_lambda,
                         )
                     else:
-                        docs = db.similarity_search(query, k=k)
+                        docs = await asyncio.to_thread(
+                            db.similarity_search,
+                            query,
+                            k=k,
+                        )
 
                     logger.debug(f"MCP index '{name}' returned {len(docs)} documents")
                     for doc in docs:
@@ -1057,13 +1068,22 @@ class MCPToolAdapter:
 
                     try:
                         # Use MMR or similarity search based on settings
+                        # Offload blocking FAISS search to a thread.
                         if use_mmr_:
                             fetch_k = max(k * 4, 20)
-                            docs = idx_db.max_marginal_relevance_search(
-                                query, k=k, fetch_k=fetch_k, lambda_mult=mmr_lambda_
+                            docs = await asyncio.to_thread(
+                                idx_db.max_marginal_relevance_search,
+                                query,
+                                k=k,
+                                fetch_k=fetch_k,
+                                lambda_mult=mmr_lambda_,
                             )
                         else:
-                            docs = idx_db.similarity_search(query, k=k)
+                            docs = await asyncio.to_thread(
+                                idx_db.similarity_search,
+                                query,
+                                k=k,
+                            )
 
                         logger.debug(
                             f"MCP index '{idx_name}' returned {len(docs)} documents"
@@ -1136,34 +1156,42 @@ class MCPToolAdapter:
         # Only include repos where git_history_depth != 1 (shallow clone has no history)
         git_repos: list[tuple[str, Path, str]] = []  # (name, path, description)
 
-        if index_base.exists():
-            for index_dir in index_base.iterdir():
-                if not index_dir.is_dir():
-                    continue
+        def _discover_git_repos_mcp() -> list[tuple[str, Path]]:
+            """Discover git repo directories on disk (blocking I/O)."""
+            repos: list[tuple[str, Path]] = []
+            if index_base.exists():
+                for d in index_base.iterdir():
+                    if not d.is_dir():
+                        continue
+                    gr = d / ".git_repo"
+                    if gr.exists() and (gr / ".git").exists():
+                        repos.append((d.name, gr))
+            return repos
 
-                git_repo = index_dir / ".git_repo"
-                if git_repo.exists() and (git_repo / ".git").exists():
-                    # Get metadata including config_snapshot to check git_history_depth
-                    description = ""
-                    git_history_depth = 0  # Default to full history
-                    for idx in rag._index_metadata or []:
-                        if idx.get("name") == index_dir.name:
-                            description = idx.get("description", "")
-                            # Get git_history_depth from config_snapshot
-                            config = idx.get("config_snapshot") or {}
-                            git_history_depth = config.get("git_history_depth", 0)
-                            break
+        disk_repos = await asyncio.to_thread(_discover_git_repos_mcp)
 
-                    # Only expose git history tool if depth != 1
-                    # depth=0 means full history, depth>1 means we have commits to search
-                    # depth=1 is a shallow clone with only the latest commit (not useful)
-                    if git_history_depth != 1:
-                        git_repos.append((index_dir.name, git_repo, description))
-                    else:
-                        logger.debug(
-                            f"Skipping git history tool for {index_dir.name}: "
-                            "shallow clone (depth=1)"
-                        )
+        for repo_dir_name, git_repo in disk_repos:
+            # Get metadata including config_snapshot to check git_history_depth
+            description = ""
+            git_history_depth = 0  # Default to full history
+            for idx in rag._index_metadata or []:
+                if idx.get("name") == repo_dir_name:
+                    description = idx.get("description", "")
+                    # Get git_history_depth from config_snapshot
+                    config = idx.get("config_snapshot") or {}
+                    git_history_depth = config.get("git_history_depth", 0)
+                    break
+
+            # Only expose git history tool if depth != 1
+            # depth=0 means full history, depth>1 means we have commits to search
+            # depth=1 is a shallow clone with only the latest commit (not useful)
+            if git_history_depth != 1:
+                git_repos.append((repo_dir_name, git_repo, description))
+            else:
+                logger.debug(
+                    f"Skipping git history tool for {repo_dir_name}: "
+                    "shallow clone (depth=1)"
+                )
 
         if not git_repos:
             return []
