@@ -3,6 +3,7 @@ Indexer data models and schemas.
 """
 
 
+
 import hashlib
 import json
 from datetime import datetime
@@ -13,7 +14,6 @@ from pydantic import BaseModel, Field
 
 from ragtime.core.embedding_models import (get_embedding_models,
                                            get_model_dimensions_sync)
-
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -2002,9 +2002,12 @@ class TableSchemaInfo(BaseModel):
     table_name: str = Field(description="Table name")
     full_name: str = Field(description="Fully qualified name (schema.table)")
     table_type: str = Field(default="TABLE", description="TABLE or VIEW")
+    table_comment: Optional[str] = Field(
+        default=None, description="Table/view description or comment"
+    )
     columns: List[dict] = Field(
         default_factory=list,
-        description="List of column definitions with name, type, nullable, default",
+        description="List of column definitions with name, type, nullable, default, comment",
     )
     primary_key: List[str] = Field(
         default_factory=list, description="List of primary key column names"
@@ -2015,6 +2018,10 @@ class TableSchemaInfo(BaseModel):
     )
     indexes: List[dict] = Field(
         default_factory=list, description="List of index definitions"
+    )
+    check_constraints: List[dict] = Field(
+        default_factory=list,
+        description="List of check constraints with name and definition",
     )
     row_count_estimate: Optional[int] = Field(
         default=None, description="Estimated row count (if available)"
@@ -2031,6 +2038,8 @@ class TableSchemaInfo(BaseModel):
         # Header with table type
         table_type = self.table_type.upper()
         lines.append(f"# {table_type}: {self.full_name}")
+        if self.table_comment:
+            lines.append(f"Description: {self.table_comment}")
         if self.row_count_estimate:
             lines.append(f"Estimated rows: ~{self.row_count_estimate:,}")
 
@@ -2053,6 +2062,10 @@ class TableSchemaInfo(BaseModel):
                 col_line += f" DEFAULT {default}"
             if col_name in self.primary_key:
                 col_line += " [PRIMARY KEY]"
+            # Include column comment/description if present
+            col_comment = col.get("comment") or col.get("description")
+            if col_comment:
+                col_line += f" -- {col_comment}"
             lines.append(col_line)
 
         # Primary key section
@@ -2071,6 +2084,14 @@ class TableSchemaInfo(BaseModel):
                     f"  - {fk_name}: ({', '.join(fk_columns)}) -> "
                     f"{ref_table}({', '.join(ref_columns)})"
                 )
+
+        # Check constraints section
+        if self.check_constraints:
+            lines.append("\n## Check Constraints:")
+            for cc in self.check_constraints:
+                cc_name = cc.get("name", "")
+                cc_def = cc.get("definition", "")
+                lines.append(f"  - {cc_name}: {cc_def}")
 
         # Indexes section
         if self.indexes:

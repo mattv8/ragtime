@@ -640,6 +640,7 @@ class SchemaIndexerService:
                 table_name = row.get("table_name", "")
                 table_type_raw = row.get("table_type", "BASE TABLE")
                 row_estimate = row.get("row_estimate")
+                table_comment = row.get("table_comment")
 
                 full_name = f"{schema}.{table_name}"
 
@@ -671,16 +672,23 @@ class SchemaIndexerService:
                     schema, table_name, host, port, user, password, database, container
                 )
 
+                # Get check constraints
+                check_constraints = await self._get_postgres_check_constraints(
+                    schema, table_name, host, port, user, password, database, container
+                )
+
                 tables.append(
                     TableSchemaInfo(
                         table_schema=schema,
                         table_name=table_name,
                         full_name=full_name,
                         table_type=table_type,
+                        table_comment=table_comment or None,
                         columns=columns,
                         primary_key=pk,
                         foreign_keys=fks,
                         indexes=indexes,
+                        check_constraints=check_constraints,
                         row_count_estimate=int(row_estimate) if row_estimate else None,
                     )
                 )
@@ -792,15 +800,24 @@ class SchemaIndexerService:
     ) -> List[dict]:
         """Get column information for a PostgreSQL table, view, or materialized view."""
         # information_schema.columns works for tables and regular views
+        # Include column comments via col_description()
         query = f"""
-        SELECT column_name, data_type, is_nullable, column_default
-        FROM information_schema.columns
-        WHERE table_schema = '{schema}' AND table_name = '{table_name}'
-        ORDER BY ordinal_position
+        SELECT
+            c.column_name,
+            c.data_type,
+            c.is_nullable,
+            c.column_default,
+            pg_catalog.col_description(
+                (quote_ident(c.table_schema) || '.' || quote_ident(c.table_name))::regclass,
+                c.ordinal_position
+            ) AS column_comment
+        FROM information_schema.columns c
+        WHERE c.table_schema = '{schema}' AND c.table_name = '{table_name}'
+        ORDER BY c.ordinal_position
         """
         columns = await self._execute_postgres_simple_query(
             query,
-            ["name", "type", "nullable", "default"],
+            ["name", "type", "nullable", "default", "comment"],
             host,
             port,
             user,
@@ -816,7 +833,8 @@ class SchemaIndexerService:
                 a.attname AS column_name,
                 pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type,
                 CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END AS is_nullable,
-                pg_catalog.pg_get_expr(d.adbin, d.adrelid) AS column_default
+                pg_catalog.pg_get_expr(d.adbin, d.adrelid) AS column_default,
+                pg_catalog.col_description(a.attrelid, a.attnum) AS column_comment
             FROM pg_attribute a
             LEFT JOIN pg_attrdef d ON a.attrelid = d.adrelid AND a.attnum = d.adnum
             WHERE a.attrelid = (quote_ident('{schema}') || '.' || quote_ident('{table_name}'))::regclass
@@ -826,7 +844,7 @@ class SchemaIndexerService:
             """
             columns = await self._execute_postgres_simple_query(
                 matview_query,
-                ["name", "type", "nullable", "default"],
+                ["name", "type", "nullable", "default", "comment"],
                 host,
                 port,
                 user,
@@ -834,6 +852,11 @@ class SchemaIndexerService:
                 database,
                 container,
             )
+
+        # Clean up null comment values
+        for col in columns:
+            if col.get("comment") == "\\N" or not col.get("comment"):
+                col["comment"] = None
 
         return columns
 
@@ -967,6 +990,46 @@ class SchemaIndexerService:
             for r in results
         ]
 
+    async def _get_postgres_check_constraints(
+        self,
+        schema: str,
+        table_name: str,
+        host: str,
+        port: int,
+        user: str,
+        password: str,
+        database: str,
+        container: str,
+    ) -> List[dict]:
+        """Get check constraints for a PostgreSQL table."""
+        query = f"""
+        SELECT
+            cc.constraint_name,
+            cc.check_clause
+        FROM information_schema.check_constraints cc
+        JOIN information_schema.table_constraints tc
+            ON cc.constraint_schema = tc.constraint_schema
+            AND cc.constraint_name = tc.constraint_name
+        WHERE tc.table_schema = '{schema}'
+            AND tc.table_name = '{table_name}'
+            AND tc.constraint_type = 'CHECK'
+            AND cc.check_clause NOT LIKE '%IS NOT NULL%'
+        """
+        results = await self._execute_postgres_simple_query(
+            query,
+            ["name", "definition"],
+            host,
+            port,
+            user,
+            password,
+            database,
+            container,
+        )
+        return [
+            {"name": r["name"], "definition": r["definition"]}
+            for r in results
+        ]
+
     async def _execute_postgres_simple_query(
         self,
         query: str,
@@ -1095,18 +1158,28 @@ class SchemaIndexerService:
                         s.name AS table_schema,
                         t.name AS table_name,
                         CASE WHEN t.type = 'V' THEN 'VIEW' ELSE 'TABLE' END AS table_type,
-                        p.rows AS row_estimate
+                        p.rows AS row_estimate,
+                        ep.value AS table_comment
                     FROM sys.tables t
                     INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
                     LEFT JOIN sys.partitions p ON t.object_id = p.object_id AND p.index_id IN (0, 1)
+                    LEFT JOIN sys.extended_properties ep
+                        ON ep.major_id = t.object_id
+                        AND ep.minor_id = 0
+                        AND ep.name = 'MS_Description'
                     UNION ALL
                     SELECT
                         s.name AS table_schema,
                         v.name AS table_name,
                         'VIEW' AS table_type,
-                        NULL AS row_estimate
+                        NULL AS row_estimate,
+                        ep.value AS table_comment
                     FROM sys.views v
                     INNER JOIN sys.schemas s ON v.schema_id = s.schema_id
+                    LEFT JOIN sys.extended_properties ep
+                        ON ep.major_id = v.object_id
+                        AND ep.minor_id = 0
+                        AND ep.name = 'MS_Description'
                     ORDER BY table_schema, table_name
                 """
                 )
@@ -1119,9 +1192,13 @@ class SchemaIndexerService:
                     table_name = row["table_name"]
                     table_type = row["table_type"]
                     row_estimate = row.get("row_estimate")
+                    table_comment = row.get("table_comment")
+                    # Cast extended property value if returned as bytes
+                    if isinstance(table_comment, bytes):
+                        table_comment = table_comment.decode("utf-8", errors="replace")
                     full_name = f"{schema}.{table_name}"
 
-                    # Get columns
+                    # Get columns with descriptions
                     cursor.execute(
                         f"""
                         SELECT
@@ -1134,22 +1211,32 @@ class SchemaIndexerService:
                                 ELSE ''
                             END AS data_type,
                             c.is_nullable,
-                            OBJECT_DEFINITION(c.default_object_id) AS column_default
+                            OBJECT_DEFINITION(c.default_object_id) AS column_default,
+                            ep.value AS column_description
                         FROM sys.columns c
                         INNER JOIN sys.types t ON c.user_type_id = t.user_type_id
+                        LEFT JOIN sys.extended_properties ep
+                            ON ep.major_id = c.object_id
+                            AND ep.minor_id = c.column_id
+                            AND ep.name = 'MS_Description'
                         WHERE c.object_id = OBJECT_ID('{schema}.{table_name}')
                         ORDER BY c.column_id
                     """
                     )
-                    columns = [
-                        {
-                            "name": c["column_name"],
-                            "type": c["data_type"],
-                            "nullable": c["is_nullable"],
-                            "default": c["column_default"],
-                        }
-                        for c in cursor.fetchall()
-                    ]
+                    columns = []
+                    for c in cursor.fetchall():
+                        col_desc = c.get("column_description")
+                        if isinstance(col_desc, bytes):
+                            col_desc = col_desc.decode("utf-8", errors="replace")
+                        columns.append(
+                            {
+                                "name": c["column_name"],
+                                "type": c["data_type"],
+                                "nullable": c["is_nullable"],
+                                "default": c["column_default"],
+                                "description": col_desc or None,
+                            }
+                        )
 
                     # Get primary key
                     cursor.execute(
@@ -1220,16 +1307,39 @@ class SchemaIndexerService:
                         for r in cursor.fetchall()
                     ]
 
+                    # Get check constraints
+                    cursor.execute(
+                        f"""
+                        SELECT
+                            cc.name AS constraint_name,
+                            cc.definition AS constraint_definition
+                        FROM sys.check_constraints cc
+                        WHERE cc.parent_object_id = OBJECT_ID('{schema}.{table_name}')
+                          AND cc.is_disabled = 0
+                    """
+                    )
+                    check_constraints = [
+                        {
+                            "name": r["constraint_name"],
+                            "definition": r["constraint_definition"],
+                        }
+                        for r in cursor.fetchall()
+                    ]
+
                     result_tables.append(
                         TableSchemaInfo(
                             table_schema=schema,
                             table_name=table_name,
                             full_name=full_name,
                             table_type=table_type,
+                            table_comment=(
+                                str(table_comment) if table_comment else None
+                            ),
                             columns=columns,
                             primary_key=pk,
                             foreign_keys=fks,
                             indexes=indexes,
+                            check_constraints=check_constraints,
                             row_count_estimate=(
                                 int(row_estimate) if row_estimate else None
                             ),
@@ -1315,7 +1425,8 @@ class SchemaIndexerService:
                         TABLE_SCHEMA AS table_schema,
                         TABLE_NAME AS table_name,
                         TABLE_TYPE AS table_type,
-                        TABLE_ROWS AS row_estimate
+                        TABLE_ROWS AS row_estimate,
+                        TABLE_COMMENT AS table_comment
                     FROM information_schema.TABLES
                     WHERE TABLE_SCHEMA = %s
                     ORDER BY TABLE_SCHEMA, TABLE_NAME
@@ -1331,6 +1442,10 @@ class SchemaIndexerService:
                     table_name = row["table_name"]
                     table_type_raw = row["table_type"]
                     row_estimate = row.get("row_estimate")
+                    table_comment = row.get("table_comment") or None
+                    # MySQL returns empty string for no comment
+                    if table_comment and not table_comment.strip():
+                        table_comment = None
                     full_name = f"{schema}.{table_name}"
 
                     # Normalize table type
@@ -1435,16 +1550,47 @@ class SchemaIndexerService:
                         for r in cursor.fetchall()
                     ]
 
+                    # Get check constraints (MySQL 8.0+)
+                    check_constraints: list[dict] = []
+                    try:
+                        cursor.execute(
+                            """
+                            SELECT
+                                tc.CONSTRAINT_NAME AS constraint_name,
+                                cc.CHECK_CLAUSE AS constraint_definition
+                            FROM information_schema.TABLE_CONSTRAINTS tc
+                            JOIN information_schema.CHECK_CONSTRAINTS cc
+                                ON tc.CONSTRAINT_SCHEMA = cc.CONSTRAINT_SCHEMA
+                                AND tc.CONSTRAINT_NAME = cc.CONSTRAINT_NAME
+                            WHERE tc.TABLE_SCHEMA = %s
+                              AND tc.TABLE_NAME = %s
+                              AND tc.CONSTRAINT_TYPE = 'CHECK'
+                            """,
+                            (schema, table_name),
+                        )
+                        check_constraints = [
+                            {
+                                "name": r["constraint_name"],
+                                "definition": r["constraint_definition"],
+                            }
+                            for r in cursor.fetchall()
+                        ]
+                    except Exception:
+                        # CHECK_CONSTRAINTS not available on MySQL < 8.0.16
+                        pass
+
                     result_tables.append(
                         TableSchemaInfo(
                             table_schema=schema,
                             table_name=table_name,
                             full_name=full_name,
                             table_type=table_type,
+                            table_comment=table_comment,
                             columns=columns,
                             primary_key=pk,
                             foreign_keys=fks,
                             indexes=indexes,
+                            check_constraints=check_constraints,
                             row_count_estimate=(
                                 int(row_estimate) if row_estimate else None
                             ),
