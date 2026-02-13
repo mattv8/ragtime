@@ -11,10 +11,9 @@ from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from ragtime.core.embedding_models import (
-    get_embedding_models,
-    get_model_dimensions_sync,
-)
+from ragtime.core.embedding_models import (get_embedding_models,
+                                           get_model_dimensions_sync)
+
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -1944,10 +1943,12 @@ class SchemaIndexJob(BaseModel):
     # Progress tracking
     total_tables: int = 0
     processed_tables: int = 0
+    introspected_tables: int = 0
     total_chunks: int = 0
     processed_chunks: int = 0
     error_message: Optional[str] = None
     cancel_requested: bool = False
+    status_detail: Optional[str] = None  # Runtime-only phase detail (not persisted)
 
     # Timing
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -1971,10 +1972,12 @@ class SchemaIndexJobResponse(BaseModel):
     progress_percent: float
     total_tables: int
     processed_tables: int
+    introspected_tables: int = 0
     total_chunks: int
     processed_chunks: int
     error_message: Optional[str] = None
     cancel_requested: bool = False
+    status_detail: Optional[str] = None
     # Timing
     created_at: datetime
     started_at: Optional[datetime] = None
@@ -2036,7 +2039,13 @@ class TableSchemaInfo(BaseModel):
         for col in self.columns:
             col_name = col.get("name", "")
             col_type = col.get("type", "")
-            nullable = "NULL" if col.get("nullable", True) else "NOT NULL"
+            # Normalize nullable: handles bool, "YES"/"NO", "t"/"f" from various DBs
+            raw_nullable = col.get("nullable", True)
+            if isinstance(raw_nullable, str):
+                is_nullable = raw_nullable.lower() in ("yes", "true", "t", "1")
+            else:
+                is_nullable = bool(raw_nullable)
+            nullable = "NULL" if is_nullable else "NOT NULL"
             default = col.get("default", "")
 
             col_line = f"  - {col_name}: {col_type} {nullable}"

@@ -1232,10 +1232,12 @@ export interface SchemaIndexJob {
   progress_percent: number;
   total_tables: number;
   processed_tables: number;
+  introspected_tables: number;
   total_chunks: number;
   processed_chunks: number;
   error_message: string | null;
   cancel_requested: boolean;
+  status_detail: string | null;
   created_at: string;
   started_at: string | null;
   completed_at: string | null;

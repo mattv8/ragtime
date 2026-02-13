@@ -238,25 +238,26 @@ function toUnifiedSchemaJob(job: SchemaIndexJob): UnifiedJob {
   } else if (job.status === 'indexing') {
     if (job.cancel_requested) {
       phase = 'Cancelling...';
-    } else if (job.total_tables === 0) {
-      phase = 'Introspecting schema...';
-      progress = 5;
+    } else if (job.total_tables === 0 && !job.status_detail) {
+      // Very early: haven't started introspection yet
+      phase = 'Connecting to database...';
+      progress = 2;
+    } else if (job.introspected_tables < job.total_tables || (job.total_tables > 0 && job.processed_tables === 0 && job.introspected_tables > 0 && job.introspected_tables < job.total_tables)) {
+      // Introspection phase: tables discovered but not all introspected yet
+      // Use status_detail for rich info, fallback to generic
+      if (job.status_detail) {
+        phase = job.status_detail;
+      } else {
+        phase = `Introspecting: ${job.introspected_tables}/${job.total_tables}`;
+      }
+      // Introspection is 0-30% of total progress
+      progress = job.total_tables > 0
+        ? Math.round((job.introspected_tables / job.total_tables) * 30)
+        : 5;
     } else if (job.processed_tables < job.total_tables) {
-      // Still processing tables
-      progress = Math.round((job.processed_tables / job.total_tables) * 70);
-      phase = `Reading tables: ${job.processed_tables}/${job.total_tables}`;
-    } else if (job.total_chunks === 0) {
-      // Tables done, chunking
-      phase = 'Chunking schema';
-      progress = 75;
-    } else if (job.processed_chunks === 0) {
-      // Chunks created, preparing to embed
-      phase = 'Preparing embeddings';
-      progress = 80;
-    } else if (job.processed_chunks < job.total_chunks) {
-      // Embedding in progress
-      progress = 80 + Math.round((job.processed_chunks / job.total_chunks) * 19);
-      phase = `Embedding: ${job.processed_chunks}/${job.total_chunks}`;
+      // Embedding phase: all tables introspected, now generating embeddings
+      progress = 30 + Math.round((job.processed_tables / job.total_tables) * 65);
+      phase = `Embedding: ${job.processed_tables}/${job.total_tables}`;
     } else {
       // All done, finalizing
       phase = 'Finalizing index';
@@ -620,14 +621,14 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
                               {job.type === 'schema' ? (
                                 // Schema jobs: show appropriate progress based on phase
                                 job.phase.startsWith('Embedding') ? (
-                                  <>{job.processedChunks.toLocaleString()}/{job.totalChunks.toLocaleString()} chunks</>
-                                ) : job.phase.startsWith('Reading') || job.phase === 'Introspecting schema...' ? (
                                   <>{job.processedTables}/{job.totalTables} tables</>
-                                ) : job.totalChunks > 0 ? (
-                                  <>{job.totalChunks.toLocaleString()} chunks</>
-                                ) : (
+                                ) : job.phase.startsWith('Introspecting') || job.phase.startsWith('Discovering') || job.phase.startsWith('Connecting') ? (
+                                  job.totalTables > 0
+                                    ? <>{job.totalTables} tables found</>
+                                    : null
+                                ) : job.totalTables > 0 ? (
                                   <>{job.processedTables}/{job.totalTables} tables</>
-                                )
+                                ) : null
                               ) : job.type === 'filesystem' ? (
                                 // Filesystem jobs: show appropriate progress based on phase
                                 job.phase.startsWith('Embedding') ? (

@@ -22,31 +22,22 @@ import json
 import subprocess
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
-from ragtime.core.ssh import (
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    ssh_tunnel_config_from_dict,
-)
-from ragtime.indexer.models import (
-    SchemaIndexConfig,
-    SchemaIndexJob,
-    SchemaIndexJobResponse,
-    SchemaIndexStatus,
-    TableSchemaInfo,
-)
+from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
+                              ssh_tunnel_config_from_dict)
+from ragtime.indexer.models import (SchemaIndexConfig, SchemaIndexJob,
+                                    SchemaIndexJobResponse, SchemaIndexStatus,
+                                    TableSchemaInfo)
 from ragtime.indexer.repository import repository
 from ragtime.indexer.utils import safe_tool_name
-from ragtime.indexer.vector_utils import (
-    SCHEMA_COLUMNS,
-    ensure_embedding_column,
-    ensure_pgvector_extension,
-    get_embeddings_model,
-    search_pgvector_embeddings,
-)
+from ragtime.indexer.vector_utils import (SCHEMA_COLUMNS,
+                                          ensure_embedding_column,
+                                          ensure_pgvector_extension,
+                                          get_embeddings_model,
+                                          search_pgvector_embeddings)
 
 logger = get_logger(__name__)
 
@@ -141,23 +132,7 @@ class SchemaIndexerService:
         """Get the current status of a schema indexing job."""
         # Check in-memory first
         if job_id in self._active_jobs:
-            job = self._active_jobs[job_id]
-            return SchemaIndexJobResponse(
-                id=job.id,
-                tool_config_id=job.tool_config_id,
-                status=job.status,
-                index_name=job.index_name,
-                progress_percent=job.progress_percent,
-                total_tables=job.total_tables,
-                processed_tables=job.processed_tables,
-                total_chunks=job.total_chunks,
-                processed_chunks=job.processed_chunks,
-                error_message=job.error_message,
-                cancel_requested=job.cancel_requested,
-                created_at=job.created_at,
-                started_at=job.started_at,
-                completed_at=job.completed_at,
-            )
+            return self.job_to_response(self._active_jobs[job_id])
 
         # Fall back to database
         return await self._get_job_from_db(job_id)
@@ -198,22 +173,7 @@ class SchemaIndexerService:
             )
             if prisma_job:
                 job = self._prisma_job_to_model(prisma_job)
-                return SchemaIndexJobResponse(
-                    id=job.id,
-                    tool_config_id=job.tool_config_id,
-                    status=job.status,
-                    index_name=job.index_name,
-                    progress_percent=job.progress_percent,
-                    total_tables=job.total_tables,
-                    processed_tables=job.processed_tables,
-                    total_chunks=job.total_chunks,
-                    processed_chunks=job.processed_chunks,
-                    error_message=job.error_message,
-                    cancel_requested=job.cancel_requested,
-                    created_at=job.created_at,
-                    started_at=job.started_at,
-                    completed_at=job.completed_at,
-                )
+                return self.job_to_response(job)
         except Exception as e:
             logger.warning(f"Error getting latest schema job: {e}")
 
@@ -318,45 +278,12 @@ class SchemaIndexerService:
             for db_job in db_jobs:
                 # Check if this job is still active in memory (fresher data)
                 if db_job.id in self._active_jobs:
-                    job = self._active_jobs[db_job.id]
-                    jobs.append(
-                        SchemaIndexJobResponse(
-                            id=job.id,
-                            tool_config_id=job.tool_config_id,
-                            status=job.status,
-                            index_name=job.index_name,
-                            progress_percent=job.progress_percent,
-                            total_tables=job.total_tables,
-                            processed_tables=job.processed_tables,
-                            total_chunks=job.total_chunks,
-                            processed_chunks=job.processed_chunks,
-                            error_message=job.error_message,
-                            cancel_requested=job.cancel_requested,
-                            created_at=job.created_at,
-                            started_at=job.started_at,
-                            completed_at=job.completed_at,
-                        )
-                    )
+                    jobs.append(self.job_to_response(self._active_jobs[db_job.id]))
                 else:
                     # Use database data - convert to model first
                     job = self._prisma_job_to_model(db_job)
                     jobs.append(
-                        SchemaIndexJobResponse(
-                            id=job.id,
-                            tool_config_id=job.tool_config_id,
-                            status=job.status,
-                            index_name=job.index_name,
-                            progress_percent=job.progress_percent,
-                            total_tables=job.total_tables,
-                            processed_tables=job.processed_tables,
-                            total_chunks=job.total_chunks,
-                            processed_chunks=job.processed_chunks,
-                            error_message=job.error_message,
-                            cancel_requested=False,  # Not tracked in DB
-                            created_at=job.created_at,
-                            started_at=job.started_at,
-                            completed_at=job.completed_at,
-                        )
+                        self.job_to_response(job, cancel_requested_override=False)
                     )
 
         except Exception as e:
@@ -566,8 +493,14 @@ class SchemaIndexerService:
                 return False, "Database does not exist. Check database name."
             return False, f"Connection test failed: {error_msg}"
 
+    # Type for optional progress callback: (total_discovered, introspected_count, current_table_name) -> Awaitable
+    IntrospectionCallback = Callable[[int, int, str], Awaitable[None]]
+
     async def introspect_schema(
-        self, tool_type: str, connection_config: dict
+        self,
+        tool_type: str,
+        connection_config: dict,
+        on_progress: "IntrospectionCallback | None" = None,
     ) -> List[TableSchemaInfo]:
         """
         Introspect database schema and return structured table information.
@@ -575,21 +508,25 @@ class SchemaIndexerService:
         Args:
             tool_type: Database type (postgres, mssql, mysql)
             connection_config: Database connection configuration
+            on_progress: Optional async callback(total, introspected, table_name)
+                         called after each table is introspected
 
         Returns:
             List of TableSchemaInfo objects for each table/view
         """
         if tool_type == DB_TYPE_POSTGRES:
-            return await self._introspect_postgres(connection_config)
+            return await self._introspect_postgres(connection_config, on_progress)
         elif tool_type == DB_TYPE_MSSQL:
-            return await self._introspect_mssql(connection_config)
+            return await self._introspect_mssql(connection_config, on_progress)
         elif tool_type == DB_TYPE_MYSQL:
-            return await self._introspect_mysql(connection_config)
+            return await self._introspect_mysql(connection_config, on_progress)
         else:
             raise ValueError(f"Unsupported database type: {tool_type}")
 
     async def _introspect_postgres(
-        self, connection_config: dict
+        self,
+        connection_config: dict,
+        on_progress: "IntrospectionCallback | None" = None,
     ) -> List[TableSchemaInfo]:
         """Introspect PostgreSQL database schema."""
         host = connection_config.get("host", "")
@@ -618,7 +555,7 @@ class SchemaIndexerService:
 
         try:
             return await self._introspect_postgres_impl(
-                host, port, user, password, database, container
+                host, port, user, password, database, container, on_progress
             )
         finally:
             if tunnel:
@@ -632,11 +569,15 @@ class SchemaIndexerService:
         password: str,
         database: str,
         container: str,
+        on_progress: "IntrospectionCallback | None" = None,
     ) -> List[TableSchemaInfo]:
-        """Internal PostgreSQL introspection (after tunnel setup)."""
+        """Internal PostgreSQL introspection (after tunnel setup).
 
-        # Build the introspection query
-        # This gets tables, columns, constraints in one query per table type
+        Discovers tables, regular views, and materialized views, then
+        introspects columns, constraints, and indexes for each one.
+        """
+
+        # Query tables and regular views from information_schema
         tables_query = """
         SELECT
             t.table_schema,
@@ -654,28 +595,68 @@ class SchemaIndexerService:
         ORDER BY t.table_schema, t.table_name
         """
 
-        tables = []
+        # Materialized views are NOT in information_schema.tables;
+        # they live in pg_class with relkind = 'm'.
+        matview_query = """
+        SELECT
+            n.nspname AS table_schema,
+            c.relname AS table_name,
+            'MATERIALIZED VIEW' AS table_type,
+            pg_catalog.obj_description(c.oid, 'pg_class') AS table_comment,
+            c.reltuples::bigint AS row_estimate
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relkind = 'm'
+          AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+        ORDER BY n.nspname, c.relname
+        """
+
+        tables: List[TableSchemaInfo] = []
 
         try:
-            # Execute tables query
+            # Discover all tables, views, and materialized views
             table_rows = await self._execute_postgres_query(
                 tables_query, host, port, user, password, database, container
             )
+            matview_rows = await self._execute_postgres_query(
+                matview_query, host, port, user, password, database, container
+            )
 
-            for row in table_rows:
+            # Combine and deduplicate (matviews won't overlap with info_schema)
+            all_rows = table_rows + matview_rows
+            total_discovered = len(all_rows)
+
+            logger.info(
+                f"Discovered {total_discovered} objects "
+                f"({len(table_rows)} tables/views, {len(matview_rows)} materialized views)"
+            )
+
+            # Report initial discovery count
+            if on_progress and total_discovered > 0:
+                await on_progress(total_discovered, 0, "")
+
+            for idx, row in enumerate(all_rows):
                 schema = row.get("table_schema", "public")
                 table_name = row.get("table_name", "")
-                table_type = row.get("table_type", "BASE TABLE")
+                table_type_raw = row.get("table_type", "BASE TABLE")
                 row_estimate = row.get("row_estimate")
 
                 full_name = f"{schema}.{table_name}"
 
-                # Get columns for this table
+                # Normalize table type for display
+                if "MATERIALIZED" in table_type_raw.upper():
+                    table_type = "MATERIALIZED VIEW"
+                elif "VIEW" in table_type_raw.upper():
+                    table_type = "VIEW"
+                else:
+                    table_type = "TABLE"
+
+                # Get columns for this table/view
                 columns = await self._get_postgres_columns(
                     schema, table_name, host, port, user, password, database, container
                 )
 
-                # Get primary key
+                # Get primary key (not applicable for views, but query is safe)
                 pk = await self._get_postgres_primary_key(
                     schema, table_name, host, port, user, password, database, container
                 )
@@ -685,7 +666,7 @@ class SchemaIndexerService:
                     schema, table_name, host, port, user, password, database, container
                 )
 
-                # Get indexes
+                # Get indexes (materialized views can have indexes)
                 indexes = await self._get_postgres_indexes(
                     schema, table_name, host, port, user, password, database, container
                 )
@@ -695,7 +676,7 @@ class SchemaIndexerService:
                         table_schema=schema,
                         table_name=table_name,
                         full_name=full_name,
-                        table_type="VIEW" if "VIEW" in table_type else "TABLE",
+                        table_type=table_type,
                         columns=columns,
                         primary_key=pk,
                         foreign_keys=fks,
@@ -704,7 +685,13 @@ class SchemaIndexerService:
                     )
                 )
 
-            logger.info(f"Introspected {len(tables)} tables/views from PostgreSQL")
+                # Report progress after each table
+                if on_progress:
+                    await on_progress(total_discovered, idx + 1, full_name)
+
+            logger.info(
+                f"Introspected {len(tables)} tables/views/materialized views from PostgreSQL"
+            )
             return tables
 
         except Exception as e:
@@ -803,14 +790,15 @@ class SchemaIndexerService:
         database: str,
         container: str,
     ) -> List[dict]:
-        """Get column information for a PostgreSQL table."""
+        """Get column information for a PostgreSQL table, view, or materialized view."""
+        # information_schema.columns works for tables and regular views
         query = f"""
         SELECT column_name, data_type, is_nullable, column_default
         FROM information_schema.columns
         WHERE table_schema = '{schema}' AND table_name = '{table_name}'
         ORDER BY ordinal_position
         """
-        return await self._execute_postgres_simple_query(
+        columns = await self._execute_postgres_simple_query(
             query,
             ["name", "type", "nullable", "default"],
             host,
@@ -820,6 +808,34 @@ class SchemaIndexerService:
             database,
             container,
         )
+
+        # Fallback for materialized views (not in information_schema)
+        if not columns:
+            matview_query = f"""
+            SELECT
+                a.attname AS column_name,
+                pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type,
+                CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END AS is_nullable,
+                pg_catalog.pg_get_expr(d.adbin, d.adrelid) AS column_default
+            FROM pg_attribute a
+            LEFT JOIN pg_attrdef d ON a.attrelid = d.adrelid AND a.attnum = d.adnum
+            WHERE a.attrelid = (quote_ident('{schema}') || '.' || quote_ident('{table_name}'))::regclass
+              AND a.attnum > 0
+              AND NOT a.attisdropped
+            ORDER BY a.attnum
+            """
+            columns = await self._execute_postgres_simple_query(
+                matview_query,
+                ["name", "type", "nullable", "default"],
+                host,
+                port,
+                user,
+                password,
+                database,
+                container,
+            )
+
+        return columns
 
     async def _get_postgres_primary_key(
         self,
@@ -1018,7 +1034,11 @@ class SchemaIndexerService:
 
         return rows
 
-    async def _introspect_mssql(self, connection_config: dict) -> List[TableSchemaInfo]:
+    async def _introspect_mssql(
+        self,
+        connection_config: dict,
+        on_progress: "IntrospectionCallback | None" = None,
+    ) -> List[TableSchemaInfo]:
         """Introspect MSSQL/SQL Server database schema."""
         try:
             import pymssql
@@ -1224,9 +1244,18 @@ class SchemaIndexerService:
 
         tables = await asyncio.to_thread(run_introspection)
         logger.info(f"Introspected {len(tables)} tables/views from MSSQL")
+
+        # Report final progress (MSSQL introspection runs synchronously in one batch)
+        if on_progress and tables:
+            await on_progress(len(tables), len(tables), tables[-1].full_name)
+
         return tables
 
-    async def _introspect_mysql(self, connection_config: dict) -> List[TableSchemaInfo]:
+    async def _introspect_mysql(
+        self,
+        connection_config: dict,
+        on_progress: "IntrospectionCallback | None" = None,
+    ) -> List[TableSchemaInfo]:
         """Introspect MySQL/MariaDB database schema."""
         try:
             import pymysql
@@ -1434,6 +1463,11 @@ class SchemaIndexerService:
 
         tables = await asyncio.to_thread(run_introspection)
         logger.info(f"Introspected {len(tables)} tables/views from MySQL/MariaDB")
+
+        # Report final progress (MySQL introspection runs synchronously in one batch)
+        if on_progress and tables:
+            await on_progress(len(tables), len(tables), tables[-1].full_name)
+
         return tables
 
     # =========================================================================
@@ -1523,9 +1557,28 @@ class SchemaIndexerService:
                     f"Updated embedding tracking: dim={embedding_dim}, hash={current_config_hash}"
                 )
 
-            # Introspect database schema
+            # Introspect database schema with progress reporting
             logger.info(f"Introspecting {tool_type} schema...")
-            tables = await self.introspect_schema(tool_type, connection_config)
+            job.status_detail = "Discovering tables..."
+
+            async def on_introspection_progress(
+                total: int, introspected: int, table_name: str
+            ):
+                job.total_tables = total
+                job.introspected_tables = introspected
+                if introspected == 0:
+                    job.status_detail = f"Discovered {total} tables, introspecting..."
+                elif introspected < total:
+                    job.status_detail = (
+                        f"Introspecting {introspected}/{total}: {table_name}"
+                    )
+                else:
+                    job.status_detail = f"Introspected {total} tables"
+                await self._update_job(job)
+
+            tables = await self.introspect_schema(
+                tool_type, connection_config, on_progress=on_introspection_progress
+            )
 
             if not tables:
                 job.status = SchemaIndexStatus.COMPLETED
@@ -1535,6 +1588,8 @@ class SchemaIndexerService:
                 return
 
             job.total_tables = len(tables)
+            job.introspected_tables = len(tables)
+            job.status_detail = None  # Clear detail for embedding phase
             await self._update_job(job)
 
             # Check for cancellation
@@ -1806,22 +1861,7 @@ class SchemaIndexerService:
             prisma_job = await db.schemaindexjob.find_unique(where={"id": job_id})
             if prisma_job:
                 job = self._prisma_job_to_model(prisma_job)
-                return SchemaIndexJobResponse(
-                    id=job.id,
-                    tool_config_id=job.tool_config_id,
-                    status=job.status,
-                    index_name=job.index_name,
-                    progress_percent=job.progress_percent,
-                    total_tables=job.total_tables,
-                    processed_tables=job.processed_tables,
-                    total_chunks=job.total_chunks,
-                    processed_chunks=job.processed_chunks,
-                    error_message=job.error_message,
-                    cancel_requested=job.cancel_requested,
-                    created_at=job.created_at,
-                    started_at=job.started_at,
-                    completed_at=job.completed_at,
-                )
+                return self.job_to_response(job)
         except Exception as e:
             logger.warning(f"Error getting job from db: {e}")
         return None
@@ -1841,6 +1881,34 @@ class SchemaIndexerService:
             created_at=prisma_job.createdAt,
             started_at=prisma_job.startedAt,
             completed_at=prisma_job.completedAt,
+        )
+
+    @staticmethod
+    def job_to_response(
+        job: SchemaIndexJob, cancel_requested_override: bool | None = None
+    ) -> SchemaIndexJobResponse:
+        """Convert a SchemaIndexJob to a SchemaIndexJobResponse."""
+        return SchemaIndexJobResponse(
+            id=job.id,
+            tool_config_id=job.tool_config_id,
+            status=job.status,
+            index_name=job.index_name,
+            progress_percent=job.progress_percent,
+            total_tables=job.total_tables,
+            processed_tables=job.processed_tables,
+            introspected_tables=job.introspected_tables,
+            total_chunks=job.total_chunks,
+            processed_chunks=job.processed_chunks,
+            error_message=job.error_message,
+            cancel_requested=(
+                cancel_requested_override
+                if cancel_requested_override is not None
+                else job.cancel_requested
+            ),
+            status_detail=job.status_detail,
+            created_at=job.created_at,
+            started_at=job.started_at,
+            completed_at=job.completed_at,
         )
 
 
