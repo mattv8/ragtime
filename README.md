@@ -203,9 +203,6 @@ FAISS indexes are loaded into memory at startup; pgvector indexes stay in Postgr
        # image: hub.docker.visnovsky.us/library/ragtime:legacy
        image: hub.docker.visnovsky.us/library/ragtime:main
        container_name: ragtime
-       # init: true provides tini for zombie reaping as a fallback
-       # (Dockerfile also includes tini in ENTRYPOINT)
-       init: true
        restart: unless-stopped
        ports:
          - "${PORT:-8000}:8000"
