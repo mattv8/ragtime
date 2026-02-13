@@ -222,6 +222,9 @@ class IndexerService:
         UPLOAD_TMP_DIR.mkdir(parents=True, exist_ok=True)
         # In-memory cache for active jobs (transient state during processing)
         self._active_jobs: Dict[str, IndexJob] = {}
+        # Strong references to background tasks so they are not garbage-collected.
+        # asyncio only keeps weak references to tasks created via create_task().
+        self._processing_tasks: Dict[str, asyncio.Task] = {}
         # Cancellation flags for cooperative cancellation
         self._cancellation_flags: Dict[str, bool] = {}
 
@@ -538,7 +541,9 @@ class IndexerService:
             if repo_dir.exists() and clone_complete_marker.exists():
                 # Clone completed previously, skip directly to indexing
                 logger.info(f"Found existing clone for job {job.id}, resuming indexing")
-                asyncio.create_task(self._process_git(job, skip_clone=True))
+                self._processing_tasks[job.id] = asyncio.create_task(
+                    self._process_git(job, skip_clone=True)
+                )
             else:
                 # Need to re-clone - clean up any partial clone first
                 if repo_dir.exists():
@@ -547,7 +552,9 @@ class IndexerService:
                     await asyncio.to_thread(
                         shutil.rmtree, temp_marker_dir, ignore_errors=True
                     )
-                asyncio.create_task(self._process_git(job))
+                self._processing_tasks[job.id] = asyncio.create_task(
+                    self._process_git(job)
+                )
         elif job.source_type == "upload":
             # Check if tmp file still exists
             tmp_path = UPLOAD_TMP_DIR / job.id
@@ -565,7 +572,7 @@ class IndexerService:
                         )
 
                     temp_dir = tmp_path  # Use tmp dir for extraction
-                    asyncio.create_task(
+                    self._processing_tasks[job.id] = asyncio.create_task(
                         self._process_upload(job, archive_path, temp_dir)
                     )
                     return
@@ -576,6 +583,7 @@ class IndexerService:
             job.completed_at = datetime.utcnow()
             await repository.update_job(job)
             self._active_jobs.pop(job.id, None)
+            self._processing_tasks.pop(job.id, None)
 
     async def _get_embeddings(self, app_settings: AppSettings):
         """Get the configured embedding model based on app settings."""
@@ -1747,14 +1755,17 @@ class IndexerService:
                 f"Saved upload to tmp directory for job {job_id}: {archive_path}"
             )
 
-            # Start processing in background
-            asyncio.create_task(self._process_upload(job, archive_path, tmp_dir))
+            # Start processing in background — hold strong reference to prevent GC
+            self._processing_tasks[job.id] = asyncio.create_task(
+                self._process_upload(job, archive_path, tmp_dir)
+            )
 
         except Exception as e:
             job.status = IndexStatus.FAILED
             job.error_message = str(e)
             await repository.update_job(job)
             self._active_jobs.pop(job_id, None)
+            self._processing_tasks.pop(job_id, None)
             if "tmp_dir" in locals():
                 await asyncio.to_thread(shutil.rmtree, tmp_dir, True)
             # Clean up optimistic metadata for failed new indexes
@@ -1820,8 +1831,10 @@ class IndexerService:
         # Update archive path for new location
         new_archive_path = new_tmp_dir / archive_path.name
 
-        # Start processing in background
-        asyncio.create_task(self._process_upload(job, new_archive_path, new_tmp_dir))
+        # Start processing in background — hold strong reference to prevent GC
+        self._processing_tasks[job.id] = asyncio.create_task(
+            self._process_upload(job, new_archive_path, new_tmp_dir)
+        )
 
         return job
 
@@ -1860,8 +1873,8 @@ class IndexerService:
         # Cache for active processing
         self._active_jobs[job_id] = job
 
-        # Start processing in background
-        asyncio.create_task(self._process_git(job))
+        # Start processing in background — hold strong reference to prevent GC
+        self._processing_tasks[job.id] = asyncio.create_task(self._process_git(job))
 
         return job
 
@@ -1920,6 +1933,7 @@ class IndexerService:
                 await asyncio.to_thread(shutil.rmtree, temp_dir, True)
             self._cancellation_flags.pop(job.id, None)
             self._active_jobs.pop(job.id, None)
+            self._processing_tasks.pop(job.id, None)
 
             # Update job status - gracefully handle database disconnection
             try:
@@ -2037,6 +2051,7 @@ class IndexerService:
                 )
             self._cancellation_flags.pop(job.id, None)
             self._active_jobs.pop(job.id, None)
+            self._processing_tasks.pop(job.id, None)
 
             # Update job status - gracefully handle database disconnection
             try:

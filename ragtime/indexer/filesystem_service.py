@@ -2047,8 +2047,10 @@ class FilesystemIndexerService:
 
         self._analysis_jobs[job.id] = job
 
-        # Start analysis in background
-        asyncio.create_task(self._run_analysis(job, config))
+        # Start analysis in background — hold strong reference to prevent GC
+        self._running_tasks[job.id] = asyncio.create_task(
+            self._run_analysis(job, config)
+        )
 
         return job
 
@@ -2360,6 +2362,8 @@ class FilesystemIndexerService:
             job.status = FilesystemAnalysisStatus.FAILED
             job.error_message = str(e)
             job.completed_at = datetime.now(timezone.utc)
+        finally:
+            self._running_tasks.pop(job.id, None)
 
     async def delete_index(
         self,

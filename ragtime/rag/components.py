@@ -527,6 +527,7 @@ class RAGComponents:
             {}
         )  # name -> {status, size_mb, chunk_count, load_time, error}
         self._loading_index: Optional[str] = None  # Currently loading index name
+        self._faiss_loading_task: Optional[asyncio.Task] = None  # prevent GC
         # Token optimization settings
         self._scratchpad_window_size: int = 6  # Default, updated from settings
 
@@ -708,8 +709,10 @@ class RAGComponents:
             f"RAG core initialized in {core_time:.1f}s - API ready (indexes loading in background)"
         )
 
-        # Start background FAISS loading
-        asyncio.create_task(self._load_faiss_indexes_background())
+        # Start background FAISS loading — hold strong reference to prevent GC
+        self._faiss_loading_task = asyncio.create_task(
+            self._load_faiss_indexes_background()
+        )
 
     async def _load_faiss_indexes_background(self):
         """Load FAISS indexes in background.

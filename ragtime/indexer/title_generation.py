@@ -134,6 +134,10 @@ async def update_conversation_title_from_question(
         logger.warning("Could not update conversation title: %s", exc)
 
 
+# Strong references for fire-and-forget tasks so they are not garbage-collected.
+_background_tasks: set[asyncio.Task] = set()
+
+
 def schedule_title_generation(conversation_id: str, user_message: str) -> None:
     """Fire-and-forget task to generate a chat title."""
 
@@ -145,4 +149,6 @@ def schedule_title_generation(conversation_id: str, user_message: str) -> None:
                 "Title generation task failed for %s: %s", conversation_id, exc
             )
 
-    asyncio.create_task(_runner())
+    task = asyncio.create_task(_runner())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)

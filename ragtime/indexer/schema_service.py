@@ -70,6 +70,9 @@ class SchemaIndexerService:
 
     def __init__(self):
         self._active_jobs: Dict[str, SchemaIndexJob] = {}
+        self._active_tasks: Dict[str, asyncio.Task] = (
+            {}
+        )  # prevent GC of fire-and-forget tasks
         self._cancellation_flags: Dict[str, bool] = {}  # job_id -> should_cancel
 
     # =========================================================================
@@ -124,10 +127,12 @@ class SchemaIndexerService:
         self._active_jobs[job_id] = job
         self._cancellation_flags[job_id] = False
 
-        # Start background processing
-        asyncio.create_task(
+        # Start background processing — hold a strong reference so the task
+        # is not garbage-collected before completion (asyncio keeps only weak refs).
+        task = asyncio.create_task(
             self._process_index(job, tool_type, connection_config, full_reindex)
         )
+        self._active_tasks[job_id] = task
 
         logger.info(f"Started schema indexing job {job_id} for tool {tool_config_id}")
         return job
@@ -1634,6 +1639,7 @@ class SchemaIndexerService:
         finally:
             # Clean up in-memory tracking
             self._active_jobs.pop(job.id, None)
+            self._active_tasks.pop(job.id, None)
             self._cancellation_flags.pop(job.id, None)
 
     async def _get_embeddings(self, settings):

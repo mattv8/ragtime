@@ -117,6 +117,7 @@ class BackgroundTaskService:
     def __init__(self):
         self._running_tasks: Dict[str, asyncio.Task] = {}
         self._shutdown = False
+        self._cleanup_task: Optional[asyncio.Task] = None
         self._filesystem_scheduler_task: Optional[asyncio.Task] = None
         self._schema_scheduler_task: Optional[asyncio.Task] = None
         self._git_scheduler_task: Optional[asyncio.Task] = None
@@ -128,7 +129,7 @@ class BackgroundTaskService:
         # Resume any pending/running tasks from previous session
         await self._resume_stale_tasks()
         # Start cleanup task
-        asyncio.create_task(self._cleanup_loop())
+        self._cleanup_task = asyncio.create_task(self._cleanup_loop())
         # Start filesystem re-indexing scheduler
         self._filesystem_scheduler_task = asyncio.create_task(
             self._filesystem_reindex_scheduler()
@@ -144,6 +145,14 @@ class BackgroundTaskService:
         """Stop the background task service."""
         logger.info("Background task service stopping")
         self._shutdown = True
+
+        # Cancel cleanup task
+        if self._cleanup_task and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
 
         # Cancel filesystem scheduler
         if (
