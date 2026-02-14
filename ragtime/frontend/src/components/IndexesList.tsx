@@ -508,14 +508,24 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
           )}
 
           {indexes.map((idx) => {
+            const indexJobs = jobs.filter(j => j.name === idx.name);
+            const latestJob = indexJobs.reduce((latest, current) => {
+              if (!latest) return current;
+              return new Date(current.created_at).getTime() > new Date(latest.created_at).getTime()
+                ? current
+                : latest;
+            }, indexJobs[0]);
+
             // Check if there's an active indexing job for this index
-            const activeJob = jobs.find(j => j.name === idx.name && (j.status === 'pending' || j.status === 'processing'));
+            const activeJob = indexJobs.find(j => j.status === 'pending' || j.status === 'processing');
             // Check if this is an optimistic index (0 documents = not yet indexed or re-index in progress)
             const isOptimistic = idx.document_count === 0;
-            // Check if this is a failed/interrupted index (0 documents, no active job)
-            // Also check if the index has a failed/interrupted job in the jobs list
-            const failedJob = jobs?.find(j => j.name === idx.name && (j.status === 'failed' || j.status === 'interrupted'));
-            const isFailedOrInterrupted = (isOptimistic && !activeJob) || (!activeJob && failedJob !== undefined);
+            // Only show incomplete if the latest job failed/interrupted and no job is active.
+            // This prevents stale old failures from marking cards incomplete after a successful run.
+            const latestFailedOrInterrupted = latestJob
+              ? (latestJob.status === 'failed' || latestJob.status === 'interrupted')
+              : false;
+            const isFailedOrInterrupted = !activeJob && (latestFailedOrInterrupted || (isOptimistic && indexJobs.length === 0));
 
             // Check if this index has a load error
             const loadError = getIndexLoadError(idx.name);

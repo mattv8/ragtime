@@ -1,1 +1,1 @@
-export { formatSizeMB, formatBytes } from './format';
+export { formatSizeMB, formatBytes, formatElapsedTime } from './format';

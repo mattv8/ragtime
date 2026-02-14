@@ -43,3 +43,31 @@ export function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
   return `${(bytes / (1024 * 1024 * 1024 * 1024)).toFixed(2)} TB`;
 }
+
+/**
+ * Formats elapsed time from milliseconds into compact human-readable units.
+ *
+ * Format rules:
+ * - < 60s: "45s"
+ * - < 1h: "3m 12s"
+ * - >= 1h: "1h 3m 12s"
+ *
+ * @param milliseconds - Elapsed duration in milliseconds
+ * @returns Formatted elapsed time string
+ */
+export function formatElapsedTime(milliseconds: number): string {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m ${seconds}s`;
+  }
+
+  return `${minutes}m ${seconds}s`;
+}

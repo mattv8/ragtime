@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Copy, Check, ArrowUp, ArrowDown, Search } from 'lucide-react';
 import { api } from '@/api';
+import { formatElapsedTime } from '@/utils';
 import type { IndexJob, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob } from '@/types';
 
 interface JobsTableProps {
@@ -33,6 +34,7 @@ type UnifiedJob = {
   processedChunks: number;
   errorMessage: string | null;
   createdAt: string;
+  startedAt: string | null;
   completedAt: string | null;
   phase: string;
   cancelRequested?: boolean;
@@ -126,6 +128,7 @@ function toUnifiedJob(job: IndexJob): UnifiedJob {
     processedChunks: job.processed_chunks,
     errorMessage: job.error_message,
     createdAt: job.created_at,
+    startedAt: job.started_at,
     completedAt: job.completed_at,
     phase: getProcessingPhase(job),
   };
@@ -209,6 +212,7 @@ function toUnifiedFilesystemJob(job: FilesystemIndexJob): UnifiedJob {
     processedChunks: job.processed_chunks,
     errorMessage: job.error_message,
     createdAt: job.created_at,
+    startedAt: job.started_at,
     completedAt: job.completed_at,
       phase,
     filesScanned: job.files_scanned,
@@ -278,6 +282,7 @@ function toUnifiedSchemaJob(job: SchemaIndexJob): UnifiedJob {
     processedChunks: job.processed_chunks,
     errorMessage: job.error_message,
     createdAt: job.created_at,
+    startedAt: job.started_at,
     completedAt: job.completed_at,
     phase,
     toolConfigId: job.tool_config_id,
@@ -333,6 +338,7 @@ function toUnifiedPdmJob(job: PdmIndexJob): UnifiedJob {
     processedChunks: job.processed_chunks,
     errorMessage: job.error_message,
     createdAt: job.created_at,
+    startedAt: job.started_at,
     completedAt: job.completed_at,
     phase,
     toolConfigId: job.tool_config_id,
@@ -341,6 +347,21 @@ function toUnifiedPdmJob(job: PdmIndexJob): UnifiedJob {
     processedDocuments: job.processed_documents,
     skippedDocuments: job.skipped_documents,
   };
+}
+
+function getElapsedDuration(job: UnifiedJob, nowMs: number): string {
+  const startTimestamp = job.startedAt ?? job.createdAt;
+  const startMs = new Date(startTimestamp).getTime();
+  if (Number.isNaN(startMs)) {
+    return '-';
+  }
+
+  const endMs = job.completedAt ? new Date(job.completedAt).getTime() : nowMs;
+  if (Number.isNaN(endMs)) {
+    return '-';
+  }
+
+  return formatElapsedTime(Math.max(0, endMs - startMs));
 }
 
 export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs = [], loading, error, onJobsChanged, onFilesystemJobsChanged, onSchemaJobsChanged, onPdmJobsChanged, onCancelFilesystemJob, onCancelSchemaJob, onCancelPdmJob }: JobsTableProps) {
@@ -353,6 +374,7 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
   const [cancelConfirmId, setCancelConfirmId] = useState<string | null>(null);
   const [retryConfirmId, setRetryConfirmId] = useState<string | null>(null);
   const [copiedErrorId, setCopiedErrorId] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const handleSort = (key: keyof UnifiedJob) => {
     if (sortConfig && sortConfig.key === key) {
@@ -495,6 +517,16 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
     j.status === 'pending' || j.status === 'processing' || j.status === 'indexing'
   );
 
+  useEffect(() => {
+    if (!hasActiveJobs) return;
+
+    const timerId = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+
+    return () => window.clearInterval(timerId);
+  }, [hasActiveJobs]);
+
   return (
     <div className="card">
       <div className="section-header">
@@ -565,6 +597,9 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
                       {sortConfig?.key === 'completedAt' && (sortConfig.direction === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />)}
                     </div>
                   </th>
+                  <th>
+                    Elapsed
+                  </th>
                   <th onClick={() => handleSort('progress')} style={{ cursor: 'pointer' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                       Progress
@@ -594,6 +629,7 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
                     <td data-label="Name" title={job.name}>{job.name}</td>
                     <td data-label="Created">{formatDate(job.createdAt)}</td>
                     <td data-label="Completed">{job.completedAt ? formatDate(job.completedAt) : '-'}</td>
+                    <td data-label="Elapsed">{getElapsedDuration(job, nowMs)}</td>
                     <td data-label="Progress" className="progress-cell">
                       {job.status === 'failed' ? (
                         job.errorMessage ? (
