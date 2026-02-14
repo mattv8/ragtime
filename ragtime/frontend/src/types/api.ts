@@ -847,6 +847,7 @@ export interface ToolConfig {
   connection_config: ConnectionConfig;
   max_results: number;
   timeout: number;
+  timeout_max_seconds: number;
   allow_write: boolean;
   disabled_reason?: string;
   last_test_at: string | null;
@@ -863,6 +864,7 @@ export interface CreateToolConfigRequest {
   connection_config: ConnectionConfig;
   max_results?: number;
   timeout?: number;
+  timeout_max_seconds?: number;
   allow_write?: boolean;
 }
 
@@ -873,6 +875,7 @@ export interface UpdateToolConfigRequest {
   connection_config?: ConnectionConfig;
   max_results?: number;
   timeout?: number;
+  timeout_max_seconds?: number;
   allow_write?: boolean;
 }
 

@@ -74,6 +74,17 @@ logger = get_logger(__name__)
 # AI can request up to this limit; configured per-tool timeout is the default
 MAX_TOOL_TIMEOUT_SECONDS = 300
 
+
+def resolve_effective_timeout(requested_timeout: int, timeout_max_seconds: int) -> int:
+    """Resolve runtime timeout using per-tool max (0 = unlimited)."""
+    requested = max(0, int(requested_timeout))
+    max_timeout = max(0, int(timeout_max_seconds))
+
+    if max_timeout == 0:
+        return requested
+    return min(requested, max_timeout)
+
+
 # =============================================================================
 # TOKEN OPTIMIZATION UTILITIES
 # =============================================================================
@@ -2492,6 +2503,9 @@ class RAGComponents:
         """Create a PostgreSQL query tool from config."""
         conn_config = config.get("connection_config", {})
         timeout = config.get("timeout", 30)
+        timeout_max_seconds = int(
+            config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0
+        )
         allow_write = config.get("allow_write", False)
         description = config.get("description", "")
 
@@ -2516,9 +2530,13 @@ class RAGComponents:
         # Add timeout field dynamically to avoid scope issues
         PostgresInput.model_fields["timeout"] = Field(
             default=_default_timeout,
-            ge=5,
-            le=MAX_TOOL_TIMEOUT_SECONDS,
-            description=f"Query timeout in seconds (default: {_default_timeout}, max: {MAX_TOOL_TIMEOUT_SECONDS}). Use higher values for complex queries, large result sets, or slow connections.",
+            ge=0,
+            le=86400,
+            description=(
+                f"Query timeout in seconds (default: {_default_timeout}, "
+                f"max: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). "
+                "Use 0 for no timeout."
+            ),
         )
         PostgresInput.model_rebuild()
 
@@ -2534,8 +2552,8 @@ class RAGComponents:
 
             logger.info(f"[{tool_name}] Query: {reason}")
 
-            # Use AI-provided timeout, capped at maximum
-            effective_timeout = min(timeout, MAX_TOOL_TIMEOUT_SECONDS)
+            effective_timeout = resolve_effective_timeout(timeout, timeout_max_seconds)
+            db_connect_timeout = effective_timeout if effective_timeout > 0 else 30
 
             # Validate query
             is_safe, validation_reason = validate_sql_query(
@@ -2580,7 +2598,7 @@ class RAGComponents:
                             user=user,
                             password=password,
                             dbname=database,
-                            connect_timeout=effective_timeout,
+                            connect_timeout=db_connect_timeout,
                         )
                         cursor = conn.cursor(
                             cursor_factory=psycopg2.extras.RealDictCursor
@@ -2627,11 +2645,15 @@ class RAGComponents:
                                 pass
 
                 try:
-                    return await asyncio.wait_for(
-                        asyncio.get_event_loop().run_in_executor(
-                            None, run_tunnel_query
-                        ),
-                        timeout=effective_timeout + 5,
+                    if effective_timeout > 0:
+                        return await asyncio.wait_for(
+                            asyncio.get_event_loop().run_in_executor(
+                                None, run_tunnel_query
+                            ),
+                            timeout=effective_timeout + 5,
+                        )
+                    return await asyncio.get_event_loop().run_in_executor(
+                        None, run_tunnel_query
                     )
                 except asyncio.TimeoutError:
                     return f"Error: Query timed out after {effective_timeout}s"
@@ -2668,12 +2690,23 @@ class RAGComponents:
                 return "Error: No connection configured"
 
             try:
-                process = await asyncio.wait_for(
-                    asyncio.create_subprocess_exec(
-                        *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
-                    ),
-                    timeout=effective_timeout,
-                )
+                if effective_timeout > 0:
+                    process = await asyncio.wait_for(
+                        asyncio.create_subprocess_exec(
+                            *cmd,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            env=env,
+                        ),
+                        timeout=effective_timeout,
+                    )
+                else:
+                    process = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        env=env,
+                    )
                 stdout, stderr = await process.communicate()
 
                 if process.returncode != 0:
@@ -2726,6 +2759,9 @@ class RAGComponents:
 
         conn_config = config.get("connection_config", {})
         timeout = config.get("timeout", 30)
+        timeout_max_seconds = int(
+            config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0
+        )
         max_results = config.get("max_results", 100)
         allow_write = config.get("allow_write", False)
         description = config.get("description", "")
@@ -2750,6 +2786,7 @@ class RAGComponents:
             password=password,
             database=database,
             timeout=timeout,
+            timeout_max_seconds=timeout_max_seconds,
             max_results=max_results,
             allow_write=allow_write,
             description=description,
@@ -2768,6 +2805,9 @@ class RAGComponents:
 
         conn_config = config.get("connection_config", {})
         timeout = config.get("timeout", 30)
+        timeout_max_seconds = int(
+            config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0
+        )
         max_results = config.get("max_results", 100)
         allow_write = config.get("allow_write", False)
         description = config.get("description", "")
@@ -2792,6 +2832,7 @@ class RAGComponents:
             password=password,
             database=database,
             timeout=timeout,
+            timeout_max_seconds=timeout_max_seconds,
             max_results=max_results,
             allow_write=allow_write,
             description=description,
@@ -2803,6 +2844,9 @@ class RAGComponents:
         """Create an Odoo shell tool from config (Docker or SSH mode)."""
         conn_config = config.get("connection_config", {})
         timeout = config.get("timeout", 60)  # Odoo shell needs more time to initialize
+        timeout_max_seconds = int(
+            config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0
+        )
         allow_write = config.get("allow_write", False)
         description = config.get("description", "")
         mode = conn_config.get("mode", "docker")  # docker or ssh
@@ -2822,9 +2866,13 @@ class RAGComponents:
         # Add timeout field dynamically to avoid scope issues
         OdooInput.model_fields["timeout"] = Field(
             default=_default_timeout,
-            ge=10,
-            le=MAX_TOOL_TIMEOUT_SECONDS,
-            description=f"Execution timeout in seconds (default: {_default_timeout}, max: {MAX_TOOL_TIMEOUT_SECONDS}). Odoo shell has initialization overhead; use higher values for complex queries.",
+            ge=0,
+            le=86400,
+            description=(
+                f"Execution timeout in seconds (default: {_default_timeout}, "
+                f"max: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). "
+                "Use 0 for no timeout."
+            ),
         )
         OdooInput.model_rebuild()
 
@@ -2859,8 +2907,7 @@ class RAGComponents:
 
             logger.info(f"[{tool_name}] Odoo ({mode}): {reason}")
 
-            # Use AI-provided timeout, capped at maximum
-            effective_timeout = min(timeout, MAX_TOOL_TIMEOUT_SECONDS)
+            effective_timeout = resolve_effective_timeout(timeout, timeout_max_seconds)
 
             # Validate code
             is_safe, validation_reason = validate_odoo_code(
@@ -2886,15 +2933,23 @@ except Exception as e:
             async def _run_with_cmd(cmd: list) -> str:
                 """Execute command and return filtered output."""
                 try:
-                    process = await asyncio.wait_for(
-                        asyncio.create_subprocess_exec(
+                    if effective_timeout > 0:
+                        process = await asyncio.wait_for(
+                            asyncio.create_subprocess_exec(
+                                *cmd,
+                                stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT,  # Merge stderr into stdout
+                            ),
+                            timeout=effective_timeout,
+                        )
+                    else:
+                        process = await asyncio.create_subprocess_exec(
                             *cmd,
                             stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT,  # Merge stderr into stdout
-                        ),
-                        timeout=effective_timeout,
-                    )
+                        )
                     stdout, _ = await process.communicate(input=full_input.encode())
                     output = stdout.decode("utf-8", errors="replace")
 
@@ -2929,7 +2984,7 @@ except Exception as e:
                     key_path=conn_config.get("ssh_key_path"),
                     key_content=conn_config.get("ssh_key_content"),
                     key_passphrase=conn_config.get("ssh_key_passphrase"),
-                    timeout=effective_timeout,
+                    timeout=effective_timeout if effective_timeout > 0 else 3600,
                 )
 
                 # Build remote Odoo shell command
@@ -2996,6 +3051,9 @@ except Exception as e:
         """Create an SSH shell tool from config."""
         conn_config = config.get("connection_config", {})
         timeout = config.get("timeout", 30)
+        timeout_max_seconds = int(
+            config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0
+        )
         allow_write = config.get("allow_write", False)
         description = config.get("description", "")
         working_directory = conn_config.get("working_directory", "")
@@ -3014,9 +3072,13 @@ except Exception as e:
         # Add timeout field dynamically to avoid scope issues
         SSHInput.model_fields["timeout"] = Field(
             default=_default_timeout,
-            ge=5,
-            le=MAX_TOOL_TIMEOUT_SECONDS,
-            description=f"Command timeout in seconds (default: {_default_timeout}, max: {MAX_TOOL_TIMEOUT_SECONDS}). Use higher values for long-running operations like backups, large file transfers, or data exports.",
+            ge=0,
+            le=86400,
+            description=(
+                f"Command timeout in seconds (default: {_default_timeout}, "
+                f"max: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). "
+                "Use 0 for no timeout."
+            ),
         )
         SSHInput.model_rebuild()
 
@@ -3045,8 +3107,7 @@ except Exception as e:
             if not host or not user:
                 return "Error: Host and user are required"
 
-            # Use AI-provided timeout, capped at maximum
-            effective_timeout = min(timeout, MAX_TOOL_TIMEOUT_SECONDS)
+            effective_timeout = resolve_effective_timeout(timeout, timeout_max_seconds)
 
             # Build SSH config for potential env var expansion
             ssh_config = SSHConfig(
@@ -3057,7 +3118,7 @@ except Exception as e:
                 key_path=key_path,
                 key_content=key_content,
                 key_passphrase=key_passphrase,
-                timeout=effective_timeout,
+                timeout=effective_timeout if effective_timeout > 0 else 3600,
             )
 
             # If working_directory is set, expand env vars for path validation

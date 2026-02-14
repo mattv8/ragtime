@@ -3,7 +3,6 @@ Indexer data models and schemas.
 """
 
 
-
 import hashlib
 import json
 from datetime import datetime
@@ -12,8 +11,10 @@ from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from ragtime.core.embedding_models import (get_embedding_models,
-                                           get_model_dimensions_sync)
+from ragtime.core.embedding_models import (
+    get_embedding_models,
+    get_model_dimensions_sync,
+)
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -1462,7 +1463,18 @@ class ToolConfig(BaseModel):
     max_results: int = Field(
         default=100, ge=1, le=1000, description="Maximum results per query"
     )
-    timeout: int = Field(default=30, ge=1, le=300, description="Timeout in seconds")
+    timeout: int = Field(
+        default=30,
+        ge=0,
+        le=86400,
+        description="Default timeout in seconds (0 = no timeout)",
+    )
+    timeout_max_seconds: int = Field(
+        default=300,
+        ge=0,
+        le=86400,
+        description="Maximum timeout user/agent can choose (0 = unlimited)",
+    )
     allow_write: bool = Field(default=False, description="Allow write operations")
 
     # Transient runtime status (not persisted)
@@ -1487,7 +1499,8 @@ class CreateToolConfigRequest(BaseModel):
     description: str = Field(default="", description="Description for RAG context")
     connection_config: dict = Field(description="Connection configuration")
     max_results: int = Field(default=100, ge=1, le=1000)
-    timeout: int = Field(default=30, ge=1, le=300)
+    timeout: int = Field(default=30, ge=0, le=86400)
+    timeout_max_seconds: int = Field(default=300, ge=0, le=86400)
     allow_write: bool = Field(default=False)
 
 
@@ -1499,7 +1512,8 @@ class UpdateToolConfigRequest(BaseModel):
     description: Optional[str] = None
     connection_config: Optional[dict] = None
     max_results: Optional[int] = Field(default=None, ge=1, le=1000)
-    timeout: Optional[int] = Field(default=None, ge=1, le=300)
+    timeout: Optional[int] = Field(default=None, ge=0, le=86400)
+    timeout_max_seconds: Optional[int] = Field(default=None, ge=0, le=86400)
     allow_write: Optional[bool] = None
 
 

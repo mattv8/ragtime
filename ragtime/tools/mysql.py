@@ -29,7 +29,19 @@ logger = get_logger(__name__)
 MAX_TOOL_TIMEOUT_SECONDS = 300
 
 
-def create_mysql_query_input(default_timeout: int) -> type[BaseModel]:
+def resolve_effective_timeout(requested_timeout: int, timeout_max_seconds: int) -> int:
+    """Resolve runtime timeout using per-tool max (0 = unlimited)."""
+    requested = max(0, int(requested_timeout))
+    max_timeout = max(0, int(timeout_max_seconds))
+
+    if max_timeout == 0:
+        return requested
+    return min(requested, max_timeout)
+
+
+def create_mysql_query_input(
+    default_timeout: int, timeout_max_seconds: int
+) -> type[BaseModel]:
     """Create MysqlQueryInput with dynamic default timeout."""
 
     class MysqlQueryInput(BaseModel):
@@ -49,9 +61,13 @@ def create_mysql_query_input(default_timeout: int) -> type[BaseModel]:
         )
         timeout: int = Field(
             default=default_timeout,
-            ge=5,
-            le=MAX_TOOL_TIMEOUT_SECONDS,
-            description=f"Query timeout in seconds (default: {default_timeout}, max: {MAX_TOOL_TIMEOUT_SECONDS}). Use higher values for complex queries or large result sets.",
+            ge=0,
+            le=max(timeout_max_seconds, MAX_TOOL_TIMEOUT_SECONDS),
+            description=(
+                f"Query timeout in seconds (default: {default_timeout}, "
+                f"max: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). "
+                "Use 0 for no timeout."
+            ),
         )
 
         model_config = {"populate_by_name": True}
@@ -77,9 +93,9 @@ class MysqlQueryInput(BaseModel):
     )
     timeout: int = Field(
         default=30,
-        ge=5,
+        ge=0,
         le=MAX_TOOL_TIMEOUT_SECONDS,
-        description=f"Query timeout in seconds (default: 30, max: {MAX_TOOL_TIMEOUT_SECONDS}). Use higher values for complex queries or large result sets.",
+        description=f"Query timeout in seconds (default: 30, max: {MAX_TOOL_TIMEOUT_SECONDS}). Use 0 for no timeout.",
     )
 
     model_config = {"populate_by_name": True}
@@ -233,10 +249,14 @@ async def execute_mysql_query_async(
                     pass
 
     try:
-        result = await asyncio.wait_for(
-            asyncio.get_event_loop().run_in_executor(None, run_query),
-            timeout=timeout + 5,  # Allow extra time for connection
-        )
+        if timeout > 0:
+            result = await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(None, run_query),
+                timeout=timeout + 5,  # Allow extra time for connection
+            )
+            return result
+
+        result = await asyncio.get_event_loop().run_in_executor(None, run_query)
         return result
 
     except asyncio.TimeoutError:
@@ -252,6 +272,7 @@ def create_mysql_tool(
     password: str,
     database: str,
     timeout: int = 30,
+    timeout_max_seconds: int = MAX_TOOL_TIMEOUT_SECONDS,
     max_results: int = 100,
     allow_write: bool = False,
     description: str = "",
@@ -278,7 +299,7 @@ def create_mysql_tool(
         Configured StructuredTool instance.
     """
     # Create input schema with this tool's default timeout
-    QueryInput = create_mysql_query_input(timeout)
+    QueryInput = create_mysql_query_input(timeout, timeout_max_seconds)
 
     async def execute_query(
         query: str = "", description: str = "", timeout: int = timeout, **_: Any
@@ -291,8 +312,7 @@ def create_mysql_tool(
         if not description:
             description = "SQL query"
 
-        # Use AI-provided timeout, capped at maximum
-        effective_timeout = min(timeout, MAX_TOOL_TIMEOUT_SECONDS)
+        effective_timeout = resolve_effective_timeout(timeout, timeout_max_seconds)
 
         return await execute_mysql_query_async(
             query=query,

@@ -266,6 +266,7 @@ model ToolConfig {
   // Query/execution limits
   maxResults  Int      @default(100) @map("max_results")
   timeout     Int      @default(30) // seconds
+  timeoutMaxSeconds Int @default(300) @map("timeout_max_seconds") // max allowed timeout for this tool (0=unlimited)
 
   // Security
   allowWrite  Boolean  @default(false) @map("allow_write")

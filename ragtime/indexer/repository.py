@@ -930,6 +930,7 @@ class IndexerRepository:
                 "connectionConfig": Json(encrypted_config),
                 "maxResults": config.max_results,
                 "timeout": config.timeout,
+                "timeoutMaxSeconds": config.timeout_max_seconds,
                 "allowWrite": config.allow_write,
             }
         )
@@ -1006,6 +1007,7 @@ class IndexerRepository:
             "connection_config": "connectionConfig",
             "max_results": "maxResults",
             "timeout": "timeout",
+            "timeout_max_seconds": "timeoutMaxSeconds",
             "allow_write": "allowWrite",
             "last_test_at": "lastTestAt",
             "last_test_result": "lastTestResult",
@@ -1252,6 +1254,7 @@ class IndexerRepository:
             connection_config=decrypted_config,
             max_results=prisma_config.maxResults,
             timeout=prisma_config.timeout,
+            timeout_max_seconds=getattr(prisma_config, "timeoutMaxSeconds", 300),
             allow_write=prisma_config.allowWrite,
             last_test_at=prisma_config.lastTestAt,
             last_test_result=prisma_config.lastTestResult,

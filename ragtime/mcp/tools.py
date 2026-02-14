@@ -10,6 +10,7 @@ tools and MCP's tool format. It supports:
 """
 
 import asyncio
+import copy
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -41,6 +42,13 @@ TOOL_INPUT_SCHEMAS: dict[str, dict] = {
                 "type": "string",
                 "description": "Brief description of what this query retrieves",
             },
+            "timeout": {
+                "type": "integer",
+                "description": "Query timeout in seconds",
+                "default": 30,
+                "minimum": 5,
+                "maximum": 300,
+            },
         },
         "required": ["query"],
     },
@@ -55,6 +63,13 @@ TOOL_INPUT_SCHEMAS: dict[str, dict] = {
                 "type": "string",
                 "description": "Brief description of what this code does",
             },
+            "timeout": {
+                "type": "integer",
+                "description": "Execution timeout in seconds",
+                "default": 60,
+                "minimum": 10,
+                "maximum": 300,
+            },
         },
         "required": ["code"],
     },
@@ -68,6 +83,13 @@ TOOL_INPUT_SCHEMAS: dict[str, dict] = {
             "reason": {
                 "type": "string",
                 "description": "Brief description of what this command does",
+            },
+            "timeout": {
+                "type": "integer",
+                "description": "Command timeout in seconds",
+                "default": 30,
+                "minimum": 5,
+                "maximum": 300,
             },
         },
         "required": ["command"],
@@ -107,6 +129,13 @@ TOOL_INPUT_SCHEMAS: dict[str, dict] = {
                 "type": "string",
                 "description": "Brief description of what this query retrieves",
             },
+            "timeout": {
+                "type": "integer",
+                "description": "Query timeout in seconds",
+                "default": 30,
+                "minimum": 5,
+                "maximum": 300,
+            },
         },
         "required": ["query"],
     },
@@ -120,6 +149,28 @@ TOOL_INPUT_SCHEMAS: dict[str, dict] = {
             "reason": {
                 "type": "string",
                 "description": "Brief description of what this query retrieves",
+            },
+            "timeout": {
+                "type": "integer",
+                "description": "Query timeout in seconds",
+                "default": 30,
+                "minimum": 5,
+                "maximum": 300,
+            },
+        },
+        "required": ["query"],
+    },
+    "solidworks_pdm": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Natural language search query to find PDM documents by part number, material, description, author, folder path, or BOM relationships.",
+            },
+            "document_type": {
+                "type": "string",
+                "description": "Optional filter by SolidWorks document type: SLDPRT, SLDASM, or SLDDRW.",
+                "enum": ["SLDPRT", "SLDASM", "SLDDRW"],
             },
         },
         "required": ["query"],
@@ -481,9 +532,27 @@ class MCPToolAdapter:
         try:
             from ragtime.indexer.routes import _heartbeat_check
         except ImportError:
-            pass  # Expected circular import context
+            logger.warning(
+                "MCP heartbeat check unavailable - skipping health filtering"
+            )
+            self._heartbeat_cache = {
+                config.get("id", ""): ToolHealthStatus(
+                    tool_id=config.get("id", ""),
+                    alive=True,
+                    checked_at=now,
+                )
+                for config in tool_configs
+                if config.get("id")
+            }
+            self._last_heartbeat_check = now
+            return self._heartbeat_cache
 
         async def check_single(config: dict) -> tuple[str, ToolHealthStatus]:
+            tool_id = config.get("id", "")
+            tool_type = config.get("tool_type", "")
+            conn_config = config.get("connection_config", {})
+            start_time = asyncio.get_event_loop().time()
+
             # SSH tunnel connections need more time to authenticate and establish
             has_ssh_tunnel = conn_config.get("ssh_tunnel_enabled", False)
             heartbeat_timeout = 15.0 if has_ssh_tunnel else 5.0
@@ -549,9 +618,69 @@ class MCPToolAdapter:
             "odoo_shell": "odoo_",
             "ssh_shell": "ssh_",
             "filesystem_indexer": "search_",
+            "solidworks_pdm": "search_",
         }
         prefix = prefixes.get(tool_type, "tool_")
         return f"{prefix}{name}"
+
+    def _build_input_schema(self, config: dict) -> dict | None:
+        """Build tool input schema, adding per-tool dynamic defaults where needed."""
+        tool_type = config.get("tool_type", "")
+        base_schema = TOOL_INPUT_SCHEMAS.get(tool_type)
+        if not base_schema:
+            return None
+
+        schema = copy.deepcopy(base_schema)
+        timeout = int(config.get("timeout", 30) or 30)
+        timeout_max_seconds = int(config.get("timeout_max_seconds", 300) or 0)
+
+        if tool_type in {"postgres", "mssql", "mysql"}:
+            timeout = max(0, timeout)
+            timeout_schema = {
+                "type": "integer",
+                "description": (
+                    f"Query timeout in seconds (default: {timeout}, "
+                    f"max: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). "
+                    "Use 0 for no timeout."
+                ),
+                "default": timeout,
+                "minimum": 0,
+            }
+            if timeout_max_seconds > 0:
+                timeout_schema["maximum"] = timeout_max_seconds
+            schema["properties"]["timeout"] = timeout_schema
+        elif tool_type == "odoo_shell":
+            timeout = max(0, timeout)
+            timeout_schema = {
+                "type": "integer",
+                "description": (
+                    f"Execution timeout in seconds (default: {timeout}, "
+                    f"max: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). "
+                    "Use 0 for no timeout."
+                ),
+                "default": timeout,
+                "minimum": 0,
+            }
+            if timeout_max_seconds > 0:
+                timeout_schema["maximum"] = timeout_max_seconds
+            schema["properties"]["timeout"] = timeout_schema
+        elif tool_type == "ssh_shell":
+            timeout = max(0, timeout)
+            timeout_schema = {
+                "type": "integer",
+                "description": (
+                    f"Command timeout in seconds (default: {timeout}, "
+                    f"max: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). "
+                    "Use 0 for no timeout."
+                ),
+                "default": timeout,
+                "minimum": 0,
+            }
+            if timeout_max_seconds > 0:
+                timeout_schema["maximum"] = timeout_max_seconds
+            schema["properties"]["timeout"] = timeout_schema
+
+        return schema
 
     def _build_schema_tool_name(self, config: dict) -> str | None:
         """Build MCP schema search tool name from config, if applicable."""
@@ -633,7 +762,7 @@ class MCPToolAdapter:
         tool_name = self._build_tool_name(config)
 
         # Get input schema for tool type
-        input_schema = TOOL_INPUT_SCHEMAS.get(tool_type)
+        input_schema = self._build_input_schema(config)
         if not input_schema:
             logger.warning(f"Unknown tool type: {tool_type}")
             return None
@@ -661,9 +790,11 @@ class MCPToolAdapter:
         type_descriptions = {
             "postgres": f"Query the '{name}' PostgreSQL database using SQL.",
             "mssql": f"Query the '{name}' MSSQL/SQL Server database using SQL.",
+            "mysql": f"Query the '{name}' MySQL/MariaDB database using SQL.",
             "odoo_shell": f"Execute Python ORM code in '{name}' Odoo shell.",
             "ssh_shell": f"Execute shell commands on '{name}' via SSH.",
             "filesystem_indexer": f"Search indexed documents from '{name}'.",
+            "solidworks_pdm": f"Search indexed SolidWorks PDM metadata from '{name}'.",
         }
 
         base_desc = type_descriptions.get(
@@ -720,6 +851,10 @@ class MCPToolAdapter:
             )  # pyright: ignore[reportPrivateUsage]
         elif tool_type == "filesystem_indexer":
             tool = await rag_temp._create_filesystem_tool(
+                config, tool_name, tool_id
+            )  # pyright: ignore[reportPrivateUsage]
+        elif tool_type == "solidworks_pdm":
+            tool = await rag_temp._create_pdm_search_tool(
                 config, tool_name, tool_id
             )  # pyright: ignore[reportPrivateUsage]
         else:

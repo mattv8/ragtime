@@ -206,6 +206,7 @@ class SettingsCache:
                     ),
                     "max_results": cfg.maxResults,
                     "timeout": cfg.timeout,
+                    "timeout_max_seconds": getattr(cfg, "timeoutMaxSeconds", 300),
                     "allow_write": cfg.allowWrite,
                 }
                 for cfg in prisma_configs

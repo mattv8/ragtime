@@ -1,0 +1,2 @@
+ALTER TABLE "tool_configs"
+ADD COLUMN IF NOT EXISTS "timeout_max_seconds" INTEGER NOT NULL DEFAULT 300;
