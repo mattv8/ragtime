@@ -541,7 +541,8 @@ async def reindex_from_git(
     Re-index an existing git-based index by pulling latest changes. Admin only.
 
     This endpoint fetches the latest changes from the git repository and
-    re-creates the FAISS index. Only works for indexes created from git repos.
+    re-creates the index using its configured vector store backend (FAISS or pgvector).
+    Only works for indexes created from git repos.
     For private repos, uses the stored token unless a new one is provided.
     """
     # Get existing index metadata

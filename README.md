@@ -31,7 +31,7 @@ Self-hosted, OpenAI-compatible RAG API + MCP server that plugs local knowledge i
 - **OpenAI-compatible `/v1/chat/completions`** endpoint with streaming: works with [OpenWebUI](#connecting-to-openwebui), Continue, and any OpenAI client
 - **Built-in chat UI** at `/` with tool visualization, interactive charts, and DataTables: no external client required
 - **[MCP server](#model-context-protocol-mcp-integration)** (HTTP Streamable + stdio transports) exposing tools to Claude Desktop, VS Code Copilot, Cursor, and JetBrains IDEs with auth
-- **Dual vector store**: FAISS for uploaded/git-cloned indexes, pgvector for filesystem/schema/PDM indexes ([details](#vector-store-abstraction))
+- **Dual vector store**: Choose FAISS or pgvector for Upload/Git indexes; pgvector for schema/PDM and optional filesystem indexing ([details](#vector-store-abstraction))
 - **[LangChain tool calling](#tool-configuration)**: PostgreSQL, MSSQL, MySQL/MariaDB, Odoo ORM, SSH shell: read-only by default, write-ops opt-in
 - **Auto-discovered tools**: drop a `<name>_tool` StructuredTool in `ragtime/tools/` and it registers at startup (see [CONTRIBUTING.md](CONTRIBUTING.md))
 - **[Tool security](#security)**: SQL injection prevention via allowlist patterns, LIMIT enforcement, Odoo code validation, optional write-ops flag
@@ -60,7 +60,7 @@ flowchart LR
 
 ## Vector Store Abstraction
 
-Ragtime uses **two vector backends**, chosen per index type: **FAISS** for in-memory, static indexes (Upload, Git) and **pgvector** for persistent, scalable indexes (Filesystem, Schema, PDM).
+Ragtime uses **two vector backends**: **FAISS** (in-memory, loaded at startup) and **pgvector** (PostgreSQL, persistent). Upload and Git indexes use a unified indexer and can use either backend.
 
 See [Creating Indexes](#creating-indexes) for a detailed breakdown of index types and their storage backends.
 
@@ -275,9 +275,9 @@ The Indexer UI (http://localhost:8000, **Indexes** tab) supports multiple index 
 
 | Method | Vector Store | Storage | Use Case |
 |--------|--------------|---------|----------|
-| **Upload** (zip/tar) | FAISS | `data/indexes/<name>/` | Static codebases, documentation snapshots |
-| **Git Clone** | FAISS | `data/indexes/<name>/` | Repositories with optional private token auth |
-| **Filesystem** | pgvector | `filesystem_chunks` table | Live SMB/NFS shares, Docker volumes, local paths: incremental re-index |
+| **Upload** (zip/tar) | FAISS or pgvector | FAISS: `data/indexes/<name>/`<br/>pgvector: `filesystem_embeddings` table | Static codebases, documentation snapshots |
+| **Git Clone** | FAISS or pgvector | FAISS: `data/indexes/<name>/`<br/>pgvector: `filesystem_embeddings` table | Repositories with optional private token auth |
+| **Filesystem** | pgvector | `filesystem_embeddings` table | Live SMB/NFS shares, Docker volumes, local paths: incremental re-index |
 | **Schema** | pgvector | `schema_embeddings` table | Auto-generated from PostgreSQL/MSSQL/MySQL tools (enable in [Tool Configuration](#tool-configuration)) |
 | **PDM** | pgvector | `pdm_embeddings` table | SolidWorks PDM metadata via SQL Server |
 

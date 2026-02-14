@@ -17,12 +17,12 @@
 
 | Index Type | Service | Storage |
 |------------|---------|--------|
-| Upload/Git | `ragtime/indexer/service.py` | FAISS files in `data/indexes/<name>/` |
-| Filesystem | `ragtime/indexer/filesystem_service.py` | pgvector `filesystem_chunks` table |
+| Upload/Git | `ragtime/indexer/service.py` | FAISS files in `data/indexes/<name>/` **or** pgvector `filesystem_embeddings` table |
+| Filesystem | `ragtime/indexer/filesystem_service.py` | pgvector `filesystem_embeddings` table |
 | Schema | `ragtime/indexer/schema_service.py` | pgvector `schema_embeddings` table |
 | PDM | `ragtime/indexer/pdm_service.py` | pgvector `pdm_embeddings` table |
 
-FAISS uses `langchain_community.vectorstores.FAISS`. pgvector uses raw SQL with cosine similarity (`<=>` operator). Embedding models are configured via `ragtime/indexer/vector_utils.py:get_embeddings_model()`.
+FAISS uses `langchain_community.vectorstores.FAISS`. pgvector uses raw SQL with cosine similarity (`<=>` operator). Upload and Git indexes use a unified indexer and can target either backend via `vector_store_type`. Embedding models are configured via `ragtime/indexer/vector_utils.py:get_embeddings_model()`.
 
 ### Tool Types
 
@@ -47,7 +47,7 @@ SESSION=$(curl -s -c - -X POST http://localhost:8000/auth/login \
   -d '{"username":"admin","password":"YOUR_ADMIN_PASSWORD"}' \
   | grep ragtime_session | awk '{print $NF}')
 
-# 2. Create a FAISS index from a git repository (async job)
+# 2. Create a git index (defaults to FAISS unless config.vector_store_type is set)
 curl -X POST http://localhost:8000/indexes/git \
   -H "Cookie: ragtime_session=$SESSION" \
   -H "Content-Type: application/json" \

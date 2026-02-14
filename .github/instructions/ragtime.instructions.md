@@ -3,7 +3,7 @@ applyTo: '**'
 ---
 ## Architecture
 
-**OpenAI-compatible RAG API** with FastAPI + FAISS + LangChain tool calling.
+**OpenAI-compatible RAG API** with FastAPI + dual vector backends (FAISS/pgvector) + LangChain tool calling.
 
 | Service | Port | Purpose |
 |---------|------|---------|
@@ -105,7 +105,7 @@ Dynamic tool instances via `tool_configs` table:
 
 ## Embedding Provider Changes
 
-Filesystem indexes use pgvector with fixed dimensions. Changing embedding provider/model/dimensions:
+Filesystem indexes can use pgvector or FAISS. Embedding dimension/config tracking applies to pgvector-backed filesystem indexes. Changing embedding provider/model/dimensions:
 - `embedding_config_hash` tracks `"{provider}:{model}:{dimensions}"` (e.g., `ollama:nomic-embed-text:default`)
 - First index sets `embedding_dimension` and `embedding_config_hash` in `app_settings`
 - Subsequent indexes check for mismatch - if changed, **full re-index required** (existing embeddings incompatible)
