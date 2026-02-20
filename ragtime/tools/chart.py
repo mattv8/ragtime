@@ -22,6 +22,24 @@ from ragtime.core.logging import get_logger
 logger = get_logger(__name__)
 
 
+USERSPACE_CHART_DESCRIPTION_SUFFIX = """
+
+User Space mode override:
+- For chat rendering, pass explicit values in labels/datasets for the current response.
+- For persistent dashboard files, do NOT hard-code full query snapshots as the long-term data source.
+- Persist a live `data_connection` component reference (tool_config-based) with request payload so data can refresh.
+- If a live connection cannot be wired with current context, report the blocker instead of silently embedding static data.
+"""
+
+
+CHAT_CHART_DESCRIPTION_SUFFIX = """
+
+Chat mode override:
+- For this response, include explicit values in labels/datasets.
+- Do not rely on hidden state from prior tool outputs; pass chart payload data directly.
+"""
+
+
 class ChartDataset(BaseModel):
     """A single dataset for a chart."""
 
@@ -362,8 +380,6 @@ For advanced customization, use raw_config with any Chart.js options:
   }
 }
 
-When running in User Space mode, follow system prompt instructions for persistent
-data_connection components configured by admins in Settings.
 """,
     args_schema=CreateChartInput,
 )

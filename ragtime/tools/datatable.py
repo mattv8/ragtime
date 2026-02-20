@@ -22,6 +22,24 @@ from ragtime.core.logging import get_logger
 logger = get_logger(__name__)
 
 
+USERSPACE_DATATABLE_DESCRIPTION_SUFFIX = """
+
+User Space mode override:
+- For chat rendering, pass explicit row values for the current response.
+- For persistent dashboard files, do NOT keep large inline query snapshots as the primary data source.
+- Persist `data_connection` metadata with component/request fields so table data is live-refreshable.
+- If missing connection info prevents live wiring, surface that blocker explicitly.
+"""
+
+
+CHAT_DATATABLE_DESCRIPTION_SUFFIX = """
+
+Chat mode override:
+- For this response, include explicit row values in `data`.
+- Do not assume prior tool outputs are implicitly available; pass table rows directly.
+"""
+
+
 def _normalize_data_connection(
     data_connection: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
@@ -240,8 +258,6 @@ For advanced customization, use raw_config with DataTables.js options:
   }
 }
 
-When running in User Space mode, follow system prompt instructions for persistent
-data_connection components configured by admins in Settings.
 """,
     args_schema=CreateDataTableInput,
 )

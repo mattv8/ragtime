@@ -57,8 +57,16 @@ from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import create_chart_tool
-from ragtime.tools.datatable import create_datatable_tool
+from ragtime.tools.chart import (
+    CHAT_CHART_DESCRIPTION_SUFFIX,
+    USERSPACE_CHART_DESCRIPTION_SUFFIX,
+    create_chart_tool,
+)
+from ragtime.tools.datatable import (
+    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+    create_datatable_tool,
+)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
 from ragtime.tools.git_history import (
     _is_shallow_repository,
@@ -291,8 +299,9 @@ def get_process_memory_bytes() -> int:
 # 1. BASE_SYSTEM_PROMPT - Role, capabilities, tool selection strategy, response format
 # 2. build_index_system_prompt() - Dynamic: lists available knowledge indexes
 # 3. build_tool_system_prompt() - Dynamic: lists available query/action tools
-# 4. UI_SYSTEM_PROMPT_ADDITION - (UI only) Visualization tool instructions
-# 5. TOOL_OUTPUT_VISIBILITY_PROMPT - (Conditional) When tool_output_mode is 'auto'
+# 4. UI_VISUALIZATION_COMMON_PROMPT - (UI only) Visualization guidance shared across modes
+# 5. UI_VISUALIZATION_CHAT_PROMPT / UI_VISUALIZATION_USERSPACE_PROMPT - Mode-specific visualization guidance (added per request context)
+# 6. TOOL_OUTPUT_VISIBILITY_PROMPT - (Conditional) When tool_output_mode is 'auto'
 # =============================================================================
 
 BASE_SYSTEM_PROMPT = """You are a technical assistant with access to indexed documentation and live system connections.
@@ -341,23 +350,17 @@ TOOL_USAGE_REMINDER = """[CRITICAL: Use the tool calling API. Do NOT write fake 
 """
 
 
-# UI-only addition: visualization tools (create_chart, create_datatable)
-UI_SYSTEM_PROMPT_ADDITION = """
+# Visualization guidance is layered by context: common + chat + userspace
+UI_VISUALIZATION_COMMON_PROMPT = """
 
 ## DATA VISUALIZATION
 
-You have visualization tools for rich, interactive displays. Use them proactively after retrieving data.
+You have visualization tools for rich, interactive displays.
 
 ### Tools
 
 - **create_chart** - Chart.js visualizations (bar, line, pie, doughnut)
 - **create_datatable** - Interactive DataTables with sorting/search/pagination
-
-### Critical Rules
-
-1. **NEVER use markdown tables** - Always use create_datatable instead
-2. **Pass data explicitly** - Tools cannot see previous outputs; include the actual data values
-3. **Visualize proactively** - Don't wait to be asked; render charts and tables automatically
 
 ### When to Use Each
 
@@ -374,6 +377,26 @@ You have visualization tools for rich, interactive displays. Use them proactivel
 - **Bar**: Category comparisons (by region, status, type)
 - **Line**: Sequential/time data (daily, monthly, trends)
 - **Pie/Doughnut**: Proportions, market share (<7 categories)
+"""
+
+
+UI_VISUALIZATION_CHAT_PROMPT = """
+
+### Chat Mode Rules
+
+1. **NEVER use markdown tables** - Always use create_datatable instead
+2. **Pass data explicitly** - Visualization tools cannot see prior outputs implicitly; include values in each call
+3. **Visualize proactively** - Don't wait to be asked; render charts and tables automatically
+"""
+
+
+UI_VISUALIZATION_USERSPACE_PROMPT = """
+
+### User Space Visualization Rules
+
+1. Persist live `data_connection` wiring for reusable dashboards/charts/tables.
+2. Do not persist full query snapshots as hard-coded long-term dashboard data.
+3. If live wiring is blocked by missing context, state the blocker explicitly.
 """
 
 
@@ -409,6 +432,10 @@ _RENDER_EXPORT_PATTERN = re.compile(
     r"\bexport\s+(?:async\s+)?function\s+render\b|\bexport\s+const\s+render\b"
 )
 _JSX_TAG_PATTERN = re.compile(r"<\s*[A-Za-z][A-Za-z0-9_:\-]*(?:\s|>|/)")
+_INLINE_ROW_LITERAL_PATTERN = re.compile(
+    r"\{\s*[A-Za-z_$][\w$]*\s*:\s*[^{}]+,\s*[A-Za-z_$][\w$]*\s*:\s*[^{}]+",
+    re.MULTILINE,
+)
 
 
 def find_hard_coded_hex_colors(content: str) -> list[str]:
@@ -460,6 +487,37 @@ def validate_userspace_runtime_contract(content: str, file_path: str) -> list[st
         )
 
     return violations
+
+
+def detect_userspace_static_data_snapshot(content: str, file_path: str) -> str | None:
+    """Detect likely hard-coded query snapshots in User Space TypeScript modules."""
+    normalized_path = (file_path or "").strip().lower()
+    if not normalized_path.endswith((".ts", ".tsx")):
+        return None
+
+    # Limit this warning to dashboard artifacts where live wiring is expected.
+    if "dashboard/" not in normalized_path:
+        return None
+
+    row_literal_count = len(_INLINE_ROW_LITERAL_PATTERN.findall(content or ""))
+    has_live_wiring_hint = any(
+        token in (content or "")
+        for token in (
+            "context.components",
+            "data_connection",
+            "component_id",
+            "refresh_interval_seconds",
+        )
+    )
+
+    if row_literal_count >= 12 and not has_live_wiring_hint:
+        return (
+            "Detected large inline dataset without live data wiring hints. "
+            "For persistent User Space dashboards, avoid hard-coded query snapshots and wire data through "
+            "data_connection/component requests (via context.components) instead."
+        )
+
+    return None
 
 
 async def validate_userspace_typescript_content(
@@ -623,8 +681,12 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 ### Data wiring rules
 
 - Use real tool outputs as the source of truth for rendered data.
+- Persistent User Space dashboards must be live-wired: do not embed full query result snapshots as hard-coded arrays in artifact files.
+- Static arrays are acceptable only for transient chat visualization payloads; they must not become the persisted data source in `dashboard/*` files.
 - Data connections are internal components, abstracted from end users.
 - These components map to admin-configured tools from Settings.
+- Persist the connection request (query/command payload + component reference), then read/fetch through `context.components` at render/runtime.
+- If live wiring cannot be completed with available tools/context, state the blocker explicitly and ask for the missing connection choice instead of silently hard-coding data.
 - When creating chart/datatable payloads for reusable artifacts, include `data_connection` as a component reference:
     - `component_kind`: `tool_config`
     - `component_id`: admin-configured tool config ID
@@ -949,12 +1011,12 @@ class RAGComponents:
             BASE_SYSTEM_PROMPT + index_prompt_section + tool_prompt_section
         )
 
-        # UI system prompt (includes chart visualization instructions)
+        # UI system prompt (includes common visualization instructions)
         self._system_prompt_ui = (
             BASE_SYSTEM_PROMPT
             + index_prompt_section
             + tool_prompt_section
-            + UI_SYSTEM_PROMPT_ADDITION
+            + UI_VISUALIZATION_COMMON_PROMPT
         )
 
         # Add visibility prompt when mode is 'auto' (AI decides)
@@ -3810,7 +3872,11 @@ except Exception as e:
                 }
         return None
 
-    def _build_request_tool_scope_prompt(self, tools: list[Any]) -> str:
+    def _build_request_tool_scope_prompt(
+        self,
+        tools: list[Any],
+        mode: str = "chat",
+    ) -> str:
         """Build a request-scoped prompt section listing active tool connections."""
         if not tools:
             return ""
@@ -3834,12 +3900,79 @@ except Exception as e:
         if not lines:
             return ""
 
-        return (
+        prompt = (
             "\n\n## ACTIVE TOOL CONNECTIONS FOR THIS REQUEST\n\n"
             + "Use only these active tool connections in this request context.\n"
-            + "When creating reusable dashboards/charts/tables, preserve the tool name and input as the stable data connection reference.\n\n"
-            + "\n".join(lines)
         )
+        if mode == "userspace":
+            prompt += "When creating reusable dashboards/charts/tables, preserve the tool name and input as the stable data connection reference.\n"
+
+        return prompt + "\n" + "\n".join(lines)
+
+    def _apply_mode_specific_tool_description_overrides(
+        self,
+        tools: list[Any],
+        mode: str,
+    ) -> list[Any]:
+        """Return tools with mode-specific descriptions for this request."""
+        if not tools:
+            return tools
+
+        live_wiring_suffix = (
+            "\n\nUser Space mode override:\n"
+            "- Query/search tools should provide source data and request payloads for live-wired dashboard components.\n"
+            "- Do not assume static snapshots are acceptable persistence for dashboard artifacts.\n"
+            "- When handing data to chart/datatable tools for persistent artifacts, include connection/request context for refreshable wiring."
+        )
+
+        chat_query_suffix = (
+            "\n\nChat mode override:\n"
+            "- Use this tool for current-response analysis and include explicit payload values per call."
+        )
+
+        overridden_tools: list[Any] = []
+        for tool in tools:
+            tool_name = getattr(tool, "name", "")
+            description = getattr(tool, "description", None)
+            if not tool_name or not isinstance(description, str):
+                overridden_tools.append(tool)
+                continue
+
+            description_suffix = ""
+            if tool_name == "create_chart":
+                if mode == "userspace":
+                    description_suffix = USERSPACE_CHART_DESCRIPTION_SUFFIX
+                elif mode == "chat":
+                    description_suffix = CHAT_CHART_DESCRIPTION_SUFFIX
+            elif tool_name == "create_datatable":
+                if mode == "userspace":
+                    description_suffix = USERSPACE_DATATABLE_DESCRIPTION_SUFFIX
+                elif mode == "chat":
+                    description_suffix = CHAT_DATATABLE_DESCRIPTION_SUFFIX
+            elif mode == "userspace" and tool_name.startswith(("query_", "search_")):
+                description_suffix = live_wiring_suffix
+            elif mode == "chat" and tool_name.startswith(("query_", "search_")):
+                description_suffix = chat_query_suffix
+
+            if not description_suffix:
+                overridden_tools.append(tool)
+                continue
+
+            overridden_tools.append(
+                StructuredTool(
+                    name=tool.name,
+                    description=(
+                        description.rstrip() + "\n" + description_suffix.strip()
+                    ),
+                    func=getattr(tool, "func", None),
+                    coroutine=getattr(tool, "coroutine", None),
+                    args_schema=getattr(tool, "args_schema", None),
+                    return_direct=getattr(tool, "return_direct", False),
+                    handle_tool_error=getattr(tool, "handle_tool_error", False),
+                )
+            )
+
+        return overridden_tools
 
     async def _create_userspace_file_tools(
         self,
@@ -3953,6 +4086,13 @@ except Exception as e:
                         "Detected hard-coded hex color literals: "
                         f"{sample}. Prefer theme CSS tokens (e.g., var(--color-text-primary), var(--color-surface), var(--color-border))."
                     )
+
+            if lower_path.endswith((".ts", ".tsx")):
+                static_data_warning = detect_userspace_static_data_snapshot(
+                    content, path
+                )
+                if static_data_warning:
+                    warnings.append(static_data_warning)
 
             typecheck: dict[str, Any] | None = None
             if lower_path.endswith((".ts", ".tsx")):
@@ -4159,11 +4299,43 @@ except Exception as e:
                         user_id,
                     )
                     runtime_tools.extend(userspace_tools)
+                    runtime_tools = (
+                        self._apply_mode_specific_tool_description_overrides(
+                            runtime_tools,
+                            mode="userspace",
+                        )
+                    )
+                    system_prompt += UI_VISUALIZATION_USERSPACE_PROMPT
                     system_prompt += USERSPACE_MODE_PROMPT_ADDITION
+                else:
+                    runtime_tools = (
+                        self._apply_mode_specific_tool_description_overrides(
+                            runtime_tools,
+                            mode="chat",
+                        )
+                    )
+                    system_prompt += UI_VISUALIZATION_CHAT_PROMPT
+            elif any(
+                getattr(t, "name", "") in {"create_chart", "create_datatable"}
+                for t in runtime_tools
+            ):
+                runtime_tools = self._apply_mode_specific_tool_description_overrides(
+                    runtime_tools,
+                    mode="chat",
+                )
+                system_prompt += UI_VISUALIZATION_CHAT_PROMPT
 
             if runtime_tools:
+                prompt_mode = (
+                    "userspace"
+                    if workspace_context
+                    and (workspace_context.get("workspace_id") or "").strip()
+                    and (workspace_context.get("user_id") or "").strip()
+                    else "chat"
+                )
                 scoped_prompt = system_prompt + self._build_request_tool_scope_prompt(
-                    runtime_tools
+                    runtime_tools,
+                    mode=prompt_mode,
                 )
                 executor = self._build_runtime_executor(
                     runtime_tools,
@@ -4256,11 +4428,37 @@ except Exception as e:
                     user_id,
                 )
                 runtime_tools.extend(userspace_tools)
+                runtime_tools = self._apply_mode_specific_tool_description_overrides(
+                    runtime_tools,
+                    mode="userspace",
+                )
+                system_prompt += UI_VISUALIZATION_USERSPACE_PROMPT
                 system_prompt += USERSPACE_MODE_PROMPT_ADDITION
+            else:
+                runtime_tools = self._apply_mode_specific_tool_description_overrides(
+                    runtime_tools,
+                    mode="chat",
+                )
+                if is_ui:
+                    system_prompt += UI_VISUALIZATION_CHAT_PROMPT
+        elif is_ui:
+            runtime_tools = self._apply_mode_specific_tool_description_overrides(
+                runtime_tools,
+                mode="chat",
+            )
+            system_prompt += UI_VISUALIZATION_CHAT_PROMPT
 
         if runtime_tools:
+            prompt_mode = (
+                "userspace"
+                if workspace_context
+                and (workspace_context.get("workspace_id") or "").strip()
+                and (workspace_context.get("user_id") or "").strip()
+                else "chat"
+            )
             scoped_prompt = system_prompt + self._build_request_tool_scope_prompt(
-                runtime_tools
+                runtime_tools,
+                mode=prompt_mode,
             )
             executor = self._build_runtime_executor(runtime_tools, scoped_prompt)
 
