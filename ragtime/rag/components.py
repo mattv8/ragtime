@@ -401,6 +401,14 @@ Default to hiding unless the user benefits from seeing technical details.
 _HEX_COLOR_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_])#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})(?![A-Za-z0-9_])"
 )
+_IMPORT_SPECIFIER_PATTERN = re.compile(
+    r"^\s*import(?:\s+type)?(?:[\s\w{},*]+from\s*)?[\"']([^\"']+)[\"']",
+    re.MULTILINE,
+)
+_RENDER_EXPORT_PATTERN = re.compile(
+    r"\bexport\s+(?:async\s+)?function\s+render\b|\bexport\s+const\s+render\b"
+)
+_JSX_TAG_PATTERN = re.compile(r"<\s*[A-Za-z][A-Za-z0-9_:\-]*(?:\s|>|/)")
 
 
 def find_hard_coded_hex_colors(content: str) -> list[str]:
@@ -419,6 +427,175 @@ def find_hard_coded_hex_colors(content: str) -> list[str]:
     return results
 
 
+def validate_userspace_runtime_contract(content: str, file_path: str) -> list[str]:
+    """Validate constraints required by the isolated User Space runtime."""
+    violations: list[str] = []
+    normalized_path = (file_path or "").strip()
+
+    # Isolated iframe runtime cannot resolve npm/bare module specifiers.
+    imports = _IMPORT_SPECIFIER_PATTERN.findall(content or "")
+    unsupported_imports = [
+        spec for spec in imports if not spec.startswith(("./", "../", "/"))
+    ]
+    if unsupported_imports:
+        sample = ", ".join(sorted(set(unsupported_imports))[:8])
+        violations.append(
+            "Unsupported bare imports for isolated runtime: "
+            f"{sample}. Use local workspace modules only."
+        )
+
+    # Entry modules must expose render(container, context).
+    if normalized_path.endswith("dashboard/main.ts") or normalized_path.endswith(
+        "dashboard/main.tsx"
+    ):
+        if not _RENDER_EXPORT_PATTERN.search(content or ""):
+            violations.append(
+                "Missing required entrypoint export: export function render(container, context)."
+            )
+
+    # JSX in .ts files creates parse errors in TypeScript validator path.
+    if normalized_path.endswith(".ts") and _JSX_TAG_PATTERN.search(content or ""):
+        violations.append(
+            "JSX-like syntax detected in a .ts file. Move JSX to .tsx modules and keep dashboard/main.ts as a thin render entrypoint."
+        )
+
+    return violations
+
+
+async def validate_userspace_typescript_content(
+    content: str,
+    file_path: str,
+    timeout_seconds: int = 20,
+) -> dict[str, Any]:
+    """Validate TypeScript content using frontend's TypeScript compiler diagnostics."""
+    contract_violations = validate_userspace_runtime_contract(content, file_path)
+
+    node_script = r"""
+const fs = require('fs');
+const path = require('path');
+
+const input = fs.readFileSync(0, 'utf8');
+const filePath = process.argv[1] || 'dashboard/main.ts';
+
+let ts;
+try {
+  const tsModulePath = path.join('/ragtime/ragtime/frontend/node_modules/typescript');
+  ts = require(tsModulePath);
+} catch (err) {
+    console.log(JSON.stringify({
+        ok: false,
+        validator_available: false,
+        message: 'TypeScript validator unavailable in runtime',
+        errors: [],
+    }));
+  process.exit(0);
+}
+
+const result = ts.transpileModule(input, {
+  fileName: filePath,
+  reportDiagnostics: true,
+  compilerOptions: {
+    module: ts.ModuleKind.ES2020,
+    target: ts.ScriptTarget.ES2020,
+    isolatedModules: true,
+    jsx: ts.JsxEmit.ReactJSX,
+  },
+});
+
+const diagnostics = (result.diagnostics || []).filter((d) => d.category === ts.DiagnosticCategory.Error);
+const errors = diagnostics.map((d) => {
+  const message = ts.flattenDiagnosticMessageText(d.messageText, '\n');
+  if (!d.file || d.start === undefined) return message;
+  const pos = d.file.getLineAndCharacterOfPosition(d.start);
+  return `${d.file.fileName}:${pos.line + 1}:${pos.character + 1} ${message}`;
+});
+
+console.log(JSON.stringify({
+  ok: errors.length === 0,
+  validator_available: true,
+  error_count: errors.length,
+  errors,
+}));
+"""
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "node",
+            "-e",
+            node_script,
+            file_path,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        return {
+            "ok": False,
+            "validator_available": False,
+            "message": "Node runtime not available for TypeScript validation",
+            "errors": contract_violations,
+            "contract_errors": contract_violations,
+            "contract_error_count": len(contract_violations),
+        }
+
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(content.encode("utf-8")),
+            timeout=timeout_seconds,
+        )
+    except TimeoutError:
+        process.kill()
+        await process.wait()
+        return {
+            "ok": False,
+            "validator_available": False,
+            "message": "TypeScript validation timed out",
+            "errors": contract_violations,
+            "contract_errors": contract_violations,
+            "contract_error_count": len(contract_violations),
+        }
+
+    if process.returncode != 0:
+        return {
+            "ok": False,
+            "validator_available": False,
+            "message": (
+                stderr.decode("utf-8", errors="replace")
+                or "TypeScript validation failed"
+            ).strip(),
+            "errors": [],
+        }
+
+    raw = stdout.decode("utf-8", errors="replace").strip()
+    if not raw:
+        return {
+            "ok": False,
+            "validator_available": False,
+            "message": "TypeScript validator returned no output",
+            "errors": [],
+        }
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {
+            "ok": False,
+            "validator_available": False,
+            "message": "TypeScript validator returned invalid JSON",
+            "errors": [],
+        }
+
+    if not isinstance(parsed, dict):
+        return {
+            "ok": False,
+            "validator_available": False,
+            "message": "TypeScript validator returned unexpected payload",
+            "errors": [],
+        }
+
+    return parsed
+
+
 USERSPACE_MODE_PROMPT_ADDITION = """
 
 ## USER SPACE MODE
@@ -430,7 +607,18 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Persist implementation as files, not only chat text.
 - Prefer TypeScript modules for interactive reports and dashboards.
 - Use `dashboard/main.ts` as the default entry artifact unless user requests another path.
-- For larger work, split logic into additional files under `dashboard/` and keep paths stable.
+- Do not keep all logic in `dashboard/main.ts` once complexity grows.
+- Split concerns into stable subpaths under `dashboard/` (for example: `dashboard/components/*`, `dashboard/data/*`, `dashboard/charts/*`, `dashboard/styles/*`).
+- Keep `dashboard/main.ts` as a thin composition entrypoint that wires imports, layout, and bootstrapping.
+- When adding files, preserve a clear module boundary and reusable naming conventions.
+
+### Runtime contract (must follow)
+
+- The isolated renderer requires `export function render(container, context)` in `dashboard/main.ts`.
+- Do not rely on `export default` as the entrypoint.
+- Do not import external npm packages (for example `react`, `recharts`, etc.) in User Space modules.
+- Use local workspace modules (`./` or `../`) and browser DOM APIs only.
+- If JSX is used, keep it out of `dashboard/main.ts`; maintain `dashboard/main.ts` as a valid TypeScript render entrypoint.
 
 ### Data wiring rules
 
@@ -451,6 +639,7 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Start by listing files to understand existing workspace structure.
 - Read any target file before overwriting it.
 - Then create/update files with full content via User Space file tools.
+- After updating TypeScript files, run `validate_userspace_typescript` and fix all reported errors before finalizing.
 - When you complete a meaningful milestone (e.g., stable report section, validated wiring, or user-approved checkpoint), call `create_userspace_snapshot` immediately with a concise message.
 
 ### Theme + CSS rules
@@ -725,6 +914,7 @@ class RAGComponents:
         async with self._init_lock:
             # Double-check after acquiring lock
             if self._init_in_progress:
+                logger.debug("RAG initialization completed by another caller")
                 return
 
             self._init_in_progress = True
@@ -3710,6 +3900,18 @@ except Exception as e:
                 description="Brief description of why snapshot is being created",
             )
 
+        class ValidateUserSpaceTypeScriptInput(BaseModel):
+            path: str = Field(
+                default="dashboard/main.ts",
+                description=(
+                    "Relative path from workspace files root to validate as TypeScript."
+                ),
+            )
+            reason: str = Field(
+                default="",
+                description="Brief description of why TypeScript validation is needed",
+            )
+
         async def list_userspace_files(reason: str = "", **_: Any) -> str:
             del reason
             files = userspace_service.list_workspace_files(workspace_id, user_id)
@@ -3752,11 +3954,23 @@ except Exception as e:
                         f"{sample}. Prefer theme CSS tokens (e.g., var(--color-text-primary), var(--color-surface), var(--color-border))."
                     )
 
+            typecheck: dict[str, Any] | None = None
+            if lower_path.endswith((".ts", ".tsx")):
+                typecheck = await validate_userspace_typescript_content(content, path)
+                if not typecheck.get("ok", False):
+                    diagnostics = typecheck.get("errors") or []
+                    if diagnostics:
+                        warnings.append(
+                            "TypeScript diagnostics detected. Run validate_userspace_typescript and fix reported errors before finalizing."
+                        )
+
             response_payload: dict[str, Any] = {
                 "file": result.model_dump(mode="json"),
             }
             if warnings:
                 response_payload["warnings"] = warnings
+            if typecheck is not None:
+                response_payload["typescript_validation"] = typecheck
             return json.dumps(response_payload, indent=2)
 
         async def create_userspace_snapshot(
@@ -3772,6 +3986,26 @@ except Exception as e:
                 message.strip() or "AI checkpoint",
             )
             return json.dumps(snapshot.model_dump(mode="json"), indent=2)
+
+        async def validate_userspace_typescript(
+            path: str = "dashboard/main.ts",
+            reason: str = "",
+            **_: Any,
+        ) -> str:
+            del reason
+            userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
+            file_data = userspace_service.get_workspace_file(
+                workspace_id, path, user_id
+            )
+            result = await validate_userspace_typescript_content(
+                file_data.content, path
+            )
+            response_payload = {
+                "path": path,
+                "artifact_type": file_data.artifact_type,
+                "validation": result,
+            }
+            return json.dumps(response_payload, indent=2)
 
         return [
             StructuredTool.from_function(
@@ -3808,6 +4042,15 @@ except Exception as e:
                     "Use this automatically at meaningful stopping points."
                 ),
                 args_schema=CreateUserSpaceSnapshotInput,
+            ),
+            StructuredTool.from_function(
+                coroutine=validate_userspace_typescript,
+                name="validate_userspace_typescript",
+                description=(
+                    "Validate a workspace TypeScript file and return diagnostics with file/line details. "
+                    "Use after TypeScript edits and before creating snapshots."
+                ),
+                args_schema=ValidateUserSpaceTypeScriptInput,
             ),
         ]
 
