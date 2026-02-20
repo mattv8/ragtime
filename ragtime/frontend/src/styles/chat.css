@@ -12,6 +12,29 @@
   position: relative;
 }
 
+/* Embedded mode: no sidebar, no border, fills parent */
+.chat-panel-embedded {
+  height: 100%;
+  border: none;
+  border-radius: 0;
+}
+
+.chat-panel-embedded .chat-header-embedded {
+  padding: var(--space-xs) var(--space-sm);
+}
+
+.chat-panel-embedded .chat-header-embedded h2 {
+  font-size: var(--text-sm);
+}
+
+.chat-panel-embedded .chat-no-conversation {
+  padding: var(--space-md);
+}
+
+.chat-panel-embedded .chat-no-conversation h2 {
+  font-size: var(--text-base);
+}
+
 /* =============================================================================
    SIDEBAR
    ============================================================================= */

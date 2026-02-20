@@ -413,6 +413,8 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         default_ocr_mode: data.default_ocr_mode,
         default_ocr_vision_model: data.default_ocr_vision_model,
         ocr_concurrency_limit: data.ocr_concurrency_limit,
+        // User Space settings
+        snapshot_retention_days: data.snapshot_retention_days,
       });
       // Reset Ollama connection state (for embeddings)
       setOllamaConnected(false);
@@ -792,6 +794,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
 
   // OCR Configuration
   const [ocrSaving, setOcrSaving] = useState(false);
+
+  // User Space Configuration
+  const [userspaceSaving, setUserspaceSaving] = useState(false);
   const [visionModels, setVisionModels] = useState<OllamaVisionModel[]>([]);
   const [visionModelsLoading, setVisionModelsLoading] = useState(false);
   const [visionModelsError, setVisionModelsError] = useState<string | null>(null);
@@ -860,6 +865,30 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       setError(err instanceof Error ? err.message : 'Failed to save OCR settings');
     } finally {
       setOcrSaving(false);
+    }
+  };
+
+  const handleSaveUserspace = async () => {
+    setUserspaceSaving(true);
+    setSuccess(null);
+    setError(null);
+
+    try {
+      const dataToSave: UpdateSettingsRequest = {
+        snapshot_retention_days: formData.snapshot_retention_days,
+      };
+      const updated = await api.updateSettings(dataToSave);
+      setSettings(updated);
+      setFormData(prev => ({
+        ...prev,
+        snapshot_retention_days: updated.snapshot_retention_days,
+      }));
+      setSuccess('User Space settings saved.');
+      setTimeout(() => setSuccess(null), 5000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save User Space settings');
+    } finally {
+      setUserspaceSaving(false);
     }
   };
 
@@ -2462,6 +2491,43 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                 Select a vision model to save
               </span>
             )}
+          </div>
+        </fieldset>
+
+        {/* User Space Configuration */}
+        <fieldset>
+          <legend>User Space</legend>
+
+          <div className="form-group">
+            <div className="form-row">
+              <label>Snapshot Retention</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                <input
+                  type="number"
+                  min={0}
+                  max={3650}
+                  value={formData.snapshot_retention_days ?? 0}
+                  onChange={(e) => setFormData({ ...formData, snapshot_retention_days: Math.max(0, Math.min(3650, parseInt(e.target.value) || 0)) })}
+                  style={{ width: '5rem' }}
+                />
+                <span>days</span>
+              </div>
+            </div>
+            <p className="muted">
+              How long to keep workspace snapshots. Set to 0 for unlimited retention.
+              Snapshots older than this window will not appear in the snapshot list.
+            </p>
+          </div>
+
+          <div className="form-actions" style={{ borderTop: 'none', paddingTop: 0 }}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={handleSaveUserspace}
+              disabled={userspaceSaving}
+            >
+              {userspaceSaving ? 'Saving...' : 'Save User Space Settings'}
+            </button>
           </div>
         </fieldset>
 

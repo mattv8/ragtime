@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/api';
-import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, LoginPage, OAuthLoginPage, MemoryStatus, UserMenu, SecurityBanner, ConfigurationBanner } from '@/components';
+import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, UserSpacePanel, LoginPage, OAuthLoginPage, MemoryStatus, UserMenu, SecurityBanner, ConfigurationBanner } from '@/components';
 import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob, ToolConfig, ConfigurationWarning } from '@/types';
 import type { OAuthParams } from '@/components';
 import '@/styles/global.css';
 
-type ViewType = 'chat' | 'indexer' | 'tools' | 'settings';
+type ViewType = 'chat' | 'userspace' | 'indexer' | 'tools' | 'settings';
 
 function getInitialView(): ViewType {
   const params = new URLSearchParams(window.location.search);
@@ -13,6 +13,7 @@ function getInitialView(): ViewType {
   if (view === 'settings') return 'settings';
   if (view === 'tools') return 'tools';
   if (view === 'indexer') return 'indexer';
+  if (view === 'userspace') return 'userspace';
   return 'chat';
 }
 
@@ -151,8 +152,8 @@ export function App() {
   const handleLoginSuccess = (user: User) => {
     setCurrentUser(user);
     // If non-admin tried to access admin view via URL, redirect to chat
-    if (user.role !== 'admin' && activeView !== 'chat') {
-      setActiveView('chat');
+    if (user.role !== 'admin' && activeView !== 'chat' && activeView !== 'userspace') {
+      setActiveView('userspace');
     }
   };
 
@@ -213,8 +214,8 @@ export function App() {
 
   // Enforce admin-only views - redirect non-admins to chat
   useEffect(() => {
-    if (currentUser && !isAdmin && activeView !== 'chat') {
-      setActiveView('chat');
+    if (currentUser && !isAdmin && activeView !== 'chat' && activeView !== 'userspace') {
+      setActiveView('userspace');
     }
   }, [currentUser, isAdmin, activeView]);
 
@@ -225,8 +226,8 @@ export function App() {
     if (oauthParams) return;
 
     const params = new URLSearchParams();
-    // Non-admins should only have 'chat' in URL
-    const viewToSync = (!isAdmin && activeView !== 'chat') ? 'chat' : activeView;
+    // Non-admins should only have user-space or chat views in URL
+    const viewToSync = (!isAdmin && activeView !== 'chat' && activeView !== 'userspace') ? 'userspace' : activeView;
     params.set('view', viewToSync);
     if (highlightSetting) {
       params.set('highlight', highlightSetting);
@@ -465,6 +466,12 @@ export function App() {
               Chat
             </button>
           )}
+          <button
+            className={`topnav-link ${activeView === 'userspace' ? 'active' : ''}`}
+            onClick={() => setActiveView('userspace')}
+          >
+            User Space
+          </button>
           {isAdmin && (
             <>
               <button
@@ -513,10 +520,13 @@ export function App() {
           }
         }}
       />
-      <div className="container">
+      {activeView === 'userspace' ? (
+        <UserSpacePanel currentUser={currentUser} />
+      ) : null}
 
-      {/* Non-admins can only see chat - this is the final safeguard */}
-      {activeView === 'chat' || !isAdmin ? (
+      <div className="container" style={activeView === 'userspace' ? { display: 'none' } : undefined}>
+
+      {activeView === 'chat' || (!isAdmin && activeView !== 'userspace') ? (
         <ChatPanel currentUser={currentUser} />
       ) : activeView === 'settings' ? (
         <SettingsPanel

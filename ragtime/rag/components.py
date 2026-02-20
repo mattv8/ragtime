@@ -3510,8 +3510,91 @@ except Exception as e:
 
         return str(content)
 
+    def _derive_config_tool_names(self, config: dict) -> set[str]:
+        """Derive runtime tool names that are generated for a ToolConfig entry."""
+        tool_type = config.get("tool_type")
+        raw_name = (config.get("name", "") or "").strip()
+        tool_name = re.sub(r"[^a-zA-Z0-9]+", "_", raw_name).strip("_").lower()
+        if not tool_name:
+            return set()
+
+        names: set[str] = set()
+        if tool_type in {"postgres", "mssql", "mysql"}:
+            names.add(f"query_{tool_name}")
+            names.add(f"search_{tool_name}_schema")
+        elif tool_type == "odoo_shell":
+            names.add(f"odoo_{tool_name}")
+        elif tool_type == "ssh_shell":
+            names.add(f"ssh_{tool_name}")
+        elif tool_type in {"filesystem_indexer", "solidworks_pdm"}:
+            names.add(f"search_{tool_name}")
+        return names
+
+    def get_blocked_config_tool_names(
+        self, allowed_tool_config_ids: list[str]
+    ) -> set[str]:
+        """Return generated tool names that should be blocked for current request context."""
+        if not self._tool_configs:
+            return set()
+
+        allowed_ids = set(allowed_tool_config_ids)
+        all_config_tool_names: set[str] = set()
+        allowed_tool_names: set[str] = set()
+
+        for config in self._tool_configs:
+            tool_names = self._derive_config_tool_names(config)
+            all_config_tool_names.update(tool_names)
+            if (config.get("id") or "") in allowed_ids:
+                allowed_tool_names.update(tool_names)
+
+        return all_config_tool_names - allowed_tool_names
+
+    def _build_runtime_executor(
+        self,
+        tools: list[Any],
+        system_prompt: str,
+    ) -> Optional[AgentExecutor]:
+        """Build a lightweight executor for request-scoped tool filtering."""
+        if self.llm is None or not tools:
+            return None
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", system_prompt),
+                MessagesPlaceholder(variable_name="chat_history", optional=True),
+                ("human", "{input}"),
+                MessagesPlaceholder(variable_name="agent_scratchpad"),
+            ]
+        )
+
+        agent = create_tool_calling_agent(
+            self.llm,
+            tools,
+            prompt,
+            message_formatter=format_to_tool_messages,
+        )
+
+        max_iterations = 15
+        if self._app_settings:
+            try:
+                max_iterations = int(self._app_settings.get("max_iterations", 15))
+            except (TypeError, ValueError):
+                max_iterations = 15
+
+        return AgentExecutor(
+            agent=agent,
+            tools=tools,
+            verbose=settings.debug_mode,
+            handle_parsing_errors=True,
+            max_iterations=max(1, max_iterations),
+            return_intermediate_steps=settings.debug_mode,
+        )
+
     async def process_query(
-        self, user_message: Union[str, Any], chat_history: Optional[List[Any]] = None
+        self,
+        user_message: Union[str, Any],
+        chat_history: Optional[List[Any]] = None,
+        blocked_tool_names: Optional[set[str]] = None,
     ) -> str:
         """
         Process a user query through the RAG pipeline (non-streaming).
@@ -3533,9 +3616,19 @@ except Exception as e:
         augmented_content = self._prepend_reminder_to_content(langchain_content)
 
         try:
-            if self.agent_executor:
+            executor = self.agent_executor
+            if blocked_tool_names and executor and getattr(executor, "tools", None):
+                filtered_tools = [
+                    t for t in executor.tools if t.name not in blocked_tool_names
+                ]
+                executor = self._build_runtime_executor(
+                    filtered_tools,
+                    self._system_prompt,
+                )
+
+            if executor:
                 # Use agent with tools
-                result = await self.agent_executor.ainvoke(
+                result = await executor.ainvoke(
                     {"input": augmented_content, "chat_history": chat_history}
                 )
                 output = result.get("output", "I couldn't generate a response.")
@@ -3572,6 +3665,7 @@ except Exception as e:
         user_message: Union[str, Any],
         chat_history: Optional[List[Any]] = None,
         is_ui: bool = False,
+        blocked_tool_names: Optional[set[str]] = None,
     ):
         """
         Process a user query with true token-by-token streaming.
@@ -3601,6 +3695,12 @@ except Exception as e:
         # Select the appropriate agent executor
         executor = self.agent_executor_ui if is_ui else self.agent_executor
         system_prompt = self._system_prompt_ui if is_ui else self._system_prompt
+
+        if blocked_tool_names and executor and getattr(executor, "tools", None):
+            filtered_tools = [
+                t for t in executor.tools if t.name not in blocked_tool_names
+            ]
+            executor = self._build_runtime_executor(filtered_tools, system_prompt)
 
         try:
             if executor:

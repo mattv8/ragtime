@@ -1031,9 +1031,12 @@ const ChatTitle = memo(({ title }: { title: string }) => {
 
 interface ChatPanelProps {
   currentUser: User;
+  workspaceId?: string;
+  onUserMessageSubmitted?: (message: string) => void | Promise<void>;
+  embedded?: boolean;
 }
 
-export function ChatPanel({ currentUser }: ChatPanelProps) {
+export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, embedded = false }: ChatPanelProps) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [inputValue, setInputValue] = useState('');
@@ -1042,7 +1045,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
   const [streamingContent, setStreamingContent] = useState('');
   const [streamingEvents, setStreamingEvents] = useState<StreamingRenderEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [showSidebar, setShowSidebar] = useState(true);
+  const [showSidebar, setShowSidebar] = useState(!embedded);
   const [editingTitle, setEditingTitle] = useState<string | null>(null);
   const [titleInput, setTitleInput] = useState('');
   const [editingMessageIdx, setEditingMessageIdx] = useState<number | null>(null);
@@ -1186,7 +1189,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
   useEffect(() => {
     loadConversations();
     loadAvailableModels();
-  }, []);
+  }, [workspaceId]);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -1222,7 +1225,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
 
   const loadConversations = async () => {
     try {
-      const data = await api.listConversations();
+      const data = await api.listConversations(workspaceId);
       setConversations(data);
       // If no active conversation and we have conversations, select the most recent
       if (!activeConversation && data.length > 0) {
@@ -1242,7 +1245,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
   const createNewConversation = async () => {
     try {
       shouldAutoScrollRef.current = true;
-      const conversation = await api.createConversation();
+      const conversation = await api.createConversation(undefined, workspaceId);
       setConversations(prev => [conversation, ...prev]);
       setActiveConversation(conversation);
       setError(null);
@@ -1268,7 +1271,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
     if (!target || target.title !== 'New Chat') return;
 
     try {
-      const url = api.getConversationEventsUrl(conversationId);
+      const url = api.getConversationEventsUrl(conversationId, workspaceId);
       const es = new EventSource(url, { withCredentials: true });
 
       es.onmessage = (event) => {
@@ -1366,7 +1369,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
     lastSeenVersionRef.current = 0;
 
     try {
-      const stream = api.streamChatTask(taskId, 0, abortController.signal);
+      const stream = api.streamChatTask(taskId, 0, abortController.signal, workspaceId);
 
       for await (const data of stream) {
         // Handle explicit completion event
@@ -1435,7 +1438,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
             // Refresh conversation on completion
             if (activeConversation) {
                 try {
-                    const updated = await api.getConversation(activeConversation.id);
+                    const updated = await api.getConversation(activeConversation.id, workspaceId);
                     setActiveConversation(updated);
                     setConversations(prev => prev.map(c => c.id === updated.id ? updated : c));
                     setStreamingContent('');
@@ -1475,7 +1478,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
 
     try {
         // 2. Start background task
-        const task = await api.sendMessageBackground(conversationId, message);
+        const task = await api.sendMessageBackground(conversationId, message, workspaceId);
         setActiveTask(task);
         setInterruptedTask(null);
 
@@ -1505,7 +1508,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
       // We should check API to be sure.
 
       try {
-        const activeT = await api.getConversationActiveTask(activeConversation.id);
+        const activeT = await api.getConversationActiveTask(activeConversation.id, workspaceId);
 
         // Use functional state update to avoid dependency issues if needed, but here simple set is fine
         if (activeT && (activeT.status === 'pending' || activeT.status === 'running')) {
@@ -1524,7 +1527,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
             if (!activeT) {
                  setActiveTask(null);
                  // Only verify interrupted if no active task
-                 const interruptedT = await api.getConversationInterruptedTask(activeConversation.id);
+                 const interruptedT = await api.getConversationInterruptedTask(activeConversation.id, workspaceId);
                  setInterruptedTask(interruptedT);
             }
         }
@@ -1559,7 +1562,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
       setStreamingEvents([]);
 
       // Refresh the conversation to get latest messages
-      const fresh = await api.getConversation(conversation.id);
+      const fresh = await api.getConversation(conversation.id, workspaceId);
       setActiveConversation(fresh);
       setError(null);
     } catch (err) {
@@ -1585,7 +1588,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
     setDeleteConfirmId(null);
 
     try {
-      await api.deleteConversation(conversationId);
+      await api.deleteConversation(conversationId, workspaceId);
       setConversations(prev => prev.filter(c => c.id !== conversationId));
       if (activeConversation?.id === conversationId) {
         setActiveConversation(null);
@@ -1608,7 +1611,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
     }
 
     try {
-      const updated = await api.updateConversationTitle(conversationId, titleInput.trim());
+      const updated = await api.updateConversationTitle(conversationId, titleInput.trim(), workspaceId);
       setConversations(prev => prev.map(c => c.id === conversationId ? updated : c));
       if (activeConversation?.id === conversationId) {
         setActiveConversation(updated);
@@ -1623,7 +1626,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
     if (!activeConversation || isStreaming) return;
 
     try {
-      const updated = await api.updateConversationModel(activeConversation.id, newModel);
+      const updated = await api.updateConversationModel(activeConversation.id, newModel, workspaceId);
       setActiveConversation(updated);
       setConversations(prev => prev.map(c => c.id === updated.id ? updated : c));
     } catch (err) {
@@ -1637,7 +1640,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
     if (isStreaming) return;
     shouldAutoScrollRef.current = true;
     try {
-      const conversation = await api.createConversation();
+      const conversation = await api.createConversation(undefined, workspaceId);
       setConversations(prev => [conversation, ...prev]);
       setActiveConversation(conversation);
       setInterruptedTask(null);
@@ -1659,7 +1662,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
     // Cancel background task if active
     if (activeTask && (activeTask.status === 'pending' || activeTask.status === 'running')) {
       try {
-        await api.cancelChatTask(activeTask.id);
+        await api.cancelChatTask(activeTask.id, workspaceId);
       } catch (err) {
         console.error('Failed to cancel task:', err);
       }
@@ -1673,7 +1676,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
     // Refresh conversation to get current state (including partial messages)
     if (activeConversation) {
       try {
-        const updated = await api.getConversation(activeConversation.id);
+        const updated = await api.getConversation(activeConversation.id, workspaceId);
         setActiveConversation(updated);
         setConversations(prev => prev.map(c => c.id === updated.id ? updated : c));
       } catch (err) {
@@ -1723,6 +1726,14 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
     if (currentTokens + newMessageTokens > contextLimit * 0.9) {
       setError(`Context limit nearly reached (${Math.round((currentTokens + newMessageTokens) / contextLimit * 100)}%). Consider starting a new conversation.`);
       return;
+    }
+
+    if (onUserMessageSubmitted) {
+      try {
+        await onUserMessageSubmitted(userMessage);
+      } catch (callbackError) {
+        console.warn('Failed to run message submit callback:', callbackError);
+      }
     }
 
     setIsStreaming(true);
@@ -1925,14 +1936,14 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
 
       // 2. Server Sync (Truncate)
       // Call endpoint to persist string truncation (removes old message & subsequent from DB)
-      const truncated = await api.truncateConversation(activeConversation.id, truncateAt);
+      const truncated = await api.truncateConversation(activeConversation.id, truncateAt, workspaceId);
 
       // Note: We don't overwrite local state with 'truncated' here because 'truncated'
       // doesn't have our optimistic user message yet.
 
       // 3. Start background task
       // This sends the message and creates a background task
-      const task = await api.sendMessageBackground(truncated.id, messageToSend);
+      const task = await api.sendMessageBackground(truncated.id, messageToSend, workspaceId);
       setActiveTask(task);
       setInterruptedTask(null);
 
@@ -1947,7 +1958,7 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
 
       // Restore authoritative state from server on error
       try {
-        const refreshed = await api.getConversation(activeConversation.id);
+        const refreshed = await api.getConversation(activeConversation.id, workspaceId);
         setActiveConversation(refreshed);
         setConversations(prev => prev.map(c => c.id === refreshed.id ? refreshed : c));
       } catch (refreshErr) {
@@ -2048,9 +2059,9 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
   };
 
   return (
-    <div className="chat-panel">
+    <div className={`chat-panel ${embedded ? 'chat-panel-embedded' : ''}`}>
       {/* Conversations Sidebar */}
-      <div className={`chat-sidebar ${showSidebar ? 'open' : ''}`}>
+      {!embedded && <div className={`chat-sidebar ${showSidebar ? 'open' : ''}`}>
         <div className="chat-sidebar-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <h3>Conversations</h3>
@@ -2104,10 +2115,10 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
             conversations.map(renderConversationItem)
           )}
         </div>
-      </div>
+      </div>}
 
       {/* Sidebar Expand Button (when collapsed) */}
-      {!showSidebar && (
+      {!embedded && !showSidebar && (
         <button
           className="chat-sidebar-expand"
           onClick={() => setShowSidebar(true)}
@@ -2122,29 +2133,33 @@ export function ChatPanel({ currentUser }: ChatPanelProps) {
         {activeConversation ? (
           <>
             {/* Chat Header */}
-            <div className="chat-header">
+            <div className={`chat-header ${embedded ? 'chat-header-embedded' : ''}`}>
               <div className="chat-header-info">
-                <button
-                  className="chat-mobile-sidebar-toggle"
-                  onClick={() => setShowSidebar(true)}
-                  title="Show conversations"
-                >
-                  <Menu size={20} />
-                </button>
+                {!embedded && (
+                  <button
+                    className="chat-mobile-sidebar-toggle"
+                    onClick={() => setShowSidebar(true)}
+                    title="Show conversations"
+                  >
+                    <Menu size={20} />
+                  </button>
+                )}
                 <h2>{activeConversation.title}</h2>
               </div>
               <div className="chat-header-actions">
-                <label className="chat-toggle-control" title="Show/hide tool calls in messages">
-                  <span className="chat-toggle-label">Tools</span>
-                  <label className="toggle-switch">
-                    <input
-                      type="checkbox"
-                      checked={showToolCalls}
-                      onChange={(e) => setShowToolCalls(e.target.checked)}
-                    />
-                    <span className="toggle-slider"></span>
+                {!embedded && (
+                  <label className="chat-toggle-control" title="Show/hide tool calls in messages">
+                    <span className="chat-toggle-label">Tools</span>
+                    <label className="toggle-switch">
+                      <input
+                        type="checkbox"
+                        checked={showToolCalls}
+                        onChange={(e) => setShowToolCalls(e.target.checked)}
+                      />
+                      <span className="toggle-slider"></span>
+                    </label>
                   </label>
-                </label>
+                )}
                 <div className="chat-context-meter" title={`Context usage: ${contextUsagePercent}%`}>
                   <div
                     className="chat-context-fill"

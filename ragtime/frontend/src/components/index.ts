@@ -9,6 +9,8 @@ export { ToolsPanel } from './ToolsPanel';
 export { ToolWizard } from './ToolWizard';
 export { MCPRoutesPanel } from './MCPRoutesPanel';
 export { ChatPanel } from './ChatPanel';
+export { UserSpacePanel } from './UserSpacePanel';
+export { UserSpaceArtifactPreview } from './UserSpaceArtifactPreview';
 export { LoginPage } from './LoginPage';
 export { OAuthLoginPage } from './OAuthLoginPage';
 export type { OAuthParams } from './OAuthLoginPage';

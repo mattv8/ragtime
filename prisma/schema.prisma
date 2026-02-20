@@ -212,6 +212,9 @@ model AppSettings {
   defaultOcrVisionModel    String?  @map("default_ocr_vision_model") // Default Ollama vision model for OCR (e.g., 'granite3.2-vision:2b')
   ocrConcurrencyLimit      Int      @default(1) @map("ocr_concurrency_limit") // Max concurrent Ollama vision OCR requests
 
+  // User Space Configuration
+  snapshotRetentionDays    Int      @default(0) @map("snapshot_retention_days") // Snapshot retention in days (0 = unlimited)
+
   // Timestamps
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 

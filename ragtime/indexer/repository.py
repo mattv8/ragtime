@@ -15,7 +15,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, cast
 
-from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexStatus as PrismaIndexStatus
 from prisma.enums import ToolType as PrismaToolType
@@ -23,32 +22,18 @@ from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
+from prisma import Json, Prisma
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (
-    CONNECTION_CONFIG_PASSWORD_FIELDS,
-    decrypt_json_passwords,
-    decrypt_secret,
-    encrypt_json_passwords,
-    encrypt_secret,
-)
+from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
+                                     decrypt_json_passwords, decrypt_secret,
+                                     encrypt_json_passwords, encrypt_secret)
 from ragtime.core.logging import get_logger
-from ragtime.indexer.models import (
-    SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
-    AppSettings,
-    ChatMessage,
-    ChatTask,
-    ChatTaskStatus,
-    ChatTaskStreamingState,
-    Conversation,
-    IndexConfig,
-    IndexJob,
-    IndexStatus,
-    ToolCallRecord,
-    ToolConfig,
-    ToolOutputMode,
-    ToolType,
-    VectorStoreType,
-)
+from ragtime.indexer.models import (SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
+                                    AppSettings, ChatMessage, ChatTask,
+                                    ChatTaskStatus, ChatTaskStreamingState,
+                                    Conversation, IndexConfig, IndexJob,
+                                    IndexStatus, ToolCallRecord, ToolConfig,
+                                    ToolOutputMode, ToolType, VectorStoreType)
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 
@@ -745,6 +730,9 @@ class IndexerRepository:
             # OCR configuration
             default_ocr_mode=getattr(settings, "defaultOcrMode", "disabled"),
             default_ocr_vision_model=getattr(settings, "defaultOcrVisionModel", None),
+            ocr_concurrency_limit=getattr(settings, "ocrConcurrencyLimit", 1),
+            # User Space configuration
+            snapshot_retention_days=getattr(settings, "snapshotRetentionDays", 0),
             updated_at=settings.updatedAt,
         )
 
@@ -812,6 +800,9 @@ class IndexerRepository:
             # OCR configuration
             "default_ocr_mode": "defaultOcrMode",
             "default_ocr_vision_model": "defaultOcrVisionModel",
+            "ocr_concurrency_limit": "ocrConcurrencyLimit",
+            # User Space configuration
+            "snapshot_retention_days": "snapshotRetentionDays",
         }
 
         # Build update data with only provided fields
@@ -1325,6 +1316,21 @@ class IndexerRepository:
             include={"user": True},
         )
 
+        return [self._prisma_conversation_to_model(c) for c in prisma_convs]
+
+    async def list_conversations_by_ids(
+        self, conversation_ids: list[str]
+    ) -> list[Conversation]:
+        """List conversations by explicit IDs, newest first."""
+        if not conversation_ids:
+            return []
+
+        db = await self._get_db()
+        prisma_convs = await db.conversation.find_many(
+            where={"id": {"in": conversation_ids}},
+            order={"updatedAt": "desc"},
+            include={"user": True},
+        )
         return [self._prisma_conversation_to_model(c) for c in prisma_convs]
 
     async def add_message(

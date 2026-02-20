@@ -514,6 +514,7 @@ export interface AppSettings {
   max_query_results: number;
   query_timeout: number;
   enable_write_ops: boolean;
+  snapshot_retention_days: number;
   updated_at: string | null;
 }
 
@@ -579,6 +580,7 @@ export interface UpdateSettingsRequest {
   max_query_results?: number;
   query_timeout?: number;
   enable_write_ops?: boolean;
+  snapshot_retention_days?: number;
 }
 
 // Ollama Connection Testing
@@ -1396,6 +1398,7 @@ export interface Conversation {
 export interface CreateConversationRequest {
   title?: string;
   model?: string;
+  workspace_id?: string;
 }
 
 export interface SendMessageRequest {
@@ -1406,6 +1409,94 @@ export interface SendMessageRequest {
 export interface SendMessageResponse {
   message: ChatMessage;
   conversation: Conversation;
+}
+
+// =============================================================================
+// User Space Types
+// =============================================================================
+
+export type WorkspaceRole = 'owner' | 'editor' | 'viewer';
+export type UserSpaceArtifactType = 'dashboard_json' | 'report_markdown' | 'report_html' | 'module_js' | 'module_ts';
+
+export interface UserSpaceWorkspaceMember {
+  user_id: string;
+  role: WorkspaceRole;
+}
+
+export interface UserSpaceWorkspace {
+  id: string;
+  name: string;
+  description?: string | null;
+  owner_user_id: string;
+  selected_tool_ids: string[];
+  members: UserSpaceWorkspaceMember[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UserSpaceAvailableTool {
+  id: string;
+  name: string;
+  tool_type: string;
+  description?: string | null;
+}
+
+export interface CreateUserSpaceWorkspaceRequest {
+  name: string;
+  description?: string;
+  selected_tool_ids?: string[];
+}
+
+export interface UpdateUserSpaceWorkspaceRequest {
+  name?: string;
+  description?: string;
+  selected_tool_ids?: string[];
+}
+
+export interface UpdateUserSpaceWorkspaceMembersRequest {
+  members: UserSpaceWorkspaceMember[];
+}
+
+export interface UserSpaceFileInfo {
+  path: string;
+  size_bytes: number;
+  updated_at: string;
+}
+
+export interface UserSpaceFile {
+  path: string;
+  content: string;
+  artifact_type?: UserSpaceArtifactType | null;
+  updated_at: string;
+}
+
+export interface UpsertUserSpaceFileRequest {
+  content: string;
+  artifact_type?: UserSpaceArtifactType;
+}
+
+export interface UserSpaceSnapshot {
+  id: string;
+  workspace_id: string;
+  message?: string | null;
+  created_at: string;
+  file_count: number;
+}
+
+export interface CreateUserSpaceSnapshotRequest {
+  message?: string;
+}
+
+export interface RestoreUserSpaceSnapshotResponse {
+  restored_snapshot_id: string;
+  file_count: number;
+}
+
+export interface PaginatedWorkspacesResponse {
+  items: UserSpaceWorkspace[];
+  total: number;
+  offset: number;
+  limit: number;
 }
 
 // Retry visualization request/response

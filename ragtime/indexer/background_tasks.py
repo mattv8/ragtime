@@ -535,6 +535,7 @@ class BackgroundTaskService:
         conversation_id: str,
         user_message: str,
         existing_task_id: Optional[str] = None,
+        blocked_tool_names: Optional[set[str]] = None,
     ) -> str:
         """
         Start a background task for processing a chat message.
@@ -661,7 +662,10 @@ class BackgroundTaskService:
                 # Parse user message in case it's a JSON-encoded multimodal array
                 parsed_user_message = parse_message_content(user_message)
                 async for event in rag.process_query_stream(
-                    parsed_user_message, chat_history, is_ui=True
+                    parsed_user_message,
+                    chat_history,
+                    is_ui=True,
+                    blocked_tool_names=blocked_tool_names,
                 ):
                     if self._shutdown:
                         await repository.cancel_chat_task(task_id)
@@ -876,7 +880,12 @@ class BackgroundTaskService:
             # Return placeholder - caller should create task first
             return ""
 
-    async def start_task_async(self, conversation_id: str, user_message: str) -> str:
+    async def start_task_async(
+        self,
+        conversation_id: str,
+        user_message: str,
+        blocked_tool_names: Optional[set[str]] = None,
+    ) -> str:
         """
         Start a background task asynchronously.
 
@@ -893,7 +902,12 @@ class BackgroundTaskService:
         task = await repository.create_chat_task(conversation_id, user_message)
 
         # Start processing in background
-        self.start_task(conversation_id, user_message, task.id)
+        self.start_task(
+            conversation_id,
+            user_message,
+            task.id,
+            blocked_tool_names=blocked_tool_names,
+        )
 
         return task.id
 

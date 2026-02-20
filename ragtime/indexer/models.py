@@ -2,7 +2,6 @@
 Indexer data models and schemas.
 """
 
-
 import hashlib
 import json
 from datetime import datetime
@@ -15,6 +14,7 @@ from ragtime.core.embedding_models import (
     get_embedding_models,
     get_model_dimensions_sync,
 )
+
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -688,6 +688,13 @@ class AppSettings(BaseModel):
         description="Max concurrent Ollama vision OCR requests. Higher values use more VRAM.",
     )
 
+    # User Space Snapshot Retention
+    snapshot_retention_days: int = Field(
+        default=0,
+        ge=0,
+        description="Snapshot retention in days (0 = unlimited). Snapshots older than this are hidden and cannot be restored.",
+    )
+
     updated_at: Optional[datetime] = None
 
     def get_embedding_config_hash(self) -> str:
@@ -924,6 +931,12 @@ class UpdateSettingsRequest(BaseModel):
         ge=1,
         le=10,
         description="Max concurrent Ollama vision OCR requests.",
+    )
+    # User Space
+    snapshot_retention_days: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Snapshot retention in days (0 = unlimited).",
     )
 
 
@@ -1805,6 +1818,10 @@ class CreateConversationRequest(BaseModel):
         default=None, description="Optional title for the conversation"
     )
     model: Optional[str] = Field(default=None, description="Optional model override")
+    workspace_id: Optional[str] = Field(
+        default=None,
+        description="Optional User Space workspace ID for workspace-scoped conversations",
+    )
 
 
 class SendMessageRequest(BaseModel):

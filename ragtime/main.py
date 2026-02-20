@@ -62,6 +62,7 @@ from ragtime.mcp.config_routes import router as mcp_config_router
 from ragtime.mcp.routes import get_mcp_routes, mcp_lifespan_manager
 from ragtime.mcp.routes import router as mcp_router
 from ragtime.rag import rag
+from ragtime.userspace.routes import router as userspace_router
 
 # Import indexer routes (always available now that it's part of ragtime)
 # Import MCP routes and transport for HTTP API access
@@ -296,6 +297,7 @@ app.include_router(auth_router)
 
 # Include indexer routes
 app.include_router(indexer_router)
+app.include_router(userspace_router)
 # Mount static files for indexer UI assets at root
 # Ensure assets directory exists so static file mount always works
 INDEXER_ASSETS_DIR.mkdir(parents=True, exist_ok=True)
