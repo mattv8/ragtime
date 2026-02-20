@@ -6,20 +6,16 @@ from fastapi import APIRouter, Depends, Query
 
 from ragtime.core.security import get_current_user
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (
-    CreateSnapshotRequest,
-    CreateWorkspaceRequest,
-    PaginatedWorkspacesResponse,
-    RestoreSnapshotResponse,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceAvailableTool,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpaceSnapshot,
-    UserSpaceWorkspace,
-)
+from ragtime.userspace.models import (CreateSnapshotRequest,
+                                      CreateWorkspaceRequest,
+                                      PaginatedWorkspacesResponse,
+                                      RestoreSnapshotResponse,
+                                      UpdateWorkspaceMembersRequest,
+                                      UpdateWorkspaceRequest,
+                                      UpsertWorkspaceFileRequest,
+                                      UserSpaceAvailableTool,
+                                      UserSpaceFileInfo, UserSpaceFileResponse,
+                                      UserSpaceSnapshot, UserSpaceWorkspace)
 from ragtime.userspace.service import userspace_service
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space"])
@@ -70,7 +66,7 @@ async def list_workspaces(
     limit: int = Query(default=50, ge=1, le=200),
     user: Any = Depends(get_current_user),
 ):
-    return userspace_service.list_workspaces(user.id, offset=offset, limit=limit)
+    return await userspace_service.list_workspaces(user.id, offset=offset, limit=limit)
 
 
 @router.post("/workspaces", response_model=UserSpaceWorkspace)
@@ -81,12 +77,12 @@ async def create_workspace(
     request.selected_tool_ids = (
         await _normalize_selected_tool_ids(request.selected_tool_ids) or []
     )
-    return userspace_service.create_workspace(request, user.id)
+    return await userspace_service.create_workspace(request, user.id)
 
 
 @router.get("/workspaces/{workspace_id}", response_model=UserSpaceWorkspace)
 async def get_workspace(workspace_id: str, user: Any = Depends(get_current_user)):
-    return userspace_service.get_workspace(workspace_id, user.id)
+    return await userspace_service.get_workspace(workspace_id, user.id)
 
 
 @router.put("/workspaces/{workspace_id}", response_model=UserSpaceWorkspace)
@@ -98,7 +94,7 @@ async def update_workspace(
     request.selected_tool_ids = await _normalize_selected_tool_ids(
         request.selected_tool_ids
     )
-    return userspace_service.update_workspace(workspace_id, request, user.id)
+    return await userspace_service.update_workspace(workspace_id, request, user.id)
 
 
 @router.delete("/workspaces/{workspace_id}")
@@ -106,7 +102,9 @@ async def delete_workspace(
     workspace_id: str,
     user: Any = Depends(get_current_user),
 ):
-    userspace_service.delete_workspace(workspace_id, user.id)
+    await userspace_service.enforce_workspace_role(workspace_id, user.id, "owner")
+    await repository.delete_workspace_conversations(workspace_id)
+    await userspace_service.delete_workspace(workspace_id, user.id)
     return {"success": True}
 
 
@@ -116,7 +114,9 @@ async def update_workspace_members(
     request: UpdateWorkspaceMembersRequest,
     user: Any = Depends(get_current_user),
 ):
-    return userspace_service.update_workspace_members(workspace_id, request, user.id)
+    return await userspace_service.update_workspace_members(
+        workspace_id, request, user.id
+    )
 
 
 @router.get("/workspaces/{workspace_id}/files", response_model=list[UserSpaceFileInfo])
@@ -124,7 +124,7 @@ async def list_workspace_files(
     workspace_id: str,
     user: Any = Depends(get_current_user),
 ):
-    return userspace_service.list_workspace_files(workspace_id, user.id)
+    return await userspace_service.list_workspace_files(workspace_id, user.id)
 
 
 @router.put(
@@ -137,7 +137,7 @@ async def upsert_workspace_file(
     request: UpsertWorkspaceFileRequest,
     user: Any = Depends(get_current_user),
 ):
-    return userspace_service.upsert_workspace_file(
+    return await userspace_service.upsert_workspace_file(
         workspace_id, file_path, request, user.id
     )
 
@@ -151,7 +151,7 @@ async def get_workspace_file(
     file_path: str,
     user: Any = Depends(get_current_user),
 ):
-    return userspace_service.get_workspace_file(workspace_id, file_path, user.id)
+    return await userspace_service.get_workspace_file(workspace_id, file_path, user.id)
 
 
 @router.delete("/workspaces/{workspace_id}/files/{file_path:path}")
@@ -160,7 +160,7 @@ async def delete_workspace_file(
     file_path: str,
     user: Any = Depends(get_current_user),
 ):
-    userspace_service.delete_workspace_file(workspace_id, file_path, user.id)
+    await userspace_service.delete_workspace_file(workspace_id, file_path, user.id)
     return {"success": True}
 
 
@@ -177,7 +177,7 @@ async def create_snapshot(
     request: CreateSnapshotRequest,
     user: Any = Depends(get_current_user),
 ):
-    return userspace_service.create_snapshot(workspace_id, user.id, request.message)
+    return await userspace_service.create_snapshot(workspace_id, user.id, request.message)
 
 
 @router.post(

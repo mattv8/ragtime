@@ -4047,12 +4047,12 @@ except Exception as e:
 
         async def list_userspace_files(reason: str = "", **_: Any) -> str:
             del reason
-            files = userspace_service.list_workspace_files(workspace_id, user_id)
+            files = await userspace_service.list_workspace_files(workspace_id, user_id)
             return json.dumps([f.model_dump(mode="json") for f in files], indent=2)
 
         async def read_userspace_file(path: str, reason: str = "", **_: Any) -> str:
             del reason
-            file_data = userspace_service.get_workspace_file(
+            file_data = await userspace_service.get_workspace_file(
                 workspace_id, path, user_id
             )
             return json.dumps(file_data.model_dump(mode="json"), indent=2)
@@ -4065,8 +4065,10 @@ except Exception as e:
             **_: Any,
         ) -> str:
             del reason
-            userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
-            result = userspace_service.upsert_workspace_file(
+            await userspace_service.enforce_workspace_role(
+                workspace_id, user_id, "editor"
+            )
+            result = await userspace_service.upsert_workspace_file(
                 workspace_id,
                 path,
                 UpsertWorkspaceFileRequest(
@@ -4119,8 +4121,10 @@ except Exception as e:
             **_: Any,
         ) -> str:
             del reason
-            userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
-            snapshot = userspace_service.create_snapshot(
+            await userspace_service.enforce_workspace_role(
+                workspace_id, user_id, "editor"
+            )
+            snapshot = await userspace_service.create_snapshot(
                 workspace_id,
                 user_id,
                 message.strip() or "AI checkpoint",
@@ -4133,8 +4137,10 @@ except Exception as e:
             **_: Any,
         ) -> str:
             del reason
-            userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
-            file_data = userspace_service.get_workspace_file(
+            await userspace_service.enforce_workspace_role(
+                workspace_id, user_id, "editor"
+            )
+            file_data = await userspace_service.get_workspace_file(
                 workspace_id, path, user_id
             )
             result = await validate_userspace_typescript_content(

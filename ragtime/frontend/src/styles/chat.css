@@ -315,6 +315,23 @@
   min-width: 150px;
 }
 
+.chat-workspace-conversation-select {
+  min-width: 220px;
+  max-width: 420px;
+  padding: 6px 12px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+
+.chat-workspace-conversation-select:focus {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
 .chat-model-badge {
   font-size: var(--text-xs);
   padding: 4px var(--space-sm);

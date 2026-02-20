@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from uuid import uuid4
 
 from fastapi import HTTPException
 
 from ragtime.config import settings
+from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 from ragtime.userspace.models import (
     ArtifactType,
@@ -38,6 +40,8 @@ class UserSpaceService:
         self._base_dir = Path(settings.index_data_path) / "_userspace"
         self._workspaces_dir = self._base_dir / "workspaces"
         self._workspaces_dir.mkdir(parents=True, exist_ok=True)
+        self._metadata_synced = False
+        self._metadata_sync_lock = asyncio.Lock()
 
     @property
     def root_path(self) -> Path:
@@ -54,21 +58,6 @@ class UserSpaceService:
 
     def _workspace_git_dir(self, workspace_id: str) -> Path:
         return self._workspace_files_dir(workspace_id) / ".git"
-
-    def _read_workspace(self, workspace_id: str) -> UserSpaceWorkspace:
-        path = self._workspace_meta_path(workspace_id)
-        if not path.exists():
-            raise HTTPException(status_code=404, detail="Workspace not found")
-        return UserSpaceWorkspace.model_validate_json(path.read_text(encoding="utf-8"))
-
-    def _write_workspace(self, workspace: UserSpaceWorkspace) -> None:
-        workspace_dir = self._workspace_dir(workspace.id)
-        workspace_dir.mkdir(parents=True, exist_ok=True)
-        self._workspace_files_dir(workspace.id).mkdir(parents=True, exist_ok=True)
-        self._workspace_meta_path(workspace.id).write_text(
-            workspace.model_dump_json(indent=2),
-            encoding="utf-8",
-        )
 
     def _run_git(
         self,
@@ -111,13 +100,6 @@ class UserSpaceService:
             ["config", "user.email", "userspace@ragtime.local"],
         )
 
-    def _has_workspace_access(
-        self, workspace: UserSpaceWorkspace, user_id: str
-    ) -> bool:
-        if workspace.owner_user_id == user_id:
-            return True
-        return any(member.user_id == user_id for member in workspace.members)
-
     def _resolve_workspace_file_path(
         self, workspace_id: str, relative_path: str
     ) -> Path:
@@ -137,164 +119,369 @@ class UserSpaceService:
         parts = Path(normalized).parts
         return ".git" in parts
 
-    def _enforce_workspace_access(
+    async def _touch_workspace(self, workspace_id: str, ts: datetime | None = None) -> None:
+        db = await get_db()
+        try:
+            await db.workspace.update(
+                where={"id": workspace_id},
+                data={"updatedAt": ts or _utc_now()},
+            )
+        except Exception:
+            logger.debug("Failed to update workspace timestamp for %s", workspace_id)
+
+    def _workspace_from_record(self, record: Any) -> UserSpaceWorkspace:
+        member_rows = list(getattr(record, "members", []) or [])
+        members: list[WorkspaceMember] = []
+        owner_present = False
+
+        for member in member_rows:
+            member_user_id = getattr(member, "userId", "")
+            role_value = getattr(member, "role", "viewer")
+            role = (
+                role_value
+                if isinstance(role_value, str)
+                else str(getattr(role_value, "value", role_value))
+            )
+            if member_user_id == getattr(record, "ownerUserId", "") and role == "owner":
+                owner_present = True
+            members.append(
+                WorkspaceMember(
+                    user_id=member_user_id,
+                    role=cast(Any, role),
+                )
+            )
+
+        if not owner_present and getattr(record, "ownerUserId", None):
+            members.insert(
+                0,
+                WorkspaceMember(user_id=record.ownerUserId, role="owner"),
+            )
+
+        tool_rows = list(getattr(record, "toolSelections", []) or [])
+        selected_tool_ids = [
+            getattr(tool_row, "toolConfigId", "")
+            for tool_row in tool_rows
+            if getattr(tool_row, "toolConfigId", None)
+        ]
+
+        return UserSpaceWorkspace(
+            id=record.id,
+            name=record.name,
+            description=record.description,
+            owner_user_id=record.ownerUserId,
+            selected_tool_ids=selected_tool_ids,
+            conversation_ids=[],
+            members=members,
+            created_at=record.createdAt,
+            updated_at=record.updatedAt,
+        )
+
+    async def _ensure_metadata_synced(self) -> None:
+        if self._metadata_synced:
+            return
+
+        async with self._metadata_sync_lock:
+            if self._metadata_synced:
+                return
+
+            db = await get_db()
+            if not self._workspaces_dir.exists():
+                self._metadata_synced = True
+                return
+
+            for workspace_dir in self._workspaces_dir.iterdir():
+                if not workspace_dir.is_dir():
+                    continue
+
+                meta_path = workspace_dir / "workspace.json"
+                if not meta_path.exists():
+                    continue
+
+                try:
+                    workspace = UserSpaceWorkspace.model_validate_json(
+                        meta_path.read_text(encoding="utf-8")
+                    )
+                except Exception:
+                    logger.warning("Skipping invalid workspace metadata file %s", meta_path)
+                    continue
+
+                owner = await db.user.find_unique(where={"id": workspace.owner_user_id})
+                if not owner:
+                    logger.warning(
+                        "Skipping workspace %s backfill: owner user %s not found",
+                        workspace.id,
+                        workspace.owner_user_id,
+                    )
+                    continue
+
+                await db.workspace.upsert(
+                    where={"id": workspace.id},
+                    data={
+                        "create": {
+                            "id": workspace.id,
+                            "name": workspace.name,
+                            "description": workspace.description,
+                            "ownerUserId": workspace.owner_user_id,
+                            "createdAt": workspace.created_at,
+                            "updatedAt": workspace.updated_at,
+                        },
+                        "update": {
+                            "name": workspace.name,
+                            "description": workspace.description,
+                            "ownerUserId": workspace.owner_user_id,
+                            "updatedAt": workspace.updated_at,
+                        },
+                    },
+                )
+
+                await db.workspacemember.delete_many(where={"workspaceId": workspace.id})
+
+                normalized_members: dict[str, str] = {workspace.owner_user_id: "owner"}
+                for member in workspace.members:
+                    if member.user_id == workspace.owner_user_id:
+                        continue
+                    normalized_members[member.user_id] = (
+                        "editor" if member.role == "owner" else member.role
+                    )
+
+                for member_user_id, member_role in normalized_members.items():
+                    user = await db.user.find_unique(where={"id": member_user_id})
+                    if not user:
+                        continue
+                    await db.workspacemember.create(
+                        data={
+                            "workspaceId": workspace.id,
+                            "userId": member_user_id,
+                            "role": member_role,
+                        }
+                    )
+
+                await db.workspacetoolselection.delete_many(
+                    where={"workspaceId": workspace.id}
+                )
+                for tool_id in workspace.selected_tool_ids:
+                    tool = await db.toolconfig.find_unique(where={"id": tool_id})
+                    if not tool or not tool.enabled:
+                        continue
+                    await db.workspacetoolselection.create(
+                        data={
+                            "workspaceId": workspace.id,
+                            "toolConfigId": tool_id,
+                        }
+                    )
+
+                if workspace.conversation_ids:
+                    await db.conversation.update_many(
+                        where={
+                            "id": {"in": workspace.conversation_ids},
+                            "workspaceId": None,
+                        },
+                        data={"workspaceId": workspace.id},
+                    )
+
+            self._metadata_synced = True
+
+    async def _enforce_workspace_access(
         self,
         workspace_id: str,
         user_id: str,
         required_role: str | None = None,
     ) -> UserSpaceWorkspace:
-        workspace = self._read_workspace(workspace_id)
-        if not self._has_workspace_access(workspace, user_id):
+        await self._ensure_metadata_synced()
+        db = await get_db()
+
+        workspace = await db.workspace.find_unique(
+            where={"id": workspace_id},
+            include={"members": True, "toolSelections": True},
+        )
+        if not workspace:
             raise HTTPException(status_code=404, detail="Workspace not found")
 
-        if required_role is None:
-            return workspace
+        user_role: str | None = None
+        if workspace.ownerUserId == user_id:
+            user_role = "owner"
+        else:
+            for member in list(getattr(workspace, "members", []) or []):
+                if getattr(member, "userId", None) != user_id:
+                    continue
+                role_value = getattr(member, "role", "viewer")
+                user_role = (
+                    role_value
+                    if isinstance(role_value, str)
+                    else str(getattr(role_value, "value", role_value))
+                )
+                break
 
-        if workspace.owner_user_id == user_id:
-            return workspace
+        if user_role is None:
+            raise HTTPException(status_code=404, detail="Workspace not found")
 
-        member_role = next(
-            (member.role for member in workspace.members if member.user_id == user_id),
-            None,
-        )
-        if member_role is None:
-            raise HTTPException(status_code=403, detail="Access denied")
-
-        if required_role == "editor" and member_role not in {"editor", "owner"}:
+        if required_role == "editor" and user_role not in {"owner", "editor"}:
             raise HTTPException(status_code=403, detail="Editor access required")
-
-        if required_role == "owner":
+        if required_role == "owner" and user_role != "owner":
             raise HTTPException(status_code=403, detail="Owner access required")
 
-        return workspace
+        return self._workspace_from_record(workspace)
 
-    def list_workspaces(
+    async def list_workspaces(
         self,
         user_id: str,
         offset: int = 0,
         limit: int = 50,
     ) -> PaginatedWorkspacesResponse:
-        all_results: list[UserSpaceWorkspace] = []
-        for workspace_dir in (
-            self._workspaces_dir.iterdir() if self._workspaces_dir.exists() else []
-        ):
-            if not workspace_dir.is_dir():
-                continue
-            meta_path = workspace_dir / "workspace.json"
-            if not meta_path.exists():
-                continue
-            workspace = UserSpaceWorkspace.model_validate_json(
-                meta_path.read_text(encoding="utf-8")
-            )
-            if self._has_workspace_access(workspace, user_id):
-                all_results.append(workspace)
+        await self._ensure_metadata_synced()
+        db = await get_db()
 
-        all_results.sort(key=lambda item: item.updated_at, reverse=True)
-        total = len(all_results)
-        page = all_results[offset : offset + limit]
+        where_clause: dict[str, Any] = {
+            "OR": [
+                {"ownerUserId": user_id},
+                {"members": {"some": {"userId": user_id}}},
+            ]
+        }
+
+        rows = await db.workspace.find_many(
+            where=where_clause,
+            include={"members": True, "toolSelections": True},
+            order={"updatedAt": "desc"},
+            skip=offset,
+            take=limit,
+        )
+        total = await db.workspace.count(where=where_clause)
+
         return PaginatedWorkspacesResponse(
-            items=page, total=total, offset=offset, limit=limit
+            items=[self._workspace_from_record(row) for row in rows],
+            total=total,
+            offset=offset,
+            limit=limit,
         )
 
-    def create_workspace(
+    async def create_workspace(
         self, request: CreateWorkspaceRequest, user_id: str
     ) -> UserSpaceWorkspace:
+        await self._ensure_metadata_synced()
+        db = await get_db()
+
         now = _utc_now()
-        workspace = UserSpaceWorkspace(
-            id=str(uuid4()),
-            name=request.name,
-            description=request.description,
-            owner_user_id=user_id,
-            selected_tool_ids=request.selected_tool_ids,
-            members=[WorkspaceMember(user_id=user_id, role="owner")],
-            created_at=now,
-            updated_at=now,
+        workspace_id = str(uuid4())
+
+        await db.workspace.create(
+            data={
+                "id": workspace_id,
+                "name": request.name,
+                "description": request.description,
+                "ownerUserId": user_id,
+                "createdAt": now,
+                "updatedAt": now,
+            },
+            include={"members": True, "toolSelections": True},
         )
-        self._write_workspace(workspace)
-        self._ensure_workspace_git_repo(workspace.id)
-        return workspace
 
-    def get_workspace(self, workspace_id: str, user_id: str) -> UserSpaceWorkspace:
-        return self._enforce_workspace_access(workspace_id, user_id)
+        await db.workspacemember.create(
+            data={
+                "workspaceId": workspace_id,
+                "userId": user_id,
+                "role": "owner",
+            }
+        )
 
-    def delete_workspace(self, workspace_id: str, user_id: str) -> None:
-        self._enforce_workspace_access(workspace_id, user_id, required_role="owner")
+        for tool_id in request.selected_tool_ids:
+            tool = await db.toolconfig.find_unique(where={"id": tool_id})
+            if not tool or not tool.enabled:
+                continue
+            await db.workspacetoolselection.create(
+                data={
+                    "workspaceId": workspace_id,
+                    "toolConfigId": tool_id,
+                }
+            )
+
+        self._workspace_files_dir(workspace_id).mkdir(parents=True, exist_ok=True)
+        self._ensure_workspace_git_repo(workspace_id)
+
+        refreshed = await db.workspace.find_unique(
+            where={"id": workspace_id},
+            include={"members": True, "toolSelections": True},
+        )
+        if not refreshed:
+            raise HTTPException(status_code=500, detail="Failed to create workspace")
+
+        return self._workspace_from_record(refreshed)
+
+    async def get_workspace(self, workspace_id: str, user_id: str) -> UserSpaceWorkspace:
+        return await self._enforce_workspace_access(workspace_id, user_id)
+
+    async def delete_workspace(self, workspace_id: str, user_id: str) -> None:
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="owner")
+        db = await get_db()
+        try:
+            await db.workspace.delete(where={"id": workspace_id})
+        except Exception as exc:
+            raise HTTPException(status_code=404, detail="Workspace not found") from exc
+
         workspace_dir = self._workspace_dir(workspace_id)
         if workspace_dir.exists():
             shutil.rmtree(workspace_dir)
 
-    def enforce_workspace_role(
+    async def enforce_workspace_role(
         self,
         workspace_id: str,
         user_id: str,
         required_role: str,
     ) -> UserSpaceWorkspace:
-        return self._enforce_workspace_access(
+        return await self._enforce_workspace_access(
             workspace_id,
             user_id,
             required_role=required_role,
         )
 
-    def list_workspace_conversation_ids(
-        self, workspace_id: str, user_id: str
-    ) -> list[str]:
-        workspace = self._enforce_workspace_access(workspace_id, user_id)
-        return list(workspace.conversation_ids)
-
-    def add_conversation_to_workspace(
-        self,
-        workspace_id: str,
-        conversation_id: str,
-        user_id: str,
-    ) -> UserSpaceWorkspace:
-        workspace = self._enforce_workspace_access(
-            workspace_id, user_id, required_role="editor"
-        )
-        if conversation_id not in workspace.conversation_ids:
-            workspace.conversation_ids.append(conversation_id)
-            workspace.updated_at = _utc_now()
-            self._write_workspace(workspace)
-        return workspace
-
-    def has_workspace_conversation_access(
-        self,
-        workspace_id: str,
-        conversation_id: str,
-        user_id: str,
-    ) -> bool:
-        workspace = self._enforce_workspace_access(workspace_id, user_id)
-        return conversation_id in workspace.conversation_ids
-
-    def update_workspace(
+    async def update_workspace(
         self,
         workspace_id: str,
         request: UpdateWorkspaceRequest,
         user_id: str,
     ) -> UserSpaceWorkspace:
-        workspace = self._enforce_workspace_access(
-            workspace_id, user_id, required_role="editor"
-        )
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
+        db = await get_db()
 
+        update_data: dict[str, Any] = {"updatedAt": _utc_now()}
         if request.name is not None:
-            workspace.name = request.name
+            update_data["name"] = request.name
         if request.description is not None:
-            workspace.description = request.description
+            update_data["description"] = request.description
+
+        await db.workspace.update(where={"id": workspace_id}, data=update_data)
+
         if request.selected_tool_ids is not None:
-            workspace.selected_tool_ids = request.selected_tool_ids
+            await db.workspacetoolselection.delete_many(where={"workspaceId": workspace_id})
+            for tool_id in request.selected_tool_ids:
+                tool = await db.toolconfig.find_unique(where={"id": tool_id})
+                if not tool or not tool.enabled:
+                    continue
+                await db.workspacetoolselection.create(
+                    data={
+                        "workspaceId": workspace_id,
+                        "toolConfigId": tool_id,
+                    }
+                )
 
-        workspace.updated_at = _utc_now()
-        self._write_workspace(workspace)
-        return workspace
+        refreshed = await db.workspace.find_unique(
+            where={"id": workspace_id},
+            include={"members": True, "toolSelections": True},
+        )
+        if not refreshed:
+            raise HTTPException(status_code=404, detail="Workspace not found")
 
-    def update_workspace_members(
+        return self._workspace_from_record(refreshed)
+
+    async def update_workspace_members(
         self,
         workspace_id: str,
         request: UpdateWorkspaceMembersRequest,
         user_id: str,
     ) -> UserSpaceWorkspace:
-        workspace = self._enforce_workspace_access(
+        workspace = await self._enforce_workspace_access(
             workspace_id, user_id, required_role="owner"
         )
+        db = await get_db()
 
         normalized_members: dict[str, WorkspaceMember] = {
             workspace.owner_user_id: WorkspaceMember(
@@ -310,15 +497,37 @@ class UserSpaceService:
                 role=normalized_role,
             )
 
-        workspace.members = list(normalized_members.values())
-        workspace.updated_at = _utc_now()
-        self._write_workspace(workspace)
-        return workspace
+        await db.workspacemember.delete_many(where={"workspaceId": workspace_id})
+        for member in normalized_members.values():
+            user = await db.user.find_unique(where={"id": member.user_id})
+            if not user:
+                continue
+            await db.workspacemember.create(
+                data={
+                    "workspaceId": workspace_id,
+                    "userId": member.user_id,
+                    "role": member.role,
+                }
+            )
 
-    def list_workspace_files(
+        await db.workspace.update(
+            where={"id": workspace_id},
+            data={"updatedAt": _utc_now()},
+        )
+
+        refreshed = await db.workspace.find_unique(
+            where={"id": workspace_id},
+            include={"members": True, "toolSelections": True},
+        )
+        if not refreshed:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+
+        return self._workspace_from_record(refreshed)
+
+    async def list_workspace_files(
         self, workspace_id: str, user_id: str
     ) -> list[UserSpaceFileInfo]:
-        self._enforce_workspace_access(workspace_id, user_id)
+        await self._enforce_workspace_access(workspace_id, user_id)
         self._ensure_workspace_git_repo(workspace_id)
         files_dir = self._workspace_files_dir(workspace_id)
         if not files_dir.exists():
@@ -343,14 +552,14 @@ class UserSpaceService:
         files.sort(key=lambda item: item.path)
         return files
 
-    def upsert_workspace_file(
+    async def upsert_workspace_file(
         self,
         workspace_id: str,
         relative_path: str,
         request: UpsertWorkspaceFileRequest,
         user_id: str,
     ) -> UserSpaceFileResponse:
-        self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
         self._ensure_workspace_git_repo(workspace_id)
         if self._is_reserved_internal_path(relative_path):
             raise HTTPException(status_code=400, detail="Invalid file path")
@@ -369,9 +578,7 @@ class UserSpaceService:
             sidecar.unlink()
 
         stat = file_path.stat()
-        workspace = self._read_workspace(workspace_id)
-        workspace.updated_at = _utc_now()
-        self._write_workspace(workspace)
+        await self._touch_workspace(workspace_id)
 
         return UserSpaceFileResponse(
             path=relative_path,
@@ -380,13 +587,13 @@ class UserSpaceService:
             updated_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
         )
 
-    def get_workspace_file(
+    async def get_workspace_file(
         self,
         workspace_id: str,
         relative_path: str,
         user_id: str,
     ) -> UserSpaceFileResponse:
-        self._enforce_workspace_access(workspace_id, user_id)
+        await self._enforce_workspace_access(workspace_id, user_id)
         self._ensure_workspace_git_repo(workspace_id)
         if self._is_reserved_internal_path(relative_path):
             raise HTTPException(status_code=404, detail="File not found")
@@ -414,10 +621,10 @@ class UserSpaceService:
             updated_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
         )
 
-    def delete_workspace_file(
+    async def delete_workspace_file(
         self, workspace_id: str, relative_path: str, user_id: str
     ) -> None:
-        self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
         self._ensure_workspace_git_repo(workspace_id)
         if self._is_reserved_internal_path(relative_path):
             raise HTTPException(status_code=400, detail="Invalid file path")
@@ -429,17 +636,15 @@ class UserSpaceService:
         if sidecar.exists() and sidecar.is_file():
             sidecar.unlink()
 
-        workspace = self._read_workspace(workspace_id)
-        workspace.updated_at = _utc_now()
-        self._write_workspace(workspace)
+        await self._touch_workspace(workspace_id)
 
-    def create_snapshot(
+    async def create_snapshot(
         self,
         workspace_id: str,
         user_id: str,
         message: str | None = None,
     ) -> UserSpaceSnapshot:
-        self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
         self._ensure_workspace_git_repo(workspace_id)
         self._run_git(workspace_id, ["add", "-A"])
 
@@ -468,19 +673,15 @@ class UserSpaceService:
             if not self._is_reserved_internal_path(file_name)
         )
 
-        snapshot_meta = UserSpaceSnapshot(
+        await self._touch_workspace(workspace_id, ts=created_at)
+
+        return UserSpaceSnapshot(
             id=snapshot_id,
             workspace_id=workspace_id,
             message=commit_subject,
             created_at=created_at,
             file_count=file_count,
         )
-
-        workspace = self._read_workspace(workspace_id)
-        workspace.updated_at = created_at
-        self._write_workspace(workspace)
-
-        return snapshot_meta
 
     async def _get_snapshot_retention_cutoff(self) -> float | None:
         """Return a UNIX timestamp cutoff based on app_settings snapshot_retention_days.
@@ -504,7 +705,7 @@ class UserSpaceService:
     async def list_snapshots(
         self, workspace_id: str, user_id: str
     ) -> list[UserSpaceSnapshot]:
-        self._enforce_workspace_access(workspace_id, user_id)
+        await self._enforce_workspace_access(workspace_id, user_id)
         self._ensure_workspace_git_repo(workspace_id)
 
         head_check = self._run_git(
@@ -555,7 +756,7 @@ class UserSpaceService:
     async def restore_snapshot(
         self, workspace_id: str, snapshot_id: str, user_id: str
     ) -> UserSpaceSnapshot:
-        self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
         self._ensure_workspace_git_repo(workspace_id)
 
         commit_check = self._run_git(
@@ -608,12 +809,9 @@ class UserSpaceService:
             file_count=file_count,
         )
 
-        workspace = self._read_workspace(workspace_id)
-        workspace.updated_at = _utc_now()
-        self._write_workspace(workspace)
+        await self._touch_workspace(workspace_id)
 
         return snapshot
 
 
-userspace_service = UserSpaceService()
 userspace_service = UserSpaceService()

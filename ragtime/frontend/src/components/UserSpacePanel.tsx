@@ -194,6 +194,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
         content: 'export function render(container: HTMLElement) {\n  container.innerHTML = `<h2>Interactive Report</h2><p>Ask chat to build your report and wire live data connections.</p>`;\n}\n',
         artifact_type: 'module_ts',
       });
+      await api.createConversation(undefined, created.id);
       setActiveWorkspaceId(created.id);
       await loadWorkspaces();
       await loadWorkspaceData(created.id);

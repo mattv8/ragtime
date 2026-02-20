@@ -1246,10 +1246,13 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, em
     try {
       const data = await api.listConversations(workspaceId);
       setConversations(data);
-      // If no active conversation and we have conversations, select the most recent
-      if (!activeConversation && data.length > 0) {
-        setActiveConversation(data[0]);
-      }
+      setActiveConversation((current) => {
+        if (!current) {
+          return data[0] ?? null;
+        }
+        const matchingConversation = data.find((conversation) => conversation.id === current.id);
+        return matchingConversation ?? data[0] ?? null;
+      });
     } catch (err) {
       console.error('Failed to load conversations:', err);
     }
@@ -1995,6 +1998,8 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, em
     return Math.round(tokens / limit * 100);
   }, [activeConversation?.messages, activeConversation?.model, getContextLimit]);
 
+  const showWorkspaceConversationSelect = embedded && Boolean(workspaceId);
+
   const renderConversationItem = (conv: Conversation) => {
     const metaText = `${conv.messages.length} messages | ${formatRelativeTime(conv.updated_at)}`;
     const isActive = activeConversation?.id === conv.id;
@@ -2164,7 +2169,29 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, em
                     <Menu size={20} />
                   </button>
                 )}
-                <h2>{activeConversation.title}</h2>
+                {showWorkspaceConversationSelect ? (
+                  <select
+                    className="chat-workspace-conversation-select"
+                    value={activeConversation.id}
+                    onChange={(e) => {
+                      const selectedConversation = conversations.find(
+                        (conversation) => conversation.id === e.target.value,
+                      );
+                      if (selectedConversation) {
+                        void selectConversation(selectedConversation);
+                      }
+                    }}
+                    title="Select a workspace chat"
+                  >
+                    {conversations.map((conversation) => (
+                      <option key={conversation.id} value={conversation.id}>
+                        {conversation.title || 'New Chat'}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <h2>{activeConversation.title}</h2>
+                )}
               </div>
               <div className="chat-header-actions">
                 {!embedded && (

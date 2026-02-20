@@ -1263,6 +1263,7 @@ class IndexerRepository:
         title: str = "New Chat",
         model: str = "gpt-4-turbo",
         user_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
     ) -> Conversation:
         """Create a new conversation."""
         db = await self._get_db()
@@ -1275,6 +1276,7 @@ class IndexerRepository:
                 "messages": Json([]),
                 "totalTokens": 0,
                 "userId": user_id,
+                "workspaceId": workspace_id,
             },
             include={"user": True},
         )
@@ -1295,7 +1297,10 @@ class IndexerRepository:
         return self._prisma_conversation_to_model(prisma_conv)
 
     async def list_conversations(
-        self, user_id: Optional[str] = None, include_all: bool = False
+        self,
+        user_id: Optional[str] = None,
+        include_all: bool = False,
+        workspace_id: Optional[str] = None,
     ) -> list[Conversation]:
         """
         List conversations, newest first.
@@ -1306,9 +1311,14 @@ class IndexerRepository:
         """
         db = await self._get_db()
 
-        where_clause = {}
+        where_clause: dict[str, Any] = {}
+        if workspace_id is not None:
+            where_clause["workspaceId"] = workspace_id
+        else:
+            where_clause["workspaceId"] = None
+
         if not include_all and user_id:
-            where_clause = {"userId": user_id}
+            where_clause["userId"] = user_id
 
         prisma_convs = await db.conversation.find_many(
             where=where_clause if where_clause else None,  # type: ignore[arg-type]
@@ -1477,7 +1487,11 @@ class IndexerRepository:
             return None
 
     async def check_conversation_access(
-        self, conversation_id: str, user_id: Optional[str], is_admin: bool = False
+        self,
+        conversation_id: str,
+        user_id: Optional[str],
+        is_admin: bool = False,
+        workspace_id: Optional[str] = None,
     ) -> bool:
         """
         Check if user has access to a conversation.
@@ -1490,16 +1504,23 @@ class IndexerRepository:
         Returns:
             True if user has access, False otherwise
         """
-        if is_admin:
-            return True
-
-        if not user_id:
-            return False
-
         db = await self._get_db()
         conv = await db.conversation.find_unique(where={"id": conversation_id})
 
         if not conv:
+            return False
+
+        conversation_workspace_id = getattr(conv, "workspaceId", None)
+        if workspace_id is not None:
+            if conversation_workspace_id != workspace_id:
+                return False
+        elif conversation_workspace_id is not None:
+            return False
+
+        if is_admin:
+            return True
+
+        if not user_id:
             return False
 
         # Allow access if conversation has no owner (legacy) or matches user
@@ -1516,6 +1537,27 @@ class IndexerRepository:
         except Exception as e:
             logger.warning(f"Failed to delete conversation {conversation_id}: {e}")
             return False
+
+    async def delete_workspace_conversations(self, workspace_id: str) -> int:
+        """Delete all conversations linked to a workspace and return delete count."""
+        db = await self._get_db()
+
+        try:
+            deleted = await db.conversation.delete_many(
+                where={"workspaceId": workspace_id}
+            )
+            count = getattr(deleted, "count", 0)
+            logger.info(
+                "Deleted %s conversations for workspace %s", count, workspace_id
+            )
+            return int(count)
+        except Exception as e:
+            logger.warning(
+                "Failed to delete conversations for workspace %s: %s",
+                workspace_id,
+                e,
+            )
+            return 0
 
     def _prisma_conversation_to_model(self, prisma_conv: Any) -> Conversation:
         """Convert Prisma Conversation to Pydantic model."""
@@ -1568,6 +1610,7 @@ class IndexerRepository:
             title=prisma_conv.title,
             model=prisma_conv.model,
             user_id=getattr(prisma_conv, "userId", None),
+            workspace_id=getattr(prisma_conv, "workspaceId", None),
             username=getattr(user, "username", None) if user else None,
             display_name=getattr(user, "displayName", None) if user else None,
             messages=messages,

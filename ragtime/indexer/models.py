@@ -1783,6 +1783,9 @@ class Conversation(BaseModel):
     user_id: Optional[str] = Field(
         default=None, description="ID of the conversation owner"
     )
+    workspace_id: Optional[str] = Field(
+        default=None, description="Optional User Space workspace ID"
+    )
     username: Optional[str] = Field(
         default=None, description="Username of the conversation owner"
     )
@@ -1809,6 +1812,7 @@ class ConversationResponse(BaseModel):
     title: str
     model: str
     user_id: Optional[str] = None
+    workspace_id: Optional[str] = None
     username: Optional[str] = None
     display_name: Optional[str] = None
     messages: List[ChatMessage]

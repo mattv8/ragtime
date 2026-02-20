@@ -1394,6 +1394,7 @@ export interface Conversation {
   title: string;
   model: string;
   user_id?: string;
+  workspace_id?: string | null;
   username?: string;
   display_name?: string;
   messages: ChatMessage[];

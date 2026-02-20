@@ -289,6 +289,9 @@ model ToolConfig {
   // Relation to MCP route tool selections
   mcpRouteTools McpRouteToolSelection[]
 
+  // Relation to User Space workspace tool selections
+  workspaceToolSelections WorkspaceToolSelection[]
+
   // Relation to MCP default route filter tool selections
   mcpDefaultRouteFilterTools McpDefaultRouteFilterToolSelection[]
 
@@ -627,6 +630,13 @@ enum UserRole {
   admin
 }
 
+/// User Space workspace role
+enum WorkspaceRole {
+  owner
+  editor
+  viewer
+}
+
 /// User account (synced from LDAP or local admin)
 model User {
   id            String       @id @default(uuid())
@@ -644,6 +654,8 @@ model User {
   // Relations
   sessions      Session[]
   conversations Conversation[]
+  ownedWorkspaces Workspace[] @relation("WorkspaceOwner")
+  workspaceMemberships WorkspaceMember[]
 
   @@map("users")
 }
@@ -724,6 +736,10 @@ model Conversation {
   userId    String?   @map("user_id")
   user      User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
 
+  // Optional User Space workspace scoping
+  workspaceId String? @map("workspace_id")
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
   // Messages stored as JSON array
   // Each message: { role: 'user' | 'assistant' | 'system', content: string, timestamp: string }
   messages  Json      @default("[]")
@@ -744,7 +760,64 @@ model Conversation {
   // Relation to background tasks
   tasks     ChatTask[]
 
+  @@index([workspaceId, updatedAt])
+  @@index([userId, workspaceId, updatedAt])
   @@map("conversations")
+}
+
+/// User Space workspace metadata and ACL source-of-truth
+model Workspace {
+  id          String   @id
+  name        String
+  description String?  @default("")
+
+  ownerUserId String   @map("owner_user_id")
+  owner       User     @relation("WorkspaceOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  members         WorkspaceMember[]
+  toolSelections  WorkspaceToolSelection[]
+  conversations   Conversation[]
+
+  @@index([ownerUserId])
+  @@index([updatedAt])
+  @@map("workspaces")
+}
+
+/// Workspace member ACL entries
+model WorkspaceMember {
+  id          String        @id @default(uuid())
+  workspaceId String        @map("workspace_id")
+  userId      String        @map("user_id")
+  role        WorkspaceRole
+
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+  @@map("workspace_members")
+}
+
+/// Workspace-selected tool configs (many-to-many)
+model WorkspaceToolSelection {
+  id           String     @id @default(uuid())
+  workspaceId  String     @map("workspace_id")
+  toolConfigId String     @map("tool_config_id")
+
+  workspace    Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  toolConfig   ToolConfig @relation(fields: [toolConfigId], references: [id], onDelete: Cascade)
+
+  createdAt    DateTime   @default(now()) @map("created_at")
+
+  @@unique([workspaceId, toolConfigId])
+  @@index([toolConfigId])
+  @@map("workspace_tool_selections")
 }
 
 /// Background chat task for async message processing
