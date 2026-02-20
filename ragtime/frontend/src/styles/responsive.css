@@ -2,6 +2,31 @@
    RESPONSIVE - Media queries and responsive adjustments
    ============================================================================= */
 
+/* =============================================================================
+   RESPONSIVE CONTAINER BREAKPOINTS (mobile-first, similar to Bootstrap)
+   sm >=576px | md >=768px | lg >=992px | xl >=1200px | xxl >=1400px
+   ============================================================================= */
+
+@media (min-width: 576px) {
+  :root { --container-max-width: 540px; }
+}
+
+@media (min-width: 768px) {
+  :root { --container-max-width: 720px; }
+}
+
+@media (min-width: 992px) {
+  :root { --container-max-width: 960px; }
+}
+
+@media (min-width: 1200px) {
+  :root { --container-max-width: 1140px; }
+}
+
+@media (min-width: 1400px) {
+  :root { --container-max-width: 1320px; }
+}
+
 /* Tablet breakpoint (768px and below) */
 @media (max-width: 768px) {
   body {
@@ -9,7 +34,6 @@
   }
 
   .container {
-    max-width: 100%;
     padding: 0;
   }
 

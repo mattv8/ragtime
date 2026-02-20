@@ -227,8 +227,27 @@ textarea:focus {
   flex-direction: column;
   height: calc(100vh - 80px);
   overflow: hidden;
-  margin: calc(-1 * var(--space-lg));
-  margin-top: 0;
+  max-width: var(--container-max-width);
+  margin: 0 auto;
+  width: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.userspace-layout.userspace-fullscreen {
+  max-width: none;
+  margin: 0;
+  width: auto;
+  position: fixed;
+  top: 1rem;
+  left: 1rem;
+  right: 1rem;
+  bottom: 1rem;
+  height: auto;
+  z-index: 500;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-primary);
 }
 
 /* --- Toolbar --- */
@@ -239,7 +258,7 @@ textarea:focus {
   justify-content: space-between;
   gap: var(--space-md);
   padding: var(--space-xs) var(--space-md);
-  background: var(--color-surface);
+  background: var(--color-surface-hover);
   border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
   min-height: 44px;
@@ -256,6 +275,8 @@ textarea:focus {
   max-width: 260px;
   padding: 6px 32px 6px 10px;
   font-size: var(--text-sm);
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
 }
 
 .userspace-filepath-input {
@@ -264,6 +285,8 @@ textarea:focus {
   padding: 6px 10px;
   font-size: var(--text-sm);
   font-family: var(--font-mono, 'SF Mono', 'Fira Code', monospace);
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
 }
 
 .userspace-type-select {
@@ -271,6 +294,8 @@ textarea:focus {
   max-width: 150px;
   padding: 6px 32px 6px 10px;
   font-size: var(--text-sm);
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
 }
 
 .userspace-role-badge {
@@ -340,7 +365,7 @@ textarea:focus {
   align-items: center;
   gap: var(--space-xs);
   padding: var(--space-xs) var(--space-md);
-  background: var(--color-background);
+  background: var(--color-surface-hover);
   border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
 }
@@ -403,7 +428,7 @@ textarea:focus {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--color-background);
+  background: var(--color-bg-secondary);
 }
 
 .userspace-file-sidebar-header {
@@ -412,6 +437,7 @@ textarea:focus {
   display: flex;
   align-items: center;
   gap: var(--space-xs);
+  background: var(--color-surface-hover);
 }
 
 .userspace-file-sidebar-header h4 {
@@ -475,6 +501,44 @@ textarea:focus {
   opacity: 1;
 }
 
+.userspace-file-rename-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px var(--space-sm);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  color: inherit;
+  font: inherit;
+  font-size: var(--text-xs);
+}
+
+.userspace-new-file-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  width: 100%;
+  padding: 6px var(--space-sm);
+  background: none;
+  border: none;
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.userspace-new-file-btn:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}
+
+.userspace-new-file-btn:focus {
+  outline: none;
+}
+
 /* Code editor */
 
 .userspace-code-editor {
@@ -509,7 +573,7 @@ textarea:focus {
   font-family: var(--font-mono, 'SF Mono', 'Fira Code', 'Cascadia Code', monospace);
   font-size: 13px;
   line-height: 1.6;
-  background: var(--color-background);
+  background: var(--color-bg-primary);
   color: var(--color-text-primary);
   tab-size: 2;
   min-height: 0;
@@ -564,7 +628,7 @@ textarea:focus {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   padding: var(--space-md);
-  background: var(--color-background);
+  background: var(--color-bg-secondary);
 }
 
 .userspace-preview-card h4 {
@@ -616,7 +680,7 @@ textarea:focus {
   gap: var(--space-xs);
   width: 100%;
   padding: var(--space-xs) var(--space-sm);
-  background: var(--color-surface);
+  background: var(--color-surface-hover);
   border: none;
   cursor: pointer;
   color: var(--color-text-secondary);
@@ -626,7 +690,7 @@ textarea:focus {
 }
 
 .userspace-snapshots-toggle:hover {
-  background: var(--color-surface-hover);
+  background: var(--color-surface-active);
 }
 
 .userspace-snapshots-toggle .rotated {
@@ -665,7 +729,7 @@ textarea:focus {
 .userspace-snapshot-info code {
   font-family: var(--font-mono, monospace);
   font-size: var(--text-xs);
-  background: var(--color-background);
+  background: var(--color-bg-primary);
   padding: 2px 6px;
   border-radius: var(--radius-sm);
   flex-shrink: 0;
@@ -705,7 +769,7 @@ textarea:focus {
   padding: var(--space-xs) var(--space-sm);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  background: var(--color-background);
+  background: var(--color-bg-secondary);
 }
 
 .userspace-member-row > span {

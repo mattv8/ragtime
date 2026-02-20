@@ -95,6 +95,9 @@
   --leading-normal: 1.5;
   --leading-relaxed: 1.75;
 
+  /* Responsive container width (overridden by breakpoints in responsive.css) */
+  --container-max-width: 100%;
+
   /* Transitions */
   --transition-fast: 150ms ease;
   --transition-normal: 200ms ease;

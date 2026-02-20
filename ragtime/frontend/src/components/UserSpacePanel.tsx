@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, File, History, Pencil, Plus, Save, Settings, Trash2, Users, X } from 'lucide-react';
+import { Check, ChevronDown, File, History, Maximize2, Minimize2, Pencil, Plus, Save, Settings, Trash2, Users, X } from 'lucide-react';
 
 import { api } from '@/api';
 import type { User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceFileInfo, UserSpaceSnapshot, UserSpaceWorkspace, UserSpaceWorkspaceMember, WorkspaceRole } from '@/types';
@@ -9,9 +9,10 @@ import { UserSpaceArtifactPreview } from './UserSpaceArtifactPreview';
 
 interface UserSpacePanelProps {
   currentUser: User;
+  onFullscreenChange?: (fullscreen: boolean) => void;
 }
 
-export function UserSpacePanel({ currentUser }: UserSpacePanelProps) {
+export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePanelProps) {
   const [workspaces, setWorkspaces] = useState<UserSpaceWorkspace[]>([]);
   const [workspacesTotal, setWorkspacesTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -28,9 +29,19 @@ export function UserSpacePanel({ currentUser }: UserSpacePanelProps) {
   const [selectedArtifactType, setSelectedArtifactType] = useState<UserSpaceArtifactType | ''>('');
   const [fileDirty, setFileDirty] = useState(false);
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  const toggleFullscreen = useCallback(() => {
+    const next = !isFullscreen;
+    setIsFullscreen(next);
+    onFullscreenChange?.(next);
+  }, [isFullscreen, onFullscreenChange]);
   const [savingFile, setSavingFile] = useState(false);
   const [savingWorkspaceTools, setSavingWorkspaceTools] = useState(false);
   const [deleteConfirmFileId, setDeleteConfirmFileId] = useState<string | null>(null);
+  const [newFileName, setNewFileName] = useState<string | null>(null);
+  const [renamingFilePath, setRenamingFilePath] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
   const [deleteConfirmWorkspaceId, setDeleteConfirmWorkspaceId] = useState<string | null>(null);
   const [showMembersModal, setShowMembersModal] = useState(false);
   const [allUsers, setAllUsers] = useState<User[]>([]);
@@ -265,6 +276,44 @@ export function UserSpacePanel({ currentUser }: UserSpacePanelProps) {
     }
   }, [activeWorkspaceId, canEditWorkspace, loadWorkspaceData]);
 
+  const handleCreateNewFile = useCallback(async (path: string) => {
+    if (!activeWorkspaceId || !canEditWorkspace || !path.trim()) return;
+    try {
+      await api.upsertUserSpaceFile(activeWorkspaceId, path.trim(), {
+        content: '',
+        artifact_type: undefined,
+      });
+      setNewFileName(null);
+      await loadWorkspaceData(activeWorkspaceId);
+      handleSelectFile(path.trim());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create file');
+    }
+  }, [activeWorkspaceId, canEditWorkspace, loadWorkspaceData, handleSelectFile]);
+
+  const handleRenameFile = useCallback(async (oldPath: string, newPath: string) => {
+    if (!activeWorkspaceId || !canEditWorkspace || !newPath.trim() || newPath.trim() === oldPath) {
+      setRenamingFilePath(null);
+      return;
+    }
+    try {
+      // Read old file content, save to new path, delete old
+      const file = await api.getUserSpaceFile(activeWorkspaceId, oldPath);
+      await api.upsertUserSpaceFile(activeWorkspaceId, newPath.trim(), {
+        content: file.content,
+        artifact_type: file.artifact_type || undefined,
+      });
+      await api.deleteUserSpaceFile(activeWorkspaceId, oldPath);
+      setRenamingFilePath(null);
+      if (selectedFilePath === oldPath) {
+        setSelectedFilePath(newPath.trim());
+      }
+      await loadWorkspaceData(activeWorkspaceId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to rename file');
+    }
+  }, [activeWorkspaceId, canEditWorkspace, loadWorkspaceData, selectedFilePath]);
+
   const handleDeleteFile = useCallback(async (filePath: string) => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
     try {
@@ -373,7 +422,7 @@ export function UserSpacePanel({ currentUser }: UserSpacePanelProps) {
   }, [activeWorkspace, canEditWorkspace, draftDescription]);
 
   return (
-    <div className="userspace-layout">
+    <div className={`userspace-layout${isFullscreen ? ' userspace-fullscreen' : ''}`}>
       {/* === Top toolbar === */}
       <div className="userspace-toolbar">
         <div className="userspace-toolbar-group">
@@ -418,13 +467,6 @@ export function UserSpacePanel({ currentUser }: UserSpacePanelProps) {
         </div>
 
         <div className="userspace-toolbar-group">
-          <input
-            className="userspace-filepath-input"
-            value={selectedFilePath}
-            onChange={(e) => setSelectedFilePath(e.target.value)}
-            placeholder="path/to/file.ts"
-            disabled={!canEditWorkspace}
-          />
           <select
             className="userspace-type-select"
             value={selectedArtifactType}
@@ -465,6 +507,13 @@ export function UserSpacePanel({ currentUser }: UserSpacePanelProps) {
               title="Workspace tools"
             >
               <Settings size={14} />
+            </button>
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={toggleFullscreen}
+              title={isFullscreen ? 'Exit full screen' : 'Full screen'}
+            >
+              {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
             </button>
             {showToolPicker && activeWorkspace && (
               <div className="userspace-tool-dropdown">
@@ -551,6 +600,31 @@ export function UserSpacePanel({ currentUser }: UserSpacePanelProps) {
               <div className="userspace-file-list">
                 {files.map((file) => {
                   const isConfirmingDelete = deleteConfirmFileId === file.path;
+                  const isRenaming = renamingFilePath === file.path;
+                  if (isRenaming) {
+                    return (
+                      <div key={file.path} className="userspace-file-item active">
+                        <input
+                          className="userspace-file-rename-input"
+                          value={renameValue}
+                          onChange={(e) => setRenameValue(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') handleRenameFile(file.path, renameValue);
+                            if (e.key === 'Escape') setRenamingFilePath(null);
+                          }}
+                          autoFocus
+                        />
+                        <div className="userspace-item-actions" style={{ opacity: 1 }}>
+                          <button className="chat-action-btn" onClick={() => handleRenameFile(file.path, renameValue)} title="Confirm">
+                            <Check size={12} />
+                          </button>
+                          <button className="chat-action-btn" onClick={() => setRenamingFilePath(null)} title="Cancel">
+                            <X size={12} />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  }
                   return (
                     <div
                       key={file.path}
@@ -571,18 +645,50 @@ export function UserSpacePanel({ currentUser }: UserSpacePanelProps) {
                               </button>
                             </>
                           ) : (
-                            <button className="chat-action-btn" onClick={() => setDeleteConfirmFileId(file.path)} title="Delete">
-                              <Trash2 size={12} />
-                            </button>
+                            <>
+                              <button className="chat-action-btn" onClick={() => { setRenamingFilePath(file.path); setRenameValue(file.path); }} title="Rename">
+                                <Pencil size={12} />
+                              </button>
+                              <button className="chat-action-btn" onClick={() => setDeleteConfirmFileId(file.path)} title="Delete">
+                                <Trash2 size={12} />
+                              </button>
+                            </>
                           )}
                         </div>
                       )}
                     </div>
                   );
                 })}
-                {files.length === 0 && (
+                {/* New file input */}
+                {newFileName !== null ? (
+                  <div className="userspace-file-item">
+                    <input
+                      className="userspace-file-rename-input"
+                      value={newFileName}
+                      onChange={(e) => setNewFileName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleCreateNewFile(newFileName);
+                        if (e.key === 'Escape') setNewFileName(null);
+                      }}
+                      placeholder="path/to/file.ts"
+                      autoFocus
+                    />
+                    <div className="userspace-item-actions" style={{ opacity: 1 }}>
+                      <button className="chat-action-btn" onClick={() => handleCreateNewFile(newFileName)} title="Create">
+                        <Check size={12} />
+                      </button>
+                      <button className="chat-action-btn" onClick={() => setNewFileName(null)} title="Cancel">
+                        <X size={12} />
+                      </button>
+                    </div>
+                  </div>
+                ) : canEditWorkspace ? (
+                  <button className="userspace-new-file-btn" onClick={() => setNewFileName('')} title="New file">
+                    <Plus size={12} /> New file
+                  </button>
+                ) : files.length === 0 ? (
                   <p className="userspace-muted" style={{ padding: '8px' }}>No files yet</p>
-                )}
+                ) : null}
               </div>
             </div>
 

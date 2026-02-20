@@ -85,6 +85,9 @@ export function App() {
   // Configuration warnings state
   const [configurationWarnings, setConfigurationWarnings] = useState<ConfigurationWarning[]>([]);
 
+  // Userspace fullscreen state
+  const [userspaceFullscreen, setUserspaceFullscreen] = useState(false);
+
   // Load server name and embedding dimensions from settings
   useEffect(() => {
     const loadSettings = async () => {
@@ -216,6 +219,10 @@ export function App() {
   useEffect(() => {
     if (currentUser && !isAdmin && activeView !== 'chat' && activeView !== 'userspace') {
       setActiveView('userspace');
+    }
+    // Clear fullscreen when leaving userspace
+    if (activeView !== 'userspace') {
+      setUserspaceFullscreen(false);
     }
   }, [currentUser, isAdmin, activeView]);
 
@@ -455,7 +462,7 @@ export function App() {
 
   return (
     <>
-      <nav className="topnav">
+      <nav className="topnav" style={userspaceFullscreen && activeView === 'userspace' ? { display: 'none' } : undefined}>
         <span className="topnav-brand">{serverName}</span>
         <div className="topnav-links">
           {isAdmin && (
@@ -503,6 +510,7 @@ export function App() {
       <SecurityBanner
         authStatus={authStatus}
         isAdmin={isAdmin}
+        hidden={userspaceFullscreen && activeView === 'userspace'}
         onNavigateToSettings={() => {
           if (isAdmin) {
             setHighlightSetting('api_key_info');
@@ -513,6 +521,7 @@ export function App() {
       <ConfigurationBanner
         warnings={configurationWarnings}
         isAdmin={isAdmin}
+        hidden={userspaceFullscreen && activeView === 'userspace'}
         onNavigateToSettings={() => {
           if (isAdmin) {
             setHighlightSetting('embedding_config');
@@ -521,7 +530,7 @@ export function App() {
         }}
       />
       {activeView === 'userspace' ? (
-        <UserSpacePanel currentUser={currentUser} />
+        <UserSpacePanel currentUser={currentUser} onFullscreenChange={setUserspaceFullscreen} />
       ) : null}
 
       <div className="container" style={activeView === 'userspace' ? { display: 'none' } : undefined}>

@@ -6,10 +6,11 @@ const DISMISS_KEY = 'ragtime_security_banner_dismissed';
 interface SecurityBannerProps {
   authStatus: AuthStatus | null;
   isAdmin: boolean;
+  hidden?: boolean;
   onNavigateToSettings?: () => void;
 }
 
-export function SecurityBanner({ authStatus, isAdmin, onNavigateToSettings }: SecurityBannerProps) {
+export function SecurityBanner({ authStatus, isAdmin, hidden, onNavigateToSettings }: SecurityBannerProps) {
   const [dismissed, setDismissed] = useState(false);
 
   // Check sessionStorage on mount
@@ -23,6 +24,9 @@ export function SecurityBanner({ authStatus, isAdmin, onNavigateToSettings }: Se
 
   // Only show to admins - regular users can't fix these issues
   if (!isAdmin) return null;
+
+  // Hide when userspace is fullscreen
+  if (hidden) return null;
 
   // Check security issues
   const showApiKeyWarning = !authStatus.api_key_configured;

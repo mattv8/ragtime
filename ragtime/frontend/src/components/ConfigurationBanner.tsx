@@ -6,10 +6,11 @@ const DISMISS_KEY = 'ragtime_config_banner_dismissed';
 interface ConfigurationBannerProps {
   warnings: ConfigurationWarning[];
   isAdmin: boolean;
+  hidden?: boolean;
   onNavigateToSettings?: () => void;
 }
 
-export function ConfigurationBanner({ warnings, isAdmin, onNavigateToSettings }: ConfigurationBannerProps) {
+export function ConfigurationBanner({ warnings, isAdmin, hidden, onNavigateToSettings }: ConfigurationBannerProps) {
   const [dismissed, setDismissed] = useState(false);
 
   // Check sessionStorage on mount
@@ -20,6 +21,9 @@ export function ConfigurationBanner({ warnings, isAdmin, onNavigateToSettings }:
 
   // Only show to admins - regular users can't fix these issues
   if (!isAdmin) return null;
+
+  // Hide when userspace is fullscreen
+  if (hidden) return null;
 
   // Filter to only show warnings and errors (not info level)
   const significantWarnings = warnings.filter(w => w.level === 'warning' || w.level === 'error');
