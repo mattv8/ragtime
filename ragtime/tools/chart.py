@@ -68,6 +68,13 @@ class CreateChartInput(BaseModel):
             "The options are merged with the auto-generated config (does not replace data)."
         ),
     )
+    data_connection: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Optional internal data-connection component reference metadata. "
+            "In User Space mode, this should reference admin-configured tool components (for example tool_config IDs)."
+        ),
+    )
 
 
 # Default color palettes for charts
@@ -92,6 +99,64 @@ CHART_BORDER_COLORS = [
     "rgba(199, 199, 199, 1)",
     "rgba(83, 102, 255, 1)",
 ]
+
+
+def _normalize_data_connection(
+    data_connection: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Normalize data connection metadata to strict component schema."""
+    if not isinstance(data_connection, dict):
+        return None
+
+    component_id = (
+        str(data_connection.get("component_id") or "").strip()
+        or str(data_connection.get("source_tool_config_id") or "").strip()
+    )
+    component_name = (
+        str(data_connection.get("component_name") or "").strip()
+        or str(data_connection.get("source_tool") or "").strip()
+        or None
+    )
+    component_type = (
+        str(data_connection.get("component_type") or "").strip()
+        or str(data_connection.get("source_tool_type") or "").strip()
+        or None
+    )
+
+    request_payload = data_connection.get("request")
+    if request_payload is None:
+        request_payload = data_connection.get("source_input")
+    if request_payload is None:
+        request_payload = {}
+    if not isinstance(request_payload, dict):
+        request_payload = {"value": request_payload}
+
+    refresh_raw = data_connection.get("refresh_interval_seconds")
+    refresh_interval_seconds: int | None = None
+    if refresh_raw is not None:
+        try:
+            refresh_interval_seconds = max(1, int(refresh_raw))
+        except (TypeError, ValueError):
+            refresh_interval_seconds = None
+
+    component_kind = (
+        str(data_connection.get("component_kind") or "").strip() or "tool_config"
+    )
+
+    normalized: dict[str, Any] = {
+        "component_kind": component_kind,
+        "request": request_payload,
+    }
+    if component_id:
+        normalized["component_id"] = component_id
+    if component_name:
+        normalized["component_name"] = component_name
+    if component_type:
+        normalized["component_type"] = component_type
+    if refresh_interval_seconds is not None:
+        normalized["refresh_interval_seconds"] = refresh_interval_seconds
+
+    return normalized
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> None:
@@ -147,6 +212,7 @@ async def create_chart(
     datasets: list[dict[str, Any]],
     description: str = "",
     raw_config: dict[str, Any] | None = None,
+    data_connection: dict[str, Any] | None = None,
 ) -> str:
     """
     Create a chart visualization specification.
@@ -199,7 +265,7 @@ async def create_chart(
     colored_datasets = _apply_default_colors(datasets, chart_type)
 
     # Build Chart.js configuration
-    chart_config = {
+    chart_config: dict[str, Any] = {
         "type": chart_type,
         "data": {
             "labels": labels,
@@ -245,6 +311,7 @@ async def create_chart(
         "__chart__": True,
         "config": chart_config,
         "description": description,
+        "data_connection": _normalize_data_connection(data_connection),
     }
 
     return json.dumps(output, indent=2)
@@ -294,6 +361,9 @@ For advanced customization, use raw_config with any Chart.js options:
     }
   }
 }
+
+When running in User Space mode, follow system prompt instructions for persistent
+data_connection components configured by admins in Settings.
 """,
     args_schema=CreateChartInput,
 )

@@ -401,13 +401,7 @@ class UserSpaceService:
             try:
                 sidecar_data = json.loads(sidecar.read_text(encoding="utf-8"))
                 sidecar_value = sidecar_data.get("artifact_type")
-                if sidecar_value in {
-                    "dashboard_json",
-                    "report_markdown",
-                    "report_html",
-                    "module_js",
-                    "module_ts",
-                }:
+                if sidecar_value == "module_ts":
                     artifact_type = cast(ArtifactType, sidecar_value)
             except Exception:
                 artifact_type = None
@@ -488,28 +482,15 @@ class UserSpaceService:
 
         return snapshot_meta
 
-    def _get_snapshot_retention_cutoff(self) -> float | None:
+    async def _get_snapshot_retention_cutoff(self) -> float | None:
         """Return a UNIX timestamp cutoff based on app_settings snapshot_retention_days.
 
         Returns None if retention is disabled (0 or unset).
         """
         try:
-            import asyncio
-
             from ragtime.indexer.repository import repository
 
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # We are inside an async context, can't block.
-                # Use a thread to fetch settings.
-                import concurrent.futures
-
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    app_settings = pool.submit(
-                        asyncio.run, repository.get_settings()
-                    ).result()
-            else:
-                app_settings = asyncio.run(repository.get_settings())
+            app_settings = await repository.get_settings()
 
             if not app_settings:
                 return None
@@ -520,7 +501,7 @@ class UserSpaceService:
         except Exception:
             return None
 
-    def list_snapshots(
+    async def list_snapshots(
         self, workspace_id: str, user_id: str
     ) -> list[UserSpaceSnapshot]:
         self._enforce_workspace_access(workspace_id, user_id)
@@ -532,7 +513,7 @@ class UserSpaceService:
         if head_check.returncode != 0:
             return []
 
-        cutoff = self._get_snapshot_retention_cutoff()
+        cutoff = await self._get_snapshot_retention_cutoff()
 
         snapshots: list[UserSpaceSnapshot] = []
         git_log = self._run_git(
@@ -571,7 +552,7 @@ class UserSpaceService:
             )
         return snapshots
 
-    def restore_snapshot(
+    async def restore_snapshot(
         self, workspace_id: str, snapshot_id: str, user_id: str
     ) -> UserSpaceSnapshot:
         self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
@@ -586,7 +567,7 @@ class UserSpaceService:
             raise HTTPException(status_code=404, detail="Snapshot not found")
 
         # Enforce retention window on restore
-        cutoff = self._get_snapshot_retention_cutoff()
+        cutoff = await self._get_snapshot_retention_cutoff()
         if cutoff is not None:
             commit_ts = self._run_git(
                 workspace_id,

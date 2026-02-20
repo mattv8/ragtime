@@ -1313,6 +1313,13 @@ export interface ToolCallRecord {
   tool: string;
   input?: Record<string, unknown>;
   output?: string;
+  connection?: ToolConnectionRef;
+}
+
+export interface ToolConnectionRef {
+  tool_config_id: string;
+  tool_config_name?: string;
+  tool_type?: string;
 }
 
 export interface ContentEvent {
@@ -1325,6 +1332,7 @@ export interface ToolCallEvent {
   tool: string;
   input?: Record<string, unknown>;
   output?: string;
+  connection?: ToolConnectionRef;
 }
 
 export type MessageEvent = ContentEvent | ToolCallEvent;
@@ -1369,6 +1377,7 @@ export interface ToolCallInfo {
   tool: string;
   input?: Record<string, unknown>;
   output?: string;
+  connection?: ToolConnectionRef;
 }
 
 export interface StreamEvent {
@@ -1416,7 +1425,7 @@ export interface SendMessageResponse {
 // =============================================================================
 
 export type WorkspaceRole = 'owner' | 'editor' | 'viewer';
-export type UserSpaceArtifactType = 'dashboard_json' | 'report_markdown' | 'report_html' | 'module_js' | 'module_ts';
+export type UserSpaceArtifactType = 'module_ts';
 
 export interface UserSpaceWorkspaceMember {
   user_id: string;

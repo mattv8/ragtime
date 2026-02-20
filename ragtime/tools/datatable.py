@@ -22,6 +22,64 @@ from ragtime.core.logging import get_logger
 logger = get_logger(__name__)
 
 
+def _normalize_data_connection(
+    data_connection: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Normalize data connection metadata to strict component schema."""
+    if not isinstance(data_connection, dict):
+        return None
+
+    component_id = (
+        str(data_connection.get("component_id") or "").strip()
+        or str(data_connection.get("source_tool_config_id") or "").strip()
+    )
+    component_name = (
+        str(data_connection.get("component_name") or "").strip()
+        or str(data_connection.get("source_tool") or "").strip()
+        or None
+    )
+    component_type = (
+        str(data_connection.get("component_type") or "").strip()
+        or str(data_connection.get("source_tool_type") or "").strip()
+        or None
+    )
+
+    request_payload = data_connection.get("request")
+    if request_payload is None:
+        request_payload = data_connection.get("source_input")
+    if request_payload is None:
+        request_payload = {}
+    if not isinstance(request_payload, dict):
+        request_payload = {"value": request_payload}
+
+    refresh_raw = data_connection.get("refresh_interval_seconds")
+    refresh_interval_seconds: int | None = None
+    if refresh_raw is not None:
+        try:
+            refresh_interval_seconds = max(1, int(refresh_raw))
+        except (TypeError, ValueError):
+            refresh_interval_seconds = None
+
+    component_kind = (
+        str(data_connection.get("component_kind") or "").strip() or "tool_config"
+    )
+
+    normalized: dict[str, Any] = {
+        "component_kind": component_kind,
+        "request": request_payload,
+    }
+    if component_id:
+        normalized["component_id"] = component_id
+    if component_name:
+        normalized["component_name"] = component_name
+    if component_type:
+        normalized["component_type"] = component_type
+    if refresh_interval_seconds is not None:
+        normalized["refresh_interval_seconds"] = refresh_interval_seconds
+
+    return normalized
+
+
 class CreateDataTableInput(BaseModel):
     """Input schema for creating an interactive data table."""
 
@@ -42,6 +100,13 @@ class CreateDataTableInput(BaseModel):
         description=(
             "Optional raw DataTables.js configuration object for advanced customization. "
             "Allows full access to DataTables options like columnDefs, order, pageLength, etc."
+        ),
+    )
+    data_connection: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Optional internal data-connection component reference metadata. "
+            "In User Space mode, this should reference admin-configured tool components (for example tool_config IDs)."
         ),
     )
 
@@ -78,6 +143,7 @@ async def create_datatable(
     data: list[list[Any]],
     description: str = "",
     raw_config: dict[str, Any] | None = None,
+    data_connection: dict[str, Any] | None = None,
 ) -> str:
     """
     Create an interactive data table specification.
@@ -121,6 +187,7 @@ async def create_datatable(
         "title": title,
         "config": table_config,
         "description": description,
+        "data_connection": _normalize_data_connection(data_connection),
     }
 
     return json.dumps(output, indent=2)
@@ -172,6 +239,9 @@ For advanced customization, use raw_config with DataTables.js options:
     "columnDefs": [{"className": "text-right", "targets": [1]}]
   }
 }
+
+When running in User Space mode, follow system prompt instructions for persistent
+data_connection components configured by admins in Settings.
 """,
     args_schema=CreateDataTableInput,
 )

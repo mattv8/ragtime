@@ -111,6 +111,40 @@ def strip_images_from_content(
     return stripped if stripped else content
 
 
+def summarize_tool_event_for_history(event: dict[str, Any]) -> str:
+    """Create compact natural-language context from a stored tool event."""
+    tool_name = event.get("tool", "unknown")
+    tool_input = event.get("input", {})
+    tool_output = event.get("output", "")
+    connection = event.get("connection") or {}
+
+    input_str = ""
+    if isinstance(tool_input, dict):
+        for field in ["query", "sql", "code", "command", "python_code"]:
+            if field in tool_input:
+                input_str = str(tool_input[field])
+                break
+        if not input_str:
+            input_str = str(tool_input)
+    else:
+        input_str = str(tool_input)
+
+    connection_suffix = ""
+    if isinstance(connection, dict) and connection.get("tool_config_id"):
+        connection_name = connection.get("tool_config_name") or tool_name
+        connection_suffix = (
+            f" (connection: {connection_name}, "
+            f"id={connection.get('tool_config_id')}, "
+            f"type={connection.get('tool_type') or 'unknown'})"
+        )
+
+    return (
+        f"\n(I used {tool_name}{connection_suffix} with: "
+        f"{input_str[:200]}{'...' if len(input_str) > 200 else ''} - "
+        f"Result: {str(tool_output)[:500]}{'...' if len(str(tool_output)) > 500 else ''})\n"
+    )
+
+
 class BackgroundTaskService:
     """Service for managing background chat tasks."""
 
@@ -536,6 +570,7 @@ class BackgroundTaskService:
         user_message: str,
         existing_task_id: Optional[str] = None,
         blocked_tool_names: Optional[set[str]] = None,
+        workspace_context: Optional[dict[str, str]] = None,
     ) -> str:
         """
         Start a background task for processing a chat message.
@@ -598,31 +633,8 @@ class BackgroundTaskService:
                                 if event.get("type") == "content":
                                     content_parts.append(event.get("content", ""))
                                 elif event.get("type") == "tool":
-                                    tool_name = event.get("tool", "unknown")
-                                    tool_input = event.get("input", {})
-                                    tool_output = event.get("output", "")
-                                    # Format tool call for context - use natural language
-                                    # to avoid the model mimicking markup patterns
-                                    input_str = ""
-                                    if isinstance(tool_input, dict):
-                                        # Extract query/code from common field names
-                                        for field in [
-                                            "query",
-                                            "sql",
-                                            "code",
-                                            "command",
-                                            "python_code",
-                                        ]:
-                                            if field in tool_input:
-                                                input_str = str(tool_input[field])
-                                                break
-                                        if not input_str:
-                                            input_str = str(tool_input)
-                                    else:
-                                        input_str = str(tool_input)
-                                    # Use prose format instead of markup to prevent mimicry
                                     content_parts.append(
-                                        f"\n(I used {tool_name} with: {input_str[:200]}{'...' if len(input_str) > 200 else ''} - Result: {tool_output[:500]}{'...' if len(str(tool_output)) > 500 else ''})\n"
+                                        summarize_tool_event_for_history(event)
                                     )
                             full_content = "".join(content_parts)
                         else:
@@ -666,6 +678,7 @@ class BackgroundTaskService:
                     chat_history,
                     is_ui=True,
                     blocked_tool_names=blocked_tool_names,
+                    workspace_context=workspace_context,
                 ):
                     if self._shutdown:
                         await repository.cancel_chat_task(task_id)
@@ -682,6 +695,7 @@ class BackgroundTaskService:
                                 "type": "tool",
                                 "tool": event.get("tool"),
                                 "input": event.get("input"),
+                                "connection": event.get("connection"),
                                 # No "output" key = running state
                             }
                             events.append(tool_event)
@@ -717,6 +731,9 @@ class BackgroundTaskService:
                                         "tool": events[tool_idx]["tool"],
                                         "input": events[tool_idx].get("input"),
                                         "output": events[tool_idx].get("output"),
+                                        "connection": events[tool_idx].get(
+                                            "connection"
+                                        ),
                                     }
                                 )
 
@@ -885,6 +902,7 @@ class BackgroundTaskService:
         conversation_id: str,
         user_message: str,
         blocked_tool_names: Optional[set[str]] = None,
+        workspace_context: Optional[dict[str, str]] = None,
     ) -> str:
         """
         Start a background task asynchronously.
@@ -907,6 +925,7 @@ class BackgroundTaskService:
             user_message,
             task.id,
             blocked_tool_names=blocked_tool_names,
+            workspace_context=workspace_context,
         )
 
         return task.id

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronDown, File, History, Maximize2, Minimize2, Pencil, Plus, Save, Settings, Trash2, Users, X } from 'lucide-react';
 
 import { api } from '@/api';
-import type { User, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceFileInfo, UserSpaceSnapshot, UserSpaceWorkspace, UserSpaceWorkspaceMember, WorkspaceRole } from '@/types';
+import type { User, UserSpaceAvailableTool, UserSpaceFileInfo, UserSpaceSnapshot, UserSpaceWorkspace, UserSpaceWorkspaceMember, WorkspaceRole } from '@/types';
 import { ChatPanel } from './ChatPanel';
 import { ResizeHandle } from './ResizeHandle';
 import { UserSpaceArtifactPreview } from './UserSpaceArtifactPreview';
@@ -26,7 +26,6 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
 
   const [selectedFilePath, setSelectedFilePath] = useState<string>('dashboard/main.ts');
   const [fileContent, setFileContent] = useState<string>('');
-  const [selectedArtifactType, setSelectedArtifactType] = useState<UserSpaceArtifactType | ''>('');
   const [fileDirty, setFileDirty] = useState(false);
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -139,11 +138,9 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
         const file = await api.getUserSpaceFile(workspaceId, firstFile);
         setSelectedFilePath(file.path);
         setFileContent(file.content);
-        setSelectedArtifactType((file.artifact_type ?? '') as UserSpaceArtifactType | '');
       } else {
         setSelectedFilePath('dashboard/main.ts');
         setFileContent('');
-        setSelectedArtifactType('dashboard_json');
       }
       setFileDirty(false);
       setError(null);
@@ -194,8 +191,8 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
         selected_tool_ids: availableTools.map((tool) => tool.id),
       });
       await api.upsertUserSpaceFile(created.id, 'dashboard/main.ts', {
-        content: '{\n  "title": "New Dashboard",\n  "panels": []\n}\n',
-        artifact_type: 'dashboard_json',
+        content: 'export function render(container: HTMLElement) {\n  container.innerHTML = `<h2>Interactive Report</h2><p>Ask chat to build your report and wire live data connections.</p>`;\n}\n',
+        artifact_type: 'module_ts',
       });
       setActiveWorkspaceId(created.id);
       await loadWorkspaces();
@@ -213,7 +210,6 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       const file = await api.getUserSpaceFile(activeWorkspaceId, path);
       setSelectedFilePath(file.path);
       setFileContent(file.content);
-      setSelectedArtifactType((file.artifact_type ?? '') as UserSpaceArtifactType | '');
       setFileDirty(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to open file');
@@ -226,7 +222,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     try {
       await api.upsertUserSpaceFile(activeWorkspaceId, selectedFilePath, {
         content: fileContent,
-        artifact_type: selectedArtifactType || undefined,
+        artifact_type: 'module_ts',
       });
       setFileDirty(false);
       await loadWorkspaceData(activeWorkspaceId);
@@ -235,7 +231,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     } finally {
       setSavingFile(false);
     }
-  }, [activeWorkspaceId, canEditWorkspace, fileContent, loadWorkspaceData, selectedArtifactType, selectedFilePath]);
+  }, [activeWorkspaceId, canEditWorkspace, fileContent, loadWorkspaceData, selectedFilePath]);
 
   const handleToggleWorkspaceTool = useCallback(async (toolId: string) => {
     if (!activeWorkspace || !canEditWorkspace) return;
@@ -322,7 +318,6 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       if (selectedFilePath === filePath) {
         setSelectedFilePath('');
         setFileContent('');
-        setSelectedArtifactType('');
         setFileDirty(false);
       }
       await loadWorkspaceData(activeWorkspaceId);
@@ -466,35 +461,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
           )}
         </div>
 
-        <div className="userspace-toolbar-group">
-          <select
-            className="userspace-type-select"
-            value={selectedArtifactType}
-            onChange={(e) => {
-              setSelectedArtifactType(e.target.value as UserSpaceArtifactType | '');
-              setFileDirty(true);
-            }}
-            disabled={!canEditWorkspace}
-          >
-            <option value="">Auto</option>
-            <option value="dashboard_json">Dashboard JSON</option>
-            <option value="report_markdown">Markdown</option>
-            <option value="report_html">HTML</option>
-            <option value="module_js">JS Module</option>
-            <option value="module_ts">TS Module</option>
-          </select>
-          <button
-            className="btn btn-primary btn-sm"
-            onClick={handleSaveFile}
-            disabled={!activeWorkspaceId || !canEditWorkspace || savingFile || !fileDirty}
-            title="Save file"
-          >
-            <Save size={14} />
-            {savingFile ? 'Saving...' : 'Save'}
-          </button>
-        </div>
-
-        <div className="userspace-toolbar-group">
+        <div className="userspace-toolbar-group userspace-toolbar-group-right">
           {activeWorkspace && (
             <span className="userspace-role-badge">
               {activeWorkspaceRole}{!canEditWorkspace ? ' (read-only)' : ''}
@@ -538,6 +505,15 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
               </div>
             )}
           </div>
+          <button
+            className="btn btn-primary btn-sm userspace-save-btn"
+            onClick={handleSaveFile}
+            disabled={!activeWorkspaceId || !canEditWorkspace || savingFile || !fileDirty}
+            title="Save file"
+          >
+            <Save size={14} />
+            {savingFile ? 'Saving...' : 'Save'}
+          </button>
         </div>
       </div>
 
@@ -737,8 +713,6 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
             <UserSpaceArtifactPreview
               filePath={selectedFilePath}
               content={fileContent}
-              artifactType={selectedArtifactType || undefined}
-              canEnableActivePreview={canEditWorkspace}
             />
           </div>
 

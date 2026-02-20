@@ -1402,7 +1402,8 @@ export const api = {
                   type: 'tool_start',
                   toolCall: {
                     tool: tc.tool,
-                    input: tc.input
+                    input: tc.input,
+                    connection: tc.connection,
                   }
                 };
               } else if (tc.type === 'end') {
@@ -1410,7 +1411,8 @@ export const api = {
                   type: 'tool_end',
                   toolCall: {
                     tool: tc.tool,
-                    output: tc.output
+                    output: tc.output,
+                    connection: tc.connection,
                   }
                 };
               }

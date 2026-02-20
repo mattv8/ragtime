@@ -23,104 +23,77 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional
 
 import httpx
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
+from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException,
+                     UploadFile)
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
 from ragtime.core.app_settings import invalidate_settings_cache
-from ragtime.core.embedding_models import (
-    OPENAI_EMBEDDING_PRIORITY,
-    get_embedding_models,
-)
+from ragtime.core.embedding_models import (OPENAI_EMBEDDING_PRIORITY,
+                                           get_embedding_models)
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (
-    MODEL_FAMILY_PATTERNS,
-    get_context_limit,
-    get_output_limit,
-    supports_function_calling,
-    update_model_function_calling,
-    update_model_limit,
-)
+from ragtime.core.model_limits import (MODEL_FAMILY_PATTERNS,
+                                       get_context_limit, get_output_limit,
+                                       supports_function_calling,
+                                       update_model_function_calling,
+                                       update_model_limit)
 from ragtime.core.ollama import get_model_details, is_reachable
 from ragtime.core.ollama import list_models
 from ragtime.core.ollama import list_models as ollama_list_models
 from ragtime.core.security import get_current_user, require_admin
-from ragtime.core.sql_utils import (
-    MssqlConnectionError,
-    MysqlConnectionError,
-    mssql_connect,
-    mysql_connect,
-)
-from ragtime.core.ssh import (
-    SSHConfig,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    execute_ssh_command,
-    ssh_tunnel_config_from_dict,
-    test_ssh_connection,
-)
+from ragtime.core.sql_utils import (MssqlConnectionError, MysqlConnectionError,
+                                    mssql_connect, mysql_connect)
+from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
+                              execute_ssh_command, ssh_tunnel_config_from_dict,
+                              test_ssh_connection)
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.core.vision_models import list_vision_models
-from ragtime.indexer.background_tasks import background_task_service
+from ragtime.indexer.background_tasks import (background_task_service,
+                                              summarize_tool_event_for_history)
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (
-    AnalyzeIndexRequest,
-    AppSettings,
-    ChatMessage,
-    ChatTaskResponse,
-    ChatTaskStatus,
-    CheckRepoVisibilityRequest,
-    ConfigurationWarning,
-    Conversation,
-    ConversationResponse,
-    CreateConversationRequest,
-    CreateIndexRequest,
-    CreateToolConfigRequest,
-    EmbeddingStatus,
-    FetchBranchesRequest,
-    FetchBranchesResponse,
-    FilesystemAnalysisJobResponse,
-    FilesystemConnectionConfig,
-    FilesystemIndexJobResponse,
-    IndexAnalysisResult,
-    IndexConfig,
-    IndexInfo,
-    IndexJobResponse,
-    IndexStatus,
-    MssqlDiscoverRequest,
-    MssqlDiscoverResponse,
-    MysqlDiscoverRequest,
-    MysqlDiscoverResponse,
-    OcrMode,
-    PdmDiscoverRequest,
-    PdmDiscoverResponse,
-    PdmIndexJobResponse,
-    PostgresDiscoverRequest,
-    PostgresDiscoverResponse,
-    RepoVisibilityResponse,
-    RetryVisualizationRequest,
-    RetryVisualizationResponse,
-    SchemaIndexJobResponse,
-    SendMessageRequest,
-    ToolConfig,
-    ToolTestRequest,
-    ToolType,
-    TriggerFilesystemIndexRequest,
-    TriggerPdmIndexRequest,
-    TriggerSchemaIndexRequest,
-    UpdateSettingsRequest,
-    UpdateToolConfigRequest,
-    VectorStoreType,
-)
+from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
+                                    ChatMessage, ChatTaskResponse,
+                                    ChatTaskStatus, CheckRepoVisibilityRequest,
+                                    ConfigurationWarning, Conversation,
+                                    ConversationResponse,
+                                    CreateConversationRequest,
+                                    CreateIndexRequest,
+                                    CreateToolConfigRequest, EmbeddingStatus,
+                                    FetchBranchesRequest,
+                                    FetchBranchesResponse,
+                                    FilesystemAnalysisJobResponse,
+                                    FilesystemConnectionConfig,
+                                    FilesystemIndexJobResponse,
+                                    IndexAnalysisResult, IndexConfig,
+                                    IndexInfo, IndexJobResponse, IndexStatus,
+                                    MssqlDiscoverRequest,
+                                    MssqlDiscoverResponse,
+                                    MysqlDiscoverRequest,
+                                    MysqlDiscoverResponse, OcrMode,
+                                    PdmDiscoverRequest, PdmDiscoverResponse,
+                                    PdmIndexJobResponse,
+                                    PostgresDiscoverRequest,
+                                    PostgresDiscoverResponse,
+                                    RepoVisibilityResponse,
+                                    RetryVisualizationRequest,
+                                    RetryVisualizationResponse,
+                                    SchemaIndexJobResponse, SendMessageRequest,
+                                    ToolConfig, ToolTestRequest, ToolType,
+                                    TriggerFilesystemIndexRequest,
+                                    TriggerPdmIndexRequest,
+                                    TriggerSchemaIndexRequest,
+                                    UpdateSettingsRequest,
+                                    UpdateToolConfigRequest, VectorStoreType)
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
+from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
+                                            schema_indexer)
 from ragtime.indexer.service import indexer
 from ragtime.indexer.title_generation import schedule_title_generation
 from ragtime.indexer.utils import safe_tool_name
@@ -1651,7 +1624,8 @@ async def update_tool_config(
 
                 # Check for name conflicts with existing indexes
                 if is_faiss and new_index_name != old_index_name:
-                    from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
+                    from ragtime.indexer.vector_backends import \
+                        FAISS_INDEX_BASE_PATH
 
                     new_path = FAISS_INDEX_BASE_PATH / new_index_name
                     if new_path.exists():
@@ -1672,7 +1646,8 @@ async def update_tool_config(
             # For FAISS filesystem indexes, rename using the backend
             if is_faiss and old_index_name and new_index_name:
                 if old_index_name != new_index_name:
-                    from ragtime.indexer.vector_backends import get_faiss_backend
+                    from ragtime.indexer.vector_backends import \
+                        get_faiss_backend
 
                     faiss_backend = get_faiss_backend()
                     success = await faiss_backend.rename_index(
@@ -6649,7 +6624,17 @@ async def send_message(
         if msg.role == "user":
             chat_history.append(HumanMessage(content=msg.content))
         elif msg.role == "assistant":
-            chat_history.append(AIMessage(content=msg.content))
+            if msg.events:
+                content_parts: list[str] = []
+                for event in msg.events:
+                    if event.get("type") == "content":
+                        content_parts.append(event.get("content", ""))
+                    elif event.get("type") == "tool":
+                        content_parts.append(summarize_tool_event_for_history(event))
+                assistant_content = "".join(content_parts).strip() or msg.content
+            else:
+                assistant_content = msg.content
+            chat_history.append(AIMessage(content=assistant_content))
 
     # Generate response
     try:
@@ -6658,6 +6643,11 @@ async def send_message(
             user_message,
             chat_history,
             blocked_tool_names=blocked_tool_names,
+            workspace_context=(
+                {"workspace_id": workspace_id, "user_id": user.id}
+                if workspace_id
+                else None
+            ),
         )
     except Exception as e:
         logger.exception("Error processing message")
@@ -6724,7 +6714,17 @@ async def send_message_stream(
         if msg.role == "user":
             chat_history.append(HumanMessage(content=msg.content))
         elif msg.role == "assistant":
-            chat_history.append(AIMessage(content=msg.content))
+            if msg.events:
+                content_parts: list[str] = []
+                for event in msg.events:
+                    if event.get("type") == "content":
+                        content_parts.append(event.get("content", ""))
+                    elif event.get("type") == "tool":
+                        content_parts.append(summarize_tool_event_for_history(event))
+                assistant_content = "".join(content_parts).strip() or msg.content
+            else:
+                assistant_content = msg.content
+            chat_history.append(AIMessage(content=assistant_content))
 
     async def stream_response():
         """Generate streaming response tokens."""
@@ -6748,6 +6748,11 @@ async def send_message_stream(
                 chat_history,
                 is_ui=True,
                 blocked_tool_names=blocked_tool_names,
+                workspace_context=(
+                    {"workspace_id": workspace_id, "user_id": user.id}
+                    if workspace_id
+                    else None
+                ),
             ):
                 # Handle structured tool events
                 if isinstance(event, dict):
@@ -6758,6 +6763,7 @@ async def send_message_stream(
                             "type": "tool",
                             "tool": event.get("tool"),
                             "input": event.get("input"),
+                            "connection": event.get("connection"),
                         }
                         tool_chunk = {
                             "id": chunk_id,
@@ -6772,6 +6778,7 @@ async def send_message_stream(
                                             "type": "start",
                                             "tool": event.get("tool"),
                                             "input": event.get("input"),
+                                            "connection": event.get("connection"),
                                         }
                                     },
                                     "finish_reason": None,
@@ -6790,6 +6797,7 @@ async def send_message_stream(
                                     "tool": current_tool_call["tool"],
                                     "input": current_tool_call.get("input"),
                                     "output": current_tool_call.get("output"),
+                                    "connection": current_tool_call.get("connection"),
                                 }
                             )
                             current_tool_call = None
@@ -6806,6 +6814,7 @@ async def send_message_stream(
                                             "type": "end",
                                             "tool": event.get("tool"),
                                             "output": event.get("output"),
+                                            "connection": event.get("connection"),
                                         }
                                     },
                                     "finish_reason": None,
@@ -7088,6 +7097,11 @@ async def send_message_background(
         conversation_id,
         user_message,
         blocked_tool_names=blocked_tool_names,
+        workspace_context=(
+            {"workspace_id": workspace_id, "user_id": user.id}
+            if workspace_id
+            else None
+        ),
     )
 
     # Get the created task

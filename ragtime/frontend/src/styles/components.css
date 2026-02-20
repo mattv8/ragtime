@@ -270,6 +270,10 @@ textarea:focus {
   gap: var(--space-xs);
 }
 
+.userspace-toolbar-group-right {
+  margin-left: auto;
+}
+
 .userspace-ws-select {
   min-width: 180px;
   max-width: 260px;
@@ -311,6 +315,11 @@ textarea:focus {
 
 .userspace-tool-picker-wrap {
   position: relative;
+}
+
+.userspace-save-btn {
+  margin-left: var(--space-sm);
+  padding-inline: var(--space-md);
 }
 
 .userspace-tool-dropdown {
@@ -664,7 +673,7 @@ textarea:focus {
   min-height: 400px;
   height: 100%;
   border: 0;
-  background: white;
+  background: var(--color-bg-secondary);
 }
 
 /* Snapshots section */

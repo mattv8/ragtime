@@ -6,9 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 WorkspaceRole = Literal["owner", "editor", "viewer"]
-ArtifactType = Literal[
-    "dashboard_json", "report_markdown", "report_html", "module_js", "module_ts"
-]
+ArtifactType = Literal["module_ts"]
 
 
 class WorkspaceMember(BaseModel):

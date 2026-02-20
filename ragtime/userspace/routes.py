@@ -168,7 +168,7 @@ async def delete_workspace_file(
     "/workspaces/{workspace_id}/snapshots", response_model=list[UserSpaceSnapshot]
 )
 async def list_snapshots(workspace_id: str, user: Any = Depends(get_current_user)):
-    return userspace_service.list_snapshots(workspace_id, user.id)
+    return await userspace_service.list_snapshots(workspace_id, user.id)
 
 
 @router.post("/workspaces/{workspace_id}/snapshots", response_model=UserSpaceSnapshot)
@@ -189,7 +189,11 @@ async def restore_snapshot(
     snapshot_id: str,
     user: Any = Depends(get_current_user),
 ):
-    snapshot = userspace_service.restore_snapshot(workspace_id, snapshot_id, user.id)
+    snapshot = await userspace_service.restore_snapshot(
+        workspace_id,
+        snapshot_id,
+        user.id,
+    )
     return RestoreSnapshotResponse(
         restored_snapshot_id=snapshot.id,
         file_count=snapshot.file_count,

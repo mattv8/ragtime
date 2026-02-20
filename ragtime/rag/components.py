@@ -4,6 +4,7 @@ RAG Components - FAISS Vector Store and LangChain Agent setup.
 
 import asyncio
 import fnmatch
+import json
 import os
 import re
 import resource
@@ -67,6 +68,8 @@ from ragtime.tools.git_history import (
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
+from ragtime.userspace.models import ArtifactType, UpsertWorkspaceFileRequest
+from ragtime.userspace.service import userspace_service
 
 logger = get_logger(__name__)
 
@@ -392,6 +395,71 @@ Tool output visibility is set to "auto". You control whether tool details (queri
 - Implementation details would clutter the response
 
 Default to hiding unless the user benefits from seeing technical details.
+"""
+
+
+_HEX_COLOR_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_])#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})(?![A-Za-z0-9_])"
+)
+
+
+def find_hard_coded_hex_colors(content: str) -> list[str]:
+    """Return unique hard-coded hex color literals found in content."""
+    if not content:
+        return []
+    seen: set[str] = set()
+    results: list[str] = []
+    for match in _HEX_COLOR_PATTERN.finditer(content):
+        literal = match.group(0)
+        normalized = literal.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        results.append(literal)
+    return results
+
+
+USERSPACE_MODE_PROMPT_ADDITION = """
+
+## USER SPACE MODE
+
+You are operating in User Space mode for a persistent workspace artifact workflow.
+
+### Persistence rules
+
+- Persist implementation as files, not only chat text.
+- Prefer TypeScript modules for interactive reports and dashboards.
+- Use `dashboard/main.ts` as the default entry artifact unless user requests another path.
+- For larger work, split logic into additional files under `dashboard/` and keep paths stable.
+
+### Data wiring rules
+
+- Use real tool outputs as the source of truth for rendered data.
+- Data connections are internal components, abstracted from end users.
+- These components map to admin-configured tools from Settings.
+- When creating chart/datatable payloads for reusable artifacts, include `data_connection` as a component reference:
+    - `component_kind`: `tool_config`
+    - `component_id`: admin-configured tool config ID
+    - `component_name`: optional friendly name
+    - `component_type`: optional tool type
+    - `request`: query/command payload used for refresh
+    - `refresh_interval_seconds`: optional refresh cadence
+- Do not expose credentials, hostnames, or connection internals in user-facing narrative.
+
+### File tool workflow
+
+- Start by listing files to understand existing workspace structure.
+- Read any target file before overwriting it.
+- Then create/update files with full content via User Space file tools.
+- When you complete a meaningful milestone (e.g., stable report section, validated wiring, or user-approved checkpoint), call `create_userspace_snapshot` immediately with a concise message.
+
+### Theme + CSS rules
+
+- Style rendered modules to match the active app theme.
+- Prefer CSS variables/tokens over hard-coded values, especially for colors, spacing, and radii.
+- Use tokens such as `var(--color-bg-primary)`, `var(--color-surface)`, `var(--color-text-primary)`, `var(--color-border)`, `var(--space-*)`, and `var(--radius-*)`.
+- If module code injects CSS dynamically, keep the same token-based approach so dark/light mode stays consistent.
+- Do not introduce custom font stacks, raw hex palettes, or fixed theme-specific colors unless explicitly requested.
 """
 
 
@@ -3530,6 +3598,219 @@ except Exception as e:
             names.add(f"search_{tool_name}")
         return names
 
+    def _get_tool_connection_metadata(
+        self, runtime_tool_name: str
+    ) -> dict[str, str] | None:
+        """Resolve tool connection metadata for a runtime tool name."""
+        if not self._tool_configs:
+            return None
+
+        for config in self._tool_configs:
+            tool_names = self._derive_config_tool_names(config)
+            if runtime_tool_name in tool_names:
+                tool_id = (config.get("id") or "").strip()
+                tool_name = (config.get("name") or "").strip()
+                tool_type = (config.get("tool_type") or "").strip()
+                if not tool_id:
+                    return None
+                return {
+                    "tool_config_id": tool_id,
+                    "tool_config_name": tool_name,
+                    "tool_type": tool_type,
+                }
+        return None
+
+    def _build_request_tool_scope_prompt(self, tools: list[Any]) -> str:
+        """Build a request-scoped prompt section listing active tool connections."""
+        if not tools:
+            return ""
+
+        lines: list[str] = []
+        for tool in tools:
+            tool_name = getattr(tool, "name", "")
+            if not tool_name:
+                continue
+
+            connection_meta = self._get_tool_connection_metadata(tool_name)
+            if connection_meta:
+                line = (
+                    f"- `{tool_name}` -> {connection_meta.get('tool_config_name') or tool_name} "
+                    f"(id={connection_meta.get('tool_config_id')}, type={connection_meta.get('tool_type')})"
+                )
+            else:
+                line = f"- `{tool_name}`"
+            lines.append(line)
+
+        if not lines:
+            return ""
+
+        return (
+            "\n\n## ACTIVE TOOL CONNECTIONS FOR THIS REQUEST\n\n"
+            + "Use only these active tool connections in this request context.\n"
+            + "When creating reusable dashboards/charts/tables, preserve the tool name and input as the stable data connection reference.\n\n"
+            + "\n".join(lines)
+        )
+
+    async def _create_userspace_file_tools(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> list[StructuredTool]:
+        """Create request-scoped User Space file tools for agentic artifact editing."""
+
+        class ListUserSpaceFilesInput(BaseModel):
+            reason: str = Field(
+                default="",
+                description="Brief description of why files are being listed",
+            )
+
+        class ReadUserSpaceFileInput(BaseModel):
+            path: str = Field(
+                default="dashboard/main.ts",
+                description=(
+                    "Relative path from the workspace files root to read. "
+                    "Default entry file: dashboard/main.ts"
+                ),
+            )
+            reason: str = Field(
+                default="",
+                description="Brief description of why this file is being read",
+            )
+
+        class UpsertUserSpaceFileInput(BaseModel):
+            path: str = Field(
+                default="dashboard/main.ts",
+                description=(
+                    "Relative path from the workspace files root to create/update. "
+                    "Default entry file: dashboard/main.ts"
+                ),
+            )
+            content: str = Field(description="Full UTF-8 file content to write")
+            artifact_type: ArtifactType | None = Field(
+                default="module_ts",
+                description=(
+                    "Artifact type for preview/rendering. Use module_ts for interactive reports."
+                ),
+            )
+            reason: str = Field(
+                default="",
+                description="Brief description of why this file is being updated",
+            )
+
+        class CreateUserSpaceSnapshotInput(BaseModel):
+            message: str = Field(
+                default="AI checkpoint",
+                description=(
+                    "Short summary for this snapshot checkpoint. "
+                    "Use milestone-oriented messages (e.g., 'wired sales chart + table')."
+                ),
+            )
+            reason: str = Field(
+                default="",
+                description="Brief description of why snapshot is being created",
+            )
+
+        async def list_userspace_files(reason: str = "", **_: Any) -> str:
+            del reason
+            files = userspace_service.list_workspace_files(workspace_id, user_id)
+            return json.dumps([f.model_dump(mode="json") for f in files], indent=2)
+
+        async def read_userspace_file(path: str, reason: str = "", **_: Any) -> str:
+            del reason
+            file_data = userspace_service.get_workspace_file(
+                workspace_id, path, user_id
+            )
+            return json.dumps(file_data.model_dump(mode="json"), indent=2)
+
+        async def upsert_userspace_file(
+            path: str,
+            content: str,
+            artifact_type: ArtifactType | None = "module_ts",
+            reason: str = "",
+            **_: Any,
+        ) -> str:
+            del reason
+            userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
+            result = userspace_service.upsert_workspace_file(
+                workspace_id,
+                path,
+                UpsertWorkspaceFileRequest(
+                    content=content,
+                    artifact_type=artifact_type,
+                ),
+                user_id,
+            )
+
+            warnings: list[str] = []
+            lower_path = (path or "").lower()
+            if lower_path.endswith((".ts", ".tsx", ".css", ".scss", ".html")):
+                hard_coded_hex = find_hard_coded_hex_colors(content)
+                if hard_coded_hex:
+                    sample = ", ".join(hard_coded_hex[:8])
+                    warnings.append(
+                        "Detected hard-coded hex color literals: "
+                        f"{sample}. Prefer theme CSS tokens (e.g., var(--color-text-primary), var(--color-surface), var(--color-border))."
+                    )
+
+            response_payload: dict[str, Any] = {
+                "file": result.model_dump(mode="json"),
+            }
+            if warnings:
+                response_payload["warnings"] = warnings
+            return json.dumps(response_payload, indent=2)
+
+        async def create_userspace_snapshot(
+            message: str = "AI checkpoint",
+            reason: str = "",
+            **_: Any,
+        ) -> str:
+            del reason
+            userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
+            snapshot = userspace_service.create_snapshot(
+                workspace_id,
+                user_id,
+                message.strip() or "AI checkpoint",
+            )
+            return json.dumps(snapshot.model_dump(mode="json"), indent=2)
+
+        return [
+            StructuredTool.from_function(
+                coroutine=list_userspace_files,
+                name="list_userspace_files",
+                description=(
+                    "List files in the active User Space workspace. Use this before creating or updating files."
+                ),
+                args_schema=ListUserSpaceFilesInput,
+            ),
+            StructuredTool.from_function(
+                coroutine=read_userspace_file,
+                name="read_userspace_file",
+                description=(
+                    "Read a file from the active User Space workspace by relative path."
+                ),
+                args_schema=ReadUserSpaceFileInput,
+            ),
+            StructuredTool.from_function(
+                coroutine=upsert_userspace_file,
+                name="upsert_userspace_file",
+                description=(
+                    "Create or update a file in the active User Space workspace. "
+                    "For interactive reports, write TypeScript modules (artifact_type=module_ts). "
+                    "Output may include CSS/theme warnings that must be fixed in follow-up edits."
+                ),
+                args_schema=UpsertUserSpaceFileInput,
+            ),
+            StructuredTool.from_function(
+                coroutine=create_userspace_snapshot,
+                name="create_userspace_snapshot",
+                description=(
+                    "Create a git-based checkpoint snapshot in the active User Space workspace. "
+                    "Use this automatically at meaningful stopping points."
+                ),
+                args_schema=CreateUserSpaceSnapshotInput,
+            ),
+        ]
+
     def get_blocked_config_tool_names(
         self, allowed_tool_config_ids: list[str]
     ) -> set[str]:
@@ -3595,6 +3876,7 @@ except Exception as e:
         user_message: Union[str, Any],
         chat_history: Optional[List[Any]] = None,
         blocked_tool_names: Optional[set[str]] = None,
+        workspace_context: Optional[dict[str, str]] = None,
     ) -> str:
         """
         Process a user query through the RAG pipeline (non-streaming).
@@ -3617,13 +3899,32 @@ except Exception as e:
 
         try:
             executor = self.agent_executor
-            if blocked_tool_names and executor and getattr(executor, "tools", None):
-                filtered_tools = [
-                    t for t in executor.tools if t.name not in blocked_tool_names
+            system_prompt = self._system_prompt
+            runtime_tools = list(getattr(executor, "tools", []) if executor else [])
+
+            if blocked_tool_names:
+                runtime_tools = [
+                    t for t in runtime_tools if t.name not in blocked_tool_names
                 ]
+
+            if workspace_context:
+                workspace_id = (workspace_context.get("workspace_id") or "").strip()
+                user_id = (workspace_context.get("user_id") or "").strip()
+                if workspace_id and user_id:
+                    userspace_tools = await self._create_userspace_file_tools(
+                        workspace_id,
+                        user_id,
+                    )
+                    runtime_tools.extend(userspace_tools)
+                    system_prompt += USERSPACE_MODE_PROMPT_ADDITION
+
+            if runtime_tools:
+                scoped_prompt = system_prompt + self._build_request_tool_scope_prompt(
+                    runtime_tools
+                )
                 executor = self._build_runtime_executor(
-                    filtered_tools,
-                    self._system_prompt,
+                    runtime_tools,
+                    scoped_prompt,
                 )
 
             if executor:
@@ -3666,6 +3967,7 @@ except Exception as e:
         chat_history: Optional[List[Any]] = None,
         is_ui: bool = False,
         blocked_tool_names: Optional[set[str]] = None,
+        workspace_context: Optional[dict[str, str]] = None,
     ):
         """
         Process a user query with true token-by-token streaming.
@@ -3696,11 +3998,28 @@ except Exception as e:
         executor = self.agent_executor_ui if is_ui else self.agent_executor
         system_prompt = self._system_prompt_ui if is_ui else self._system_prompt
 
-        if blocked_tool_names and executor and getattr(executor, "tools", None):
-            filtered_tools = [
-                t for t in executor.tools if t.name not in blocked_tool_names
+        runtime_tools = list(getattr(executor, "tools", []) if executor else [])
+        if blocked_tool_names:
+            runtime_tools = [
+                t for t in runtime_tools if t.name not in blocked_tool_names
             ]
-            executor = self._build_runtime_executor(filtered_tools, system_prompt)
+
+        if workspace_context:
+            workspace_id = (workspace_context.get("workspace_id") or "").strip()
+            user_id = (workspace_context.get("user_id") or "").strip()
+            if workspace_id and user_id:
+                userspace_tools = await self._create_userspace_file_tools(
+                    workspace_id,
+                    user_id,
+                )
+                runtime_tools.extend(userspace_tools)
+                system_prompt += USERSPACE_MODE_PROMPT_ADDITION
+
+        if runtime_tools:
+            scoped_prompt = system_prompt + self._build_request_tool_scope_prompt(
+                runtime_tools
+            )
+            executor = self._build_runtime_executor(runtime_tools, scoped_prompt)
 
         try:
             if executor:
@@ -3732,10 +4051,12 @@ except Exception as e:
 
                         tool_name = event.get("name", "unknown")
                         tool_input = event.get("data", {}).get("input", {})
+                        connection_meta = self._get_tool_connection_metadata(tool_name)
                         yield {
                             "type": "tool_start",
                             "tool": tool_name,
                             "input": tool_input,
+                            "connection": connection_meta,
                             "run_id": run_id,  # Include run_id for matching with tool_end
                         }
 
@@ -3748,6 +4069,7 @@ except Exception as e:
 
                         tool_name = event.get("name", "unknown")
                         tool_output = event.get("data", {}).get("output", "")
+                        connection_meta = self._get_tool_connection_metadata(tool_name)
                         # Don't truncate UI visualization tools - their JSON must be complete
                         # Truncate other long outputs for display
                         ui_tools = {"create_chart", "create_datatable"}
@@ -3761,6 +4083,7 @@ except Exception as e:
                             "type": "tool_end",
                             "tool": tool_name,
                             "output": tool_output,
+                            "connection": connection_meta,
                             "run_id": run_id,  # Include run_id for matching with tool_start
                         }
 

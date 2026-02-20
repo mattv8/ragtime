@@ -81,6 +81,11 @@ interface ActiveToolCall {
   tool: string;
   input?: Record<string, unknown>;
   output?: string;
+  connection?: {
+    tool_config_id: string;
+    tool_config_name?: string;
+    tool_type?: string;
+  };
   status: 'running' | 'complete';
 }
 
@@ -180,6 +185,13 @@ interface ChartData {
   __chart__: true;
   config: ChartConfig;
   description?: string;
+  data_connection?: {
+    source_tool?: string;
+    source_tool_config_id?: string;
+    source_tool_type?: string;
+    source_input?: Record<string, unknown>;
+    refresh_interval_seconds?: number;
+  };
 }
 
 // Parse datatable data from create_datatable tool output
@@ -199,6 +211,13 @@ interface DataTableData {
   title: string;
   config: DataTableConfig;
   description?: string;
+  data_connection?: {
+    source_tool?: string;
+    source_tool_config_id?: string;
+    source_tool_type?: string;
+    source_input?: Record<string, unknown>;
+    refresh_interval_seconds?: number;
+  };
 }
 
 function parseChartData(output: string): ChartData | null {
@@ -1414,6 +1433,7 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, em
                             tool: ev.tool || '',
                             input: ev.input,
                             output: ev.output,
+                          connection: ev.connection,
                             status: ev.output ? 'complete' : 'running'
                         }
                     };
@@ -2273,6 +2293,7 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, em
                                           tool: ev.tool,
                                           input: ev.input,
                                           output: ev.output,
+                                          connection: ev.connection,
                                           status: 'complete'
                                         }}
                                         defaultExpanded={false}
@@ -2299,6 +2320,7 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, em
                                           tool: tc.tool,
                                           input: tc.input,
                                           output: tc.output,
+                                          connection: tc.connection,
                                           status: 'complete'
                                         }}
                                         defaultExpanded={false}

@@ -2,6 +2,7 @@
 Indexer data models and schemas.
 """
 
+
 import hashlib
 import json
 from datetime import datetime
@@ -14,7 +15,6 @@ from ragtime.core.embedding_models import (
     get_embedding_models,
     get_model_dimensions_sync,
 )
-
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -1732,6 +1732,10 @@ class ToolCallRecord(BaseModel):
     tool: str = Field(description="Name of the tool called")
     input: Optional[dict] = Field(default=None, description="Tool input/query")
     output: Optional[str] = Field(default=None, description="Tool output/result")
+    connection: Optional[dict] = Field(
+        default=None,
+        description="Optional tool connection reference metadata (tool_config_id/name/type)",
+    )
 
 
 class ContentEvent(BaseModel):
@@ -1748,6 +1752,10 @@ class ToolCallEvent(BaseModel):
     tool: str = Field(description="Name of the tool called")
     input: Optional[dict] = Field(default=None, description="Tool input/query")
     output: Optional[str] = Field(default=None, description="Tool output/result")
+    connection: Optional[dict] = Field(
+        default=None,
+        description="Optional tool connection reference metadata (tool_config_id/name/type)",
+    )
 
 
 class ChatMessage(BaseModel):
