@@ -1,126 +1,72 @@
 ---
 applyTo: '**'
 ---
-## Architecture
+## Big Picture
 
-**OpenAI-compatible RAG API** with FastAPI + dual vector backends (FAISS/pgvector) + LangChain tool calling.
+- FastAPI app in `ragtime/main.py` composes four surfaces: OpenAI API (`/v1/*`), auth (`/auth/*`), indexer/UI (`/indexes/*` + `/`), and MCP (`/mcp*`).
+- Runtime services: `ragtime-dev` container (API + Vite + tool execution) and `ragtime-db-dev` (Postgres+pgvector).
+- Core startup sequence (`lifespan` in `ragtime/main.py`): connect DB -> `rag.initialize()` -> recover/cleanup index jobs -> start background chat tasks -> start MCP session manager.
+- Health/readiness is progressive: `/health` is `initializing` until core LLM/tool setup finishes; FAISS indexes can continue loading in background.
 
-| Service | Port | Purpose |
-|---------|------|---------|
-| ragtime | 8000 | RAG API + Indexer API + tool execution |
-| ragtime (Vite) | 8001 | Indexer UI with hot-reload (dev only) |
-| ragtime-db | 5434 | PostgreSQL (Prisma ORM) |
+## Data and Retrieval Architecture
 
-## Development Setup
+- Persistence is Prisma (`ragtime/core/database.py`, schema in `prisma/schema.prisma`) using mapped snake_case tables.
+- Upload/Git indexes support both backends:
+  - `faiss`: files under `.data/indexes/<name>/`, loaded into memory at startup.
+  - `pgvector`: embeddings in DB tables (`filesystem_embeddings`, etc.).
+- Schema and PDM indexers are pgvector-only (`schema_embeddings`, `pdm_embeddings`).
+- `ragtime/rag/components.py` rebuilds the agent when tools/indexes change; avoid bypassing this when changing retrieval/tool wiring.
 
-- Dev stack runs in Docker: `ragtime` (8000/8001), `ragtime-db` (5434)
-- Frontend `node_modules` persists in named volume, auto-installs on missing
-- After `package.json` changes: `docker exec ragtime-dev sh -c "cd /ragtime/ragtime/frontend && npm ci"`
+## Tooling Pattern (Important)
 
-## Tool Pattern
+- Static tools are auto-discovered from `ragtime/tools/` by `ragtime/tools/registry.py`.
+- Discovery convention: module `my_tool.py` should export `my_tool_tool` (or `tool`) as a `StructuredTool`.
+- Runtime tools come from DB `tool_configs` and are materialized in `ragtime/rag/components.py` (not just filesystem modules).
+- Tool schemas must use Pydantic fields with descriptions (LLM-facing contract quality matters).
 
-Tools auto-discovered from `ragtime/tools/`. Must export `<filename>_tool`:
+## Auth, MCP, and User Space
 
-```python
-from pydantic import BaseModel, Field
-from langchain_core.tools import StructuredTool
+- Session auth uses `ragtime_session` cookie (JWT-backed); `get_session_token` also accepts `Authorization: Bearer`.
+- Local admin usernames are stored with `local:` prefix to avoid LDAP collisions.
+- MCP HTTP transport (`ragtime/mcp/routes.py`) supports default route plus dynamic custom routes and optional auth/group filters.
+- User Space is file-backed under `${INDEX_DATA_PATH}/_userspace/workspaces/*` with git-based snapshots (`ragtime/userspace/service.py`).
 
-class MyToolInput(BaseModel):
-    query: str = Field(description="Description for LLM")
+## Developer Workflow
 
-async def execute_my_tool(query: str) -> str:
-    return result
+- Preferred dev loop: VS Code task `Start Development Stack` (`docker/docker-compose.dev.yml`).
+- Dev ports: `8000` API, `8001` Vite UI; in dev, `DEBUG_MODE=true` and hot reload is active.
+- If `ragtime/frontend/package.json` changes, run `docker exec ragtime-dev sh -c "cd /ragtime/ragtime/frontend && npm ci"`.
+- Prisma workflow after schema edits:
+  - `docker exec ragtime-dev python -m prisma generate`
+  - Use migrations for durable changes (`python -m prisma migrate dev` / `migrate deploy`), not ad-hoc DB edits.
 
-my_tool_tool = StructuredTool.from_function(
-    coroutine=execute_my_tool,
-    name="my_tool",
-    description="What this tool does",
-    args_schema=MyToolInput
-)
-```
+## Prisma + Migration Gotchas
 
-## Prisma
+- Before creating a new migration, check `git status prisma/migrations/`; if an uncommitted migration already exists, append to it instead of creating another.
+- For complex DDL or Prisma diff failures, use manual migration folders (`prisma/migrations/<timestamp>_name/migration.sql`) and verify with `docker exec ragtime-dev python -m prisma migrate deploy`.
+- Keep migration SQL idempotent for pgvector environments (`IF NOT EXISTS`, safe enum updates, `DO $$ ... EXCEPTION WHEN duplicate_object`).
+- In this repo, avoid relying on `db push` for production-like behavior; entrypoint and deploy paths are migration-first.
 
-Schema: `prisma/schema.prisma`.
+## Security + Secrets Nuance
 
-```bash
-python -m prisma generate  # After schema changes
-python -m prisma db push   # Dev only - applies schema directly
-```
+- Secrets are encrypted in DB as `enc::...`; key is persisted at `.data/.encryption_key` and must be included in backups with `--include-secret`.
+- High-impact encrypted fields include:
+  - `app_settings` API keys/passwords
+  - credential fields inside `tool_configs.connection_config`
+  - MCP route auth passwords
+  - stored git tokens in index records.
+- Validators in `ragtime/core/security.py` are intentionally strict; adjust there (not in prompting) when tool behavior appears blocked.
 
-### Migrations
+## Retrieval/Embedding Compatibility
 
-Schema changes require migrations for production deployment:
+- Upload/Git can be `faiss` or `pgvector`; schema and PDM remain pgvector-only.
+- Embedding provider/model changes can invalidate existing vector compatibility; respect embedding tracking fields in `app_settings` (`embedding_dimension`, `embedding_config_hash`) before reusing indexed data.
+- If embedding config changes across existing indexes, prefer full re-index over partial patching.
 
-1. **Before creating a new migration**, check for uncommitted migrations:
-   ```bash
-   git status prisma/migrations/
-   ```
-   If an uncommitted migration exists, add your changes to that migration's SQL file instead of creating a new one.
+## Project-Specific Guardrails
 
-2. **Creating migrations** (dev stack must be running):
-   ```bash
-   docker exec ragtime-dev python -m prisma migrate dev --name descriptive_name
-   ```
-
-3. **Manual migration** (when prisma migrate dev fails or for complex DDL):
-   - Create folder: `prisma/migrations/YYYYMMDDHHMMSS_name/`
-   - Add `migration.sql` with the required DDL statements
-   - Test by running: `docker exec ragtime-dev python -m prisma migrate deploy`
-
-4. **Production deployment**:
-   ```bash
-   docker exec ragtime python -m prisma migrate deploy
-   ```
-
-5. **Keep migrations idempotent** - PostgreSQL with pgvector. Use `IF NOT EXISTS`, `ADD VALUE IF NOT EXISTS`, and `DO $$ ... EXCEPTION WHEN duplicate_object` blocks for enums/constraints.
-
-## Authentication
-
-- Cookie: `ragtime_session` (httpOnly JWT)
-- Local admin usernames stored with `local:` prefix in DB to avoid LDAP collision
-- LDAP config stored in `ldap_config` table (singleton, id="default")
-
-## Secrets Encryption
-
-- Sensitive fields (API keys, passwords, tokens) use Fernet symmetric encryption
-- Encryption key auto-generated on first startup, persisted to `data/.encryption_key`
-- Encryption key derived from `ENCRYPTION_KEY` setting via SHA256
-- Encrypted values prefixed with `enc::` in database
-- **Backups**: Use `--include-secret` flag to include the encryption key file
-
-**Encrypted fields:**
-- `app_settings`: `openai_api_key`, `anthropic_api_key`, `postgres_password`, `mcp_default_route_password`
-- `tool_configs.connection_config`: `password`, `ssh_password`, `ssh_key_passphrase`, `key_passphrase`, `smb_password`, `key_content`, `ssh_key_content`, `ssh_tunnel_password`, `ssh_tunnel_key_content`, `ssh_tunnel_key_passphrase`
-- `mcp_route_configs`: `auth_password`
-- `index_jobs` / `index_metadata`: `git_token`
-
-## Tool Configs
-
-Dynamic tool instances via `tool_configs` table:
-- `tool_type`: postgres, odoo_shell, ssh_shell, filesystem_indexer
-- `connection_config`: JSON with type-specific params
-- `description`: Presented to LLM for tool selection context
-- Tools built at runtime in `ragtime/rag/components.py`
-
-## Embedding Provider Changes
-
-Filesystem indexes can use pgvector or FAISS. Embedding dimension/config tracking applies to pgvector-backed filesystem indexes. Changing embedding provider/model/dimensions:
-- `embedding_config_hash` tracks `"{provider}:{model}:{dimensions}"` (e.g., `ollama:nomic-embed-text:default`)
-- First index sets `embedding_dimension` and `embedding_config_hash` in `app_settings`
-- Subsequent indexes check for mismatch - if changed, **full re-index required** (existing embeddings incompatible)
-- Deleting all filesystem indexes clears tracking, allowing fresh start with new provider
-
-## Security Validation
-
-- **SQL queries require LIMIT clause** - `core/security.py:validate_sql_query` rejects SELECT without LIMIT
-- **Odoo code validation** - blocks `.write()`, `.create()`, `.unlink()` unless `allow_write=True`
-- Filesystem indexer skips zero-byte files and symlinks (cloud placeholder detection)
-
-## Conventions
-
-- Async everywhere
-- Type hints required (Python 3.12+ syntax)
-- Pydantic `BaseModel` with `Field(description=...)` for LLM
-- Logging: `from ragtime.core.logging import get_logger`
-- **No emojis** in logs, entrypoints, or UI text (use plain text)
+- Security validators are strict by design (`ragtime/core/security.py`): SQL read-only checks (including `LIMIT` expectations), Odoo write-op blocking, SSH command filtering.
+- Secrets in DB are encrypted (`enc::`), key persisted at `.data/.encryption_key`; backups need `--include-secret` when secret portability matters.
+- Keep async style and existing logging pattern (`get_logger` / `setup_logging`), and preserve mapped Prisma field naming conventions.
+- No dedicated test suite exists in repo; validate changes with targeted API/UI/container smoke checks.
+- House style: keep type hints and Pydantic `Field(description=...)` on LLM-facing schemas; avoid emojis in logs/UI text.
