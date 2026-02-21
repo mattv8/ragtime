@@ -691,9 +691,24 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 
 - Style rendered modules to match the active app theme.
 - Prefer CSS variables/tokens over hard-coded values, especially for colors, spacing, and radii.
-- Use tokens such as `var(--color-bg-primary)`, `var(--color-surface)`, `var(--color-text-primary)`, `var(--color-border)`, `var(--space-*)`, and `var(--radius-*)`.
 - If module code injects CSS dynamically, keep the same token-based approach so dark/light mode stays consistent.
 - Do not introduce custom font stacks, raw hex palettes, or fixed theme-specific colors unless explicitly requested.
+- Available CSS variable tokens (always use `var(--token-name)` syntax):
+
+  | Category       | Tokens |
+  |----------------|--------|
+  | Backgrounds    | `--color-bg-primary`, `--color-bg-secondary`, `--color-bg-tertiary` |
+  | Surfaces       | `--color-surface`, `--color-surface-hover`, `--color-surface-active` |
+  | Text           | `--color-text-primary`, `--color-text-secondary`, `--color-text-muted`, `--color-text-inverse` |
+  | Brand/Accent   | `--color-primary`, `--color-primary-hover`, `--color-primary-light`, `--color-primary-border`, `--color-accent`, `--color-accent-hover`, `--color-accent-light` |
+  | Semantic       | `--color-success`, `--color-success-light`, `--color-success-border`, `--color-error`, `--color-error-light`, `--color-error-border`, `--color-warning`, `--color-warning-light`, `--color-warning-border`, `--color-info`, `--color-info-light`, `--color-info-border` |
+  | Borders        | `--color-border`, `--color-border-strong` |
+  | Input          | `--color-input-bg`, `--color-input-border`, `--color-input-focus` |
+  | Shadows        | `--shadow-sm`, `--shadow-md`, `--shadow-lg`, `--shadow-xl` |
+  | Spacing        | `--space-xs` (4px), `--space-sm` (8px), `--space-md` (16px), `--space-lg` (24px), `--space-xl` (32px), `--space-2xl` (48px) |
+  | Radius         | `--radius-sm` (4px), `--radius-md` (8px), `--radius-lg` (12px), `--radius-xl` (16px), `--radius-full` (pill) |
+  | Typography     | `--font-sans`, `--font-mono`, `--text-xs` .. `--text-2xl`, `--leading-tight` / `--leading-normal` / `--leading-relaxed` |
+  | Transitions    | `--transition-fast` (150ms), `--transition-normal` (200ms), `--transition-slow` (300ms) |
 """
 
 

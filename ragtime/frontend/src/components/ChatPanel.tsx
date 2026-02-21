@@ -1509,7 +1509,7 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, on
             }
         }
     }
-  }, [activeConversation, stopTaskStreaming, onTaskComplete]);
+  }, [activeConversation, stopTaskStreaming, onTaskComplete, workspaceId]);
 
   const startTaskAndStream = useCallback(async (conversationId: string, message: string) => {
     // 1. Optimistic update (User message)
@@ -1551,7 +1551,7 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, on
        setError(err.message || 'Failed to start task');
        setIsStreaming(false);
     }
-  }, [activeConversation, connectTaskStream]);
+  }, [activeConversation, connectTaskStream, workspaceId]);
 
   // Check for active/interrupted background task when conversation changes
   useEffect(() => {
@@ -1604,7 +1604,7 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, on
         // Stop streaming when conversation ID changes (unmounting this effect instance)
         stopTaskStreaming();
     };
-  }, [activeConversation?.id, connectTaskStream, stopTaskStreaming]);
+  }, [activeConversation?.id, connectTaskStream, stopTaskStreaming, workspaceId]);
 
   // Cleanup on component unmount
   useEffect(() => {

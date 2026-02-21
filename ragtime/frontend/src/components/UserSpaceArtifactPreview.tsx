@@ -4,36 +4,85 @@ import ts from 'typescript';
 interface UserSpaceArtifactPreviewProps {
   entryPath: string;
   workspaceFiles: Record<string, string>;
+  previewInstanceKey?: string;
 }
 
 const THEME_TOKEN_NAMES = [
+  // Base colors
   '--color-bg-primary',
   '--color-bg-secondary',
   '--color-bg-tertiary',
+  // Surface colors
   '--color-surface',
   '--color-surface-hover',
   '--color-surface-active',
+  // Text colors
   '--color-text-primary',
   '--color-text-secondary',
   '--color-text-muted',
-  '--color-border',
-  '--color-border-strong',
+  '--color-text-inverse',
+  // Brand / accent
   '--color-primary',
   '--color-primary-hover',
   '--color-primary-light',
   '--color-primary-border',
+  '--color-accent',
+  '--color-accent-hover',
+  '--color-accent-light',
+  // Semantic colors
   '--color-success',
+  '--color-success-light',
+  '--color-success-border',
   '--color-error',
+  '--color-error-light',
+  '--color-error-border',
   '--color-warning',
+  '--color-warning-light',
+  '--color-warning-border',
+  '--color-info',
+  '--color-info-light',
+  '--color-info-border',
+  // Borders
+  '--color-border',
+  '--color-border-strong',
+  // Input
+  '--color-input-bg',
+  '--color-input-border',
+  '--color-input-focus',
+  // Shadows
+  '--shadow-sm',
+  '--shadow-md',
+  '--shadow-lg',
+  '--shadow-xl',
+  // Spacing
   '--space-xs',
   '--space-sm',
   '--space-md',
   '--space-lg',
+  '--space-xl',
+  '--space-2xl',
+  // Border radius
   '--radius-sm',
   '--radius-md',
   '--radius-lg',
+  '--radius-xl',
+  '--radius-full',
+  // Typography
   '--font-sans',
   '--font-mono',
+  '--text-xs',
+  '--text-sm',
+  '--text-base',
+  '--text-lg',
+  '--text-xl',
+  '--text-2xl',
+  '--leading-tight',
+  '--leading-normal',
+  '--leading-relaxed',
+  // Transitions
+  '--transition-fast',
+  '--transition-normal',
+  '--transition-slow',
 ] as const;
 
 type ThemeTokens = Record<string, string>;
@@ -166,16 +215,18 @@ function rewriteLocalSpecifiers(
     return rewritten;
   };
 
-  const staticImportPattern = /((?:import|export)\s+(?:[^'"`]*?\s+from\s+)?['"])([^'"]+)(['"])/g;
-  const dynamicImportPattern = /(import\(\s*['"])([^'"]+)(['"]\s*\))/g;
+  const patterns: RegExp[] = [
+    /(\bimport\s+['"])([^'"]+)(['"])/g,
+    /(\bfrom\s+['"])([^'"]+)(['"])/g,
+    /(\bimport\(\s*['"])([^'"]+)(['"]\s*\))/g,
+  ];
 
-  let output = source.replace(staticImportPattern, (_full, prefix: string, specifier: string, suffix: string) => {
-    return `${prefix}${rewrite(specifier)}${suffix}`;
-  });
-
-  output = output.replace(dynamicImportPattern, (_full, prefix: string, specifier: string, suffix: string) => {
-    return `${prefix}${rewrite(specifier)}${suffix}`;
-  });
+  let output = source;
+  for (const pattern of patterns) {
+    output = output.replace(pattern, (_full, prefix: string, specifier: string, suffix: string) => {
+      return `${prefix}${rewrite(specifier)}${suffix}`;
+    });
+  }
 
   return { output, errors };
 }
@@ -196,46 +247,74 @@ function buildIframeDoc(
   transpiledModules: ModuleMap,
   themeTokens: ThemeTokens
 ): string {
-  const encodedEntryPath = JSON.stringify(entryPath);
-  const encodedModules = JSON.stringify(transpiledModules);
-  const encodedThemeTokens = JSON.stringify(themeTokens);
+  const payload = encodeURIComponent(JSON.stringify({
+    entryPath,
+    modules: transpiledModules,
+    themeTokens,
+  }));
   return `<!doctype html>
 <html>
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' blob:; style-src 'unsafe-inline'; img-src data:; connect-src 'none';" />
     <style>
-      :root { font-family: var(--font-sans, system-ui, sans-serif); }
+      :root { font-family: var(--font-sans, system-ui, sans-serif); color-scheme: dark; }
       *, *::before, *::after { box-sizing: border-box; }
-      html, body { margin: 0; padding: 0; min-height: 100%; background: var(--color-bg-secondary, transparent); color: var(--color-text-primary, #e5e7eb); font-family: var(--font-sans, system-ui, sans-serif); }
+      html, body { margin: 0; padding: 0; min-height: 100%; background: var(--color-bg-primary, #0f172a); color: var(--color-text-primary, #f1f5f9); font-family: var(--font-sans, system-ui, sans-serif); }
       #app { min-height: 100%; padding: var(--space-md, 16px); }
+      a { color: var(--color-primary, #6366f1); }
+      a:hover { color: var(--color-primary-hover, #4f46e5); }
       .userspace-render-error {
-        margin: var(--space-md, 12px);
-        padding: var(--space-md, 12px);
-        border: 1px solid var(--color-error, #dc2626);
+        margin: var(--space-md, 16px);
+        padding: var(--space-md, 16px);
+        border: 1px solid var(--color-error, #ef4444);
         border-radius: var(--radius-md, 8px);
-        color: var(--color-text-primary, #fca5a5);
-        background: var(--color-bg-tertiary, #2b1012);
+        color: var(--color-text-primary, #f1f5f9);
+        background: var(--color-error-light, rgba(239, 68, 68, 0.15));
         white-space: pre-wrap;
       }
     </style>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app" data-payload="${payload}"></div>
     <script type="module">
-      const entryPath = ${encodedEntryPath};
-      const modules = ${encodedModules};
-      const themeTokens = ${encodedThemeTokens};
       const container = document.getElementById('app');
+      const renderFatal = (message) => {
+        const mount = container || document.body;
+        if (!mount) return;
+        const el = document.createElement('div');
+        el.className = 'userspace-render-error';
+        el.textContent = message;
+        mount.innerHTML = '';
+        mount.appendChild(el);
+      };
+
+      let entryPath = '';
+      let modules = {};
+      let themeTokens = {};
+      try {
+        const encodedPayload = (container && container.getAttribute('data-payload')) || '{}';
+        const payload = JSON.parse(decodeURIComponent(encodedPayload));
+        entryPath = payload.entryPath || '';
+        modules = payload.modules || {};
+        themeTokens = payload.themeTokens || {};
+      } catch (error) {
+        renderFatal(error instanceof Error ? error.stack || error.message : String(error));
+      }
       const rootStyle = document.documentElement.style;
-      Object.entries(themeTokens).forEach(([name, value]) => rootStyle.setProperty(name, value));
+      Object.keys(themeTokens).forEach((name) => {
+        const value = themeTokens[name];
+        rootStyle.setProperty(name, value);
+      });
 
       const extensions = ['.ts', '.tsx', '.js', '.jsx'];
 
       const normalizePath = (input) => {
         if (!input) return '';
-        const withoutBackslashes = String(input).replace(/\\\\/g, '/');
-        const withoutLeadingSlash = withoutBackslashes.replace(/^\//, '');
+        const withoutBackslashes = String(input).split('\\\\').join('/');
+        const withoutLeadingSlash = withoutBackslashes.startsWith('/')
+          ? withoutBackslashes.slice(1)
+          : withoutBackslashes;
         const segments = withoutLeadingSlash.split('/');
         const normalized = [];
 
@@ -298,8 +377,11 @@ function buildIframeDoc(
       };
 
       const rewriteLocalSpecifiers = (source, importerPath, moduleUrlMap) => {
-        const staticImportPattern = /((?:import|export)\s+(?:[^'"]*?\s+from\s+)?['"])([^'"]+)(['"])/g;
-        const dynamicImportPattern = /(import\(\s*['"])([^'"]+)(['"]\s*\))/g;
+        const patterns = [
+          /(\bimport\s+['"])([^'"]+)(['"])/g,
+          /(\bfrom\s+['"])([^'"]+)(['"])/g,
+          /(\bimport\(\s*['"])([^'"]+)(['"]\s*\))/g,
+        ];
 
         const rewriteSpecifier = (specifier) => {
           const resolved = resolveWorkspaceModulePath(importerPath, specifier);
@@ -316,26 +398,21 @@ function buildIframeDoc(
           return moduleUrl;
         };
 
-        let output = source.replace(staticImportPattern, (_full, prefix, specifier, suffix) => {
-          return prefix + rewriteSpecifier(specifier) + suffix;
-        });
-
-        output = output.replace(dynamicImportPattern, (_full, prefix, specifier, suffix) => {
-          return prefix + rewriteSpecifier(specifier) + suffix;
-        });
+        let output = source;
+        for (const pattern of patterns) {
+          output = output.replace(pattern, (_full, prefix, specifier, suffix) => {
+            return prefix + rewriteSpecifier(specifier) + suffix;
+          });
+        }
 
         return output;
       };
 
       const showError = (message) => {
-        const el = document.createElement('div');
-        el.className = 'userspace-render-error';
-        el.textContent = message;
-        container.innerHTML = '';
-        container.appendChild(el);
+        renderFatal(message);
       };
 
-      try {
+      const runPreview = async () => {
         const normalizedEntry = normalizePath(entryPath);
         if (!normalizedEntry || !Object.prototype.hasOwnProperty.call(modules, normalizedEntry)) {
           throw new Error("Missing entry module '" + entryPath + "'.");
@@ -410,9 +487,11 @@ function buildIframeDoc(
           });
           await loaded.render(container, context);
         }
-      } catch (error) {
+      };
+
+      runPreview().catch((error) => {
         showError(error instanceof Error ? error.stack || error.message : String(error));
-      }
+      });
     </script>
   </body>
 </html>`;
@@ -421,6 +500,7 @@ function buildIframeDoc(
 export function UserSpaceArtifactPreview({
   entryPath,
   workspaceFiles,
+  previewInstanceKey,
 }: UserSpaceArtifactPreviewProps) {
   const themeTokens = readThemeTokens();
 
@@ -536,6 +616,7 @@ export function UserSpaceArtifactPreview({
   return (
     <div className="userspace-preview-card userspace-preview-frame-wrap">
       <iframe
+        key={`${previewInstanceKey ?? ''}:${transpileResult.entryPath}`}
         title="TypeScript module preview"
         className="userspace-preview-frame"
         sandbox="allow-scripts"

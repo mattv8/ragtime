@@ -52,6 +52,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const [showSnapshots, setShowSnapshots] = useState(true);
   const toolPickerRef = useRef<HTMLDivElement>(null);
   const fileContentCacheRef = useRef(fileContentCache);
+  const creatingWorkspaceRef = useRef(false);
 
   // Resize state
   const [sidebarWidth, setSidebarWidth] = useState(180);
@@ -104,6 +105,15 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   }, [fileContent, fileContentCache, files, selectedFilePath]);
 
   const selectedToolIds = useMemo(() => new Set(activeWorkspace?.selected_tool_ids ?? []), [activeWorkspace?.selected_tool_ids]);
+
+  const getNextWorkspaceName = useCallback(() => {
+    const existingNames = new Set(workspaces.map((workspace) => workspace.name.trim().toLowerCase()));
+    let index = 1;
+    while (existingNames.has(`workspace ${index}`)) {
+      index += 1;
+    }
+    return `Workspace ${index}`;
+  }, [workspaces]);
 
   const activeWorkspaceRole = useMemo(() => {
     if (!activeWorkspace) return 'viewer';
@@ -317,15 +327,19 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   }, [showToolPicker]);
 
   const handleCreateWorkspace = useCallback(async () => {
+    if (creatingWorkspaceRef.current) {
+      return;
+    }
+    creatingWorkspaceRef.current = true;
     setCreatingWorkspace(true);
     try {
       const created = await api.createUserSpaceWorkspace({
-        name: `Workspace ${workspaces.length + 1}`,
+        name: getNextWorkspaceName(),
         description: 'User Space dashboard workspace',
         selected_tool_ids: availableTools.map((tool) => tool.id),
       });
       await api.upsertUserSpaceFile(created.id, 'dashboard/main.ts', {
-        content: 'export function render(container: HTMLElement) {\n  container.innerHTML = `<h2>Interactive Report</h2><p>Ask chat to build your report and wire live data connections.</p>`;\n}\n',
+        content: 'export function render(container: HTMLElement) {\n  container.innerHTML = `\n    <div style="max-width: 800px; margin: 0 auto; padding: var(--space-lg, 24px);">\n      <h2 style="color: var(--color-text-primary, #f1f5f9); margin: 0 0 var(--space-sm, 8px) 0;">Interactive Report</h2>\n      <p style="color: var(--color-text-secondary, #94a3b8); margin: 0;">Ask chat to build your report and wire live data connections.</p>\n    </div>\n  `;\n}\n',
         artifact_type: 'module_ts',
       });
       await api.createConversation(undefined, created.id);
@@ -335,9 +349,10 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create workspace');
     } finally {
+      creatingWorkspaceRef.current = false;
       setCreatingWorkspace(false);
     }
-  }, [availableTools, loadWorkspaceData, loadWorkspaces, workspaces.length]);
+  }, [availableTools, getNextWorkspaceName, loadWorkspaceData, loadWorkspaces]);
 
   const handleSelectFile = useCallback(async (path: string) => {
     if (!activeWorkspaceId) return;
@@ -885,6 +900,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
           <div className="userspace-chat-section" style={{ flex: 1 - editorFraction }}>
             {activeWorkspaceId ? (
               <ChatPanel
+                key={activeWorkspaceId}
                 currentUser={currentUser}
                 workspaceId={activeWorkspaceId}
                 onUserMessageSubmitted={canEditWorkspace ? handleUserMessageSubmitted : undefined}
@@ -907,6 +923,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
             <UserSpaceArtifactPreview
               entryPath={previewEntryPath}
               workspaceFiles={previewWorkspaceFiles}
+              previewInstanceKey={activeWorkspaceId ?? ''}
             />
           </div>
 
