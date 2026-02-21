@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, File, History, Maximize2, Minimize2, Pencil, Plus, Save, Settings, Trash2, Users, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, File, History, Maximize2, Minimize2, Pencil, Plus, Save, Settings, Trash2, Users, X } from 'lucide-react';
 
 import { api } from '@/api';
 import type { User, UserSpaceAvailableTool, UserSpaceFileInfo, UserSpaceSnapshot, UserSpaceWorkspace, UserSpaceWorkspaceMember, WorkspaceRole } from '@/types';
+import { buildUserSpaceTree, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { ChatPanel } from './ChatPanel';
 import { ResizeHandle } from './ResizeHandle';
 import { UserSpaceArtifactPreview } from './UserSpaceArtifactPreview';
@@ -10,6 +11,14 @@ import { UserSpaceArtifactPreview } from './UserSpaceArtifactPreview';
 interface UserSpacePanelProps {
   currentUser: User;
   onFullscreenChange?: (fullscreen: boolean) => void;
+}
+
+function normalizeWorkspacePath(value: string): string {
+  return value.trim().replace(/^\/+|\/+$/g, '').replace(/\/+/g, '/');
+}
+
+function getExpandedFoldersStorageKey(workspaceId: string): string {
+  return `userspace:expanded-folders:${workspaceId}`;
 }
 
 export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePanelProps) {
@@ -40,9 +49,13 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const [savingFile, setSavingFile] = useState(false);
   const [savingWorkspaceTools, setSavingWorkspaceTools] = useState(false);
   const [deleteConfirmFileId, setDeleteConfirmFileId] = useState<string | null>(null);
+  const [deleteConfirmFolderPath, setDeleteConfirmFolderPath] = useState<string | null>(null);
   const [newFileName, setNewFileName] = useState<string | null>(null);
+  const [newFileParentPath, setNewFileParentPath] = useState<string>('');
   const [renamingFilePath, setRenamingFilePath] = useState<string | null>(null);
+  const [renamingFolderPath, setRenamingFolderPath] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [deleteConfirmWorkspaceId, setDeleteConfirmWorkspaceId] = useState<string | null>(null);
   const [showMembersModal, setShowMembersModal] = useState(false);
   const [allUsers, setAllUsers] = useState<User[]>([]);
@@ -52,7 +65,6 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const [showSnapshots, setShowSnapshots] = useState(true);
   const toolPickerRef = useRef<HTMLDivElement>(null);
   const fileContentCacheRef = useRef(fileContentCache);
-  const creatingWorkspaceRef = useRef(false);
 
   // Resize state
   const [sidebarWidth, setSidebarWidth] = useState(180);
@@ -105,15 +117,8 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   }, [fileContent, fileContentCache, files, selectedFilePath]);
 
   const selectedToolIds = useMemo(() => new Set(activeWorkspace?.selected_tool_ids ?? []), [activeWorkspace?.selected_tool_ids]);
-
-  const getNextWorkspaceName = useCallback(() => {
-    const existingNames = new Set(workspaces.map((workspace) => workspace.name.trim().toLowerCase()));
-    let index = 1;
-    while (existingNames.has(`workspace ${index}`)) {
-      index += 1;
-    }
-    return `Workspace ${index}`;
-  }, [workspaces]);
+  const fileTree = useMemo(() => buildUserSpaceTree(files), [files]);
+  const folderPaths = useMemo(() => listFolderPaths(files), [files]);
 
   const activeWorkspaceRole = useMemo(() => {
     if (!activeWorkspace) return 'viewer';
@@ -326,20 +331,74 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showToolPicker]);
 
-  const handleCreateWorkspace = useCallback(async () => {
-    if (creatingWorkspaceRef.current) {
+  useEffect(() => {
+    if (!activeWorkspaceId) {
+      setExpandedFolders(new Set());
       return;
     }
-    creatingWorkspaceRef.current = true;
+
+    try {
+      const raw = window.localStorage.getItem(getExpandedFoldersStorageKey(activeWorkspaceId));
+      if (!raw) {
+        setExpandedFolders(new Set());
+        return;
+      }
+
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        setExpandedFolders(new Set());
+        return;
+      }
+
+      setExpandedFolders(new Set(parsed.filter((value): value is string => typeof value === 'string')));
+    } catch {
+      setExpandedFolders(new Set());
+    }
+  }, [activeWorkspaceId]);
+
+  useEffect(() => {
+    setExpandedFolders((current) => {
+      const next = new Set(Array.from(current).filter((path) => folderPaths.has(path)));
+      if (next.size === current.size) {
+        return current;
+      }
+      return next;
+    });
+  }, [folderPaths]);
+
+  useEffect(() => {
+    if (!activeWorkspaceId) return;
+    window.localStorage.setItem(getExpandedFoldersStorageKey(activeWorkspaceId), JSON.stringify(Array.from(expandedFolders)));
+  }, [activeWorkspaceId, expandedFolders]);
+
+  useEffect(() => {
+    if (!selectedFilePath) return;
+    const ancestors = getAncestorFolderPaths(selectedFilePath);
+    if (ancestors.length === 0) return;
+
+    setExpandedFolders((current) => {
+      const next = new Set(current);
+      let changed = false;
+      for (const folderPath of ancestors) {
+        if (!next.has(folderPath)) {
+          next.add(folderPath);
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [selectedFilePath]);
+
+  const handleCreateWorkspace = useCallback(async () => {
     setCreatingWorkspace(true);
     try {
       const created = await api.createUserSpaceWorkspace({
-        name: getNextWorkspaceName(),
+        name: `Workspace ${workspaces.length + 1}`,
         description: 'User Space dashboard workspace',
         selected_tool_ids: availableTools.map((tool) => tool.id),
       });
       await api.upsertUserSpaceFile(created.id, 'dashboard/main.ts', {
-        content: 'export function render(container: HTMLElement) {\n  container.innerHTML = `\n    <div style="max-width: 800px; margin: 0 auto; padding: var(--space-lg, 24px);">\n      <h2 style="color: var(--color-text-primary, #f1f5f9); margin: 0 0 var(--space-sm, 8px) 0;">Interactive Report</h2>\n      <p style="color: var(--color-text-secondary, #94a3b8); margin: 0;">Ask chat to build your report and wire live data connections.</p>\n    </div>\n  `;\n}\n',
+        content: 'export function render(container: HTMLElement) {\n  container.innerHTML = `<h2>Interactive Report</h2><p>Ask chat to build your report and wire live data connections.</p>`;\n}\n',
         artifact_type: 'module_ts',
       });
       await api.createConversation(undefined, created.id);
@@ -349,10 +408,9 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create workspace');
     } finally {
-      creatingWorkspaceRef.current = false;
       setCreatingWorkspace(false);
     }
-  }, [availableTools, getNextWorkspaceName, loadWorkspaceData, loadWorkspaces]);
+  }, [availableTools, loadWorkspaceData, loadWorkspaces, workspaces.length]);
 
   const handleSelectFile = useCallback(async (path: string) => {
     if (!activeWorkspaceId) return;
@@ -442,11 +500,6 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     await loadWorkspaceData(activeWorkspaceId);
   }, [activeWorkspaceId, canEditWorkspace, loadWorkspaceData]);
 
-  const handleTaskComplete = useCallback(() => {
-    if (!activeWorkspaceId) return;
-    loadWorkspaceData(activeWorkspaceId);
-  }, [activeWorkspaceId, loadWorkspaceData]);
-
   const handleRestoreSnapshot = useCallback(async (snapshotId: string) => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
     try {
@@ -457,11 +510,40 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     }
   }, [activeWorkspaceId, canEditWorkspace, loadWorkspaceData]);
 
-  const handleCreateNewFile = useCallback(async (path: string) => {
-    if (!activeWorkspaceId || !canEditWorkspace || !path.trim()) return;
+  const handleStartCreateFile = useCallback((parentPath = '') => {
+    const normalizedParent = normalizeWorkspacePath(parentPath);
+    setNewFileParentPath(normalizedParent);
+    setNewFileName(normalizedParent ? `${normalizedParent}/` : '');
+    setDeleteConfirmFileId(null);
+    setDeleteConfirmFolderPath(null);
+    setRenamingFilePath(null);
+    setRenamingFolderPath(null);
+  }, []);
+
+  const handleCreateNewFile = useCallback(async (path: string, parentPath: string = '') => {
+    if (!activeWorkspaceId || !canEditWorkspace) return;
+
+    const normalizedParent = normalizeWorkspacePath(parentPath);
+    const normalizedInput = normalizeWorkspacePath(path);
+    const nextPath = (() => {
+      if (!normalizedInput) return '';
+      if (!normalizedParent) return normalizedInput;
+      if (normalizedInput === normalizedParent || normalizedInput.startsWith(`${normalizedParent}/`)) {
+        return normalizedInput;
+      }
+      if (!normalizedInput.includes('/')) {
+        return `${normalizedParent}/${normalizedInput}`;
+      }
+      return normalizedInput;
+    })();
+
+    if (!nextPath) {
+      setError('File path is required');
+      return;
+    }
+
     try {
-      const nextPath = path.trim();
-      await api.upsertUserSpaceFile(activeWorkspaceId, path.trim(), {
+      await api.upsertUserSpaceFile(activeWorkspaceId, nextPath, {
         content: '',
         artifact_type: undefined,
       });
@@ -473,22 +555,23 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
         },
       }));
       setNewFileName(null);
+      setNewFileParentPath('');
       await loadWorkspaceData(activeWorkspaceId);
       handleSelectFile(nextPath);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create file');
     }
-  }, [activeWorkspaceId, canEditWorkspace, loadWorkspaceData, handleSelectFile]);
+  }, [activeWorkspaceId, canEditWorkspace, handleSelectFile, loadWorkspaceData]);
 
   const handleRenameFile = useCallback(async (oldPath: string, newPath: string) => {
-    if (!activeWorkspaceId || !canEditWorkspace || !newPath.trim() || newPath.trim() === oldPath) {
+    const normalizedNewPath = normalizeWorkspacePath(newPath);
+    if (!activeWorkspaceId || !canEditWorkspace || !normalizedNewPath || normalizedNewPath === oldPath) {
       setRenamingFilePath(null);
       return;
     }
     try {
-      // Read old file content, save to new path, delete old
       const file = await api.getUserSpaceFile(activeWorkspaceId, oldPath);
-      await api.upsertUserSpaceFile(activeWorkspaceId, newPath.trim(), {
+      await api.upsertUserSpaceFile(activeWorkspaceId, normalizedNewPath, {
         content: file.content,
         artifact_type: file.artifact_type || undefined,
       });
@@ -498,19 +581,103 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
         const next = { ...current };
         const currentValue = next[oldPath];
         if (currentValue) {
-          next[newPath.trim()] = currentValue;
+          next[normalizedNewPath] = currentValue;
         }
         delete next[oldPath];
         return next;
       });
       if (selectedFilePath === oldPath) {
-        setSelectedFilePath(newPath.trim());
+        setSelectedFilePath(normalizedNewPath);
       }
       await loadWorkspaceData(activeWorkspaceId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to rename file');
     }
   }, [activeWorkspaceId, canEditWorkspace, loadWorkspaceData, selectedFilePath]);
+
+  const handleRenameFolder = useCallback(async (oldFolderPath: string, newFolderPath: string) => {
+    if (!activeWorkspaceId || !canEditWorkspace) {
+      setRenamingFolderPath(null);
+      return;
+    }
+
+    const oldPrefix = normalizeWorkspacePath(oldFolderPath);
+    const newPrefix = normalizeWorkspacePath(newFolderPath);
+
+    if (!oldPrefix || !newPrefix || oldPrefix === newPrefix) {
+      setRenamingFolderPath(null);
+      return;
+    }
+
+    if (newPrefix.startsWith(`${oldPrefix}/`)) {
+      setError('Cannot rename a folder into one of its own descendants');
+      return;
+    }
+
+    const descendants = files.filter((file) => file.path.startsWith(`${oldPrefix}/`));
+    if (descendants.length === 0) {
+      setError('Folder is empty; no files to rename');
+      setRenamingFolderPath(null);
+      return;
+    }
+
+    const descendantPaths = new Set(descendants.map((file) => file.path));
+    const existingPaths = new Set(files.map((file) => file.path));
+    const moves = descendants.map((file) => ({
+      oldPath: file.path,
+      newPath: `${newPrefix}/${file.path.slice(oldPrefix.length + 1)}`,
+    }));
+
+    const conflictingPath = moves.find((move) => existingPaths.has(move.newPath) && !descendantPaths.has(move.newPath));
+    if (conflictingPath) {
+      setError(`Cannot rename folder because target file already exists: ${conflictingPath.newPath}`);
+      return;
+    }
+
+    const createdPaths: string[] = [];
+    try {
+      for (const move of moves) {
+        const sourceFile = await api.getUserSpaceFile(activeWorkspaceId, move.oldPath);
+        await api.upsertUserSpaceFile(activeWorkspaceId, move.newPath, {
+          content: sourceFile.content,
+          artifact_type: sourceFile.artifact_type || undefined,
+        });
+        createdPaths.push(move.newPath);
+      }
+    } catch (err) {
+      await Promise.allSettled(createdPaths.map((path) => api.deleteUserSpaceFile(activeWorkspaceId, path)));
+      setError(err instanceof Error ? `Failed to rename folder: ${err.message}` : 'Failed to rename folder');
+      return;
+    }
+
+    const deleteResults = await Promise.allSettled(moves.map((move) => api.deleteUserSpaceFile(activeWorkspaceId, move.oldPath)));
+    const deleteFailures = deleteResults.filter((result) => result.status === 'rejected').length;
+
+    setRenamingFolderPath(null);
+    setRenameValue('');
+    setExpandedFolders((current) => {
+      const next = new Set<string>();
+      for (const path of current) {
+        if (path === oldPrefix || path.startsWith(`${oldPrefix}/`)) {
+          const suffix = path.slice(oldPrefix.length);
+          next.add(`${newPrefix}${suffix}`);
+        } else {
+          next.add(path);
+        }
+      }
+      return next;
+    });
+
+    if (selectedFilePath.startsWith(`${oldPrefix}/`)) {
+      setSelectedFilePath(`${newPrefix}/${selectedFilePath.slice(oldPrefix.length + 1)}`);
+    }
+
+    await loadWorkspaceData(activeWorkspaceId);
+
+    if (deleteFailures > 0) {
+      setError(`Folder renamed, but ${deleteFailures} source file(s) could not be removed`);
+    }
+  }, [activeWorkspaceId, canEditWorkspace, files, loadWorkspaceData, selectedFilePath]);
 
   const handleDeleteFile = useCallback(async (filePath: string) => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
@@ -532,6 +699,47 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       setError(err instanceof Error ? err.message : 'Failed to delete file');
     }
   }, [activeWorkspaceId, canEditWorkspace, loadWorkspaceData, selectedFilePath]);
+
+  const handleDeleteFolder = useCallback(async (folderPath: string) => {
+    if (!activeWorkspaceId || !canEditWorkspace) return;
+
+    const normalizedFolderPath = normalizeWorkspacePath(folderPath);
+    const descendants = files.filter((file) => file.path.startsWith(`${normalizedFolderPath}/`));
+    if (descendants.length === 0) {
+      setDeleteConfirmFolderPath(null);
+      setError('Folder is empty; no files to delete');
+      return;
+    }
+
+    const results = await Promise.allSettled(
+      descendants.map((file) => api.deleteUserSpaceFile(activeWorkspaceId, file.path))
+    );
+    const failures = results.filter((result) => result.status === 'rejected').length;
+
+    setDeleteConfirmFolderPath(null);
+    if (selectedFilePath.startsWith(`${normalizedFolderPath}/`)) {
+      setSelectedFilePath('');
+      setFileContent('');
+      setFileDirty(false);
+    }
+    await loadWorkspaceData(activeWorkspaceId);
+
+    if (failures > 0) {
+      setError(`Deleted folder contents with ${failures} failure(s)`);
+    }
+  }, [activeWorkspaceId, canEditWorkspace, files, loadWorkspaceData, selectedFilePath]);
+
+  const handleToggleFolder = useCallback((folderPath: string) => {
+    setExpandedFolders((current) => {
+      const next = new Set(current);
+      if (next.has(folderPath)) {
+        next.delete(folderPath);
+      } else {
+        next.add(folderPath);
+      }
+      return next;
+    });
+  }, []);
 
   const handleDeleteWorkspace = useCallback(async (workspaceId: string) => {
     try {
@@ -623,6 +831,151 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       setError(err instanceof Error ? err.message : 'Failed to update description');
     }
   }, [activeWorkspace, canEditWorkspace, draftDescription]);
+
+  const renderTreeNodes = useCallback((nodes: ReturnType<typeof buildUserSpaceTree>, depth = 0) => {
+    return nodes.flatMap((node) => {
+      const indentStyle = { paddingLeft: `${depth * 14 + 6}px` };
+
+      if (node.type === 'folder') {
+        const isExpanded = expandedFolders.has(node.path);
+        const isRenaming = renamingFolderPath === node.path;
+        const isConfirmingDelete = deleteConfirmFolderPath === node.path;
+        const rows: JSX.Element[] = [];
+
+        if (isRenaming) {
+          rows.push(
+            <div key={`${node.path}-rename`} className="userspace-file-item userspace-tree-row active">
+              <input
+                className="userspace-file-rename-input"
+                style={indentStyle}
+                value={renameValue}
+                onChange={(event) => setRenameValue(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') handleRenameFolder(node.path, renameValue);
+                  if (event.key === 'Escape') setRenamingFolderPath(null);
+                }}
+                autoFocus
+              />
+              <div className="userspace-item-actions" style={{ opacity: 1 }}>
+                <button className="chat-action-btn" onClick={() => handleRenameFolder(node.path, renameValue)} title="Confirm">
+                  <Check size={12} />
+                </button>
+                <button className="chat-action-btn" onClick={() => setRenamingFolderPath(null)} title="Cancel">
+                  <X size={12} />
+                </button>
+              </div>
+            </div>
+          );
+        } else {
+          rows.push(
+            <div key={node.path} className="userspace-file-item userspace-tree-row userspace-tree-folder-row">
+              <button className="userspace-item-content userspace-tree-content" onClick={() => handleToggleFolder(node.path)} style={indentStyle}>
+                <span className="userspace-tree-chevron" aria-hidden="true">
+                  {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                </span>
+                <span className="userspace-folder-label">{node.name}</span>
+              </button>
+              {canEditWorkspace && (
+                <div className="userspace-item-actions">
+                  {isConfirmingDelete ? (
+                    <>
+                      <button className="chat-action-btn confirm-delete" onClick={() => handleDeleteFolder(node.path)} title="Confirm">
+                        <Check size={12} />
+                      </button>
+                      <button className="chat-action-btn cancel-delete" onClick={() => setDeleteConfirmFolderPath(null)} title="Cancel">
+                        <X size={12} />
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button className="chat-action-btn" onClick={() => handleStartCreateFile(node.path)} title="New file in folder">
+                        <Plus size={12} />
+                      </button>
+                      <button className="chat-action-btn" onClick={() => { setRenamingFolderPath(node.path); setRenameValue(node.path); }} title="Rename folder">
+                        <Pencil size={12} />
+                      </button>
+                      <button className="chat-action-btn" onClick={() => setDeleteConfirmFolderPath(node.path)} title="Delete folder">
+                        <Trash2 size={12} />
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        }
+
+        if (isExpanded && node.children.length > 0) {
+          rows.push(...renderTreeNodes(node.children, depth + 1));
+        }
+
+        return rows;
+      }
+
+      const isConfirmingDelete = deleteConfirmFileId === node.path;
+      const isRenaming = renamingFilePath === node.path;
+
+      if (isRenaming) {
+        return [
+          <div key={`${node.path}-rename`} className="userspace-file-item userspace-tree-row active">
+            <input
+              className="userspace-file-rename-input"
+              style={indentStyle}
+              value={renameValue}
+              onChange={(event) => setRenameValue(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') handleRenameFile(node.path, renameValue);
+                if (event.key === 'Escape') setRenamingFilePath(null);
+              }}
+              autoFocus
+            />
+            <div className="userspace-item-actions" style={{ opacity: 1 }}>
+              <button className="chat-action-btn" onClick={() => handleRenameFile(node.path, renameValue)} title="Confirm">
+                <Check size={12} />
+              </button>
+              <button className="chat-action-btn" onClick={() => setRenamingFilePath(null)} title="Cancel">
+                <X size={12} />
+              </button>
+            </div>
+          </div>,
+        ];
+      }
+
+      return [
+        <div
+          key={node.path}
+          className={`userspace-file-item userspace-tree-row ${node.path === selectedFilePath ? 'active' : ''}`}
+        >
+          <button className="userspace-item-content userspace-tree-content" onClick={() => handleSelectFile(node.path)} style={indentStyle}>
+            <span className="userspace-tree-file-label">{node.name}</span>
+          </button>
+          {canEditWorkspace && (
+            <div className="userspace-item-actions">
+              {isConfirmingDelete ? (
+                <>
+                  <button className="chat-action-btn confirm-delete" onClick={() => handleDeleteFile(node.path)} title="Confirm">
+                    <Check size={12} />
+                  </button>
+                  <button className="chat-action-btn cancel-delete" onClick={() => setDeleteConfirmFileId(null)} title="Cancel">
+                    <X size={12} />
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button className="chat-action-btn" onClick={() => { setRenamingFilePath(node.path); setRenameValue(node.path); }} title="Rename">
+                    <Pencil size={12} />
+                  </button>
+                  <button className="chat-action-btn" onClick={() => setDeleteConfirmFileId(node.path)} title="Delete">
+                    <Trash2 size={12} />
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+        </div>,
+      ];
+    });
+  }, [canEditWorkspace, deleteConfirmFileId, deleteConfirmFolderPath, expandedFolders, handleDeleteFile, handleDeleteFolder, handleRenameFile, handleRenameFolder, handleSelectFile, handleStartCreateFile, handleToggleFolder, renameValue, renamingFilePath, renamingFolderPath, selectedFilePath]);
 
   return (
     <div className={`userspace-layout${isFullscreen ? ' userspace-fullscreen' : ''}`}>
@@ -782,95 +1135,38 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                 <h4><File size={14} /> Files</h4>
               </div>
               <div className="userspace-file-list">
-                {files.map((file) => {
-                  const isConfirmingDelete = deleteConfirmFileId === file.path;
-                  const isRenaming = renamingFilePath === file.path;
-                  if (isRenaming) {
-                    return (
-                      <div key={file.path} className="userspace-file-item active">
-                        <input
-                          className="userspace-file-rename-input"
-                          value={renameValue}
-                          onChange={(e) => setRenameValue(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') handleRenameFile(file.path, renameValue);
-                            if (e.key === 'Escape') setRenamingFilePath(null);
-                          }}
-                          autoFocus
-                        />
-                        <div className="userspace-item-actions" style={{ opacity: 1 }}>
-                          <button className="chat-action-btn" onClick={() => handleRenameFile(file.path, renameValue)} title="Confirm">
-                            <Check size={12} />
-                          </button>
-                          <button className="chat-action-btn" onClick={() => setRenamingFilePath(null)} title="Cancel">
-                            <X size={12} />
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  }
-                  return (
-                    <div
-                      key={file.path}
-                      className={`userspace-file-item ${file.path === selectedFilePath ? 'active' : ''}`}
-                    >
-                      <button className="userspace-item-content" onClick={() => handleSelectFile(file.path)}>
-                        <span>{file.path}</span>
-                      </button>
-                      {canEditWorkspace && (
-                        <div className="userspace-item-actions">
-                          {isConfirmingDelete ? (
-                            <>
-                              <button className="chat-action-btn confirm-delete" onClick={() => handleDeleteFile(file.path)} title="Confirm">
-                                <Check size={12} />
-                              </button>
-                              <button className="chat-action-btn cancel-delete" onClick={() => setDeleteConfirmFileId(null)} title="Cancel">
-                                <X size={12} />
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              <button className="chat-action-btn" onClick={() => { setRenamingFilePath(file.path); setRenameValue(file.path); }} title="Rename">
-                                <Pencil size={12} />
-                              </button>
-                              <button className="chat-action-btn" onClick={() => setDeleteConfirmFileId(file.path)} title="Delete">
-                                <Trash2 size={12} />
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-                {/* New file input */}
+                {renderTreeNodes(fileTree)}
                 {newFileName !== null ? (
-                  <div className="userspace-file-item">
+                  <div className="userspace-file-item userspace-tree-row userspace-tree-new-file-row">
                     <input
                       className="userspace-file-rename-input"
+                      style={{ paddingLeft: `${newFileParentPath ? 20 : 6}px` }}
                       value={newFileName}
                       onChange={(e) => setNewFileName(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter') handleCreateNewFile(newFileName);
-                        if (e.key === 'Escape') setNewFileName(null);
+                        if (e.key === 'Enter') handleCreateNewFile(newFileName, newFileParentPath);
+                        if (e.key === 'Escape') {
+                          setNewFileName(null);
+                          setNewFileParentPath('');
+                        }
                       }}
-                      placeholder="path/to/file.ts"
+                      placeholder={newFileParentPath ? `${newFileParentPath}/file.ts` : 'path/to/file.ts'}
                       autoFocus
                     />
                     <div className="userspace-item-actions" style={{ opacity: 1 }}>
-                      <button className="chat-action-btn" onClick={() => handleCreateNewFile(newFileName)} title="Create">
+                      <button className="chat-action-btn" onClick={() => handleCreateNewFile(newFileName, newFileParentPath)} title="Create">
                         <Check size={12} />
                       </button>
-                      <button className="chat-action-btn" onClick={() => setNewFileName(null)} title="Cancel">
+                      <button className="chat-action-btn" onClick={() => { setNewFileName(null); setNewFileParentPath(''); }} title="Cancel">
                         <X size={12} />
                       </button>
                     </div>
                   </div>
                 ) : canEditWorkspace ? (
-                  <button className="userspace-new-file-btn" onClick={() => setNewFileName('')} title="New file">
+                  <button className="userspace-new-file-btn" onClick={() => handleStartCreateFile('')} title="New file">
                     <Plus size={12} /> New file
                   </button>
-                ) : files.length === 0 ? (
+                ) : fileTree.length === 0 ? (
                   <p className="userspace-muted" style={{ padding: '8px' }}>No files yet</p>
                 ) : null}
               </div>
@@ -904,7 +1200,6 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                 currentUser={currentUser}
                 workspaceId={activeWorkspaceId}
                 onUserMessageSubmitted={canEditWorkspace ? handleUserMessageSubmitted : undefined}
-                onTaskComplete={handleTaskComplete}
                 embedded
               />
             ) : (
