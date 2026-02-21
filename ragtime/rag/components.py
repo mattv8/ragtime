@@ -17,13 +17,8 @@ from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (
-    AIMessage,
-    BaseMessage,
-    HumanMessage,
-    SystemMessage,
-    ToolMessage,
-)
+from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
+                                     SystemMessage, ToolMessage)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -35,44 +30,29 @@ from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_output_limit
 from ragtime.core.ollama import get_model_context_length
-from ragtime.core.security import (
-    _SSH_ENV_VAR_RE,
-    sanitize_output,
-    validate_odoo_code,
-    validate_sql_query,
-    validate_ssh_command,
-)
+from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
+                                   validate_odoo_code, validate_sql_query,
+                                   validate_ssh_command)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (
-    SSHConfig,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    execute_ssh_command,
-    expand_env_vars_via_ssh,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
+                              execute_ssh_command, expand_env_vars_via_ssh,
+                              ssh_tunnel_config_from_dict)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (
-    CHAT_CHART_DESCRIPTION_SUFFIX,
-    USERSPACE_CHART_DESCRIPTION_SUFFIX,
-    create_chart_tool,
-)
-from ragtime.tools.datatable import (
-    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-    create_datatable_tool,
-)
+from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
+                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
+                                 create_chart_tool)
+from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+                                     create_datatable_tool)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (
-    _is_shallow_repository,
-    create_aggregate_git_history_tool,
-    create_per_index_git_history_tool,
-)
+from ragtime.tools.git_history import (_is_shallow_repository,
+                                       create_aggregate_git_history_tool,
+                                       create_per_index_git_history_tool)
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
@@ -458,6 +438,7 @@ def validate_userspace_runtime_contract(content: str, file_path: str) -> list[st
     """Validate constraints required by the isolated User Space runtime."""
     violations: list[str] = []
     normalized_path = (file_path or "").strip()
+    runtime_path = normalized_path.replace("\\", "/").lstrip("/")
 
     # Isolated iframe runtime cannot resolve npm/bare module specifiers.
     imports = _IMPORT_SPECIFIER_PATTERN.findall(content or "")
@@ -472,9 +453,7 @@ def validate_userspace_runtime_contract(content: str, file_path: str) -> list[st
         )
 
     # Entry modules must expose render(container, context).
-    if normalized_path.endswith("dashboard/main.ts") or normalized_path.endswith(
-        "dashboard/main.tsx"
-    ):
+    if runtime_path == "dashboard/main.ts":
         if not _RENDER_EXPORT_PATTERN.search(content or ""):
             violations.append(
                 "Missing required entrypoint export: export function render(container, context)."
@@ -664,10 +643,13 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 
 - Persist implementation as files, not only chat text.
 - Prefer TypeScript modules for interactive reports and dashboards.
-- Use `dashboard/main.ts` as the default entry artifact unless user requests another path.
+- Build one cohesive frontend app with `dashboard/main.ts` as the fixed entry artifact.
+- For any request to create/build/update a report, dashboard, or frontend, you MUST write/update workspace files via `upsert_userspace_file` before finalizing.
+- Do not end with chat-only guidance when the user asked for implementation; persist a runnable scaffold first, then describe blockers.
 - Do not keep all logic in `dashboard/main.ts` once complexity grows.
 - Split concerns into stable subpaths under `dashboard/` (for example: `dashboard/components/*`, `dashboard/data/*`, `dashboard/charts/*`, `dashboard/styles/*`).
 - Keep `dashboard/main.ts` as a thin composition entrypoint that wires imports, layout, and bootstrapping.
+- Do not treat each file as an independent rendered page; compose routes, breadcrumbs, and shell navigation inside the single app rooted at `dashboard/main.ts`.
 - When adding files, preserve a clear module boundary and reusable naming conventions.
 
 ### Runtime contract (must follow)
@@ -686,7 +668,7 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Data connections are internal components, abstracted from end users.
 - These components map to admin-configured tools from Settings.
 - Persist the connection request (query/command payload + component reference), then read/fetch through `context.components` at render/runtime.
-- If live wiring cannot be completed with available tools/context, state the blocker explicitly and ask for the missing connection choice instead of silently hard-coding data.
+- If live wiring cannot be completed with available tools/context, still persist a working UI scaffold in files (layout, navigation, placeholders, and integration points), then state the blocker explicitly and ask for the missing connection choice.
 - When creating chart/datatable payloads for reusable artifacts, include `data_connection` as a component reference:
     - `component_kind`: `tool_config`
     - `component_id`: admin-configured tool config ID
@@ -701,6 +683,7 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Start by listing files to understand existing workspace structure.
 - Read any target file before overwriting it.
 - Then create/update files with full content via User Space file tools.
+- For implementation requests, never finish with only prose: ensure at least one artifact file write occurred in the current turn.
 - After updating TypeScript files, run `validate_userspace_typescript` and fix all reported errors before finalizing.
 - When you complete a meaningful milestone (e.g., stable report section, validated wiring, or user-approved checkpoint), call `create_userspace_snapshot` immediately with a concise message.
 

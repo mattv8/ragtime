@@ -23,76 +23,104 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional
 
 import httpx
-from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException,
-                     UploadFile)
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
 from ragtime.core.app_settings import invalidate_settings_cache
-from ragtime.core.embedding_models import (OPENAI_EMBEDDING_PRIORITY,
-                                           get_embedding_models)
+from ragtime.core.embedding_models import (
+    OPENAI_EMBEDDING_PRIORITY,
+    get_embedding_models,
+)
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (MODEL_FAMILY_PATTERNS,
-                                       get_context_limit, get_output_limit,
-                                       supports_function_calling,
-                                       update_model_function_calling,
-                                       update_model_limit)
+from ragtime.core.model_limits import (
+    MODEL_FAMILY_PATTERNS,
+    get_context_limit,
+    get_output_limit,
+    supports_function_calling,
+    update_model_function_calling,
+    update_model_limit,
+)
 from ragtime.core.ollama import get_model_details, is_reachable
 from ragtime.core.ollama import list_models
 from ragtime.core.ollama import list_models as ollama_list_models
 from ragtime.core.security import get_current_user, require_admin
-from ragtime.core.sql_utils import (MssqlConnectionError, MysqlConnectionError,
-                                    mssql_connect, mysql_connect)
-from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
-                              execute_ssh_command, ssh_tunnel_config_from_dict,
-                              test_ssh_connection)
+from ragtime.core.sql_utils import (
+    MssqlConnectionError,
+    MysqlConnectionError,
+    mssql_connect,
+    mysql_connect,
+)
+from ragtime.core.ssh import (
+    SSHConfig,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    ssh_tunnel_config_from_dict,
+    test_ssh_connection,
+)
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.core.vision_models import list_vision_models
 from ragtime.indexer.background_tasks import background_task_service
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
-                                    ChatMessage, ChatTaskResponse,
-                                    ChatTaskStatus, CheckRepoVisibilityRequest,
-                                    ConfigurationWarning, Conversation,
-                                    ConversationResponse,
-                                    CreateConversationRequest,
-                                    CreateIndexRequest,
-                                    CreateToolConfigRequest, EmbeddingStatus,
-                                    FetchBranchesRequest,
-                                    FetchBranchesResponse,
-                                    FilesystemAnalysisJobResponse,
-                                    FilesystemConnectionConfig,
-                                    FilesystemIndexJobResponse,
-                                    IndexAnalysisResult, IndexConfig,
-                                    IndexInfo, IndexJobResponse, IndexStatus,
-                                    MssqlDiscoverRequest,
-                                    MssqlDiscoverResponse,
-                                    MysqlDiscoverRequest,
-                                    MysqlDiscoverResponse, OcrMode,
-                                    PdmDiscoverRequest, PdmDiscoverResponse,
-                                    PdmIndexJobResponse,
-                                    PostgresDiscoverRequest,
-                                    PostgresDiscoverResponse,
-                                    RepoVisibilityResponse,
-                                    RetryVisualizationRequest,
-                                    RetryVisualizationResponse,
-                                    SchemaIndexJobResponse, SendMessageRequest,
-                                    ToolConfig, ToolTestRequest, ToolType,
-                                    TriggerFilesystemIndexRequest,
-                                    TriggerPdmIndexRequest,
-                                    TriggerSchemaIndexRequest,
-                                    UpdateSettingsRequest,
-                                    UpdateToolConfigRequest, VectorStoreType)
+from ragtime.indexer.models import (
+    AnalyzeIndexRequest,
+    AppSettings,
+    ChatMessage,
+    ChatTaskResponse,
+    ChatTaskStatus,
+    CheckRepoVisibilityRequest,
+    ConfigurationWarning,
+    Conversation,
+    ConversationResponse,
+    CreateConversationRequest,
+    CreateIndexRequest,
+    CreateToolConfigRequest,
+    EmbeddingStatus,
+    FetchBranchesRequest,
+    FetchBranchesResponse,
+    FilesystemAnalysisJobResponse,
+    FilesystemConnectionConfig,
+    FilesystemIndexJobResponse,
+    IndexAnalysisResult,
+    IndexConfig,
+    IndexInfo,
+    IndexJobResponse,
+    IndexStatus,
+    MssqlDiscoverRequest,
+    MssqlDiscoverResponse,
+    MysqlDiscoverRequest,
+    MysqlDiscoverResponse,
+    OcrMode,
+    PdmDiscoverRequest,
+    PdmDiscoverResponse,
+    PdmIndexJobResponse,
+    PostgresDiscoverRequest,
+    PostgresDiscoverResponse,
+    RepoVisibilityResponse,
+    RetryVisualizationRequest,
+    RetryVisualizationResponse,
+    SchemaIndexJobResponse,
+    SendMessageRequest,
+    ToolConfig,
+    ToolTestRequest,
+    ToolType,
+    TriggerFilesystemIndexRequest,
+    TriggerPdmIndexRequest,
+    TriggerSchemaIndexRequest,
+    UpdateSettingsRequest,
+    UpdateToolConfigRequest,
+    VectorStoreType,
+)
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
-                                            schema_indexer)
+from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
 from ragtime.indexer.service import indexer
 from ragtime.indexer.title_generation import schedule_title_generation
 from ragtime.indexer.utils import safe_tool_name
@@ -1623,8 +1651,7 @@ async def update_tool_config(
 
                 # Check for name conflicts with existing indexes
                 if is_faiss and new_index_name != old_index_name:
-                    from ragtime.indexer.vector_backends import \
-                        FAISS_INDEX_BASE_PATH
+                    from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 
                     new_path = FAISS_INDEX_BASE_PATH / new_index_name
                     if new_path.exists():
@@ -1645,8 +1672,7 @@ async def update_tool_config(
             # For FAISS filesystem indexes, rename using the backend
             if is_faiss and old_index_name and new_index_name:
                 if old_index_name != new_index_name:
-                    from ragtime.indexer.vector_backends import \
-                        get_faiss_backend
+                    from ragtime.indexer.vector_backends import get_faiss_backend
 
                     faiss_backend = get_faiss_backend()
                     success = await faiss_backend.rename_index(
@@ -6362,6 +6388,42 @@ async def _assert_workspace_access(
     await userspace_service.enforce_workspace_role(workspace_id, user.id, required_role)
 
 
+async def _resolve_workspace_runtime_scope(
+    conversation: Conversation,
+    user: User,
+    workspace_id: Optional[str],
+    required_role: str,
+) -> tuple[Optional[str], Optional[set[str]], Optional[dict[str, str]]]:
+    requested_workspace_id = (workspace_id or "").strip() or None
+    conversation_workspace_id = (conversation.workspace_id or "").strip() or None
+
+    if (
+        requested_workspace_id
+        and conversation_workspace_id
+        and requested_workspace_id != conversation_workspace_id
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="workspace_id does not match the conversation workspace",
+        )
+
+    effective_workspace_id = requested_workspace_id or conversation_workspace_id
+    if not effective_workspace_id:
+        return None, None, None
+
+    workspace = await userspace_service.enforce_workspace_role(
+        effective_workspace_id,
+        user.id,
+        required_role,
+    )
+    blocked_tool_names = rag.get_blocked_config_tool_names(workspace.selected_tool_ids)
+    workspace_context = {
+        "workspace_id": effective_workspace_id,
+        "user_id": user.id,
+    }
+    return effective_workspace_id, blocked_tool_names, workspace_context
+
+
 @router.get("/conversations", response_model=List[ConversationResponse])
 async def list_conversations(
     workspace_id: Optional[str] = None,
@@ -6591,6 +6653,7 @@ async def send_message(
     Non-streaming version.
     """
     await _assert_workspace_access(workspace_id, user, "editor")
+
     # Check access
     has_access = await repository.check_conversation_access(
         conversation_id,
@@ -6605,6 +6668,13 @@ async def send_message(
     conv = await repository.get_conversation(conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
+
+    _, blocked_tool_names, workspace_context = await _resolve_workspace_runtime_scope(
+        conv,
+        user,
+        workspace_id,
+        "editor",
+    )
 
     if not rag.is_ready:
         raise HTTPException(
@@ -6631,7 +6701,12 @@ async def send_message(
 
     # Generate response
     try:
-        answer = await rag.process_query(user_message, chat_history)
+        answer = await rag.process_query(
+            user_message,
+            chat_history,
+            blocked_tool_names=blocked_tool_names,
+            workspace_context=workspace_context,
+        )
     except Exception as e:
         logger.exception("Error processing message")
         answer = f"Error: {str(e)}"
@@ -6663,6 +6738,7 @@ async def send_message_stream(
     Returns SSE stream of tokens.
     """
     await _assert_workspace_access(workspace_id, user, "editor")
+
     # Check access
     has_access = await repository.check_conversation_access(
         conversation_id,
@@ -6677,6 +6753,13 @@ async def send_message_stream(
     conv = await repository.get_conversation(conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
+
+    _, blocked_tool_names, workspace_context = await _resolve_workspace_runtime_scope(
+        conv,
+        user,
+        workspace_id,
+        "editor",
+    )
 
     if not rag.is_ready:
         raise HTTPException(
@@ -6721,7 +6804,11 @@ async def send_message_stream(
         try:
             # Use UI agent (with chart tool and enhanced prompt)
             async for event in rag.process_query_stream(
-                user_message, chat_history, is_ui=True
+                user_message,
+                chat_history,
+                is_ui=True,
+                blocked_tool_names=blocked_tool_names,
+                workspace_context=workspace_context,
             ):
                 # Handle structured tool events
                 if isinstance(event, dict):
@@ -7020,6 +7107,7 @@ async def send_message_background(
     Returns a task object that can be polled for status and results.
     """
     await _assert_workspace_access(workspace_id, user, "editor")
+
     # Check access
     has_access = await repository.check_conversation_access(
         conversation_id,
@@ -7034,6 +7122,13 @@ async def send_message_background(
     conv = await repository.get_conversation(conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
+
+    _, blocked_tool_names, workspace_context = await _resolve_workspace_runtime_scope(
+        conv,
+        user,
+        workspace_id,
+        "editor",
+    )
 
     if not rag.is_ready:
         raise HTTPException(
@@ -7068,7 +7163,10 @@ async def send_message_background(
 
     # Start background task
     task_id = await background_task_service.start_task_async(
-        conversation_id, user_message
+        conversation_id,
+        user_message,
+        blocked_tool_names=blocked_tool_names,
+        workspace_context=workspace_context,
     )
 
     # Get the created task

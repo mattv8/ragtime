@@ -1052,10 +1052,11 @@ interface ChatPanelProps {
   currentUser: User;
   workspaceId?: string;
   onUserMessageSubmitted?: (message: string) => void | Promise<void>;
+  onTaskComplete?: () => void;
   embedded?: boolean;
 }
 
-export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, embedded = false }: ChatPanelProps) {
+export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, onTaskComplete, embedded = false }: ChatPanelProps) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [inputValue, setInputValue] = useState('');
@@ -1091,6 +1092,7 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, em
   // Available models state
   const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
+  const [isWorkspaceConversationMenuOpen, setIsWorkspaceConversationMenuOpen] = useState(false);
 
   // Image modal state
   const [modalImageUrl, setModalImageUrl] = useState<string | null>(null);
@@ -1102,6 +1104,7 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, em
   const abortControllerRef = useRef<AbortController | null>(null);
   const processingTaskRef = useRef<string | null>(null);
   const titleSourceRef = useRef<Map<string, EventSource>>(new Map());
+  const workspaceConversationDropdownRef = useRef<HTMLDivElement>(null);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -1112,6 +1115,37 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, em
       textarea.style.height = scrollHeight + 'px';
     }
   }, [inputValue]);
+
+  useEffect(() => {
+    if (!isWorkspaceConversationMenuOpen) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        workspaceConversationDropdownRef.current &&
+        !workspaceConversationDropdownRef.current.contains(event.target as Node)
+      ) {
+        setIsWorkspaceConversationMenuOpen(false);
+      }
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsWorkspaceConversationMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEscape);
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [isWorkspaceConversationMenuOpen]);
+
+  useEffect(() => {
+    setIsWorkspaceConversationMenuOpen(false);
+  }, [activeConversation?.id, workspaceId, embedded]);
 
 
 
@@ -1468,9 +1502,14 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, em
                     setStreamingEvents([]);
                 } catch (e) { console.error(e); }
             }
+
+            // Notify parent that the task finished (e.g. refresh workspace preview)
+            if (onTaskComplete) {
+                try { onTaskComplete(); } catch (e) { console.error(e); }
+            }
         }
     }
-  }, [activeConversation, stopTaskStreaming]);
+  }, [activeConversation, stopTaskStreaming, onTaskComplete]);
 
   const startTaskAndStream = useCallback(async (conversationId: string, message: string) => {
     // 1. Optimistic update (User message)
@@ -2170,25 +2209,44 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, em
                   </button>
                 )}
                 {showWorkspaceConversationSelect ? (
-                  <select
-                    className="chat-workspace-conversation-select"
-                    value={activeConversation.id}
-                    onChange={(e) => {
-                      const selectedConversation = conversations.find(
-                        (conversation) => conversation.id === e.target.value,
-                      );
-                      if (selectedConversation) {
-                        void selectConversation(selectedConversation);
-                      }
-                    }}
-                    title="Select a workspace chat"
+                  <div
+                    className="chat-workspace-conversation-picker"
+                    ref={workspaceConversationDropdownRef}
                   >
-                    {conversations.map((conversation) => (
-                      <option key={conversation.id} value={conversation.id}>
-                        {conversation.title || 'New Chat'}
-                      </option>
-                    ))}
-                  </select>
+                    <button
+                      type="button"
+                      className="model-selector-trigger chat-workspace-conversation-trigger"
+                      onClick={() => setIsWorkspaceConversationMenuOpen((open) => !open)}
+                      title="Select a workspace chat"
+                      aria-haspopup="listbox"
+                      aria-expanded={isWorkspaceConversationMenuOpen}
+                    >
+                      <span className="model-selector-text">{activeConversation.title || 'New Chat'}</span>
+                      <span className="model-selector-arrow">▾</span>
+                    </button>
+
+                    {isWorkspaceConversationMenuOpen && (
+                      <div className="model-selector-dropdown chat-workspace-conversation-dropdown">
+                        <div className="model-selector-dropdown-inner" role="listbox" aria-label="Workspace chats">
+                          {conversations.map((conversation) => (
+                            <button
+                              key={conversation.id}
+                              type="button"
+                              role="option"
+                              aria-selected={conversation.id === activeConversation.id}
+                              className={`model-selector-item chat-workspace-conversation-item ${conversation.id === activeConversation.id ? 'is-selected' : ''}`}
+                              onClick={() => {
+                                setIsWorkspaceConversationMenuOpen(false);
+                                void selectConversation(conversation);
+                              }}
+                            >
+                              <span className="model-selector-item-name">{conversation.title || 'New Chat'}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 ) : (
                   <h2>{activeConversation.title}</h2>
                 )}

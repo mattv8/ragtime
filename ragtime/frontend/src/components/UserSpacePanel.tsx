@@ -13,6 +13,7 @@ interface UserSpacePanelProps {
 }
 
 export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePanelProps) {
+  const previewEntryPath = 'dashboard/main.ts';
   const [workspaces, setWorkspaces] = useState<UserSpaceWorkspace[]>([]);
   const [workspacesTotal, setWorkspacesTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -27,6 +28,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const [selectedFilePath, setSelectedFilePath] = useState<string>('dashboard/main.ts');
   const [fileContent, setFileContent] = useState<string>('');
   const [fileDirty, setFileDirty] = useState(false);
+  const [fileContentCache, setFileContentCache] = useState<Record<string, { content: string; updatedAt: string }>>({});
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -49,6 +51,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const [showToolPicker, setShowToolPicker] = useState(false);
   const [showSnapshots, setShowSnapshots] = useState(true);
   const toolPickerRef = useRef<HTMLDivElement>(null);
+  const fileContentCacheRef = useRef(fileContentCache);
 
   // Resize state
   const [sidebarWidth, setSidebarWidth] = useState(180);
@@ -85,6 +88,20 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     () => workspaces.find((workspace) => workspace.id === activeWorkspaceId) ?? null,
     [workspaces, activeWorkspaceId]
   );
+
+  const previewWorkspaceFiles = useMemo(() => {
+    const modules: Record<string, string> = {};
+    for (const file of files) {
+      const cached = fileContentCache[file.path];
+      if (cached) {
+        modules[file.path] = cached.content;
+      }
+    }
+    if (selectedFilePath) {
+      modules[selectedFilePath] = fileContent;
+    }
+    return modules;
+  }, [fileContent, fileContentCache, files, selectedFilePath]);
 
   const selectedToolIds = useMemo(() => new Set(activeWorkspace?.selected_tool_ids ?? []), [activeWorkspace?.selected_tool_ids]);
 
@@ -133,21 +150,54 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       setFiles(nextFiles);
       setSnapshots(nextSnapshots);
 
-      const firstFile = nextFiles[0]?.path;
-      if (firstFile) {
-        const file = await api.getUserSpaceFile(workspaceId, firstFile);
-        setSelectedFilePath(file.path);
-        setFileContent(file.content);
+      const validPaths = new Set(nextFiles.map((file) => file.path));
+      setFileContentCache((current) => {
+        const next: Record<string, { content: string; updatedAt: string }> = {};
+        for (const [path, value] of Object.entries(current)) {
+          if (validPaths.has(path)) {
+            next[path] = value;
+          }
+        }
+        return next;
+      });
+
+      const selectedExists = nextFiles.some((file) => file.path === selectedFilePath);
+      const preferredPath = selectedExists
+        ? selectedFilePath
+        : nextFiles.some((file) => file.path === previewEntryPath)
+          ? previewEntryPath
+          : nextFiles[0]?.path ?? previewEntryPath;
+
+      setSelectedFilePath(preferredPath);
+
+      if (nextFiles.some((file) => file.path === preferredPath)) {
+        const preferredMeta = nextFiles.find((file) => file.path === preferredPath);
+        const preferredUpdatedAt = preferredMeta?.updated_at ?? '';
+        const cached = fileContentCacheRef.current[preferredPath];
+
+        if (cached && cached.updatedAt === preferredUpdatedAt) {
+          setFileContent(cached.content);
+        } else {
+          const file = await api.getUserSpaceFile(workspaceId, preferredPath);
+          setFileContent(file.content);
+          setFileContentCache((current) => ({
+            ...current,
+            [file.path]: {
+              content: file.content,
+              updatedAt: preferredUpdatedAt,
+            },
+          }));
+        }
       } else {
-        setSelectedFilePath('dashboard/main.ts');
         setFileContent('');
       }
+
       setFileDirty(false);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load workspace data');
     }
-  }, []);
+  }, [previewEntryPath, selectedFilePath]);
 
   useEffect(() => {
     loadWorkspaces();
@@ -170,6 +220,90 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     if (!activeWorkspaceId) return;
     loadWorkspaceData(activeWorkspaceId);
   }, [activeWorkspaceId, loadWorkspaceData]);
+
+  useEffect(() => {
+    if (!activeWorkspaceId) return;
+
+    const refreshInterval = window.setInterval(() => {
+      if (fileDirty || savingFile) return;
+      loadWorkspaceData(activeWorkspaceId);
+    }, 4000);
+
+    return () => {
+      window.clearInterval(refreshInterval);
+    };
+  }, [activeWorkspaceId, fileDirty, loadWorkspaceData, savingFile]);
+
+  useEffect(() => {
+    fileContentCacheRef.current = fileContentCache;
+  }, [fileContentCache]);
+
+  useEffect(() => {
+    if (!activeWorkspaceId) return;
+
+    let cancelled = false;
+
+    const syncWorkspaceFileCache = async () => {
+      const staleFiles = files.filter((file) => {
+        const cached = fileContentCacheRef.current[file.path];
+        return !cached || cached.updatedAt !== (file.updated_at ?? '');
+      });
+
+      const validPaths = new Set(files.map((file) => file.path));
+
+      if (staleFiles.length === 0) {
+        setFileContentCache((current) => {
+          const next: Record<string, { content: string; updatedAt: string }> = {};
+          for (const [path, value] of Object.entries(current)) {
+            if (validPaths.has(path)) {
+              next[path] = value;
+            }
+          }
+          return next;
+        });
+        return;
+      }
+
+      const fetched = await Promise.all(
+        staleFiles.map(async (file) => {
+          const loaded = await api.getUserSpaceFile(activeWorkspaceId, file.path);
+          return {
+            path: loaded.path,
+            content: loaded.content,
+            updatedAt: file.updated_at ?? '',
+          };
+        })
+      );
+
+      if (cancelled) return;
+
+      setFileContentCache((current) => {
+        const next: Record<string, { content: string; updatedAt: string }> = {};
+        for (const [path, value] of Object.entries(current)) {
+          if (validPaths.has(path)) {
+            next[path] = value;
+          }
+        }
+
+        for (const file of fetched) {
+          next[file.path] = {
+            content: file.content,
+            updatedAt: file.updatedAt,
+          };
+        }
+
+        return next;
+      });
+    };
+
+    syncWorkspaceFileCache().catch((err) => {
+      console.warn('Failed to sync userspace file cache', err);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeWorkspaceId, files]);
 
   useEffect(() => {
     if (!showToolPicker) return;
@@ -207,15 +341,34 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
 
   const handleSelectFile = useCallback(async (path: string) => {
     if (!activeWorkspaceId) return;
+
+    setSelectedFilePath(path);
+
     try {
+      const selectedMeta = files.find((file) => file.path === path);
+      const selectedUpdatedAt = selectedMeta?.updated_at ?? '';
+      const cached = fileContentCacheRef.current[path];
+
+      if (cached && cached.updatedAt === selectedUpdatedAt) {
+        setFileContent(cached.content);
+        setFileDirty(false);
+        return;
+      }
+
       const file = await api.getUserSpaceFile(activeWorkspaceId, path);
-      setSelectedFilePath(file.path);
       setFileContent(file.content);
+      setFileContentCache((current) => ({
+        ...current,
+        [file.path]: {
+          content: file.content,
+          updatedAt: selectedUpdatedAt,
+        },
+      }));
       setFileDirty(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to open file');
     }
-  }, [activeWorkspaceId]);
+  }, [activeWorkspaceId, files]);
 
   const handleSaveFile = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
@@ -225,6 +378,16 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
         content: fileContent,
         artifact_type: 'module_ts',
       });
+
+      const fileMeta = files.find((file) => file.path === selectedFilePath);
+      setFileContentCache((current) => ({
+        ...current,
+        [selectedFilePath]: {
+          content: fileContent,
+          updatedAt: fileMeta?.updated_at ?? current[selectedFilePath]?.updatedAt ?? '',
+        },
+      }));
+
       setFileDirty(false);
       await loadWorkspaceData(activeWorkspaceId);
     } catch (err) {
@@ -232,7 +395,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     } finally {
       setSavingFile(false);
     }
-  }, [activeWorkspaceId, canEditWorkspace, fileContent, loadWorkspaceData, selectedFilePath]);
+  }, [activeWorkspaceId, canEditWorkspace, fileContent, files, loadWorkspaceData, selectedFilePath]);
 
   const handleToggleWorkspaceTool = useCallback(async (toolId: string) => {
     if (!activeWorkspace || !canEditWorkspace) return;
@@ -261,7 +424,13 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     if (!activeWorkspaceId || !canEditWorkspace) return;
     const snapshot = await api.createUserSpaceSnapshot(activeWorkspaceId, { message });
     setSnapshots((current) => [snapshot, ...current]);
-  }, [activeWorkspaceId, canEditWorkspace]);
+    await loadWorkspaceData(activeWorkspaceId);
+  }, [activeWorkspaceId, canEditWorkspace, loadWorkspaceData]);
+
+  const handleTaskComplete = useCallback(() => {
+    if (!activeWorkspaceId) return;
+    loadWorkspaceData(activeWorkspaceId);
+  }, [activeWorkspaceId, loadWorkspaceData]);
 
   const handleRestoreSnapshot = useCallback(async (snapshotId: string) => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
@@ -276,13 +445,21 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const handleCreateNewFile = useCallback(async (path: string) => {
     if (!activeWorkspaceId || !canEditWorkspace || !path.trim()) return;
     try {
+      const nextPath = path.trim();
       await api.upsertUserSpaceFile(activeWorkspaceId, path.trim(), {
         content: '',
         artifact_type: undefined,
       });
+      setFileContentCache((current) => ({
+        ...current,
+        [nextPath]: {
+          content: '',
+          updatedAt: current[nextPath]?.updatedAt ?? '',
+        },
+      }));
       setNewFileName(null);
       await loadWorkspaceData(activeWorkspaceId);
-      handleSelectFile(path.trim());
+      handleSelectFile(nextPath);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create file');
     }
@@ -302,6 +479,15 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       });
       await api.deleteUserSpaceFile(activeWorkspaceId, oldPath);
       setRenamingFilePath(null);
+      setFileContentCache((current) => {
+        const next = { ...current };
+        const currentValue = next[oldPath];
+        if (currentValue) {
+          next[newPath.trim()] = currentValue;
+        }
+        delete next[oldPath];
+        return next;
+      });
       if (selectedFilePath === oldPath) {
         setSelectedFilePath(newPath.trim());
       }
@@ -315,6 +501,11 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     if (!activeWorkspaceId || !canEditWorkspace) return;
     try {
       await api.deleteUserSpaceFile(activeWorkspaceId, filePath);
+      setFileContentCache((current) => {
+        const next = { ...current };
+        delete next[filePath];
+        return next;
+      });
       setDeleteConfirmFileId(null);
       if (selectedFilePath === filePath) {
         setSelectedFilePath('');
@@ -335,6 +526,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
         setActiveWorkspaceId(null);
         setFiles([]);
         setSnapshots([]);
+        setFileContentCache({});
         setFileContent('');
         setSelectedFilePath('');
       }
@@ -696,6 +888,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                 currentUser={currentUser}
                 workspaceId={activeWorkspaceId}
                 onUserMessageSubmitted={canEditWorkspace ? handleUserMessageSubmitted : undefined}
+                onTaskComplete={handleTaskComplete}
                 embedded
               />
             ) : (
@@ -712,8 +905,8 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
         <div className="userspace-right-pane">
           <div className="userspace-preview-section">
             <UserSpaceArtifactPreview
-              filePath={selectedFilePath}
-              content={fileContent}
+              entryPath={previewEntryPath}
+              workspaceFiles={previewWorkspaceFiles}
             />
           </div>
 
