@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useRef } from 'react';
 
 interface ResizeHandleProps {
   /** 'horizontal' = dragging left/right, 'vertical' = dragging up/down */
@@ -11,39 +11,13 @@ interface ResizeHandleProps {
 
 export function ResizeHandle({ direction, onResize, className }: ResizeHandleProps) {
   const startPos = useRef(0);
-  const dragging = useRef(false);
+  const onResizeRef = useRef(onResize);
+  onResizeRef.current = onResize;
 
-  const handleMouseMove = useCallback(
-    (e: MouseEvent) => {
-      if (!dragging.current) return;
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
       e.preventDefault();
-      const pos = direction === 'horizontal' ? e.clientX : e.clientY;
-      const delta = pos - startPos.current;
-      startPos.current = pos;
-      onResize(delta);
-    },
-    [direction, onResize],
-  );
-
-  const handleMouseUp = useCallback(() => {
-    dragging.current = false;
-    document.body.style.cursor = '';
-    document.body.style.userSelect = '';
-  }, []);
-
-  useEffect(() => {
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [handleMouseMove, handleMouseUp]);
-
-  const handleMouseDown = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault();
-      dragging.current = true;
+      e.currentTarget.setPointerCapture(e.pointerId);
       startPos.current = direction === 'horizontal' ? e.clientX : e.clientY;
       document.body.style.cursor = direction === 'horizontal' ? 'col-resize' : 'row-resize';
       document.body.style.userSelect = 'none';
@@ -51,7 +25,37 @@ export function ResizeHandle({ direction, onResize, className }: ResizeHandlePro
     [direction],
   );
 
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+      e.preventDefault();
+      const pos = direction === 'horizontal' ? e.clientX : e.clientY;
+      const delta = pos - startPos.current;
+      startPos.current = pos;
+      onResizeRef.current(delta);
+    },
+    [direction],
+  );
+
+  const handlePointerUp = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+      e.currentTarget.releasePointerCapture(e.pointerId);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    },
+    [],
+  );
+
   const cls = className ?? `resize-handle resize-handle-${direction}`;
 
-  return <div className={cls} onMouseDown={handleMouseDown} />;
+  return (
+    <div
+      className={cls}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      style={{ touchAction: 'none' }}
+    />
+  );
 }
