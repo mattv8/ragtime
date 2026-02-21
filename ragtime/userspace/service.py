@@ -23,6 +23,7 @@ from ragtime.userspace.models import (
     UpsertWorkspaceFileRequest,
     UserSpaceFileInfo,
     UserSpaceFileResponse,
+    UserSpaceLiveDataCheck,
     UserSpaceLiveDataConnection,
     UserSpaceSnapshot,
     UserSpaceWorkspace,
@@ -614,6 +615,7 @@ class UserSpaceService:
             raise HTTPException(status_code=400, detail="Invalid file path")
 
         parsed_live_data_connections = request.live_data_connections or []
+        parsed_live_data_checks = request.live_data_checks or []
         if _requires_live_data_contract(
             relative_path,
             request.artifact_type,
@@ -627,6 +629,15 @@ class UserSpaceService:
                         "For live-data-requested module source writes in dashboard/* or with artifact_type=module_ts, "
                         "provide at least one connection with component_kind=tool_config, "
                         "component_id, and request. Set live_data_requested=false for scaffolding without live wiring."
+                    ),
+                )
+            if not parsed_live_data_checks:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Missing required live_data_checks verification metadata. "
+                        "For live-data-requested module source writes, include checks proving successful "
+                        "connection and transformation for each live_data_connections component_id."
                     ),
                 )
 
@@ -643,6 +654,53 @@ class UserSpaceService:
                         ),
                     )
 
+        if parsed_live_data_checks:
+            allowed_component_ids = set(workspace.selected_tool_ids)
+            for check in parsed_live_data_checks:
+                if check.component_id not in allowed_component_ids:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Invalid live_data_checks component_id: "
+                            f"{check.component_id}. It must match a tool selected "
+                            "for this workspace."
+                        ),
+                    )
+                if (
+                    not check.connection_check_passed
+                    or not check.transformation_check_passed
+                ):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "live_data_checks must indicate successful connection and transformation "
+                            f"for component_id={check.component_id}."
+                        ),
+                    )
+
+        if _requires_live_data_contract(
+            relative_path,
+            request.artifact_type,
+            request.live_data_requested,
+        ):
+            connected_ids = {
+                connection.component_id for connection in parsed_live_data_connections
+            }
+            verified_ids = {
+                check.component_id
+                for check in parsed_live_data_checks
+                if check.connection_check_passed and check.transformation_check_passed
+            }
+            missing_verified_ids = sorted(connected_ids - verified_ids)
+            if missing_verified_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Missing successful live_data_checks verification for component_id(s): "
+                        + ", ".join(missing_verified_ids)
+                    ),
+                )
+
         file_path = self._resolve_workspace_file_path(workspace_id, relative_path)
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(request.content, encoding="utf-8")
@@ -656,6 +714,11 @@ class UserSpaceService:
             sidecar_payload["live_data_connections"] = [
                 connection.model_dump(mode="json")
                 for connection in request.live_data_connections
+            ]
+
+        if request.live_data_checks is not None:
+            sidecar_payload["live_data_checks"] = [
+                check.model_dump(mode="json") for check in request.live_data_checks
             ]
 
         if sidecar_payload:
@@ -674,6 +737,7 @@ class UserSpaceService:
             content=request.content,
             artifact_type=request.artifact_type,
             live_data_connections=request.live_data_connections,
+            live_data_checks=request.live_data_checks,
             updated_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
         )
 
@@ -694,6 +758,7 @@ class UserSpaceService:
 
         artifact_type = None
         live_data_connections: list[UserSpaceLiveDataConnection] | None = None
+        live_data_checks: list[UserSpaceLiveDataCheck] | None = None
         sidecar = file_path.with_suffix(file_path.suffix + ".artifact.json")
         if sidecar.exists():
             try:
@@ -715,9 +780,24 @@ class UserSpaceService:
                         except Exception:
                             continue
                     live_data_connections = parsed_connections or None
+
+                raw_checks = sidecar_data.get("live_data_checks")
+                if isinstance(raw_checks, list):
+                    parsed_checks: list[UserSpaceLiveDataCheck] = []
+                    for item in raw_checks:
+                        if not isinstance(item, dict):
+                            continue
+                        try:
+                            parsed_checks.append(
+                                UserSpaceLiveDataCheck.model_validate(item)
+                            )
+                        except Exception:
+                            continue
+                    live_data_checks = parsed_checks or None
             except Exception:
                 artifact_type = None
                 live_data_connections = None
+                live_data_checks = None
 
         stat = file_path.stat()
         return UserSpaceFileResponse(
@@ -725,6 +805,7 @@ class UserSpaceService:
             content=file_path.read_text(encoding="utf-8"),
             artifact_type=artifact_type,
             live_data_connections=live_data_connections,
+            live_data_checks=live_data_checks,
             updated_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
         )
 

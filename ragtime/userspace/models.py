@@ -66,6 +66,7 @@ class UpsertWorkspaceFileRequest(BaseModel):
         ),
     )
     live_data_connections: list["UserSpaceLiveDataConnection"] | None = None
+    live_data_checks: list["UserSpaceLiveDataCheck"] | None = None
 
 
 class UserSpaceLiveDataConnection(BaseModel):
@@ -77,11 +78,21 @@ class UserSpaceLiveDataConnection(BaseModel):
     refresh_interval_seconds: int | None = Field(default=None, ge=1)
 
 
+class UserSpaceLiveDataCheck(BaseModel):
+    component_id: str = Field(min_length=1)
+    connection_check_passed: bool
+    transformation_check_passed: bool
+    input_row_count: int | None = Field(default=None, ge=0)
+    output_row_count: int | None = Field(default=None, ge=0)
+    note: str | None = None
+
+
 class UserSpaceFileResponse(BaseModel):
     path: str
     content: str
     artifact_type: ArtifactType | None = None
     live_data_connections: list[UserSpaceLiveDataConnection] | None = None
+    live_data_checks: list[UserSpaceLiveDataCheck] | None = None
     updated_at: datetime
 
 

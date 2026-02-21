@@ -1482,11 +1482,21 @@ export interface UserSpaceLiveDataConnection {
   refresh_interval_seconds?: number | null;
 }
 
+export interface UserSpaceLiveDataCheck {
+  component_id: string;
+  connection_check_passed: boolean;
+  transformation_check_passed: boolean;
+  input_row_count?: number | null;
+  output_row_count?: number | null;
+  note?: string | null;
+}
+
 export interface UserSpaceFile {
   path: string;
   content: string;
   artifact_type?: UserSpaceArtifactType | null;
   live_data_connections?: UserSpaceLiveDataConnection[] | null;
+  live_data_checks?: UserSpaceLiveDataCheck[] | null;
   updated_at: string;
 }
 
@@ -1495,6 +1505,7 @@ export interface UpsertUserSpaceFileRequest {
   artifact_type?: UserSpaceArtifactType;
   live_data_requested?: boolean;
   live_data_connections?: UserSpaceLiveDataConnection[];
+  live_data_checks?: UserSpaceLiveDataCheck[];
 }
 
 export interface UserSpaceSnapshot {

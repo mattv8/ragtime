@@ -79,6 +79,7 @@ from ragtime.tools.odoo_shell import filter_odoo_output
 from ragtime.userspace.models import (
     ArtifactType,
     UpsertWorkspaceFileRequest,
+    UserSpaceLiveDataCheck,
     UserSpaceLiveDataConnection,
 )
 from ragtime.userspace.service import userspace_service
@@ -400,9 +401,10 @@ UI_VISUALIZATION_USERSPACE_PROMPT = """
 ### User Space Visualization Rules
 
 1. Persist live `data_connection` wiring for reusable dashboards/charts/tables.
-2. Persisted module source files must include structured `live_data_connections` metadata in `upsert_userspace_file` when the file is in `dashboard/*` or when `artifact_type=module_ts`.
+2. When `live_data_requested=true`, persisted module source files in `dashboard/*` or with `artifact_type=module_ts` must include structured `live_data_connections` metadata in `upsert_userspace_file`.
 3. Chart axes/labels and series data must be sourced from runtime live data payloads.
-4. If live wiring is blocked by missing context, state the blocker explicitly.
+4. When `live_data_requested=true`, provide `live_data_checks` proving successful connection and transformation before persisting.
+5. If live wiring is blocked by missing context, state the blocker explicitly.
 """
 
 
@@ -657,8 +659,9 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 
 - Use real tool outputs as the source of truth for rendered data.
 - Persistent User Space dashboards must be live-wired.
-- Persisted module-source writes are contract-validated: for files under `dashboard/*` or writes with `artifact_type=module_ts`, `upsert_userspace_file` must include a non-empty `live_data_connections` list.
+- Persisted module-source writes are contract-validated only when `live_data_requested=true`: for files under `dashboard/*` or writes with `artifact_type=module_ts`, `upsert_userspace_file` must include a non-empty `live_data_connections` list.
 - Each `live_data_connections` entry must include at least `component_kind=tool_config`, `component_id`, and `request`.
+- For `live_data_requested=true`, include `live_data_checks` for each connection with `connection_check_passed=true` and `transformation_check_passed=true`.
 - Never invent or guess `component_id` values. Use only IDs from ACTIVE TOOL CONNECTIONS FOR THIS REQUEST.
 - Do not persist dashboard files without connection metadata, even when scaffolding.
 - Data connections are internal components, abstracted from end users.
@@ -4020,6 +4023,31 @@ except Exception as e:
                     description="Optional refresh interval in seconds.",
                 )
 
+            class LiveDataCheckInput(BaseModel):
+                component_id: str = Field(
+                    description="Tool config ID verified during live data check.",
+                )
+                connection_check_passed: bool = Field(
+                    description="True only when a live connection test succeeded.",
+                )
+                transformation_check_passed: bool = Field(
+                    description="True only when transformation/shape checks succeeded.",
+                )
+                input_row_count: int | None = Field(
+                    default=None,
+                    ge=0,
+                    description="Optional input row count seen during validation.",
+                )
+                output_row_count: int | None = Field(
+                    default=None,
+                    ge=0,
+                    description="Optional output row count after transformation.",
+                )
+                note: str | None = Field(
+                    default=None,
+                    description="Optional validation note.",
+                )
+
             path: str = Field(
                 default="dashboard/main.ts",
                 description=(
@@ -4046,6 +4074,13 @@ except Exception as e:
                 description=(
                     "Structured live data contract metadata for persisted module source files. "
                     "Required only when live_data_requested=true for writes under dashboard/* or writes where artifact_type=module_ts."
+                ),
+            )
+            live_data_checks: list[LiveDataCheckInput] | None = Field(
+                default=None,
+                description=(
+                    "Verification metadata for successful live data connection + transformation checks. "
+                    "Required when live_data_requested=true for eligible module-source writes."
                 ),
             )
             reason: str = Field(
@@ -4096,6 +4131,7 @@ except Exception as e:
             artifact_type: ArtifactType | None = "module_ts",
             live_data_requested: bool = False,
             live_data_connections: list[Any] | None = None,
+            live_data_checks: list[Any] | None = None,
             reason: str = "",
             **_: Any,
         ) -> str:
@@ -4112,6 +4148,7 @@ except Exception as e:
             parsed_live_data_connections: list[UserSpaceLiveDataConnection] | None = (
                 None
             )
+            parsed_live_data_checks: list[UserSpaceLiveDataCheck] | None = None
             if live_data_connections is not None:
                 parsed_live_data_connections = []
                 for item in live_data_connections:
@@ -4124,6 +4161,18 @@ except Exception as e:
                         UserSpaceLiveDataConnection.model_validate(payload)
                     )
 
+            if live_data_checks is not None:
+                parsed_live_data_checks = []
+                for item in live_data_checks:
+                    payload = (
+                        item.model_dump(mode="python")
+                        if isinstance(item, BaseModel)
+                        else item
+                    )
+                    parsed_live_data_checks.append(
+                        UserSpaceLiveDataCheck.model_validate(payload)
+                    )
+
             workspace = await userspace_service.get_workspace(workspace_id, user_id)
             allowed_component_ids = set(workspace.selected_tool_ids)
             if parsed_live_data_connections:
@@ -4132,6 +4181,22 @@ except Exception as e:
                         hard_errors.append(
                             "Invalid live_data_connections component_id: "
                             f"{connection.component_id}. It must match a tool selected for this workspace."
+                        )
+
+            if parsed_live_data_checks:
+                for check in parsed_live_data_checks:
+                    if check.component_id not in allowed_component_ids:
+                        hard_errors.append(
+                            "Invalid live_data_checks component_id: "
+                            f"{check.component_id}. It must match a tool selected for this workspace."
+                        )
+                    if (
+                        not check.connection_check_passed
+                        or not check.transformation_check_passed
+                    ):
+                        hard_errors.append(
+                            "live_data_checks must indicate successful connection and transformation for "
+                            f"component_id={check.component_id}."
                         )
 
             module_source_extensions = (
@@ -4158,6 +4223,30 @@ except Exception as e:
                     "Missing required live_data_connections contract metadata for this module source write. "
                     "Provide at least one connection with component_kind=tool_config, component_id, and request, or set live_data_requested=false for scaffolding."
                 )
+
+            if requires_live_data_contract:
+                if not parsed_live_data_checks:
+                    hard_errors.append(
+                        "Missing required live_data_checks verification metadata for this module source write. "
+                        "Provide checks with successful connection and transformation for each component_id."
+                    )
+                else:
+                    connection_ids = {
+                        connection.component_id
+                        for connection in (parsed_live_data_connections or [])
+                    }
+                    verified_ids = {
+                        check.component_id
+                        for check in parsed_live_data_checks
+                        if check.connection_check_passed
+                        and check.transformation_check_passed
+                    }
+                    missing_ids = sorted(connection_ids - verified_ids)
+                    if missing_ids:
+                        hard_errors.append(
+                            "Missing successful live_data_checks verification for component_id(s): "
+                            + ", ".join(missing_ids)
+                        )
 
             if lower_path.endswith((".ts", ".tsx", ".css", ".scss", ".html")):
                 hard_coded_hex = find_hard_coded_hex_colors(content)
@@ -4192,6 +4281,7 @@ except Exception as e:
                     artifact_type=artifact_type,
                     live_data_requested=live_data_requested,
                     live_data_connections=parsed_live_data_connections,
+                    live_data_checks=parsed_live_data_checks,
                 ),
                 user_id,
             )
@@ -4267,7 +4357,7 @@ except Exception as e:
                     "Create or update a file in the active User Space workspace. "
                     "For interactive reports, write TypeScript modules (artifact_type=module_ts). "
                     "When the user explicitly requests live data, set live_data_requested=true. "
-                    "Then module-source writes under dashboard/*, and module_ts artifact writes, require non-empty live_data_connections metadata for live wiring. "
+                    "Then module-source writes under dashboard/*, and module_ts artifact writes, require non-empty live_data_connections metadata and successful live_data_checks verification. "
                     "Output may include CSS/theme warnings that must be fixed in follow-up edits."
                 ),
                 args_schema=UpsertUserSpaceFileInput,

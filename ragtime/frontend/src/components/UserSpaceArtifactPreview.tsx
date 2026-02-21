@@ -90,6 +90,37 @@ const THEME_TOKEN_NAMES = [
 type ThemeTokens = Record<string, string>;
 type ModuleMap = Record<string, string>;
 
+const DEFAULT_THEME_TOKENS: ThemeTokens = {
+  '--color-bg-primary': '#0f172a',
+  '--color-bg-secondary': '#111827',
+  '--color-bg-tertiary': '#1f2937',
+  '--color-surface': '#1e293b',
+  '--color-surface-hover': '#334155',
+  '--color-surface-active': '#1f2937',
+  '--color-text-primary': '#f8fafc',
+  '--color-text-secondary': '#cbd5e1',
+  '--color-text-muted': '#94a3b8',
+  '--color-border': '#334155',
+  '--shadow-sm': '0 1px 2px rgba(0, 0, 0, 0.35)',
+  '--space-xs': '4px',
+  '--space-sm': '8px',
+  '--space-md': '12px',
+  '--space-lg': '16px',
+  '--space-xl': '24px',
+  '--radius-sm': '4px',
+  '--radius-md': '8px',
+  '--radius-lg': '12px',
+  '--font-sans': 'Inter, system-ui, -apple-system, Segoe UI, sans-serif',
+  '--font-mono': 'ui-monospace, SFMono-Regular, Menlo, monospace',
+  '--text-xs': '12px',
+  '--text-sm': '14px',
+  '--text-base': '16px',
+  '--text-lg': '18px',
+  '--text-xl': '20px',
+  '--text-2xl': '30px',
+  '--transition-fast': '150ms ease',
+} as const;
+
 const SUPPORTED_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx'] as const;
 
 function normalizePath(input: string): string {
@@ -234,11 +265,14 @@ function rewriteLocalSpecifiers(
 }
 
 function readThemeTokens(): ThemeTokens {
-  if (typeof window === 'undefined') return {};
-  const styles = window.getComputedStyle(document.documentElement);
-  const tokens: ThemeTokens = {};
+  if (typeof window === 'undefined') return { ...DEFAULT_THEME_TOKENS };
+  const rootStyles = window.getComputedStyle(document.documentElement);
+  const bodyStyles = document.body ? window.getComputedStyle(document.body) : null;
+  const tokens: ThemeTokens = { ...DEFAULT_THEME_TOKENS };
   for (const tokenName of THEME_TOKEN_NAMES) {
-    const value = styles.getPropertyValue(tokenName).trim();
+    const rootValue = rootStyles.getPropertyValue(tokenName).trim();
+    const bodyValue = bodyStyles?.getPropertyValue(tokenName).trim() || '';
+    const value = rootValue || bodyValue || tokens[tokenName];
     if (value) tokens[tokenName] = value;
   }
   return tokens;
@@ -376,6 +410,43 @@ function buildIframeDoc(
       const applyChartDefaults = () => {
         const Chart = window.Chart;
         if (!Chart || !Chart.defaults) return;
+
+        if (!window.__RAGTIME_CHART_IFRAME_PATCHED__) {
+          const OriginalChart = Chart;
+          const PatchedChart = function (item, config) {
+            const nextConfig = config && typeof config === 'object'
+              ? { ...config, options: { ...(config.options || {}) } }
+              : config;
+
+            const canvas = item && item.canvas
+              ? item.canvas
+              : (item instanceof HTMLCanvasElement ? item : null);
+
+            if (canvas) {
+              const parent = canvas.parentElement;
+              const width = Math.max(parent?.clientWidth || canvas.clientWidth || 0, 320);
+              const height = Math.max(parent?.clientHeight || canvas.clientHeight || 0, 240);
+
+              canvas.style.width = '100%';
+              canvas.style.height = '100%';
+              canvas.width = width;
+              canvas.height = height;
+            }
+
+            if (nextConfig && nextConfig.options) {
+              nextConfig.options.responsive = false;
+              nextConfig.options.maintainAspectRatio = false;
+              nextConfig.options.resizeDelay = 250;
+            }
+
+            return new OriginalChart(item, nextConfig);
+          };
+
+          Object.assign(PatchedChart, OriginalChart);
+          PatchedChart.prototype = OriginalChart.prototype;
+          window.Chart = PatchedChart;
+          window.__RAGTIME_CHART_IFRAME_PATCHED__ = true;
+        }
 
         const styles = getComputedStyle(document.documentElement);
         const textColor = styles.getPropertyValue('--color-text-secondary').trim() || '#9ca3af';
