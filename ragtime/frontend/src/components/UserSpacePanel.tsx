@@ -95,9 +95,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     setEditorFraction((prev) => Math.max(0.2, Math.min(0.85, prev + delta / totalHeight)));
   }, []);
   const [editingName, setEditingName] = useState(false);
-  const [editingDescription, setEditingDescription] = useState(false);
   const [draftName, setDraftName] = useState('');
-  const [draftDescription, setDraftDescription] = useState('');
 
   const activeWorkspace = useMemo(
     () => workspaces.find((workspace) => workspace.id === activeWorkspaceId) ?? null,
@@ -425,7 +423,6 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     try {
       const created = await api.createUserSpaceWorkspace({
         name: `Workspace ${workspaces.length + 1}`,
-        description: 'User Space dashboard workspace',
         selected_tool_ids: availableTools.map((tool) => tool.id),
       });
       await api.upsertUserSpaceFile(created.id, 'dashboard/main.ts', {
@@ -847,23 +844,6 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     }
   }, [activeWorkspace, canEditWorkspace, draftName]);
 
-  const handleStartEditDescription = useCallback(() => {
-    if (!activeWorkspace || !canEditWorkspace) return;
-    setDraftDescription(activeWorkspace.description ?? '');
-    setEditingDescription(true);
-  }, [activeWorkspace, canEditWorkspace]);
-
-  const handleSaveDescription = useCallback(async () => {
-    if (!activeWorkspace || !canEditWorkspace) return;
-    try {
-      const updated = await api.updateUserSpaceWorkspace(activeWorkspace.id, { description: draftDescription.trim() || undefined });
-      setWorkspaces((current) => current.map((ws) => ws.id === updated.id ? updated : ws));
-      setEditingDescription(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update description');
-    }
-  }, [activeWorkspace, canEditWorkspace, draftDescription]);
-
   const renderTreeNodes = useCallback((nodes: ReturnType<typeof buildUserSpaceTree>, depth = 0) => {
     return nodes.flatMap((node) => {
       const indentStyle = { paddingLeft: `${depth * 14 + 6}px` };
@@ -1132,9 +1112,6 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
               <button className="btn btn-secondary btn-sm" onClick={handleStartEditName} title="Rename workspace">
                 <Pencil size={14} />
               </button>
-              <button className="btn btn-secondary btn-sm" onClick={handleStartEditDescription} title="Edit description">
-                <File size={14} />
-              </button>
             </>
           )}
         </div>
@@ -1199,7 +1176,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       {loading && <p className="userspace-status">Loading workspaces...</p>}
       {error && <p className="userspace-error userspace-status">{error}</p>}
 
-      {/* === Rename / description inline editors === */}
+      {/* === Rename inline editor === */}
       {editingName && activeWorkspace && (
         <div className="userspace-inline-edit">
           <label>Rename:</label>
@@ -1211,20 +1188,6 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
           />
           <button className="btn btn-primary btn-sm" onClick={handleSaveName}><Check size={14} /></button>
           <button className="btn btn-secondary btn-sm" onClick={() => setEditingName(false)}><X size={14} /></button>
-        </div>
-      )}
-      {editingDescription && activeWorkspace && (
-        <div className="userspace-inline-edit">
-          <label>Description:</label>
-          <input
-            value={draftDescription}
-            onChange={(e) => setDraftDescription(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') handleSaveDescription(); if (e.key === 'Escape') setEditingDescription(false); }}
-            placeholder="Workspace description"
-            autoFocus
-          />
-          <button className="btn btn-primary btn-sm" onClick={handleSaveDescription}><Check size={14} /></button>
-          <button className="btn btn-secondary btn-sm" onClick={() => setEditingDescription(false)}><X size={14} /></button>
         </div>
       )}
 
