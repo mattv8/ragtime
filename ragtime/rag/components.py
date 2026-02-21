@@ -56,7 +56,8 @@ from ragtime.tools.git_history import (_is_shallow_repository,
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import ArtifactType, UpsertWorkspaceFileRequest
+from ragtime.userspace.models import (ArtifactType, UpsertWorkspaceFileRequest,
+                                      UserSpaceLiveDataConnection)
 from ragtime.userspace.service import userspace_service
 
 logger = get_logger(__name__)
@@ -375,8 +376,9 @@ UI_VISUALIZATION_USERSPACE_PROMPT = """
 ### User Space Visualization Rules
 
 1. Persist live `data_connection` wiring for reusable dashboards/charts/tables.
-2. Do not persist full query snapshots as hard-coded long-term dashboard data.
-3. If live wiring is blocked by missing context, state the blocker explicitly.
+2. Persisted dashboard TypeScript files must include structured `live_data_connections` metadata in `upsert_userspace_file`.
+3. Chart axes/labels and series data must be sourced from runtime live data payloads.
+4. If live wiring is blocked by missing context, state the blocker explicitly.
 """
 
 
@@ -412,10 +414,6 @@ _RENDER_EXPORT_PATTERN = re.compile(
     r"\bexport\s+(?:async\s+)?function\s+render\b|\bexport\s+const\s+render\b"
 )
 _JSX_TAG_PATTERN = re.compile(r"<\s*[A-Za-z][A-Za-z0-9_:\-]*(?:\s|>|/)")
-_INLINE_ROW_LITERAL_PATTERN = re.compile(
-    r"\{\s*[A-Za-z_$][\w$]*\s*:\s*[^{}]+,\s*[A-Za-z_$][\w$]*\s*:\s*[^{}]+",
-    re.MULTILINE,
-)
 
 
 def find_hard_coded_hex_colors(content: str) -> list[str]:
@@ -466,37 +464,6 @@ def validate_userspace_runtime_contract(content: str, file_path: str) -> list[st
         )
 
     return violations
-
-
-def detect_userspace_static_data_snapshot(content: str, file_path: str) -> str | None:
-    """Detect likely hard-coded query snapshots in User Space TypeScript modules."""
-    normalized_path = (file_path or "").strip().lower()
-    if not normalized_path.endswith((".ts", ".tsx")):
-        return None
-
-    # Limit this warning to dashboard artifacts where live wiring is expected.
-    if "dashboard/" not in normalized_path:
-        return None
-
-    row_literal_count = len(_INLINE_ROW_LITERAL_PATTERN.findall(content or ""))
-    has_live_wiring_hint = any(
-        token in (content or "")
-        for token in (
-            "context.components",
-            "data_connection",
-            "component_id",
-            "refresh_interval_seconds",
-        )
-    )
-
-    if row_literal_count >= 12 and not has_live_wiring_hint:
-        return (
-            "Detected large inline dataset without live data wiring hints. "
-            "For persistent User Space dashboards, avoid hard-coded query snapshots and wire data through "
-            "data_connection/component requests (via context.components) instead."
-        )
-
-    return None
 
 
 async def validate_userspace_typescript_content(
@@ -663,8 +630,10 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 ### Data wiring rules
 
 - Use real tool outputs as the source of truth for rendered data.
-- Persistent User Space dashboards must be live-wired: do not embed full query result snapshots as hard-coded arrays in artifact files.
-- Static arrays are acceptable only for transient chat visualization payloads; they must not become the persisted data source in `dashboard/*` files.
+- Persistent User Space dashboards must be live-wired.
+- Persisted dashboard TypeScript writes are contract-validated: `upsert_userspace_file` must include a non-empty `live_data_connections` list.
+- Each `live_data_connections` entry must include at least `component_kind=tool_config`, `component_id`, and `request`.
+- Do not persist dashboard files without connection metadata, even when scaffolding.
 - Data connections are internal components, abstracted from end users.
 - These components map to admin-configured tools from Settings.
 - Persist the connection request (query/command payload + component reference), then read/fetch through `context.components` at render/runtime.
@@ -3999,6 +3968,31 @@ except Exception as e:
             )
 
         class UpsertUserSpaceFileInput(BaseModel):
+            class LiveDataConnectionInput(BaseModel):
+                component_kind: str = Field(
+                    default="tool_config",
+                    description="Connection kind. Must be tool_config for User Space persistence.",
+                )
+                component_id: str = Field(
+                    description="Admin-configured tool config ID selected for this workspace.",
+                )
+                request: dict[str, Any] | str = Field(
+                    description="Query/command payload used to fetch or refresh live data.",
+                )
+                component_name: str | None = Field(
+                    default=None,
+                    description="Optional friendly connection name.",
+                )
+                component_type: str | None = Field(
+                    default=None,
+                    description="Optional tool type (postgres, mssql, mysql, odoo_shell, ssh_shell, etc).",
+                )
+                refresh_interval_seconds: int | None = Field(
+                    default=None,
+                    ge=1,
+                    description="Optional refresh interval in seconds.",
+                )
+
             path: str = Field(
                 default="dashboard/main.ts",
                 description=(
@@ -4011,6 +4005,13 @@ except Exception as e:
                 default="module_ts",
                 description=(
                     "Artifact type for preview/rendering. Use module_ts for interactive reports."
+                ),
+            )
+            live_data_connections: list[LiveDataConnectionInput] | None = Field(
+                default=None,
+                description=(
+                    "Structured live data contract metadata for persisted dashboard TypeScript files. "
+                    "Required for dashboard/*.ts and dashboard/*.tsx writes."
                 ),
             )
             reason: str = Field(
@@ -4059,6 +4060,7 @@ except Exception as e:
             path: str,
             content: str,
             artifact_type: ArtifactType | None = "module_ts",
+            live_data_connections: list[Any] | None = None,
             reason: str = "",
             **_: Any,
         ) -> str:
@@ -4066,18 +4068,44 @@ except Exception as e:
             await userspace_service.enforce_workspace_role(
                 workspace_id, user_id, "editor"
             )
-            result = await userspace_service.upsert_workspace_file(
-                workspace_id,
-                path,
-                UpsertWorkspaceFileRequest(
-                    content=content,
-                    artifact_type=artifact_type,
-                ),
-                user_id,
-            )
 
             warnings: list[str] = []
+            hard_errors: list[str] = []
             lower_path = (path or "").lower()
+            normalized_path = lower_path.replace("\\", "/")
+
+            parsed_live_data_connections: list[UserSpaceLiveDataConnection] | None = None
+            if live_data_connections is not None:
+                parsed_live_data_connections = []
+                for item in live_data_connections:
+                    payload = (
+                        item.model_dump(mode="python")
+                        if isinstance(item, BaseModel)
+                        else item
+                    )
+                    parsed_live_data_connections.append(
+                        UserSpaceLiveDataConnection.model_validate(payload)
+                    )
+
+            workspace = await userspace_service.get_workspace(workspace_id, user_id)
+            allowed_component_ids = set(workspace.selected_tool_ids)
+            if parsed_live_data_connections:
+                for connection in parsed_live_data_connections:
+                    if connection.component_id not in allowed_component_ids:
+                        hard_errors.append(
+                            "Invalid live_data_connections component_id: "
+                            f"{connection.component_id}. It must match a tool selected for this workspace."
+                        )
+
+            is_dashboard_typescript = normalized_path.startswith(
+                "dashboard/"
+            ) and normalized_path.endswith((".ts", ".tsx"))
+            if is_dashboard_typescript and not parsed_live_data_connections:
+                hard_errors.append(
+                    "Missing required live_data_connections contract for dashboard TypeScript file. "
+                    "Provide at least one connection with component_kind=tool_config, component_id, and request."
+                )
+
             if lower_path.endswith((".ts", ".tsx", ".css", ".scss", ".html")):
                 hard_coded_hex = find_hard_coded_hex_colors(content)
                 if hard_coded_hex:
@@ -4086,13 +4114,6 @@ except Exception as e:
                         "Detected hard-coded hex color literals: "
                         f"{sample}. Prefer theme CSS tokens (e.g., var(--color-text-primary), var(--color-surface), var(--color-border))."
                     )
-
-            if lower_path.endswith((".ts", ".tsx")):
-                static_data_warning = detect_userspace_static_data_snapshot(
-                    content, path
-                )
-                if static_data_warning:
-                    warnings.append(static_data_warning)
 
             typecheck: dict[str, Any] | None = None
             if lower_path.endswith((".ts", ".tsx")):
@@ -4103,6 +4124,23 @@ except Exception as e:
                         warnings.append(
                             "TypeScript diagnostics detected. Run validate_userspace_typescript and fix reported errors before finalizing."
                         )
+
+            if hard_errors:
+                raise ValueError(
+                    "User Space file write rejected due to persistence policy violations:\n- "
+                    + "\n- ".join(hard_errors)
+                )
+
+            result = await userspace_service.upsert_workspace_file(
+                workspace_id,
+                path,
+                UpsertWorkspaceFileRequest(
+                    content=content,
+                    artifact_type=artifact_type,
+                    live_data_connections=parsed_live_data_connections,
+                ),
+                user_id,
+            )
 
             response_payload: dict[str, Any] = {
                 "file": result.model_dump(mode="json"),
@@ -4174,6 +4212,7 @@ except Exception as e:
                 description=(
                     "Create or update a file in the active User Space workspace. "
                     "For interactive reports, write TypeScript modules (artifact_type=module_ts). "
+                    "Dashboard TypeScript writes require non-empty live_data_connections metadata for live wiring. "
                     "Output may include CSS/theme warnings that must be fixed in follow-up edits."
                 ),
                 args_schema=UpsertUserSpaceFileInput,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -58,12 +58,23 @@ class UserSpaceFileInfo(BaseModel):
 class UpsertWorkspaceFileRequest(BaseModel):
     content: str = Field(default="", description="UTF-8 text content")
     artifact_type: ArtifactType | None = None
+    live_data_connections: list["UserSpaceLiveDataConnection"] | None = None
+
+
+class UserSpaceLiveDataConnection(BaseModel):
+    component_kind: Literal["tool_config"] = "tool_config"
+    component_id: str = Field(min_length=1)
+    request: dict[str, Any] | str
+    component_name: str | None = None
+    component_type: str | None = None
+    refresh_interval_seconds: int | None = Field(default=None, ge=1)
 
 
 class UserSpaceFileResponse(BaseModel):
     path: str
     content: str
     artifact_type: ArtifactType | None = None
+    live_data_connections: list[UserSpaceLiveDataConnection] | None = None
     updated_at: datetime
 
 

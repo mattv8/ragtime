@@ -14,19 +14,15 @@ from fastapi import HTTPException
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
-from ragtime.userspace.models import (
-    ArtifactType,
-    CreateWorkspaceRequest,
-    PaginatedWorkspacesResponse,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpaceSnapshot,
-    UserSpaceWorkspace,
-    WorkspaceMember,
-)
+from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
+                                      PaginatedWorkspacesResponse,
+                                      UpdateWorkspaceMembersRequest,
+                                      UpdateWorkspaceRequest,
+                                      UpsertWorkspaceFileRequest,
+                                      UserSpaceFileInfo, UserSpaceFileResponse,
+                                      UserSpaceLiveDataConnection,
+                                      UserSpaceSnapshot, UserSpaceWorkspace,
+                                      WorkspaceMember)
 
 logger = get_logger(__name__)
 
@@ -569,9 +565,19 @@ class UserSpaceService:
         file_path.write_text(request.content, encoding="utf-8")
 
         sidecar = file_path.with_suffix(file_path.suffix + ".artifact.json")
+        sidecar_payload: dict[str, Any] = {}
         if request.artifact_type is not None:
+            sidecar_payload["artifact_type"] = request.artifact_type
+
+        if request.live_data_connections is not None:
+            sidecar_payload["live_data_connections"] = [
+                connection.model_dump(mode="json")
+                for connection in request.live_data_connections
+            ]
+
+        if sidecar_payload:
             sidecar.write_text(
-                json.dumps({"artifact_type": request.artifact_type}),
+                json.dumps(sidecar_payload),
                 encoding="utf-8",
             )
         elif sidecar.exists() and sidecar.is_file():
@@ -584,6 +590,7 @@ class UserSpaceService:
             path=relative_path,
             content=request.content,
             artifact_type=request.artifact_type,
+            live_data_connections=request.live_data_connections,
             updated_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
         )
 
@@ -603,6 +610,7 @@ class UserSpaceService:
             raise HTTPException(status_code=404, detail="File not found")
 
         artifact_type = None
+        live_data_connections: list[UserSpaceLiveDataConnection] | None = None
         sidecar = file_path.with_suffix(file_path.suffix + ".artifact.json")
         if sidecar.exists():
             try:
@@ -610,14 +618,30 @@ class UserSpaceService:
                 sidecar_value = sidecar_data.get("artifact_type")
                 if sidecar_value == "module_ts":
                     artifact_type = cast(ArtifactType, sidecar_value)
+
+                raw_connections = sidecar_data.get("live_data_connections")
+                if isinstance(raw_connections, list):
+                    parsed_connections: list[UserSpaceLiveDataConnection] = []
+                    for item in raw_connections:
+                        if not isinstance(item, dict):
+                            continue
+                        try:
+                            parsed_connections.append(
+                                UserSpaceLiveDataConnection.model_validate(item)
+                            )
+                        except Exception:
+                            continue
+                    live_data_connections = parsed_connections or None
             except Exception:
                 artifact_type = None
+                live_data_connections = None
 
         stat = file_path.stat()
         return UserSpaceFileResponse(
             path=relative_path,
             content=file_path.read_text(encoding="utf-8"),
             artifact_type=artifact_type,
+            live_data_connections=live_data_connections,
             updated_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
         )
 
