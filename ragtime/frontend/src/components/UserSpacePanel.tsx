@@ -75,8 +75,30 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const contentRef = useRef<HTMLDivElement>(null);
   const leftPaneRef = useRef<HTMLDivElement>(null);
 
+  // Collapse state: track which panes are collapsed + their last size for restore
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [rightPaneCollapsed, setRightPaneCollapsed] = useState(false);
+  const [chatCollapsed, setChatCollapsed] = useState(false);
+  const prevSidebarWidth = useRef(180);
+  const prevLeftPaneFraction = useRef(0.5);
+  const prevEditorFraction = useRef(0.6);
+
+  const SIDEBAR_COLLAPSE_THRESHOLD = 60;
+  const MAIN_COLLAPSE_LEFT_THRESHOLD = 0.08;
+  const MAIN_COLLAPSE_RIGHT_THRESHOLD = 0.92;
+  const EDITOR_COLLAPSE_BOTTOM_THRESHOLD = 0.92;
+
   const handleResizeSidebar = useCallback((delta: number) => {
-    setSidebarWidth((prev) => Math.max(100, Math.min(400, prev + delta)));
+    setSidebarWidth((prev) => {
+      const next = prev + delta;
+      if (next < SIDEBAR_COLLAPSE_THRESHOLD) {
+        prevSidebarWidth.current = prev > SIDEBAR_COLLAPSE_THRESHOLD ? prev : prevSidebarWidth.current;
+        setSidebarCollapsed(true);
+        return 0;
+      }
+      setSidebarCollapsed(false);
+      return Math.min(400, next);
+    });
   }, []);
 
   const handleResizeMainSplit = useCallback((delta: number) => {
@@ -84,7 +106,21 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     if (!el) return;
     const totalWidth = el.offsetWidth;
     if (totalWidth === 0) return;
-    setLeftPaneFraction((prev) => Math.max(0.25, Math.min(0.75, prev + delta / totalWidth)));
+    setLeftPaneFraction((prev) => {
+      const next = prev + delta / totalWidth;
+      if (next > MAIN_COLLAPSE_RIGHT_THRESHOLD) {
+        prevLeftPaneFraction.current = prev < MAIN_COLLAPSE_RIGHT_THRESHOLD ? prev : prevLeftPaneFraction.current;
+        setRightPaneCollapsed(true);
+        return 1;
+      }
+      if (next < MAIN_COLLAPSE_LEFT_THRESHOLD) {
+        prevLeftPaneFraction.current = prev > MAIN_COLLAPSE_LEFT_THRESHOLD ? prev : prevLeftPaneFraction.current;
+        // Left pane collapse not implemented (keep at min)
+        return 0.05;
+      }
+      setRightPaneCollapsed(false);
+      return next;
+    });
   }, []);
 
   const handleResizeEditorChat = useCallback((delta: number) => {
@@ -92,7 +128,31 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     if (!el) return;
     const totalHeight = el.offsetHeight;
     if (totalHeight === 0) return;
-    setEditorFraction((prev) => Math.max(0.2, Math.min(0.85, prev + delta / totalHeight)));
+    setEditorFraction((prev) => {
+      const next = prev + delta / totalHeight;
+      if (next > EDITOR_COLLAPSE_BOTTOM_THRESHOLD) {
+        prevEditorFraction.current = prev < EDITOR_COLLAPSE_BOTTOM_THRESHOLD ? prev : prevEditorFraction.current;
+        setChatCollapsed(true);
+        return 1;
+      }
+      setChatCollapsed(false);
+      return Math.max(0.2, next);
+    });
+  }, []);
+
+  const expandSidebar = useCallback(() => {
+    setSidebarCollapsed(false);
+    setSidebarWidth(prevSidebarWidth.current || 180);
+  }, []);
+
+  const expandRightPane = useCallback(() => {
+    setRightPaneCollapsed(false);
+    setLeftPaneFraction(prevLeftPaneFraction.current || 0.5);
+  }, []);
+
+  const expandChat = useCallback(() => {
+    setChatCollapsed(false);
+    setEditorFraction(prevEditorFraction.current || 0.6);
   }, []);
   const [editingName, setEditingName] = useState(false);
   const [draftName, setDraftName] = useState('');
@@ -1192,11 +1252,12 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       )}
 
       {/* === Main content: left pane (editor+chat) | right pane (preview+snapshots) === */}
-      <div className="userspace-content" ref={contentRef} style={{ gridTemplateColumns: `${leftPaneFraction}fr 0px ${1 - leftPaneFraction}fr` }}>
+      <div className="userspace-content" ref={contentRef} style={{ gridTemplateColumns: rightPaneCollapsed ? '1fr 16px 0fr' : `${leftPaneFraction}fr 4px ${1 - leftPaneFraction}fr` }}>
         {/* Left pane */}
         <div className="userspace-left-pane" ref={leftPaneRef}>
           <div className="userspace-editor-section" style={{ flex: editorFraction }}>
             {/* File sidebar */}
+            {!sidebarCollapsed && (
             <div className="userspace-file-sidebar" style={{ width: sidebarWidth }}>
               <div className="userspace-file-sidebar-header">
                 <h4><File size={14} /> Files</h4>
@@ -1238,8 +1299,9 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                 ) : null}
               </div>
             </div>
+            )}
 
-            <ResizeHandle direction="horizontal" onResize={handleResizeSidebar} />
+            <ResizeHandle direction="horizontal" onResize={handleResizeSidebar} collapsed={sidebarCollapsed ? 'before' : undefined} onExpand={expandSidebar} />
 
             {/* Code editor */}
             <div className="userspace-code-editor">
@@ -1257,9 +1319,10 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
             </div>
           </div>
 
-          <ResizeHandle direction="vertical" onResize={handleResizeEditorChat} />
+          <ResizeHandle direction="vertical" onResize={handleResizeEditorChat} collapsed={chatCollapsed ? 'after' : undefined} onExpand={expandChat} />
 
           {/* Chat section */}
+          {!chatCollapsed && (
           <div className="userspace-chat-section" style={{ flex: 1 - editorFraction }}>
             {activeWorkspaceId ? (
               <ChatPanel
@@ -1275,11 +1338,13 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
               </div>
             )}
           </div>
+          )}
         </div>
 
-        <ResizeHandle direction="horizontal" onResize={handleResizeMainSplit} />
+        <ResizeHandle direction="horizontal" onResize={handleResizeMainSplit} collapsed={rightPaneCollapsed ? 'after' : undefined} onExpand={expandRightPane} />
 
         {/* Right pane */}
+        {!rightPaneCollapsed && (
         <div className="userspace-right-pane">
           <div className="userspace-preview-section">
             <UserSpaceArtifactPreview
@@ -1320,6 +1385,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
             )}
           </div>
         </div>
+        )}
       </div>
 
       {/* === Members modal === */}

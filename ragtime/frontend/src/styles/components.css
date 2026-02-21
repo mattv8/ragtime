@@ -946,6 +946,28 @@ textarea:focus {
   cursor: row-resize;
 }
 
+/* Collapsed state: clickable strip with expand chevron */
+.resize-handle-collapsed {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-border);
+  cursor: pointer;
+}
+
+.resize-handle-collapsed.resize-handle-horizontal {
+  width: 16px;
+}
+
+.resize-handle-collapsed.resize-handle-vertical {
+  height: 16px;
+}
+
+.resize-handle-chevron {
+  color: var(--color-text-muted);
+  pointer-events: none;
+}
+
 input::placeholder,
 textarea::placeholder {
   color: var(--color-text-muted);

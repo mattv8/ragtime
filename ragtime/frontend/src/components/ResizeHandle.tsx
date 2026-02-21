@@ -1,4 +1,5 @@
 import { useCallback, useRef } from 'react';
+import { ChevronLeft, ChevronRight, ChevronUp, ChevronDown } from 'lucide-react';
 
 interface ResizeHandleProps {
   /** 'horizontal' = dragging left/right, 'vertical' = dragging up/down */
@@ -7,22 +8,30 @@ interface ResizeHandleProps {
   onResize: (delta: number) => void;
   /** Optional className override */
   className?: string;
+  /**
+   * Which side adjacent to this handle is currently collapsed.
+   * 'before' = the pane before (left/top), 'after' = the pane after (right/bottom), undefined = nothing collapsed.
+   */
+  collapsed?: 'before' | 'after';
+  /** Called when the user activates the collapsed handle to restore a pane */
+  onExpand?: () => void;
 }
 
-export function ResizeHandle({ direction, onResize, className }: ResizeHandleProps) {
+export function ResizeHandle({ direction, onResize, className, collapsed, onExpand }: ResizeHandleProps) {
   const startPos = useRef(0);
   const onResizeRef = useRef(onResize);
   onResizeRef.current = onResize;
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
+      if (collapsed) return; // don't allow dragging when collapsed
       e.preventDefault();
       e.currentTarget.setPointerCapture(e.pointerId);
       startPos.current = direction === 'horizontal' ? e.clientX : e.clientY;
       document.body.style.cursor = direction === 'horizontal' ? 'col-resize' : 'row-resize';
       document.body.style.userSelect = 'none';
     },
-    [direction],
+    [direction, collapsed],
   );
 
   const handlePointerMove = useCallback(
@@ -48,6 +57,29 @@ export function ResizeHandle({ direction, onResize, className }: ResizeHandlePro
   );
 
   const cls = className ?? `resize-handle resize-handle-${direction}`;
+
+  if (collapsed) {
+    // Determine chevron icon: points toward the collapsed pane (click to expand it)
+    let Icon: typeof ChevronLeft;
+    if (direction === 'horizontal') {
+      Icon = collapsed === 'before' ? ChevronRight : ChevronLeft;
+    } else {
+      Icon = collapsed === 'before' ? ChevronDown : ChevronUp;
+    }
+
+    return (
+      <div
+        className={`${cls} resize-handle-collapsed`}
+        onPointerDown={(e) => {
+          e.preventDefault();
+          onExpand?.();
+        }}
+        title="Expand pane"
+      >
+        <Icon size={14} className="resize-handle-chevron" />
+      </div>
+    );
+  }
 
   return (
     <div
