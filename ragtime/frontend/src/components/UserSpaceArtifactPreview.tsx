@@ -176,7 +176,7 @@ function resolveWorkspaceModulePath(
 
 function collectLocalSpecifiers(source: string): string[] {
   const values: string[] = [];
-  const staticImportPattern = /(?:import|export)\s+(?:[^'"`]*?\s+from\s+)?['"]([^'"]+)['"]/g;
+  const staticImportPattern = /(?:import|export)\s+(?:[^'"`]*?\s*from\s*)?['"]([^'"]+)['"]/g;
   const dynamicImportPattern = /import\(\s*['"]([^'"]+)['"]\s*\)/g;
 
   for (const pattern of [staticImportPattern, dynamicImportPattern]) {
@@ -216,8 +216,8 @@ function rewriteLocalSpecifiers(
   };
 
   const patterns: RegExp[] = [
-    /(\bimport\s+['"])([^'"]+)(['"])/g,
-    /(\bfrom\s+['"])([^'"]+)(['"])/g,
+    /(\bimport\s*['"])([^'"]+)(['"])/g,
+    /(\bfrom\s*['"])([^'"]+)(['"])/g,
     /(\bimport\(\s*['"])([^'"]+)(['"]\s*\))/g,
   ];
 
@@ -256,12 +256,12 @@ function buildIframeDoc(
 <html>
   <head>
     <meta charset="utf-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' blob:; style-src 'unsafe-inline'; img-src data:; connect-src 'none';" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' blob: https://cdn.jsdelivr.net; style-src 'unsafe-inline'; img-src data:; connect-src 'none';" />
     <style>
       :root { font-family: var(--font-sans, system-ui, sans-serif); color-scheme: dark; }
       *, *::before, *::after { box-sizing: border-box; }
       html, body { margin: 0; padding: 0; min-height: 100%; background: var(--color-bg-primary, #0f172a); color: var(--color-text-primary, #f1f5f9); font-family: var(--font-sans, system-ui, sans-serif); }
-      #app { min-height: 100%; padding: var(--space-md, 16px); }
+      #app { min-height: 100%; }
       a { color: var(--color-primary, #6366f1); }
       a:hover { color: var(--color-primary-hover, #4f46e5); }
       .userspace-render-error {
@@ -274,6 +274,7 @@ function buildIframeDoc(
         white-space: pre-wrap;
       }
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   </head>
   <body>
     <div id="app" data-payload="${payload}"></div>
@@ -306,6 +307,47 @@ function buildIframeDoc(
         const value = themeTokens[name];
         rootStyle.setProperty(name, value);
       });
+
+      const applyChartDefaults = () => {
+        const Chart = window.Chart;
+        if (!Chart || !Chart.defaults) return;
+
+        const styles = getComputedStyle(document.documentElement);
+        const textColor = styles.getPropertyValue('--color-text-secondary').trim() || '#9ca3af';
+        const gridColor = styles.getPropertyValue('--color-border').trim() || '#374151';
+
+        Chart.defaults.color = textColor;
+        Chart.defaults.borderColor = gridColor;
+        Chart.defaults.plugins = Chart.defaults.plugins || {};
+        Chart.defaults.plugins.legend = Chart.defaults.plugins.legend || {};
+        Chart.defaults.plugins.legend.labels = Chart.defaults.plugins.legend.labels || {};
+        Chart.defaults.plugins.legend.labels.color = textColor;
+        Chart.defaults.plugins.title = Chart.defaults.plugins.title || {};
+        Chart.defaults.plugins.title.color = textColor;
+
+        Chart.defaults.scales = Chart.defaults.scales || {};
+        Chart.defaults.scales.linear = Chart.defaults.scales.linear || {};
+        Chart.defaults.scales.linear.ticks = Chart.defaults.scales.linear.ticks || {};
+        Chart.defaults.scales.linear.ticks.color = textColor;
+        Chart.defaults.scales.linear.grid = Chart.defaults.scales.linear.grid || {};
+        Chart.defaults.scales.linear.grid.color = gridColor;
+
+        Chart.defaults.scales.category = Chart.defaults.scales.category || {};
+        Chart.defaults.scales.category.ticks = Chart.defaults.scales.category.ticks || {};
+        Chart.defaults.scales.category.ticks.color = textColor;
+        Chart.defaults.scales.category.grid = Chart.defaults.scales.category.grid || {};
+        Chart.defaults.scales.category.grid.color = gridColor;
+
+        Chart.defaults.scales.radialLinear = Chart.defaults.scales.radialLinear || {};
+        Chart.defaults.scales.radialLinear.ticks = Chart.defaults.scales.radialLinear.ticks || {};
+        Chart.defaults.scales.radialLinear.ticks.color = textColor;
+        Chart.defaults.scales.radialLinear.grid = Chart.defaults.scales.radialLinear.grid || {};
+        Chart.defaults.scales.radialLinear.grid.color = gridColor;
+        Chart.defaults.scales.radialLinear.pointLabels = Chart.defaults.scales.radialLinear.pointLabels || {};
+        Chart.defaults.scales.radialLinear.pointLabels.color = textColor;
+      };
+
+      applyChartDefaults();
 
       const extensions = ['.ts', '.tsx', '.js', '.jsx'];
 
@@ -376,11 +418,28 @@ function buildIframeDoc(
         return null;
       };
 
+      const collectLocalSpecifiers = (source) => {
+        const values = [];
+        const staticImportPattern = /(?:import|export)\\s+(?:[^'"]*?\\s*from\\s*)?['"]([^'"]+)['"]/g;
+        const dynamicImportPattern = /import\\(\\s*['"]([^'"]+)['"]\\s*\\)/g;
+
+        for (const pattern of [staticImportPattern, dynamicImportPattern]) {
+          pattern.lastIndex = 0;
+          let match;
+          while ((match = pattern.exec(source)) !== null) {
+            const specifier = match[1];
+            if (specifier) values.push(specifier);
+          }
+        }
+
+        return values;
+      };
+
       const rewriteLocalSpecifiers = (source, importerPath, moduleUrlMap) => {
         const patterns = [
-          /(\bimport\s+['"])([^'"]+)(['"])/g,
-          /(\bfrom\s+['"])([^'"]+)(['"])/g,
-          /(\bimport\(\s*['"])([^'"]+)(['"]\s*\))/g,
+          /(\\bimport\\s*['"])([^'"]+)(['"])/g,
+          /(\\bfrom\\s*['"])([^'"]+)(['"])/g,
+          /(\\bimport\\(\\s*['"])([^'"]+)(['"]\\s*\\))/g,
         ];
 
         const rewriteSpecifier = (specifier) => {
@@ -421,8 +480,8 @@ function buildIframeDoc(
         // Extract local dependency specifiers from module source text
         const extractLocalDeps = (source, importerPath) => {
           const deps = [];
-          const staticRe = /(?:import|export)\s+(?:[^'"\`]*?\s+from\s+)?['"]([^'"]+)['"]/g;
-          const dynamicRe = /import\\(\s*['"]([^'"]+)['"]\s*\\)/g;
+          const staticRe = /(?:import|export)\\s+(?:[^'"]*?\\s*from\\s*)?['"]([^'"]+)['"]/g;
+          const dynamicRe = /import\\(\\s*['"]([^'"]+)['"]\\s*\\)/g;
           for (const re of [staticRe, dynamicRe]) {
             re.lastIndex = 0;
             let m;
@@ -468,6 +527,14 @@ function buildIframeDoc(
         const blobUrls = [];
         for (const modulePath of sorted) {
           const rewritten = rewriteLocalSpecifiers(modules[modulePath], modulePath, moduleUrlMap);
+          const remainingLocalSpecifiers = collectLocalSpecifiers(rewritten).filter((specifier) => {
+            return specifier.startsWith('./') || specifier.startsWith('../') || specifier.startsWith('/');
+          });
+          if (remainingLocalSpecifiers.length > 0) {
+            throw new Error(
+              modulePath + ": unresolved local module specifiers remained after rewrite: " + remainingLocalSpecifiers.join(', ')
+            );
+          }
           const blob = new Blob([rewritten], { type: 'text/javascript' });
           const url = URL.createObjectURL(blob);
           moduleUrlMap[modulePath] = url;
@@ -614,7 +681,7 @@ export function UserSpaceArtifactPreview({
   }
 
   return (
-    <div className="userspace-preview-card userspace-preview-frame-wrap">
+    <div className="userspace-preview-frame-wrap">
       <iframe
         key={`${previewInstanceKey ?? ''}:${transpileResult.entryPath}`}
         title="TypeScript module preview"

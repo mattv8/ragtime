@@ -733,9 +733,11 @@ textarea:focus {
 
 .userspace-preview-section {
   flex: 1;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
-  overflow: auto;
-  padding: var(--space-md);
+  overflow: hidden;
+  padding: 0;
 }
 
 /* Preview cards */
@@ -771,14 +773,20 @@ textarea:focus {
 }
 
 .userspace-preview-frame-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   padding: 0;
   overflow: hidden;
 }
 
 .userspace-preview-frame {
+  flex: 1;
   width: 100%;
-  min-height: 400px;
+  min-height: 0;
   height: 100%;
+  display: block;
   border: 0;
   background: var(--color-bg-secondary);
 }
