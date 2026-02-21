@@ -298,8 +298,10 @@ function buildIframeDoc(
     <style>
       :root { font-family: var(--font-sans, system-ui, sans-serif); color-scheme: dark; }
       *, *::before, *::after { box-sizing: border-box; }
-      html, body { margin: 0; padding: 0; min-height: 100%; background: var(--color-bg-primary, #0f172a); color: var(--color-text-primary, #f1f5f9); font-family: var(--font-sans, system-ui, sans-serif); }
-      #app { min-height: 100%; }
+      html { height: 100%; }
+      body { margin: 0; padding: 0; height: 100%; background: var(--color-bg-primary, #0f172a); color: var(--color-text-primary, #f1f5f9); font-family: var(--font-sans, system-ui, sans-serif); }
+      #app { height: 100%; display: flex; flex-direction: column; }
+      canvas { display: block; max-width: 100%; max-height: 100%; }
       a { color: var(--color-primary, #6366f1); }
       a:hover { color: var(--color-primary-hover, #4f46e5); }
       .userspace-render-error {
@@ -423,20 +425,71 @@ function buildIframeDoc(
               : (item instanceof HTMLCanvasElement ? item : null);
 
             if (canvas) {
+              // Ensure parent constrains canvas so Chart.js responsive mode works
               const parent = canvas.parentElement;
-              const width = Math.max(parent?.clientWidth || canvas.clientWidth || 0, 320);
-              const height = Math.max(parent?.clientHeight || canvas.clientHeight || 0, 240);
-
-              canvas.style.width = '100%';
-              canvas.style.height = '100%';
-              canvas.width = width;
-              canvas.height = height;
+              if (parent) {
+                if (!parent.style.position || parent.style.position === 'static') {
+                  parent.style.position = 'relative';
+                }
+                parent.style.width = parent.style.width || '100%';
+                // Guarantee a readable minimum height for the chart area
+                parent.style.minHeight = parent.style.minHeight || '300px';
+                // If parent has no explicit height, let it grow to fill available space
+                if (!parent.style.height && !parent.style.flex) {
+                  parent.style.flex = '1';
+                }
+              }
             }
 
             if (nextConfig && nextConfig.options) {
-              nextConfig.options.responsive = false;
-              nextConfig.options.maintainAspectRatio = false;
-              nextConfig.options.resizeDelay = 250;
+              nextConfig.options.responsive = true;
+              nextConfig.options.maintainAspectRatio = true;
+              nextConfig.options.aspectRatio = nextConfig.options.aspectRatio || 1.8;
+              nextConfig.options.resizeDelay = 300;
+              // Compact layout padding
+              nextConfig.options.layout = nextConfig.options.layout || {};
+              nextConfig.options.layout.padding = nextConfig.options.layout.padding ?? { top: 4, right: 8, bottom: 4, left: 4 };
+
+              // Force theme-aware text/grid colors on every chart instance
+              const cStyles = getComputedStyle(document.documentElement);
+              const tColor = cStyles.getPropertyValue('--color-text-secondary').trim() || '#9ca3af';
+              const gColor = cStyles.getPropertyValue('--color-border').trim() || '#374151';
+
+              // Enforce scale tick + grid colors per named axis
+              const scales = nextConfig.options.scales;
+              if (scales && typeof scales === 'object') {
+                for (const axisKey of Object.keys(scales)) {
+                  const axis = scales[axisKey];
+                  if (!axis || typeof axis !== 'object') continue;
+                  axis.ticks = axis.ticks || {};
+                  axis.ticks.color = tColor;
+                  axis.grid = axis.grid || {};
+                  axis.grid.color = gColor;
+                  if (axis.title && typeof axis.title === 'object') {
+                    axis.title.color = tColor;
+                  }
+                }
+              }
+
+              // Enforce legend + title plugin colors
+              const plugins = nextConfig.options.plugins = nextConfig.options.plugins || {};
+              if (plugins.legend) {
+                plugins.legend.labels = plugins.legend.labels || {};
+                plugins.legend.labels.color = tColor;
+              }
+              if (plugins.title) {
+                plugins.title.color = tColor;
+              }
+              if (plugins.subtitle) {
+                plugins.subtitle.color = tColor;
+              }
+              if (plugins.tooltip) {
+                plugins.tooltip.titleColor = plugins.tooltip.titleColor || tColor;
+                plugins.tooltip.bodyColor = plugins.tooltip.bodyColor || tColor;
+              }
+
+              // Global font color fallback
+              nextConfig.options.color = tColor;
             }
 
             return new OriginalChart(item, nextConfig);

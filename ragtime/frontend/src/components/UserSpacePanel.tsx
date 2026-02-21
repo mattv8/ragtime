@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronDown, ChevronRight, File, History, Maximize2, Minimize2, Pencil, Plus, Save, Settings, Trash2, Users, X } from 'lucide-react';
+import CodeMirror from '@uiw/react-codemirror';
+import { javascript } from '@codemirror/lang-javascript';
 
 import { api } from '@/api';
 import type { User, UserSpaceAvailableTool, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceSnapshot, UserSpaceWorkspace, UserSpaceWorkspaceMember, WorkspaceRole } from '@/types';
@@ -1335,15 +1337,33 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
             {/* Code editor */}
             <div className="userspace-code-editor">
               {!canEditWorkspace && <div className="userspace-readonly-badge">Read-only</div>}
-              <textarea
+              <CodeMirror
                 value={fileContent}
-                onChange={(e) => {
-                  setFileContent(e.target.value);
+                onChange={(value) => {
+                  setFileContent(value);
                   setFileDirty(true);
                 }}
+                extensions={[javascript({ typescript: true, jsx: true })]}
+                editable={canEditWorkspace}
+                readOnly={!canEditWorkspace}
                 placeholder="Create dashboard/report/module source files here"
-                disabled={!canEditWorkspace}
-                spellCheck={false}
+                height="100%"
+                theme={(() => {
+                  const stored = localStorage.getItem('ragtime-theme');
+                  if (stored === 'light') return 'light';
+                  if (stored === 'dark' || stored) return 'dark';
+                  return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+                })()}
+                basicSetup={{
+                  lineNumbers: true,
+                  foldGutter: true,
+                  bracketMatching: true,
+                  closeBrackets: true,
+                  autocompletion: true,
+                  highlightActiveLine: true,
+                  indentOnInput: true,
+                  tabSize: 2,
+                }}
               />
             </div>
           </div>

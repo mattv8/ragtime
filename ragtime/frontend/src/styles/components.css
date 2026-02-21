@@ -664,6 +664,7 @@ textarea:focus {
   min-width: 0;
   min-height: 0;
   position: relative;
+  overflow: hidden;
 }
 
 .userspace-readonly-badge {
@@ -679,25 +680,65 @@ textarea:focus {
   z-index: 1;
 }
 
-.userspace-code-editor textarea {
+/* react-codemirror wrapper div */
+.userspace-code-editor > div {
   flex: 1;
-  width: 100%;
-  resize: none;
-  border: none;
-  border-radius: 0;
-  padding: var(--space-sm);
-  font-family: var(--font-mono, 'SF Mono', 'Fira Code', 'Cascadia Code', monospace);
-  font-size: 13px;
-  line-height: 1.6;
-  background: var(--color-bg-primary);
-  color: var(--color-text-primary);
-  tab-size: 2;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
 }
 
-.userspace-code-editor textarea:focus {
+.userspace-code-editor .cm-editor {
+  flex: 1;
+  min-height: 0;
+  font-family: var(--font-mono, 'SF Mono', 'Fira Code', 'Cascadia Code', monospace);
+  font-size: 13px;
+}
+
+.userspace-code-editor .cm-editor .cm-scroller {
+  overflow: auto;
+}
+
+.userspace-code-editor .cm-editor.cm-focused {
   outline: none;
-  box-shadow: none;
+}
+
+/* Override CodeMirror backgrounds to match app theme via CSS variables */
+.userspace-code-editor,
+.userspace-code-editor > div,
+.userspace-code-editor .cm-editor,
+.userspace-code-editor .cm-editor .cm-gutters {
+  background-color: var(--color-bg-primary) !important;
+}
+
+.userspace-code-editor .cm-editor .cm-gutters {
+  border-right: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+}
+
+.userspace-code-editor .cm-editor .cm-activeLineGutter,
+.userspace-code-editor .cm-editor .cm-activeLine {
+  background-color: var(--color-surface-hover) !important;
+}
+
+.userspace-code-editor .cm-editor .cm-cursor {
+  border-left-color: var(--color-text-primary);
+}
+
+.userspace-code-editor .cm-editor .cm-selectionBackground,
+.userspace-code-editor .cm-editor .cm-content ::selection {
+  background-color: var(--color-primary-light) !important;
+}
+
+.userspace-code-editor .cm-editor .cm-tooltip {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-primary);
+}
+
+.userspace-code-editor .cm-editor .cm-tooltip-autocomplete ul li[aria-selected] {
+  background-color: var(--color-primary-light);
+  color: var(--color-text-primary);
 }
 
 /* Chat section */
