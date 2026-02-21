@@ -378,10 +378,11 @@ UI_VISUALIZATION_USERSPACE_PROMPT = """
 ### User Space Visualization Rules
 
 1. Persist live `data_connection` wiring for reusable dashboards/charts/tables.
-2. When `live_data_requested=true`, persisted module source files in `dashboard/*` or with `artifact_type=module_ts` must include structured `live_data_connections` metadata in `upsert_userspace_file`.
-3. Chart axes/labels and series data must be sourced from runtime live data payloads.
-4. When `live_data_requested=true`, provide `live_data_checks` proving successful connection and transformation before persisting.
-5. If live wiring is blocked by missing context, state the blocker explicitly.
+2. Dashboard module writes automatically require `live_data_connections` and `live_data_checks` when the workspace has selected tools.
+3. Chart axes/labels and series data must be sourced from runtime live data payloads via `context.components[componentId].execute()`.
+4. Provide `live_data_checks` proving successful connection and transformation before persisting.
+5. **NEVER embed hardcoded, mock, sample, or static data arrays in module source.** The system will reject writes containing such patterns.
+6. If live wiring is blocked by missing context, persist a scaffold with `execute()` call sites and state the blocker. Do NOT substitute mock data.
 """
 
 
@@ -418,6 +419,23 @@ _RENDER_EXPORT_PATTERN = re.compile(
 )
 _JSX_TAG_PATTERN = re.compile(r"<\s*[A-Za-z][A-Za-z0-9_:\-]*(?:\s|>|/)")
 
+# Patterns that indicate hardcoded mock/sample data in module source.
+# Each tuple: (compiled regex, human-readable description)
+_HARDCODED_DATA_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # getMockData / mockData / sampleData / dummyData function/variable names
+    (re.compile(r"\b(?:get)?[Mm]ock[Dd]ata\b"), "mock data function/variable"),
+    (re.compile(r"\b(?:get)?[Ss]ample[Dd]ata\b"), "sample data function/variable"),
+    (re.compile(r"\b(?:get)?[Dd]ummy[Dd]ata\b"), "dummy data function/variable"),
+    (re.compile(r"\b(?:get)?[Ff]ake[Dd]ata\b"), "fake data function/variable"),
+    (re.compile(r"\b(?:get)?[Ss]tatic[Dd]ata\b"), "static data function/variable"),
+    (re.compile(r"\bplaceholder[Dd]ata\b"), "placeholder data variable"),
+    # Large inline array literals with 5+ object elements (e.g., [{...}, {...}, ...])
+    (re.compile(
+        r"=\s*\[\s*(?:\{[^}]{8,}\}\s*,\s*){4,}",
+        re.DOTALL,
+    ), "large inline data array literal (5+ objects)"),
+]
+
 
 def find_hard_coded_hex_colors(content: str) -> list[str]:
     """Return unique hard-coded hex color literals found in content."""
@@ -433,6 +451,20 @@ def find_hard_coded_hex_colors(content: str) -> list[str]:
         seen.add(normalized)
         results.append(literal)
     return results
+
+
+def find_hardcoded_data_patterns(content: str) -> list[str]:
+    """Detect hardcoded mock/sample data patterns in module source code.
+
+    Returns a list of human-readable descriptions of detected patterns.
+    """
+    if not content:
+        return []
+    findings: list[str] = []
+    for pattern, description in _HARDCODED_DATA_PATTERNS:
+        if pattern.search(content):
+            findings.append(description)
+    return findings
 
 
 def validate_userspace_runtime_contract(content: str, file_path: str) -> list[str]:
@@ -637,15 +669,16 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 
 - Use real tool outputs as the source of truth for rendered data.
 - Persistent User Space dashboards must be live-wired.
-- Persisted module-source writes are contract-validated only when `live_data_requested=true`: for files under `dashboard/*` or writes with `artifact_type=module_ts`, `upsert_userspace_file` must include a non-empty `live_data_connections` list.
+- **NEVER embed hardcoded, mock, sample, dummy, or static data arrays in module source files.** All data must be fetched at runtime via `context.components[componentId].execute()`. The system will reject writes containing hardcoded data patterns.
+- When the workspace has selected tools, dashboard module writes (`dashboard/*` or `artifact_type=module_ts`) automatically require `live_data_connections` and `live_data_checks` -- the `live_data_requested` flag is inferred.
 - Each `live_data_connections` entry must include at least `component_kind=tool_config`, `component_id`, and `request`.
-- For `live_data_requested=true`, include `live_data_checks` for each connection with `connection_check_passed=true` and `transformation_check_passed=true`.
+- Include `live_data_checks` for each connection with `connection_check_passed=true` and `transformation_check_passed=true`.
 - Never invent or guess `component_id` values. Use only IDs from ACTIVE TOOL CONNECTIONS FOR THIS REQUEST.
 - Do not persist dashboard files without connection metadata, even when scaffolding.
 - Data connections are internal components, abstracted from end users.
 - These components map to admin-configured tools from Settings.
 - Persist the connection request (query/command payload + component reference), then read/fetch through `context.components` at render/runtime.
-- If live wiring cannot be completed with available tools/context, still persist a working UI scaffold in files (layout, navigation, placeholders, and integration points), then state the blocker explicitly and ask for the missing connection choice.
+- If live wiring cannot be completed with available tools/context, persist a UI scaffold with layout, navigation, and `context.components[x].execute()` call sites that return empty rows until the connection is available. State the blocker explicitly. Do NOT substitute mock data.
 - When creating chart/datatable payloads for reusable artifacts, include `data_connection` as a component reference:
     - `component_kind`: `tool_config`
     - `component_id`: admin-configured tool config ID
@@ -4188,14 +4221,38 @@ except Exception as e:
                 ".cts",
             )
             is_module_source = normalized_path.endswith(module_source_extensions)
-            requires_live_data_contract = (
-                live_data_requested
-                and is_module_source
-                and (
-                    normalized_path.startswith("dashboard/")
-                    or artifact_type == "module_ts"
-                )
+            is_dashboard_module = is_module_source and (
+                normalized_path.startswith("dashboard/")
+                or artifact_type == "module_ts"
             )
+
+            # Auto-require live data contract when workspace has selected
+            # tools and the write targets a dashboard module.  The agent
+            # should not be able to bypass the contract by leaving
+            # live_data_requested=false while embedding hardcoded data.
+            workspace_has_tools = bool(workspace.selected_tool_ids)
+            effective_live_data_requested = (
+                live_data_requested
+                or (workspace_has_tools and is_dashboard_module)
+            )
+
+            requires_live_data_contract = (
+                effective_live_data_requested
+                and is_dashboard_module
+            )
+
+            # Detect hardcoded mock/sample data in ALL dashboard module
+            # writes regardless of live_data_requested flag.
+            if is_dashboard_module:
+                mock_patterns = find_hardcoded_data_patterns(content)
+                if mock_patterns:
+                    hard_errors.append(
+                        "Hardcoded mock/sample data detected in module source: "
+                        + ", ".join(mock_patterns)
+                        + ". All data must be fetched at runtime via context.components[componentId].execute(). "
+                        "Remove hardcoded data arrays and use live data connections."
+                    )
+
             if requires_live_data_contract and not parsed_live_data_connections:
                 hard_errors.append(
                     "Missing required live_data_connections contract metadata for this module source write. "
