@@ -57,6 +57,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const [renameValue, setRenameValue] = useState('');
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [deleteConfirmWorkspaceId, setDeleteConfirmWorkspaceId] = useState<string | null>(null);
+  const [isWorkspaceMenuOpen, setIsWorkspaceMenuOpen] = useState(false);
   const [showMembersModal, setShowMembersModal] = useState(false);
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [pendingMembers, setPendingMembers] = useState<UserSpaceWorkspaceMember[]>([]);
@@ -64,6 +65,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const [showToolPicker, setShowToolPicker] = useState(false);
   const [showSnapshots, setShowSnapshots] = useState(true);
   const toolPickerRef = useRef<HTMLDivElement>(null);
+  const workspaceDropdownRef = useRef<HTMLDivElement>(null);
   const fileContentCacheRef = useRef(fileContentCache);
 
   // Resize state
@@ -330,6 +332,35 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showToolPicker]);
+
+  useEffect(() => {
+    if (!isWorkspaceMenuOpen) return;
+
+    function handleClickOutside(event: MouseEvent) {
+      if (workspaceDropdownRef.current && !workspaceDropdownRef.current.contains(event.target as Node)) {
+        setIsWorkspaceMenuOpen(false);
+      }
+    }
+
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setIsWorkspaceMenuOpen(false);
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [isWorkspaceMenuOpen]);
+
+  useEffect(() => {
+    if (!isWorkspaceMenuOpen) {
+      setDeleteConfirmWorkspaceId(null);
+    }
+  }, [isWorkspaceMenuOpen]);
 
   useEffect(() => {
     if (!activeWorkspaceId) {
@@ -745,6 +776,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     try {
       await api.deleteUserSpaceWorkspace(workspaceId);
       setDeleteConfirmWorkspaceId(null);
+      setIsWorkspaceMenuOpen(false);
       if (activeWorkspaceId === workspaceId) {
         setActiveWorkspaceId(null);
         setFiles([]);
@@ -982,16 +1014,104 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       {/* === Top toolbar === */}
       <div className="userspace-toolbar">
         <div className="userspace-toolbar-group">
-          <select
-            className="userspace-ws-select"
-            value={activeWorkspaceId ?? ''}
-            onChange={(e) => setActiveWorkspaceId(e.target.value || null)}
-          >
-            {workspaces.length === 0 && <option value="">No workspaces</option>}
-            {workspaces.map((ws) => (
-              <option key={ws.id} value={ws.id}>{ws.name}</option>
-            ))}
-          </select>
+          <div className="model-selector userspace-workspace-picker" ref={workspaceDropdownRef}>
+            <button
+              type="button"
+              className="model-selector-trigger userspace-workspace-trigger"
+              onClick={() => {
+                if (workspaces.length > 0) {
+                  setIsWorkspaceMenuOpen((open) => !open);
+                }
+              }}
+              title="Select workspace"
+              aria-haspopup="listbox"
+              aria-expanded={isWorkspaceMenuOpen}
+              disabled={workspaces.length === 0}
+            >
+              <span className="model-selector-text">{activeWorkspace?.name ?? 'No workspaces'}</span>
+              <span className="model-selector-arrow">▾</span>
+            </button>
+
+            {isWorkspaceMenuOpen && workspaces.length > 0 && (
+              <div className="model-selector-dropdown userspace-workspace-dropdown">
+                <div className="model-selector-dropdown-inner" role="listbox" aria-label="Workspace list">
+                  {workspaces.map((ws) => {
+                    const canDeleteWorkspace = ws.owner_user_id === currentUser.id;
+                    const isConfirmingDelete = deleteConfirmWorkspaceId === ws.id;
+                    return (
+                      <div
+                        key={ws.id}
+                        className={`model-selector-item userspace-workspace-item ${ws.id === activeWorkspaceId ? 'is-selected' : ''} ${!canDeleteWorkspace ? 'is-shared' : ''}`}
+                      >
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={ws.id === activeWorkspaceId}
+                          className="userspace-workspace-select-btn"
+                          onClick={() => {
+                            setActiveWorkspaceId(ws.id);
+                            setIsWorkspaceMenuOpen(false);
+                            setDeleteConfirmWorkspaceId(null);
+                          }}
+                        >
+                          <span className="model-selector-item-name">{ws.name}</span>
+                        </button>
+
+                        {canDeleteWorkspace && (
+                          <div className="userspace-workspace-item-actions">
+                            {isConfirmingDelete ? (
+                              <>
+                                <button
+                                  type="button"
+                                  className="chat-action-btn confirm-delete"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    void handleDeleteWorkspace(ws.id);
+                                  }}
+                                  title="Confirm delete workspace"
+                                >
+                                  <Check size={12} />
+                                </button>
+                                <button
+                                  type="button"
+                                  className="chat-action-btn cancel-delete"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setDeleteConfirmWorkspaceId(null);
+                                  }}
+                                  title="Cancel"
+                                >
+                                  <X size={12} />
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                type="button"
+                                className="chat-action-btn"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setDeleteConfirmWorkspaceId(ws.id);
+                                }}
+                                title="Delete workspace"
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                            )}
+                          </div>
+                        )}
+
+                        {!canDeleteWorkspace && (
+                          <span className="userspace-workspace-owner-hint" title="Only workspace owners can delete workspaces">
+                            Shared
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
           {workspaces.length < workspacesTotal && (
             <button className="btn btn-secondary btn-sm" onClick={() => loadWorkspaces(true)} disabled={loadingMore}>
               {loadingMore ? '...' : 'More'}
@@ -1004,9 +1124,6 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
             <>
               <button className="btn btn-secondary btn-sm" onClick={handleOpenMembersModal} title="Manage members">
                 <Users size={14} />
-              </button>
-              <button className="btn btn-secondary btn-sm" onClick={() => setDeleteConfirmWorkspaceId(activeWorkspaceId)} title="Delete workspace">
-                <Trash2 size={14} />
               </button>
             </>
           )}
@@ -1108,19 +1225,6 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
           />
           <button className="btn btn-primary btn-sm" onClick={handleSaveDescription}><Check size={14} /></button>
           <button className="btn btn-secondary btn-sm" onClick={() => setEditingDescription(false)}><X size={14} /></button>
-        </div>
-      )}
-
-      {/* === Delete workspace confirmation === */}
-      {deleteConfirmWorkspaceId && (
-        <div className="userspace-confirm-bar">
-          <span>Delete workspace &quot;{workspaces.find((w) => w.id === deleteConfirmWorkspaceId)?.name}&quot;?</span>
-          <button className="btn btn-danger btn-sm" onClick={() => handleDeleteWorkspace(deleteConfirmWorkspaceId)}>
-            <Check size={14} /> Delete
-          </button>
-          <button className="btn btn-secondary btn-sm" onClick={() => setDeleteConfirmWorkspaceId(null)}>
-            <X size={14} /> Cancel
-          </button>
         </div>
       )}
 

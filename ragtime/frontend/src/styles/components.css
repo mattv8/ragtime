@@ -283,6 +283,70 @@ textarea:focus {
   border: 1px solid var(--color-border-strong);
 }
 
+.userspace-workspace-picker {
+  min-width: 180px;
+  max-width: 260px;
+}
+
+.userspace-workspace-trigger {
+  width: 100%;
+  max-width: 100%;
+  justify-content: space-between;
+  padding: 6px 10px 6px 12px;
+  background: var(--color-surface);
+  font-size: var(--text-sm);
+}
+
+.userspace-workspace-dropdown {
+  min-width: 100%;
+  max-width: 320px;
+}
+
+.userspace-workspace-item {
+  gap: var(--space-xxs, 2px);
+  padding: 4px 6px 4px 10px;
+}
+
+.userspace-workspace-select-btn {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 4px 2px;
+}
+
+.userspace-workspace-item-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.userspace-workspace-item .chat-action-btn {
+  width: 24px;
+  height: 24px;
+}
+
+.userspace-workspace-item .chat-action-btn:hover {
+  background: var(--color-surface-active);
+}
+
+.userspace-workspace-item.is-shared {
+  padding-right: 10px;
+}
+
+.userspace-workspace-owner-hint {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  opacity: 0.85;
+  margin-left: var(--space-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .userspace-filepath-input {
   min-width: 180px;
   max-width: 280px;
