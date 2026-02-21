@@ -58,6 +58,13 @@ class UserSpaceFileInfo(BaseModel):
 class UpsertWorkspaceFileRequest(BaseModel):
     content: str = Field(default="", description="UTF-8 text content")
     artifact_type: ArtifactType | None = None
+    live_data_requested: bool = Field(
+        default=False,
+        description=(
+            "Set true only when the user explicitly requested live/refreshable data. "
+            "When true for eligible module-source writes, live_data_connections are required."
+        ),
+    )
     live_data_connections: list["UserSpaceLiveDataConnection"] | None = None
 
 

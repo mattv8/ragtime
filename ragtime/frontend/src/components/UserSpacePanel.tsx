@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronDown, ChevronRight, File, History, Maximize2, Minimize2, Pencil, Plus, Save, Settings, Trash2, Users, X } from 'lucide-react';
 
 import { api } from '@/api';
-import type { User, UserSpaceAvailableTool, UserSpaceFileInfo, UserSpaceSnapshot, UserSpaceWorkspace, UserSpaceWorkspaceMember, WorkspaceRole } from '@/types';
+import type { User, UserSpaceAvailableTool, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceSnapshot, UserSpaceWorkspace, UserSpaceWorkspaceMember, WorkspaceRole } from '@/types';
 import { buildUserSpaceTree, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { ChatPanel } from './ChatPanel';
 import { ResizeHandle } from './ResizeHandle';
@@ -38,6 +38,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const [fileContent, setFileContent] = useState<string>('');
   const [fileDirty, setFileDirty] = useState(false);
   const [fileContentCache, setFileContentCache] = useState<Record<string, { content: string; updatedAt: string }>>({});
+  const [previewLiveDataConnections, setPreviewLiveDataConnections] = useState<UserSpaceLiveDataConnection[]>([]);
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -277,6 +278,34 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   useEffect(() => {
     loadWorkspaces();
   }, [loadWorkspaces]);
+
+  useEffect(() => {
+    if (!activeWorkspaceId) {
+      setPreviewLiveDataConnections([]);
+      return;
+    }
+
+    if (!files.some((file) => file.path === previewEntryPath)) {
+      setPreviewLiveDataConnections([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    api.getUserSpaceFile(activeWorkspaceId, previewEntryPath)
+      .then((file) => {
+        if (cancelled) return;
+        setPreviewLiveDataConnections(file.live_data_connections ?? []);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPreviewLiveDataConnections([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeWorkspaceId, files, previewEntryPath]);
 
   useEffect(() => {
     const loadTools = async () => {
@@ -1350,6 +1379,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
             <UserSpaceArtifactPreview
               entryPath={previewEntryPath}
               workspaceFiles={previewWorkspaceFiles}
+              liveDataConnections={previewLiveDataConnections}
               previewInstanceKey={activeWorkspaceId ?? ''}
             />
           </div>

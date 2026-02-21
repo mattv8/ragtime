@@ -17,8 +17,13 @@ from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
-                                     SystemMessage, ToolMessage)
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -30,34 +35,52 @@ from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_output_limit
 from ragtime.core.ollama import get_model_context_length
-from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
-                                   validate_odoo_code, validate_sql_query,
-                                   validate_ssh_command)
+from ragtime.core.security import (
+    _SSH_ENV_VAR_RE,
+    sanitize_output,
+    validate_odoo_code,
+    validate_sql_query,
+    validate_ssh_command,
+)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
-                              execute_ssh_command, expand_env_vars_via_ssh,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.ssh import (
+    SSHConfig,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    expand_env_vars_via_ssh,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
-                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
-                                 create_chart_tool)
-from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-                                     create_datatable_tool)
+from ragtime.tools.chart import (
+    CHAT_CHART_DESCRIPTION_SUFFIX,
+    USERSPACE_CHART_DESCRIPTION_SUFFIX,
+    create_chart_tool,
+)
+from ragtime.tools.datatable import (
+    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+    create_datatable_tool,
+)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (_is_shallow_repository,
-                                       create_aggregate_git_history_tool,
-                                       create_per_index_git_history_tool)
+from ragtime.tools.git_history import (
+    _is_shallow_repository,
+    create_aggregate_git_history_tool,
+    create_per_index_git_history_tool,
+)
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (ArtifactType, UpsertWorkspaceFileRequest,
-                                      UserSpaceLiveDataConnection)
+from ragtime.userspace.models import (
+    ArtifactType,
+    UpsertWorkspaceFileRequest,
+    UserSpaceLiveDataConnection,
+)
 from ragtime.userspace.service import userspace_service
 
 logger = get_logger(__name__)
@@ -342,6 +365,7 @@ You have visualization tools for rich, interactive displays.
 
 - **create_chart** - Chart.js visualizations (bar, line, pie, doughnut)
 - **create_datatable** - Interactive DataTables with sorting/search/pagination
+- Runtime note: use built-in visualization runtime support; do not add external CDN/npm script imports for chart/table libraries in generated User Space modules.
 
 ### When to Use Each
 
@@ -376,7 +400,7 @@ UI_VISUALIZATION_USERSPACE_PROMPT = """
 ### User Space Visualization Rules
 
 1. Persist live `data_connection` wiring for reusable dashboards/charts/tables.
-2. Persisted dashboard TypeScript files must include structured `live_data_connections` metadata in `upsert_userspace_file`.
+2. Persisted module source files must include structured `live_data_connections` metadata in `upsert_userspace_file` when the file is in `dashboard/*` or when `artifact_type=module_ts`.
 3. Chart axes/labels and series data must be sourced from runtime live data payloads.
 4. If live wiring is blocked by missing context, state the blocker explicitly.
 """
@@ -624,6 +648,8 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - The isolated renderer requires `export function render(container, context)` in `dashboard/main.ts`.
 - Do not rely on `export default` as the entrypoint.
 - Do not import external npm packages (for example `react`, `recharts`, etc.) in User Space modules.
+- Chart.js is preloaded in the isolated User Space preview runtime (`window.Chart` available). Do not inject additional Chart.js CDN scripts from generated modules.
+- Do not inject DataTables CDN scripts in generated User Space modules. For interactive tabular UX, use `create_datatable` outputs and local module rendering.
 - Use local workspace modules (`./` or `../`) and browser DOM APIs only.
 - If JSX is used, keep it out of `dashboard/main.ts`; maintain `dashboard/main.ts` as a valid TypeScript render entrypoint.
 
@@ -631,8 +657,9 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 
 - Use real tool outputs as the source of truth for rendered data.
 - Persistent User Space dashboards must be live-wired.
-- Persisted dashboard TypeScript writes are contract-validated: `upsert_userspace_file` must include a non-empty `live_data_connections` list.
+- Persisted module-source writes are contract-validated: for files under `dashboard/*` or writes with `artifact_type=module_ts`, `upsert_userspace_file` must include a non-empty `live_data_connections` list.
 - Each `live_data_connections` entry must include at least `component_kind=tool_config`, `component_id`, and `request`.
+- Never invent or guess `component_id` values. Use only IDs from ACTIVE TOOL CONNECTIONS FOR THIS REQUEST.
 - Do not persist dashboard files without connection metadata, even when scaffolding.
 - Data connections are internal components, abstracted from end users.
 - These components map to admin-configured tools from Settings.
@@ -4007,11 +4034,18 @@ except Exception as e:
                     "Artifact type for preview/rendering. Use module_ts for interactive reports."
                 ),
             )
+            live_data_requested: bool = Field(
+                default=False,
+                description=(
+                    "Set true only when the user explicitly asked for live/real-time/refreshable data. "
+                    "When true on eligible module-source writes, live_data_connections are required."
+                ),
+            )
             live_data_connections: list[LiveDataConnectionInput] | None = Field(
                 default=None,
                 description=(
-                    "Structured live data contract metadata for persisted dashboard TypeScript files. "
-                    "Required for dashboard/*.ts and dashboard/*.tsx writes."
+                    "Structured live data contract metadata for persisted module source files. "
+                    "Required only when live_data_requested=true for writes under dashboard/* or writes where artifact_type=module_ts."
                 ),
             )
             reason: str = Field(
@@ -4060,6 +4094,7 @@ except Exception as e:
             path: str,
             content: str,
             artifact_type: ArtifactType | None = "module_ts",
+            live_data_requested: bool = False,
             live_data_connections: list[Any] | None = None,
             reason: str = "",
             **_: Any,
@@ -4074,7 +4109,9 @@ except Exception as e:
             lower_path = (path or "").lower()
             normalized_path = lower_path.replace("\\", "/")
 
-            parsed_live_data_connections: list[UserSpaceLiveDataConnection] | None = None
+            parsed_live_data_connections: list[UserSpaceLiveDataConnection] | None = (
+                None
+            )
             if live_data_connections is not None:
                 parsed_live_data_connections = []
                 for item in live_data_connections:
@@ -4097,13 +4134,29 @@ except Exception as e:
                             f"{connection.component_id}. It must match a tool selected for this workspace."
                         )
 
-            is_dashboard_typescript = normalized_path.startswith(
-                "dashboard/"
-            ) and normalized_path.endswith((".ts", ".tsx"))
-            if is_dashboard_typescript and not parsed_live_data_connections:
+            module_source_extensions = (
+                ".ts",
+                ".tsx",
+                ".js",
+                ".jsx",
+                ".mjs",
+                ".cjs",
+                ".mts",
+                ".cts",
+            )
+            is_module_source = normalized_path.endswith(module_source_extensions)
+            requires_live_data_contract = (
+                live_data_requested
+                and is_module_source
+                and (
+                    normalized_path.startswith("dashboard/")
+                    or artifact_type == "module_ts"
+                )
+            )
+            if requires_live_data_contract and not parsed_live_data_connections:
                 hard_errors.append(
-                    "Missing required live_data_connections contract for dashboard TypeScript file. "
-                    "Provide at least one connection with component_kind=tool_config, component_id, and request."
+                    "Missing required live_data_connections contract metadata for this module source write. "
+                    "Provide at least one connection with component_kind=tool_config, component_id, and request, or set live_data_requested=false for scaffolding."
                 )
 
             if lower_path.endswith((".ts", ".tsx", ".css", ".scss", ".html")):
@@ -4137,6 +4190,7 @@ except Exception as e:
                 UpsertWorkspaceFileRequest(
                     content=content,
                     artifact_type=artifact_type,
+                    live_data_requested=live_data_requested,
                     live_data_connections=parsed_live_data_connections,
                 ),
                 user_id,
@@ -4212,7 +4266,8 @@ except Exception as e:
                 description=(
                     "Create or update a file in the active User Space workspace. "
                     "For interactive reports, write TypeScript modules (artifact_type=module_ts). "
-                    "Dashboard TypeScript writes require non-empty live_data_connections metadata for live wiring. "
+                    "When the user explicitly requests live data, set live_data_requested=true. "
+                    "Then module-source writes under dashboard/*, and module_ts artifact writes, require non-empty live_data_connections metadata for live wiring. "
                     "Output may include CSS/theme warnings that must be fixed in follow-up edits."
                 ),
                 args_schema=UpsertUserSpaceFileInput,
@@ -4255,6 +4310,35 @@ except Exception as e:
                 allowed_tool_names.update(tool_names)
 
         return all_config_tool_names - allowed_tool_names
+
+    def _build_request_system_prompt(
+        self,
+        *,
+        is_ui: bool,
+        allowed_tool_config_ids: list[str] | None,
+    ) -> str:
+        """Build request-scoped system prompt with optional tool visibility filtering."""
+        if allowed_tool_config_ids is None:
+            return self._system_prompt_ui if is_ui else self._system_prompt
+
+        tool_configs = self._tool_configs or []
+        allowed_ids = set(allowed_tool_config_ids)
+        filtered_tool_configs = [
+            config for config in tool_configs if (config.get("id") or "") in allowed_ids
+        ]
+
+        index_prompt_section = build_index_system_prompt(self._index_metadata)
+        tool_prompt_section = build_tool_system_prompt(filtered_tool_configs)
+
+        prompt = BASE_SYSTEM_PROMPT + index_prompt_section + tool_prompt_section
+        if is_ui:
+            prompt += UI_VISUALIZATION_COMMON_PROMPT
+            if (
+                self._app_settings
+                and self._app_settings.get("tool_output_mode", "default") == "auto"
+            ):
+                prompt += TOOL_OUTPUT_VISIBILITY_PROMPT
+        return prompt
 
     def _build_runtime_executor(
         self,
@@ -4325,7 +4409,11 @@ except Exception as e:
 
         try:
             executor = self.agent_executor
-            system_prompt = self._system_prompt
+            workspace_allowed_tool_config_ids: list[str] | None = None
+            system_prompt = self._build_request_system_prompt(
+                is_ui=False,
+                allowed_tool_config_ids=None,
+            )
             runtime_tools = list(getattr(executor, "tools", []) if executor else [])
 
             if blocked_tool_names:
@@ -4337,6 +4425,14 @@ except Exception as e:
                 workspace_id = (workspace_context.get("workspace_id") or "").strip()
                 user_id = (workspace_context.get("user_id") or "").strip()
                 if workspace_id and user_id:
+                    workspace = await userspace_service.get_workspace(
+                        workspace_id, user_id
+                    )
+                    workspace_allowed_tool_config_ids = workspace.selected_tool_ids
+                    system_prompt = self._build_request_system_prompt(
+                        is_ui=False,
+                        allowed_tool_config_ids=workspace_allowed_tool_config_ids,
+                    )
                     userspace_tools = await self._create_userspace_file_tools(
                         workspace_id,
                         user_id,
@@ -4405,9 +4501,7 @@ except Exception as e:
                         "Error: No LLM configured. Please configure an LLM in Settings."
                     )
 
-                messages: List[BaseMessage] = [
-                    SystemMessage(content=self._system_prompt)
-                ]
+                messages: List[BaseMessage] = [SystemMessage(content=system_prompt)]
                 messages.extend(chat_history)
                 # Use langchain_content (can be string or multimodal list)
                 messages.append(HumanMessage(content=langchain_content))
@@ -4454,7 +4548,11 @@ except Exception as e:
 
         # Select the appropriate agent executor
         executor = self.agent_executor_ui if is_ui else self.agent_executor
-        system_prompt = self._system_prompt_ui if is_ui else self._system_prompt
+        workspace_allowed_tool_config_ids: list[str] | None = None
+        system_prompt = self._build_request_system_prompt(
+            is_ui=is_ui,
+            allowed_tool_config_ids=None,
+        )
 
         runtime_tools = list(getattr(executor, "tools", []) if executor else [])
         if blocked_tool_names:
@@ -4466,6 +4564,12 @@ except Exception as e:
             workspace_id = (workspace_context.get("workspace_id") or "").strip()
             user_id = (workspace_context.get("user_id") or "").strip()
             if workspace_id and user_id:
+                workspace = await userspace_service.get_workspace(workspace_id, user_id)
+                workspace_allowed_tool_config_ids = workspace.selected_tool_ids
+                system_prompt = self._build_request_system_prompt(
+                    is_ui=is_ui,
+                    allowed_tool_config_ids=workspace_allowed_tool_config_ids,
+                )
                 userspace_tools = await self._create_userspace_file_tools(
                     workspace_id,
                     user_id,

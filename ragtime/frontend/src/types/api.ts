@@ -1473,16 +1473,28 @@ export interface UserSpaceFileInfo {
   updated_at: string;
 }
 
+export interface UserSpaceLiveDataConnection {
+  component_kind: 'tool_config';
+  component_id: string;
+  request: Record<string, unknown> | string;
+  component_name?: string | null;
+  component_type?: string | null;
+  refresh_interval_seconds?: number | null;
+}
+
 export interface UserSpaceFile {
   path: string;
   content: string;
   artifact_type?: UserSpaceArtifactType | null;
+  live_data_connections?: UserSpaceLiveDataConnection[] | null;
   updated_at: string;
 }
 
 export interface UpsertUserSpaceFileRequest {
   content: string;
   artifact_type?: UserSpaceArtifactType;
+  live_data_requested?: boolean;
+  live_data_connections?: UserSpaceLiveDataConnection[];
 }
 
 export interface UserSpaceSnapshot {

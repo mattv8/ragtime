@@ -14,21 +14,56 @@ from fastapi import HTTPException
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
-from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
-                                      PaginatedWorkspacesResponse,
-                                      UpdateWorkspaceMembersRequest,
-                                      UpdateWorkspaceRequest,
-                                      UpsertWorkspaceFileRequest,
-                                      UserSpaceFileInfo, UserSpaceFileResponse,
-                                      UserSpaceLiveDataConnection,
-                                      UserSpaceSnapshot, UserSpaceWorkspace,
-                                      WorkspaceMember)
+from ragtime.userspace.models import (
+    ArtifactType,
+    CreateWorkspaceRequest,
+    PaginatedWorkspacesResponse,
+    UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserSpaceLiveDataConnection,
+    UserSpaceSnapshot,
+    UserSpaceWorkspace,
+    WorkspaceMember,
+)
 
 logger = get_logger(__name__)
+
+_MODULE_SOURCE_EXTENSIONS = (
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+    ".mts",
+    ".cts",
+)
 
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _requires_live_data_contract(
+    relative_path: str,
+    artifact_type: ArtifactType | None,
+    live_data_requested: bool,
+) -> bool:
+    if not live_data_requested:
+        return False
+
+    normalized_path = (relative_path or "").strip().lower().replace("\\", "/")
+    is_module_source = normalized_path.endswith(_MODULE_SOURCE_EXTENSIONS)
+    if not is_module_source:
+        return False
+
+    if artifact_type == "module_ts":
+        return True
+
+    return normalized_path.startswith("dashboard/")
 
 
 class UserSpaceService:
@@ -115,7 +150,9 @@ class UserSpaceService:
         parts = Path(normalized).parts
         return ".git" in parts
 
-    async def _touch_workspace(self, workspace_id: str, ts: datetime | None = None) -> None:
+    async def _touch_workspace(
+        self, workspace_id: str, ts: datetime | None = None
+    ) -> None:
         db = await get_db()
         try:
             await db.workspace.update(
@@ -198,7 +235,9 @@ class UserSpaceService:
                         meta_path.read_text(encoding="utf-8")
                     )
                 except Exception:
-                    logger.warning("Skipping invalid workspace metadata file %s", meta_path)
+                    logger.warning(
+                        "Skipping invalid workspace metadata file %s", meta_path
+                    )
                     continue
 
                 owner = await db.user.find_unique(where={"id": workspace.owner_user_id})
@@ -230,7 +269,9 @@ class UserSpaceService:
                     },
                 )
 
-                await db.workspacemember.delete_many(where={"workspaceId": workspace.id})
+                await db.workspacemember.delete_many(
+                    where={"workspaceId": workspace.id}
+                )
 
                 normalized_members: dict[str, str] = {workspace.owner_user_id: "owner"}
                 for member in workspace.members:
@@ -402,11 +443,15 @@ class UserSpaceService:
 
         return self._workspace_from_record(refreshed)
 
-    async def get_workspace(self, workspace_id: str, user_id: str) -> UserSpaceWorkspace:
+    async def get_workspace(
+        self, workspace_id: str, user_id: str
+    ) -> UserSpaceWorkspace:
         return await self._enforce_workspace_access(workspace_id, user_id)
 
     async def delete_workspace(self, workspace_id: str, user_id: str) -> None:
-        await self._enforce_workspace_access(workspace_id, user_id, required_role="owner")
+        await self._enforce_workspace_access(
+            workspace_id, user_id, required_role="owner"
+        )
         db = await get_db()
         try:
             await db.workspace.delete(where={"id": workspace_id})
@@ -435,7 +480,9 @@ class UserSpaceService:
         request: UpdateWorkspaceRequest,
         user_id: str,
     ) -> UserSpaceWorkspace:
-        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
+        await self._enforce_workspace_access(
+            workspace_id, user_id, required_role="editor"
+        )
         db = await get_db()
 
         update_data: dict[str, Any] = {"updatedAt": _utc_now()}
@@ -447,7 +494,9 @@ class UserSpaceService:
         await db.workspace.update(where={"id": workspace_id}, data=update_data)
 
         if request.selected_tool_ids is not None:
-            await db.workspacetoolselection.delete_many(where={"workspaceId": workspace_id})
+            await db.workspacetoolselection.delete_many(
+                where={"workspaceId": workspace_id}
+            )
             for tool_id in request.selected_tool_ids:
                 tool = await db.toolconfig.find_unique(where={"id": tool_id})
                 if not tool or not tool.enabled:
@@ -555,10 +604,44 @@ class UserSpaceService:
         request: UpsertWorkspaceFileRequest,
         user_id: str,
     ) -> UserSpaceFileResponse:
-        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
+        workspace = await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="editor",
+        )
         self._ensure_workspace_git_repo(workspace_id)
         if self._is_reserved_internal_path(relative_path):
             raise HTTPException(status_code=400, detail="Invalid file path")
+
+        parsed_live_data_connections = request.live_data_connections or []
+        if _requires_live_data_contract(
+            relative_path,
+            request.artifact_type,
+            request.live_data_requested,
+        ):
+            if not parsed_live_data_connections:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Missing required live_data_connections contract metadata. "
+                        "For live-data-requested module source writes in dashboard/* or with artifact_type=module_ts, "
+                        "provide at least one connection with component_kind=tool_config, "
+                        "component_id, and request. Set live_data_requested=false for scaffolding without live wiring."
+                    ),
+                )
+
+        if parsed_live_data_connections:
+            allowed_component_ids = set(workspace.selected_tool_ids)
+            for connection in parsed_live_data_connections:
+                if connection.component_id not in allowed_component_ids:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Invalid live_data_connections component_id: "
+                            f"{connection.component_id}. It must match a tool selected "
+                            "for this workspace."
+                        ),
+                    )
 
         file_path = self._resolve_workspace_file_path(workspace_id, relative_path)
         file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -648,7 +731,9 @@ class UserSpaceService:
     async def delete_workspace_file(
         self, workspace_id: str, relative_path: str, user_id: str
     ) -> None:
-        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
+        await self._enforce_workspace_access(
+            workspace_id, user_id, required_role="editor"
+        )
         self._ensure_workspace_git_repo(workspace_id)
         if self._is_reserved_internal_path(relative_path):
             raise HTTPException(status_code=400, detail="Invalid file path")
@@ -668,7 +753,9 @@ class UserSpaceService:
         user_id: str,
         message: str | None = None,
     ) -> UserSpaceSnapshot:
-        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
+        await self._enforce_workspace_access(
+            workspace_id, user_id, required_role="editor"
+        )
         self._ensure_workspace_git_repo(workspace_id)
         self._run_git(workspace_id, ["add", "-A"])
 
@@ -780,7 +867,9 @@ class UserSpaceService:
     async def restore_snapshot(
         self, workspace_id: str, snapshot_id: str, user_id: str
     ) -> UserSpaceSnapshot:
-        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
+        await self._enforce_workspace_access(
+            workspace_id, user_id, required_role="editor"
+        )
         self._ensure_workspace_git_repo(workspace_id)
 
         commit_check = self._run_git(

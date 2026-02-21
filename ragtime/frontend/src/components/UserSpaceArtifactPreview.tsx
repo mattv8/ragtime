@@ -1,9 +1,11 @@
 import { useMemo } from 'react';
 import ts from 'typescript';
+import type { UserSpaceLiveDataConnection } from '@/types';
 
 interface UserSpaceArtifactPreviewProps {
   entryPath: string;
   workspaceFiles: Record<string, string>;
+  liveDataConnections?: UserSpaceLiveDataConnection[];
   previewInstanceKey?: string;
 }
 
@@ -245,12 +247,14 @@ function readThemeTokens(): ThemeTokens {
 function buildIframeDoc(
   entryPath: string,
   transpiledModules: ModuleMap,
-  themeTokens: ThemeTokens
+  themeTokens: ThemeTokens,
+  liveDataConnections: UserSpaceLiveDataConnection[]
 ): string {
   const payload = encodeURIComponent(JSON.stringify({
     entryPath,
     modules: transpiledModules,
     themeTokens,
+    liveDataConnections,
   }));
   return `<!doctype html>
 <html>
@@ -293,20 +297,81 @@ function buildIframeDoc(
       let entryPath = '';
       let modules = {};
       let themeTokens = {};
+      let liveDataConnections = [];
       try {
         const encodedPayload = (container && container.getAttribute('data-payload')) || '{}';
         const payload = JSON.parse(decodeURIComponent(encodedPayload));
         entryPath = payload.entryPath || '';
         modules = payload.modules || {};
         themeTokens = payload.themeTokens || {};
+        liveDataConnections = Array.isArray(payload.liveDataConnections) ? payload.liveDataConnections : [];
       } catch (error) {
         renderFatal(error instanceof Error ? error.stack || error.message : String(error));
       }
+
+      const buildRuntimeComponents = (connections) => {
+        const byKey = {};
+        const list = [];
+        for (let index = 0; index < connections.length; index += 1) {
+          const connection = connections[index] || {};
+          const componentId = (typeof connection.component_id === 'string' && connection.component_id.trim())
+            ? connection.component_id.trim()
+            : 'component_' + index;
+
+          const component = Object.freeze({
+            component_id: componentId,
+            component_kind: connection.component_kind || 'tool_config',
+            component_name: connection.component_name || null,
+            component_type: connection.component_type || null,
+            request: connection.request ?? {},
+            refresh_interval_seconds: connection.refresh_interval_seconds ?? null,
+            async execute(requestOverride) {
+              const effectiveRequest = requestOverride ?? connection.request ?? {};
+              return {
+                rows: [],
+                request: effectiveRequest,
+                preview_stub: true,
+              };
+            },
+          });
+
+          byKey[componentId] = component;
+          byKey[index] = component;
+          list.push(component);
+        }
+        return {
+          byKey: Object.freeze(byKey),
+          list: Object.freeze(list),
+        };
+      };
+
+      const runtimeComponents = buildRuntimeComponents(liveDataConnections);
+      window.__RAGTIME_COMPONENTS__ = runtimeComponents.byKey;
       const rootStyle = document.documentElement.style;
       Object.keys(themeTokens).forEach((name) => {
         const value = themeTokens[name];
         rootStyle.setProperty(name, value);
       });
+
+      const originalHeadAppendChild = document.head.appendChild.bind(document.head);
+      document.head.appendChild = (node) => {
+        if (
+          node &&
+          node.tagName === 'SCRIPT' &&
+          typeof node.src === 'string' &&
+          node.src.toLowerCase().includes('cdn.jsdelivr.net/npm/chart.js') &&
+          window.Chart
+        ) {
+          if (typeof node.onload === 'function') {
+            setTimeout(() => {
+              node.onload(new Event('load'));
+            }, 0);
+          }
+          return node;
+        }
+
+        return originalHeadAppendChild(node);
+      };
 
       const applyChartDefaults = () => {
         const Chart = window.Chart;
@@ -550,6 +615,7 @@ function buildIframeDoc(
         } else {
           const context = Object.freeze({
             components: Object.freeze(window.__RAGTIME_COMPONENTS__ ?? {}),
+            componentsList: runtimeComponents.list,
             themeTokens: Object.freeze(themeTokens),
           });
           await loaded.render(container, context);
@@ -567,6 +633,7 @@ function buildIframeDoc(
 export function UserSpaceArtifactPreview({
   entryPath,
   workspaceFiles,
+  liveDataConnections = [],
   previewInstanceKey,
 }: UserSpaceArtifactPreviewProps) {
   const themeTokens = readThemeTokens();
@@ -687,7 +754,7 @@ export function UserSpaceArtifactPreview({
         title="TypeScript module preview"
         className="userspace-preview-frame"
         sandbox="allow-scripts"
-        srcDoc={buildIframeDoc(transpileResult.entryPath, transpileResult.modules, themeTokens)}
+        srcDoc={buildIframeDoc(transpileResult.entryPath, transpileResult.modules, themeTokens, liveDataConnections)}
       />
     </div>
   );
