@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from ragtime.core.security import get_current_user
+from ragtime.core.security import get_current_user, get_current_user_optional
 from ragtime.indexer.repository import repository
 from ragtime.userspace.models import (CreateSnapshotRequest,
                                       CreateWorkspaceRequest,
@@ -14,6 +14,7 @@ from ragtime.userspace.models import (CreateSnapshotRequest,
                                       RestoreSnapshotResponse,
                                       UpdateWorkspaceMembersRequest,
                                       UpdateWorkspaceRequest,
+                                      UpdateWorkspaceShareAccessRequest,
                                       UpdateWorkspaceShareSlugRequest,
                                       UpsertWorkspaceFileRequest,
                                       UserSpaceAvailableTool,
@@ -234,6 +235,25 @@ async def revoke_workspace_share_link(
 
 
 @router.put(
+    "/workspaces/{workspace_id}/share-link/access",
+    response_model=UserSpaceWorkspaceShareLinkStatus,
+)
+async def update_workspace_share_access(
+    workspace_id: str,
+    request: UpdateWorkspaceShareAccessRequest,
+    base_request: Request,
+    user: Any = Depends(get_current_user),
+):
+    base_url = str(base_request.base_url).rstrip("/")
+    return await userspace_service.update_workspace_share_access(
+        workspace_id,
+        request,
+        user.id,
+        base_url=base_url,
+    )
+
+
+@router.put(
     "/workspaces/{workspace_id}/share-link/slug",
     response_model=UserSpaceWorkspaceShareLinkStatus,
 )
@@ -272,16 +292,34 @@ async def check_workspace_share_slug_availability(
     "/shared/{share_token}",
     response_model=UserSpaceSharedPreviewResponse,
 )
-async def get_shared_preview(share_token: str):
-    return await userspace_service.get_shared_preview(share_token)
+async def get_shared_preview(
+    share_token: str,
+    password: str | None = Query(default=None),
+    user: Any | None = Depends(get_current_user_optional),
+):
+    return await userspace_service.get_shared_preview(
+        share_token,
+        current_user=user,
+        password=password,
+    )
 
 
 @router.get(
     "/shared/{owner_username}/{share_slug}",
     response_model=UserSpaceSharedPreviewResponse,
 )
-async def get_shared_preview_by_slug(owner_username: str, share_slug: str):
-    return await userspace_service.get_shared_preview_by_slug(owner_username, share_slug)
+async def get_shared_preview_by_slug(
+    owner_username: str,
+    share_slug: str,
+    password: str | None = Query(default=None),
+    user: Any | None = Depends(get_current_user_optional),
+):
+    return await userspace_service.get_shared_preview_by_slug(
+        owner_username,
+        share_slug,
+        current_user=user,
+        password=password,
+    )
 
 
 @router.post(
@@ -291,8 +329,15 @@ async def get_shared_preview_by_slug(owner_username: str, share_slug: str):
 async def execute_shared_component(
     share_token: str,
     request: ExecuteComponentRequest,
+    password: str | None = Query(default=None),
+    user: Any | None = Depends(get_current_user_optional),
 ):
-    return await userspace_service.execute_shared_component(share_token, request)
+    return await userspace_service.execute_shared_component(
+        share_token,
+        request,
+        current_user=user,
+        password=password,
+    )
 
 
 @router.post(
@@ -303,11 +348,15 @@ async def execute_shared_component_by_slug(
     owner_username: str,
     share_slug: str,
     request: ExecuteComponentRequest,
+    password: str | None = Query(default=None),
+    user: Any | None = Depends(get_current_user_optional),
 ):
     return await userspace_service.execute_shared_component_by_slug(
         owner_username,
         share_slug,
         request,
+        current_user=user,
+        password=password,
     )
 
 

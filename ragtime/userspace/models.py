@@ -7,6 +7,13 @@ from pydantic import BaseModel, Field
 
 WorkspaceRole = Literal["owner", "editor", "viewer"]
 ArtifactType = Literal["module_ts"]
+ShareAccessMode = Literal[
+    "token",
+    "password",
+    "authenticated_users",
+    "selected_users",
+    "ldap_groups",
+]
 
 
 class WorkspaceMember(BaseModel):
@@ -125,6 +132,17 @@ class UserSpaceWorkspaceShareLinkStatus(BaseModel):
     share_token: str | None = None
     share_url: str | None = None
     created_at: datetime | None = None
+    share_access_mode: ShareAccessMode = "token"
+    selected_user_ids: list[str] = Field(default_factory=list)
+    selected_ldap_groups: list[str] = Field(default_factory=list)
+    has_password: bool = False
+
+
+class UpdateWorkspaceShareAccessRequest(BaseModel):
+    share_access_mode: ShareAccessMode
+    password: str | None = Field(default=None, max_length=512)
+    selected_user_ids: list[str] = Field(default_factory=list)
+    selected_ldap_groups: list[str] = Field(default_factory=list)
 
 
 class UpdateWorkspaceShareSlugRequest(BaseModel):

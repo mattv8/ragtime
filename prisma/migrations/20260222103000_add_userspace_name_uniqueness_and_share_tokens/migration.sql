@@ -2,7 +2,11 @@ ALTER TABLE "workspaces"
     ADD COLUMN IF NOT EXISTS "name_normalized" TEXT,
     ADD COLUMN IF NOT EXISTS "share_token" TEXT,
     ADD COLUMN IF NOT EXISTS "share_token_created_at" TIMESTAMP(3),
-    ADD COLUMN IF NOT EXISTS "share_slug" TEXT;
+    ADD COLUMN IF NOT EXISTS "share_slug" TEXT,
+    ADD COLUMN IF NOT EXISTS "share_access_mode" TEXT DEFAULT 'token',
+    ADD COLUMN IF NOT EXISTS "share_password" TEXT,
+    ADD COLUMN IF NOT EXISTS "share_selected_user_ids" JSONB DEFAULT '[]'::jsonb,
+    ADD COLUMN IF NOT EXISTS "share_selected_ldap_groups" JSONB DEFAULT '[]'::jsonb;
 
 CREATE UNIQUE INDEX IF NOT EXISTS "workspaces_owner_user_id_name_normalized_key"
     ON "workspaces"("owner_user_id", "name_normalized");

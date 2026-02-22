@@ -16,7 +16,9 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from ragtime.config import settings
+from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
+from ragtime.core.encryption import decrypt_secret, encrypt_secret
 from ragtime.core.logging import get_logger
 from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
                                     add_table_metadata_to_psql_output,
@@ -29,8 +31,10 @@ from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
                                       ExecuteComponentRequest,
                                       ExecuteComponentResponse,
                                       PaginatedWorkspacesResponse,
+                                      ShareAccessMode,
                                       UpdateWorkspaceMembersRequest,
                                       UpdateWorkspaceRequest,
+                                      UpdateWorkspaceShareAccessRequest,
                                       UpsertWorkspaceFileRequest,
                                       UserSpaceFileInfo, UserSpaceFileResponse,
                                       UserSpaceLiveDataCheck,
@@ -46,6 +50,7 @@ logger = get_logger(__name__)
 
 _USPACE_EXEC_SUPPORTED_SQL_TOOLS = {"postgres", "mysql", "mssql"}
 _USERSPACE_PREVIEW_ENTRY_PATH = "dashboard/main.ts"
+_DEFAULT_SHARE_SLUG_PREFIX = "share"
 
 _MODULE_SOURCE_EXTENSIONS = (
     ".ts",
@@ -104,6 +109,32 @@ def _is_share_slug_conflict_error(exc: Exception) -> bool:
         "owner_user_id_share_slug" in message
         or ("unique" in message and "share_slug" in message)
     )
+
+
+def _normalize_share_access_mode(value: str | None) -> ShareAccessMode:
+    mode = (value or "token").strip().lower()
+    allowed: set[str] = {
+        "token",
+        "password",
+        "authenticated_users",
+        "selected_users",
+        "ldap_groups",
+    }
+    return cast(ShareAccessMode, mode if mode in allowed else "token")
+
+
+def _normalize_string_list(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        value = str(item or "").strip()
+        if not value or value in seen:
+            continue
+        normalized.append(value)
+        seen.add(value)
+    return normalized
 
 
 def _requires_live_data_contract(
@@ -299,31 +330,128 @@ class UserSpaceService:
         owner_user_id: str,
         preferred_name: str,
     ) -> str:
-        base_slug = _normalize_share_slug_for_uniqueness(preferred_name)
-        if not base_slug:
-            base_slug = "shared_workspace"
+        del owner_user_id, preferred_name
+        return f"{_DEFAULT_SHARE_SLUG_PREFIX}_{secrets.token_hex(4)}"
 
-        db = await get_db()
-        existing_rows = await db.workspace.find_many(
-            where={
-                "ownerUserId": owner_user_id,
-                "shareSlug": {"not": None},
-            },
-            take=10000,
-            order={"createdAt": "asc"},
+    def _extract_share_access_state(
+        self,
+        workspace_record: Any,
+    ) -> tuple[ShareAccessMode, str | None, list[str], list[str]]:
+        mode = _normalize_share_access_mode(
+            str(getattr(workspace_record, "shareAccessMode", "token") or "token")
         )
-        used: set[str] = {
-            str(getattr(row, "shareSlug", "") or "")
-            for row in existing_rows
-            if str(getattr(row, "shareSlug", "") or "")
-        }
+        password_encrypted = str(getattr(workspace_record, "sharePassword", "") or "")
+        selected_user_ids = _normalize_string_list(
+            getattr(workspace_record, "shareSelectedUserIds", [])
+        )
+        selected_ldap_groups = _normalize_string_list(
+            getattr(workspace_record, "shareSelectedLdapGroups", [])
+        )
+        return mode, (password_encrypted or None), selected_user_ids, selected_ldap_groups
 
-        candidate = base_slug
-        suffix = 2
-        while candidate in used:
-            candidate = f"{base_slug}_{suffix}"
-            suffix += 1
-        return candidate
+    async def _is_user_in_ldap_group(self, user: Any, group_dn: str) -> bool:
+        if not getattr(user, "ldapDn", None):
+            return False
+
+        ldap_config = await get_ldap_config()
+        if not ldap_config.serverUrl:
+            return False
+
+        bind_password = decrypt_secret(ldap_config.bindPassword)
+        conn = _get_ldap_connection(
+            ldap_config.serverUrl,
+            ldap_config.bindDn,
+            bind_password,
+            ldap_config.allowSelfSigned,
+        )
+        if not conn:
+            return False
+
+        try:
+            conn.search(
+                search_base=user.ldapDn,
+                search_filter="(objectClass=*)",
+                search_scope="BASE",
+                attributes=["memberOf", "primaryGroupID"],
+            )
+            if not conn.entries:
+                return False
+
+            entry = conn.entries[0]
+            member_of: list[str] = []
+            if hasattr(entry, "memberOf") and entry.memberOf:
+                member_of = [str(value).lower() for value in entry.memberOf]
+            if group_dn.lower() in member_of:
+                return True
+
+            primary_group_id = None
+            if hasattr(entry, "primaryGroupID") and entry.primaryGroupID:
+                primary_group_id = int(str(entry.primaryGroupID))
+
+            if primary_group_id:
+                conn.search(
+                    search_base=group_dn,
+                    search_filter="(objectClass=*)",
+                    search_scope="BASE",
+                    attributes=["primaryGroupToken"],
+                )
+                if conn.entries:
+                    group_entry = conn.entries[0]
+                    if (
+                        hasattr(group_entry, "primaryGroupToken")
+                        and group_entry.primaryGroupToken
+                    ):
+                        group_rid = int(str(group_entry.primaryGroupToken))
+                        return group_rid == primary_group_id
+
+            return False
+        except Exception:
+            return False
+        finally:
+            if conn.bound:
+                conn.unbind()
+
+    async def _enforce_share_access(
+        self,
+        workspace_record: Any,
+        current_user: Any | None,
+        provided_password: str | None,
+    ) -> None:
+        mode, password_encrypted, selected_user_ids, selected_ldap_groups = (
+            self._extract_share_access_state(workspace_record)
+        )
+
+        if mode == "token":
+            return
+
+        if mode == "password":
+            if not password_encrypted:
+                raise HTTPException(status_code=403, detail="Share password not configured")
+            provided = (provided_password or "").strip()
+            if not provided:
+                raise HTTPException(status_code=401, detail="Password required")
+            if decrypt_secret(password_encrypted) != provided:
+                raise HTTPException(status_code=401, detail="Invalid password")
+            return
+
+        if current_user is None:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if mode == "authenticated_users":
+            return
+
+        if mode == "selected_users":
+            if str(getattr(current_user, "id", "")) not in selected_user_ids:
+                raise HTTPException(status_code=403, detail="User not allowed for this share")
+            return
+
+        if mode == "ldap_groups":
+            if getattr(current_user, "authProvider", None) == "local" and getattr(current_user, "role", None) == "admin":
+                return
+            for group_dn in selected_ldap_groups:
+                if await self._is_user_in_ldap_group(current_user, group_dn):
+                    return
+            raise HTTPException(status_code=403, detail="User not in allowed LDAP groups")
 
     async def _allocate_next_default_workspace_name(self, user_id: str) -> str:
         db = await get_db()
@@ -783,6 +911,9 @@ class UserSpaceService:
 
         share_token = str(getattr(workspace_record, "shareToken", "") or "")
         share_slug = str(getattr(workspace_record, "shareSlug", "") or "")
+        access_mode, password_encrypted, selected_user_ids, selected_ldap_groups = (
+            self._extract_share_access_state(workspace_record)
+        )
         owner_username = await self._get_public_owner_username(
             str(getattr(workspace_record, "ownerUserId", "") or "")
         )
@@ -796,6 +927,10 @@ class UserSpaceService:
                 share_token=None,
                 share_url=None,
                 created_at=None,
+                share_access_mode=access_mode,
+                selected_user_ids=selected_user_ids,
+                selected_ldap_groups=selected_ldap_groups,
+                has_password=bool(password_encrypted),
             )
 
         return UserSpaceWorkspaceShareLinkStatus(
@@ -810,6 +945,10 @@ class UserSpaceService:
                 base_url=base_url,
             ),
             created_at=created_at,
+            share_access_mode=access_mode,
+            selected_user_ids=selected_user_ids,
+            selected_ldap_groups=selected_ldap_groups,
+            has_password=bool(password_encrypted),
         )
 
     async def revoke_workspace_share_link(
@@ -852,6 +991,16 @@ class UserSpaceService:
             share_token=None,
             share_url=None,
             created_at=None,
+            share_access_mode=_normalize_share_access_mode(
+                str(getattr(workspace_record, "shareAccessMode", "token") or "token")
+            ),
+            selected_user_ids=_normalize_string_list(
+                getattr(workspace_record, "shareSelectedUserIds", [])
+            ),
+            selected_ldap_groups=_normalize_string_list(
+                getattr(workspace_record, "shareSelectedLdapGroups", [])
+            ),
+            has_password=bool(str(getattr(workspace_record, "sharePassword", "") or "")),
         )
 
     async def create_workspace_share_link(
@@ -1011,31 +1160,104 @@ class UserSpaceService:
             available=existing is None,
         )
 
+    async def update_workspace_share_access(
+        self,
+        workspace_id: str,
+        request: UpdateWorkspaceShareAccessRequest,
+        user_id: str,
+        base_url: str | None = None,
+    ) -> UserSpaceWorkspaceShareLinkStatus:
+        await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="editor",
+        )
+
+        mode = _normalize_share_access_mode(request.share_access_mode)
+        selected_user_ids = _normalize_string_list(request.selected_user_ids)
+        selected_ldap_groups = _normalize_string_list(request.selected_ldap_groups)
+
+        update_data: dict[str, Any] = {
+            "shareAccessMode": mode,
+            "shareSelectedUserIds": selected_user_ids,
+            "shareSelectedLdapGroups": selected_ldap_groups,
+            "updatedAt": _utc_now(),
+        }
+
+        if mode == "password":
+            password = (request.password or "").strip()
+            if not password:
+                raise HTTPException(status_code=400, detail="Password is required")
+            update_data["sharePassword"] = encrypt_secret(password)
+        elif request.password is not None and request.password.strip():
+            update_data["sharePassword"] = encrypt_secret(request.password.strip())
+        elif mode != "password":
+            update_data["sharePassword"] = None
+
+        if mode == "selected_users" and not selected_user_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="At least one user is required for selected-users mode",
+            )
+        if mode == "ldap_groups" and not selected_ldap_groups:
+            raise HTTPException(
+                status_code=400,
+                detail="At least one LDAP group is required for ldap-groups mode",
+            )
+
+        db = await get_db()
+        try:
+            await db.workspace.update(where={"id": workspace_id}, data=update_data)
+        except Exception as exc:
+            raise HTTPException(status_code=404, detail="Workspace not found") from exc
+
+        return await self.get_workspace_share_link_status(
+            workspace_id,
+            user_id,
+            base_url=base_url,
+        )
+
     async def get_shared_preview(
         self,
         share_token: str,
+        current_user: Any | None = None,
+        password: str | None = None,
     ) -> UserSpaceSharedPreviewResponse:
         workspace_id = await self._resolve_workspace_id_from_share_token(share_token)
-        return await self._build_shared_preview_response(workspace_id)
+        return await self._build_shared_preview_response(
+            workspace_id,
+            current_user=current_user,
+            password=password,
+        )
 
     async def get_shared_preview_by_slug(
         self,
         owner_username: str,
         share_slug: str,
+        current_user: Any | None = None,
+        password: str | None = None,
     ) -> UserSpaceSharedPreviewResponse:
         workspace_id = await self._resolve_workspace_id_from_share_slug(
             owner_username,
             share_slug,
         )
-        return await self._build_shared_preview_response(workspace_id)
+        return await self._build_shared_preview_response(
+            workspace_id,
+            current_user=current_user,
+            password=password,
+        )
 
     async def _build_shared_preview_response(
         self,
         workspace_id: str,
+        *,
+        current_user: Any | None = None,
+        password: str | None = None,
     ) -> UserSpaceSharedPreviewResponse:
         workspace_record = await self._get_workspace_record(workspace_id)
         if not workspace_record:
             raise HTTPException(status_code=404, detail="Shared workspace not found")
+        await self._enforce_share_access(workspace_record, current_user, password)
 
         files_dir = self._workspace_files_dir(workspace_id)
         if not files_dir.exists() or not files_dir.is_dir():
@@ -1659,8 +1881,14 @@ class UserSpaceService:
         self,
         share_token: str,
         request: ExecuteComponentRequest,
+        current_user: Any | None = None,
+        password: str | None = None,
     ) -> ExecuteComponentResponse:
         workspace_id = await self._resolve_workspace_id_from_share_token(share_token)
+        workspace_record = await self._get_workspace_record(workspace_id)
+        if not workspace_record:
+            raise HTTPException(status_code=404, detail="Shared workspace not found")
+        await self._enforce_share_access(workspace_record, current_user, password)
         workspace = await self._load_workspace_for_component_execution(workspace_id)
 
         return await self._execute_component_for_workspace(
@@ -1674,11 +1902,17 @@ class UserSpaceService:
         owner_username: str,
         share_slug: str,
         request: ExecuteComponentRequest,
+        current_user: Any | None = None,
+        password: str | None = None,
     ) -> ExecuteComponentResponse:
         workspace_id = await self._resolve_workspace_id_from_share_slug(
             owner_username,
             share_slug,
         )
+        workspace_record = await self._get_workspace_record(workspace_id)
+        if not workspace_record:
+            raise HTTPException(status_code=404, detail="Shared workspace not found")
+        await self._enforce_share_access(workspace_record, current_user, password)
         workspace = await self._load_workspace_for_component_execution(workspace_id)
 
         return await self._execute_component_for_workspace(

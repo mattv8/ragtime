@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react';
+import { AuthCredentialsForm } from './AuthCredentialsForm';
 
 export interface OAuthParams {
   client_id: string;
@@ -108,54 +109,15 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
           Authorizing: <strong>{getClientDisplay()}</strong>
         </div>
 
-        <form onSubmit={handleSubmit} className="login-form">
-          {error && (
-            <div className="login-error">
-              {error}
-            </div>
-          )}
-
-          <div className="form-group">
-            <label htmlFor="username" className="form-label">
-              Username
-            </label>
-            <input
-              type="text"
-              id="username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className="form-input"
-              placeholder="Username"
-              required
-              autoFocus
-              autoComplete="username"
-            />
-          </div>
-
-          <div className="form-group">
-            <label htmlFor="password" className="form-label">
-              Password
-            </label>
-            <input
-              type="password"
-              id="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="form-input"
-              placeholder="Password"
-              required
-              autoComplete="current-password"
-            />
-          </div>
-
-          <button
-            type="submit"
-            className="btn btn-primary login-submit"
-            disabled={isLoading || !username || !password}
-          >
-            {isLoading ? 'Signing in...' : 'Sign In'}
-          </button>
-        </form>
+        <AuthCredentialsForm
+          username={username}
+          password={password}
+          error={error}
+          isLoading={isLoading}
+          onUsernameChange={setUsername}
+          onPasswordChange={setPassword}
+          onSubmit={handleSubmit}
+        />
 
         <div className="login-footer">
           <p className="login-info">

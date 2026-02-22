@@ -4,9 +4,10 @@ import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 
 import { api } from '@/api';
-import type { User, UserSpaceAvailableTool, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceSnapshot, UserSpaceWorkspace, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, WorkspaceRole } from '@/types';
+import type { User, UserSpaceAvailableTool, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceWorkspace, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, WorkspaceRole } from '@/types';
 import { buildUserSpaceTree, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { ChatPanel } from './ChatPanel';
+import { LdapGroupSelect } from './LdapGroupSelect';
 import { ResizeHandle } from './ResizeHandle';
 import { UserSpaceArtifactPreview } from './UserSpaceArtifactPreview';
 
@@ -36,7 +37,10 @@ function normalizeShareSlugInput(value: string): string {
 
 function getDefaultShareSlug(value: string | null | undefined): string {
   const normalized = normalizeShareSlugInput(value ?? '');
-  return normalized || 'shared_workspace';
+  if (normalized && !normalized.startsWith('workspace')) {
+    return `share_${normalized.slice(0, 24)}`;
+  }
+  return 'share_workspace';
 }
 
 export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePanelProps) {
@@ -71,6 +75,14 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const [checkingShareSlug, setCheckingShareSlug] = useState(false);
   const [savingShareSlug, setSavingShareSlug] = useState(false);
   const [shareSlugAvailable, setShareSlugAvailable] = useState<boolean | null>(null);
+  const [shareAccessMode, setShareAccessMode] = useState<UserSpaceShareAccessMode>('token');
+  const [sharePasswordDraft, setSharePasswordDraft] = useState('');
+  const [shareSelectedUserIdsDraft, setShareSelectedUserIdsDraft] = useState<string[]>([]);
+  const [shareSelectedLdapGroupsDraft, setShareSelectedLdapGroupsDraft] = useState<string[]>([]);
+  const [shareLdapGroupDraft, setShareLdapGroupDraft] = useState('');
+  const [ldapDiscoveredGroups, setLdapDiscoveredGroups] = useState<{ dn: string; name: string }[]>([]);
+  const [loadingLdapGroups, setLoadingLdapGroups] = useState(false);
+  const [savingShareAccess, setSavingShareAccess] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   const toggleFullscreen = useCallback(() => {
@@ -973,6 +985,10 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       setShareLinkStatus(status);
       setShareSlugDraft(status.share_slug ?? getDefaultShareSlug(activeWorkspace?.name));
       setShareSlugAvailable(null);
+      setShareAccessMode(status.share_access_mode ?? 'token');
+      setShareSelectedUserIdsDraft(status.selected_user_ids ?? []);
+      setShareSelectedLdapGroupsDraft(status.selected_ldap_groups ?? []);
+      setSharePasswordDraft('');
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load share link state');
@@ -991,9 +1007,51 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     if (!activeWorkspaceId || !canEditWorkspace) return;
     setShareSlugDraft(shareLinkStatus?.share_slug ?? getDefaultShareSlug(activeWorkspace?.name));
     setShareSlugAvailable(null);
+    setShareAccessMode(shareLinkStatus?.share_access_mode ?? 'token');
+    setShareSelectedUserIdsDraft(shareLinkStatus?.selected_user_ids ?? []);
+    setShareSelectedLdapGroupsDraft(shareLinkStatus?.selected_ldap_groups ?? []);
+    setSharePasswordDraft('');
+    setShareLdapGroupDraft('');
     setAutoCreateShareLinkAttempted(false);
+    void api.listUsers().then(setAllUsers).catch(() => setAllUsers([]));
+    void (async () => {
+      setLoadingLdapGroups(true);
+      try {
+        const ldapData = await api.getLdapConfig();
+        let groups = Array.isArray(ldapData.discovered_groups)
+          ? ldapData.discovered_groups
+          : [];
+
+        if (groups.length === 0) {
+          const discovered = await api.discoverLdapWithStoredCredentials();
+          if (discovered.success && Array.isArray(discovered.groups)) {
+            groups = discovered.groups;
+          }
+        }
+
+        const normalized = groups
+          .filter((group): group is { dn: string; name: string } => Boolean(group?.dn))
+          .filter(
+            (group, index, all) =>
+              all.findIndex((candidate) => candidate.dn === group.dn) === index,
+          );
+        setLdapDiscoveredGroups(normalized);
+      } catch {
+        setLdapDiscoveredGroups([]);
+      } finally {
+        setLoadingLdapGroups(false);
+      }
+    })();
     setShowShareModal(true);
-  }, [activeWorkspace?.name, activeWorkspaceId, canEditWorkspace, shareLinkStatus?.share_slug]);
+  }, [
+    activeWorkspace?.name,
+    activeWorkspaceId,
+    canEditWorkspace,
+    shareLinkStatus?.share_access_mode,
+    shareLinkStatus?.selected_ldap_groups,
+    shareLinkStatus?.selected_user_ids,
+    shareLinkStatus?.share_slug,
+  ]);
 
   const handleEnsureShareLink = useCallback(async (rotateToken = false) => {
     if (!activeWorkspaceId || !canEditWorkspace) return null;
@@ -1013,6 +1071,10 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
         share_token: link.share_token,
         share_url: link.share_url,
         created_at: new Date().toISOString(),
+        share_access_mode: shareLinkStatus?.share_access_mode ?? 'token',
+        selected_user_ids: shareLinkStatus?.selected_user_ids ?? [],
+        selected_ldap_groups: shareLinkStatus?.selected_ldap_groups ?? [],
+        has_password: shareLinkStatus?.has_password ?? false,
       };
       setShareLinkStatus(nextStatus);
       setShareSlugDraft(link.share_slug);
@@ -1026,7 +1088,14 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       setSharingWorkspace(false);
       setRotatingShareLink(false);
     }
-  }, [activeWorkspaceId, canEditWorkspace]);
+  }, [
+    activeWorkspaceId,
+    canEditWorkspace,
+    shareLinkStatus?.has_password,
+    shareLinkStatus?.selected_ldap_groups,
+    shareLinkStatus?.selected_user_ids,
+    shareLinkStatus?.share_access_mode,
+  ]);
 
   useEffect(() => {
     if (!showShareModal || !activeWorkspaceId || !canEditWorkspace) return;
@@ -1141,6 +1210,74 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       setSavingShareSlug(false);
     }
   }, [activeWorkspaceId, canEditWorkspace, shareSlugDraft]);
+
+  const handleToggleShareSelectedUser = useCallback((userId: string) => {
+    setShareSelectedUserIdsDraft((current) => (
+      current.includes(userId)
+        ? current.filter((value) => value !== userId)
+        : [...current, userId]
+    ));
+  }, []);
+
+  const handleAddShareLdapGroup = useCallback(() => {
+    const groupDn = shareLdapGroupDraft.trim();
+    if (!groupDn) return;
+    setShareSelectedLdapGroupsDraft((current) => (
+      current.includes(groupDn) ? current : [...current, groupDn]
+    ));
+    setShareLdapGroupDraft('');
+  }, [shareLdapGroupDraft]);
+
+  const handleRemoveShareLdapGroup = useCallback((groupDn: string) => {
+    setShareSelectedLdapGroupsDraft((current) => current.filter((value) => value !== groupDn));
+  }, []);
+
+  const handleSaveShareAccess = useCallback(async () => {
+    if (!activeWorkspaceId || !canEditWorkspace) return;
+    setSavingShareAccess(true);
+    try {
+      const status = await api.updateUserSpaceWorkspaceShareAccess(activeWorkspaceId, {
+        share_access_mode: shareAccessMode,
+        password: sharePasswordDraft.trim() || undefined,
+        selected_user_ids: shareSelectedUserIdsDraft,
+        selected_ldap_groups: shareSelectedLdapGroupsDraft,
+      });
+      setShareLinkStatus(status);
+      setShareAccessMode(status.share_access_mode);
+      setShareSelectedUserIdsDraft(status.selected_user_ids ?? []);
+      setShareSelectedLdapGroupsDraft(status.selected_ldap_groups ?? []);
+      setSharePasswordDraft('');
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save share access settings');
+    } finally {
+      setSavingShareAccess(false);
+    }
+  }, [
+    activeWorkspaceId,
+    canEditWorkspace,
+    shareAccessMode,
+    sharePasswordDraft,
+    shareSelectedLdapGroupsDraft,
+    shareSelectedUserIdsDraft,
+  ]);
+
+  const shareSelectableUsers = useMemo(() => {
+    if (allUsers.length > 0) {
+      return allUsers;
+    }
+    if (!activeWorkspace) {
+      return [currentUser];
+    }
+    const workspaceMemberIds = new Set<string>([
+      activeWorkspace.owner_user_id,
+      ...activeWorkspace.members.map((member) => member.user_id),
+    ]);
+    const fallbackUsers: User[] = [currentUser, ...allUsers].filter((user, index, list) => (
+      workspaceMemberIds.has(user.id) && list.findIndex((candidate) => candidate.id === user.id) === index
+    ));
+    return fallbackUsers;
+  }, [activeWorkspace, allUsers, currentUser]);
 
   const handleSaveName = useCallback(async () => {
     if (!activeWorkspace || !canEditWorkspace || !draftName.trim()) return;
@@ -1817,33 +1954,141 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                   </div>
 
                   <div className="userspace-share-controls">
+                    <h4>Access Controls</h4>
+                    <div className="userspace-share-access-row">
+                      <label htmlFor="userspace-share-access-mode" className="userspace-share-label">Access mode</label>
+                      <select
+                        id="userspace-share-access-mode"
+                        value={shareAccessMode}
+                        onChange={(event) => setShareAccessMode(event.target.value as UserSpaceShareAccessMode)}
+                        disabled={savingShareAccess || sharingWorkspace || revokingShareLink}
+                      >
+                        <option value="token">Tokenized public link</option>
+                        <option value="password">Password protected</option>
+                        <option value="authenticated_users">Any authenticated user</option>
+                        <option value="selected_users">Selected users only</option>
+                        <option value="ldap_groups">Selected LDAP groups only</option>
+                      </select>
+                    </div>
+
+                    {shareAccessMode === 'password' && (
+                      <div className="userspace-share-access-row">
+                        <label htmlFor="userspace-share-password" className="userspace-share-label">
+                          Share password {shareLinkStatus?.has_password ? '(set)' : '(required)'}
+                        </label>
+                        <input
+                          id="userspace-share-password"
+                          type="password"
+                          value={sharePasswordDraft}
+                          onChange={(event) => setSharePasswordDraft(event.target.value)}
+                          placeholder={shareLinkStatus?.has_password ? 'Enter new password to update' : 'Enter password'}
+                          autoComplete="new-password"
+                        />
+                      </div>
+                    )}
+
+                    {shareAccessMode === 'selected_users' && (
+                      <div className="userspace-share-access-row">
+                        <label className="userspace-share-label">Allowed users</label>
+                        <div className="userspace-share-user-grid">
+                          {shareSelectableUsers.map((user) => (
+                            <label key={user.id} className="userspace-share-user-option">
+                              <input
+                                type="checkbox"
+                                checked={shareSelectedUserIdsDraft.includes(user.id)}
+                                onChange={() => handleToggleShareSelectedUser(user.id)}
+                              />
+                              <span>{formatUserLabel(user, user.id)}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {shareAccessMode === 'ldap_groups' && (
+                      <div className="userspace-share-access-row">
+                        <label className="userspace-share-label">Allowed LDAP groups</label>
+                        <div className="userspace-share-slug-row">
+                          {ldapDiscoveredGroups.length > 0 ? (
+                            <LdapGroupSelect
+                              value={shareLdapGroupDraft}
+                              onChange={setShareLdapGroupDraft}
+                              groups={ldapDiscoveredGroups}
+                              emptyOptionLabel="Select an LDAP group..."
+                            />
+                          ) : (
+                            <input
+                              value={shareLdapGroupDraft}
+                              onChange={(event) => setShareLdapGroupDraft(event.target.value)}
+                              placeholder="cn=group,ou=groups,dc=example,dc=com"
+                              autoComplete="off"
+                            />
+                          )}
+                          <button className="btn btn-secondary" onClick={handleAddShareLdapGroup} type="button">Add Group</button>
+                        </div>
+                        {loadingLdapGroups ? (
+                          <p className="userspace-share-meta">Loading LDAP groups…</p>
+                        ) : ldapDiscoveredGroups.length > 0 ? (
+                          <p className="userspace-share-meta">Groups are discovered from the configured LDAP base domain.</p>
+                        ) : (
+                          <p className="userspace-share-meta">Could not auto-discover LDAP groups. Enter group DN manually.</p>
+                        )}
+                        {shareSelectedLdapGroupsDraft.length > 0 && (
+                          <div className="userspace-share-group-list">
+                            {shareSelectedLdapGroupsDraft.map((groupDn) => (
+                              <div key={groupDn} className="userspace-share-group-item">
+                                <span>{groupDn}</span>
+                                <button
+                                  className="btn btn-secondary"
+                                  onClick={() => handleRemoveShareLdapGroup(groupDn)}
+                                  type="button"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="userspace-share-actions userspace-share-actions-single">
+                      <button
+                        className="btn btn-secondary"
+                        onClick={handleSaveShareAccess}
+                        disabled={savingShareAccess || sharingWorkspace || revokingShareLink || savingShareSlug || checkingShareSlug}
+                      >
+                        {savingShareAccess ? 'Saving Access...' : 'Save Access'}
+                      </button>
+                    </div>
+
                     <h4>Sharing Controls</h4>
                     <div className="userspace-share-actions">
                       <button
                         className="btn btn-secondary"
                         onClick={handleCopyShareLink}
-                        disabled={sharingWorkspace || revokingShareLink || savingShareSlug || checkingShareSlug}
+                        disabled={sharingWorkspace || revokingShareLink || savingShareSlug || checkingShareSlug || savingShareAccess}
                       >
                         {shareCopied ? 'Copied' : 'Copy Link'}
                       </button>
                       <button
                         className="btn btn-secondary"
                         onClick={handleOpenFullPreview}
-                        disabled={sharingWorkspace || revokingShareLink || savingShareSlug || checkingShareSlug}
+                        disabled={sharingWorkspace || revokingShareLink || savingShareSlug || checkingShareSlug || savingShareAccess}
                       >
                         Open Preview
                       </button>
                       <button
                         className="btn btn-secondary"
                         onClick={handleRotateShareLink}
-                        disabled={sharingWorkspace || revokingShareLink || savingShareSlug || checkingShareSlug}
+                        disabled={sharingWorkspace || revokingShareLink || savingShareSlug || checkingShareSlug || savingShareAccess}
                       >
                         {rotatingShareLink ? 'Rotating...' : 'Rotate Link'}
                       </button>
                       <button
                         className="btn btn-secondary"
                         onClick={handleRevokeShareLink}
-                        disabled={revokingShareLink || sharingWorkspace || savingShareSlug || checkingShareSlug || !shareLinkStatus?.has_share_link}
+                        disabled={revokingShareLink || sharingWorkspace || savingShareSlug || checkingShareSlug || savingShareAccess || !shareLinkStatus?.has_share_link}
                       >
                         {revokingShareLink ? 'Revoking...' : 'Revoke Link'}
                       </button>

@@ -1,3 +1,4 @@
+import { LdapGroupSelect } from './LdapGroupSelect';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Lock, LockOpen, Info } from 'lucide-react';
 import { api } from '@/api';
@@ -2174,19 +2175,17 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                (formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'password') === 'oauth2' && (
                 <div className="form-group" style={{ marginTop: '1rem' }}>
                   <label htmlFor="mcp-allowed-group">Allowed LDAP Group (Optional)</label>
-                  <select
-                    id="mcp-allowed-group"
-                    value={formData.mcp_default_route_allowed_group ?? settings?.mcp_default_route_allowed_group ?? ''}
-                    onChange={(e) =>
-                      setFormData({ ...formData, mcp_default_route_allowed_group: e.target.value || null })
-                    }
-                    style={{ maxWidth: '500px' }}
-                  >
-                    <option value="">Any authenticated LDAP user</option>
-                    {ldapDiscoveredGroups.map((g) => (
-                      <option key={g.dn} value={g.dn}>{g.name}</option>
-                    ))}
-                  </select>
+                  <div style={{ maxWidth: '500px' }}>
+                    <LdapGroupSelect
+                      id="mcp-allowed-group"
+                      value={formData.mcp_default_route_allowed_group ?? settings?.mcp_default_route_allowed_group ?? ''}
+                      onChange={(value) =>
+                        setFormData({ ...formData, mcp_default_route_allowed_group: value || null })
+                      }
+                      groups={ldapDiscoveredGroups}
+                      emptyOptionLabel="Any authenticated LDAP user"
+                    />
+                  </div>
                   <p className="field-help">
                     Restrict access to members of a specific LDAP group. Leave empty to allow all authenticated LDAP users.
                   </p>

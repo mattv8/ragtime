@@ -2,7 +2,7 @@
  * API client for Ragtime Indexer
  */
 
-import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, GetSettingsResponse, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, OllamaVisionModelsRequest, OllamaVisionModelsResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, MysqlDiscoverRequest, MysqlDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse, McpRouteConfig, CreateMcpRouteRequest, UpdateMcpRouteRequest, McpRouteListResponse, HealthResponse, UserSpaceWorkspace, CreateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceMembersRequest, UserSpaceFileInfo, UserSpaceFile, UpsertUserSpaceFileRequest, UserSpaceSnapshot, CreateUserSpaceSnapshotRequest, RestoreUserSpaceSnapshotResponse, UserSpaceAvailableTool, PaginatedWorkspacesResponse, ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus, UserSpaceSharedPreviewResponse, WorkspaceShareSlugAvailabilityResponse } from '@/types';
+import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, GetSettingsResponse, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, OllamaVisionModelsRequest, OllamaVisionModelsResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, MysqlDiscoverRequest, MysqlDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse, McpRouteConfig, CreateMcpRouteRequest, UpdateMcpRouteRequest, McpRouteListResponse, HealthResponse, UserSpaceWorkspace, CreateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceMembersRequest, UserSpaceFileInfo, UserSpaceFile, UpsertUserSpaceFileRequest, UserSpaceSnapshot, CreateUserSpaceSnapshotRequest, RestoreUserSpaceSnapshotResponse, UserSpaceAvailableTool, PaginatedWorkspacesResponse, ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus, UserSpaceSharedPreviewResponse, WorkspaceShareSlugAvailabilityResponse, UpdateUserSpaceWorkspaceShareAccessRequest } from '@/types';
 
 const API_BASE = '/indexes';
 const AUTH_BASE = '/auth';
@@ -1712,18 +1712,33 @@ export const api = {
     return handleResponse<WorkspaceShareSlugAvailabilityResponse>(response);
   },
 
-  async getUserSpaceSharedPreview(shareToken: string): Promise<UserSpaceSharedPreviewResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(shareToken)}`);
+  async updateUserSpaceWorkspaceShareAccess(
+    workspaceId: string,
+    request: UpdateUserSpaceWorkspaceShareAccessRequest,
+  ): Promise<UserSpaceWorkspaceShareLinkStatus> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/share-link/access`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<UserSpaceWorkspaceShareLinkStatus>(response);
+  },
+
+  async getUserSpaceSharedPreview(shareToken: string, password?: string): Promise<UserSpaceSharedPreviewResponse> {
+    const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
+    const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(shareToken)}${suffix}`);
     return handleResponse<UserSpaceSharedPreviewResponse>(response);
   },
 
-  async getUserSpaceSharedPreviewBySlug(ownerUsername: string, shareSlug: string): Promise<UserSpaceSharedPreviewResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}`);
+  async getUserSpaceSharedPreviewBySlug(ownerUsername: string, shareSlug: string, password?: string): Promise<UserSpaceSharedPreviewResponse> {
+    const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
+    const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}${suffix}`);
     return handleResponse<UserSpaceSharedPreviewResponse>(response);
   },
 
-  async executeUserSpaceSharedComponent(shareToken: string, request: ExecuteComponentRequest): Promise<ExecuteComponentResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(shareToken)}/execute-component`, {
+  async executeUserSpaceSharedComponent(shareToken: string, request: ExecuteComponentRequest, password?: string): Promise<ExecuteComponentResponse> {
+    const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
+    const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(shareToken)}/execute-component${suffix}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
@@ -1731,8 +1746,9 @@ export const api = {
     return handleResponse<ExecuteComponentResponse>(response);
   },
 
-  async executeUserSpaceSharedComponentBySlug(ownerUsername: string, shareSlug: string, request: ExecuteComponentRequest): Promise<ExecuteComponentResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/execute-component`, {
+  async executeUserSpaceSharedComponentBySlug(ownerUsername: string, shareSlug: string, request: ExecuteComponentRequest, password?: string): Promise<ExecuteComponentResponse> {
+    const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
+    const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/execute-component${suffix}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),

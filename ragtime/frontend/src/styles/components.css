@@ -1068,7 +1068,6 @@ textarea:focus {
   display: flex;
   flex-direction: column;
   gap: var(--space-xs);
-  margin-bottom: var(--space-md);
 }
 
 .userspace-share-modal {
@@ -1122,14 +1121,78 @@ textarea:focus {
 }
 
 .userspace-share-controls {
-  border-top: none;
-  padding-top: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-sm);
 }
 
 .userspace-share-controls h4 {
-  margin: 0 0 var(--space-sm) 0;
+  margin: var(--space-sm) 0 0 0;
   font-size: var(--text-sm);
   color: var(--color-text-secondary);
+}
+
+.userspace-share-controls h4:first-child {
+  margin-top: 0;
+}
+
+.userspace-share-access-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.userspace-share-access-row select,
+.userspace-share-access-row input {
+  width: 100%;
+}
+
+.userspace-share-user-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 160px;
+  overflow-y: auto;
+  padding: var(--space-xs);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+}
+
+.userspace-share-user-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-height: 28px;
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+
+.userspace-share-group-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  margin-top: var(--space-xs);
+}
+
+.userspace-share-group-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-xs);
+  align-items: center;
+  padding: var(--space-xs);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+}
+
+.userspace-share-group-item span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
 }
 
 .userspace-share-actions {
@@ -1140,6 +1203,10 @@ textarea:focus {
 
 .userspace-share-actions .btn {
   width: 100%;
+}
+
+.userspace-share-actions.userspace-share-actions-single {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 @media (max-width: 640px) {

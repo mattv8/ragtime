@@ -1561,6 +1561,24 @@ export interface UserSpaceWorkspaceShareLinkStatus {
   share_token: string | null;
   share_url: string | null;
   created_at: string | null;
+  share_access_mode: UserSpaceShareAccessMode;
+  selected_user_ids: string[];
+  selected_ldap_groups: string[];
+  has_password: boolean;
+}
+
+export type UserSpaceShareAccessMode =
+  | 'token'
+  | 'password'
+  | 'authenticated_users'
+  | 'selected_users'
+  | 'ldap_groups';
+
+export interface UpdateUserSpaceWorkspaceShareAccessRequest {
+  share_access_mode: UserSpaceShareAccessMode;
+  password?: string | null;
+  selected_user_ids?: string[];
+  selected_ldap_groups?: string[];
 }
 
 export interface WorkspaceShareSlugAvailabilityResponse {

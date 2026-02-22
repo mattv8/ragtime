@@ -24,6 +24,7 @@ interface UserSpaceArtifactPreviewProps {
   shareToken?: string;
   ownerUsername?: string;
   shareSlug?: string;
+  sharePassword?: string;
   onExecutionStateChange?: (isExecuting: boolean) => void;
 }
 
@@ -36,6 +37,7 @@ export function UserSpaceArtifactPreview({
   shareToken,
   ownerUsername,
   shareSlug,
+  sharePassword,
   onExecutionStateChange,
 }: UserSpaceArtifactPreviewProps) {
   const themeTokens = readThemeTokens();
@@ -126,12 +128,12 @@ export function UserSpaceArtifactPreview({
           ? await api.executeUserSpaceSharedComponent(shareToken, {
             component_id,
             request,
-          })
+          }, sharePassword)
           : ownerUsername && shareSlug
             ? await api.executeUserSpaceSharedComponentBySlug(ownerUsername, shareSlug, {
               component_id,
               request,
-            })
+            }, sharePassword)
             : await api.executeWorkspaceComponent(workspaceId as string, {
               component_id,
               request,
@@ -185,7 +187,7 @@ export function UserSpaceArtifactPreview({
         setPendingExecutions((current) => Math.max(0, current - 1));
       }
     },
-    [workspaceId, shareToken, ownerUsername, shareSlug, normalizeExecuteResult]
+    [workspaceId, shareToken, ownerUsername, shareSlug, sharePassword, normalizeExecuteResult]
   );
 
   useEffect(() => {
@@ -195,7 +197,7 @@ export function UserSpaceArtifactPreview({
 
   useEffect(() => {
     setExecutionError(null);
-  }, [workspaceId, shareToken, ownerUsername, shareSlug, entryPath, previewInstanceKey]);
+  }, [workspaceId, shareToken, ownerUsername, shareSlug, sharePassword, entryPath, previewInstanceKey]);
 
   useEffect(() => {
     onExecutionStateChange?.(pendingExecutions > 0);
@@ -203,7 +205,7 @@ export function UserSpaceArtifactPreview({
 
   useEffect(() => {
     setPendingExecutions(0);
-  }, [workspaceId, shareToken, ownerUsername, shareSlug, entryPath, previewInstanceKey]);
+  }, [workspaceId, shareToken, ownerUsername, shareSlug, sharePassword, entryPath, previewInstanceKey]);
 
   const transpileResult = useMemo(() => {
     const normalizedEntry = normalizePath(entryPath);

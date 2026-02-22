@@ -13,6 +13,7 @@ import type {
 } from '@/types';
 import { Icon } from './Icon';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
+import { LdapGroupSelect } from './LdapGroupSelect';
 
 type PanelTab = 'custom-routes' | 'default-filters';
 
@@ -473,15 +474,12 @@ function RouteWizard({
           {requireAuth && ldapConfigured && authMethod === 'oauth2' && (
             <div className="form-group">
               <label>Allowed LDAP Group (Optional)</label>
-              <select
+              <LdapGroupSelect
                 value={allowedLdapGroup}
-                onChange={(e) => setAllowedLdapGroup(e.target.value)}
-              >
-                <option value="">Any authenticated LDAP user</option>
-                {ldapGroups.map((g) => (
-                  <option key={g.dn} value={g.dn}>{g.name}</option>
-                ))}
-              </select>
+                onChange={setAllowedLdapGroup}
+                groups={ldapGroups}
+                emptyOptionLabel="Any authenticated LDAP user"
+              />
               <p className="field-help">
                 Restrict access to members of a specific LDAP group. Leave empty to allow all authenticated LDAP users.
               </p>
@@ -915,17 +913,14 @@ function DefaultFilterWizard({
 
         <div className="form-group">
           <label>LDAP Group</label>
-          <select
+          <LdapGroupSelect
             value={ldapGroupDn}
-            onChange={(e) => setLdapGroupDn(e.target.value)}
+            onChange={setLdapGroupDn}
+            groups={ldapGroups}
             disabled={!!editingFilter}
             required
-          >
-            <option value="">Select an LDAP group...</option>
-            {ldapGroups.map((g) => (
-              <option key={g.dn} value={g.dn}>{g.name}</option>
-            ))}
-          </select>
+            emptyOptionLabel="Select an LDAP group..."
+          />
           <p className="field-help">
             {editingFilter
               ? 'LDAP group cannot be changed after creation.'

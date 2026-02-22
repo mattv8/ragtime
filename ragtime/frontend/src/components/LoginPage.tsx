@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { api } from '@/api';
 import type { User, AuthStatus } from '@/types';
+import { AuthCredentialsForm } from './AuthCredentialsForm';
 
 interface LoginPageProps {
   authStatus: AuthStatus;
@@ -49,59 +50,21 @@ export function LoginPage({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
         </div>
 
         {authStatus.cookie_warning && (
-          <div className="login-warning">
+          <div className="status-message warning">
             <strong>Warning:</strong> {authStatus.cookie_warning}
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="login-form">
-          {error && (
-            <div className="login-error">
-              {error}
-            </div>
-          )}
-
-          <div className="form-group">
-            <label htmlFor="username" className="form-label">
-              Username
-            </label>
-            <input
-              type="text"
-              id="username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className="form-input"
-              placeholder={authStatus.ldap_configured ? 'Username' : 'Local admin'}
-              required
-              autoFocus
-              autoComplete="username"
-            />
-          </div>
-
-          <div className="form-group">
-            <label htmlFor="password" className="form-label">
-              Password
-            </label>
-            <input
-              type="password"
-              id="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="form-input"
-              placeholder="Password"
-              required
-              autoComplete="current-password"
-            />
-          </div>
-
-          <button
-            type="submit"
-            className="btn btn-primary login-submit"
-            disabled={isLoading || !username || !password}
-          >
-            {isLoading ? 'Signing in...' : 'Sign In'}
-          </button>
-        </form>
+        <AuthCredentialsForm
+          username={username}
+          password={password}
+          usernamePlaceholder={authStatus.ldap_configured ? 'Username' : 'Local admin'}
+          error={error}
+          isLoading={isLoading}
+          onUsernameChange={setUsername}
+          onPasswordChange={setPassword}
+          onSubmit={handleSubmit}
+        />
 
         <div className="login-footer">
           {authStatus.ldap_configured && (
@@ -115,7 +78,7 @@ export function LoginPage({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
             </p>
           )}
           {authStatus.ldap_configured && authStatus.local_admin_enabled && (
-            <p className="login-info-small">
+            <p className="login-info">
               Local admin account is also available
             </p>
           )}
