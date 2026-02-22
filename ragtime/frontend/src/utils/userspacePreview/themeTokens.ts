@@ -1,0 +1,112 @@
+export const THEME_TOKEN_NAMES = [
+  '--color-bg-primary',
+  '--color-bg-secondary',
+  '--color-bg-tertiary',
+  '--color-surface',
+  '--color-surface-hover',
+  '--color-surface-active',
+  '--color-text-primary',
+  '--color-text-secondary',
+  '--color-text-muted',
+  '--color-text-inverse',
+  '--color-primary',
+  '--color-primary-hover',
+  '--color-primary-light',
+  '--color-primary-border',
+  '--color-accent',
+  '--color-accent-hover',
+  '--color-accent-light',
+  '--color-success',
+  '--color-success-light',
+  '--color-success-border',
+  '--color-error',
+  '--color-error-light',
+  '--color-error-border',
+  '--color-warning',
+  '--color-warning-light',
+  '--color-warning-border',
+  '--color-info',
+  '--color-info-light',
+  '--color-info-border',
+  '--color-border',
+  '--color-border-strong',
+  '--color-input-bg',
+  '--color-input-border',
+  '--color-input-focus',
+  '--shadow-sm',
+  '--shadow-md',
+  '--shadow-lg',
+  '--shadow-xl',
+  '--space-xs',
+  '--space-sm',
+  '--space-md',
+  '--space-lg',
+  '--space-xl',
+  '--space-2xl',
+  '--radius-sm',
+  '--radius-md',
+  '--radius-lg',
+  '--radius-xl',
+  '--radius-full',
+  '--font-sans',
+  '--font-mono',
+  '--text-xs',
+  '--text-sm',
+  '--text-base',
+  '--text-lg',
+  '--text-xl',
+  '--text-2xl',
+  '--leading-tight',
+  '--leading-normal',
+  '--leading-relaxed',
+  '--transition-fast',
+  '--transition-normal',
+  '--transition-slow',
+] as const;
+
+export type ThemeTokens = Record<string, string>;
+
+export const DEFAULT_THEME_TOKENS: ThemeTokens = {
+  '--color-bg-primary': '#0f172a',
+  '--color-bg-secondary': '#111827',
+  '--color-bg-tertiary': '#1f2937',
+  '--color-surface': '#1e293b',
+  '--color-surface-hover': '#334155',
+  '--color-surface-active': '#1f2937',
+  '--color-text-primary': '#f8fafc',
+  '--color-text-secondary': '#cbd5e1',
+  '--color-text-muted': '#94a3b8',
+  '--color-border': '#334155',
+  '--shadow-sm': '0 1px 2px rgba(0, 0, 0, 0.35)',
+  '--space-xs': '4px',
+  '--space-sm': '8px',
+  '--space-md': '16px',
+  '--space-lg': '24px',
+  '--space-xl': '32px',
+  '--radius-sm': '4px',
+  '--radius-md': '8px',
+  '--radius-lg': '12px',
+  '--font-sans': 'Inter, system-ui, -apple-system, Segoe UI, sans-serif',
+  '--font-mono': 'ui-monospace, SFMono-Regular, Menlo, monospace',
+  '--text-xs': '12px',
+  '--text-sm': '14px',
+  '--text-base': '16px',
+  '--text-lg': '18px',
+  '--text-xl': '20px',
+  '--text-2xl': '30px',
+  '--transition-fast': '150ms ease',
+} as const;
+
+export function readThemeTokens(): ThemeTokens {
+  if (typeof window === 'undefined') return { ...DEFAULT_THEME_TOKENS };
+  const rootStyles = window.getComputedStyle(document.documentElement);
+  const bodyStyles = document.body ? window.getComputedStyle(document.body) : null;
+  const tokens: ThemeTokens = { ...DEFAULT_THEME_TOKENS };
+  for (const tokenName of THEME_TOKEN_NAMES) {
+    const rootValue = rootStyles.getPropertyValue(tokenName).trim();
+    const bodyValue = bodyStyles?.getPropertyValue(tokenName).trim() || '';
+    const value = rootValue || bodyValue || tokens[tokenName];
+    if (value) tokens[tokenName] = value;
+  }
+  return tokens;
+}
