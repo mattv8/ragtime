@@ -911,8 +911,6 @@ export function UserSpaceArtifactPreview({
       if (event.data.type === 'ragtime-execute-error') {
         const componentId = typeof event.data.component_id === 'string' ? event.data.component_id : 'unknown';
         const error = typeof event.data.error === 'string' ? event.data.error : 'Unknown execution error';
-        const surfacedError = `Live data connection failed (${componentId}): ${error}`;
-        setExecutionError(surfacedError);
         console.error('[UserSpacePreview] iframe execute error:', {
           component_id: componentId,
           error,
@@ -953,15 +951,11 @@ export function UserSpaceArtifactPreview({
         const normalizedResult = normalizeExecuteResult(result);
         const normalizedError = typeof normalizedResult.error === 'string' ? normalizedResult.error.trim() : '';
         if (normalizedError) {
-          const surfacedError = `Live data connection failed (${component_id}): ${normalizedError}`;
-          setExecutionError(surfacedError);
           console.error('[UserSpacePreview] execute-component returned error:', {
             component_id,
             error: normalizedError,
             request,
           });
-        } else {
-          setExecutionError(null);
         }
         frameWindow.postMessage(
           { bridge: 'userspace-exec-v1', type: 'ragtime-execute-result', callId, result: normalizedResult },
@@ -969,8 +963,6 @@ export function UserSpaceArtifactPreview({
         );
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : String(err);
-        const surfacedError = `Live data connection failed (${component_id}): ${errorMessage}`;
-        setExecutionError(surfacedError);
         console.error('[UserSpacePreview] execute-component request failed:', {
           component_id,
           error: errorMessage,
