@@ -1490,7 +1490,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
             <button className="userspace-snapshots-toggle" onClick={() => setShowSnapshots(!showSnapshots)}>
               <History size={14} />
               <span>Snapshots ({snapshots.length})</span>
-              <ChevronDown size={14} className={showSnapshots ? 'rotated' : ''} />
+              <ChevronDown size={14} className={showSnapshots ? '' : 'rotated'} />
             </button>
             {showSnapshots && (
               <div className="userspace-snapshots-list">

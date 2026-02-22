@@ -302,6 +302,18 @@ function buildIframeDoc(
     <style>
       :root { font-family: var(--font-sans, system-ui, sans-serif); color-scheme: dark; }
       *, *::before, *::after { box-sizing: border-box; }
+      ::-webkit-scrollbar { width: 8px; height: 8px; background: transparent; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: var(--color-border, #334155); border-radius: var(--radius-full, 9999px); }
+      ::-webkit-scrollbar-thumb:hover { background: var(--color-text-muted, #94a3b8); }
+      ::-webkit-scrollbar-corner { background: transparent; }
+      * { scrollbar-width: thin; scrollbar-color: var(--color-border, #334155) transparent; }
+      html::-webkit-scrollbar, body::-webkit-scrollbar { width: 8px; height: 8px; background: transparent; }
+      html::-webkit-scrollbar-track, body::-webkit-scrollbar-track { background: transparent; }
+      html::-webkit-scrollbar-thumb, body::-webkit-scrollbar-thumb { background: var(--color-border, #334155); border-radius: var(--radius-full, 9999px); }
+      html::-webkit-scrollbar-thumb:hover, body::-webkit-scrollbar-thumb:hover { background: var(--color-text-muted, #94a3b8); }
+      html::-webkit-scrollbar-corner, body::-webkit-scrollbar-corner { background: transparent; }
+      html, body { scrollbar-width: thin; scrollbar-color: var(--color-border, #334155) transparent; }
       html { height: 100%; }
       body { margin: 0; padding: 0; height: 100%; background: var(--color-bg-primary, #0f172a); color: var(--color-text-primary, #f1f5f9); font-family: var(--font-sans, system-ui, sans-serif); }
       #app { height: 100%; display: flex; flex-direction: column; }

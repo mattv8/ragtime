@@ -898,7 +898,7 @@ textarea:focus {
   height: 100%;
   display: block;
   border: 0;
-  background: var(--color-bg-secondary);
+  background: var(--color-bg-primary);
 }
 
 /* Snapshots section */
