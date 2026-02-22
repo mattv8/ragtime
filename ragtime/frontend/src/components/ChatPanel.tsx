@@ -1267,20 +1267,8 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, on
   const loadAvailableModels = async () => {
     try {
       setModelsLoading(true);
-      if (embedded && isAdmin) {
-        const allModelsData = await api.getAllModels();
-        const allowedModels = allModelsData.allowed_models ?? [];
-
-        if (allowedModels.length > 0) {
-          const allowedModelSet = new Set(allowedModels);
-          setAvailableModels(allModelsData.models.filter((model) => allowedModelSet.has(model.id)));
-        } else {
-          setAvailableModels(allModelsData.models);
-        }
-      } else {
-        const data = await api.getAvailableModels();
-        setAvailableModels(data.models);
-      }
+      const data = await api.getAvailableModels();
+      setAvailableModels(data.models);
     } catch (err) {
       console.error('Failed to load available models:', err);
     } finally {
