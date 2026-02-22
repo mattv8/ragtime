@@ -6,16 +6,22 @@ from fastapi import APIRouter, Depends, Query
 
 from ragtime.core.security import get_current_user
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (CreateSnapshotRequest,
-                                      CreateWorkspaceRequest,
-                                      PaginatedWorkspacesResponse,
-                                      RestoreSnapshotResponse,
-                                      UpdateWorkspaceMembersRequest,
-                                      UpdateWorkspaceRequest,
-                                      UpsertWorkspaceFileRequest,
-                                      UserSpaceAvailableTool,
-                                      UserSpaceFileInfo, UserSpaceFileResponse,
-                                      UserSpaceSnapshot, UserSpaceWorkspace)
+from ragtime.userspace.models import (
+    CreateSnapshotRequest,
+    CreateWorkspaceRequest,
+    ExecuteComponentRequest,
+    ExecuteComponentResponse,
+    PaginatedWorkspacesResponse,
+    RestoreSnapshotResponse,
+    UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceAvailableTool,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserSpaceSnapshot,
+    UserSpaceWorkspace,
+)
 from ragtime.userspace.service import userspace_service
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space"])
@@ -164,6 +170,18 @@ async def delete_workspace_file(
     return {"success": True}
 
 
+@router.post(
+    "/workspaces/{workspace_id}/execute-component",
+    response_model=ExecuteComponentResponse,
+)
+async def execute_component(
+    workspace_id: str,
+    request: ExecuteComponentRequest,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.execute_component(workspace_id, request, user.id)
+
+
 @router.get(
     "/workspaces/{workspace_id}/snapshots", response_model=list[UserSpaceSnapshot]
 )
@@ -177,7 +195,9 @@ async def create_snapshot(
     request: CreateSnapshotRequest,
     user: Any = Depends(get_current_user),
 ):
-    return await userspace_service.create_snapshot(workspace_id, user.id, request.message)
+    return await userspace_service.create_snapshot(
+        workspace_id, user.id, request.message
+    )
 
 
 @router.post(

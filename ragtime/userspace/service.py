@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -14,23 +15,29 @@ from fastapi import HTTPException
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
-from ragtime.userspace.models import (
-    ArtifactType,
-    CreateWorkspaceRequest,
-    PaginatedWorkspacesResponse,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-    UserSpaceSnapshot,
-    UserSpaceWorkspace,
-    WorkspaceMember,
-)
+from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
+                                    add_table_metadata_to_psql_output,
+                                    enforce_max_results, format_query_result,
+                                    validate_sql_query)
+from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
+                              ssh_tunnel_config_from_dict)
+from ragtime.indexer.repository import repository
+from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
+                                      ExecuteComponentRequest,
+                                      ExecuteComponentResponse,
+                                      PaginatedWorkspacesResponse,
+                                      UpdateWorkspaceMembersRequest,
+                                      UpdateWorkspaceRequest,
+                                      UpsertWorkspaceFileRequest,
+                                      UserSpaceFileInfo, UserSpaceFileResponse,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection,
+                                      UserSpaceSnapshot, UserSpaceWorkspace,
+                                      WorkspaceMember)
 
 logger = get_logger(__name__)
+
+_USPACE_EXEC_SUPPORTED_SQL_TOOLS = {"postgres", "mysql", "mssql"}
 
 _MODULE_SOURCE_EXTENSIONS = (
     ".ts",
@@ -881,8 +888,6 @@ class UserSpaceService:
         Returns None if retention is disabled (0 or unset).
         """
         try:
-            from ragtime.indexer.repository import repository
-
             app_settings = await repository.get_settings()
 
             if not app_settings:
@@ -1006,6 +1011,423 @@ class UserSpaceService:
         await self._touch_workspace(workspace_id)
 
         return snapshot
+
+    # ──────────────────────────────────────────────────────────────
+    # Component execution bridge (preview live data)
+    # ──────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _resolve_effective_timeout(
+        requested_timeout: int,
+        timeout_max_seconds: int,
+    ) -> int:
+        requested = max(0, int(requested_timeout))
+        maximum = max(0, int(timeout_max_seconds))
+        if maximum == 0:
+            return requested
+        return min(requested, maximum)
+
+    @staticmethod
+    def _extract_query_text(payload: dict[str, Any] | str) -> str:
+        if isinstance(payload, str):
+            return payload
+        if isinstance(payload, dict):
+            value = payload.get("query") or payload.get("sql") or payload.get("command")
+            return str(value or "")
+        return ""
+
+    async def execute_component(
+        self,
+        workspace_id: str,
+        request: ExecuteComponentRequest,
+        user_id: str,
+    ) -> ExecuteComponentResponse:
+        """Execute a live data query against a workspace-selected tool.
+
+        Validates that the component_id belongs to the workspace's selected
+        tools, loads the tool config, dispatches the query through the
+        appropriate database driver, and returns structured rows.
+        """
+        workspace = await self._enforce_workspace_access(workspace_id, user_id)
+
+        # Verify component_id is a selected tool
+        if request.component_id not in workspace.selected_tool_ids:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"Component {request.component_id} is not selected "
+                    "for this workspace."
+                ),
+            )
+
+        tool_config = await repository.get_tool_config(request.component_id)
+        if tool_config is None or not tool_config.enabled:
+            raise HTTPException(
+                status_code=404,
+                detail="Tool configuration not found or disabled.",
+            )
+
+        tool_type = tool_config.tool_type.value
+        if tool_type not in _USPACE_EXEC_SUPPORTED_SQL_TOOLS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Live preview execution supports SQL tools only "
+                    "(postgres, mysql, mssql)."
+                ),
+            )
+
+        conn_config = tool_config.connection_config or {}
+
+        # Extract query from request payload
+        query = self._extract_query_text(request.request)
+
+        if not query.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="No query/command found in request payload.",
+            )
+
+        # Dispatch to appropriate query executor
+        raw_output: str
+        try:
+            raw_output = await self._dispatch_tool_query(
+                tool_type, conn_config, tool_config, query
+            )
+        except Exception as exc:
+            logger.error(
+                "Component execution failed for %s: %s",
+                request.component_id,
+                exc,
+            )
+            return ExecuteComponentResponse(
+                component_id=request.component_id,
+                rows=[],
+                columns=[],
+                row_count=0,
+                error=str(exc),
+            )
+
+        # Check for error output
+        if raw_output.startswith("Error:"):
+            return ExecuteComponentResponse(
+                component_id=request.component_id,
+                rows=[],
+                columns=[],
+                row_count=0,
+                error=raw_output,
+            )
+
+        # Parse tabular output into structured rows
+        rows, columns = self._parse_query_output(raw_output)
+        return ExecuteComponentResponse(
+            component_id=request.component_id,
+            rows=rows,
+            columns=columns,
+            row_count=len(rows),
+        )
+
+    async def _dispatch_tool_query(
+        self,
+        tool_type: str,
+        conn_config: dict,
+        tool_config: Any,
+        query: str,
+    ) -> str:
+        """Route a query to the correct database executor."""
+        host = conn_config.get("host", "")
+        port = conn_config.get("port", 5432)
+        user = conn_config.get("user", "")
+        password = conn_config.get("password", "")
+        database = conn_config.get("database", "")
+        timeout = self._resolve_effective_timeout(
+            tool_config.timeout or 30,
+            getattr(tool_config, "timeout_max_seconds", 300) or 300,
+        )
+        max_results = tool_config.max_results or 100
+
+        if tool_type == "postgres":
+            return await self._execute_postgres_query(conn_config, query, timeout, max_results)
+        elif tool_type == "mssql":
+            from ragtime.tools.mssql import execute_mssql_query_async
+
+            ssh_tunnel_config = build_ssh_tunnel_config(conn_config, host, port)
+            return await execute_mssql_query_async(
+                query=query,
+                host=host,
+                port=int(conn_config.get("port", 1433)),
+                user=user,
+                password=password,
+                database=database,
+                timeout=timeout,
+                max_results=max_results,
+                allow_write=False,
+                description="Preview component execution",
+                ssh_tunnel_config=ssh_tunnel_config,
+                include_metadata=True,
+            )
+        elif tool_type == "mysql":
+            from ragtime.tools.mysql import execute_mysql_query_async
+
+            ssh_tunnel_config = build_ssh_tunnel_config(conn_config, host, port)
+            return await execute_mysql_query_async(
+                query=query,
+                host=host,
+                port=int(conn_config.get("port", 3306)),
+                user=user,
+                password=password,
+                database=database,
+                timeout=timeout,
+                max_results=max_results,
+                allow_write=False,
+                description="Preview component execution",
+                ssh_tunnel_config=ssh_tunnel_config,
+                include_metadata=True,
+            )
+        else:
+            raise ValueError(
+                f"Unsupported tool type for preview execution: {tool_type}"
+            )
+
+    async def _execute_postgres_query(
+        self,
+        conn_config: dict,
+        query: str,
+        timeout: int,
+        max_results: int,
+    ) -> str:
+        """Execute a read-only postgres query using shared SQL utility helpers."""
+        is_safe, reason = validate_sql_query(
+            query,
+            enable_write=False,
+            db_type=DB_TYPE_POSTGRES,
+        )
+        if not is_safe:
+            return f"Error: {reason}"
+
+        query = enforce_max_results(query, max_results, db_type=DB_TYPE_POSTGRES)
+
+        host = conn_config.get("host", "")
+        port = conn_config.get("port", 5432)
+        user = conn_config.get("user", "")
+        password = conn_config.get("password", "")
+        database = conn_config.get("database", "")
+        container = conn_config.get("container", "")
+
+        ssh_tunnel_config = build_ssh_tunnel_config(conn_config, host, port)
+
+        if ssh_tunnel_config:
+
+            def run_tunnel_query() -> str:
+                try:
+                    import psycopg2  # type: ignore[import-untyped]
+                    import psycopg2.extras  # type: ignore[import-untyped]
+                except ImportError:
+                    return "Error: psycopg2 not available"
+
+                tunnel: SSHTunnel | None = None
+                conn = None
+                try:
+                    tunnel_cfg = ssh_tunnel_config_from_dict(
+                        ssh_tunnel_config, default_remote_port=5432
+                    )
+                    if not tunnel_cfg:
+                        return "Error: Invalid SSH tunnel configuration"
+                    tunnel = SSHTunnel(tunnel_cfg)
+                    local_port = tunnel.start()
+                    conn = psycopg2.connect(
+                        host="127.0.0.1",
+                        port=local_port,
+                        user=user,
+                        password=password,
+                        dbname=database,
+                        connect_timeout=timeout if timeout > 0 else 30,
+                    )
+                    cursor = conn.cursor(
+                        cursor_factory=psycopg2.extras.RealDictCursor
+                    )
+                    cursor.execute(query)
+                    if cursor.description:
+                        rows = [dict(row) for row in cursor.fetchall()]
+                        columns = [
+                            col.name if getattr(col, "name", None) else str(col[0])
+                            for col in cursor.description
+                        ]
+                        return format_query_result(
+                            rows,
+                            columns,
+                            include_metadata=True,
+                        )
+                    return "Query executed successfully (no results)"
+                except Exception as e:
+                    return f"Error: {e}"
+                finally:
+                    if conn:
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+                    if tunnel:
+                        try:
+                            tunnel.stop()
+                        except Exception:
+                            pass
+
+            if timeout > 0:
+                return await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(
+                        None, run_tunnel_query
+                    ),
+                    timeout=timeout + 5,
+                )
+            return await asyncio.get_event_loop().run_in_executor(
+                None, run_tunnel_query
+            )
+
+        # Direct host or docker container
+        escaped_query = query.replace("'", "'\\''")
+        if host:
+            cmd = [
+                "psql", "-h", host, "-p", str(port),
+                "-U", user, "-d", database, "-c", query,
+            ]
+            env = dict(os.environ)
+            env["PGPASSWORD"] = password
+        elif container:
+            cmd = [
+                "docker", "exec", "-i", container, "bash", "-c",
+                f'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \'{escaped_query}\'',
+            ]
+            env = None
+        else:
+            return "Error: No connection configured"
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            if timeout > 0:
+                try:
+                    stdout, stderr = await asyncio.wait_for(
+                        process.communicate(), timeout=timeout
+                    )
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.communicate()
+                    return f"Error: Query timed out after {timeout}s"
+            else:
+                stdout, stderr = await process.communicate()
+
+            if process.returncode != 0:
+                return f"Error: {stderr.decode('utf-8', errors='replace').strip()}"
+
+            output = stdout.decode("utf-8", errors="replace").strip()
+            if not output:
+                return "Query executed successfully (no results)"
+
+            return add_table_metadata_to_psql_output(output, include_metadata=True)
+        except asyncio.TimeoutError:
+            return f"Error: Query timed out after {timeout}s"
+        except Exception as e:
+            return f"Error: {e}"
+
+    @staticmethod
+    def _parse_query_output(output: str) -> tuple[list[dict[str, Any]], list[str]]:
+        parsed = UserSpaceService._extract_table_metadata(output)
+        if parsed is not None:
+            return parsed
+        return UserSpaceService._parse_tabular_output(output)
+
+    @staticmethod
+    def _extract_table_metadata(
+        output: str,
+    ) -> tuple[list[dict[str, Any]], list[str]] | None:
+        start_marker = "<!--TABLEDATA:"
+        start = output.find(start_marker)
+        if start == -1:
+            return None
+
+        end = output.find("-->", start + len(start_marker))
+        if end == -1:
+            return None
+
+        json_str = output[start + len(start_marker):end]
+        try:
+            table_data = json.loads(json_str)
+        except Exception:
+            return None
+
+        columns = table_data.get("columns")
+        raw_rows = table_data.get("rows")
+        if not isinstance(columns, list):
+            return None
+
+        normalized_columns = [str(col) for col in columns]
+        if not isinstance(raw_rows, list):
+            return [], normalized_columns
+
+        parsed_rows: list[dict[str, Any]] = []
+        for raw_row in raw_rows:
+            if isinstance(raw_row, dict):
+                parsed_rows.append({str(k): v for k, v in raw_row.items()})
+                continue
+
+            if isinstance(raw_row, list):
+                row_dict: dict[str, Any] = {}
+                for index, column_name in enumerate(normalized_columns):
+                    row_dict[column_name] = raw_row[index] if index < len(raw_row) else None
+                parsed_rows.append(row_dict)
+
+        return parsed_rows, normalized_columns
+
+    @staticmethod
+    def _parse_tabular_output(output: str) -> tuple[list[dict[str, Any]], list[str]]:
+        """Parse psql/tabular output into a list of dicts and column names.
+
+        Handles the standard format:
+            col1 | col2 | col3
+            -----+------+-----
+            val1 | val2 | val3
+            (N rows)
+        """
+        lines = output.strip().splitlines()
+        if len(lines) < 3:
+            return [], []
+
+        # First line is column headers
+        header_line = lines[0]
+        columns = [col.strip() for col in header_line.split("|")]
+
+        # Skip separator line (index 1)
+        rows: list[dict[str, Any]] = []
+        for line in lines[2:]:
+            stripped = line.strip()
+            # Stop at the row count line
+            if stripped.startswith("(") and stripped.endswith(")"):
+                break
+            if not stripped:
+                continue
+            values = [val.strip() for val in line.split("|")]
+            row: dict[str, Any] = {}
+            for i, col in enumerate(columns):
+                if i < len(values):
+                    # Try to parse numeric values
+                    raw = values[i]
+                    try:
+                        if "." in raw:
+                            row[col] = float(raw)
+                        else:
+                            row[col] = int(raw)
+                    except (ValueError, TypeError):
+                        row[col] = raw
+                else:
+                    row[col] = None
+            rows.append(row)
+
+        return rows, columns
 
 
 userspace_service = UserSpaceService()

@@ -1532,6 +1532,19 @@ export interface PaginatedWorkspacesResponse {
   limit: number;
 }
 
+export interface ExecuteComponentRequest {
+  component_id: string;
+  request: Record<string, unknown> | string;
+}
+
+export interface ExecuteComponentResponse {
+  component_id: string;
+  rows: Record<string, unknown>[];
+  columns: string[];
+  row_count: number;
+  error?: string | null;
+}
+
 // Retry visualization request/response
 export interface RetryVisualizationRequest {
   tool_type: 'datatable' | 'chart';

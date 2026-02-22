@@ -1,12 +1,15 @@
-import { useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ts from 'typescript';
 import type { UserSpaceLiveDataConnection } from '@/types';
+import { api } from '@/api/client';
 
 interface UserSpaceArtifactPreviewProps {
   entryPath: string;
   workspaceFiles: Record<string, string>;
   liveDataConnections?: UserSpaceLiveDataConnection[];
   previewInstanceKey?: string;
+  workspaceId?: string;
+  onExecutionStateChange?: (isExecuting: boolean) => void;
 }
 
 const THEME_TOKEN_NAMES = [
@@ -313,6 +316,16 @@ function buildIframeDoc(
         background: var(--color-error-light, rgba(239, 68, 68, 0.15));
         white-space: pre-wrap;
       }
+      .userspace-runtime-error {
+        margin: var(--space-sm, 8px);
+        padding: var(--space-sm, 8px);
+        border: 1px solid var(--color-error-border, #ef4444);
+        border-radius: var(--radius-sm, 6px);
+        background: var(--color-error-light, rgba(239, 68, 68, 0.15));
+        color: var(--color-error, #ef4444);
+        font-size: var(--text-sm, 14px);
+        white-space: pre-wrap;
+      }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   </head>
@@ -328,6 +341,19 @@ function buildIframeDoc(
         el.textContent = message;
         mount.innerHTML = '';
         mount.appendChild(el);
+      };
+
+      const reportRuntimeError = (message) => {
+        const mount = container || document.body;
+        if (!mount) return;
+        let panel = mount.querySelector('[data-userspace-runtime-error]');
+        if (!panel) {
+          panel = document.createElement('div');
+          panel.className = 'userspace-runtime-error';
+          panel.setAttribute('data-userspace-runtime-error', '1');
+          mount.insertBefore(panel, mount.firstChild);
+        }
+        panel.textContent = message;
       };
 
       let entryPath = '';
@@ -346,6 +372,12 @@ function buildIframeDoc(
       }
 
       const buildRuntimeComponents = (connections) => {
+        const toAliasKey = (value) => String(value || '')
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '_')
+          .replace(/^_+|_+$/g, '');
+
         const byKey = {};
         const list = [];
         for (let index = 0; index < connections.length; index += 1) {
@@ -363,20 +395,87 @@ function buildIframeDoc(
             refresh_interval_seconds: connection.refresh_interval_seconds ?? null,
             async execute(requestOverride) {
               const effectiveRequest = requestOverride ?? connection.request ?? {};
-              return {
-                rows: [],
-                request: effectiveRequest,
-                preview_stub: true,
-              };
+              const callId = '__exec_' + Math.random().toString(36).slice(2) + '_' + Date.now();
+              return new Promise((resolve) => {
+                const timeout = setTimeout(() => {
+                  window.removeEventListener('message', handler);
+                  const timeoutMessage = 'Execute request timed out after 60s';
+                  reportRuntimeError('Live data execution failed (' + componentId + '): ' + timeoutMessage);
+                  window.parent.postMessage({
+                    bridge: 'userspace-exec-v1',
+                    type: 'ragtime-execute-error',
+                    callId,
+                    component_id: componentId,
+                    error: timeoutMessage,
+                  }, '*');
+                  resolve({ rows: [], columns: [], row_count: 0, error: timeoutMessage });
+                }, 60000);
+                const handler = (event) => {
+                  if (event.source !== window.parent) return;
+                  if (event.data && event.data.bridge === 'userspace-exec-v1' && event.data.type === 'ragtime-execute-result' && event.data.callId === callId) {
+                    window.removeEventListener('message', handler);
+                    clearTimeout(timeout);
+                    const result = event.data.result || { rows: [], columns: [], row_count: 0, error: 'Empty response' };
+                    const resultError = typeof result.error === 'string' ? result.error.trim() : '';
+                    if (resultError) {
+                      reportRuntimeError('Live data execution failed (' + componentId + '): ' + resultError);
+                      window.parent.postMessage({
+                        bridge: 'userspace-exec-v1',
+                        type: 'ragtime-execute-error',
+                        callId,
+                        component_id: componentId,
+                        error: resultError,
+                      }, '*');
+                      console.error('[UserSpacePreviewIframe] execute failed', {
+                        component_id: componentId,
+                        error: resultError,
+                        request: effectiveRequest,
+                      });
+                    }
+                    resolve(result);
+                  }
+                };
+                window.addEventListener('message', handler);
+                window.parent.postMessage({
+                  bridge: 'userspace-exec-v1',
+                  type: 'ragtime-execute',
+                  callId: callId,
+                  component_id: componentId,
+                  request: effectiveRequest,
+                }, '*');
+              });
             },
           });
 
           byKey[componentId] = component;
           byKey[index] = component;
+
+          const aliasFromName = toAliasKey(connection.component_name);
+          if (aliasFromName && !Object.prototype.hasOwnProperty.call(byKey, aliasFromName)) {
+            byKey[aliasFromName] = component;
+          }
+
           list.push(component);
         }
+
+        const componentsProxy = new Proxy(byKey, {
+          get(target, prop, receiver) {
+            if (Reflect.has(target, prop)) {
+              return Reflect.get(target, prop, receiver);
+            }
+            if (typeof prop === 'string' && list.length === 1) {
+              return list[0];
+            }
+            return undefined;
+          },
+          has(target, prop) {
+            if (Reflect.has(target, prop)) return true;
+            return typeof prop === 'string' && list.length === 1;
+          },
+        });
+
         return {
-          byKey: Object.freeze(byKey),
+          byKey: Object.freeze(componentsProxy),
           list: Object.freeze(list),
         };
       };
@@ -759,8 +858,161 @@ export function UserSpaceArtifactPreview({
   workspaceFiles,
   liveDataConnections = [],
   previewInstanceKey,
+  workspaceId,
+  onExecutionStateChange,
 }: UserSpaceArtifactPreviewProps) {
   const themeTokens = readThemeTokens();
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [executionError, setExecutionError] = useState<string | null>(null);
+  const [pendingExecutions, setPendingExecutions] = useState(0);
+
+  const normalizeExecuteResult = useCallback((result: any) => {
+    if (!result || typeof result !== 'object') {
+      return { rows: [], columns: [], row_count: 0, error: 'Invalid execution response' };
+    }
+
+    const columns: string[] = Array.isArray(result.columns)
+      ? result.columns.map((value: unknown) => String(value))
+      : [];
+    const rows = Array.isArray(result.rows) ? result.rows : [];
+
+    const normalizedRows = rows.map((row: any) => {
+      if (!row || typeof row !== 'object' || Array.isArray(row)) {
+        return row;
+      }
+
+      const enrichedRow: Record<string, unknown> = { ...row };
+      columns.forEach((columnName, index) => {
+        if (!(index in enrichedRow)) {
+          enrichedRow[index] = row[columnName] ?? null;
+        }
+      });
+      return enrichedRow;
+    });
+
+    return {
+      ...result,
+      columns,
+      rows: normalizedRows,
+      row_count: typeof result.row_count === 'number' ? result.row_count : normalizedRows.length,
+    };
+  }, []);
+
+  const handleIframeMessage = useCallback(
+    async (event: MessageEvent) => {
+      const frameWindow = iframeRef.current?.contentWindow;
+      if (!frameWindow || event.source !== frameWindow) return;
+
+      const isExpectedOrigin = event.origin === 'null' || event.origin === window.location.origin;
+      if (!isExpectedOrigin) return;
+
+      if (!event.data || event.data.bridge !== 'userspace-exec-v1') return;
+
+      if (event.data.type === 'ragtime-execute-error') {
+        const componentId = typeof event.data.component_id === 'string' ? event.data.component_id : 'unknown';
+        const error = typeof event.data.error === 'string' ? event.data.error : 'Unknown execution error';
+        const surfacedError = `Live data connection failed (${componentId}): ${error}`;
+        setExecutionError(surfacedError);
+        console.error('[UserSpacePreview] iframe execute error:', {
+          component_id: componentId,
+          error,
+        });
+        return;
+      }
+
+      if (event.data.type !== 'ragtime-execute') return;
+
+      const { callId, component_id, request } = event.data;
+      if (typeof callId !== 'string' || typeof component_id !== 'string') return;
+
+      setPendingExecutions((current) => current + 1);
+      setExecutionError(null);
+
+      if (!workspaceId) {
+        const errorMessage = 'No workspace context available';
+        setExecutionError(errorMessage);
+        console.error('[UserSpacePreview] execute-component failed:', errorMessage);
+        frameWindow.postMessage(
+          {
+            bridge: 'userspace-exec-v1',
+            type: 'ragtime-execute-result',
+            callId,
+            result: { rows: [], columns: [], row_count: 0, error: errorMessage },
+          },
+          '*'
+        );
+        setPendingExecutions((current) => Math.max(0, current - 1));
+        return;
+      }
+
+      try {
+        const result = await api.executeWorkspaceComponent(workspaceId, {
+          component_id,
+          request,
+        });
+        const normalizedResult = normalizeExecuteResult(result);
+        const normalizedError = typeof normalizedResult.error === 'string' ? normalizedResult.error.trim() : '';
+        if (normalizedError) {
+          const surfacedError = `Live data connection failed (${component_id}): ${normalizedError}`;
+          setExecutionError(surfacedError);
+          console.error('[UserSpacePreview] execute-component returned error:', {
+            component_id,
+            error: normalizedError,
+            request,
+          });
+        } else {
+          setExecutionError(null);
+        }
+        frameWindow.postMessage(
+          { bridge: 'userspace-exec-v1', type: 'ragtime-execute-result', callId, result: normalizedResult },
+          '*'
+        );
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        const surfacedError = `Live data connection failed (${component_id}): ${errorMessage}`;
+        setExecutionError(surfacedError);
+        console.error('[UserSpacePreview] execute-component request failed:', {
+          component_id,
+          error: errorMessage,
+          request,
+        });
+        frameWindow.postMessage(
+          {
+            bridge: 'userspace-exec-v1',
+            type: 'ragtime-execute-result',
+            callId,
+            result: {
+              rows: [],
+              columns: [],
+              row_count: 0,
+              error: errorMessage,
+            },
+          },
+          '*'
+        );
+      } finally {
+        setPendingExecutions((current) => Math.max(0, current - 1));
+      }
+    },
+    [workspaceId, normalizeExecuteResult]
+  );
+
+  useEffect(() => {
+    window.addEventListener('message', handleIframeMessage);
+    return () => window.removeEventListener('message', handleIframeMessage);
+  }, [handleIframeMessage]);
+
+  useEffect(() => {
+    setExecutionError(null);
+  }, [workspaceId, entryPath, previewInstanceKey]);
+
+  useEffect(() => {
+    onExecutionStateChange?.(pendingExecutions > 0);
+  }, [pendingExecutions, onExecutionStateChange]);
+
+  useEffect(() => {
+    setPendingExecutions(0);
+  }, [workspaceId, entryPath, previewInstanceKey]);
 
   const transpileResult = useMemo(() => {
     const normalizedEntry = normalizePath(entryPath);
@@ -873,7 +1125,13 @@ export function UserSpaceArtifactPreview({
 
   return (
     <div className="userspace-preview-frame-wrap">
+      {executionError ? (
+        <div className="status-message error userspace-preview-exec-error" role="alert">
+          {executionError}
+        </div>
+      ) : null}
       <iframe
+        ref={iframeRef}
         key={`${previewInstanceKey ?? ''}:${transpileResult.entryPath}`}
         title="TypeScript module preview"
         className="userspace-preview-frame"

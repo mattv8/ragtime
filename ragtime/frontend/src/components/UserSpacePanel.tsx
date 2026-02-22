@@ -41,6 +41,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const [fileDirty, setFileDirty] = useState(false);
   const [fileContentCache, setFileContentCache] = useState<Record<string, { content: string; updatedAt: string }>>({});
   const [previewLiveDataConnections, setPreviewLiveDataConnections] = useState<UserSpaceLiveDataConnection[]>([]);
+  const [previewExecuting, setPreviewExecuting] = useState(false);
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -1208,6 +1209,12 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
         </div>
 
         <div className="userspace-toolbar-group userspace-toolbar-group-right">
+          {previewExecuting && (
+            <span className="userspace-toolbar-live-status" title="Live data connection in progress">
+              <span className="userspace-toolbar-live-spinner" aria-hidden="true" />
+              Connecting data...
+            </span>
+          )}
           {activeWorkspace && (
             <span className="userspace-role-badge">
               {activeWorkspaceRole}{!canEditWorkspace ? ' (read-only)' : ''}
@@ -1401,6 +1408,8 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
               workspaceFiles={previewWorkspaceFiles}
               liveDataConnections={previewLiveDataConnections}
               previewInstanceKey={activeWorkspaceId ?? ''}
+              workspaceId={activeWorkspaceId ?? undefined}
+              onExecutionStateChange={setPreviewExecuting}
             />
           </div>
 

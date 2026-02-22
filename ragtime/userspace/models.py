@@ -96,6 +96,19 @@ class UserSpaceFileResponse(BaseModel):
     updated_at: datetime
 
 
+class ExecuteComponentRequest(BaseModel):
+    component_id: str = Field(min_length=1)
+    request: dict[str, Any] | str
+
+
+class ExecuteComponentResponse(BaseModel):
+    component_id: str
+    rows: list[dict[str, Any]]
+    columns: list[str]
+    row_count: int
+    error: str | None = None
+
+
 class UserSpaceSnapshot(BaseModel):
     id: str
     workspace_id: str
