@@ -1202,82 +1202,10 @@ class UserSpaceService:
             workspace_id,
             user_id=user_id,
         )
-
-        # Verify component_id is a selected tool
-        if request.component_id not in workspace.selected_tool_ids:
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    f"Component {request.component_id} is not selected "
-                    "for this workspace."
-                ),
-            )
-
-        tool_config = await repository.get_tool_config(request.component_id)
-        if tool_config is None or not tool_config.enabled:
-            raise HTTPException(
-                status_code=404,
-                detail="Tool configuration not found or disabled.",
-            )
-
-        tool_type = tool_config.tool_type.value
-        if tool_type not in _USPACE_EXEC_SUPPORTED_SQL_TOOLS:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Live preview execution supports SQL tools only "
-                    "(postgres, mysql, mssql)."
-                ),
-            )
-
-        conn_config = tool_config.connection_config or {}
-
-        # Extract query from request payload
-        query = self._extract_query_text(request.request)
-
-        if not query.strip():
-            raise HTTPException(
-                status_code=400,
-                detail="No query/command found in request payload.",
-            )
-
-        # Dispatch to appropriate query executor
-        raw_output: str
-        try:
-            raw_output = await self._dispatch_tool_query(
-                tool_type, conn_config, tool_config, query
-            )
-        except Exception as exc:
-            logger.error(
-                "Component execution failed for %s: %s",
-                request.component_id,
-                exc,
-            )
-            return ExecuteComponentResponse(
-                component_id=request.component_id,
-                rows=[],
-                columns=[],
-                row_count=0,
-                error=str(exc),
-            )
-
-        # Check for error output
-        if raw_output.startswith("Error:"):
-            return ExecuteComponentResponse(
-                component_id=request.component_id,
-                rows=[],
-                columns=[],
-                row_count=0,
-                error=raw_output,
-            )
-
-        # Parse tabular output into structured rows
-        rows, columns = self._parse_query_output(raw_output)
-        return ExecuteComponentResponse(
-            component_id=request.component_id,
-            rows=rows,
-            columns=columns,
-            row_count=len(rows),
+        return await self._execute_component_for_workspace(
+            workspace,
+            request,
+            error_log_prefix="Component execution failed",
         )
 
     async def execute_shared_component(
@@ -1288,33 +1216,23 @@ class UserSpaceService:
         workspace_id = self._resolve_workspace_id_from_share_token(share_token)
         workspace = await self._load_workspace_for_component_execution(workspace_id)
 
-        if request.component_id not in workspace.selected_tool_ids:
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    f"Component {request.component_id} is not selected "
-                    "for this workspace."
-                ),
-            )
+        return await self._execute_component_for_workspace(
+            workspace,
+            request,
+            error_log_prefix="Shared component execution failed",
+        )
 
-        tool_config = await repository.get_tool_config(request.component_id)
-        if tool_config is None or not tool_config.enabled:
-            raise HTTPException(
-                status_code=404,
-                detail="Tool configuration not found or disabled.",
-            )
+    async def _execute_component_for_workspace(
+        self,
+        workspace: UserSpaceWorkspace,
+        request: ExecuteComponentRequest,
+        *,
+        error_log_prefix: str,
+    ) -> ExecuteComponentResponse:
+        tool_type, conn_config, tool_config = (
+            await self._resolve_component_execution_config(workspace, request.component_id)
+        )
 
-        tool_type = tool_config.tool_type.value
-        if tool_type not in _USPACE_EXEC_SUPPORTED_SQL_TOOLS:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Live preview execution supports SQL tools only "
-                    "(postgres, mysql, mssql)."
-                ),
-            )
-
-        conn_config = tool_config.connection_config or {}
         query = self._extract_query_text(request.request)
         if not query.strip():
             raise HTTPException(
@@ -1331,7 +1249,8 @@ class UserSpaceService:
             )
         except Exception as exc:
             logger.error(
-                "Shared component execution failed for %s: %s",
+                "%s for %s: %s",
+                error_log_prefix,
                 request.component_id,
                 exc,
             )
@@ -1343,9 +1262,53 @@ class UserSpaceService:
                 error=str(exc),
             )
 
+        return self._build_execute_component_response(
+            component_id=request.component_id,
+            raw_output=raw_output,
+        )
+
+    async def _resolve_component_execution_config(
+        self,
+        workspace: UserSpaceWorkspace,
+        component_id: str,
+    ) -> tuple[str, dict[str, Any], Any]:
+        if component_id not in workspace.selected_tool_ids:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"Component {component_id} is not selected "
+                    "for this workspace."
+                ),
+            )
+
+        tool_config = await repository.get_tool_config(component_id)
+        if tool_config is None or not tool_config.enabled:
+            raise HTTPException(
+                status_code=404,
+                detail="Tool configuration not found or disabled.",
+            )
+
+        tool_type = tool_config.tool_type.value
+        if tool_type not in _USPACE_EXEC_SUPPORTED_SQL_TOOLS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Live preview execution supports SQL tools only "
+                    "(postgres, mysql, mssql)."
+                ),
+            )
+
+        conn_config = tool_config.connection_config or {}
+        return tool_type, conn_config, tool_config
+
+    def _build_execute_component_response(
+        self,
+        component_id: str,
+        raw_output: str,
+    ) -> ExecuteComponentResponse:
         if raw_output.startswith("Error:"):
             return ExecuteComponentResponse(
-                component_id=request.component_id,
+                component_id=component_id,
                 rows=[],
                 columns=[],
                 row_count=0,
@@ -1354,7 +1317,7 @@ class UserSpaceService:
 
         rows, columns = self._parse_query_output(raw_output)
         return ExecuteComponentResponse(
-            component_id=request.component_id,
+            component_id=component_id,
             rows=rows,
             columns=columns,
             row_count=len(rows),

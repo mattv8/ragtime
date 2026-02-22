@@ -248,6 +248,10 @@ User Space internal tools behavior:
 - User Space prompt guidance instructs the agent to create snapshots at meaningful stopping points (milestones/checkpoints).
 - `upsert_userspace_file` returns AI-facing warnings when hard-coded hex colors are detected in generated module/CSS content, so the agent can replace them with theme tokens.
 - Live-data contract enforcement is deterministic at both agent and userspace service write paths and gated by intent: only writes with `live_data_requested=true` are required to include non-empty `live_data_connections` metadata for eligible module-source paths/types.
+- Agent-side `upsert_userspace_file` currently applies stricter policy than service-level writes:
+  - for dashboard/module source writes in workspaces that already have selected tools, agent writes effectively force live-data wiring expectations even when `live_data_requested=false` is passed,
+  - hardcoded mock/sample data patterns in dashboard modules are actively rejected by the agent wrapper,
+  - service-level `PUT /workspaces/{workspace_id}/files/{file_path:path}` remains intent-gated (`live_data_requested=true`) for strict contract-required metadata checks.
 - Each `live_data_connections` item requires a `tool_config` component reference (`component_id`) plus the live `request` payload used for refresh.
 - `live_data_connections.component_id` must reference a tool currently selected in the workspace (`selected_tool_ids`); non-selected IDs are rejected.
 - For `live_data_requested=true`, `live_data_checks` is required and each check must report:
@@ -354,8 +358,6 @@ Shared link behavior:
 - Share tokens are deterministic and currently non-expiring/non-revocable per-workspace (rotation follows server encryption key changes).
 - No dedicated automated userspace test suite is defined in this document.
 - Member picker currently depends on admin user listing capability in UI flows.
-
----
 
 ## 12) Verification Criteria (State Conformance)
 
