@@ -1548,7 +1548,24 @@ export interface ExecuteComponentResponse {
 export interface UserSpaceWorkspaceShareLink {
   workspace_id: string;
   share_token: string;
+  owner_username: string;
+  share_slug: string;
   share_url: string;
+}
+
+export interface UserSpaceWorkspaceShareLinkStatus {
+  workspace_id: string;
+  has_share_link: boolean;
+  owner_username: string;
+  share_slug: string | null;
+  share_token: string | null;
+  share_url: string | null;
+  created_at: string | null;
+}
+
+export interface WorkspaceShareSlugAvailabilityResponse {
+  slug: string;
+  available: boolean;
 }
 
 export interface UserSpaceSharedPreviewResponse {

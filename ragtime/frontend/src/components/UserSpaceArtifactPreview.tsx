@@ -22,6 +22,8 @@ interface UserSpaceArtifactPreviewProps {
   previewInstanceKey?: string;
   workspaceId?: string;
   shareToken?: string;
+  ownerUsername?: string;
+  shareSlug?: string;
   onExecutionStateChange?: (isExecuting: boolean) => void;
 }
 
@@ -32,6 +34,8 @@ export function UserSpaceArtifactPreview({
   previewInstanceKey,
   workspaceId,
   shareToken,
+  ownerUsername,
+  shareSlug,
   onExecutionStateChange,
 }: UserSpaceArtifactPreviewProps) {
   const themeTokens = readThemeTokens();
@@ -100,7 +104,7 @@ export function UserSpaceArtifactPreview({
       setPendingExecutions((current) => current + 1);
       setExecutionError(null);
 
-      if (!workspaceId && !shareToken) {
+      if (!workspaceId && !shareToken && !(ownerUsername && shareSlug)) {
         const errorMessage = 'No workspace context available';
         setExecutionError(errorMessage);
         console.error('[UserSpacePreview] execute-component failed:', errorMessage);
@@ -123,10 +127,15 @@ export function UserSpaceArtifactPreview({
             component_id,
             request,
           })
-          : await api.executeWorkspaceComponent(workspaceId as string, {
-            component_id,
-            request,
-          });
+          : ownerUsername && shareSlug
+            ? await api.executeUserSpaceSharedComponentBySlug(ownerUsername, shareSlug, {
+              component_id,
+              request,
+            })
+            : await api.executeWorkspaceComponent(workspaceId as string, {
+              component_id,
+              request,
+            });
         const normalizedResult = normalizeExecuteResult(result);
         const normalizedError = typeof normalizedResult.error === 'string' ? normalizedResult.error.trim() : '';
         if (normalizedError) {
@@ -176,7 +185,7 @@ export function UserSpaceArtifactPreview({
         setPendingExecutions((current) => Math.max(0, current - 1));
       }
     },
-    [workspaceId, shareToken, normalizeExecuteResult]
+    [workspaceId, shareToken, ownerUsername, shareSlug, normalizeExecuteResult]
   );
 
   useEffect(() => {
@@ -186,7 +195,7 @@ export function UserSpaceArtifactPreview({
 
   useEffect(() => {
     setExecutionError(null);
-  }, [workspaceId, shareToken, entryPath, previewInstanceKey]);
+  }, [workspaceId, shareToken, ownerUsername, shareSlug, entryPath, previewInstanceKey]);
 
   useEffect(() => {
     onExecutionStateChange?.(pendingExecutions > 0);
@@ -194,7 +203,7 @@ export function UserSpaceArtifactPreview({
 
   useEffect(() => {
     setPendingExecutions(0);
-  }, [workspaceId, shareToken, entryPath, previewInstanceKey]);
+  }, [workspaceId, shareToken, ownerUsername, shareSlug, entryPath, previewInstanceKey]);
 
   const transpileResult = useMemo(() => {
     const normalizedEntry = normalizePath(entryPath);

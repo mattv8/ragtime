@@ -6,6 +6,10 @@ import type { OAuthParams } from '@/components';
 import '@/styles/global.css';
 
 type ViewType = 'chat' | 'userspace' | 'indexer' | 'tools' | 'settings';
+type UserSpaceSharedRoute =
+  | { mode: 'token'; token: string }
+  | { mode: 'slug'; ownerUsername: string; shareSlug: string }
+  | null;
 
 function getInitialView(): ViewType {
   const params = new URLSearchParams(window.location.search);
@@ -47,10 +51,26 @@ function getOAuthParams(): OAuthParams | null {
   return null;
 }
 
-function getUserSpaceShareToken(): string | null {
+function getUserSpaceSharedRoute(): UserSpaceSharedRoute {
   const params = new URLSearchParams(window.location.search);
   const token = params.get('userspace_share_token');
-  return token && token.trim() ? token.trim() : null;
+  if (token && token.trim()) {
+    return { mode: 'token', token: token.trim() };
+  }
+
+  const parts = window.location.pathname.split('/').filter(Boolean);
+  if (parts.length === 2) {
+    const [ownerUsername, shareSlug] = parts;
+    if (ownerUsername && shareSlug) {
+      return {
+        mode: 'slug',
+        ownerUsername: decodeURIComponent(ownerUsername),
+        shareSlug: decodeURIComponent(shareSlug),
+      };
+    }
+  }
+
+  return null;
 }
 
 export function App() {
@@ -64,7 +84,7 @@ export function App() {
     const params = getOAuthParams();
     return params;
   });
-  const [userspaceShareToken] = useState<string | null>(getUserSpaceShareToken);
+  const [userspaceSharedRoute] = useState<UserSpaceSharedRoute>(getUserSpaceSharedRoute);
 
   // App state
   const [activeView, setActiveView] = useState<ViewType>(getInitialView);
@@ -125,7 +145,7 @@ export function App() {
 
   // Check authentication status on mount
   useEffect(() => {
-    if (userspaceShareToken) {
+    if (userspaceSharedRoute) {
       setAuthLoading(false);
       return;
     }
@@ -162,7 +182,7 @@ export function App() {
     };
 
     checkAuth();
-  }, [userspaceShareToken]);
+  }, [userspaceSharedRoute]);
 
   const handleLoginSuccess = (user: User) => {
     setCurrentUser(user);
@@ -241,7 +261,7 @@ export function App() {
   // Sync state to URL params (only sync valid views for user's role)
   // Skip URL sync during OAuth flow - we need to preserve those params until redirect
   useEffect(() => {
-    if (userspaceShareToken) return;
+    if (userspaceSharedRoute) return;
     // Don't modify URL during OAuth authorization flow
     if (oauthParams) return;
 
@@ -254,10 +274,12 @@ export function App() {
     }
     const newUrl = `${window.location.pathname}?${params.toString()}`;
     window.history.replaceState({}, '', newUrl);
-  }, [activeView, highlightSetting, oauthParams, isAdmin, userspaceShareToken]);
+  }, [activeView, highlightSetting, oauthParams, isAdmin, userspaceSharedRoute]);
 
-  if (userspaceShareToken) {
-    return <UserSpaceSharedView shareToken={userspaceShareToken} />;
+  if (userspaceSharedRoute) {
+    return userspaceSharedRoute.mode === 'token'
+      ? <UserSpaceSharedView shareToken={userspaceSharedRoute.token} />
+      : <UserSpaceSharedView ownerUsername={userspaceSharedRoute.ownerUsername} shareSlug={userspaceSharedRoute.shareSlug} />;
   }
 
   const loadJobs = useCallback(async () => {

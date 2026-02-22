@@ -14,12 +14,15 @@ from ragtime.userspace.models import (CreateSnapshotRequest,
                                       RestoreSnapshotResponse,
                                       UpdateWorkspaceMembersRequest,
                                       UpdateWorkspaceRequest,
+                                      UpdateWorkspaceShareSlugRequest,
                                       UpsertWorkspaceFileRequest,
                                       UserSpaceAvailableTool,
                                       UserSpaceFileInfo, UserSpaceFileResponse,
                                       UserSpaceSharedPreviewResponse,
                                       UserSpaceSnapshot, UserSpaceWorkspace,
-                                      UserSpaceWorkspaceShareLink)
+                                      UserSpaceWorkspaceShareLink,
+                                      UserSpaceWorkspaceShareLinkStatus,
+                                      WorkspaceShareSlugAvailabilityResponse)
 from ragtime.userspace.service import userspace_service
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space"])
@@ -187,6 +190,7 @@ async def execute_component(
 async def create_workspace_share_link(
     workspace_id: str,
     request: Request,
+    rotate_token: bool = Query(default=False),
     user: Any = Depends(get_current_user),
 ):
     base_url = str(request.base_url).rstrip("/")
@@ -194,6 +198,73 @@ async def create_workspace_share_link(
         workspace_id,
         user.id,
         base_url=base_url,
+        rotate_token=rotate_token,
+    )
+
+
+@router.get(
+    "/workspaces/{workspace_id}/share-link",
+    response_model=UserSpaceWorkspaceShareLinkStatus,
+)
+async def get_workspace_share_link(
+    workspace_id: str,
+    request: Request,
+    user: Any = Depends(get_current_user),
+):
+    base_url = str(request.base_url).rstrip("/")
+    return await userspace_service.get_workspace_share_link_status(
+        workspace_id,
+        user.id,
+        base_url=base_url,
+    )
+
+
+@router.delete(
+    "/workspaces/{workspace_id}/share-link",
+    response_model=UserSpaceWorkspaceShareLinkStatus,
+)
+async def revoke_workspace_share_link(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.revoke_workspace_share_link(
+        workspace_id,
+        user.id,
+    )
+
+
+@router.put(
+    "/workspaces/{workspace_id}/share-link/slug",
+    response_model=UserSpaceWorkspaceShareLinkStatus,
+)
+async def update_workspace_share_slug(
+    workspace_id: str,
+    request: UpdateWorkspaceShareSlugRequest,
+    base_request: Request,
+    user: Any = Depends(get_current_user),
+):
+    base_url = str(base_request.base_url).rstrip("/")
+    return await userspace_service.update_workspace_share_slug(
+        workspace_id,
+        request.slug,
+        user.id,
+        base_url=base_url,
+    )
+
+
+@router.get(
+    "/workspaces/{workspace_id}/share-link/availability",
+    response_model=WorkspaceShareSlugAvailabilityResponse,
+)
+async def check_workspace_share_slug_availability(
+    workspace_id: str,
+    slug: str = Query(min_length=1, max_length=120),
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.check_workspace_share_slug_availability(
+        workspace_id,
+        slug,
+        user.id,
     )
 
 
@@ -205,6 +276,14 @@ async def get_shared_preview(share_token: str):
     return await userspace_service.get_shared_preview(share_token)
 
 
+@router.get(
+    "/shared/{owner_username}/{share_slug}",
+    response_model=UserSpaceSharedPreviewResponse,
+)
+async def get_shared_preview_by_slug(owner_username: str, share_slug: str):
+    return await userspace_service.get_shared_preview_by_slug(owner_username, share_slug)
+
+
 @router.post(
     "/shared/{share_token}/execute-component",
     response_model=ExecuteComponentResponse,
@@ -214,6 +293,22 @@ async def execute_shared_component(
     request: ExecuteComponentRequest,
 ):
     return await userspace_service.execute_shared_component(share_token, request)
+
+
+@router.post(
+    "/shared/{owner_username}/{share_slug}/execute-component",
+    response_model=ExecuteComponentResponse,
+)
+async def execute_shared_component_by_slug(
+    owner_username: str,
+    share_slug: str,
+    request: ExecuteComponentRequest,
+):
+    return await userspace_service.execute_shared_component_by_slug(
+        owner_username,
+        share_slug,
+        request,
+    )
 
 
 @router.get(

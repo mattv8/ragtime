@@ -773,6 +773,7 @@ model Workspace {
   description String?  @default("")
   shareToken  String?  @unique @map("share_token")
   shareTokenCreatedAt DateTime? @map("share_token_created_at")
+  shareSlug   String?  @map("share_slug")
 
   ownerUserId String   @map("owner_user_id")
   owner       User     @relation("WorkspaceOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
@@ -786,6 +787,7 @@ model Workspace {
 
   @@index([ownerUserId])
   @@unique([ownerUserId, nameNormalized])
+  @@unique([ownerUserId, shareSlug])
   @@index([updatedAt])
   @@map("workspaces")
 }

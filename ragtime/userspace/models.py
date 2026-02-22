@@ -112,7 +112,28 @@ class ExecuteComponentResponse(BaseModel):
 class UserSpaceWorkspaceShareLink(BaseModel):
     workspace_id: str
     share_token: str
+    owner_username: str
+    share_slug: str
     share_url: str
+
+
+class UserSpaceWorkspaceShareLinkStatus(BaseModel):
+    workspace_id: str
+    has_share_link: bool
+    owner_username: str
+    share_slug: str | None = None
+    share_token: str | None = None
+    share_url: str | None = None
+    created_at: datetime | None = None
+
+
+class UpdateWorkspaceShareSlugRequest(BaseModel):
+    slug: str = Field(min_length=1, max_length=120)
+
+
+class WorkspaceShareSlugAvailabilityResponse(BaseModel):
+    slug: str
+    available: bool
 
 
 class UserSpaceSharedPreviewResponse(BaseModel):

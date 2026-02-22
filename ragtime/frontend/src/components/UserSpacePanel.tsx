@@ -4,7 +4,7 @@ import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 
 import { api } from '@/api';
-import type { User, UserSpaceAvailableTool, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceSnapshot, UserSpaceWorkspace, UserSpaceWorkspaceMember, WorkspaceRole } from '@/types';
+import type { User, UserSpaceAvailableTool, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceSnapshot, UserSpaceWorkspace, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, WorkspaceRole } from '@/types';
 import { buildUserSpaceTree, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { ChatPanel } from './ChatPanel';
 import { ResizeHandle } from './ResizeHandle';
@@ -21,6 +21,22 @@ function normalizeWorkspacePath(value: string): string {
 
 function getExpandedFoldersStorageKey(workspaceId: string): string {
   return `userspace:expanded-folders:${workspaceId}`;
+}
+
+function normalizeShareSlugInput(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9_-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^[_-]+|[_-]+$/g, '')
+    .slice(0, 80);
+}
+
+function getDefaultShareSlug(value: string | null | undefined): string {
+  const normalized = normalizeShareSlugInput(value ?? '');
+  return normalized || 'shared_workspace';
 }
 
 export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePanelProps) {
@@ -45,6 +61,16 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [sharingWorkspace, setSharingWorkspace] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [shareLinkStatus, setShareLinkStatus] = useState<UserSpaceWorkspaceShareLinkStatus | null>(null);
+  const [loadingShareStatus, setLoadingShareStatus] = useState(false);
+  const [rotatingShareLink, setRotatingShareLink] = useState(false);
+  const [revokingShareLink, setRevokingShareLink] = useState(false);
+  const [autoCreateShareLinkAttempted, setAutoCreateShareLinkAttempted] = useState(false);
+  const [shareSlugDraft, setShareSlugDraft] = useState('');
+  const [checkingShareSlug, setCheckingShareSlug] = useState(false);
+  const [savingShareSlug, setSavingShareSlug] = useState(false);
+  const [shareSlugAvailable, setShareSlugAvailable] = useState<boolean | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   const toggleFullscreen = useCallback(() => {
@@ -935,43 +961,186 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     setEditingName(true);
   }, [activeWorkspace, canEditWorkspace]);
 
-  const requestWorkspaceShareUrl = useCallback(async () => {
+  const loadShareLinkStatus = useCallback(async () => {
+    if (!activeWorkspaceId || !canEditWorkspace) {
+      setShareLinkStatus(null);
+      return;
+    }
+
+    setLoadingShareStatus(true);
+    try {
+      const status = await api.getUserSpaceWorkspaceShareLinkStatus(activeWorkspaceId);
+      setShareLinkStatus(status);
+      setShareSlugDraft(status.share_slug ?? getDefaultShareSlug(activeWorkspace?.name));
+      setShareSlugAvailable(null);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load share link state');
+      setShareLinkStatus(null);
+    } finally {
+      setLoadingShareStatus(false);
+    }
+  }, [activeWorkspace?.name, activeWorkspaceId, canEditWorkspace]);
+
+  useEffect(() => {
+    if (!showShareModal) return;
+    void loadShareLinkStatus();
+  }, [loadShareLinkStatus, showShareModal]);
+
+  const handleOpenShareModal = useCallback(() => {
+    if (!activeWorkspaceId || !canEditWorkspace) return;
+    setShareSlugDraft(shareLinkStatus?.share_slug ?? getDefaultShareSlug(activeWorkspace?.name));
+    setShareSlugAvailable(null);
+    setAutoCreateShareLinkAttempted(false);
+    setShowShareModal(true);
+  }, [activeWorkspace?.name, activeWorkspaceId, canEditWorkspace, shareLinkStatus?.share_slug]);
+
+  const handleEnsureShareLink = useCallback(async (rotateToken = false) => {
     if (!activeWorkspaceId || !canEditWorkspace) return null;
-    const response = await api.createUserSpaceWorkspaceShareLink(activeWorkspaceId);
-    return response.share_url;
+
+    setSharingWorkspace(true);
+    if (rotateToken) {
+      setRotatingShareLink(true);
+    }
+
+    try {
+      const link = await api.createUserSpaceWorkspaceShareLink(activeWorkspaceId, rotateToken);
+      const nextStatus: UserSpaceWorkspaceShareLinkStatus = {
+        workspace_id: link.workspace_id,
+        has_share_link: true,
+        owner_username: link.owner_username,
+        share_slug: link.share_slug,
+        share_token: link.share_token,
+        share_url: link.share_url,
+        created_at: new Date().toISOString(),
+      };
+      setShareLinkStatus(nextStatus);
+      setShareSlugDraft(link.share_slug);
+      setShareSlugAvailable(true);
+      setError(null);
+      return nextStatus;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create share link');
+      return null;
+    } finally {
+      setSharingWorkspace(false);
+      setRotatingShareLink(false);
+    }
   }, [activeWorkspaceId, canEditWorkspace]);
 
-  const handleQuickShare = useCallback(async () => {
-    if (!activeWorkspaceId || !canEditWorkspace) return;
-    setSharingWorkspace(true);
+  useEffect(() => {
+    if (!showShareModal || !activeWorkspaceId || !canEditWorkspace) return;
+    if (loadingShareStatus || sharingWorkspace || autoCreateShareLinkAttempted) return;
+    if (!shareLinkStatus || shareLinkStatus.has_share_link) return;
+
+    setAutoCreateShareLinkAttempted(true);
+    void handleEnsureShareLink(false);
+  }, [
+    showShareModal,
+    activeWorkspaceId,
+    canEditWorkspace,
+    loadingShareStatus,
+    sharingWorkspace,
+    autoCreateShareLinkAttempted,
+    shareLinkStatus,
+    handleEnsureShareLink,
+  ]);
+
+  const handleCopyShareLink = useCallback(async () => {
+    let url = shareLinkStatus?.share_url ?? null;
+    if (!url) {
+      const created = await handleEnsureShareLink(false);
+      url = created?.share_url ?? null;
+    }
+    if (!url) return;
+
     try {
-      const shareUrl = await requestWorkspaceShareUrl();
-      if (!shareUrl) return;
-      await navigator.clipboard.writeText(shareUrl);
+      await navigator.clipboard.writeText(url);
       setShareCopied(true);
       window.setTimeout(() => setShareCopied(false), 1500);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to copy share link');
-    } finally {
-      setSharingWorkspace(false);
     }
-  }, [activeWorkspaceId, canEditWorkspace, requestWorkspaceShareUrl]);
+  }, [handleEnsureShareLink, shareLinkStatus?.share_url]);
 
   const handleOpenFullPreview = useCallback(async () => {
+    let url = shareLinkStatus?.share_url ?? null;
+    if (!url) {
+      const created = await handleEnsureShareLink(false);
+      url = created?.share_url ?? null;
+    }
+    if (!url) return;
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }, [handleEnsureShareLink, shareLinkStatus?.share_url]);
+
+  const handleRotateShareLink = useCallback(async () => {
+    await handleEnsureShareLink(true);
+  }, [handleEnsureShareLink]);
+
+  const handleRevokeShareLink = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
-    setSharingWorkspace(true);
+    setRevokingShareLink(true);
     try {
-      const shareUrl = await requestWorkspaceShareUrl();
-      if (!shareUrl) return;
-      window.open(shareUrl, '_blank', 'noopener,noreferrer');
+      const status = await api.revokeUserSpaceWorkspaceShareLink(activeWorkspaceId);
+      setShareLinkStatus(status);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to open preview');
+      setError(err instanceof Error ? err.message : 'Failed to revoke share link');
     } finally {
-      setSharingWorkspace(false);
+      setRevokingShareLink(false);
     }
-  }, [activeWorkspaceId, canEditWorkspace, requestWorkspaceShareUrl]);
+  }, [activeWorkspaceId, canEditWorkspace]);
+
+  useEffect(() => {
+    if (!showShareModal || !activeWorkspaceId || !canEditWorkspace) return;
+    const normalized = normalizeShareSlugInput(shareSlugDraft);
+    if (!normalized) {
+      setShareSlugAvailable(false);
+      setCheckingShareSlug(false);
+      return;
+    }
+
+    setCheckingShareSlug(true);
+    const timer = window.setTimeout(async () => {
+      try {
+        const result = await api.checkUserSpaceWorkspaceShareSlugAvailability(activeWorkspaceId, normalized);
+        setShareSlugAvailable(result.available);
+      } catch {
+        setShareSlugAvailable(false);
+      } finally {
+        setCheckingShareSlug(false);
+      }
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timer);
+      setCheckingShareSlug(false);
+    };
+  }, [showShareModal, activeWorkspaceId, canEditWorkspace, shareSlugDraft]);
+
+  const handleSaveShareSlug = useCallback(async () => {
+    if (!activeWorkspaceId || !canEditWorkspace) return;
+    const normalized = normalizeShareSlugInput(shareSlugDraft);
+    if (!normalized) {
+      setError('Share slug is required');
+      return;
+    }
+
+    setSavingShareSlug(true);
+    try {
+      const status = await api.updateUserSpaceWorkspaceShareSlug(activeWorkspaceId, normalized);
+      setShareLinkStatus(status);
+      setShareSlugDraft(status.share_slug ?? normalized);
+      setShareSlugAvailable(true);
+      setError(null);
+    } catch (err) {
+      setShareSlugAvailable(false);
+      setError(err instanceof Error ? err.message : 'Failed to save share slug');
+    } finally {
+      setSavingShareSlug(false);
+    }
+  }, [activeWorkspaceId, canEditWorkspace, shareSlugDraft]);
 
   const handleSaveName = useCallback(async () => {
     if (!activeWorkspace || !canEditWorkspace || !draftName.trim()) return;
@@ -1274,17 +1443,17 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
           <div className="userspace-toolbar-actions" aria-label="Workspace sharing actions">
             <button
               className="btn btn-secondary btn-sm btn-icon userspace-toolbar-action-btn"
-              onClick={handleQuickShare}
+              onClick={handleOpenShareModal}
               disabled={!activeWorkspaceId || !canEditWorkspace || sharingWorkspace}
-              title={shareCopied ? 'Share link copied' : 'Copy static share link'}
+              title="Manage share link"
             >
               {shareCopied ? <Check size={14} /> : <Link2 size={14} />}
             </button>
             <button
               className="btn btn-secondary btn-sm btn-icon userspace-toolbar-action-btn"
-              onClick={handleOpenFullPreview}
+              onClick={handleOpenShareModal}
               disabled={!activeWorkspaceId || !canEditWorkspace || sharingWorkspace}
-              title="Open shared full-screen preview"
+              title="Manage shared preview"
             >
               <ExternalLink size={14} />
             </button>
@@ -1523,7 +1692,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       {/* === Members modal === */}
       {showMembersModal && activeWorkspace && (
         <div className="modal-overlay" onClick={() => setShowMembersModal(false)}>
-          <div className="modal-content modal-small" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-content modal-small userspace-members-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h3>Manage Members</h3>
               <button className="modal-close" onClick={() => setShowMembersModal(false)}>&times;</button>
@@ -1539,13 +1708,22 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                   return (
                     <div key={member.user_id} className="userspace-member-row">
                       <span>{formatUserLabel(user, member.user_id)}</span>
-                      <select
-                        value={member.role}
-                        onChange={(e) => handleChangeMemberRole(member.user_id, e.target.value as WorkspaceRole)}
-                      >
-                        <option value="editor">editor</option>
-                        <option value="viewer">viewer</option>
-                      </select>
+                      <div className="userspace-member-role-toggle" role="group" aria-label="Member role">
+                        <button
+                          type="button"
+                          className={`userspace-member-role-option ${member.role === 'editor' ? 'active' : ''}`}
+                          onClick={() => handleChangeMemberRole(member.user_id, 'editor')}
+                        >
+                          Editor
+                        </button>
+                        <button
+                          type="button"
+                          className={`userspace-member-role-option ${member.role === 'viewer' ? 'active' : ''}`}
+                          onClick={() => handleChangeMemberRole(member.user_id, 'viewer')}
+                        >
+                          Viewer
+                        </button>
+                      </div>
                       <button className="chat-action-btn" onClick={() => handleRemoveMember(member.user_id)} title="Remove member">
                         <X size={14} />
                       </button>
@@ -1580,6 +1758,99 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
               <button className="btn btn-primary" onClick={handleSaveMembers} disabled={savingMembers}>
                 {savingMembers ? 'Saving...' : 'Save'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* === Share modal === */}
+      {showShareModal && activeWorkspace && (
+        <div className="modal-overlay" onClick={() => setShowShareModal(false)}>
+          <div className="modal-content modal-small userspace-share-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Share Workspace</h3>
+              <button className="modal-close" onClick={() => setShowShareModal(false)}>&times;</button>
+            </div>
+            <div className="modal-body">
+              {loadingShareStatus ? (
+                <p className="userspace-muted">Loading share settings...</p>
+              ) : (
+                <>
+                  <div className="userspace-share-link-pane">
+                    <label htmlFor="userspace-share-slug" className="userspace-share-label">Custom slug</label>
+                    <div className="userspace-share-slug-row">
+                      <input
+                        id="userspace-share-slug"
+                        value={shareSlugDraft}
+                        onChange={(event) => {
+                          setShareSlugDraft(normalizeShareSlugInput(event.target.value));
+                          setShareSlugAvailable(null);
+                        }}
+                        placeholder="custom_slug"
+                        autoComplete="off"
+                      />
+                      <button
+                        className="btn btn-secondary"
+                        onClick={handleSaveShareSlug}
+                        disabled={savingShareSlug || checkingShareSlug || sharingWorkspace || revokingShareLink}
+                      >
+                        {savingShareSlug ? 'Saving...' : 'Save Slug'}
+                      </button>
+                    </div>
+                    {shareSlugAvailable !== null && (
+                      <div className={`userspace-share-meta ${shareSlugAvailable ? '' : 'userspace-error'}`}>
+                        {shareSlugAvailable ? 'Slug is available' : 'Slug is unavailable'}
+                      </div>
+                    )}
+
+                    {shareLinkStatus?.has_share_link && shareLinkStatus.share_url ? (
+                      <>
+                        <label htmlFor="userspace-share-url" className="userspace-share-label">Active share URL</label>
+                        <input id="userspace-share-url" value={shareLinkStatus.share_url} readOnly />
+                        <div className="userspace-share-meta">
+                          {shareLinkStatus.created_at ? `Created ${new Date(shareLinkStatus.created_at).toLocaleString()}` : 'Share link active'}
+                        </div>
+                      </>
+                    ) : (
+                      <p className="userspace-muted">No active share link for this workspace.</p>
+                    )}
+                  </div>
+
+                  <div className="userspace-share-controls">
+                    <h4>Sharing Controls</h4>
+                    <div className="userspace-share-actions">
+                      <button
+                        className="btn btn-secondary"
+                        onClick={handleCopyShareLink}
+                        disabled={sharingWorkspace || revokingShareLink || savingShareSlug || checkingShareSlug}
+                      >
+                        {shareCopied ? 'Copied' : 'Copy Link'}
+                      </button>
+                      <button
+                        className="btn btn-secondary"
+                        onClick={handleOpenFullPreview}
+                        disabled={sharingWorkspace || revokingShareLink || savingShareSlug || checkingShareSlug}
+                      >
+                        Open Preview
+                      </button>
+                      <button
+                        className="btn btn-secondary"
+                        onClick={handleRotateShareLink}
+                        disabled={sharingWorkspace || revokingShareLink || savingShareSlug || checkingShareSlug}
+                      >
+                        {rotatingShareLink ? 'Rotating...' : 'Rotate Link'}
+                      </button>
+                      <button
+                        className="btn btn-secondary"
+                        onClick={handleRevokeShareLink}
+                        disabled={revokingShareLink || sharingWorkspace || savingShareSlug || checkingShareSlug || !shareLinkStatus?.has_share_link}
+                      >
+                        {revokingShareLink ? 'Revoking...' : 'Revoke Link'}
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>

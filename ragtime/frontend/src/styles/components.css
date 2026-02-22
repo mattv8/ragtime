@@ -1000,7 +1000,8 @@ textarea:focus {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
-  padding: var(--space-xs) var(--space-sm);
+  min-height: 44px;
+  padding: var(--space-sm) var(--space-sm);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: var(--color-bg-secondary);
@@ -1029,6 +1030,122 @@ textarea:focus {
 
 .userspace-add-member select {
   width: 100%;
+}
+
+.userspace-member-role-toggle {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.userspace-member-role-option {
+  border: none;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.userspace-member-role-option + .userspace-member-role-option {
+  border-left: 1px solid var(--color-border-strong);
+}
+
+.userspace-member-role-option:hover {
+  background: var(--color-surface-hover);
+}
+
+.userspace-member-role-option.active {
+  background: var(--color-primary-light);
+  color: var(--color-text-primary);
+}
+
+.userspace-share-link-pane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-md);
+}
+
+.userspace-share-modal {
+  max-width: 520px;
+}
+
+.userspace-share-modal .modal-header,
+.userspace-share-modal .modal-footer,
+.userspace-members-modal .modal-header,
+.userspace-members-modal .modal-footer {
+  border: none;
+}
+
+.userspace-share-modal .modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.userspace-share-label {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+
+.userspace-share-link-pane input {
+  font-family: var(--font-mono, 'SF Mono', 'Fira Code', monospace);
+  font-size: var(--text-xs);
+  line-height: 1.35;
+  padding: 8px 10px;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-strong);
+  color: var(--color-text-primary);
+}
+
+.userspace-share-link-pane input:focus {
+  border-color: var(--color-input-focus);
+  box-shadow: 0 0 0 3px var(--color-primary-light);
+}
+
+.userspace-share-slug-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-xs);
+  align-items: center;
+}
+
+.userspace-share-meta {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.userspace-share-controls {
+  border-top: none;
+  padding-top: var(--space-md);
+}
+
+.userspace-share-controls h4 {
+  margin: 0 0 var(--space-sm) 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+
+.userspace-share-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-xs);
+}
+
+.userspace-share-actions .btn {
+  width: 100%;
+}
+
+@media (max-width: 640px) {
+  .userspace-share-actions {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* --- Resize handles --- */

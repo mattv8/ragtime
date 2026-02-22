@@ -29,8 +29,8 @@ Implemented capabilities:
 - Snapshot/restore using **git commit history** per workspace.
 - User Space-only agent tools for file I/O plus autonomous checkpoint snapshots.
 - Workspace sharing with role-based access (`owner`, `editor`, `viewer`).
-- Tokenized static share links for direct dashboard iframe access.
-- Public full-screen shared dashboard rendering via URL token.
+- Share links with owner-scoped custom slugs.
+- Public full-screen shared dashboard rendering via path URL `/{username}/{slug}`.
 
 Persistence root:
 
@@ -60,7 +60,7 @@ Implemented workspace actions:
 - Create/edit/delete files
 - Create snapshot
 - Restore snapshot
-- Quick Share (copy tokenized static link)
+- Quick Share (copy slug-based static link)
 - Preview (open shared full-screen render)
 - Delete workspace (owner only)
 - Manage members (owner only)
@@ -169,8 +169,14 @@ Userspace endpoints (`/indexes/userspace`):
 - `DELETE /workspaces/{workspace_id}/files/{file_path:path}`
 - `POST /workspaces/{workspace_id}/execute-component`
 - `POST /workspaces/{workspace_id}/share-link`
+- `GET /workspaces/{workspace_id}/share-link`
+- `DELETE /workspaces/{workspace_id}/share-link`
+- `PUT /workspaces/{workspace_id}/share-link/slug`
+- `GET /workspaces/{workspace_id}/share-link/availability?slug=...`
 - `GET /shared/{share_token}`
 - `POST /shared/{share_token}/execute-component`
+- `GET /shared/{owner_username}/{share_slug}`
+- `POST /shared/{owner_username}/{share_slug}/execute-component`
 - `GET /workspaces/{workspace_id}/snapshots`
 - `POST /workspaces/{workspace_id}/snapshots`
 - `POST /workspaces/{workspace_id}/snapshots/{snapshot_id}/restore`
@@ -193,7 +199,9 @@ File endpoint payload behavior:
 - `POST /workspaces/{workspace_id}/share-link` returns:
   - `workspace_id`
   - `share_token`
-  - `share_url` (`/?userspace_share_token=<token>` using request base URL)
+  - `owner_username`
+  - `share_slug`
+  - `share_url` (`/{username}/{slug}` using request base URL)
 - `GET /shared/{share_token}` returns:
   - `workspace_id`, `workspace_name`
   - `entry_path` (currently `dashboard/main.ts`)

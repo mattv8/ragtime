@@ -6,10 +6,12 @@ import type { UserSpaceSharedPreviewResponse } from '@/types';
 import { UserSpaceArtifactPreview } from './UserSpaceArtifactPreview';
 
 interface UserSpaceSharedViewProps {
-  shareToken: string;
+  shareToken?: string;
+  ownerUsername?: string;
+  shareSlug?: string;
 }
 
-export function UserSpaceSharedView({ shareToken }: UserSpaceSharedViewProps) {
+export function UserSpaceSharedView({ shareToken, ownerUsername, shareSlug }: UserSpaceSharedViewProps) {
   const [previewData, setPreviewData] = useState<UserSpaceSharedPreviewResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -20,7 +22,9 @@ export function UserSpaceSharedView({ shareToken }: UserSpaceSharedViewProps) {
     const load = async () => {
       setLoading(true);
       try {
-        const data = await api.getUserSpaceSharedPreview(shareToken);
+        const data = shareToken
+          ? await api.getUserSpaceSharedPreview(shareToken)
+          : await api.getUserSpaceSharedPreviewBySlug(ownerUsername as string, shareSlug as string);
         if (cancelled) return;
         setPreviewData(data);
         setError(null);
@@ -38,7 +42,7 @@ export function UserSpaceSharedView({ shareToken }: UserSpaceSharedViewProps) {
     return () => {
       cancelled = true;
     };
-  }, [shareToken]);
+  }, [ownerUsername, shareSlug, shareToken]);
 
   if (loading) {
     return <div className="userspace-shared-status">Loading shared dashboard...</div>;
@@ -54,9 +58,11 @@ export function UserSpaceSharedView({ shareToken }: UserSpaceSharedViewProps) {
         entryPath={previewData.entry_path}
         workspaceFiles={previewData.workspace_files}
         liveDataConnections={previewData.live_data_connections ?? []}
-        previewInstanceKey={shareToken}
+        previewInstanceKey={shareToken || `${ownerUsername}/${shareSlug}`}
         workspaceId={previewData.workspace_id}
         shareToken={shareToken}
+        ownerUsername={ownerUsername}
+        shareSlug={shareSlug}
       />
     </div>
   );

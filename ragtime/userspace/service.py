@@ -38,7 +38,9 @@ from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
                                       UserSpaceSharedPreviewResponse,
                                       UserSpaceSnapshot, UserSpaceWorkspace,
                                       UserSpaceWorkspaceShareLink,
-                                      WorkspaceMember)
+                                      UserSpaceWorkspaceShareLinkStatus,
+                                      WorkspaceMember,
+                                      WorkspaceShareSlugAvailabilityResponse)
 
 logger = get_logger(__name__)
 
@@ -70,6 +72,37 @@ def _is_workspace_name_conflict_error(exc: Exception) -> bool:
     return (
         "owner_user_id_name_normalized" in message
         or ("unique" in message and "name_normalized" in message)
+    )
+
+
+def _is_share_token_conflict_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "unique" in message and (
+        "sharetoken" in message
+        or "share_token" in message
+        or "share token" in message
+    )
+
+
+def _normalize_share_slug_for_uniqueness(slug: str) -> str:
+    value = re.sub(r"\s+", "_", (slug or "").strip().lower())
+    value = re.sub(r"[^a-z0-9_-]+", "_", value)
+    value = re.sub(r"_+", "_", value)
+    return value.strip("_-")[:80]
+
+
+def _normalize_owner_username_for_share_path(username: str) -> str:
+    value = (username or "").strip().lower()
+    if value.startswith("local:"):
+        value = value.split(":", 1)[1]
+    return value
+
+
+def _is_share_slug_conflict_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "owner_user_id_share_slug" in message
+        or ("unique" in message and "share_slug" in message)
     )
 
 
@@ -180,6 +213,18 @@ class UserSpaceService:
     def _generate_share_token() -> str:
         return secrets.token_urlsafe(24)
 
+    def _build_workspace_share_url(
+        self,
+        owner_username: str,
+        share_slug: str,
+        base_url: str | None = None,
+    ) -> str:
+        normalized_base = (base_url or "").strip().rstrip("/")
+        owner_segment = quote(owner_username, safe="")
+        slug_segment = quote(share_slug, safe="")
+        share_path = f"/{owner_segment}/{slug_segment}"
+        return f"{normalized_base}{share_path}" if normalized_base else share_path
+
     async def _resolve_workspace_id_from_share_token(self, share_token: str) -> str:
         token = (share_token or "").strip()
         if not token:
@@ -193,6 +238,92 @@ class UserSpaceService:
         if not workspace:
             raise HTTPException(status_code=404, detail="Shared workspace not found")
         return str(workspace.id)
+
+    async def _resolve_workspace_id_from_share_slug(
+        self,
+        owner_username: str,
+        share_slug: str,
+    ) -> str:
+        normalized_owner = _normalize_owner_username_for_share_path(owner_username)
+        normalized_slug = _normalize_share_slug_for_uniqueness(share_slug)
+        if not normalized_owner or not normalized_slug:
+            raise HTTPException(status_code=404, detail="Shared workspace not found")
+
+        db = await get_db()
+        candidate_usernames = [normalized_owner]
+        if not normalized_owner.startswith("local:"):
+            candidate_usernames.append(f"local:{normalized_owner}")
+
+        users = await db.user.find_many(
+            where={"username": {"in": candidate_usernames}},
+            take=5,
+        )
+        owner_ids = [
+            str(getattr(user, "id", ""))
+            for user in users
+            if _normalize_owner_username_for_share_path(
+                str(getattr(user, "username", "") or "")
+            )
+            == normalized_owner
+        ]
+        if not owner_ids:
+            raise HTTPException(status_code=404, detail="Shared workspace not found")
+
+        workspace = await db.workspace.find_first(
+            where={
+                "ownerUserId": {"in": owner_ids},
+                "shareSlug": normalized_slug,
+                "shareToken": {"not": None},
+            },
+            include={"members": True, "toolSelections": True},
+        )
+        if not workspace:
+            raise HTTPException(status_code=404, detail="Shared workspace not found")
+        return str(workspace.id)
+
+    async def _get_public_owner_username(self, owner_user_id: str) -> str:
+        db = await get_db()
+        owner = await db.user.find_unique(where={"id": owner_user_id})
+        if not owner:
+            raise HTTPException(status_code=404, detail="Workspace owner not found")
+
+        normalized = _normalize_owner_username_for_share_path(
+            str(getattr(owner, "username", "") or "")
+        )
+        if not normalized:
+            raise HTTPException(status_code=400, detail="Workspace owner username invalid")
+        return normalized
+
+    async def _allocate_next_share_slug(
+        self,
+        owner_user_id: str,
+        preferred_name: str,
+    ) -> str:
+        base_slug = _normalize_share_slug_for_uniqueness(preferred_name)
+        if not base_slug:
+            base_slug = "shared_workspace"
+
+        db = await get_db()
+        existing_rows = await db.workspace.find_many(
+            where={
+                "ownerUserId": owner_user_id,
+                "shareSlug": {"not": None},
+            },
+            take=10000,
+            order={"createdAt": "asc"},
+        )
+        used: set[str] = {
+            str(getattr(row, "shareSlug", "") or "")
+            for row in existing_rows
+            if str(getattr(row, "shareSlug", "") or "")
+        }
+
+        candidate = base_slug
+        suffix = 2
+        while candidate in used:
+            candidate = f"{base_slug}_{suffix}"
+            suffix += 1
+        return candidate
 
     async def _allocate_next_default_workspace_name(self, user_id: str) -> str:
         db = await get_db()
@@ -633,6 +764,96 @@ class UserSpaceService:
     ) -> UserSpaceWorkspace:
         return await self._enforce_workspace_access(workspace_id, user_id)
 
+    async def get_workspace_share_link_status(
+        self,
+        workspace_id: str,
+        user_id: str,
+        base_url: str | None = None,
+    ) -> UserSpaceWorkspaceShareLinkStatus:
+        await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="editor",
+        )
+
+        db = await get_db()
+        workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+        if not workspace_record:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+
+        share_token = str(getattr(workspace_record, "shareToken", "") or "")
+        share_slug = str(getattr(workspace_record, "shareSlug", "") or "")
+        owner_username = await self._get_public_owner_username(
+            str(getattr(workspace_record, "ownerUserId", "") or "")
+        )
+        created_at = getattr(workspace_record, "shareTokenCreatedAt", None)
+        if not share_token or not share_slug:
+            return UserSpaceWorkspaceShareLinkStatus(
+                workspace_id=workspace_id,
+                has_share_link=False,
+                owner_username=owner_username,
+                share_slug=share_slug or None,
+                share_token=None,
+                share_url=None,
+                created_at=None,
+            )
+
+        return UserSpaceWorkspaceShareLinkStatus(
+            workspace_id=workspace_id,
+            has_share_link=True,
+            owner_username=owner_username,
+            share_slug=share_slug,
+            share_token=share_token,
+            share_url=self._build_workspace_share_url(
+                owner_username,
+                share_slug,
+                base_url=base_url,
+            ),
+            created_at=created_at,
+        )
+
+    async def revoke_workspace_share_link(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> UserSpaceWorkspaceShareLinkStatus:
+        await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="editor",
+        )
+
+        db = await get_db()
+        workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+        if not workspace_record:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+
+        owner_username = await self._get_public_owner_username(
+            str(getattr(workspace_record, "ownerUserId", "") or "")
+        )
+        share_slug = str(getattr(workspace_record, "shareSlug", "") or "")
+
+        try:
+            await db.workspace.update(
+                where={"id": workspace_id},
+                data={
+                    "shareToken": None,
+                    "shareTokenCreatedAt": None,
+                },
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=404, detail="Workspace not found") from exc
+
+        return UserSpaceWorkspaceShareLinkStatus(
+            workspace_id=workspace_id,
+            has_share_link=False,
+            owner_username=owner_username,
+            share_slug=share_slug or None,
+            share_token=None,
+            share_url=None,
+            created_at=None,
+        )
+
     async def create_workspace_share_link(
         self,
         workspace_id: str,
@@ -651,12 +872,34 @@ class UserSpaceService:
             raise HTTPException(status_code=404, detail="Workspace not found")
 
         existing_token = str(getattr(workspace_record, "shareToken", "") or "")
+        owner_user_id = str(getattr(workspace_record, "ownerUserId", "") or "")
+        existing_slug = str(getattr(workspace_record, "shareSlug", "") or "")
+        share_slug = _normalize_share_slug_for_uniqueness(existing_slug)
+        if not share_slug:
+            share_slug = await self._allocate_next_share_slug(
+                owner_user_id,
+                str(getattr(workspace_record, "name", "") or ""),
+            )
 
         if existing_token and not rotate_token:
             share_token = existing_token
+            if share_slug != existing_slug:
+                try:
+                    await db.workspace.update(
+                        where={"id": workspace_id},
+                        data={"shareSlug": share_slug},
+                    )
+                except Exception as exc:
+                    if _is_share_slug_conflict_error(exc):
+                        raise HTTPException(
+                            status_code=409,
+                            detail="A share slug with that value already exists for this owner",
+                        ) from exc
+                    raise
         else:
             share_token = ""
-            for _ in range(10):
+            max_attempts = 20
+            for _ in range(max_attempts):
                 candidate = self._generate_share_token()
                 try:
                     await db.workspace.update(
@@ -664,28 +907,108 @@ class UserSpaceService:
                         data={
                             "shareToken": candidate,
                             "shareTokenCreatedAt": _utc_now(),
+                            "shareSlug": share_slug,
                         },
                     )
                     share_token = candidate
                     break
                 except Exception as exc:
-                    if "share_token" in str(exc).lower() and "unique" in str(exc).lower():
+                    if _is_share_token_conflict_error(exc) or _is_share_slug_conflict_error(
+                        exc
+                    ):
                         continue
                     raise
             if not share_token:
                 raise HTTPException(
                     status_code=500,
-                    detail="Failed to generate workspace share token",
+                    detail="Failed to generate workspace share link",
                 )
-        normalized_base = (base_url or "").strip().rstrip("/")
-        query = quote(share_token, safe="")
-        share_path = f"/?userspace_share_token={query}"
-        share_url = f"{normalized_base}{share_path}" if normalized_base else share_path
+        owner_username = await self._get_public_owner_username(owner_user_id)
+        share_url = self._build_workspace_share_url(
+            owner_username,
+            share_slug,
+            base_url=base_url,
+        )
 
         return UserSpaceWorkspaceShareLink(
             workspace_id=workspace_id,
             share_token=share_token,
+            owner_username=owner_username,
+            share_slug=share_slug,
             share_url=share_url,
+        )
+
+    async def update_workspace_share_slug(
+        self,
+        workspace_id: str,
+        slug: str,
+        user_id: str,
+        base_url: str | None = None,
+    ) -> UserSpaceWorkspaceShareLinkStatus:
+        await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="editor",
+        )
+
+        normalized_slug = _normalize_share_slug_for_uniqueness(slug)
+        if not normalized_slug:
+            raise HTTPException(status_code=400, detail="Share slug is required")
+
+        db = await get_db()
+        try:
+            await db.workspace.update(
+                where={"id": workspace_id},
+                data={
+                    "shareSlug": normalized_slug,
+                    "updatedAt": _utc_now(),
+                },
+            )
+        except Exception as exc:
+            if _is_share_slug_conflict_error(exc):
+                raise HTTPException(
+                    status_code=409,
+                    detail="A share slug with that value already exists for this owner",
+                ) from exc
+            raise HTTPException(status_code=404, detail="Workspace not found") from exc
+
+        return await self.get_workspace_share_link_status(
+            workspace_id,
+            user_id,
+            base_url=base_url,
+        )
+
+    async def check_workspace_share_slug_availability(
+        self,
+        workspace_id: str,
+        slug: str,
+        user_id: str,
+    ) -> WorkspaceShareSlugAvailabilityResponse:
+        await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="editor",
+        )
+
+        normalized_slug = _normalize_share_slug_for_uniqueness(slug)
+        if not normalized_slug:
+            raise HTTPException(status_code=400, detail="Share slug is required")
+
+        db = await get_db()
+        workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+        if not workspace_record:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+
+        existing = await db.workspace.find_first(
+            where={
+                "ownerUserId": str(getattr(workspace_record, "ownerUserId", "") or ""),
+                "shareSlug": normalized_slug,
+                "NOT": {"id": workspace_id},
+            }
+        )
+        return WorkspaceShareSlugAvailabilityResponse(
+            slug=normalized_slug,
+            available=existing is None,
         )
 
     async def get_shared_preview(
@@ -693,6 +1016,23 @@ class UserSpaceService:
         share_token: str,
     ) -> UserSpaceSharedPreviewResponse:
         workspace_id = await self._resolve_workspace_id_from_share_token(share_token)
+        return await self._build_shared_preview_response(workspace_id)
+
+    async def get_shared_preview_by_slug(
+        self,
+        owner_username: str,
+        share_slug: str,
+    ) -> UserSpaceSharedPreviewResponse:
+        workspace_id = await self._resolve_workspace_id_from_share_slug(
+            owner_username,
+            share_slug,
+        )
+        return await self._build_shared_preview_response(workspace_id)
+
+    async def _build_shared_preview_response(
+        self,
+        workspace_id: str,
+    ) -> UserSpaceSharedPreviewResponse:
         workspace_record = await self._get_workspace_record(workspace_id)
         if not workspace_record:
             raise HTTPException(status_code=404, detail="Shared workspace not found")
@@ -1321,6 +1661,24 @@ class UserSpaceService:
         request: ExecuteComponentRequest,
     ) -> ExecuteComponentResponse:
         workspace_id = await self._resolve_workspace_id_from_share_token(share_token)
+        workspace = await self._load_workspace_for_component_execution(workspace_id)
+
+        return await self._execute_component_for_workspace(
+            workspace,
+            request,
+            error_log_prefix="Shared component execution failed",
+        )
+
+    async def execute_shared_component_by_slug(
+        self,
+        owner_username: str,
+        share_slug: str,
+        request: ExecuteComponentRequest,
+    ) -> ExecuteComponentResponse:
+        workspace_id = await self._resolve_workspace_id_from_share_slug(
+            owner_username,
+            share_slug,
+        )
         workspace = await self._load_workspace_for_component_execution(workspace_id)
 
         return await self._execute_component_for_workspace(
