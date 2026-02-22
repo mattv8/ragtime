@@ -68,8 +68,8 @@ Implemented workspace actions:
 Workspace creation behavior:
 
 - Create action is single-flight in UI (rapid repeat clicks are ignored while creation is in progress).
-- Default naming uses the next available `Workspace N` value from currently loaded workspaces rather than list-length indexing.
-- Duplicate names are still possible across independent clients/tabs because name uniqueness is not globally enforced server-side.
+- Default naming is assigned server-side using the next available owner-scoped `Workspace N` value.
+- Workspace names are enforced server-side as owner-scoped unique values using normalized comparison (trimmed, lowercase, whitespace normalized to underscores).
 
 Editor mode defaults:
 
@@ -362,7 +362,7 @@ Shared link behavior:
 
 - Workspace file artifacts are filesystem-backed; workspace ACL/tool metadata is DB-backed.
 - Renderer isolation is iframe/CSP bootstrap level; not a full multi-origin hardened sandbox.
-- Share tokens are deterministic and currently non-expiring/non-revocable per-workspace (rotation follows server encryption key changes).
+- Share tokens are persisted per workspace in DB-backed metadata and resolved by token lookup.
 - No dedicated automated userspace test suite is defined in this document.
 - Member picker currently depends on admin user listing capability in UI flows.
 

@@ -525,7 +525,6 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     setCreatingWorkspace(true);
     try {
       const created = await api.createUserSpaceWorkspace({
-        name: `Workspace ${workspaces.length + 1}`,
         selected_tool_ids: availableTools.map((tool) => tool.id),
       });
       await api.upsertUserSpaceFile(created.id, 'dashboard/main.ts', {
@@ -541,7 +540,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     } finally {
       setCreatingWorkspace(false);
     }
-  }, [availableTools, loadWorkspaceData, loadWorkspaces, workspaces.length]);
+  }, [availableTools, loadWorkspaceData, loadWorkspaces]);
 
   const handleSelectFile = useCallback(async (path: string) => {
     if (!activeWorkspaceId) return;

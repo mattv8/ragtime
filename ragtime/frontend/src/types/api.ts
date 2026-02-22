@@ -1452,7 +1452,7 @@ export interface UserSpaceAvailableTool {
 }
 
 export interface CreateUserSpaceWorkspaceRequest {
-  name: string;
+  name?: string;
   description?: string;
   selected_tool_ids?: string[];
 }

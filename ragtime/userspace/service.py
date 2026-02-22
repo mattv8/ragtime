@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
-import hmac
 import json
 import os
+import re
+import secrets
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -44,7 +43,6 @@ from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
 logger = get_logger(__name__)
 
 _USPACE_EXEC_SUPPORTED_SQL_TOOLS = {"postgres", "mysql", "mssql"}
-_USERSPACE_SHARE_TOKEN_PREFIX = "userspace-share-v1"
 _USERSPACE_PREVIEW_ENTRY_PATH = "dashboard/main.ts"
 
 _MODULE_SOURCE_EXTENSIONS = (
@@ -60,6 +58,19 @@ _MODULE_SOURCE_EXTENSIONS = (
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _normalize_workspace_name_for_uniqueness(name: str) -> str:
+    collapsed = re.sub(r"\s+", "_", (name or "").strip())
+    return collapsed.lower()
+
+
+def _is_workspace_name_conflict_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "owner_user_id_name_normalized" in message
+        or ("unique" in message and "name_normalized" in message)
+    )
 
 
 def _requires_live_data_contract(
@@ -165,48 +176,44 @@ class UserSpaceService:
         parts = Path(normalized).parts
         return ".git" in parts
 
-    def _generate_share_token(self, workspace_id: str) -> str:
-        payload = f"{_USERSPACE_SHARE_TOKEN_PREFIX}:{workspace_id}".encode("utf-8")
-        signature = hmac.new(
-            settings.encryption_key.encode("utf-8"),
-            payload,
-            hashlib.sha256,
-        ).digest()[:16]
-        raw = payload + b"." + signature
-        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    @staticmethod
+    def _generate_share_token() -> str:
+        return secrets.token_urlsafe(24)
 
-    def _resolve_workspace_id_from_share_token(self, share_token: str) -> str:
+    async def _resolve_workspace_id_from_share_token(self, share_token: str) -> str:
         token = (share_token or "").strip()
         if not token:
             raise HTTPException(status_code=404, detail="Shared workspace not found")
 
-        padding = "=" * (-len(token) % 4)
-        try:
-            decoded = base64.urlsafe_b64decode(token + padding)
-            payload, provided_signature = decoded.rsplit(b".", 1)
-        except Exception as exc:
-            raise HTTPException(
-                status_code=404,
-                detail="Shared workspace not found",
-            ) from exc
-
-        expected_signature = hmac.new(
-            settings.encryption_key.encode("utf-8"),
-            payload,
-            hashlib.sha256,
-        ).digest()[:16]
-        if not hmac.compare_digest(provided_signature, expected_signature):
+        db = await get_db()
+        workspace = await db.workspace.find_first(
+            where={"shareToken": token},
+            include={"members": True, "toolSelections": True},
+        )
+        if not workspace:
             raise HTTPException(status_code=404, detail="Shared workspace not found")
+        return str(workspace.id)
 
-        payload_text = payload.decode("utf-8", errors="ignore")
-        prefix = f"{_USERSPACE_SHARE_TOKEN_PREFIX}:"
-        if not payload_text.startswith(prefix):
-            raise HTTPException(status_code=404, detail="Shared workspace not found")
+    async def _allocate_next_default_workspace_name(self, user_id: str) -> str:
+        db = await get_db()
+        owner_workspaces = await db.workspace.find_many(
+            where={"ownerUserId": user_id},
+            take=10000,
+            order={"createdAt": "asc"},
+        )
+        used: set[str] = {
+            str(getattr(workspace, "nameNormalized", "") or "")
+            for workspace in owner_workspaces
+            if str(getattr(workspace, "nameNormalized", "") or "")
+        }
 
-        workspace_id = payload_text[len(prefix) :].strip()
-        if not workspace_id:
-            raise HTTPException(status_code=404, detail="Shared workspace not found")
-        return workspace_id
+        next_index = 1
+        while True:
+            candidate = f"Workspace {next_index}"
+            normalized = _normalize_workspace_name_for_uniqueness(candidate)
+            if normalized not in used:
+                return candidate
+            next_index += 1
 
     @staticmethod
     def _read_artifact_sidecar(
@@ -361,25 +368,64 @@ class UserSpaceService:
                     )
                     continue
 
-                await db.workspace.upsert(
-                    where={"id": workspace.id},
-                    data={
-                        "create": {
-                            "id": workspace.id,
-                            "name": workspace.name,
-                            "description": workspace.description,
-                            "ownerUserId": workspace.owner_user_id,
-                            "createdAt": workspace.created_at,
-                            "updatedAt": workspace.updated_at,
+                try:
+                    await db.workspace.upsert(
+                        where={"id": workspace.id},
+                        data={
+                            "create": {
+                                "id": workspace.id,
+                                "name": workspace.name,
+                                "nameNormalized": _normalize_workspace_name_for_uniqueness(
+                                    workspace.name
+                                )
+                                or None,
+                                "description": workspace.description,
+                                "ownerUserId": workspace.owner_user_id,
+                                "createdAt": workspace.created_at,
+                                "updatedAt": workspace.updated_at,
+                            },
+                            "update": {
+                                "name": workspace.name,
+                                "nameNormalized": _normalize_workspace_name_for_uniqueness(
+                                    workspace.name
+                                )
+                                or None,
+                                "description": workspace.description,
+                                "ownerUserId": workspace.owner_user_id,
+                                "updatedAt": workspace.updated_at,
+                            },
                         },
-                        "update": {
-                            "name": workspace.name,
-                            "description": workspace.description,
-                            "ownerUserId": workspace.owner_user_id,
-                            "updatedAt": workspace.updated_at,
-                        },
-                    },
-                )
+                    )
+                except Exception as exc:
+                    if _is_workspace_name_conflict_error(exc):
+                        await db.workspace.upsert(
+                            where={"id": workspace.id},
+                            data={
+                                "create": {
+                                    "id": workspace.id,
+                                    "name": workspace.name,
+                                    "nameNormalized": None,
+                                    "description": workspace.description,
+                                    "ownerUserId": workspace.owner_user_id,
+                                    "createdAt": workspace.created_at,
+                                    "updatedAt": workspace.updated_at,
+                                },
+                                "update": {
+                                    "name": workspace.name,
+                                    "nameNormalized": None,
+                                    "description": workspace.description,
+                                    "ownerUserId": workspace.owner_user_id,
+                                    "updatedAt": workspace.updated_at,
+                                },
+                            },
+                        )
+                        logger.warning(
+                            "Workspace name conflict during metadata sync for workspace=%s owner=%s; leaving name_normalized unset",
+                            workspace.id,
+                            workspace.owner_user_id,
+                        )
+                    else:
+                        raise
 
                 await db.workspacemember.delete_many(
                     where={"workspaceId": workspace.id}
@@ -519,18 +565,37 @@ class UserSpaceService:
 
         now = _utc_now()
         workspace_id = str(uuid4())
+        requested_name = (request.name or "").strip()
 
-        await db.workspace.create(
-            data={
-                "id": workspace_id,
-                "name": request.name,
-                "description": request.description,
-                "ownerUserId": user_id,
-                "createdAt": now,
-                "updatedAt": now,
-            },
-            include={"members": True, "toolSelections": True},
-        )
+        if requested_name:
+            final_name = requested_name
+        else:
+            final_name = await self._allocate_next_default_workspace_name(user_id)
+
+        name_normalized = _normalize_workspace_name_for_uniqueness(final_name)
+        if not name_normalized:
+            raise HTTPException(status_code=400, detail="Workspace name is required")
+
+        try:
+            await db.workspace.create(
+                data={
+                    "id": workspace_id,
+                    "name": final_name,
+                    "nameNormalized": name_normalized,
+                    "description": request.description,
+                    "ownerUserId": user_id,
+                    "createdAt": now,
+                    "updatedAt": now,
+                },
+                include={"members": True, "toolSelections": True},
+            )
+        except Exception as exc:
+            if _is_workspace_name_conflict_error(exc):
+                raise HTTPException(
+                    status_code=409,
+                    detail="A workspace with that name already exists for this owner",
+                ) from exc
+            raise
 
         await db.workspacemember.create(
             data={
@@ -573,14 +638,45 @@ class UserSpaceService:
         workspace_id: str,
         user_id: str,
         base_url: str | None = None,
+        rotate_token: bool = False,
     ) -> UserSpaceWorkspaceShareLink:
         await self._enforce_workspace_access(
             workspace_id,
             user_id,
             required_role="editor",
         )
+        db = await get_db()
+        workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+        if not workspace_record:
+            raise HTTPException(status_code=404, detail="Workspace not found")
 
-        share_token = self._generate_share_token(workspace_id)
+        existing_token = str(getattr(workspace_record, "shareToken", "") or "")
+
+        if existing_token and not rotate_token:
+            share_token = existing_token
+        else:
+            share_token = ""
+            for _ in range(10):
+                candidate = self._generate_share_token()
+                try:
+                    await db.workspace.update(
+                        where={"id": workspace_id},
+                        data={
+                            "shareToken": candidate,
+                            "shareTokenCreatedAt": _utc_now(),
+                        },
+                    )
+                    share_token = candidate
+                    break
+                except Exception as exc:
+                    if "share_token" in str(exc).lower() and "unique" in str(exc).lower():
+                        continue
+                    raise
+            if not share_token:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to generate workspace share token",
+                )
         normalized_base = (base_url or "").strip().rstrip("/")
         query = quote(share_token, safe="")
         share_path = f"/?userspace_share_token={query}"
@@ -596,7 +692,7 @@ class UserSpaceService:
         self,
         share_token: str,
     ) -> UserSpaceSharedPreviewResponse:
-        workspace_id = self._resolve_workspace_id_from_share_token(share_token)
+        workspace_id = await self._resolve_workspace_id_from_share_token(share_token)
         workspace_record = await self._get_workspace_record(workspace_id)
         if not workspace_record:
             raise HTTPException(status_code=404, detail="Shared workspace not found")
@@ -670,11 +766,23 @@ class UserSpaceService:
 
         update_data: dict[str, Any] = {"updatedAt": _utc_now()}
         if request.name is not None:
-            update_data["name"] = request.name
+            normalized_name = _normalize_workspace_name_for_uniqueness(request.name)
+            if not normalized_name:
+                raise HTTPException(status_code=400, detail="Workspace name is required")
+            update_data["name"] = request.name.strip()
+            update_data["nameNormalized"] = normalized_name
         if request.description is not None:
             update_data["description"] = request.description
 
-        await db.workspace.update(where={"id": workspace_id}, data=update_data)
+        try:
+            await db.workspace.update(where={"id": workspace_id}, data=update_data)
+        except Exception as exc:
+            if _is_workspace_name_conflict_error(exc):
+                raise HTTPException(
+                    status_code=409,
+                    detail="A workspace with that name already exists for this owner",
+                ) from exc
+            raise
 
         if request.selected_tool_ids is not None:
             await db.workspacetoolselection.delete_many(
@@ -1212,7 +1320,7 @@ class UserSpaceService:
         share_token: str,
         request: ExecuteComponentRequest,
     ) -> ExecuteComponentResponse:
-        workspace_id = self._resolve_workspace_id_from_share_token(share_token)
+        workspace_id = await self._resolve_workspace_id_from_share_token(share_token)
         workspace = await self._load_workspace_for_component_execution(workspace_id)
 
         return await self._execute_component_for_workspace(
