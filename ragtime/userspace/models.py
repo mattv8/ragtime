@@ -109,6 +109,20 @@ class ExecuteComponentResponse(BaseModel):
     error: str | None = None
 
 
+class UserSpaceWorkspaceShareLink(BaseModel):
+    workspace_id: str
+    share_token: str
+    share_url: str
+
+
+class UserSpaceSharedPreviewResponse(BaseModel):
+    workspace_id: str
+    workspace_name: str
+    entry_path: str
+    workspace_files: dict[str, str]
+    live_data_connections: list["UserSpaceLiveDataConnection"] | None = None
+
+
 class UserSpaceSnapshot(BaseModel):
     id: str
     workspace_id: str

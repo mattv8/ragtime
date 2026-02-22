@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/api';
-import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, UserSpacePanel, LoginPage, OAuthLoginPage, MemoryStatus, UserMenu, SecurityBanner, ConfigurationBanner } from '@/components';
+import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, UserSpacePanel, UserSpaceSharedView, LoginPage, OAuthLoginPage, MemoryStatus, UserMenu, SecurityBanner, ConfigurationBanner } from '@/components';
 import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob, ToolConfig, ConfigurationWarning } from '@/types';
 import type { OAuthParams } from '@/components';
 import '@/styles/global.css';
@@ -47,6 +47,12 @@ function getOAuthParams(): OAuthParams | null {
   return null;
 }
 
+function getUserSpaceShareToken(): string | null {
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get('userspace_share_token');
+  return token && token.trim() ? token.trim() : null;
+}
+
 export function App() {
   // Auth state
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
@@ -58,6 +64,7 @@ export function App() {
     const params = getOAuthParams();
     return params;
   });
+  const [userspaceShareToken] = useState<string | null>(getUserSpaceShareToken);
 
   // App state
   const [activeView, setActiveView] = useState<ViewType>(getInitialView);
@@ -118,6 +125,11 @@ export function App() {
 
   // Check authentication status on mount
   useEffect(() => {
+    if (userspaceShareToken) {
+      setAuthLoading(false);
+      return;
+    }
+
     const checkAuth = async () => {
       try {
         const status = await api.getAuthStatus();
@@ -150,7 +162,7 @@ export function App() {
     };
 
     checkAuth();
-  }, []);
+  }, [userspaceShareToken]);
 
   const handleLoginSuccess = (user: User) => {
     setCurrentUser(user);
@@ -229,6 +241,7 @@ export function App() {
   // Sync state to URL params (only sync valid views for user's role)
   // Skip URL sync during OAuth flow - we need to preserve those params until redirect
   useEffect(() => {
+    if (userspaceShareToken) return;
     // Don't modify URL during OAuth authorization flow
     if (oauthParams) return;
 
@@ -241,7 +254,11 @@ export function App() {
     }
     const newUrl = `${window.location.pathname}?${params.toString()}`;
     window.history.replaceState({}, '', newUrl);
-  }, [activeView, highlightSetting, oauthParams, isAdmin]);
+  }, [activeView, highlightSetting, oauthParams, isAdmin, userspaceShareToken]);
+
+  if (userspaceShareToken) {
+    return <UserSpaceSharedView shareToken={userspaceShareToken} />;
+  }
 
   const loadJobs = useCallback(async () => {
     try {
@@ -477,7 +494,7 @@ export function App() {
             className={`topnav-link ${activeView === 'userspace' ? 'active' : ''}`}
             onClick={() => setActiveView('userspace')}
           >
-            User Space
+            Workspace
           </button>
           {isAdmin && (
             <>

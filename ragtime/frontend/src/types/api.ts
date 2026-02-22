@@ -1545,6 +1545,20 @@ export interface ExecuteComponentResponse {
   error?: string | null;
 }
 
+export interface UserSpaceWorkspaceShareLink {
+  workspace_id: string;
+  share_token: string;
+  share_url: string;
+}
+
+export interface UserSpaceSharedPreviewResponse {
+  workspace_id: string;
+  workspace_name: string;
+  entry_path: string;
+  workspace_files: Record<string, string>;
+  live_data_connections?: UserSpaceLiveDataConnection[] | null;
+}
+
 // Retry visualization request/response
 export interface RetryVisualizationRequest {
   tool_type: 'datatable' | 'chart';

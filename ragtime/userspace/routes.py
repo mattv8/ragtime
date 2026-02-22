@@ -2,26 +2,24 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 
 from ragtime.core.security import get_current_user
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (
-    CreateSnapshotRequest,
-    CreateWorkspaceRequest,
-    ExecuteComponentRequest,
-    ExecuteComponentResponse,
-    PaginatedWorkspacesResponse,
-    RestoreSnapshotResponse,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceAvailableTool,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpaceSnapshot,
-    UserSpaceWorkspace,
-)
+from ragtime.userspace.models import (CreateSnapshotRequest,
+                                      CreateWorkspaceRequest,
+                                      ExecuteComponentRequest,
+                                      ExecuteComponentResponse,
+                                      PaginatedWorkspacesResponse,
+                                      RestoreSnapshotResponse,
+                                      UpdateWorkspaceMembersRequest,
+                                      UpdateWorkspaceRequest,
+                                      UpsertWorkspaceFileRequest,
+                                      UserSpaceAvailableTool,
+                                      UserSpaceFileInfo, UserSpaceFileResponse,
+                                      UserSpaceSharedPreviewResponse,
+                                      UserSpaceSnapshot, UserSpaceWorkspace,
+                                      UserSpaceWorkspaceShareLink)
 from ragtime.userspace.service import userspace_service
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space"])
@@ -180,6 +178,42 @@ async def execute_component(
     user: Any = Depends(get_current_user),
 ):
     return await userspace_service.execute_component(workspace_id, request, user.id)
+
+
+@router.post(
+    "/workspaces/{workspace_id}/share-link",
+    response_model=UserSpaceWorkspaceShareLink,
+)
+async def create_workspace_share_link(
+    workspace_id: str,
+    request: Request,
+    user: Any = Depends(get_current_user),
+):
+    base_url = str(request.base_url).rstrip("/")
+    return await userspace_service.create_workspace_share_link(
+        workspace_id,
+        user.id,
+        base_url=base_url,
+    )
+
+
+@router.get(
+    "/shared/{share_token}",
+    response_model=UserSpaceSharedPreviewResponse,
+)
+async def get_shared_preview(share_token: str):
+    return await userspace_service.get_shared_preview(share_token)
+
+
+@router.post(
+    "/shared/{share_token}/execute-component",
+    response_model=ExecuteComponentResponse,
+)
+async def execute_shared_component(
+    share_token: str,
+    request: ExecuteComponentRequest,
+):
+    return await userspace_service.execute_shared_component(share_token, request)
 
 
 @router.get(

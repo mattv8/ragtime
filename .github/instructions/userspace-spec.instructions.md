@@ -28,6 +28,8 @@ Implemented capabilities:
 - Snapshot/restore using **git commit history** per workspace.
 - User Space-only agent tools for file I/O plus autonomous checkpoint snapshots.
 - Workspace sharing with role-based access (`owner`, `editor`, `viewer`).
+- Tokenized static share links for direct dashboard iframe access.
+- Public full-screen shared dashboard rendering via URL token.
 
 Persistence root:
 
@@ -57,6 +59,8 @@ Implemented workspace actions:
 - Create/edit/delete files
 - Create snapshot
 - Restore snapshot
+- Quick Share (copy tokenized static link)
+- Preview (open shared full-screen render)
 - Delete workspace (owner only)
 - Manage members (owner only)
 
@@ -71,6 +75,7 @@ Editor mode defaults:
 - User Space is TypeScript-module-only for interactive report/dashboard generation.
 - Artifact format selection is removed from the toolbar; saves always persist as `module_ts`.
 - Save action is anchored at the far-right side of the top toolbar.
+- Quick Share and Preview actions are available in the User Space top toolbar and are enabled for `owner`/`editor` only.
 
 ---
 
@@ -157,6 +162,9 @@ Userspace endpoints (`/indexes/userspace`):
 - `GET /workspaces/{workspace_id}/files/{file_path:path}`
 - `DELETE /workspaces/{workspace_id}/files/{file_path:path}`
 - `POST /workspaces/{workspace_id}/execute-component`
+- `POST /workspaces/{workspace_id}/share-link`
+- `GET /shared/{share_token}`
+- `POST /shared/{share_token}/execute-component`
 - `GET /workspaces/{workspace_id}/snapshots`
 - `POST /workspaces/{workspace_id}/snapshots`
 - `POST /workspaces/{workspace_id}/snapshots/{snapshot_id}/restore`
@@ -176,6 +184,16 @@ File endpoint payload behavior:
   - `component_id` (must be present in workspace `selected_tool_ids`)
   - `request` (SQL payload; string or object containing `query`/`sql`/`command`)
   - returns structured tabular data: `rows[]`, `columns[]`, `row_count`, optional `error`
+- `POST /workspaces/{workspace_id}/share-link` returns:
+  - `workspace_id`
+  - `share_token`
+  - `share_url` (`/?userspace_share_token=<token>` using request base URL)
+- `GET /shared/{share_token}` returns:
+  - `workspace_id`, `workspace_name`
+  - `entry_path` (currently `dashboard/main.ts`)
+  - `workspace_files` (module map for preview runtime)
+  - `live_data_connections` (when present in entry sidecar metadata)
+- `POST /shared/{share_token}/execute-component` accepts same execution payload and returns the same structured tabular response as workspace-authenticated execution.
 
 ---
 
@@ -193,6 +211,8 @@ Effective behavior:
 - Mutate workspace/files/snapshots/conversation state: `owner/editor`.
 - Manage members: `owner` only.
 - Delete workspace: `owner` only.
+- Create share link: `owner/editor` with membership.
+- Shared preview/read + shared execute endpoints are anonymous and authorized by a valid signed `share_token`.
 
 Normalization rule:
 
@@ -255,6 +275,7 @@ Execution bridge behavior:
 - Preview execution is SQL-only (`postgres`, `mysql`, `mssql`) and always read-only (`allow_write=false`).
 - Query limits/timeouts are bounded by tool configuration (`max_results`, `timeout`, `timeout_max_seconds`).
 - SQL tool output metadata is parsed into structured response rows/columns for deterministic dashboard wiring.
+- Shared-preview execution path resolves workspace context from token, still enforces selected-tool membership and SQL-only/read-only execution constraints.
 
 ---
 
@@ -291,6 +312,7 @@ Implemented controls:
 - Chart.js is preloaded in preview runtime (`window.Chart`), and redundant Chart.js CDN script injection from generated modules is suppressed.
 - Preview runtime component `execute()` uses iframe-to-parent `postMessage` RPC.
 - Parent runtime forwards execution requests to `/indexes/userspace/workspaces/{workspace_id}/execute-component` and returns structured results back to the iframe.
+- In shared-token mode, parent runtime forwards execution requests to `/indexes/userspace/shared/{share_token}/execute-component`.
 - Bridge messages are scoped to the preview iframe window and use a dedicated protocol marker (`userspace-exec-v1`) for safer routing.
 - Isolated runtime receives current app theme tokens via CSS custom properties, enabling dark/light-consistent module styling.
 - Local module import rewriting in preview supports side-effect imports, `from`-clause imports, and dynamic imports for workspace-relative modules.
@@ -305,6 +327,7 @@ Primary frontend files:
 - `ragtime/frontend/src/App.tsx`
 - `ragtime/frontend/src/components/UserSpacePanel.tsx`
 - `ragtime/frontend/src/components/UserSpaceArtifactPreview.tsx`
+- `ragtime/frontend/src/components/UserSpaceSharedView.tsx`
 - `ragtime/frontend/src/components/ChatPanel.tsx`
 - `ragtime/frontend/src/api/client.ts`
 - `ragtime/frontend/src/types/api.ts`
@@ -317,12 +340,18 @@ Workspace switch behavior:
 - Embedded chat panel is remounted by `workspace_id` on workspace change to avoid stale conversation/task polling state crossing workspace boundaries.
 - Task polling/stream callbacks are refreshed when `workspace_id` changes.
 
+Shared link behavior:
+
+- App checks `userspace_share_token` query param and renders a shared full-screen dashboard view without the authenticated app shell.
+- Shared dashboard view loads preview payload from `/indexes/userspace/shared/{share_token}` and renders with the same iframe runtime.
+
 ---
 
 ## 11) Current Boundaries / Non-goals
 
 - Workspace and ACL persistence is filesystem metadata-based, not DB-backed.
 - Renderer isolation is iframe/CSP bootstrap level; not a full multi-origin hardened sandbox.
+- Share tokens are deterministic and currently non-expiring/non-revocable per-workspace (rotation follows server encryption key changes).
 - No dedicated automated userspace test suite is defined in this document.
 - Member picker currently depends on admin user listing capability in UI flows.
 
@@ -341,6 +370,9 @@ A deployment conforms to this specification when the following are true:
 7. TypeScript module previews run in an isolated sandboxed iframe runtime with component-limited context.
 8. Workspace switches do not reuse stale embedded chat state across workspace boundaries.
 9. Repeated rapid workspace-create clicks in one UI session do not produce duplicate default `Workspace N` names from client-side race conditions.
+10. Workspace toolbar offers Quick Share and Preview actions for editable roles.
+11. A valid `userspace_share_token` URL renders the shared dashboard without requiring session auth.
+12. Shared execution endpoint enforces selected-tool checks and SQL-only read-only execution bounds.
 
 ---
 

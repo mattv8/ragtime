@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
 import json
 import os
 import shutil
@@ -8,6 +11,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -32,12 +36,16 @@ from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
                                       UserSpaceFileInfo, UserSpaceFileResponse,
                                       UserSpaceLiveDataCheck,
                                       UserSpaceLiveDataConnection,
+                                      UserSpaceSharedPreviewResponse,
                                       UserSpaceSnapshot, UserSpaceWorkspace,
+                                      UserSpaceWorkspaceShareLink,
                                       WorkspaceMember)
 
 logger = get_logger(__name__)
 
 _USPACE_EXEC_SUPPORTED_SQL_TOOLS = {"postgres", "mysql", "mssql"}
+_USERSPACE_SHARE_TOKEN_PREFIX = "userspace-share-v1"
+_USERSPACE_PREVIEW_ENTRY_PATH = "dashboard/main.ts"
 
 _MODULE_SOURCE_EXTENSIONS = (
     ".ts",
@@ -157,6 +165,103 @@ class UserSpaceService:
             return True
         parts = Path(normalized).parts
         return ".git" in parts
+
+    def _generate_share_token(self, workspace_id: str) -> str:
+        payload = f"{_USERSPACE_SHARE_TOKEN_PREFIX}:{workspace_id}".encode("utf-8")
+        signature = hmac.new(
+            settings.encryption_key.encode("utf-8"),
+            payload,
+            hashlib.sha256,
+        ).digest()[:16]
+        raw = payload + b"." + signature
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    def _resolve_workspace_id_from_share_token(self, share_token: str) -> str:
+        token = (share_token or "").strip()
+        if not token:
+            raise HTTPException(status_code=404, detail="Shared workspace not found")
+
+        padding = "=" * (-len(token) % 4)
+        try:
+            decoded = base64.urlsafe_b64decode(token + padding)
+            payload, provided_signature = decoded.rsplit(b".", 1)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Shared workspace not found",
+            ) from exc
+
+        expected_signature = hmac.new(
+            settings.encryption_key.encode("utf-8"),
+            payload,
+            hashlib.sha256,
+        ).digest()[:16]
+        if not hmac.compare_digest(provided_signature, expected_signature):
+            raise HTTPException(status_code=404, detail="Shared workspace not found")
+
+        payload_text = payload.decode("utf-8", errors="ignore")
+        prefix = f"{_USERSPACE_SHARE_TOKEN_PREFIX}:"
+        if not payload_text.startswith(prefix):
+            raise HTTPException(status_code=404, detail="Shared workspace not found")
+
+        workspace_id = payload_text[len(prefix) :].strip()
+        if not workspace_id:
+            raise HTTPException(status_code=404, detail="Shared workspace not found")
+        return workspace_id
+
+    @staticmethod
+    def _read_artifact_sidecar(
+        file_path: Path,
+    ) -> tuple[
+        ArtifactType | None,
+        list[UserSpaceLiveDataConnection] | None,
+        list[UserSpaceLiveDataCheck] | None,
+    ]:
+        artifact_type: ArtifactType | None = None
+        live_data_connections: list[UserSpaceLiveDataConnection] | None = None
+        live_data_checks: list[UserSpaceLiveDataCheck] | None = None
+
+        sidecar = file_path.with_suffix(file_path.suffix + ".artifact.json")
+        if not sidecar.exists():
+            return artifact_type, live_data_connections, live_data_checks
+
+        try:
+            sidecar_data = json.loads(sidecar.read_text(encoding="utf-8"))
+            sidecar_value = sidecar_data.get("artifact_type")
+            if sidecar_value == "module_ts":
+                artifact_type = cast(ArtifactType, sidecar_value)
+
+            raw_connections = sidecar_data.get("live_data_connections")
+            if isinstance(raw_connections, list):
+                parsed_connections: list[UserSpaceLiveDataConnection] = []
+                for item in raw_connections:
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        parsed_connections.append(
+                            UserSpaceLiveDataConnection.model_validate(item)
+                        )
+                    except Exception:
+                        continue
+                live_data_connections = parsed_connections or None
+
+            raw_checks = sidecar_data.get("live_data_checks")
+            if isinstance(raw_checks, list):
+                parsed_checks: list[UserSpaceLiveDataCheck] = []
+                for item in raw_checks:
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        parsed_checks.append(UserSpaceLiveDataCheck.model_validate(item))
+                    except Exception:
+                        continue
+                live_data_checks = parsed_checks or None
+        except Exception:
+            artifact_type = None
+            live_data_connections = None
+            live_data_checks = None
+
+        return artifact_type, live_data_connections, live_data_checks
 
     async def _touch_workspace(
         self, workspace_id: str, ts: datetime | None = None
@@ -367,6 +472,14 @@ class UserSpaceService:
 
         return self._workspace_from_record(workspace)
 
+    async def _get_workspace_record(self, workspace_id: str) -> Any:
+        await self._ensure_metadata_synced()
+        db = await get_db()
+        return await db.workspace.find_unique(
+            where={"id": workspace_id},
+            include={"members": True, "toolSelections": True},
+        )
+
     async def list_workspaces(
         self,
         user_id: str,
@@ -455,6 +568,69 @@ class UserSpaceService:
         self, workspace_id: str, user_id: str
     ) -> UserSpaceWorkspace:
         return await self._enforce_workspace_access(workspace_id, user_id)
+
+    async def create_workspace_share_link(
+        self,
+        workspace_id: str,
+        user_id: str,
+        base_url: str | None = None,
+    ) -> UserSpaceWorkspaceShareLink:
+        await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="editor",
+        )
+
+        share_token = self._generate_share_token(workspace_id)
+        normalized_base = (base_url or "").strip().rstrip("/")
+        query = quote(share_token, safe="")
+        share_path = f"/?userspace_share_token={query}"
+        share_url = f"{normalized_base}{share_path}" if normalized_base else share_path
+
+        return UserSpaceWorkspaceShareLink(
+            workspace_id=workspace_id,
+            share_token=share_token,
+            share_url=share_url,
+        )
+
+    async def get_shared_preview(
+        self,
+        share_token: str,
+    ) -> UserSpaceSharedPreviewResponse:
+        workspace_id = self._resolve_workspace_id_from_share_token(share_token)
+        workspace_record = await self._get_workspace_record(workspace_id)
+        if not workspace_record:
+            raise HTTPException(status_code=404, detail="Shared workspace not found")
+
+        files_dir = self._workspace_files_dir(workspace_id)
+        if not files_dir.exists() or not files_dir.is_dir():
+            raise HTTPException(status_code=404, detail="Shared workspace not found")
+
+        workspace_files: dict[str, str] = {}
+        for file_path in files_dir.rglob("*"):
+            if not file_path.is_file():
+                continue
+            relative = str(file_path.relative_to(files_dir))
+            if self._is_reserved_internal_path(relative):
+                continue
+            workspace_files[relative] = file_path.read_text(encoding="utf-8")
+
+        if _USERSPACE_PREVIEW_ENTRY_PATH not in workspace_files:
+            raise HTTPException(
+                status_code=404,
+                detail="Shared workspace preview entry not found",
+            )
+
+        entry_file_path = files_dir / _USERSPACE_PREVIEW_ENTRY_PATH
+        _, live_data_connections, _ = self._read_artifact_sidecar(entry_file_path)
+
+        return UserSpaceSharedPreviewResponse(
+            workspace_id=workspace_id,
+            workspace_name=str(getattr(workspace_record, "name", "User Space")),
+            entry_path=_USERSPACE_PREVIEW_ENTRY_PATH,
+            workspace_files=workspace_files,
+            live_data_connections=live_data_connections,
+        )
 
     async def delete_workspace(self, workspace_id: str, user_id: str) -> None:
         await self._enforce_workspace_access(
@@ -763,48 +939,9 @@ class UserSpaceService:
         if not file_path.exists() or not file_path.is_file():
             raise HTTPException(status_code=404, detail="File not found")
 
-        artifact_type = None
-        live_data_connections: list[UserSpaceLiveDataConnection] | None = None
-        live_data_checks: list[UserSpaceLiveDataCheck] | None = None
-        sidecar = file_path.with_suffix(file_path.suffix + ".artifact.json")
-        if sidecar.exists():
-            try:
-                sidecar_data = json.loads(sidecar.read_text(encoding="utf-8"))
-                sidecar_value = sidecar_data.get("artifact_type")
-                if sidecar_value == "module_ts":
-                    artifact_type = cast(ArtifactType, sidecar_value)
-
-                raw_connections = sidecar_data.get("live_data_connections")
-                if isinstance(raw_connections, list):
-                    parsed_connections: list[UserSpaceLiveDataConnection] = []
-                    for item in raw_connections:
-                        if not isinstance(item, dict):
-                            continue
-                        try:
-                            parsed_connections.append(
-                                UserSpaceLiveDataConnection.model_validate(item)
-                            )
-                        except Exception:
-                            continue
-                    live_data_connections = parsed_connections or None
-
-                raw_checks = sidecar_data.get("live_data_checks")
-                if isinstance(raw_checks, list):
-                    parsed_checks: list[UserSpaceLiveDataCheck] = []
-                    for item in raw_checks:
-                        if not isinstance(item, dict):
-                            continue
-                        try:
-                            parsed_checks.append(
-                                UserSpaceLiveDataCheck.model_validate(item)
-                            )
-                        except Exception:
-                            continue
-                    live_data_checks = parsed_checks or None
-            except Exception:
-                artifact_type = None
-                live_data_connections = None
-                live_data_checks = None
+        artifact_type, live_data_connections, live_data_checks = (
+            self._read_artifact_sidecar(file_path)
+        )
 
         stat = file_path.stat()
         return UserSpaceFileResponse(
@@ -1036,6 +1173,19 @@ class UserSpaceService:
             return str(value or "")
         return ""
 
+    async def _load_workspace_for_component_execution(
+        self,
+        workspace_id: str,
+        user_id: str | None = None,
+    ) -> UserSpaceWorkspace:
+        if user_id is not None:
+            return await self._enforce_workspace_access(workspace_id, user_id)
+
+        workspace_record = await self._get_workspace_record(workspace_id)
+        if not workspace_record:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+        return self._workspace_from_record(workspace_record)
+
     async def execute_component(
         self,
         workspace_id: str,
@@ -1048,7 +1198,10 @@ class UserSpaceService:
         tools, loads the tool config, dispatches the query through the
         appropriate database driver, and returns structured rows.
         """
-        workspace = await self._enforce_workspace_access(workspace_id, user_id)
+        workspace = await self._load_workspace_for_component_execution(
+            workspace_id,
+            user_id=user_id,
+        )
 
         # Verify component_id is a selected tool
         if request.component_id not in workspace.selected_tool_ids:
@@ -1119,6 +1272,86 @@ class UserSpaceService:
             )
 
         # Parse tabular output into structured rows
+        rows, columns = self._parse_query_output(raw_output)
+        return ExecuteComponentResponse(
+            component_id=request.component_id,
+            rows=rows,
+            columns=columns,
+            row_count=len(rows),
+        )
+
+    async def execute_shared_component(
+        self,
+        share_token: str,
+        request: ExecuteComponentRequest,
+    ) -> ExecuteComponentResponse:
+        workspace_id = self._resolve_workspace_id_from_share_token(share_token)
+        workspace = await self._load_workspace_for_component_execution(workspace_id)
+
+        if request.component_id not in workspace.selected_tool_ids:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"Component {request.component_id} is not selected "
+                    "for this workspace."
+                ),
+            )
+
+        tool_config = await repository.get_tool_config(request.component_id)
+        if tool_config is None or not tool_config.enabled:
+            raise HTTPException(
+                status_code=404,
+                detail="Tool configuration not found or disabled.",
+            )
+
+        tool_type = tool_config.tool_type.value
+        if tool_type not in _USPACE_EXEC_SUPPORTED_SQL_TOOLS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Live preview execution supports SQL tools only "
+                    "(postgres, mysql, mssql)."
+                ),
+            )
+
+        conn_config = tool_config.connection_config or {}
+        query = self._extract_query_text(request.request)
+        if not query.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="No query/command found in request payload.",
+            )
+
+        try:
+            raw_output = await self._dispatch_tool_query(
+                tool_type,
+                conn_config,
+                tool_config,
+                query,
+            )
+        except Exception as exc:
+            logger.error(
+                "Shared component execution failed for %s: %s",
+                request.component_id,
+                exc,
+            )
+            return ExecuteComponentResponse(
+                component_id=request.component_id,
+                rows=[],
+                columns=[],
+                row_count=0,
+                error=str(exc),
+            )
+
+        if raw_output.startswith("Error:"):
+            return ExecuteComponentResponse(
+                component_id=request.component_id,
+                rows=[],
+                columns=[],
+                row_count=0,
+                error=raw_output,
+            )
+
         rows, columns = self._parse_query_output(raw_output)
         return ExecuteComponentResponse(
             component_id=request.component_id,

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, File, History, Maximize2, Minimize2, Pencil, Plus, Save, Settings, Trash2, Users, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, ExternalLink, File, History, Link2, Maximize2, Minimize2, Pencil, Plus, Save, Settings, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 
@@ -43,6 +43,8 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const [previewLiveDataConnections, setPreviewLiveDataConnections] = useState<UserSpaceLiveDataConnection[]>([]);
   const [previewExecuting, setPreviewExecuting] = useState(false);
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
+  const [sharingWorkspace, setSharingWorkspace] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   const toggleFullscreen = useCallback(() => {
@@ -192,6 +194,15 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
 
   const canEditWorkspace = activeWorkspaceRole === 'owner' || activeWorkspaceRole === 'editor';
   const isOwner = activeWorkspaceRole === 'owner';
+
+  const formatUserLabel = useCallback((user?: Pick<User, 'username' | 'display_name'> | null, fallbackId?: string) => {
+    const username = user?.username?.trim() || fallbackId?.trim() || 'unknown';
+    const displayName = user?.display_name?.trim();
+    if (displayName && displayName !== username) {
+      return `${displayName} (@${username})`;
+    }
+    return `@${username}`;
+  }, []);
 
   const loadWorkspaces = useCallback(async (append = false) => {
     if (append) {
@@ -925,6 +936,44 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     setEditingName(true);
   }, [activeWorkspace, canEditWorkspace]);
 
+  const requestWorkspaceShareUrl = useCallback(async () => {
+    if (!activeWorkspaceId || !canEditWorkspace) return null;
+    const response = await api.createUserSpaceWorkspaceShareLink(activeWorkspaceId);
+    return response.share_url;
+  }, [activeWorkspaceId, canEditWorkspace]);
+
+  const handleQuickShare = useCallback(async () => {
+    if (!activeWorkspaceId || !canEditWorkspace) return;
+    setSharingWorkspace(true);
+    try {
+      const shareUrl = await requestWorkspaceShareUrl();
+      if (!shareUrl) return;
+      await navigator.clipboard.writeText(shareUrl);
+      setShareCopied(true);
+      window.setTimeout(() => setShareCopied(false), 1500);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to copy share link');
+    } finally {
+      setSharingWorkspace(false);
+    }
+  }, [activeWorkspaceId, canEditWorkspace, requestWorkspaceShareUrl]);
+
+  const handleOpenFullPreview = useCallback(async () => {
+    if (!activeWorkspaceId || !canEditWorkspace) return;
+    setSharingWorkspace(true);
+    try {
+      const shareUrl = await requestWorkspaceShareUrl();
+      if (!shareUrl) return;
+      window.open(shareUrl, '_blank', 'noopener,noreferrer');
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to open preview');
+    } finally {
+      setSharingWorkspace(false);
+    }
+  }, [activeWorkspaceId, canEditWorkspace, requestWorkspaceShareUrl]);
+
   const handleSaveName = useCallback(async () => {
     if (!activeWorkspace || !canEditWorkspace || !draftName.trim()) return;
     try {
@@ -1209,64 +1258,87 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
         </div>
 
         <div className="userspace-toolbar-group userspace-toolbar-group-right">
-          {previewExecuting && (
-            <span className="userspace-toolbar-live-status" title="Live data connection in progress">
-              <span className="userspace-toolbar-live-spinner" aria-hidden="true" />
-              Connecting data...
-            </span>
-          )}
-          {activeWorkspace && (
-            <span className="userspace-role-badge">
-              {activeWorkspaceRole}{!canEditWorkspace ? ' (read-only)' : ''}
-            </span>
-          )}
-          <div className="userspace-tool-picker-wrap" ref={toolPickerRef}>
+          <div className="userspace-toolbar-status-group">
+            {previewExecuting && (
+              <span className="userspace-toolbar-live-status" title="Live data connection in progress">
+                <span className="userspace-toolbar-live-spinner" aria-hidden="true" />
+                Connecting data...
+              </span>
+            )}
+            {activeWorkspace && (
+              <span className="userspace-role-badge">
+                {activeWorkspaceRole}{!canEditWorkspace ? ' (read-only)' : ''}
+              </span>
+            )}
+          </div>
+
+          <div className="userspace-toolbar-actions" aria-label="Workspace sharing actions">
             <button
-              className={`btn btn-secondary btn-sm ${showToolPicker ? 'active' : ''}`}
-              onClick={() => setShowToolPicker(!showToolPicker)}
-              title="Workspace tools"
+              className="btn btn-secondary btn-sm btn-icon userspace-toolbar-action-btn"
+              onClick={handleQuickShare}
+              disabled={!activeWorkspaceId || !canEditWorkspace || sharingWorkspace}
+              title={shareCopied ? 'Share link copied' : 'Copy static share link'}
             >
-              <Settings size={14} />
+              {shareCopied ? <Check size={14} /> : <Link2 size={14} />}
             </button>
             <button
-              className="btn btn-secondary btn-sm"
+              className="btn btn-secondary btn-sm btn-icon userspace-toolbar-action-btn"
+              onClick={handleOpenFullPreview}
+              disabled={!activeWorkspaceId || !canEditWorkspace || sharingWorkspace}
+              title="Open shared full-screen preview"
+            >
+              <ExternalLink size={14} />
+            </button>
+          </div>
+
+          <div className="userspace-toolbar-actions" aria-label="Workspace editor actions">
+            <div className="userspace-tool-picker-wrap" ref={toolPickerRef}>
+              <button
+                className={`btn btn-secondary btn-sm btn-icon userspace-toolbar-action-btn ${showToolPicker ? 'active' : ''}`}
+                onClick={() => setShowToolPicker(!showToolPicker)}
+                title="Workspace tools"
+              >
+                <Settings size={14} />
+              </button>
+              {showToolPicker && activeWorkspace && (
+                <div className="userspace-tool-dropdown">
+                  <h4>Workspace Tools</h4>
+                  {!canEditWorkspace && <p className="userspace-muted">Read-only access</p>}
+                  <div className="userspace-tool-list">
+                    {availableTools.map((tool) => (
+                      <label key={tool.id} className="checkbox-label userspace-tool-item">
+                        <input
+                          type="checkbox"
+                          checked={selectedToolIds.has(tool.id)}
+                          onChange={() => handleToggleWorkspaceTool(tool.id)}
+                          disabled={savingWorkspaceTools || !canEditWorkspace}
+                        />
+                        <span>
+                          <strong>{tool.name}</strong>
+                          <small className="userspace-muted">{tool.tool_type}</small>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            <button
+              className="btn btn-secondary btn-sm btn-icon userspace-toolbar-action-btn"
               onClick={toggleFullscreen}
               title={isFullscreen ? 'Exit full screen' : 'Full screen'}
             >
               {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
             </button>
-            {showToolPicker && activeWorkspace && (
-              <div className="userspace-tool-dropdown">
-                <h4>Workspace Tools</h4>
-                {!canEditWorkspace && <p className="userspace-muted">Read-only access</p>}
-                <div className="userspace-tool-list">
-                  {availableTools.map((tool) => (
-                    <label key={tool.id} className="checkbox-label userspace-tool-item">
-                      <input
-                        type="checkbox"
-                        checked={selectedToolIds.has(tool.id)}
-                        onChange={() => handleToggleWorkspaceTool(tool.id)}
-                        disabled={savingWorkspaceTools || !canEditWorkspace}
-                      />
-                      <span>
-                        <strong>{tool.name}</strong>
-                        <small className="userspace-muted">{tool.tool_type}</small>
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-            )}
+            <button
+              className="btn btn-primary btn-sm btn-icon userspace-toolbar-action-btn userspace-save-btn"
+              onClick={handleSaveFile}
+              disabled={!activeWorkspaceId || !canEditWorkspace || savingFile || !fileDirty}
+              title={savingFile ? 'Saving file...' : 'Save file'}
+            >
+              <Save size={14} className={savingFile ? 'spinning' : undefined} />
+            </button>
           </div>
-          <button
-            className="btn btn-primary btn-sm userspace-save-btn"
-            onClick={handleSaveFile}
-            disabled={!activeWorkspaceId || !canEditWorkspace || savingFile || !fileDirty}
-            title="Save file"
-          >
-            <Save size={14} />
-            {savingFile ? 'Saving...' : 'Save'}
-          </button>
         </div>
       </div>
 
@@ -1458,14 +1530,14 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
             <div className="modal-body">
               <div className="userspace-members-list">
                 <div className="userspace-member-row userspace-member-owner">
-                  <span>{currentUser.display_name || currentUser.username}</span>
+                  <span>{formatUserLabel(currentUser)}</span>
                   <small className="userspace-muted">owner</small>
                 </div>
                 {pendingMembers.map((member) => {
                   const user = allUsers.find((u) => u.id === member.user_id);
                   return (
                     <div key={member.user_id} className="userspace-member-row">
-                      <span>{user?.display_name || user?.username || member.user_id}</span>
+                      <span>{formatUserLabel(user, member.user_id)}</span>
                       <select
                         value={member.role}
                         onChange={(e) => handleChangeMemberRole(member.user_id, e.target.value as WorkspaceRole)}
@@ -1496,7 +1568,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                     {allUsers
                       .filter((u) => u.id !== activeWorkspace.owner_user_id && !pendingMembers.some((m) => m.user_id === u.id))
                       .map((u) => (
-                        <option key={u.id} value={u.id}>{u.display_name || u.username}</option>
+                        <option key={u.id} value={u.id}>{formatUserLabel(u, u.id)}</option>
                       ))}
                   </select>
                 </div>

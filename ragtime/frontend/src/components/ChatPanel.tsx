@@ -1246,9 +1246,12 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, on
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
-    if (shouldAutoScrollRef.current) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }
+    if (!shouldAutoScrollRef.current || !chatMessagesRef.current) return;
+
+    chatMessagesRef.current.scrollTo({
+      top: chatMessagesRef.current.scrollHeight,
+      behavior: 'smooth',
+    });
   }, [activeConversation?.messages, streamingContent]);
 
   const handleScroll = useCallback(() => {
