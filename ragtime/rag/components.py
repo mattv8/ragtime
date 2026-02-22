@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import get_output_limit
+from ragtime.core.model_limits import get_context_limit, get_output_limit
 from ragtime.core.ollama import get_model_context_length
 from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
                                    validate_odoo_code, validate_sql_query,
@@ -430,10 +430,13 @@ _HARDCODED_DATA_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\b(?:get)?[Ss]tatic[Dd]ata\b"), "static data function/variable"),
     (re.compile(r"\bplaceholder[Dd]ata\b"), "placeholder data variable"),
     # Large inline array literals with 5+ object elements (e.g., [{...}, {...}, ...])
-    (re.compile(
-        r"=\s*\[\s*(?:\{[^}]{8,}\}\s*,\s*){4,}",
-        re.DOTALL,
-    ), "large inline data array literal (5+ objects)"),
+    (
+        re.compile(
+            r"=\s*\[\s*(?:\{[^}]{8,}\}\s*,\s*){4,}",
+            re.DOTALL,
+        ),
+        "large inline data array literal (5+ objects)",
+    ),
 ]
 
 
@@ -690,12 +693,13 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 
 ### File tool workflow
 
-- Start by listing files to understand existing workspace structure.
+- Start by running `assay_userspace_code` to understand current workspace structure and implementation status before editing.
+- If assay is unavailable for any reason, fallback to `list_userspace_files` and targeted `read_userspace_file` calls.
 - Read any target file before overwriting it.
 - Then create/update files with full content via User Space file tools.
 - For implementation requests, never finish with only prose: ensure at least one artifact file write occurred in the current turn.
 - After updating TypeScript files, run `validate_userspace_typescript` and fix all reported errors before finalizing.
-- When you complete a meaningful milestone (e.g., stable report section, validated wiring, or user-approved checkpoint), call `create_userspace_snapshot` immediately with a concise message.
+- On every completed user-requested change loop, call `create_userspace_snapshot` immediately with a concise completion message.
 
 ### Theme + CSS rules
 
@@ -3995,6 +3999,29 @@ except Exception as e:
                 description="Brief description of why files are being listed",
             )
 
+        class AssayUserSpaceCodeInput(BaseModel):
+            max_files: int = Field(
+                default=12,
+                ge=1,
+                le=50,
+                description=(
+                    "Maximum number of workspace files to inspect in the assay pass. "
+                    "Prefer dashboard entry + recently updated files."
+                ),
+            )
+            max_chars_per_file: int = Field(
+                default=1600,
+                ge=200,
+                le=12000,
+                description=(
+                    "Maximum number of UTF-8 characters to include per inspected file preview."
+                ),
+            )
+            reason: str = Field(
+                default="",
+                description="Brief description of why the code assay is needed",
+            )
+
         class ReadUserSpaceFileInput(BaseModel):
             path: str = Field(
                 default="dashboard/main.ts",
@@ -4129,6 +4156,72 @@ except Exception as e:
             files = await userspace_service.list_workspace_files(workspace_id, user_id)
             return json.dumps([f.model_dump(mode="json") for f in files], indent=2)
 
+        async def assay_userspace_code(
+            max_files: int = 12,
+            max_chars_per_file: int = 1600,
+            reason: str = "",
+            **_: Any,
+        ) -> str:
+            del reason
+            await userspace_service.enforce_workspace_role(
+                workspace_id, user_id, "editor"
+            )
+
+            files = await userspace_service.list_workspace_files(workspace_id, user_id)
+
+            dashboard_paths = sorted(
+                [file.path for file in files if file.path.startswith("dashboard/")]
+            )
+            non_dashboard_paths = sorted(
+                [file.path for file in files if not file.path.startswith("dashboard/")]
+            )
+
+            prioritized_paths: list[str] = []
+            if "dashboard/main.ts" in dashboard_paths:
+                prioritized_paths.append("dashboard/main.ts")
+                dashboard_paths.remove("dashboard/main.ts")
+
+            prioritized_paths.extend(dashboard_paths)
+            prioritized_paths.extend(non_dashboard_paths)
+
+            selected_paths = prioritized_paths[:max_files]
+
+            inspected: list[dict[str, Any]] = []
+            for path in selected_paths:
+                file_data = await userspace_service.get_workspace_file(
+                    workspace_id, path, user_id
+                )
+                content = file_data.content
+                line_count = content.count("\n") + (1 if content else 0)
+                inspected.append(
+                    {
+                        "path": file_data.path,
+                        "artifact_type": file_data.artifact_type,
+                        "content_chars": len(content),
+                        "line_count": line_count,
+                        "preview": content[:max_chars_per_file],
+                    }
+                )
+
+            assay = {
+                "workspace_id": workspace_id,
+                "summary": {
+                    "total_files": len(files),
+                    "dashboard_file_count": len(
+                        [file for file in files if file.path.startswith("dashboard/")]
+                    ),
+                    "has_dashboard_entry": any(
+                        file.path == "dashboard/main.ts" for file in files
+                    ),
+                    "inspected_file_count": len(inspected),
+                },
+                "inspected_files": inspected,
+                "next_step": (
+                    "Read target files in full before overwrite, then update files and validate TypeScript."
+                ),
+            }
+            return json.dumps(assay, indent=2)
+
         async def read_userspace_file(path: str, reason: str = "", **_: Any) -> str:
             del reason
             file_data = await userspace_service.get_workspace_file(
@@ -4222,8 +4315,7 @@ except Exception as e:
             )
             is_module_source = normalized_path.endswith(module_source_extensions)
             is_dashboard_module = is_module_source and (
-                normalized_path.startswith("dashboard/")
-                or artifact_type == "module_ts"
+                normalized_path.startswith("dashboard/") or artifact_type == "module_ts"
             )
 
             # Auto-require live data contract when workspace has selected
@@ -4231,14 +4323,12 @@ except Exception as e:
             # should not be able to bypass the contract by leaving
             # live_data_requested=false while embedding hardcoded data.
             workspace_has_tools = bool(workspace.selected_tool_ids)
-            effective_live_data_requested = (
-                live_data_requested
-                or (workspace_has_tools and is_dashboard_module)
+            effective_live_data_requested = live_data_requested or (
+                workspace_has_tools and is_dashboard_module
             )
 
             requires_live_data_contract = (
-                effective_live_data_requested
-                and is_dashboard_module
+                effective_live_data_requested and is_dashboard_module
             )
 
             # Detect hardcoded mock/sample data in ALL dashboard module
@@ -4303,10 +4393,16 @@ except Exception as e:
                         )
 
             if hard_errors:
-                raise ValueError(
-                    "User Space file write rejected due to persistence policy violations:\n- "
-                    + "\n- ".join(hard_errors)
-                )
+                response_payload: dict[str, Any] = {
+                    "file": None,
+                    "rejected": True,
+                    "errors": hard_errors,
+                }
+                if warnings:
+                    response_payload["warnings"] = warnings
+                if typecheck is not None:
+                    response_payload["typescript_validation"] = typecheck
+                return json.dumps(response_payload, indent=2)
 
             result = await userspace_service.upsert_workspace_file(
                 workspace_id,
@@ -4370,6 +4466,15 @@ except Exception as e:
 
         return [
             StructuredTool.from_function(
+                coroutine=assay_userspace_code,
+                name="assay_userspace_code",
+                description=(
+                    "Perform a focused assay of existing workspace code and structure before editing. "
+                    "Use this first in each implementation loop to understand current state and identify target files."
+                ),
+                args_schema=AssayUserSpaceCodeInput,
+            ),
+            StructuredTool.from_function(
                 coroutine=list_userspace_files,
                 name="list_userspace_files",
                 description=(
@@ -4393,7 +4498,8 @@ except Exception as e:
                     "For interactive reports, write TypeScript modules (artifact_type=module_ts). "
                     "When the user explicitly requests live data, set live_data_requested=true. "
                     "Then module-source writes under dashboard/*, and module_ts artifact writes, require non-empty live_data_connections metadata and successful live_data_checks verification. "
-                    "Output may include CSS/theme warnings that must be fixed in follow-up edits."
+                    "Output may include CSS/theme warnings that must be fixed in follow-up edits. "
+                    "Policy violations are returned as structured rejection payloads in tool output (rejected=true, errors=[...])."
                 ),
                 args_schema=UpsertUserSpaceFileInput,
             ),
@@ -4402,7 +4508,7 @@ except Exception as e:
                 name="create_userspace_snapshot",
                 description=(
                     "Create a git-based checkpoint snapshot in the active User Space workspace. "
-                    "Use this automatically at meaningful stopping points."
+                    "Use this automatically at each completed user-requested change loop."
                 ),
                 args_schema=CreateUserSpaceSnapshotInput,
             ),
@@ -4506,6 +4612,79 @@ except Exception as e:
             return_intermediate_steps=settings.debug_mode,
         )
 
+    def _content_to_text_for_token_estimate(self, content: Any) -> str:
+        """Convert message/tool content into plain text for token estimate math."""
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            chunks: list[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    item_type = item.get("type")
+                    if item_type == "text":
+                        chunks.append(str(item.get("text") or ""))
+                    elif item_type == "image_url":
+                        chunks.append("[image]")
+                    elif item_type == "file":
+                        chunks.append("[file]")
+                    else:
+                        chunks.append(str(item))
+                else:
+                    chunks.append(str(item))
+            return "\n".join(chunks)
+        if isinstance(content, dict):
+            if content.get("type") == "text":
+                return str(content.get("text") or "")
+            return str(content)
+        return str(content)
+
+    async def _build_context_headroom_prompt(
+        self,
+        *,
+        chat_history: list[Any],
+        user_content: Any,
+    ) -> str:
+        """Build a request-scoped context headroom advisory for the model."""
+        model_id = (
+            (self._app_settings or {}).get("llm_model", "gpt-4-turbo")
+            if self._app_settings
+            else "gpt-4-turbo"
+        )
+        try:
+            context_limit = max(1, int(await get_context_limit(model_id)))
+        except Exception:
+            context_limit = 8192
+
+        estimated_tokens = 0
+        for message in chat_history:
+            content = getattr(message, "content", message)
+            estimated_tokens += len(
+                self._content_to_text_for_token_estimate(content)
+            ) // 4
+
+        estimated_tokens += len(self._content_to_text_for_token_estimate(user_content)) // 4
+
+        usage_percent = int((estimated_tokens / context_limit) * 100)
+        headroom_tokens = max(0, context_limit - estimated_tokens)
+        risk_level = (
+            "high"
+            if usage_percent >= 85
+            else "medium"
+            if usage_percent >= 70
+            else "low"
+        )
+
+        return (
+            "\n\n## CONTEXT HEADROOM ASSAY\n"
+            f"- Estimated conversation usage: {estimated_tokens} / {context_limit} tokens (~{usage_percent}%)\n"
+            f"- Estimated headroom: {headroom_tokens} tokens\n"
+            f"- Risk level: {risk_level}\n"
+            "- Keep responses concise when risk is medium/high and avoid unnecessary tool churn.\n"
+            "- For implementation tasks, prioritize minimal edits that complete the request in one loop.\n"
+        )
+
     async def process_query(
         self,
         user_message: Union[str, Any],
@@ -4538,6 +4717,10 @@ except Exception as e:
             system_prompt = self._build_request_system_prompt(
                 is_ui=False,
                 allowed_tool_config_ids=None,
+            )
+            system_prompt += await self._build_context_headroom_prompt(
+                chat_history=chat_history,
+                user_content=augmented_content,
             )
             runtime_tools = list(getattr(executor, "tools", []) if executor else [])
 
@@ -4677,6 +4860,10 @@ except Exception as e:
         system_prompt = self._build_request_system_prompt(
             is_ui=is_ui,
             allowed_tool_config_ids=None,
+        )
+        system_prompt += await self._build_context_headroom_prompt(
+            chat_history=chat_history,
+            user_content=langchain_content,
         )
 
         runtime_tools = list(getattr(executor, "tools", []) if executor else [])

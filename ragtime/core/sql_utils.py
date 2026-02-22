@@ -59,6 +59,7 @@ def validate_sql_query(
     query: str,
     enable_write: bool = False,
     db_type: str = DB_TYPE_POSTGRES,
+    require_result_limit: bool = True,
 ) -> tuple[bool, str]:
     """
     Validate SQL query for safety across database types.
@@ -69,6 +70,7 @@ def validate_sql_query(
         query: The SQL query to validate.
         enable_write: Whether write operations are allowed.
         db_type: Database type for dialect-specific validation.
+        require_result_limit: Whether result-limiting clauses are required.
 
     Returns:
         Tuple of (is_safe, reason_message).
@@ -109,7 +111,7 @@ def validate_sql_query(
                 return False, "Query contains forbidden MSSQL pattern"
 
         # Check for result limiting (TOP or OFFSET/FETCH) - MSSQL style
-        if query_upper.startswith("SELECT"):
+        if require_result_limit and query_upper.startswith("SELECT"):
             has_top = re.search(r"\bTOP\s*\(?\s*\d+\s*\)?", query_upper)
             has_fetch = re.search(r"\bFETCH\s+(FIRST|NEXT)\s+\d+\s+ROW", query_upper)
             if not has_top and not has_fetch:
@@ -162,7 +164,7 @@ def validate_sql_query(
                 return False, "Query contains forbidden MySQL pattern"
 
         # Check for LIMIT clause (MySQL uses LIMIT like PostgreSQL)
-        if query_upper.startswith("SELECT"):
+        if require_result_limit and query_upper.startswith("SELECT"):
             has_limit = re.search(r"\bLIMIT\s+\d+", query_upper)
             if not has_limit:
                 return (
@@ -173,7 +175,11 @@ def validate_sql_query(
         return True, "Query is safe"
 
     # For PostgreSQL and others, use core validation
-    is_safe, reason = _validate_sql_query(query, enable_write)
+    is_safe, reason = _validate_sql_query(
+        query,
+        enable_write,
+        require_limit_clause=require_result_limit,
+    )
     if not is_safe:
         return is_safe, reason
 

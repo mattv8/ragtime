@@ -23,6 +23,7 @@ Implemented capabilities:
 
 - Dedicated **User Space** navigation/view.
 - Left-side chat integrated with the existing conversation/task runtime.
+- Viewer role chat is visible but read-only in User Space (send controls disabled in UI; backend still enforces role checks).
 - Workspace-scoped file management and artifact preview.
 - Workspace-scoped tool selection (admin-configured tools only).
 - Snapshot/restore using **git commit history** per workspace.
@@ -102,7 +103,7 @@ Editor mode defaults:
   - chat-specific visualization guidance (applies to chat/non-userspace requests),
   - userspace-specific visualization guidance (applies only when `workspace_context` is present).
 - User Space mode applies a dedicated prompt component (`USERSPACE_MODE_PROMPT_ADDITION`) only when `workspace_context` is present, so persistent artifact/file-structure instructions are not mixed into standard chat prompts.
-- In User Space mode, the runtime injects internal-only LangChain tools: `list_userspace_files`, `read_userspace_file`, `upsert_userspace_file`, and `create_userspace_snapshot`.
+- In User Space mode, the runtime injects internal-only LangChain tools: `assay_userspace_code`, `list_userspace_files`, `read_userspace_file`, `upsert_userspace_file`, `validate_userspace_typescript`, and `create_userspace_snapshot`.
 - Runtime tool descriptions are request-scoped and mode-aware:
   - chat mode surfaces chat-focused chart/datatable instructions (explicit per-call payloads),
   - userspace mode surfaces persistent live-wiring instructions (`data_connection`, refreshable request payloads, blocker reporting).
@@ -125,6 +126,11 @@ Editor mode defaults:
 - `selected_tool_ids`
 - `conversation_ids`
 - `created_at`, `updated_at`
+
+Authoritative metadata note:
+
+- Workspace ACL/tool/conversation metadata is persisted in database tables (`userspace_workspaces`, `userspace_members`) as source of truth.
+- Filesystem `workspace.json` values are maintained for workspace portability/backfill compatibility.
 
 ### File metadata sidecars
 
@@ -245,7 +251,8 @@ Connection metadata behavior:
 User Space internal tools behavior:
 
 - `create_userspace_snapshot` enables agent-created git checkpoints without adding UI controls/end-user surfacing.
-- User Space prompt guidance instructs the agent to create snapshots at meaningful stopping points (milestones/checkpoints).
+- User Space prompt guidance instructs the agent to create snapshots at each completed user-requested change loop.
+- `assay_userspace_code` provides a structured pre-edit assay pass so the agent assesses current file state before editing.
 - `upsert_userspace_file` returns AI-facing warnings when hard-coded hex colors are detected in generated module/CSS content, so the agent can replace them with theme tokens.
 - Live-data contract enforcement is deterministic at both agent and userspace service write paths and gated by intent: only writes with `live_data_requested=true` are required to include non-empty `live_data_connections` metadata for eligible module-source paths/types.
 - Agent-side `upsert_userspace_file` currently applies stricter policy than service-level writes:
@@ -353,7 +360,7 @@ Shared link behavior:
 
 ## 11) Current Boundaries / Non-goals
 
-- Workspace and ACL persistence is filesystem metadata-based, not DB-backed.
+- Workspace file artifacts are filesystem-backed; workspace ACL/tool metadata is DB-backed.
 - Renderer isolation is iframe/CSP bootstrap level; not a full multi-origin hardened sandbox.
 - Share tokens are deterministic and currently non-expiring/non-revocable per-workspace (rotation follows server encryption key changes).
 - No dedicated automated userspace test suite is defined in this document.

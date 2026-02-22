@@ -14,12 +14,8 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (
-    DB_TYPE_MSSQL,
-    enforce_max_results,
-    format_query_result,
-    validate_sql_query,
-)
+from ragtime.core.sql_utils import (DB_TYPE_MSSQL, enforce_max_results,
+                                    format_query_result, validate_sql_query)
 from ragtime.core.ssh import SSHTunnel, ssh_tunnel_config_from_dict
 
 logger = get_logger(__name__)
@@ -111,6 +107,7 @@ async def execute_mssql_query_async(
     timeout: int = 30,
     max_results: int = 100,
     allow_write: bool = False,
+    require_result_limit: bool = True,
     description: str = "",
     ssh_tunnel_config: dict[str, Any] | None = None,
     include_metadata: bool = True,
@@ -130,6 +127,7 @@ async def execute_mssql_query_async(
         timeout: Query timeout in seconds.
         max_results: Maximum rows to return.
         allow_write: Whether to allow write operations.
+        require_result_limit: Whether TOP/FETCH is required for SELECT.
         description: Brief description for logging purposes.
         ssh_tunnel_config: Optional SSH tunnel configuration dict.
 
@@ -141,7 +139,10 @@ async def execute_mssql_query_async(
 
     # Validate the query
     is_safe, reason = validate_sql_query(
-        query, enable_write=allow_write, db_type=DB_TYPE_MSSQL
+        query,
+        enable_write=allow_write,
+        db_type=DB_TYPE_MSSQL,
+        require_result_limit=require_result_limit,
     )
     if not is_safe:
         error_msg = f"Security validation failed: {reason}"

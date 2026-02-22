@@ -6,6 +6,7 @@ import { api } from '@/api';
 import type { Conversation, ChatMessage, AvailableModel, ChatTask, User, ContentPart } from '@/types';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
+import { calculateConversationTokens, calculateStreamingTokens, estimateTokens } from '@/utils/contextUsage';
 
 interface CodeBlockProps {
   inline?: boolean;
@@ -844,9 +845,6 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
   );
 })
 
-// Approximate tokens per character (rough estimate for display)
-const CHARS_PER_TOKEN = 4;
-
 // Consolidated streaming content - groups content events between tool calls
 // This avoids re-rendering markdown for every token and dramatically improves performance
 interface StreamingSegment {
@@ -883,57 +881,6 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
 
 // Default context limit fallback when model not found in API response
 const DEFAULT_CONTEXT_LIMIT = 8192;
-
-// Estimate tokens from text
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / CHARS_PER_TOKEN);
-}
-
-// Estimate tokens from an object payload (e.g., tool inputs)
-function estimateTokensFromObject(value: unknown): number {
-  if (value === undefined || value === null) return 0;
-  try {
-    return estimateTokens(JSON.stringify(value));
-  } catch {
-    return estimateTokens(String(value));
-  }
-}
-
-// Calculate tokens for a single message, including tool calls and chronological events
-// If events exist, they contain the full picture (content + tools); otherwise fall back to content/tool_calls
-function calculateMessageTokens(msg: ChatMessage): number {
-  // If we have chronological events, use them (they contain content + tool calls)
-  if (msg.events?.length) {
-    let tokens = 0;
-    for (const ev of msg.events) {
-      if (ev.type === 'content') {
-        tokens += estimateTokens(ev.content || '');
-      } else if (ev.type === 'tool') {
-        tokens += estimateTokensFromObject(ev.input);
-        tokens += estimateTokens(ev.output || '');
-      }
-    }
-    return tokens;
-  }
-
-  // Fallback: use content + legacy tool_calls
-  const contentText = parseMessageContent(msg.content).text;
-  let tokens = estimateTokens(contentText || '');
-
-  if (msg.tool_calls?.length) {
-    for (const tc of msg.tool_calls) {
-      tokens += estimateTokensFromObject(tc.input);
-      tokens += estimateTokens(tc.output || '');
-    }
-  }
-
-  return tokens;
-}
-
-// Calculate total tokens for a conversation
-function calculateConversationTokens(messages: ChatMessage[]): number {
-  return messages.reduce((total, msg) => total + calculateMessageTokens(msg), 0);
-}
 
 // Format relative time
 function formatRelativeTime(dateStr: string): string {
@@ -1054,9 +1001,19 @@ interface ChatPanelProps {
   onUserMessageSubmitted?: (message: string) => void | Promise<void>;
   onTaskComplete?: () => void;
   embedded?: boolean;
+  readOnly?: boolean;
+  readOnlyMessage?: string;
 }
 
-export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, onTaskComplete, embedded = false }: ChatPanelProps) {
+export function ChatPanel({
+  currentUser,
+  workspaceId,
+  onUserMessageSubmitted,
+  onTaskComplete,
+  embedded = false,
+  readOnly = false,
+  readOnlyMessage,
+}: ChatPanelProps) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [inputValue, setInputValue] = useState('');
@@ -1080,6 +1037,7 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, on
   const [isConnectionError, setIsConnectionError] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const isAdmin = currentUser.role === 'admin';
+  const effectiveReadOnlyMessage = readOnlyMessage || 'Workspace is read-only. Viewers can review messages but cannot send prompts.';
 
   // Inline confirmation for delete (conversation ID waiting for confirmation)
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -1302,6 +1260,7 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, on
   }, [availableModels]);
 
   const createNewConversation = async () => {
+    if (readOnly) return;
     try {
       shouldAutoScrollRef.current = true;
       const conversation = await api.createConversation(undefined, workspaceId);
@@ -1700,6 +1659,7 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, on
   };
 
   const startFreshConversation = async () => {
+    if (readOnly) return;
     // Start a fresh conversation (same behavior as New button)
     // This replaces the old clearConversation which wiped messages
     if (isStreaming) return;
@@ -1774,7 +1734,7 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, on
 
   // Direct message send - bypasses inputValue state for programmatic sending
   const sendMessageDirect = async (message: string) => {
-    if (!message.trim() || !activeConversation || isStreaming) return;
+    if (!message.trim() || !activeConversation || isStreaming || readOnly) return;
     shouldAutoScrollRef.current = true;
 
     const userMessage = message.trim();
@@ -1830,7 +1790,7 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, on
   };
 
   const sendMessage = async () => {
-    if ((!inputValue.trim() && attachments.length === 0) || !activeConversation || isStreaming) return;
+    if ((!inputValue.trim() && attachments.length === 0) || !activeConversation || isStreaming || readOnly) return;
 
     const userMessage = inputValue.trim();
     const messageAttachments = [...attachments];
@@ -1851,6 +1811,7 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, on
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (readOnly) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       if (isStreaming) return; // Allow typing while a response streams
 
@@ -1947,7 +1908,7 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, on
   };
 
   const submitEditMessage = async () => {
-    if (!activeConversation || editingMessageIdx === null || (!editMessageContent.trim() && editMessageAttachments.length === 0)) return;
+    if (readOnly || !activeConversation || editingMessageIdx === null || (!editMessageContent.trim() && editMessageAttachments.length === 0)) return;
     shouldAutoScrollRef.current = true;
 
     let messageToSend: string = editMessageContent.trim();
@@ -2033,12 +1994,36 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, on
   };
 
   // Memoize context usage calculation to avoid recalculating on every render
-  const contextUsagePercent = useMemo(() => {
-    if (!activeConversation) return 0;
-    const tokens = calculateConversationTokens(activeConversation.messages);
-    const limit = getContextLimit(activeConversation.model);
-    return Math.round(tokens / limit * 100);
-  }, [activeConversation?.messages, activeConversation?.model, getContextLimit]);
+  const contextUsage = useMemo(() => {
+    if (!activeConversation) {
+      return {
+        currentTokens: 0,
+        totalTokens: 0,
+        contextLimit: DEFAULT_CONTEXT_LIMIT,
+        contextUsagePercent: 0,
+        projectedInputPercent: 0,
+        hasHeadroom: true,
+      };
+    }
+
+    const currentTokens = calculateConversationTokens(activeConversation.messages);
+    const streamingTokens = isStreaming ? calculateStreamingTokens(streamingEvents as any, streamingContent) : 0;
+    const totalTokens = currentTokens + streamingTokens;
+    const contextLimit = getContextLimit(activeConversation.model);
+    const contextUsagePercent = Math.round((totalTokens / contextLimit) * 100);
+    const nextMessageTokens = estimateTokens(inputValue.trim());
+    const projectedInputPercent = Math.round(((totalTokens + nextMessageTokens) / contextLimit) * 100);
+    const hasHeadroom = totalTokens + nextMessageTokens <= contextLimit * 0.9;
+
+    return {
+      currentTokens,
+      totalTokens,
+      contextLimit,
+      contextUsagePercent,
+      projectedInputPercent,
+      hasHeadroom,
+    };
+  }, [activeConversation, getContextLimit, inputValue, isStreaming, streamingContent, streamingEvents]);
 
   const showWorkspaceConversationSelect = embedded && Boolean(workspaceId);
 
@@ -2268,17 +2253,22 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, on
                     </label>
                   </label>
                 )}
-                <div className="chat-context-meter" title={`Context usage: ${contextUsagePercent}%`}>
-                  <div
-                    className="chat-context-fill"
-                    style={{
-                      width: `${Math.min(contextUsagePercent, 100)}%`,
-                      backgroundColor: contextUsagePercent > 80 ? 'var(--color-error)' :
-                                       contextUsagePercent > 60 ? '#fbbf24' :
-                                       'var(--color-success)'
-                    }}
-                  />
-                  <span className="chat-context-label">{contextUsagePercent}%</span>
+                <div
+                  className="chat-context-meter"
+                  title={`Context usage: ${contextUsage.contextUsagePercent}% (${contextUsage.totalTokens}/${contextUsage.contextLimit} tokens)`}
+                >
+                  <div className="chat-context-track">
+                    <div
+                      className="chat-context-fill"
+                      style={{
+                        width: `${Math.min(contextUsage.contextUsagePercent, 100)}%`,
+                        backgroundColor: contextUsage.contextUsagePercent > 80 ? 'var(--color-error)' :
+                                         contextUsage.contextUsagePercent > 60 ? 'var(--color-warning)' :
+                                         'var(--color-success)'
+                      }}
+                    />
+                  </div>
+                  <span className="chat-context-label">{contextUsage.contextUsagePercent}%</span>
                 </div>
                 <ModelSelector
                   models={availableModels}
@@ -2286,7 +2276,7 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, on
                   onModelChange={changeModel}
                   disabled={isStreaming || modelsLoading}
                 />
-                <button className="btn btn-sm btn-secondary" onClick={startFreshConversation} title="Start a new conversation">
+                <button className="btn btn-sm btn-secondary" onClick={startFreshConversation} title="Start a new conversation" disabled={readOnly}>
                   New Chat
                 </button>
               </div>
@@ -2443,7 +2433,7 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, on
                               <span className="chat-message-time">
                                 {formatRelativeTime(msg.timestamp)}
                               </span>
-                              {msg.role === 'user' && !isStreaming && (
+                              {msg.role === 'user' && !isStreaming && !readOnly && (
                                 <button
                                   className="chat-message-edit-btn"
                                   onClick={() => {
@@ -2502,7 +2492,7 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, on
                 ((activeConversation.messages.length > 0 &&
                   activeConversation.messages[activeConversation.messages.length - 1].role === 'assistant' &&
                   (hitMaxIterations || isConnectionError)) ||
-                 interruptedTask) && (
+                 interruptedTask) && !readOnly && (
                 <div className="chat-continue-inline">
                   <span className="chat-continue-text">
                     Conversation interrupted, <button className="chat-continue-link" onClick={continueConversation}>continue?</button>
@@ -2528,19 +2518,26 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, on
 
             {/* Input Area */}
             <div className="chat-input-area">
+              {readOnly && (
+                <div className="chat-readonly-note" role="status">
+                  {effectiveReadOnlyMessage}
+                </div>
+              )}
               <div className="chat-input-wrapper">
                 <FileAttachment
                   attachments={attachments}
                   onAttachmentsChange={setAttachments}
+                  disabled={readOnly || isStreaming}
                 />
                 <textarea
                   ref={inputRef}
                   value={inputValue}
                   onChange={(e) => setInputValue(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder="Ask a question or paste an image (Ctrl+V)..."
+                  placeholder={readOnly ? effectiveReadOnlyMessage : 'Ask a question or paste an image (Ctrl+V)...'}
                   rows={1}
                   className="chat-input"
+                  disabled={readOnly}
                 />
                 {isStreaming ? (
                   <button
@@ -2554,13 +2551,14 @@ export function ChatPanel({ currentUser, workspaceId, onUserMessageSubmitted, on
                     </svg>
                   </button>
                 ) : (
+                  !readOnly &&
                   (inputValue.trim() || attachments.length > 0) && (
                     <button
                       type="button"
                       className="btn chat-send-btn-inline"
                       onClick={sendMessage}
-                      disabled={!activeConversation}
-                      title="Send message"
+                      disabled={!activeConversation || !contextUsage.hasHeadroom}
+                      title={contextUsage.hasHeadroom ? 'Send message' : `Context headroom too low (${contextUsage.projectedInputPercent}%)`}
                     >
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <line x1="12" y1="19" x2="12" y2="5"></line>

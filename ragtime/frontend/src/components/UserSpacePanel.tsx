@@ -1459,6 +1459,8 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                 workspaceId={activeWorkspaceId}
                 onUserMessageSubmitted={canEditWorkspace ? handleUserMessageSubmitted : undefined}
                 embedded
+                readOnly={!canEditWorkspace}
+                readOnlyMessage="Workspace is read-only for viewers. You can review chat and files, but only owners/editors can send prompts."
               />
             ) : (
               <div className="userspace-chat-placeholder">

@@ -496,7 +496,11 @@ _SQL_SYSTEM_PATTERNS = [
 ]
 
 
-def validate_sql_query(query: str, enable_write: bool = False) -> Tuple[bool, str]:
+def validate_sql_query(
+    query: str,
+    enable_write: bool = False,
+    require_limit_clause: bool = True,
+) -> Tuple[bool, str]:
     """
     Validate SQL query for safety. Returns (is_safe, reason).
     Only allows read-only SELECT queries unless write ops are enabled.
@@ -504,6 +508,7 @@ def validate_sql_query(query: str, enable_write: bool = False) -> Tuple[bool, st
     Args:
         query: The SQL query to validate.
         enable_write: Whether write operations are allowed.
+        require_limit_clause: Whether SELECT queries must include LIMIT.
 
     Returns:
         Tuple of (is_safe, reason_message).
@@ -541,7 +546,11 @@ def validate_sql_query(query: str, enable_write: bool = False) -> Tuple[bool, st
                 )
 
     # Must have LIMIT clause for SELECT queries to prevent huge result sets
-    if query_upper.startswith("SELECT") and "LIMIT" not in query_upper:
+    if (
+        require_limit_clause
+        and query_upper.startswith("SELECT")
+        and "LIMIT" not in query_upper
+    ):
         return False, "SELECT queries must include a LIMIT clause"
 
     return True, "Query is safe"

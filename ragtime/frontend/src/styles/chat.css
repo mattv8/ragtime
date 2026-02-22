@@ -576,6 +576,34 @@
   gap: var(--space-md);
 }
 
+.chat-context-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 110px;
+}
+
+.chat-context-track {
+  width: 56px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--color-border);
+  overflow: hidden;
+}
+
+.chat-context-fill {
+  height: 100%;
+  background: var(--color-success);
+  transition: width var(--transition-fast), background-color var(--transition-fast);
+}
+
+.chat-context-label {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  min-width: 34px;
+  text-align: right;
+}
+
 .chat-toggle-control {
   display: flex;
   align-items: center;
@@ -757,9 +785,20 @@
 
 .chat-input-area {
   display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
   padding: var(--space-lg);
   border-top: 1px solid var(--color-border);
   background: var(--color-surface-hover);
+}
+
+.chat-readonly-note {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  padding: 6px 10px;
 }
 
 .chat-input-wrapper {

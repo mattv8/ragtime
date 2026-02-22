@@ -58,7 +58,6 @@ _MODULE_SOURCE_EXTENSIONS = (
     ".cts",
 )
 
-
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -1358,6 +1357,7 @@ class UserSpaceService:
                 timeout=timeout,
                 max_results=max_results,
                 allow_write=False,
+                require_result_limit=False,
                 description="Preview component execution",
                 ssh_tunnel_config=ssh_tunnel_config,
                 include_metadata=True,
@@ -1376,6 +1376,7 @@ class UserSpaceService:
                 timeout=timeout,
                 max_results=max_results,
                 allow_write=False,
+                require_result_limit=False,
                 description="Preview component execution",
                 ssh_tunnel_config=ssh_tunnel_config,
                 include_metadata=True,
@@ -1397,6 +1398,7 @@ class UserSpaceService:
             query,
             enable_write=False,
             db_type=DB_TYPE_POSTGRES,
+            require_result_limit=False,
         )
         if not is_safe:
             return f"Error: {reason}"
