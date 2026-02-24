@@ -355,6 +355,10 @@ TOOL_USAGE_REMINDER = """[CRITICAL: Use the tool calling API. Do NOT write fake 
 
 """
 
+USERSPACE_TURN_REMINDER = """[USER SPACE TURN CHECKLIST: Before finalizing, run validate_userspace_typescript on EVERY changed .ts/.tsx file (including dashboard/main.ts) and fix all reported errors. Persist implementation changes via userspace file tools (not chat-only prose). Never use hardcoded/mock/sample/static data in dashboard modules; wire live data via context.components[componentId].execute() with required metadata/checks. After each completed change loop, call create_userspace_snapshot with a concise completion message.]
+
+"""
+
 
 # Visualization guidance is layered by context: common + chat + userspace
 UI_VISUALIZATION_COMMON_PROMPT = """
@@ -4095,7 +4099,7 @@ except Exception as e:
 
         return context, sources
 
-    def _prepend_reminder_to_content(self, content: Any) -> Any:
+    def _prepend_reminder_to_content(self, content: Any, mode: str = "chat") -> Any:
         """Prepend tool usage reminder to content (string or multimodal list).
 
         For string content: prepends the reminder text.
@@ -4107,16 +4111,20 @@ except Exception as e:
         Returns:
             Content with reminder prepended
         """
+        reminder_text = TOOL_USAGE_REMINDER
+        if mode == "userspace":
+            reminder_text += USERSPACE_TURN_REMINDER
+
         if isinstance(content, str):
-            return f"{TOOL_USAGE_REMINDER}{content}"
+            return f"{reminder_text}{content}"
 
         if isinstance(content, list):
             # Prepend reminder as first text block
-            reminder_block = {"type": "text", "text": TOOL_USAGE_REMINDER}
+            reminder_block = {"type": "text", "text": reminder_text}
             return [reminder_block] + content
 
         # Fallback
-        return f"{TOOL_USAGE_REMINDER}{content}"
+        return f"{reminder_text}{content}"
 
     def _convert_message_to_langchain(self, message: Any) -> Any:
         """
@@ -5954,9 +5962,6 @@ except Exception as e:
         # Convert to LangChain format (preserves multimodal content)
         langchain_content = self._convert_message_to_langchain(user_message)
 
-        # Prepend tool usage reminder (adjacent to current message for effectiveness)
-        augmented_content = self._prepend_reminder_to_content(langchain_content)
-
         try:
             executor = self.agent_executor
             request_llm = await self._get_request_scoped_llm(conversation_model)
@@ -5967,6 +5972,11 @@ except Exception as e:
                 blocked_tool_names=blocked_tool_names,
                 workspace_context=workspace_context,
                 add_chat_visualization_prompt=True,
+            )
+            # Prepend per-turn reminder (adjacent to current message for effectiveness)
+            augmented_content = self._prepend_reminder_to_content(
+                langchain_content,
+                mode=request_context["mode"],
             )
             system_prompt = self._build_request_system_prompt(
                 is_ui=request_context["prompt_is_ui"],
@@ -6014,8 +6024,7 @@ except Exception as e:
 
                 messages: List[BaseMessage] = [SystemMessage(content=system_prompt)]
                 messages.extend(chat_history)
-                # Use langchain_content (can be string or multimodal list)
-                messages.append(HumanMessage(content=langchain_content))
+                messages.append(HumanMessage(content=augmented_content))
                 response = await request_llm.ainvoke(messages)
                 content = response.content
                 return content if isinstance(content, str) else str(content)
@@ -6102,7 +6111,10 @@ except Exception as e:
                 stripped_content = self._strip_images_from_content(langchain_content)
 
                 # Prepend tool usage reminder (adjacent to current message for effectiveness)
-                agent_input = self._prepend_reminder_to_content(stripped_content)
+                agent_input = self._prepend_reminder_to_content(
+                    stripped_content,
+                    mode=request_context["mode"],
+                )
 
                 # Track tool runs to avoid duplicates from nested events
                 active_tool_runs: set[str] = set()
