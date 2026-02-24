@@ -4882,6 +4882,24 @@ except Exception as e:
                     indent=2,
                 )
 
+            normalized_lower_path = normalized_path.lower()
+            patch_is_module_source = normalized_lower_path.endswith(
+                (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts")
+            )
+            patch_is_dashboard_module = patch_is_module_source and (
+                normalized_lower_path.startswith("dashboard/")
+                or file_data.artifact_type == "module_ts"
+            )
+            if patch_is_dashboard_module:
+                mock_patterns = find_hardcoded_data_patterns(updated_content)
+                if mock_patterns:
+                    raise ToolException(
+                        "LIVE DATA POLICY VIOLATION -- Hardcoded data patterns detected: "
+                        + ", ".join(mock_patterns)
+                        + ". Replace static/mock data with live runtime data via "
+                        "context.components[componentId].execute()."
+                    )
+
             request_payload = UpsertWorkspaceFileRequest(
                 content=updated_content,
                 artifact_type=file_data.artifact_type,
@@ -4950,6 +4968,7 @@ except Exception as e:
             )
 
             warnings: list[str] = []
+            allowed_violations: list[str] = []
             hard_errors: list[str] = []
             lower_path = (path or "").lower()
             normalized_path = lower_path.replace("\\", "/")
@@ -5037,15 +5056,14 @@ except Exception as e:
             )
 
             # Detect hardcoded mock/sample data naming patterns.
-            # This is a supplementary warning only; the authoritative
-            # enforcement is the AST-based structural validation below.
+            # Hardcoded data is always a hard policy violation.
             if is_dashboard_module:
                 mock_patterns = find_hardcoded_data_patterns(content)
                 if mock_patterns:
-                    warnings.append(
-                        "Suspicious hardcoded data patterns detected: "
+                    hard_errors.append(
+                        "Hardcoded data patterns detected: "
                         + ", ".join(mock_patterns)
-                        + ". All data must be fetched at runtime via "
+                        + ". All dashboard data must be fetched at runtime via "
                         "context.components[componentId].execute()."
                     )
 
@@ -5158,12 +5176,12 @@ except Exception as e:
                 if not typecheck.get("ok", False):
                     contract_errors = typecheck.get("contract_errors") or []
                     if contract_errors:
-                        hard_errors.extend(
-                            [
-                                "User Space runtime contract violation: " + err
-                                for err in contract_errors
-                            ]
-                        )
+                        for err in contract_errors:
+                            violation = "User Space runtime contract violation: " + str(
+                                err
+                            )
+                            if violation not in allowed_violations:
+                                allowed_violations.append(violation)
                     diagnostics = typecheck.get("errors") or []
                     if diagnostics:
                         warnings.append(
@@ -5216,6 +5234,8 @@ except Exception as e:
                     }
                     if warnings:
                         response_payload["warnings"] = warnings
+                    if allowed_violations:
+                        response_payload["allowed_violations"] = allowed_violations
                     if typecheck is not None:
                         response_payload["typescript_validation"] = typecheck
                     return json.dumps(response_payload, indent=2)
@@ -5232,6 +5252,10 @@ except Exception as e:
                     }
                     if warnings:
                         entrypoint_response_payload["warnings"] = warnings
+                    if allowed_violations:
+                        entrypoint_response_payload["allowed_violations"] = (
+                            allowed_violations
+                        )
                     if typecheck is not None:
                         entrypoint_response_payload["typescript_validation"] = typecheck
                     return json.dumps(entrypoint_response_payload, indent=2)
@@ -5242,6 +5266,9 @@ except Exception as e:
             }
             if warnings:
                 success_response_payload["warnings"] = warnings
+            if allowed_violations:
+                success_response_payload["allowed_violations"] = allowed_violations
+                success_response_payload["created_with_violations"] = True
             if typecheck is not None:
                 success_response_payload["typescript_validation"] = typecheck
             return json.dumps(success_response_payload, indent=2)
