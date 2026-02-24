@@ -679,6 +679,7 @@ class BackgroundTaskService:
                     is_ui=True,
                     blocked_tool_names=blocked_tool_names,
                     workspace_context=workspace_context,
+                    conversation_model=conv.model,
                 ):
                     if self._shutdown:
                         await repository.cancel_chat_task(task_id)

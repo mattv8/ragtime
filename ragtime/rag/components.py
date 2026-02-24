@@ -1186,102 +1186,111 @@ class RAGComponents:
         assert self._app_settings is not None  # Set by initialize()
         provider = self._app_settings.get("llm_provider", "openai").lower()
         model = self._app_settings.get("llm_model", "gpt-4-turbo")
-        max_tokens = self._app_settings.get("llm_max_tokens", 4096)
+        max_tokens = await self._resolve_llm_max_tokens(provider, model)
+        self.llm = await self._build_llm(provider, model, max_tokens)
 
-        # Handle "LLM Max" setting (value >= 100000)
-        # We query the model metadata to find the true maximum supported output tokens
-        if max_tokens >= 100000:
-            if provider == "ollama":
-                # For Ollama, try to get context length (as a proxy for max generation)
-                base_url = self._app_settings.get(
-                    "llm_ollama_base_url",
-                    self._app_settings.get("ollama_base_url", "http://localhost:11434"),
-                )
-                detected_limit = await get_model_context_length(model, base_url)
-                if detected_limit:
-                    # For Ollama, num_predict=-1 or context length usually works
-                    # But to be safe we use context_length
-                    max_tokens = detected_limit
-                    logger.info(
-                        f"Using detected context limits for Ollama model {model}: {max_tokens}"
-                    )
-                else:
-                    max_tokens = 4096  # Fallback
-                    logger.warning(
-                        f"Could not detect limits for Ollama model {model}, using default {max_tokens}"
-                    )
-            else:
-                # For Cloud providers (OpenAI, Anthropic), use LiteLLM data
-                detected_limit = await get_output_limit(model)
-                if detected_limit:
-                    max_tokens = detected_limit
-                    logger.info(
-                        f"Using detected output limit for {model}: {max_tokens}"
-                    )
-                else:
-                    # If unknown, 4096 is a safe bet for most modern models
-                    # If the user really wanted 100k, they will be limited to 4k if model is unknown
-                    max_tokens = 4096
-                    logger.warning(
-                        f"Could not detect output limit for {model}, using default {max_tokens}"
-                    )
+        if self.llm is None:
+            logger.warning(
+                "No usable LLM configured - chat features will be disabled until provider credentials and model settings are valid"
+            )
+            return
 
         if provider == "ollama":
+            logger.info(f"Using Ollama LLM: {model}")
+        elif provider == "anthropic":
+            logger.info(f"Using Anthropic LLM: {model}")
+        elif hasattr(self.llm, "model_name"):
+            logger.info(f"Using OpenAI LLM: {self.llm.model_name}")
+        else:
+            logger.info(f"Using OpenAI LLM: {model}")
+
+    async def _resolve_llm_max_tokens(self, provider: str, model: str) -> int:
+        """Resolve max tokens for an LLM request using configured limits."""
+        assert self._app_settings is not None
+        max_tokens = self._app_settings.get("llm_max_tokens", 4096)
+
+        if max_tokens < 100000:
+            return max_tokens
+
+        if provider == "ollama":
+            base_url = self._app_settings.get(
+                "llm_ollama_base_url",
+                self._app_settings.get("ollama_base_url", "http://localhost:11434"),
+            )
+            detected_limit = await get_model_context_length(model, base_url)
+            if detected_limit:
+                logger.info(
+                    f"Using detected context limits for Ollama model {model}: {detected_limit}"
+                )
+                return detected_limit
+
+            logger.warning(
+                f"Could not detect limits for Ollama model {model}, using default 4096"
+            )
+            return 4096
+
+        detected_limit = await get_output_limit(model)
+        if detected_limit:
+            logger.info(f"Using detected output limit for {model}: {detected_limit}")
+            return detected_limit
+
+        logger.warning(f"Could not detect output limit for {model}, using default 4096")
+        return 4096
+
+    async def _build_llm(
+        self,
+        provider: str,
+        model: str,
+        max_tokens: int,
+    ) -> Optional[Any]:
+        """Build an LLM client for a provider/model pair, or return None when unavailable."""
+        assert self._app_settings is not None
+        provider_normalized = provider.lower().strip()
+
+        if provider_normalized == "ollama":
             try:
-                # Use LLM-specific Ollama settings if available, otherwise fall back to embedding settings
                 base_url = self._app_settings.get(
                     "llm_ollama_base_url",
                     self._app_settings.get("ollama_base_url", "http://localhost:11434"),
                 )
-                self.llm = ChatOllama(
+                return ChatOllama(
                     model=model,
                     base_url=base_url,
                     temperature=0,
                     num_predict=max_tokens,
                 )
-                logger.info(f"Using Ollama LLM: {model} at {base_url}")
-                return
             except ImportError:
-                logger.warning("langchain-ollama not installed, falling back to OpenAI")
+                logger.warning("langchain-ollama not installed")
+                return None
 
-        if provider == "anthropic":
+        if provider_normalized == "anthropic":
             api_key = self._app_settings.get("anthropic_api_key", "")
-            if api_key:
-                try:
-                    self.llm = ChatAnthropic(
-                        model=model,
-                        temperature=0,
-                        api_key=api_key,
-                        max_tokens=max_tokens,
-                    )
-                    logger.info(f"Using Anthropic LLM: {model}")
-                    return
-                except ImportError:
-                    logger.warning(
-                        "langchain-anthropic not installed, falling back to OpenAI"
-                    )
-            else:
-                logger.warning(
-                    "Anthropic selected but no API key configured, falling back to OpenAI"
+            if not api_key:
+                logger.warning("Anthropic selected but no API key configured")
+                return None
+            try:
+                return ChatAnthropic(
+                    model=model,
+                    temperature=0,
+                    api_key=api_key,
+                    max_tokens=max_tokens,
                 )
+            except ImportError:
+                logger.warning("langchain-anthropic not installed")
+                return None
 
-        # Default to OpenAI
         api_key = self._app_settings.get("openai_api_key", "")
         if not api_key:
-            logger.warning(
-                "No OpenAI API key configured - LLM features will be disabled until configured via Settings UI"
-            )
-            self.llm = None
-            return
+            logger.warning("OpenAI selected but no API key configured")
+            return None
 
-        self.llm = ChatOpenAI(
-            model=model if provider == "openai" else "gpt-4-turbo",
+        return ChatOpenAI(
+            model=model,
             temperature=0,
             streaming=True,
             api_key=api_key,
             max_tokens=max_tokens,
         )
-        logger.info(f"Using OpenAI LLM: {self.llm.model_name}")
 
     async def _get_embedding_model(self):
         """Get embedding model based on database settings."""
@@ -4575,9 +4584,11 @@ except Exception as e:
         self,
         tools: list[Any],
         system_prompt: str,
+        llm: Optional[Any] = None,
     ) -> Optional[AgentExecutor]:
         """Build a lightweight executor for request-scoped tool filtering."""
-        if self.llm is None or not tools:
+        runtime_llm = llm or self.llm
+        if runtime_llm is None or not tools:
             return None
 
         prompt = ChatPromptTemplate.from_messages(
@@ -4590,7 +4601,7 @@ except Exception as e:
         )
 
         agent = create_tool_calling_agent(
-            self.llm,
+            runtime_llm,
             tools,
             prompt,
             message_formatter=format_to_tool_messages,
@@ -4611,6 +4622,84 @@ except Exception as e:
             max_iterations=max(1, max_iterations),
             return_intermediate_steps=settings.debug_mode,
         )
+
+    def _parse_provider_scoped_model(
+        self,
+        conversation_model: Optional[str],
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Parse optional provider-scoped model format: provider::model_id."""
+        if not conversation_model:
+            return None, None
+
+        model = conversation_model.strip()
+        if not model:
+            return None, None
+
+        if "::" not in model:
+            return None, model
+
+        prefix, _, remainder = model.partition("::")
+        if prefix in {"openai", "anthropic", "ollama"} and remainder:
+            return prefix, remainder
+
+        return None, model
+
+    async def _resolve_chat_request_max_tokens(self, provider: str, model: str) -> int:
+        """Resolve chat-specific max_tokens, capped to selected model limits when known."""
+        assert self._app_settings is not None
+
+        resolved = await self._resolve_llm_max_tokens(provider, model)
+
+        if provider == "ollama":
+            base_url = self._app_settings.get(
+                "llm_ollama_base_url",
+                self._app_settings.get("ollama_base_url", "http://localhost:11434"),
+            )
+            model_limit = await get_model_context_length(model, base_url)
+            if model_limit and resolved > model_limit:
+                logger.debug(
+                    f"Capping chat max_tokens for model {model}: {resolved} -> {model_limit}"
+                )
+                return model_limit
+            return resolved
+
+        model_limit = await get_output_limit(model)
+        if model_limit and resolved > model_limit:
+            logger.debug(
+                f"Capping chat max_tokens for model {model}: {resolved} -> {model_limit}"
+            )
+            return model_limit
+
+        return resolved
+
+    async def _get_request_scoped_llm(
+        self, conversation_model: Optional[str]
+    ) -> Optional[Any]:
+        """Resolve a request-scoped LLM honoring the conversation model override."""
+        provider_override, model_id = self._parse_provider_scoped_model(
+            conversation_model
+        )
+
+        if not model_id:
+            return self.llm
+
+        if not self._app_settings:
+            return self.llm
+
+        configured_model = str(self._app_settings.get("llm_model", "")).strip()
+        configured_provider = str(self._app_settings.get("llm_provider", "openai")).lower()
+
+        if (
+            configured_model
+            and model_id == configured_model
+            and self.llm is not None
+            and (provider_override is None or provider_override == configured_provider)
+        ):
+            return self.llm
+
+        provider = provider_override or configured_provider
+        max_tokens = await self._resolve_chat_request_max_tokens(provider, model_id)
+        return await self._build_llm(provider, model_id, max_tokens)
 
     def _content_to_text_for_token_estimate(self, content: Any) -> str:
         """Convert message/tool content into plain text for token estimate math."""
@@ -4645,35 +4734,36 @@ except Exception as e:
         *,
         chat_history: list[Any],
         user_content: Any,
+        model_id: Optional[str] = None,
     ) -> str:
         """Build a request-scoped context headroom advisory for the model."""
-        model_id = (
+        effective_model_id = model_id or (
             (self._app_settings or {}).get("llm_model", "gpt-4-turbo")
             if self._app_settings
             else "gpt-4-turbo"
         )
         try:
-            context_limit = max(1, int(await get_context_limit(model_id)))
+            context_limit = max(1, int(await get_context_limit(effective_model_id)))
         except Exception:
             context_limit = 8192
 
         estimated_tokens = 0
         for message in chat_history:
             content = getattr(message, "content", message)
-            estimated_tokens += len(
-                self._content_to_text_for_token_estimate(content)
-            ) // 4
+            estimated_tokens += (
+                len(self._content_to_text_for_token_estimate(content)) // 4
+            )
 
-        estimated_tokens += len(self._content_to_text_for_token_estimate(user_content)) // 4
+        estimated_tokens += (
+            len(self._content_to_text_for_token_estimate(user_content)) // 4
+        )
 
         usage_percent = int((estimated_tokens / context_limit) * 100)
         headroom_tokens = max(0, context_limit - estimated_tokens)
         risk_level = (
             "high"
             if usage_percent >= 85
-            else "medium"
-            if usage_percent >= 70
-            else "low"
+            else "medium" if usage_percent >= 70 else "low"
         )
 
         return (
@@ -4691,6 +4781,7 @@ except Exception as e:
         chat_history: Optional[List[Any]] = None,
         blocked_tool_names: Optional[set[str]] = None,
         workspace_context: Optional[dict[str, str]] = None,
+        conversation_model: Optional[str] = None,
     ) -> str:
         """
         Process a user query through the RAG pipeline (non-streaming).
@@ -4713,6 +4804,8 @@ except Exception as e:
 
         try:
             executor = self.agent_executor
+            request_llm = await self._get_request_scoped_llm(conversation_model)
+            _, request_model_id = self._parse_provider_scoped_model(conversation_model)
             workspace_allowed_tool_config_ids: list[str] | None = None
             system_prompt = self._build_request_system_prompt(
                 is_ui=False,
@@ -4721,6 +4814,7 @@ except Exception as e:
             system_prompt += await self._build_context_headroom_prompt(
                 chat_history=chat_history,
                 user_content=augmented_content,
+                model_id=request_model_id,
             )
             runtime_tools = list(getattr(executor, "tools", []) if executor else [])
 
@@ -4787,6 +4881,7 @@ except Exception as e:
                 executor = self._build_runtime_executor(
                     runtime_tools,
                     scoped_prompt,
+                    llm=request_llm,
                 )
 
             if executor:
@@ -4804,7 +4899,7 @@ except Exception as e:
                 return output
             else:
                 # Direct LLM call without tools - use multimodal content
-                if self.llm is None:
+                if request_llm is None:
                     return (
                         "Error: No LLM configured. Please configure an LLM in Settings."
                     )
@@ -4813,7 +4908,7 @@ except Exception as e:
                 messages.extend(chat_history)
                 # Use langchain_content (can be string or multimodal list)
                 messages.append(HumanMessage(content=langchain_content))
-                response = await self.llm.ainvoke(messages)
+                response = await request_llm.ainvoke(messages)
                 content = response.content
                 return content if isinstance(content, str) else str(content)
 
@@ -4828,6 +4923,7 @@ except Exception as e:
         is_ui: bool = False,
         blocked_tool_names: Optional[set[str]] = None,
         workspace_context: Optional[dict[str, str]] = None,
+        conversation_model: Optional[str] = None,
     ):
         """
         Process a user query with true token-by-token streaming.
@@ -4856,6 +4952,8 @@ except Exception as e:
 
         # Select the appropriate agent executor
         executor = self.agent_executor_ui if is_ui else self.agent_executor
+        request_llm = await self._get_request_scoped_llm(conversation_model)
+        _, request_model_id = self._parse_provider_scoped_model(conversation_model)
         workspace_allowed_tool_config_ids: list[str] | None = None
         system_prompt = self._build_request_system_prompt(
             is_ui=is_ui,
@@ -4864,6 +4962,7 @@ except Exception as e:
         system_prompt += await self._build_context_headroom_prompt(
             chat_history=chat_history,
             user_content=langchain_content,
+            model_id=request_model_id,
         )
 
         runtime_tools = list(getattr(executor, "tools", []) if executor else [])
@@ -4919,7 +5018,11 @@ except Exception as e:
                 runtime_tools,
                 mode=prompt_mode,
             )
-            executor = self._build_runtime_executor(runtime_tools, scoped_prompt)
+            executor = self._build_runtime_executor(
+                runtime_tools,
+                scoped_prompt,
+                llm=request_llm,
+            )
 
         try:
             if executor:
@@ -5026,7 +5129,7 @@ except Exception as e:
                                     yield {"type": "max_iterations_reached"}
             else:
                 # Direct LLM streaming without tools - use multimodal content
-                if self.llm is None:
+                if request_llm is None:
                     yield "Error: No LLM configured. Please configure an LLM in Settings."
                     return
 
@@ -5036,7 +5139,7 @@ except Exception as e:
                 messages.append(HumanMessage(content=langchain_content))
 
                 # Use astream for true token-by-token streaming
-                async for chunk in self.llm.astream(messages):
+                async for chunk in request_llm.astream(messages):
                     if hasattr(chunk, "content") and chunk.content:
                         content = chunk.content
                         # Handle Anthropic-style content blocks (list of dicts with 'text' key)

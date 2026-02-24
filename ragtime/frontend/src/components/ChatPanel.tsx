@@ -1052,6 +1052,26 @@ export function ChatPanel({
   const [modelsLoading, setModelsLoading] = useState(true);
   const [isWorkspaceConversationMenuOpen, setIsWorkspaceConversationMenuOpen] = useState(false);
 
+  const parseStoredConversationModel = useCallback((storedModel: string): { provider?: 'openai' | 'anthropic' | 'ollama'; modelId: string } => {
+    if (!storedModel) {
+      return { modelId: '' };
+    }
+
+    const delimiterIndex = storedModel.indexOf('::');
+    if (delimiterIndex <= 0) {
+      return { modelId: storedModel };
+    }
+
+    const provider = storedModel.slice(0, delimiterIndex) as 'openai' | 'anthropic' | 'ollama';
+    const modelId = storedModel.slice(delimiterIndex + 2);
+
+    if (provider !== 'openai' && provider !== 'anthropic' && provider !== 'ollama') {
+      return { modelId: storedModel };
+    }
+
+    return { provider, modelId };
+  }, []);
+
   // Image modal state
   const [modalImageUrl, setModalImageUrl] = useState<string | null>(null);
 
@@ -1650,7 +1670,13 @@ export function ChatPanel({
     if (!activeConversation || isStreaming) return;
 
     try {
-      const updated = await api.updateConversationModel(activeConversation.id, newModel, workspaceId);
+      const selected = availableModels.find((model) => model.id === newModel);
+      const updated = await api.updateConversationModel(
+        activeConversation.id,
+        newModel,
+        workspaceId,
+        selected?.provider,
+      );
       setActiveConversation(updated);
       setConversations(prev => prev.map(c => c.id === updated.id ? updated : c));
     } catch (err) {
@@ -1746,7 +1772,7 @@ export function ChatPanel({
     // Check context limit before sending
     const currentTokens = calculateConversationTokens(activeConversation.messages);
     const newMessageTokens = estimateTokens(userMessage);
-    const contextLimit = getContextLimit(activeConversation.model);
+    const contextLimit = getContextLimit(parseStoredConversationModel(activeConversation.model).modelId);
 
     if (currentTokens + newMessageTokens > contextLimit * 0.9) {
       setError(`Context limit nearly reached (${Math.round((currentTokens + newMessageTokens) / contextLimit * 100)}%). Consider starting a new conversation.`);
@@ -2009,7 +2035,7 @@ export function ChatPanel({
     const currentTokens = calculateConversationTokens(activeConversation.messages);
     const streamingTokens = isStreaming ? calculateStreamingTokens(streamingEvents as any, streamingContent) : 0;
     const totalTokens = currentTokens + streamingTokens;
-    const contextLimit = getContextLimit(activeConversation.model);
+    const contextLimit = getContextLimit(parseStoredConversationModel(activeConversation.model).modelId);
     const contextUsagePercent = Math.round((totalTokens / contextLimit) * 100);
     const nextMessageTokens = estimateTokens(inputValue.trim());
     const projectedInputPercent = Math.round(((totalTokens + nextMessageTokens) / contextLimit) * 100);
@@ -2272,7 +2298,7 @@ export function ChatPanel({
                 </div>
                 <ModelSelector
                   models={availableModels}
-                  selectedModelId={activeConversation.model}
+                  selectedModelId={parseStoredConversationModel(activeConversation.model).modelId}
                   onModelChange={changeModel}
                   disabled={isStreaming || modelsLoading}
                 />

@@ -7,6 +7,7 @@ applyTo: '**'
 - Runtime services: `ragtime-dev` container (API + Vite + tool execution) and `ragtime-db-dev` (Postgres+pgvector).
 - Core startup sequence (`lifespan` in `ragtime/main.py`): connect DB -> `rag.initialize()` -> recover/cleanup index jobs -> start background chat tasks -> start MCP session manager.
 - Health/readiness is progressive: `/health` is `initializing` until core LLM/tool setup finishes; FAISS indexes can continue loading in background.
+- CRITICAL: Always search first for existing code paths and import and reuse existing functions/components when implementing features or fixes; avoid copy-pasting or bypassing established patterns without strong justification. Always use DRY methodology.
 
 ## Data and Retrieval Architecture
 

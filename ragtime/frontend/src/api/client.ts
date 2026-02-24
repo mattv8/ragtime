@@ -1314,11 +1314,11 @@ export const api = {
   /**
    * Update conversation model
    */
-  async updateConversationModel(conversationId: string, model: string, workspaceId?: string): Promise<Conversation> {
+  async updateConversationModel(conversationId: string, model: string, workspaceId?: string, provider?: 'openai' | 'anthropic' | 'ollama'): Promise<Conversation> {
     const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/model`, workspaceId), {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model }),
+      body: JSON.stringify({ model, provider }),
     });
     return handleResponse<Conversation>(response);
   },
