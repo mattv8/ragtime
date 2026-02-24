@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo, isValidElement, type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, X, AlertCircle, RefreshCw, FileText, Menu } from 'lucide-react';
+import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, X, AlertCircle, RefreshCw, FileText, Menu, ChevronDown, ChevronRight } from 'lucide-react';
 import { api } from '@/api';
 import type { Conversation, ChatMessage, AvailableModel, ChatTask, User, ContentPart } from '@/types';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
@@ -590,11 +590,35 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
   const hasErrorInOutput = useMemo(() => {
     const output = retryOutput || toolCall.output;
     if (!output) return false;
+
+    // Prefer structured JSON status checks (avoids false positives on keys like "error_count": 0)
+    try {
+      const parsed = JSON.parse(output) as Record<string, unknown>;
+      if (parsed && typeof parsed === 'object') {
+        if (parsed.rejected === true || parsed.success === false) return true;
+        if (parsed.ok === false) return true;
+        if (typeof parsed.status === 'string') {
+          const status = parsed.status.toLowerCase();
+          if (status.includes('failed') || status.includes('error') || status.includes('rejected')) {
+            return true;
+          }
+        }
+        if (typeof parsed.error === 'string' && parsed.error.trim().length > 0) return true;
+        return false;
+      }
+    } catch {
+      // Non-JSON output: fall through to conservative text checks
+    }
+
     const outputLower = output.toLowerCase();
-    return outputLower.includes('error') ||
-           outputLower.includes('validation error') ||
-           outputLower.includes('failed') ||
-           outputLower.includes('exception');
+    return (
+      /(^|\n)\s*error\s*[:\-]/i.test(output) ||
+      outputLower.includes('validation error') ||
+      outputLower.includes('exception') ||
+      outputLower.includes('traceback') ||
+      outputLower.includes('tool error') ||
+      outputLower.includes('failed')
+    );
   }, [toolCall.output, retryOutput]);
 
   // Effective output (use retry output if available)
@@ -761,8 +785,10 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
     if (isFailed && isVisualizationTool) {
       return <AlertCircle size={14} className="tool-call-error-icon" />;
     }
-    return <Check size={14} />;
+    return null;
   };
+
+  const statusIcon = getStatusIcon();
 
   return (
     <div className={`tool-call tool-call-${toolCall.status}${isFailed ? ' tool-call-failed' : ''}`}>
@@ -771,11 +797,11 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
           className="tool-call-header"
           onClick={() => setExpanded(!expanded)}
         >
-          <span className="tool-call-icon">
-            {getStatusIcon()}
-          </span>
+          {statusIcon && <span className="tool-call-icon">{statusIcon}</span>}
           <span className="tool-call-name">{toolCall.tool}</span>
-          <span className="tool-call-toggle">{expanded ? '▼' : '▶'}</span>
+          <span className="tool-call-toggle" aria-hidden="true">
+            {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          </span>
         </button>
         {isFailed && isVisualizationTool && !isRetrying && (
           <button
