@@ -83,6 +83,9 @@ from ragtime.indexer.vector_utils import (
 
 logger = get_logger(__name__)
 
+_ANALYSIS_RETENTION_SECONDS = 1800
+_ANALYSIS_MAX_RECORDS = 200
+
 
 @dataclass
 class MountInfo:
@@ -112,6 +115,40 @@ class FilesystemIndexerService:
         self._mounts: Dict[str, MountInfo] = {}
         self._mount_lock = threading.Lock()  # Protect mount operations
         # Note: Ollama vision OCR uses centralized semaphore from ollama_concurrency
+
+    def _prune_analysis_state(self) -> None:
+        """Bound analysis in-memory state by age and max records."""
+        now = datetime.now(timezone.utc).timestamp()
+        expired_ids: list[str] = []
+        for job_id, job in self._analysis_jobs.items():
+            completed_at = getattr(job, "completed_at", None)
+            if completed_at is None:
+                continue
+            age = now - completed_at.timestamp()
+            if age > _ANALYSIS_RETENTION_SECONDS:
+                expired_ids.append(job_id)
+
+        for job_id in expired_ids:
+            self._analysis_jobs.pop(job_id, None)
+            self._analysis_results.pop(job_id, None)
+
+        if len(self._analysis_jobs) <= _ANALYSIS_MAX_RECORDS:
+            return
+
+        sortable_ids = sorted(
+            self._analysis_jobs.keys(),
+            key=lambda job_id: (
+                (
+                    getattr(self._analysis_jobs[job_id], "completed_at", None)
+                    or getattr(self._analysis_jobs[job_id], "created_at", None)
+                    or datetime.min.replace(tzinfo=timezone.utc)
+                ).timestamp()
+            ),
+        )
+        overflow_count = len(self._analysis_jobs) - _ANALYSIS_MAX_RECORDS
+        for job_id in sortable_ids[:overflow_count]:
+            self._analysis_jobs.pop(job_id, None)
+            self._analysis_results.pop(job_id, None)
 
     async def _append_embedding_dimension_warning(self, warnings: List[str]) -> None:
         """Warn when embedding dimensions exceed pgvector's 2000-dim index limit."""
@@ -838,6 +875,9 @@ class FilesystemIndexerService:
         self._running_tasks.clear()
         self._active_jobs.clear()
         self._cancellation_flags.clear()
+        self._analysis_jobs.clear()
+        self._analysis_results.clear()
+        await self.cleanup_all_mounts()
 
     async def retry_job(self, job_id: str) -> Optional[FilesystemIndexJob]:
         """
@@ -2039,6 +2079,8 @@ class FilesystemIndexerService:
 
         Runs in background and provides progress updates.
         """
+        self._prune_analysis_state()
+
         job = FilesystemAnalysisJob(
             id=str(uuid.uuid4()),
             tool_config_id=tool_config_id,
@@ -2058,6 +2100,7 @@ class FilesystemIndexerService:
         self, job_id: str
     ) -> Optional[tuple[FilesystemAnalysisJob, Optional[FilesystemAnalysisResult]]]:
         """Get an analysis job and its result if completed."""
+        self._prune_analysis_state()
         job = self._analysis_jobs.get(job_id)
         if not job:
             return None
@@ -2364,6 +2407,7 @@ class FilesystemIndexerService:
             job.completed_at = datetime.now(timezone.utc)
         finally:
             self._running_tasks.pop(job.id, None)
+            self._prune_analysis_state()
 
     async def delete_index(
         self,

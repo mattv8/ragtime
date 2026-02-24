@@ -4,12 +4,13 @@ import asyncio
 import hashlib
 import json
 import os
+import posixpath
 import re
 import secrets
 import shutil
 import subprocess
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, cast
 from urllib.parse import quote
 from uuid import uuid4
@@ -79,11 +80,24 @@ class _ExecutionProofRecord:
         self.query_hash = query_hash
 
 
+class _GitCommandResult:
+    """Async git command result payload."""
+
+    __slots__ = ("returncode", "stdout", "stderr")
+
+    def __init__(self, returncode: int, stdout: str, stderr: str) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
 _EXECUTION_PROOF_MAX_AGE_SECONDS = 3600  # 1 hour
 
 _USPACE_EXEC_SUPPORTED_SQL_TOOLS = {"postgres", "mysql", "mssql"}
 _USERSPACE_PREVIEW_ENTRY_PATH = "dashboard/main.ts"
 _DEFAULT_SHARE_SLUG_PREFIX = "share"
+_USERSPACE_PREVIEW_MAX_FILES = 200
+_USERSPACE_PREVIEW_MAX_BYTES = 3_000_000
 
 _MODULE_SOURCE_EXTENSIONS = (
     ".ts",
@@ -197,8 +211,6 @@ class UserSpaceService:
         self._base_dir = Path(settings.index_data_path) / "_userspace"
         self._workspaces_dir = self._base_dir / "workspaces"
         self._workspaces_dir.mkdir(parents=True, exist_ok=True)
-        self._metadata_synced = False
-        self._metadata_sync_lock = asyncio.Lock()
         self._execution_proofs: dict[str, dict[str, _ExecutionProofRecord]] = {}
 
     def record_execution_proof(
@@ -248,43 +260,53 @@ class UserSpaceService:
     def _workspace_git_dir(self, workspace_id: str) -> Path:
         return self._workspace_files_dir(workspace_id) / ".git"
 
-    def _run_git(
+    async def _run_git(
         self,
         workspace_id: str,
         args: list[str],
         check: bool = True,
-    ) -> subprocess.CompletedProcess[str]:
+    ) -> _GitCommandResult:
         files_dir = self._workspace_files_dir(workspace_id)
         try:
-            return subprocess.run(
-                ["git", *args],
-                cwd=files_dir,
-                capture_output=True,
-                text=True,
-                check=check,
+            process = await asyncio.create_subprocess_exec(
+                "git",
+                *args,
+                cwd=str(files_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
             )
+            stdout_bytes, stderr_bytes = await process.communicate()
+            result = _GitCommandResult(
+                returncode=process.returncode if process.returncode is not None else 1,
+                stdout=stdout_bytes.decode("utf-8", errors="replace"),
+                stderr=stderr_bytes.decode("utf-8", errors="replace"),
+            )
+            if check and result.returncode != 0:
+                stderr = (result.stderr or "").strip()
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Git snapshot operation failed: {stderr or 'unknown error'}",
+                )
+            return result
         except FileNotFoundError as exc:
             raise HTTPException(
                 status_code=500,
                 detail="Git binary not available for User Space snapshots",
             ) from exc
-        except subprocess.CalledProcessError as exc:
-            stderr = (exc.stderr or "").strip()
-            raise HTTPException(
-                status_code=500,
-                detail=f"Git snapshot operation failed: {stderr or 'unknown error'}",
-            ) from exc
 
-    def _ensure_workspace_git_repo(self, workspace_id: str) -> None:
+    async def _ensure_workspace_git_repo(self, workspace_id: str) -> None:
         files_dir = self._workspace_files_dir(workspace_id)
         files_dir.mkdir(parents=True, exist_ok=True)
         git_dir = self._workspace_git_dir(workspace_id)
         if git_dir.exists() and git_dir.is_dir():
             return
 
-        self._run_git(workspace_id, ["init"])
-        self._run_git(workspace_id, ["config", "user.name", "Ragtime User Space"])
-        self._run_git(
+        await self._run_git(workspace_id, ["init"])
+        await self._run_git(
+            workspace_id,
+            ["config", "user.name", "Ragtime User Space"],
+        )
+        await self._run_git(
             workspace_id,
             ["config", "user.email", "userspace@ragtime.local"],
         )
@@ -432,19 +454,38 @@ class UserSpaceService:
         if not ldap_config.serverUrl:
             return False
 
-        bind_password = decrypt_secret(ldap_config.bindPassword)
+        return await asyncio.to_thread(
+            self._is_user_in_ldap_group_sync,
+            str(getattr(user, "ldapDn", "") or ""),
+            group_dn,
+            str(ldap_config.serverUrl),
+            str(ldap_config.bindDn),
+            str(ldap_config.bindPassword),
+            bool(ldap_config.allowSelfSigned),
+        )
+
+    @staticmethod
+    def _is_user_in_ldap_group_sync(
+        user_ldap_dn: str,
+        group_dn: str,
+        server_url: str,
+        bind_dn: str,
+        bind_password_encrypted: str,
+        allow_self_signed: bool,
+    ) -> bool:
+        bind_password = decrypt_secret(bind_password_encrypted)
         conn = _get_ldap_connection(
-            ldap_config.serverUrl,
-            ldap_config.bindDn,
+            server_url,
+            bind_dn,
             bind_password,
-            ldap_config.allowSelfSigned,
+            allow_self_signed,
         )
         if not conn:
             return False
 
         try:
             conn.search(
-                search_base=user.ldapDn,
+                search_base=user_ldap_dn,
                 search_filter="(objectClass=*)",
                 search_scope="BASE",
                 attributes=["memberOf", "primaryGroupID"],
@@ -673,161 +714,12 @@ class UserSpaceService:
             updated_at=record.updatedAt,
         )
 
-    async def _ensure_metadata_synced(self) -> None:
-        if self._metadata_synced:
-            return
-
-        async with self._metadata_sync_lock:
-            if self._metadata_synced:
-                return
-
-            db = await get_db()
-            if not self._workspaces_dir.exists():
-                self._metadata_synced = True
-                return
-
-            for workspace_dir in self._workspaces_dir.iterdir():
-                if not workspace_dir.is_dir():
-                    continue
-
-                meta_path = workspace_dir / "workspace.json"
-                if not meta_path.exists():
-                    continue
-
-                try:
-                    workspace = UserSpaceWorkspace.model_validate_json(
-                        meta_path.read_text(encoding="utf-8")
-                    )
-                except Exception:
-                    logger.warning(
-                        "Skipping invalid workspace metadata file %s", meta_path
-                    )
-                    continue
-
-                owner = await db.user.find_unique(where={"id": workspace.owner_user_id})
-                if not owner:
-                    logger.warning(
-                        "Skipping workspace %s backfill: owner user %s not found",
-                        workspace.id,
-                        workspace.owner_user_id,
-                    )
-                    continue
-
-                try:
-                    await db.workspace.upsert(
-                        where={"id": workspace.id},
-                        data={
-                            "create": {
-                                "id": workspace.id,
-                                "name": workspace.name,
-                                "nameNormalized": _normalize_workspace_name_for_uniqueness(
-                                    workspace.name
-                                )
-                                or None,
-                                "description": workspace.description,
-                                "ownerUserId": workspace.owner_user_id,
-                                "createdAt": workspace.created_at,
-                                "updatedAt": workspace.updated_at,
-                            },
-                            "update": {
-                                "name": workspace.name,
-                                "nameNormalized": _normalize_workspace_name_for_uniqueness(
-                                    workspace.name
-                                )
-                                or None,
-                                "description": workspace.description,
-                                "ownerUserId": workspace.owner_user_id,
-                                "updatedAt": workspace.updated_at,
-                            },
-                        },
-                    )
-                except Exception as exc:
-                    if _is_workspace_name_conflict_error(exc):
-                        await db.workspace.upsert(
-                            where={"id": workspace.id},
-                            data={
-                                "create": {
-                                    "id": workspace.id,
-                                    "name": workspace.name,
-                                    "nameNormalized": None,
-                                    "description": workspace.description,
-                                    "ownerUserId": workspace.owner_user_id,
-                                    "createdAt": workspace.created_at,
-                                    "updatedAt": workspace.updated_at,
-                                },
-                                "update": {
-                                    "name": workspace.name,
-                                    "nameNormalized": None,
-                                    "description": workspace.description,
-                                    "ownerUserId": workspace.owner_user_id,
-                                    "updatedAt": workspace.updated_at,
-                                },
-                            },
-                        )
-                        logger.warning(
-                            "Workspace name conflict during metadata sync for workspace=%s owner=%s; leaving name_normalized unset",
-                            workspace.id,
-                            workspace.owner_user_id,
-                        )
-                    else:
-                        raise
-
-                await db.workspacemember.delete_many(
-                    where={"workspaceId": workspace.id}
-                )
-
-                normalized_members: dict[str, str] = {workspace.owner_user_id: "owner"}
-                for member in workspace.members:
-                    if member.user_id == workspace.owner_user_id:
-                        continue
-                    normalized_members[member.user_id] = (
-                        "editor" if member.role == "owner" else member.role
-                    )
-
-                for member_user_id, member_role in normalized_members.items():
-                    user = await db.user.find_unique(where={"id": member_user_id})
-                    if not user:
-                        continue
-                    await db.workspacemember.create(
-                        data={
-                            "workspaceId": workspace.id,
-                            "userId": member_user_id,
-                            "role": member_role,
-                        }
-                    )
-
-                await db.workspacetoolselection.delete_many(
-                    where={"workspaceId": workspace.id}
-                )
-                for tool_id in workspace.selected_tool_ids:
-                    tool = await db.toolconfig.find_unique(where={"id": tool_id})
-                    if not tool or not tool.enabled:
-                        continue
-                    await db.workspacetoolselection.create(
-                        data={
-                            "workspaceId": workspace.id,
-                            "toolConfigId": tool_id,
-                        }
-                    )
-
-                if workspace.conversation_ids:
-                    await db.conversation.update_many(
-                        where={
-                            "id": {"in": workspace.conversation_ids},
-                            "workspaceId": None,
-                        },
-                        data={"workspaceId": workspace.id},
-                    )
-
-            self._metadata_synced = True
-
     async def _enforce_workspace_access(
         self,
         workspace_id: str,
         user_id: str,
         required_role: str | None = None,
     ) -> UserSpaceWorkspace:
-        await self._ensure_metadata_synced()
         db = await get_db()
 
         workspace = await db.workspace.find_unique(
@@ -863,7 +755,6 @@ class UserSpaceService:
         return self._workspace_from_record(workspace)
 
     async def _get_workspace_record(self, workspace_id: str) -> Any:
-        await self._ensure_metadata_synced()
         db = await get_db()
         return await db.workspace.find_unique(
             where={"id": workspace_id},
@@ -876,7 +767,6 @@ class UserSpaceService:
         offset: int = 0,
         limit: int = 50,
     ) -> PaginatedWorkspacesResponse:
-        await self._ensure_metadata_synced()
         db = await get_db()
 
         where_clause: dict[str, Any] = {
@@ -905,7 +795,6 @@ class UserSpaceService:
     async def create_workspace(
         self, request: CreateWorkspaceRequest, user_id: str
     ) -> UserSpaceWorkspace:
-        await self._ensure_metadata_synced()
         db = await get_db()
 
         now = _utc_now()
@@ -962,7 +851,7 @@ class UserSpaceService:
             )
 
         self._workspace_files_dir(workspace_id).mkdir(parents=True, exist_ok=True)
-        self._ensure_workspace_git_repo(workspace_id)
+        await self._ensure_workspace_git_repo(workspace_id)
 
         refreshed = await db.workspace.find_unique(
             where={"id": workspace_id},
@@ -1351,23 +1240,17 @@ class UserSpaceService:
         if not files_dir.exists() or not files_dir.is_dir():
             raise HTTPException(status_code=404, detail="Shared workspace not found")
 
-        workspace_files: dict[str, str] = {}
-        for file_path in files_dir.rglob("*"):
-            if not file_path.is_file():
-                continue
-            relative = str(file_path.relative_to(files_dir))
-            if self._is_reserved_internal_path(relative):
-                continue
-            workspace_files[relative] = file_path.read_text(encoding="utf-8")
-
-        if _USERSPACE_PREVIEW_ENTRY_PATH not in workspace_files:
-            raise HTTPException(
-                status_code=404,
-                detail="Shared workspace preview entry not found",
-            )
+        workspace_files = await asyncio.to_thread(
+            self._collect_preview_workspace_files,
+            files_dir,
+            _USERSPACE_PREVIEW_ENTRY_PATH,
+        )
 
         entry_file_path = files_dir / _USERSPACE_PREVIEW_ENTRY_PATH
-        _, live_data_connections, _ = self._read_artifact_sidecar(entry_file_path)
+        _, live_data_connections, _ = await asyncio.to_thread(
+            self._read_artifact_sidecar,
+            entry_file_path,
+        )
 
         return UserSpaceSharedPreviewResponse(
             workspace_id=workspace_id,
@@ -1389,7 +1272,7 @@ class UserSpaceService:
 
         workspace_dir = self._workspace_dir(workspace_id)
         if workspace_dir.exists():
-            shutil.rmtree(workspace_dir)
+            await asyncio.to_thread(shutil.rmtree, workspace_dir)
 
     async def enforce_workspace_role(
         self,
@@ -1516,29 +1399,12 @@ class UserSpaceService:
         self, workspace_id: str, user_id: str
     ) -> list[UserSpaceFileInfo]:
         await self._enforce_workspace_access(workspace_id, user_id)
-        self._ensure_workspace_git_repo(workspace_id)
+        await self._ensure_workspace_git_repo(workspace_id)
         files_dir = self._workspace_files_dir(workspace_id)
         if not files_dir.exists():
             return []
 
-        files: list[UserSpaceFileInfo] = []
-        for file_path in files_dir.rglob("*"):
-            if not file_path.is_file():
-                continue
-            relative = str(file_path.relative_to(files_dir))
-            if self._is_reserved_internal_path(relative):
-                continue
-            stat = file_path.stat()
-            files.append(
-                UserSpaceFileInfo(
-                    path=relative,
-                    size_bytes=stat.st_size,
-                    updated_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
-                )
-            )
-
-        files.sort(key=lambda item: item.path)
-        return files
+        return await asyncio.to_thread(self._list_workspace_files_sync, files_dir)
 
     async def upsert_workspace_file(
         self,
@@ -1552,7 +1418,7 @@ class UserSpaceService:
             user_id,
             required_role="editor",
         )
-        self._ensure_workspace_git_repo(workspace_id)
+        await self._ensure_workspace_git_repo(workspace_id)
         if self._is_reserved_internal_path(relative_path):
             raise HTTPException(status_code=400, detail="Invalid file path")
 
@@ -1660,34 +1526,14 @@ class UserSpaceService:
                 )
 
         file_path = self._resolve_workspace_file_path(workspace_id, relative_path)
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(request.content, encoding="utf-8")
-
-        sidecar = file_path.with_suffix(file_path.suffix + ".artifact.json")
-        sidecar_payload: dict[str, Any] = {}
-        if request.artifact_type is not None:
-            sidecar_payload["artifact_type"] = request.artifact_type
-
-        if request.live_data_connections is not None:
-            sidecar_payload["live_data_connections"] = [
-                connection.model_dump(mode="json")
-                for connection in request.live_data_connections
-            ]
-
-        if request.live_data_checks is not None:
-            sidecar_payload["live_data_checks"] = [
-                check.model_dump(mode="json") for check in request.live_data_checks
-            ]
-
-        if sidecar_payload:
-            sidecar.write_text(
-                json.dumps(sidecar_payload),
-                encoding="utf-8",
-            )
-        elif sidecar.exists() and sidecar.is_file():
-            sidecar.unlink()
-
-        stat = file_path.stat()
+        stat = await asyncio.to_thread(
+            self._write_workspace_file_sync,
+            file_path,
+            request.content,
+            request.artifact_type,
+            request.live_data_connections,
+            request.live_data_checks,
+        )
         await self._touch_workspace(workspace_id)
 
         return UserSpaceFileResponse(
@@ -1706,7 +1552,7 @@ class UserSpaceService:
         user_id: str,
     ) -> UserSpaceFileResponse:
         await self._enforce_workspace_access(workspace_id, user_id)
-        self._ensure_workspace_git_repo(workspace_id)
+        await self._ensure_workspace_git_repo(workspace_id)
         if self._is_reserved_internal_path(relative_path):
             raise HTTPException(status_code=404, detail="File not found")
 
@@ -1714,14 +1560,15 @@ class UserSpaceService:
         if not file_path.exists() or not file_path.is_file():
             raise HTTPException(status_code=404, detail="File not found")
 
-        artifact_type, live_data_connections, live_data_checks = (
-            self._read_artifact_sidecar(file_path)
+        artifact_type, live_data_connections, live_data_checks, content, stat = (
+            await asyncio.to_thread(
+                self._read_workspace_file_sync,
+                file_path,
+            )
         )
-
-        stat = file_path.stat()
         return UserSpaceFileResponse(
             path=relative_path,
-            content=file_path.read_text(encoding="utf-8"),
+            content=content,
             artifact_type=artifact_type,
             live_data_connections=live_data_connections,
             live_data_checks=live_data_checks,
@@ -1734,16 +1581,12 @@ class UserSpaceService:
         await self._enforce_workspace_access(
             workspace_id, user_id, required_role="editor"
         )
-        self._ensure_workspace_git_repo(workspace_id)
+        await self._ensure_workspace_git_repo(workspace_id)
         if self._is_reserved_internal_path(relative_path):
             raise HTTPException(status_code=400, detail="Invalid file path")
 
         file_path = self._resolve_workspace_file_path(workspace_id, relative_path)
-        if file_path.exists() and file_path.is_file():
-            file_path.unlink()
-        sidecar = file_path.with_suffix(file_path.suffix + ".artifact.json")
-        if sidecar.exists() and sidecar.is_file():
-            sidecar.unlink()
+        await asyncio.to_thread(self._delete_workspace_file_sync, file_path)
 
         await self._touch_workspace(workspace_id)
 
@@ -1756,8 +1599,8 @@ class UserSpaceService:
         await self._enforce_workspace_access(
             workspace_id, user_id, required_role="editor"
         )
-        self._ensure_workspace_git_repo(workspace_id)
-        self._run_git(workspace_id, ["add", "-A"])
+        await self._ensure_workspace_git_repo(workspace_id)
+        await self._run_git(workspace_id, ["add", "-A"])
 
         normalized_message = (message or "Snapshot").strip()
         commit_subject = (
@@ -1765,18 +1608,27 @@ class UserSpaceService:
             if normalized_message
             else "Snapshot"
         )
-        self._run_git(workspace_id, ["commit", "--allow-empty", "-m", commit_subject])
-
-        snapshot_id = self._run_git(workspace_id, ["rev-parse", "HEAD"]).stdout.strip()
-        commit_ts = self._run_git(
+        await self._run_git(
             workspace_id,
-            ["show", "-s", "--format=%ct", snapshot_id],
+            ["commit", "--allow-empty", "-m", commit_subject],
+        )
+
+        snapshot_id = (
+            await self._run_git(workspace_id, ["rev-parse", "HEAD"])
+        ).stdout.strip()
+        commit_ts = (
+            await self._run_git(
+                workspace_id,
+                ["show", "-s", "--format=%ct", snapshot_id],
+            )
         ).stdout.strip()
         created_at = datetime.fromtimestamp(int(commit_ts), tz=timezone.utc)
 
-        tracked_files = self._run_git(
-            workspace_id,
-            ["ls-tree", "-r", "--name-only", snapshot_id],
+        tracked_files = (
+            await self._run_git(
+                workspace_id,
+                ["ls-tree", "-r", "--name-only", snapshot_id],
+            )
         ).stdout.splitlines()
         file_count = sum(
             1
@@ -1815,9 +1667,9 @@ class UserSpaceService:
         self, workspace_id: str, user_id: str
     ) -> list[UserSpaceSnapshot]:
         await self._enforce_workspace_access(workspace_id, user_id)
-        self._ensure_workspace_git_repo(workspace_id)
+        await self._ensure_workspace_git_repo(workspace_id)
 
-        head_check = self._run_git(
+        head_check = await self._run_git(
             workspace_id, ["rev-parse", "--verify", "HEAD"], check=False
         )
         if head_check.returncode != 0:
@@ -1826,9 +1678,11 @@ class UserSpaceService:
         cutoff = await self._get_snapshot_retention_cutoff()
 
         snapshots: list[UserSpaceSnapshot] = []
-        git_log = self._run_git(
-            workspace_id,
-            ["log", "--pretty=format:%H%x1f%ct%x1f%s"],
+        git_log = (
+            await self._run_git(
+                workspace_id,
+                ["log", "--pretty=format:%H%x1f%ct%x1f%s"],
+            )
         ).stdout
 
         for line in git_log.splitlines():
@@ -1842,9 +1696,11 @@ class UserSpaceService:
             ts = int(commit_ts)
             if cutoff is not None and ts < cutoff:
                 continue
-            tracked_files = self._run_git(
-                workspace_id,
-                ["ls-tree", "-r", "--name-only", commit_id],
+            tracked_files = (
+                await self._run_git(
+                    workspace_id,
+                    ["ls-tree", "-r", "--name-only", commit_id],
+                )
             ).stdout.splitlines()
             file_count = sum(
                 1
@@ -1868,9 +1724,9 @@ class UserSpaceService:
         await self._enforce_workspace_access(
             workspace_id, user_id, required_role="editor"
         )
-        self._ensure_workspace_git_repo(workspace_id)
+        await self._ensure_workspace_git_repo(workspace_id)
 
-        commit_check = self._run_git(
+        commit_check = await self._run_git(
             workspace_id,
             ["cat-file", "-e", f"{snapshot_id}^{{commit}}"],
             check=False,
@@ -1881,9 +1737,11 @@ class UserSpaceService:
         # Enforce retention window on restore
         cutoff = await self._get_snapshot_retention_cutoff()
         if cutoff is not None:
-            commit_ts = self._run_git(
-                workspace_id,
-                ["show", "-s", "--format=%ct", snapshot_id],
+            commit_ts = (
+                await self._run_git(
+                    workspace_id,
+                    ["show", "-s", "--format=%ct", snapshot_id],
+                )
             ).stdout.strip()
             if int(commit_ts) < cutoff:
                 raise HTTPException(
@@ -1891,20 +1749,26 @@ class UserSpaceService:
                     detail="Snapshot has expired and cannot be restored",
                 )
 
-        self._run_git(workspace_id, ["reset", "--hard", snapshot_id])
-        self._run_git(workspace_id, ["clean", "-fd"])
+        await self._run_git(workspace_id, ["reset", "--hard", snapshot_id])
+        await self._run_git(workspace_id, ["clean", "-fd"])
 
-        commit_ts = self._run_git(
-            workspace_id,
-            ["show", "-s", "--format=%ct", snapshot_id],
+        commit_ts = (
+            await self._run_git(
+                workspace_id,
+                ["show", "-s", "--format=%ct", snapshot_id],
+            )
         ).stdout.strip()
-        commit_subject = self._run_git(
-            workspace_id,
-            ["show", "-s", "--format=%s", snapshot_id],
+        commit_subject = (
+            await self._run_git(
+                workspace_id,
+                ["show", "-s", "--format=%s", snapshot_id],
+            )
         ).stdout.strip()
-        tracked_files = self._run_git(
-            workspace_id,
-            ["ls-tree", "-r", "--name-only", snapshot_id],
+        tracked_files = (
+            await self._run_git(
+                workspace_id,
+                ["ls-tree", "-r", "--name-only", snapshot_id],
+            )
         ).stdout.splitlines()
         file_count = sum(
             1
@@ -2459,6 +2323,196 @@ class UserSpaceService:
             rows.append(row)
 
         return rows, columns
+
+    def _list_workspace_files_sync(self, files_dir: Path) -> list[UserSpaceFileInfo]:
+        files: list[UserSpaceFileInfo] = []
+        for file_path in files_dir.rglob("*"):
+            if not file_path.is_file():
+                continue
+            relative = str(file_path.relative_to(files_dir))
+            if self._is_reserved_internal_path(relative):
+                continue
+            stat = file_path.stat()
+            files.append(
+                UserSpaceFileInfo(
+                    path=relative,
+                    size_bytes=stat.st_size,
+                    updated_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
+                )
+            )
+        files.sort(key=lambda item: item.path)
+        return files
+
+    def _write_workspace_file_sync(
+        self,
+        file_path: Path,
+        content: str,
+        artifact_type: ArtifactType | None,
+        live_data_connections: list[UserSpaceLiveDataConnection] | None,
+        live_data_checks: list[UserSpaceLiveDataCheck] | None,
+    ) -> os.stat_result:
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(content, encoding="utf-8")
+
+        sidecar = file_path.with_suffix(file_path.suffix + ".artifact.json")
+        sidecar_payload: dict[str, Any] = {}
+        if artifact_type is not None:
+            sidecar_payload["artifact_type"] = artifact_type
+
+        if live_data_connections is not None:
+            sidecar_payload["live_data_connections"] = [
+                connection.model_dump(mode="json")
+                for connection in live_data_connections
+            ]
+
+        if live_data_checks is not None:
+            sidecar_payload["live_data_checks"] = [
+                check.model_dump(mode="json") for check in live_data_checks
+            ]
+
+        if sidecar_payload:
+            sidecar.write_text(
+                json.dumps(sidecar_payload),
+                encoding="utf-8",
+            )
+        elif sidecar.exists() and sidecar.is_file():
+            sidecar.unlink()
+
+        return file_path.stat()
+
+    def _read_workspace_file_sync(
+        self,
+        file_path: Path,
+    ) -> tuple[
+        ArtifactType | None,
+        list[UserSpaceLiveDataConnection] | None,
+        list[UserSpaceLiveDataCheck] | None,
+        str,
+        os.stat_result,
+    ]:
+        artifact_type, live_data_connections, live_data_checks = (
+            self._read_artifact_sidecar(file_path)
+        )
+        content = file_path.read_text(encoding="utf-8")
+        stat = file_path.stat()
+        return artifact_type, live_data_connections, live_data_checks, content, stat
+
+    def _delete_workspace_file_sync(self, file_path: Path) -> None:
+        if file_path.exists() and file_path.is_file():
+            file_path.unlink()
+        sidecar = file_path.with_suffix(file_path.suffix + ".artifact.json")
+        if sidecar.exists() and sidecar.is_file():
+            sidecar.unlink()
+
+    @staticmethod
+    def _extract_local_module_specifiers(source: str) -> list[str]:
+        pattern = re.compile(
+            r"(?:import|export)\\s+(?:[^\"']*?\\s+from\\s+)?[\"']([^\"']+)[\"']|"
+            r"import\\(\\s*[\"']([^\"']+)[\"']\\s*\\)"
+        )
+        specifiers: list[str] = []
+        for match in pattern.findall(source):
+            value = match[0] or match[1]
+            if not value:
+                continue
+            if value.startswith(".") or value.startswith("/"):
+                specifiers.append(value)
+        return specifiers
+
+    def _resolve_workspace_module_path(
+        self,
+        files_dir: Path,
+        importer_relative_path: str,
+        specifier: str,
+    ) -> str | None:
+        importer = PurePosixPath(importer_relative_path)
+        base_dir = importer.parent
+        raw_candidate = (
+            PurePosixPath(specifier.lstrip("/"))
+            if specifier.startswith("/")
+            else base_dir / specifier
+        )
+        normalized = posixpath.normpath(str(raw_candidate).replace("\\", "/"))
+        if normalized.startswith("../") or normalized == "..":
+            return None
+
+        candidates: list[str] = [normalized]
+        if not normalized.lower().endswith(_MODULE_SOURCE_EXTENSIONS):
+            for extension in _MODULE_SOURCE_EXTENSIONS:
+                candidates.append(f"{normalized}{extension}")
+                candidates.append(f"{normalized}/index{extension}")
+
+        for candidate in candidates:
+            if not candidate or candidate.startswith("../"):
+                continue
+            if self._is_reserved_internal_path(candidate):
+                continue
+            target_path = files_dir / candidate
+            if target_path.exists() and target_path.is_file():
+                return candidate
+        return None
+
+    def _collect_preview_workspace_files(
+        self,
+        files_dir: Path,
+        entry_path: str,
+    ) -> dict[str, str]:
+        entry_relative_path = entry_path.strip().replace("\\", "/")
+        entry_file_path = files_dir / entry_relative_path
+        if not entry_file_path.exists() or not entry_file_path.is_file():
+            raise HTTPException(
+                status_code=404,
+                detail="Shared workspace preview entry not found",
+            )
+
+        queue: list[str] = [entry_relative_path]
+        workspace_files: dict[str, str] = {}
+        total_bytes = 0
+
+        while queue:
+            current_relative = queue.pop(0)
+            if current_relative in workspace_files:
+                continue
+
+            file_path = files_dir / current_relative
+            if not file_path.exists() or not file_path.is_file():
+                continue
+            if self._is_reserved_internal_path(current_relative):
+                continue
+
+            content = file_path.read_text(encoding="utf-8")
+            encoded_size = len(content.encode("utf-8"))
+
+            if len(workspace_files) >= _USERSPACE_PREVIEW_MAX_FILES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="Shared workspace preview exceeds file count limit",
+                )
+            if total_bytes + encoded_size > _USERSPACE_PREVIEW_MAX_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="Shared workspace preview exceeds payload size limit",
+                )
+
+            workspace_files[current_relative] = content
+            total_bytes += encoded_size
+
+            for specifier in self._extract_local_module_specifiers(content):
+                dependency = self._resolve_workspace_module_path(
+                    files_dir,
+                    current_relative,
+                    specifier,
+                )
+                if dependency and dependency not in workspace_files:
+                    queue.append(dependency)
+
+        if entry_relative_path not in workspace_files:
+            raise HTTPException(
+                status_code=404,
+                detail="Shared workspace preview entry not found",
+            )
+
+        return workspace_files
 
 
 userspace_service = UserSpaceService()

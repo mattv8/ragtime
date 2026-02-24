@@ -1,6 +1,8 @@
-
 import asyncio
 from typing import Dict, Set
+
+_TASK_EVENT_QUEUE_MAXSIZE = 200
+
 
 class TaskEventBus:
     _instance = None
@@ -16,10 +18,15 @@ class TaskEventBus:
         if task_id in self._subscribers:
             # Copy set to avoid size change during iteration if something unsubscribes concurrently (unlikely but safe)
             for queue in list(self._subscribers[task_id]):
+                if queue.full():
+                    try:
+                        queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        pass
                 await queue.put(data)
 
     async def subscribe(self, task_id: str) -> asyncio.Queue:
-        queue = asyncio.Queue()
+        queue: asyncio.Queue = asyncio.Queue(maxsize=_TASK_EVENT_QUEUE_MAXSIZE)
         if task_id not in self._subscribers:
             self._subscribers[task_id] = set()
         self._subscribers[task_id].add(queue)

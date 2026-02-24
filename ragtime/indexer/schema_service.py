@@ -26,18 +26,27 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
-from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
-                              ssh_tunnel_config_from_dict)
-from ragtime.indexer.models import (SchemaIndexConfig, SchemaIndexJob,
-                                    SchemaIndexJobResponse, SchemaIndexStatus,
-                                    TableSchemaInfo)
+from ragtime.core.ssh import (
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    ssh_tunnel_config_from_dict,
+)
+from ragtime.indexer.models import (
+    SchemaIndexConfig,
+    SchemaIndexJob,
+    SchemaIndexJobResponse,
+    SchemaIndexStatus,
+    TableSchemaInfo,
+)
 from ragtime.indexer.repository import repository
 from ragtime.indexer.utils import safe_tool_name
-from ragtime.indexer.vector_utils import (SCHEMA_COLUMNS,
-                                          ensure_embedding_column,
-                                          ensure_pgvector_extension,
-                                          get_embeddings_model,
-                                          search_pgvector_embeddings)
+from ragtime.indexer.vector_utils import (
+    SCHEMA_COLUMNS,
+    ensure_embedding_column,
+    ensure_pgvector_extension,
+    get_embeddings_model,
+    search_pgvector_embeddings,
+)
 
 logger = get_logger(__name__)
 
@@ -251,6 +260,17 @@ class SchemaIndexerService:
     async def shutdown(self) -> None:
         """Shutdown the service and clear active job tracking."""
         logger.info("Schema indexer service shutting down")
+        for job_id, task in list(self._active_tasks.items()):
+            if task.done():
+                continue
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            logger.info(f"Cancelled schema indexing task {job_id}")
+
+        self._active_tasks.clear()
         self._active_jobs.clear()
         self._cancellation_flags.clear()
 
@@ -1025,10 +1045,7 @@ class SchemaIndexerService:
             database,
             container,
         )
-        return [
-            {"name": r["name"], "definition": r["definition"]}
-            for r in results
-        ]
+        return [{"name": r["name"], "definition": r["definition"]} for r in results]
 
     async def _execute_postgres_simple_query(
         self,

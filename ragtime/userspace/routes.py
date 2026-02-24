@@ -2,28 +2,32 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Header, Query, Request
 
 from ragtime.core.security import get_current_user, get_current_user_optional
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (CreateSnapshotRequest,
-                                      CreateWorkspaceRequest,
-                                      ExecuteComponentRequest,
-                                      ExecuteComponentResponse,
-                                      PaginatedWorkspacesResponse,
-                                      RestoreSnapshotResponse,
-                                      UpdateWorkspaceMembersRequest,
-                                      UpdateWorkspaceRequest,
-                                      UpdateWorkspaceShareAccessRequest,
-                                      UpdateWorkspaceShareSlugRequest,
-                                      UpsertWorkspaceFileRequest,
-                                      UserSpaceAvailableTool,
-                                      UserSpaceFileInfo, UserSpaceFileResponse,
-                                      UserSpaceSharedPreviewResponse,
-                                      UserSpaceSnapshot, UserSpaceWorkspace,
-                                      UserSpaceWorkspaceShareLink,
-                                      UserSpaceWorkspaceShareLinkStatus,
-                                      WorkspaceShareSlugAvailabilityResponse)
+from ragtime.userspace.models import (
+    CreateSnapshotRequest,
+    CreateWorkspaceRequest,
+    ExecuteComponentRequest,
+    ExecuteComponentResponse,
+    PaginatedWorkspacesResponse,
+    RestoreSnapshotResponse,
+    UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest,
+    UpdateWorkspaceShareSlugRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceAvailableTool,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot,
+    UserSpaceWorkspace,
+    UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceShareSlugAvailabilityResponse,
+)
 from ragtime.userspace.service import userspace_service
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space"])
@@ -294,13 +298,16 @@ async def check_workspace_share_slug_availability(
 )
 async def get_shared_preview(
     share_token: str,
-    password: str | None = Query(default=None),
+    share_password: str | None = Header(
+        default=None,
+        alias="X-UserSpace-Share-Password",
+    ),
     user: Any | None = Depends(get_current_user_optional),
 ):
     return await userspace_service.get_shared_preview(
         share_token,
         current_user=user,
-        password=password,
+        password=share_password,
     )
 
 
@@ -311,14 +318,17 @@ async def get_shared_preview(
 async def get_shared_preview_by_slug(
     owner_username: str,
     share_slug: str,
-    password: str | None = Query(default=None),
+    share_password: str | None = Header(
+        default=None,
+        alias="X-UserSpace-Share-Password",
+    ),
     user: Any | None = Depends(get_current_user_optional),
 ):
     return await userspace_service.get_shared_preview_by_slug(
         owner_username,
         share_slug,
         current_user=user,
-        password=password,
+        password=share_password,
     )
 
 
@@ -329,14 +339,17 @@ async def get_shared_preview_by_slug(
 async def execute_shared_component(
     share_token: str,
     request: ExecuteComponentRequest,
-    password: str | None = Query(default=None),
+    share_password: str | None = Header(
+        default=None,
+        alias="X-UserSpace-Share-Password",
+    ),
     user: Any | None = Depends(get_current_user_optional),
 ):
     return await userspace_service.execute_shared_component(
         share_token,
         request,
         current_user=user,
-        password=password,
+        password=share_password,
     )
 
 
@@ -348,7 +361,10 @@ async def execute_shared_component_by_slug(
     owner_username: str,
     share_slug: str,
     request: ExecuteComponentRequest,
-    password: str | None = Query(default=None),
+    share_password: str | None = Header(
+        default=None,
+        alias="X-UserSpace-Share-Password",
+    ),
     user: Any | None = Depends(get_current_user_optional),
 ):
     return await userspace_service.execute_shared_component_by_slug(
@@ -356,7 +372,7 @@ async def execute_shared_component_by_slug(
         share_slug,
         request,
         current_user=user,
-        password=password,
+        password=share_password,
     )
 
 

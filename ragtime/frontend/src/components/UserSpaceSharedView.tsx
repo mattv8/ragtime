@@ -13,7 +13,8 @@ interface UserSpaceSharedViewProps {
 
 export function UserSpaceSharedView({ shareToken, ownerUsername, shareSlug }: UserSpaceSharedViewProps) {
   const [previewData, setPreviewData] = useState<UserSpaceSharedPreviewResponse | null>(null);
-  const [sharePassword, setSharePassword] = useState('');
+  const [sharePasswordDraft, setSharePasswordDraft] = useState('');
+  const [submittedSharePassword, setSubmittedSharePassword] = useState<string | undefined>(undefined);
   const [passwordRequired, setPasswordRequired] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -25,8 +26,8 @@ export function UserSpaceSharedView({ shareToken, ownerUsername, shareSlug }: Us
       setLoading(true);
       try {
         const data = shareToken
-          ? await api.getUserSpaceSharedPreview(shareToken, sharePassword || undefined)
-          : await api.getUserSpaceSharedPreviewBySlug(ownerUsername as string, shareSlug as string, sharePassword || undefined);
+          ? await api.getUserSpaceSharedPreview(shareToken, submittedSharePassword)
+          : await api.getUserSpaceSharedPreviewBySlug(ownerUsername as string, shareSlug as string, submittedSharePassword);
         if (cancelled) return;
         setPreviewData(data);
         setPasswordRequired(false);
@@ -49,7 +50,7 @@ export function UserSpaceSharedView({ shareToken, ownerUsername, shareSlug }: Us
     return () => {
       cancelled = true;
     };
-  }, [ownerUsername, sharePassword, shareSlug, shareToken]);
+  }, [ownerUsername, shareSlug, shareToken, submittedSharePassword]);
 
   if (loading) {
     return <div className="userspace-shared-status">Loading shared dashboard...</div>;
@@ -65,11 +66,20 @@ export function UserSpaceSharedView({ shareToken, ownerUsername, shareSlug }: Us
               <input
                 id="userspace-shared-password"
                 type="password"
-                value={sharePassword}
-                onChange={(event) => setSharePassword(event.target.value)}
+                value={sharePasswordDraft}
+                onChange={(event) => setSharePasswordDraft(event.target.value)}
                 autoComplete="current-password"
               />
-              <p className="userspace-muted" style={{ margin: 0 }}>Preview retries automatically when password changes.</p>
+              <div className="userspace-toolbar-actions" style={{ marginTop: 8 }}>
+                <button
+                  type="button"
+                  className="userspace-button"
+                  onClick={() => setSubmittedSharePassword(sharePasswordDraft || undefined)}
+                  disabled={loading}
+                >
+                  Load Preview
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -89,7 +99,7 @@ export function UserSpaceSharedView({ shareToken, ownerUsername, shareSlug }: Us
         shareToken={shareToken}
         ownerUsername={ownerUsername}
         shareSlug={shareSlug}
-        sharePassword={sharePassword || undefined}
+        sharePassword={submittedSharePassword}
       />
     </div>
   );

@@ -130,7 +130,8 @@ Editor mode defaults:
 Authoritative metadata note:
 
 - Workspace ACL/tool/conversation metadata is persisted in database tables (`userspace_workspaces`, `userspace_members`) as source of truth.
-- Filesystem `workspace.json` values are maintained for workspace portability/backfill compatibility.
+- Runtime authorization and tool access do not import ACL/tool state from filesystem metadata.
+- Filesystem `workspace.json` is treated as portability metadata only (non-authoritative for runtime access checks).
 
 ### File metadata sidecars
 
@@ -205,9 +206,11 @@ File endpoint payload behavior:
 - `GET /shared/{share_token}` returns:
   - `workspace_id`, `workspace_name`
   - `entry_path` (currently `dashboard/main.ts`)
-  - `workspace_files` (module map for preview runtime)
+  - `workspace_files` (module map for preview runtime; entry/dependency-scoped, not full workspace dump)
   - `live_data_connections` (when present in entry sidecar metadata)
 - `POST /shared/{share_token}/execute-component` accepts same execution payload and returns the same structured tabular response as workspace-authenticated execution.
+- Shared password transport (for password-protected links) uses `X-UserSpace-Share-Password` header; password query params are not used.
+- Shared preview payload is bounded server-side (`file_count` and `total_bytes` caps) and returns `413` when limits are exceeded.
 
 ---
 
@@ -227,6 +230,7 @@ Effective behavior:
 - Delete workspace: `owner` only.
 - Create share link: `owner/editor` with membership.
 - Shared preview/read + shared execute endpoints are anonymous and authorized by a valid signed `share_token`.
+- For password mode, shared endpoints require a valid password supplied via request header.
 
 Normalization rule:
 

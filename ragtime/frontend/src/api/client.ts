@@ -1725,32 +1725,46 @@ export const api = {
   },
 
   async getUserSpaceSharedPreview(shareToken: string, password?: string): Promise<UserSpaceSharedPreviewResponse> {
-    const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
-    const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(shareToken)}${suffix}`);
+    const headers: HeadersInit | undefined = password
+      ? { 'X-UserSpace-Share-Password': password }
+      : undefined;
+    const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(shareToken)}`, {
+      headers,
+    });
     return handleResponse<UserSpaceSharedPreviewResponse>(response);
   },
 
   async getUserSpaceSharedPreviewBySlug(ownerUsername: string, shareSlug: string, password?: string): Promise<UserSpaceSharedPreviewResponse> {
-    const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
-    const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}${suffix}`);
+    const headers: HeadersInit | undefined = password
+      ? { 'X-UserSpace-Share-Password': password }
+      : undefined;
+    const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}`, {
+      headers,
+    });
     return handleResponse<UserSpaceSharedPreviewResponse>(response);
   },
 
   async executeUserSpaceSharedComponent(shareToken: string, request: ExecuteComponentRequest, password?: string): Promise<ExecuteComponentResponse> {
-    const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
-    const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(shareToken)}/execute-component${suffix}`, {
+    const headers: HeadersInit = { 'Content-Type': 'application/json' };
+    if (password) {
+      headers['X-UserSpace-Share-Password'] = password;
+    }
+    const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(shareToken)}/execute-component`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(request),
     });
     return handleResponse<ExecuteComponentResponse>(response);
   },
 
   async executeUserSpaceSharedComponentBySlug(ownerUsername: string, shareSlug: string, request: ExecuteComponentRequest, password?: string): Promise<ExecuteComponentResponse> {
-    const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
-    const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/execute-component${suffix}`, {
+    const headers: HeadersInit = { 'Content-Type': 'application/json' };
+    if (password) {
+      headers['X-UserSpace-Share-Password'] = password;
+    }
+    const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/execute-component`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(request),
     });
     return handleResponse<ExecuteComponentResponse>(response);
