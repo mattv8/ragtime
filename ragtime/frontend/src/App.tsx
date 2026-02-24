@@ -514,14 +514,12 @@ export function App() {
       <nav className="topnav" style={hideChrome ? { display: 'none' } : undefined}>
         <span className="topnav-brand">{serverName}</span>
         <div className="topnav-links">
-          {isAdmin && (
-            <button
-              className={`topnav-link ${activeView === 'chat' ? 'active' : ''}`}
-              onClick={() => setActiveView('chat')}
-            >
-              Chat
-            </button>
-          )}
+          <button
+            className={`topnav-link ${activeView === 'chat' ? 'active' : ''}`}
+            onClick={() => setActiveView('chat')}
+          >
+            Chat
+          </button>
           <button
             className={`topnav-link ${activeView === 'userspace' ? 'active' : ''}`}
             onClick={() => setActiveView('userspace')}

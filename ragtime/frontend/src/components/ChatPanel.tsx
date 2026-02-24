@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo, isValidElement, type ReactNode, type CSSProperties } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, ChevronDown, ChevronRight, Users } from 'lucide-react';
+import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus } from 'lucide-react';
 import { api } from '@/api';
 import type { Conversation, ChatMessage, AvailableModel, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool } from '@/types';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
@@ -1168,7 +1168,6 @@ export function ChatPanel({
         setShowSidebar(false);
         return prevSidebarWidth.current || prev || 280;
       }
-      setShowSidebar(true);
       prevSidebarWidth.current = next;
       return next;
     });
@@ -1862,6 +1861,9 @@ export function ChatPanel({
 
   const selectConversation = async (conversation: Conversation) => {
     try {
+      if (!embedded && typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches) {
+        setShowSidebar(false);
+      }
       shouldAutoScrollRef.current = true;
       // Stop any current streaming when switching
       stopTaskStreaming();
@@ -2406,7 +2408,7 @@ export function ChatPanel({
     : undefined;
 
   return (
-    <div className={`chat-panel ${embedded ? 'chat-panel-embedded' : ''}${isFullscreen ? ' chat-panel-fullscreen' : ''}`} style={panelStyle}>
+    <div className={`chat-panel ${embedded ? 'chat-panel-embedded' : ''}${showWorkspaceConversationSelect ? ' chat-panel-workspace' : ''}${isFullscreen ? ' chat-panel-fullscreen' : ''}`} style={panelStyle}>
       {/* Conversations Sidebar */}
       {!embedded && showSidebar && <div className="chat-sidebar open">
         <div className="chat-sidebar-header">
@@ -2420,7 +2422,7 @@ export function ChatPanel({
           </div>
         </div>
 
-        <div className="chat-conversation-list">
+        <div className={`chat-conversation-list ${!isAdmin ? 'chat-conversation-list-non-admin' : ''}`}>
           {conversations.length === 0 ? (
             <div className="chat-empty-state">
               <p>No conversations yet</p>
@@ -2469,6 +2471,16 @@ export function ChatPanel({
             {/* Chat Header */}
             <div className={`chat-header ${embedded ? 'chat-header-embedded' : ''}`}>
               <div className="chat-header-info">
+                {!embedded && !isAdmin && (
+                  <button
+                    className="btn btn-secondary btn-sm btn-icon"
+                    onClick={() => setShowSidebar((prev) => !prev)}
+                    title={showSidebar ? 'Hide sidebar' : 'Show sidebar'}
+                    style={{ marginRight: '8px' }}
+                  >
+                    {showSidebar ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}
+                  </button>
+                )}
                 {showWorkspaceConversationSelect ? (
                   <div
                     className="chat-workspace-conversation-picker"
@@ -2482,8 +2494,9 @@ export function ChatPanel({
                       aria-haspopup="listbox"
                       aria-expanded={isWorkspaceConversationMenuOpen}
                     >
-                      <span className="model-selector-text">{activeConversation.title || 'New Chat'}</span>
-                      <span className="model-selector-arrow">▾</span>
+                      <MessageSquare size={14} className="chat-workspace-conversation-icon" aria-hidden="true" />
+                      <span className="model-selector-text chat-workspace-conversation-trigger-label">{activeConversation.title || 'New Chat'}</span>
+                      <span className="model-selector-arrow chat-workspace-conversation-trigger-arrow">▾</span>
                     </button>
 
                     {isWorkspaceConversationMenuOpen && (
@@ -2545,6 +2558,8 @@ export function ChatPanel({
                   selectedModelId={parseStoredConversationModel(activeConversation.model).modelId}
                   onModelChange={changeModel}
                   disabled={isStreaming || modelsLoading}
+                  triggerIcon={showWorkspaceConversationSelect ? <Bot size={14} /> : undefined}
+                  triggerClassName={showWorkspaceConversationSelect ? 'chat-workspace-model-trigger' : undefined}
                 />
                 {!embedded && (
                   <button
@@ -2555,8 +2570,9 @@ export function ChatPanel({
                     {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
                   </button>
                 )}
-                <button className="btn btn-sm btn-secondary" onClick={startFreshConversation} title="Start a new conversation" disabled={readOnly}>
-                  New Chat
+                <button className="btn btn-sm btn-secondary chat-new-chat-btn" onClick={startFreshConversation} title="Start a new conversation" disabled={readOnly}>
+                  <MessageSquarePlus size={14} className="chat-new-chat-icon" aria-hidden="true" />
+                  <span className="chat-new-chat-label">New Chat</span>
                 </button>
               </div>
             </div>

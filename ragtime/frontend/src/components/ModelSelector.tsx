@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import type { ReactNode } from 'react';
 
 // Generic model interface that both AvailableModel and LLMModel satisfy
 interface BaseModel {
@@ -16,6 +17,8 @@ interface ModelSelectorProps<T extends BaseModel> {
   placeholder?: string;
   /** Variant: 'compact' for chat header, 'full' for settings forms */
   variant?: 'compact' | 'full';
+  triggerIcon?: ReactNode;
+  triggerClassName?: string;
 }
 
 interface GroupedModels<T extends BaseModel> {
@@ -36,7 +39,9 @@ export function ModelSelector<T extends BaseModel>({
   onModelChange,
   disabled,
   placeholder = 'Select model',
-  variant = 'compact'
+  variant = 'compact',
+  triggerIcon,
+  triggerClassName,
 }: ModelSelectorProps<T>) {
   const [isOpen, setIsOpen] = useState(false);
   const [expandedGroup, setExpandedGroup] = useState<string | null>(null);
@@ -206,9 +211,11 @@ export function ModelSelector<T extends BaseModel>({
     );
   }
 
-  const triggerClassName = variant === 'full'
+  const triggerButtonClassName = variant === 'full'
     ? 'model-selector-trigger model-selector-trigger-full'
     : 'model-selector-trigger';
+
+  const triggerClasses = `${triggerButtonClassName}${triggerClassName ? ` ${triggerClassName}` : ''}`;
 
   return (
     <div
@@ -217,11 +224,12 @@ export function ModelSelector<T extends BaseModel>({
     >
       <button
         type="button"
-        className={triggerClassName}
+        className={triggerClasses}
         onClick={() => !disabled && setIsOpen(!isOpen)}
         disabled={disabled}
         title="Select model"
       >
+        {triggerIcon ? <span className="model-selector-icon" aria-hidden="true">{triggerIcon}</span> : null}
         <span className="model-selector-text">{displayText}</span>
         <span className="model-selector-arrow">▾</span>
       </button>
