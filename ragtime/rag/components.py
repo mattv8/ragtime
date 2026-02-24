@@ -355,7 +355,7 @@ TOOL_USAGE_REMINDER = """[CRITICAL: Use the tool calling API. Do NOT write fake 
 
 """
 
-USERSPACE_TURN_REMINDER = """[USER SPACE TURN CHECKLIST: Before finalizing, run validate_userspace_typescript on EVERY changed .ts/.tsx file (including dashboard/main.ts) and fix all reported errors. Persist implementation changes via userspace file tools (not chat-only prose). Never use hardcoded/mock/sample/static data in dashboard modules; wire live data via context.components[componentId].execute() with required metadata/checks. After each completed change loop, call create_userspace_snapshot with a concise completion message.]
+USERSPACE_TURN_REMINDER = """[USER SPACE TURN CHECKLIST: Before finalizing, run validate_userspace_typescript on EVERY changed .ts/.tsx file (including dashboard/main.ts) and fix all reported errors. Persist implementation changes via userspace file tools (not chat-only prose). Treat any tool result with rejected=true as a failed step (even if replacement counts are shown), and fix/retry before claiming success. Never use hardcoded/mock/sample/static data in dashboard modules; wire live data via context.components[componentId].execute() with required metadata/checks. After each completed change loop, call create_userspace_snapshot with a concise completion message.]
 
 """
 
@@ -4930,12 +4930,18 @@ except Exception as e:
                     return json.dumps(
                         {
                             "rejected": True,
+                            "status": "rejected_not_persisted",
+                            "updated": False,
+                            "persisted": False,
+                            "message": (
+                                "Patch text replacements were computed locally but the file was NOT persisted."
+                            ),
                             "error": detail_text,
                             "action_required": (
                                 "Apply the required wiring/contract fixes, then retry patch_userspace_file."
                             ),
                             "path": normalized_path,
-                            "applied": applied,
+                            "attempted_replacements": applied,
                             "skipped": skipped,
                         },
                         indent=2,
