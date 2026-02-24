@@ -206,6 +206,75 @@ def _requires_live_data_contract(
     return live_data_requested
 
 
+def _requires_entrypoint_wiring(
+    relative_path: str,
+    artifact_type: ArtifactType | None,
+) -> bool:
+    normalized_path = (relative_path or "").strip().lower().replace("\\", "/")
+    if normalized_path == _USERSPACE_PREVIEW_ENTRY_PATH:
+        return False
+
+    is_module_source = normalized_path.endswith(_MODULE_SOURCE_EXTENSIONS)
+    if not is_module_source:
+        return False
+
+    is_dashboard_module = artifact_type == "module_ts" or normalized_path.startswith(
+        "dashboard/"
+    )
+    return is_dashboard_module
+
+
+def _entrypoint_module_specifier_candidates(relative_path: str) -> list[str]:
+    normalized_path = (relative_path or "").strip().replace("\\", "/")
+    if not normalized_path.startswith("dashboard/"):
+        return []
+
+    module_rel = normalized_path[len("dashboard/") :]
+    module_without_ext = module_rel
+    for extension in _MODULE_SOURCE_EXTENSIONS:
+        if module_without_ext.lower().endswith(extension):
+            module_without_ext = module_without_ext[: -len(extension)]
+            break
+
+    candidates = [
+        f"./{module_without_ext}",
+        f"./{module_rel}",
+    ]
+
+    if "/" not in module_without_ext:
+        candidates.extend(
+            [
+                f"./{module_without_ext}.ts",
+                f"./{module_without_ext}.tsx",
+                f"./{module_without_ext}.js",
+                f"./{module_without_ext}.jsx",
+            ]
+        )
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        deduped.append(candidate)
+        seen.add(candidate)
+    return deduped
+
+
+def _entrypoint_references_module(main_content: str, candidates: list[str]) -> bool:
+    if not main_content or not candidates:
+        return False
+
+    for candidate in candidates:
+        if (
+            f'"{candidate}"' in main_content
+            or f"'{candidate}'" in main_content
+            or f"`{candidate}`" in main_content
+        ):
+            return True
+    return False
+
+
 class UserSpaceService:
     def __init__(self) -> None:
         self._base_dir = Path(settings.index_data_path) / "_userspace"
@@ -1421,6 +1490,37 @@ class UserSpaceService:
         await self._ensure_workspace_git_repo(workspace_id)
         if self._is_reserved_internal_path(relative_path):
             raise HTTPException(status_code=400, detail="Invalid file path")
+
+        if _requires_entrypoint_wiring(relative_path, request.artifact_type):
+            main_path = self._resolve_workspace_file_path(
+                workspace_id,
+                _USERSPACE_PREVIEW_ENTRY_PATH,
+            )
+            if not main_path.exists() or not main_path.is_file():
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Entry-point wiring required: dashboard/main.ts is missing. "
+                        "Create/update dashboard/main.ts to import and render this module "
+                        f"before upserting {relative_path}."
+                    ),
+                )
+
+            try:
+                main_content = main_path.read_text(encoding="utf-8")
+            except OSError:
+                main_content = ""
+
+            candidates = _entrypoint_module_specifier_candidates(relative_path)
+            if not _entrypoint_references_module(main_content, candidates):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Entry-point wiring required: dashboard/main.ts does not reference "
+                        f"{relative_path}. Update dashboard/main.ts to import/compose this module "
+                        "before persisting non-entry dashboard modules."
+                    ),
+                )
 
         parsed_live_data_connections = request.live_data_connections or []
         parsed_live_data_checks = request.live_data_checks or []

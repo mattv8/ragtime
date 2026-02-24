@@ -18,8 +18,13 @@ from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
-                                     SystemMessage, ToolMessage)
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -31,35 +36,53 @@ from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit, get_output_limit
 from ragtime.core.ollama import get_model_context_length
-from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
-                                   validate_odoo_code, validate_sql_query,
-                                   validate_ssh_command)
+from ragtime.core.security import (
+    _SSH_ENV_VAR_RE,
+    sanitize_output,
+    validate_odoo_code,
+    validate_sql_query,
+    validate_ssh_command,
+)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
-                              execute_ssh_command, expand_env_vars_via_ssh,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.ssh import (
+    SSHConfig,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    expand_env_vars_via_ssh,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
-                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
-                                 create_chart_tool)
-from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-                                     create_datatable_tool)
+from ragtime.tools.chart import (
+    CHAT_CHART_DESCRIPTION_SUFFIX,
+    USERSPACE_CHART_DESCRIPTION_SUFFIX,
+    create_chart_tool,
+)
+from ragtime.tools.datatable import (
+    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+    create_datatable_tool,
+)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (_is_shallow_repository,
-                                       create_aggregate_git_history_tool,
-                                       create_per_index_git_history_tool)
+from ragtime.tools.git_history import (
+    _is_shallow_repository,
+    create_aggregate_git_history_tool,
+    create_per_index_git_history_tool,
+)
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (ArtifactType, UpsertWorkspaceFileRequest,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection)
+from ragtime.userspace.models import (
+    ArtifactType,
+    UpsertWorkspaceFileRequest,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+)
 from ragtime.userspace.service import userspace_service
 
 logger = get_logger(__name__)
@@ -377,6 +400,7 @@ UI_VISUALIZATION_CHAT_PROMPT = """
 USERSPACE_SHARED_LIVE_DATA_GUARDRAILS = """
 
 - **NEVER embed hardcoded, mock, sample, or static data arrays in module source.** The system performs AST analysis on TypeScript source and rejects writes that lack structural `context.components[componentId].execute()` binding.
+- Chat query tools may enforce `LIMIT` for safe exploration, but persisted `live_data_connections.request` payloads do not require `LIMIT` unless intentionally desired.
 - If live wiring is blocked by missing context, persist a scaffold with `execute()` call sites and state the blocker. Do NOT substitute mock data.
 - If no tools are selected for the workspace, report the conflict and request tool configuration before proceeding. Do NOT fabricate data.
 """
@@ -842,7 +866,9 @@ console.log(JSON.stringify({
                 stderr.decode("utf-8", errors="replace")
                 or "TypeScript validation failed"
             ).strip(),
-            "errors": [],
+            "errors": contract_violations,
+            "contract_errors": contract_violations,
+            "contract_error_count": len(contract_violations),
         }
 
     raw = stdout.decode("utf-8", errors="replace").strip()
@@ -851,7 +877,9 @@ console.log(JSON.stringify({
             "ok": False,
             "validator_available": False,
             "message": "TypeScript validator returned no output",
-            "errors": [],
+            "errors": contract_violations,
+            "contract_errors": contract_violations,
+            "contract_error_count": len(contract_violations),
         }
 
     try:
@@ -861,7 +889,9 @@ console.log(JSON.stringify({
             "ok": False,
             "validator_available": False,
             "message": "TypeScript validator returned invalid JSON",
-            "errors": [],
+            "errors": contract_violations,
+            "contract_errors": contract_violations,
+            "contract_error_count": len(contract_violations),
         }
 
     if not isinstance(parsed, dict):
@@ -869,8 +899,23 @@ console.log(JSON.stringify({
             "ok": False,
             "validator_available": False,
             "message": "TypeScript validator returned unexpected payload",
-            "errors": [],
+            "errors": contract_violations,
+            "contract_errors": contract_violations,
+            "contract_error_count": len(contract_violations),
         }
+
+    existing_errors = parsed.get("errors")
+    merged_errors = list(existing_errors) if isinstance(existing_errors, list) else []
+    for violation in contract_violations:
+        if violation not in merged_errors:
+            merged_errors.append(violation)
+
+    parsed["errors"] = merged_errors
+    parsed["contract_errors"] = contract_violations
+    parsed["contract_error_count"] = len(contract_violations)
+    parsed["error_count"] = len(merged_errors)
+    if contract_violations:
+        parsed["ok"] = False
 
     return parsed
 
@@ -4206,6 +4251,119 @@ except Exception as e:
 
         return prompt + "\n" + "\n".join(lines)
 
+    @staticmethod
+    def _extract_query_text_from_tool_call(
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> str | None:
+        if args:
+            first = args[0]
+            if isinstance(first, str) and first.strip():
+                return first.strip()
+            if isinstance(first, BaseModel):
+                payload = first.model_dump(mode="python")
+                if isinstance(payload, dict):
+                    for key in ("query", "sql", "request", "command"):
+                        value = payload.get(key)
+                        if isinstance(value, str) and value.strip():
+                            return value.strip()
+            if isinstance(first, dict):
+                for key in ("query", "sql", "request", "command"):
+                    value = first.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+
+        for key in ("query", "sql", "request", "command"):
+            value = kwargs.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    @staticmethod
+    def _extract_row_count_from_tool_output(output: Any) -> int:
+        output_str = output if isinstance(output, str) else str(output)
+        if not output_str or output_str.startswith("Error:"):
+            return 0
+
+        match = re.search(r"\((\d+)\s+rows?\)\s*$", output_str)
+        if match:
+            return int(match.group(1))
+
+        if "no results" in output_str.lower():
+            return 0
+
+        return 0
+
+    def _wrap_userspace_runtime_tools_for_execution_proofs(
+        self,
+        runtime_tools: list[Any],
+        workspace_id: str,
+        allowed_tool_config_ids: list[str],
+    ) -> list[Any]:
+        if not runtime_tools or not workspace_id or not allowed_tool_config_ids:
+            return runtime_tools
+
+        allowed_ids = set(allowed_tool_config_ids)
+        wrapped_tools: list[Any] = []
+        for tool in runtime_tools:
+            tool_name = getattr(tool, "name", "")
+            if not tool_name.startswith("query_"):
+                wrapped_tools.append(tool)
+                continue
+
+            connection_meta = self._get_tool_connection_metadata(tool_name)
+            component_id = (
+                (connection_meta or {}).get("tool_config_id", "").strip()
+                if connection_meta
+                else ""
+            )
+            if not component_id or component_id not in allowed_ids:
+                wrapped_tools.append(tool)
+                continue
+
+            original_coroutine = getattr(tool, "coroutine", None)
+            original_func = getattr(tool, "func", None)
+
+            if original_coroutine is not None:
+
+                async def proofing_coroutine(
+                    *args: Any,
+                    _orig=original_coroutine,
+                    _component_id=component_id,
+                    **kwargs: Any,
+                ) -> Any:
+                    result = await _orig(*args, **kwargs)
+                    query_text = self._extract_query_text_from_tool_call(
+                        args,
+                        kwargs,
+                    )
+                    if query_text and not str(result).startswith("Error:"):
+                        row_count = self._extract_row_count_from_tool_output(result)
+                        userspace_service.record_execution_proof(
+                            workspace_id,
+                            _component_id,
+                            row_count,
+                            query_text,
+                        )
+                    return result
+
+                wrapped_tools.append(
+                    StructuredTool(
+                        name=tool.name,
+                        description=getattr(tool, "description", ""),
+                        func=original_func,
+                        coroutine=proofing_coroutine,
+                        args_schema=getattr(tool, "args_schema", None),
+                        return_direct=getattr(tool, "return_direct", False),
+                        handle_tool_error=getattr(tool, "handle_tool_error", False),
+                    )
+                )
+                continue
+
+            wrapped_tools.append(tool)
+
+        return wrapped_tools
+
     def _apply_mode_specific_tool_description_overrides(
         self,
         tools: list[Any],
@@ -4219,7 +4377,8 @@ except Exception as e:
             "\n\nUser Space mode override:\n"
             "- Query/search tools should provide source data and request payloads for live-wired dashboard components.\n"
             "- Do not assume static snapshots are acceptable persistence for dashboard artifacts.\n"
-            "- When handing data to chart/datatable tools for persistent artifacts, include connection/request context for refreshable wiring."
+            "- Use the exact successful query payload as the baseline connection request for live wiring.\n"
+            "- Chat query tools may enforce LIMIT for safe exploration, but persisted live_data_connections request payloads do not require LIMIT unless intentionally desired."
         )
 
         chat_query_suffix = (
@@ -4330,7 +4489,10 @@ except Exception as e:
                     description="Admin-configured tool config ID selected for this workspace.",
                 )
                 request: dict[str, Any] | str = Field(
-                    description="Query/command payload used to fetch or refresh live data.",
+                    description=(
+                        "Query/command payload used to fetch or refresh live data. "
+                        "For persisted live data wiring, LIMIT is optional and should only be used when intentional."
+                    ),
                 )
                 component_name: str | None = Field(
                     default=None,
@@ -4741,14 +4903,33 @@ except Exception as e:
             if lower_path.endswith((".ts", ".tsx")):
                 typecheck = await validate_userspace_typescript_content(content, path)
                 if not typecheck.get("ok", False):
+                    contract_errors = typecheck.get("contract_errors") or []
+                    if contract_errors:
+                        hard_errors.extend(
+                            [
+                                "User Space runtime contract violation: " + err
+                                for err in contract_errors
+                            ]
+                        )
                     diagnostics = typecheck.get("errors") or []
                     if diagnostics:
                         warnings.append(
-                            "TypeScript diagnostics detected. Run validate_userspace_typescript and fix reported errors before finalizing."
+                            "TypeScript/runtime diagnostics detected. Run validate_userspace_typescript and fix reported errors before finalizing."
                         )
 
             if hard_errors:
-                detail = "LIVE DATA POLICY VIOLATION -- " + " | ".join(hard_errors)
+                all_runtime_contract = all(
+                    err.startswith("User Space runtime contract violation:")
+                    for err in hard_errors
+                )
+                if all_runtime_contract:
+                    detail = "USER SPACE RUNTIME CONTRACT VIOLATION -- " + " | ".join(
+                        hard_errors
+                    )
+                else:
+                    detail = "LIVE DATA POLICY VIOLATION -- " + " | ".join(
+                        hard_errors
+                    )
                 if warnings:
                     detail += " [Warnings: " + "; ".join(warnings) + "]"
                 raise ToolException(detail)
@@ -4787,16 +4968,32 @@ except Exception as e:
                     if typecheck is not None:
                         response_payload["typescript_validation"] = typecheck
                     return json.dumps(response_payload, indent=2)
+                if status_code == 400 and detail_text.startswith(
+                    "Entry-point wiring required:"
+                ):
+                    entrypoint_response_payload: dict[str, Any] = {
+                        "rejected": True,
+                        "error": detail_text,
+                        "action_required": (
+                            "Upsert dashboard/main.ts so it imports/composes the module, "
+                            "then retry upsert_userspace_file for the non-entry dashboard file."
+                        ),
+                    }
+                    if warnings:
+                        entrypoint_response_payload["warnings"] = warnings
+                    if typecheck is not None:
+                        entrypoint_response_payload["typescript_validation"] = typecheck
+                    return json.dumps(entrypoint_response_payload, indent=2)
                 raise
 
-            response_payload: dict[str, Any] = {
+            success_response_payload: dict[str, Any] = {
                 "file": result.model_dump(mode="json"),
             }
             if warnings:
-                response_payload["warnings"] = warnings
+                success_response_payload["warnings"] = warnings
             if typecheck is not None:
-                response_payload["typescript_validation"] = typecheck
-            return json.dumps(response_payload, indent=2)
+                success_response_payload["typescript_validation"] = typecheck
+            return json.dumps(success_response_payload, indent=2)
 
         async def create_userspace_snapshot(
             message: str = "AI checkpoint",
@@ -4980,13 +5177,17 @@ except Exception as e:
             runtime_tools = [
                 tool
                 for tool in runtime_tools
-                if getattr(tool, "name", "")
-                not in {"create_chart", "create_datatable"}
+                if getattr(tool, "name", "") not in {"create_chart", "create_datatable"}
             ]
             runtime_tools.extend(userspace_tools)
             runtime_tools = self._apply_mode_specific_tool_description_overrides(
                 runtime_tools,
                 mode="userspace",
+            )
+            runtime_tools = self._wrap_userspace_runtime_tools_for_execution_proofs(
+                runtime_tools,
+                workspace_id,
+                allowed_tool_config_ids,
             )
 
             mode = "userspace"
@@ -5194,7 +5395,9 @@ except Exception as e:
             return self.llm
 
         configured_model = str(self._app_settings.get("llm_model", "")).strip()
-        configured_provider = str(self._app_settings.get("llm_provider", "openai")).lower()
+        configured_provider = str(
+            self._app_settings.get("llm_provider", "openai")
+        ).lower()
 
         if (
             configured_model
