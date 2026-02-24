@@ -4,12 +4,27 @@
 
 .chat-panel {
   display: flex;
-  height: calc(100vh - 140px);
+  height: 100%;
+  min-height: 0;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   overflow: hidden;
   position: relative;
+}
+
+.chat-panel-fullscreen {
+  position: fixed;
+  top: 1rem;
+  left: 1rem;
+  right: 1rem;
+  bottom: 1rem;
+  width: auto;
+  height: auto;
+  z-index: 500;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-primary);
 }
 
 /* Embedded mode: no sidebar, no border, fills parent */
@@ -40,18 +55,12 @@
    ============================================================================= */
 
 .chat-sidebar {
-  width: 280px;
-  min-width: 280px;
+  width: var(--chat-sidebar-width, 280px);
+  min-width: var(--chat-sidebar-width, 280px);
   background: var(--color-bg-secondary);
   border-right: 1px solid var(--color-border);
   display: flex;
   flex-direction: column;
-  transition: transform var(--transition-slow), margin var(--transition-slow);
-}
-
-.chat-sidebar:not(.open) {
-  transform: translateX(-100%);
-  margin-right: -280px;
 }
 
 .chat-sidebar-header {
@@ -67,53 +76,6 @@
   font-size: var(--text-base);
   font-weight: 600;
   color: var(--color-text-primary);
-}
-
-.chat-sidebar-header-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-}
-
-.chat-sidebar-collapse,
-.chat-sidebar-expand {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: none;
-  color: var(--color-text-muted);
-  cursor: pointer;
-  padding: var(--space-xs) var(--space-sm);
-  border-radius: var(--radius-sm);
-  transition: all var(--transition-fast);
-}
-
-.chat-sidebar-collapse:hover,
-.chat-sidebar-expand:hover {
-  background: var(--color-surface-hover);
-  color: var(--color-text-primary);
-}
-
-.chat-sidebar-expand {
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 10;
-  background: var(--color-bg-tertiary);
-  border: 1px solid var(--color-border);
-  border-left: none;
-  border-radius: 0 var(--radius-md) var(--radius-md) 0;
-  padding: var(--space-md) var(--space-xs);
-  font-size: var(--text-lg);
-  opacity: 0.7;
-  transition: opacity var(--transition-fast), background var(--transition-fast);
-}
-
-.chat-sidebar-expand:hover {
-  opacity: 1;
-  background: var(--color-surface-hover);
 }
 
 /* Conversation List */
@@ -285,6 +247,11 @@
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
+}
+
+.chat-resize-handle {
+  align-self: stretch;
 }
 
 .chat-header {
@@ -628,6 +595,7 @@
 
 .chat-messages {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: var(--space-lg);
   display: flex;
@@ -790,6 +758,7 @@
   padding: var(--space-lg);
   border-top: 1px solid var(--color-border);
   background: var(--color-surface-hover);
+  overflow: visible;
 }
 
 .chat-readonly-note {
@@ -803,9 +772,11 @@
 
 .chat-input-wrapper {
   flex: 1;
+  min-height: 0;
+  width: 100%;
   position: relative;
   display: flex;
-  align-items: center;
+  align-items: stretch;
   background: var(--color-input-bg);
   border: 1px solid var(--color-input-border);
   border-radius: var(--radius-lg);
@@ -817,17 +788,20 @@
   box-shadow: 0 0 0 3px var(--color-primary-light);
 }
 
-.chat-input {
+.chat-input-wrapper .chat-input {
   flex: 1;
+  min-height: 100%;
+  max-height: none;
   padding: 12px 60px 12px 52px; /* Extra right padding to inset scrollbar */
   background: transparent;
   border: none;
+  border-radius: 0;
+  box-shadow: none;
   color: var(--color-text-primary);
   font-size: var(--text-base);
   font-family: inherit;
   resize: none;
   min-height: 24px;
-  max-height: 200px;
   height: auto;
   line-height: 1.5;
   overflow-y: auto;
@@ -1856,14 +1830,4 @@
   color: var(--color-text-secondary);
   font-size: var(--text-sm);
   line-height: var(--leading-normal);
-}
-
-/* Mobile Toggle */
-.chat-mobile-sidebar-toggle {
-  display: none;
-  background: none;
-  border: none;
-  padding: var(--space-xs);
-  color: var(--color-text-secondary);
-  cursor: pointer;
 }

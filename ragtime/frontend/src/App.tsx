@@ -114,6 +114,7 @@ export function App() {
 
   // Userspace fullscreen state
   const [userspaceFullscreen, setUserspaceFullscreen] = useState(false);
+  const [chatFullscreen, setChatFullscreen] = useState(false);
 
   // Load server name and embedding dimensions from settings
   useEffect(() => {
@@ -256,7 +257,16 @@ export function App() {
     if (activeView !== 'userspace') {
       setUserspaceFullscreen(false);
     }
+    // Clear fullscreen when leaving chat
+    if (activeView !== 'chat') {
+      setChatFullscreen(false);
+    }
   }, [currentUser, isAdmin, activeView]);
+
+  const isChatView = activeView === 'chat' || (!isAdmin && activeView !== 'userspace');
+  const isUserspaceView = activeView === 'userspace';
+  const lockViewportLayout = isChatView || isUserspaceView;
+  const hideChrome = (isUserspaceView && userspaceFullscreen) || (isChatView && chatFullscreen);
 
   // Sync state to URL params (only sync valid views for user's role)
   // Skip URL sync during OAuth flow - we need to preserve those params until redirect
@@ -500,8 +510,8 @@ export function App() {
   }
 
   return (
-    <>
-      <nav className="topnav" style={userspaceFullscreen && activeView === 'userspace' ? { display: 'none' } : undefined}>
+    <div className={`app-shell${lockViewportLayout ? ' app-shell-locked' : ''}`}>
+      <nav className="topnav" style={hideChrome ? { display: 'none' } : undefined}>
         <span className="topnav-brand">{serverName}</span>
         <div className="topnav-links">
           {isAdmin && (
@@ -549,7 +559,7 @@ export function App() {
       <SecurityBanner
         authStatus={authStatus}
         isAdmin={isAdmin}
-        hidden={userspaceFullscreen && activeView === 'userspace'}
+        hidden={hideChrome}
         onNavigateToSettings={() => {
           if (isAdmin) {
             setHighlightSetting('api_key_info');
@@ -560,7 +570,7 @@ export function App() {
       <ConfigurationBanner
         warnings={configurationWarnings}
         isAdmin={isAdmin}
-        hidden={userspaceFullscreen && activeView === 'userspace'}
+        hidden={hideChrome}
         onNavigateToSettings={() => {
           if (isAdmin) {
             setHighlightSetting('embedding_config');
@@ -568,14 +578,16 @@ export function App() {
           }
         }}
       />
+      <div className="container">
+
       {activeView === 'userspace' ? (
-        <UserSpacePanel currentUser={currentUser} onFullscreenChange={setUserspaceFullscreen} />
-      ) : null}
-
-      <div className="container" style={activeView === 'userspace' ? { display: 'none' } : undefined}>
-
-      {activeView === 'chat' || (!isAdmin && activeView !== 'userspace') ? (
-        <ChatPanel currentUser={currentUser} />
+        <div className="userspace-page-container">
+          <UserSpacePanel currentUser={currentUser} onFullscreenChange={setUserspaceFullscreen} />
+        </div>
+      ) : isChatView ? (
+        <div className="chat-page-container">
+          <ChatPanel currentUser={currentUser} onFullscreenChange={setChatFullscreen} />
+        </div>
       ) : activeView === 'settings' ? (
         <SettingsPanel
           onServerNameChange={handleServerNameChange}
@@ -630,6 +642,6 @@ export function App() {
         </>
       )}
       </div>
-    </>
+    </div>
   );
 }

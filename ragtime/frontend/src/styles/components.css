@@ -225,7 +225,7 @@ textarea:focus {
 .userspace-layout {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 80px);
+  height: 100%;
   overflow: hidden;
   max-width: var(--container-max-width);
   margin: 0 auto;

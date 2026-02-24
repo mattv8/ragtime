@@ -373,7 +373,7 @@
 
   /* Chat panel */
   .chat-panel {
-    height: calc(100vh - 120px);
+    height: 100%;
     flex-direction: column;
     position: relative;
   }
@@ -388,32 +388,6 @@
     z-index: 100;
     box-shadow: var(--shadow-lg);
     background: var(--color-bg-secondary);
-  }
-
-  .chat-sidebar:not(.open) {
-    transform: translateX(-100%);
-    margin-right: 0;
-    box-shadow: none;
-    pointer-events: none;
-  }
-
-  .chat-sidebar-expand {
-    display: none;
-  }
-
-  .chat-mobile-sidebar-toggle {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 32px;
-    height: 32px;
-    border-radius: var(--radius-sm);
-    color: var(--color-text-secondary);
-  }
-
-  .chat-mobile-sidebar-toggle:active {
-    background: var(--color-surface-hover);
-    color: var(--color-text-primary);
   }
 
   .chat-main {
@@ -465,7 +439,7 @@
   }
 
   /* Adjust padding so text isn't hidden by file button or send button */
-  .chat-input {
+  .chat-input-wrapper .chat-input {
     flex: 1 1 100%;
     width: 100%;
     min-height: 44px; /* Touch friendly minimum */
@@ -633,7 +607,7 @@
   }
 
   .chat-panel {
-    height: calc(100vh - 100px);
+    height: 100%;
   }
 
   .chat-sidebar {
@@ -706,7 +680,7 @@
     gap: var(--space-xs);
   }
 
-  .chat-input {
+  .chat-input-wrapper .chat-input {
     min-height: 70px;
     max-height: 180px;
     padding: var(--space-sm);
@@ -862,7 +836,7 @@
 /* Landscape phone adjustments */
 @media (max-height: 500px) and (orientation: landscape) {
   .chat-panel {
-    height: calc(100vh - 80px);
+    height: 100%;
   }
 
   .chat-sidebar {

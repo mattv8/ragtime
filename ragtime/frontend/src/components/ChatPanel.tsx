@@ -1,11 +1,12 @@
-import { useState, useEffect, useRef, useCallback, useMemo, memo, isValidElement, type ReactNode } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, memo, isValidElement, type ReactNode, type CSSProperties } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, X, AlertCircle, RefreshCw, FileText, Menu, ChevronDown, ChevronRight } from 'lucide-react';
+import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, ChevronDown, ChevronRight } from 'lucide-react';
 import { api } from '@/api';
 import type { Conversation, ChatMessage, AvailableModel, ChatTask, User, ContentPart } from '@/types';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
+import { ResizeHandle } from './ResizeHandle';
 import { calculateConversationTokens, calculateStreamingTokens, estimateTokens } from '@/utils/contextUsage';
 
 interface CodeBlockProps {
@@ -1026,6 +1027,7 @@ interface ChatPanelProps {
   workspaceId?: string;
   onUserMessageSubmitted?: (message: string) => void | Promise<void>;
   onTaskComplete?: () => void;
+  onFullscreenChange?: (fullscreen: boolean) => void;
   embedded?: boolean;
   readOnly?: boolean;
   readOnlyMessage?: string;
@@ -1036,6 +1038,7 @@ export function ChatPanel({
   workspaceId,
   onUserMessageSubmitted,
   onTaskComplete,
+  onFullscreenChange,
   embedded = false,
   readOnly = false,
   readOnlyMessage,
@@ -1049,6 +1052,10 @@ export function ChatPanel({
   const [streamingEvents, setStreamingEvents] = useState<StreamingRenderEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showSidebar, setShowSidebar] = useState(!embedded);
+  const [sidebarWidth, setSidebarWidth] = useState(280);
+  const [inputAreaHeight, setInputAreaHeight] = useState(96);
+  const [isInputAreaCollapsed, setIsInputAreaCollapsed] = useState(false);
+  const [isMessagesCollapsed, setIsMessagesCollapsed] = useState(false);
   const [editingTitle, setEditingTitle] = useState<string | null>(null);
   const [titleInput, setTitleInput] = useState('');
   const [editingMessageIdx, setEditingMessageIdx] = useState<number | null>(null);
@@ -1077,6 +1084,13 @@ export function ChatPanel({
   const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [isWorkspaceConversationMenuOpen, setIsWorkspaceConversationMenuOpen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  const toggleFullscreen = useCallback(() => {
+    const next = !isFullscreen;
+    setIsFullscreen(next);
+    onFullscreenChange?.(next);
+  }, [isFullscreen, onFullscreenChange]);
 
   const parseStoredConversationModel = useCallback((storedModel: string): { provider?: 'openai' | 'anthropic' | 'ollama'; modelId: string } => {
     if (!storedModel) {
@@ -1101,6 +1115,12 @@ export function ChatPanel({
   // Image modal state
   const [modalImageUrl, setModalImageUrl] = useState<string | null>(null);
 
+  useEffect(() => {
+    return () => {
+      onFullscreenChange?.(false);
+    };
+  }, [onFullscreenChange]);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
@@ -1109,16 +1129,107 @@ export function ChatPanel({
   const processingTaskRef = useRef<string | null>(null);
   const titleSourceRef = useRef<Map<string, EventSource>>(new Map());
   const workspaceConversationDropdownRef = useRef<HTMLDivElement>(null);
+  const chatMainRef = useRef<HTMLDivElement>(null);
+  const prevSidebarWidth = useRef(280);
+  const prevInputAreaHeight = useRef(96);
 
-  // Auto-resize textarea
+  const handleResizeSidebar = useCallback((delta: number) => {
+    if (embedded) return;
+    setSidebarWidth((prev) => {
+      const next = Math.min(480, Math.max(0, prev + delta));
+      if (next < 120) {
+        if (prev >= 120) prevSidebarWidth.current = prev;
+        setShowSidebar(false);
+        return prevSidebarWidth.current || prev || 280;
+      }
+      setShowSidebar(true);
+      prevSidebarWidth.current = next;
+      return next;
+    });
+  }, [embedded]);
+
+  const expandSidebar = useCallback(() => {
+    setShowSidebar(true);
+    const restored = prevSidebarWidth.current || 280;
+    setSidebarWidth(Math.min(480, Math.max(180, restored)));
+  }, []);
+
+  const handleResizeInputArea = useCallback((delta: number) => {
+    setInputAreaHeight((prev) => {
+      const proposed = prev - delta;
+      const draggingDown = delta > 0;
+      const draggingUp = delta < 0;
+      const atMinHeight = prev <= 72;
+      const crossedCollapseThreshold = proposed < 56;
+
+      // --- Collapse input area (dragging down) ---
+      if (draggingDown && (atMinHeight || crossedCollapseThreshold)) {
+        if (!isInputAreaCollapsed && prev > 72) {
+          prevInputAreaHeight.current = prev;
+        }
+        setIsInputAreaCollapsed(true);
+        if (isMessagesCollapsed) setIsMessagesCollapsed(false);
+        return prev;
+      }
+
+      // --- Compute max input height from container ---
+      const container = chatMainRef.current;
+      let maxInputHeight = 600; // fallback
+      if (container) {
+        const containerHeight = container.clientHeight;
+        // Measure all non-input siblings (header, error, handle) to get exact available space
+        let occupiedHeight = 0;
+        for (const child of Array.from(container.children)) {
+          const el = child as HTMLElement;
+          if (el.classList.contains('chat-input-area')) continue;   // skip the input area itself
+          if (el.classList.contains('chat-messages')) continue;     // skip messages (will be collapsed)
+          occupiedHeight += el.getBoundingClientRect().height;
+        }
+        maxInputHeight = containerHeight - occupiedHeight;
+      }
+
+      // --- Collapse messages area (dragging up past max) ---
+      if (draggingUp && proposed >= maxInputHeight) {
+        if (!isMessagesCollapsed) {
+          prevInputAreaHeight.current = prev;
+          setIsMessagesCollapsed(true);
+        }
+        return maxInputHeight;
+      }
+
+      const next = Math.min(maxInputHeight, Math.max(72, proposed));
+      prevInputAreaHeight.current = next;
+      if (isInputAreaCollapsed) {
+        setIsInputAreaCollapsed(false);
+      }
+      if (isMessagesCollapsed) {
+        setIsMessagesCollapsed(false);
+      }
+      return next;
+    });
+  }, [isInputAreaCollapsed, isMessagesCollapsed]);
+
+  const expandInputArea = useCallback(() => {
+    setIsInputAreaCollapsed(false);
+    setInputAreaHeight(Math.max(72, prevInputAreaHeight.current || 96));
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, []);
+
+  const expandMessages = useCallback(() => {
+    setIsMessagesCollapsed(false);
+    setInputAreaHeight(Math.max(72, prevInputAreaHeight.current || 96));
+  }, []);
+
+  // Auto-size textarea to fit content while filling resized input pane
   useEffect(() => {
     const textarea = inputRef.current;
     if (textarea) {
       textarea.style.height = '0px';
       const scrollHeight = textarea.scrollHeight;
-      textarea.style.height = scrollHeight + 'px';
+      const wrapperHeight = textarea.parentElement?.clientHeight ?? 0;
+      textarea.style.height = Math.max(scrollHeight, wrapperHeight) + 'px';
     }
-  }, [inputValue]);
+  }, [inputValue, inputAreaHeight]);
 
   useEffect(() => {
     if (!isWorkspaceConversationMenuOpen) return;
@@ -2162,10 +2273,14 @@ export function ChatPanel({
     );
   };
 
+  const panelStyle: CSSProperties | undefined = !embedded
+    ? ({ ['--chat-sidebar-width' as '--chat-sidebar-width']: `${sidebarWidth}px` } as CSSProperties)
+    : undefined;
+
   return (
-    <div className={`chat-panel ${embedded ? 'chat-panel-embedded' : ''}`}>
+    <div className={`chat-panel ${embedded ? 'chat-panel-embedded' : ''}${isFullscreen ? ' chat-panel-fullscreen' : ''}`} style={panelStyle}>
       {/* Conversations Sidebar */}
-      {!embedded && <div className={`chat-sidebar ${showSidebar ? 'open' : ''}`}>
+      {!embedded && showSidebar && <div className="chat-sidebar open">
         <div className="chat-sidebar-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <h3>Conversations</h3>
@@ -2174,18 +2289,6 @@ export function ChatPanel({
                 <Loader2 size={14} className="spinning" />
               </span>
             )}
-          </div>
-          <div className="chat-sidebar-header-actions">
-            <button className="btn btn-sm" onClick={createNewConversation}>
-              + New
-            </button>
-            <button
-              className="chat-sidebar-collapse"
-              onClick={() => setShowSidebar(false)}
-              title="Hide sidebar"
-            >
-              «
-            </button>
           </div>
         </div>
 
@@ -2221,33 +2324,23 @@ export function ChatPanel({
         </div>
       </div>}
 
-      {/* Sidebar Expand Button (when collapsed) */}
-      {!embedded && !showSidebar && (
-        <button
-          className="chat-sidebar-expand"
-          onClick={() => setShowSidebar(true)}
-          title="Show sidebar"
-        >
-          »
-        </button>
+      {!embedded && (
+        <ResizeHandle
+          direction="horizontal"
+          className="resize-handle resize-handle-horizontal chat-resize-handle"
+          onResize={handleResizeSidebar}
+          collapsed={!showSidebar ? 'before' : undefined}
+          onExpand={expandSidebar}
+        />
       )}
 
       {/* Main Chat Area */}
-      <div className="chat-main">
+      <div className="chat-main" ref={chatMainRef}>
         {activeConversation ? (
           <>
             {/* Chat Header */}
             <div className={`chat-header ${embedded ? 'chat-header-embedded' : ''}`}>
               <div className="chat-header-info">
-                {!embedded && (
-                  <button
-                    className="chat-mobile-sidebar-toggle"
-                    onClick={() => setShowSidebar(true)}
-                    title="Show conversations"
-                  >
-                    <Menu size={20} />
-                  </button>
-                )}
                 {showWorkspaceConversationSelect ? (
                   <div
                     className="chat-workspace-conversation-picker"
@@ -2331,10 +2424,20 @@ export function ChatPanel({
                 <button className="btn btn-sm btn-secondary" onClick={startFreshConversation} title="Start a new conversation" disabled={readOnly}>
                   New Chat
                 </button>
+                {!embedded && (
+                  <button
+                    className="btn btn-secondary btn-sm btn-icon"
+                    onClick={toggleFullscreen}
+                    title={isFullscreen ? 'Exit full screen' : 'Full screen'}
+                  >
+                    {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                  </button>
+                )}
               </div>
             </div>
 
             {/* Messages */}
+            {!isMessagesCollapsed && (
             <div className="chat-messages" ref={chatMessagesRef} onScroll={handleScroll}>
               {activeConversation.messages.length === 0 && !isStreaming ? (
                 <div className="chat-welcome">
@@ -2554,6 +2657,7 @@ export function ChatPanel({
 
               <div ref={messagesEndRef} />
             </div>
+            )}
 
             {/* Error Display */}
             {error && (
@@ -2568,8 +2672,17 @@ export function ChatPanel({
               </div>
             )}
 
+            <ResizeHandle
+              direction="vertical"
+              className="resize-handle resize-handle-vertical chat-resize-handle"
+              onResize={handleResizeInputArea}
+              collapsed={isInputAreaCollapsed ? 'after' : isMessagesCollapsed ? 'before' : undefined}
+              onExpand={isInputAreaCollapsed ? expandInputArea : isMessagesCollapsed ? expandMessages : undefined}
+            />
+
             {/* Input Area */}
-            <div className="chat-input-area">
+            {!isInputAreaCollapsed && (
+            <div className="chat-input-area" style={{ height: `${inputAreaHeight}px`, minHeight: `${inputAreaHeight}px` }}>
               {readOnly && (
                 <div className="chat-readonly-note" role="status">
                   {effectiveReadOnlyMessage}
@@ -2621,6 +2734,7 @@ export function ChatPanel({
                 )}
               </div>
             </div>
+            )}
           </>
         ) : (
           <div className="chat-no-conversation">
