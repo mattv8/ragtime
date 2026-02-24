@@ -563,7 +563,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     setCreatingWorkspace(true);
     try {
       const created = await api.createUserSpaceWorkspace({
-        selected_tool_ids: availableTools.map((tool) => tool.id),
+        selected_tool_ids: [],
       });
       await api.upsertUserSpaceFile(created.id, 'dashboard/main.ts', {
         content: 'export function render(container: HTMLElement) {\n  container.innerHTML = `<h2>Interactive Report</h2><p>Ask chat to build your report and wire live data connections.</p>`;\n}\n',
@@ -578,7 +578,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     } finally {
       setCreatingWorkspace(false);
     }
-  }, [availableTools, loadWorkspaceData, loadWorkspaces]);
+  }, [loadWorkspaceData, loadWorkspaces]);
 
   const handleSelectFile = useCallback(async (path: string) => {
     if (!activeWorkspaceId) return;

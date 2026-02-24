@@ -262,17 +262,41 @@ User Space internal tools behavior:
 - User Space prompt guidance instructs the agent to create snapshots at each completed user-requested change loop.
 - `assay_userspace_code` provides a structured pre-edit assay pass so the agent assesses current file state before editing.
 - `upsert_userspace_file` returns AI-facing warnings when hard-coded hex colors are detected in generated module/CSS content, so the agent can replace them with theme tokens.
-- Live-data contract enforcement is deterministic at both agent and userspace service write paths and gated by intent: only writes with `live_data_requested=true` are required to include non-empty `live_data_connections` metadata for eligible module-source paths/types.
-- Agent-side `upsert_userspace_file` currently applies stricter policy than service-level writes:
-  - for dashboard/module source writes in workspaces that already have selected tools, agent writes effectively force live-data wiring expectations even when `live_data_requested=false` is passed,
-  - hardcoded mock/sample data patterns in dashboard modules are actively rejected by the agent wrapper,
-  - service-level `PUT /workspaces/{workspace_id}/files/{file_path:path}` remains intent-gated (`live_data_requested=true`) for strict contract-required metadata checks.
+
+### Live-data contract enforcement
+
+Enforcement is layered across both agent and service paths:
+
+**Service-level** (`_requires_live_data_contract` in `service.py`):
+
+- Auto-requires the live data contract when the workspace has selected tools (`workspace_has_tools=True`), regardless of the explicit `live_data_requested` flag. Non-module-source or non-dashboard paths are excluded.
+- Requires non-empty `live_data_connections` and `live_data_checks` for all qualifying writes.
+- Cross-validates that every `live_data_connections.component_id` has a corresponding successful `live_data_checks` entry.
+- Verifies server-side execution proofs (`verify_execution_proofs`): each declared `component_id` must have a non-expired `_ExecutionProofRecord` minted by a prior `execute-component` call. Proofs expire after 1 hour.
+
+**Agent-level** (`upsert_userspace_file` wrapper in `components.py`):
+
+- Auto-infers `effective_live_data_requested=true` when workspace has tools and the write targets a dashboard module.
+- **AST structural validation** (`validate_live_data_binding`): uses the TypeScript compiler AST to deterministically verify that the module source contains `context.components[componentId].execute()` call patterns. This is non-regex, non-heuristic, and cannot be satisfied by fabricating metadata alone. Entry files (`dashboard/main.ts`) accept local module imports as evidence of deferred binding; non-entry files must contain direct `execute()` calls.
+- **Hard tool failure** (`ToolException` with `handle_tool_error=True`): policy violations raise a `ToolException`, which the agent framework surfaces as a tool error rather than a green-checkmark success response. This prevents the agent from ignoring rejected writes.
+- **Regex patterns demoted to warning**: `find_hardcoded_data_patterns` is a supplementary warning only; the AST validation above is the authoritative enforcement.
+- **No-tools conflict**: when a dashboard module write targets a workspace without selected tools, a warning instructs the agent to report the conflict to the user and request tool configuration. Writes are not blocked but cannot claim live data wiring.
 - Each `live_data_connections` item requires a `tool_config` component reference (`component_id`) plus the live `request` payload used for refresh.
 - `live_data_connections.component_id` must reference a tool currently selected in the workspace (`selected_tool_ids`); non-selected IDs are rejected.
 - For `live_data_requested=true`, `live_data_checks` is required and each check must report:
   - `connection_check_passed=true`
   - `transformation_check_passed=true`
   - `component_id` that matches a selected tool and maps to a corresponding `live_data_connections.component_id`
+
+### Execution proof tracking
+
+- `_ExecutionProofRecord` records are minted server-side when `_execute_component_for_workspace` completes without error.
+- Each proof captures `component_id`, `row_count`, `timestamp`, and `query_hash`.
+- Proofs expire after `_EXECUTION_PROOF_MAX_AGE_SECONDS` (1 hour).
+- The `upsert_workspace_file` service validates that every declared connection has a non-expired proof before persisting.
+
+### Field schemas
+
 - `live_data_connections` is validated against schema fields:
   - `component_kind` = `tool_config`
   - `component_id` (required)

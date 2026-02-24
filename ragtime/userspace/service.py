@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -20,33 +21,65 @@ from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
-                                    add_table_metadata_to_psql_output,
-                                    enforce_max_results, format_query_result,
-                                    validate_sql_query)
-from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.sql_utils import (
+    DB_TYPE_POSTGRES,
+    add_table_metadata_to_psql_output,
+    enforce_max_results,
+    format_query_result,
+    validate_sql_query,
+)
+from ragtime.core.ssh import (
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
-                                      ExecuteComponentRequest,
-                                      ExecuteComponentResponse,
-                                      PaginatedWorkspacesResponse,
-                                      ShareAccessMode,
-                                      UpdateWorkspaceMembersRequest,
-                                      UpdateWorkspaceRequest,
-                                      UpdateWorkspaceShareAccessRequest,
-                                      UpsertWorkspaceFileRequest,
-                                      UserSpaceFileInfo, UserSpaceFileResponse,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection,
-                                      UserSpaceSharedPreviewResponse,
-                                      UserSpaceSnapshot, UserSpaceWorkspace,
-                                      UserSpaceWorkspaceShareLink,
-                                      UserSpaceWorkspaceShareLinkStatus,
-                                      WorkspaceMember,
-                                      WorkspaceShareSlugAvailabilityResponse)
+from ragtime.userspace.models import (
+    ArtifactType,
+    CreateWorkspaceRequest,
+    ExecuteComponentRequest,
+    ExecuteComponentResponse,
+    PaginatedWorkspacesResponse,
+    ShareAccessMode,
+    UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+    UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot,
+    UserSpaceWorkspace,
+    UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceMember,
+    WorkspaceShareSlugAvailabilityResponse,
+)
 
 logger = get_logger(__name__)
+
+
+class _ExecutionProofRecord:
+    """Server-side proof of a successful execute-component call."""
+
+    __slots__ = ("component_id", "row_count", "timestamp", "query_hash")
+
+    def __init__(
+        self,
+        component_id: str,
+        row_count: int,
+        timestamp: float,
+        query_hash: str,
+    ) -> None:
+        self.component_id = component_id
+        self.row_count = row_count
+        self.timestamp = timestamp
+        self.query_hash = query_hash
+
+
+_EXECUTION_PROOF_MAX_AGE_SECONDS = 3600  # 1 hour
 
 _USPACE_EXEC_SUPPORTED_SQL_TOOLS = {"postgres", "mysql", "mssql"}
 _USERSPACE_PREVIEW_ENTRY_PATH = "dashboard/main.ts"
@@ -63,6 +96,7 @@ _MODULE_SOURCE_EXTENSIONS = (
     ".cts",
 )
 
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -74,18 +108,15 @@ def _normalize_workspace_name_for_uniqueness(name: str) -> str:
 
 def _is_workspace_name_conflict_error(exc: Exception) -> bool:
     message = str(exc).lower()
-    return (
-        "owner_user_id_name_normalized" in message
-        or ("unique" in message and "name_normalized" in message)
+    return "owner_user_id_name_normalized" in message or (
+        "unique" in message and "name_normalized" in message
     )
 
 
 def _is_share_token_conflict_error(exc: Exception) -> bool:
     message = str(exc).lower()
     return "unique" in message and (
-        "sharetoken" in message
-        or "share_token" in message
-        or "share token" in message
+        "sharetoken" in message or "share_token" in message or "share token" in message
     )
 
 
@@ -105,9 +136,8 @@ def _normalize_owner_username_for_share_path(username: str) -> str:
 
 def _is_share_slug_conflict_error(exc: Exception) -> bool:
     message = str(exc).lower()
-    return (
-        "owner_user_id_share_slug" in message
-        or ("unique" in message and "share_slug" in message)
+    return "owner_user_id_share_slug" in message or (
+        "unique" in message and "share_slug" in message
     )
 
 
@@ -141,19 +171,25 @@ def _requires_live_data_contract(
     relative_path: str,
     artifact_type: ArtifactType | None,
     live_data_requested: bool,
+    workspace_has_tools: bool = False,
 ) -> bool:
-    if not live_data_requested:
-        return False
-
     normalized_path = (relative_path or "").strip().lower().replace("\\", "/")
     is_module_source = normalized_path.endswith(_MODULE_SOURCE_EXTENSIONS)
     if not is_module_source:
         return False
 
-    if artifact_type == "module_ts":
+    is_dashboard_module = artifact_type == "module_ts" or normalized_path.startswith(
+        "dashboard/"
+    )
+    if not is_dashboard_module:
+        return False
+
+    # Auto-require live data contract when workspace has tools,
+    # regardless of the explicit live_data_requested flag.
+    if workspace_has_tools:
         return True
 
-    return normalized_path.startswith("dashboard/")
+    return live_data_requested
 
 
 class UserSpaceService:
@@ -163,6 +199,38 @@ class UserSpaceService:
         self._workspaces_dir.mkdir(parents=True, exist_ok=True)
         self._metadata_synced = False
         self._metadata_sync_lock = asyncio.Lock()
+        self._execution_proofs: dict[str, dict[str, _ExecutionProofRecord]] = {}
+
+    def record_execution_proof(
+        self,
+        workspace_id: str,
+        component_id: str,
+        row_count: int,
+        query: str,
+    ) -> None:
+        """Record a server-side proof of successful tool/component execution."""
+        proof = _ExecutionProofRecord(
+            component_id=component_id,
+            row_count=row_count,
+            timestamp=_utc_now().timestamp(),
+            query_hash=hashlib.sha256(query.strip().encode()).hexdigest(),
+        )
+        self._execution_proofs.setdefault(workspace_id, {})[component_id] = proof
+
+    def verify_execution_proofs(
+        self,
+        workspace_id: str,
+        component_ids: set[str],
+    ) -> list[str]:
+        """Return component_ids that lack valid (non-expired) server-side proofs."""
+        now = _utc_now().timestamp()
+        workspace_proofs = self._execution_proofs.get(workspace_id, {})
+        missing: list[str] = []
+        for cid in sorted(component_ids):
+            proof = workspace_proofs.get(cid)
+            if not proof or (now - proof.timestamp) > _EXECUTION_PROOF_MAX_AGE_SECONDS:
+                missing.append(cid)
+        return missing
 
     @property
     def root_path(self) -> Path:
@@ -322,7 +390,9 @@ class UserSpaceService:
             str(getattr(owner, "username", "") or "")
         )
         if not normalized:
-            raise HTTPException(status_code=400, detail="Workspace owner username invalid")
+            raise HTTPException(
+                status_code=400, detail="Workspace owner username invalid"
+            )
         return normalized
 
     async def _allocate_next_share_slug(
@@ -347,7 +417,12 @@ class UserSpaceService:
         selected_ldap_groups = _normalize_string_list(
             getattr(workspace_record, "shareSelectedLdapGroups", [])
         )
-        return mode, (password_encrypted or None), selected_user_ids, selected_ldap_groups
+        return (
+            mode,
+            (password_encrypted or None),
+            selected_user_ids,
+            selected_ldap_groups,
+        )
 
     async def _is_user_in_ldap_group(self, user: Any, group_dn: str) -> bool:
         if not getattr(user, "ldapDn", None):
@@ -426,7 +501,9 @@ class UserSpaceService:
 
         if mode == "password":
             if not password_encrypted:
-                raise HTTPException(status_code=403, detail="Share password not configured")
+                raise HTTPException(
+                    status_code=403, detail="Share password not configured"
+                )
             provided = (provided_password or "").strip()
             if not provided:
                 raise HTTPException(status_code=401, detail="Password required")
@@ -442,16 +519,23 @@ class UserSpaceService:
 
         if mode == "selected_users":
             if str(getattr(current_user, "id", "")) not in selected_user_ids:
-                raise HTTPException(status_code=403, detail="User not allowed for this share")
+                raise HTTPException(
+                    status_code=403, detail="User not allowed for this share"
+                )
             return
 
         if mode == "ldap_groups":
-            if getattr(current_user, "authProvider", None) == "local" and getattr(current_user, "role", None) == "admin":
+            if (
+                getattr(current_user, "authProvider", None) == "local"
+                and getattr(current_user, "role", None) == "admin"
+            ):
                 return
             for group_dn in selected_ldap_groups:
                 if await self._is_user_in_ldap_group(current_user, group_dn):
                     return
-            raise HTTPException(status_code=403, detail="User not in allowed LDAP groups")
+            raise HTTPException(
+                status_code=403, detail="User not in allowed LDAP groups"
+            )
 
     async def _allocate_next_default_workspace_name(self, user_id: str) -> str:
         db = await get_db()
@@ -517,7 +601,9 @@ class UserSpaceService:
                     if not isinstance(item, dict):
                         continue
                     try:
-                        parsed_checks.append(UserSpaceLiveDataCheck.model_validate(item))
+                        parsed_checks.append(
+                            UserSpaceLiveDataCheck.model_validate(item)
+                        )
                     except Exception:
                         continue
                 live_data_checks = parsed_checks or None
@@ -1000,7 +1086,9 @@ class UserSpaceService:
             selected_ldap_groups=_normalize_string_list(
                 getattr(workspace_record, "shareSelectedLdapGroups", [])
             ),
-            has_password=bool(str(getattr(workspace_record, "sharePassword", "") or "")),
+            has_password=bool(
+                str(getattr(workspace_record, "sharePassword", "") or "")
+            ),
         )
 
     async def create_workspace_share_link(
@@ -1062,9 +1150,9 @@ class UserSpaceService:
                     share_token = candidate
                     break
                 except Exception as exc:
-                    if _is_share_token_conflict_error(exc) or _is_share_slug_conflict_error(
+                    if _is_share_token_conflict_error(
                         exc
-                    ):
+                    ) or _is_share_slug_conflict_error(exc):
                         continue
                     raise
             if not share_token:
@@ -1330,7 +1418,9 @@ class UserSpaceService:
         if request.name is not None:
             normalized_name = _normalize_workspace_name_for_uniqueness(request.name)
             if not normalized_name:
-                raise HTTPException(status_code=400, detail="Workspace name is required")
+                raise HTTPException(
+                    status_code=400, detail="Workspace name is required"
+                )
             update_data["name"] = request.name.strip()
             update_data["nameNormalized"] = normalized_name
         if request.description is not None:
@@ -1468,10 +1558,12 @@ class UserSpaceService:
 
         parsed_live_data_connections = request.live_data_connections or []
         parsed_live_data_checks = request.live_data_checks or []
+        workspace_has_tools = bool(workspace.selected_tool_ids)
         if _requires_live_data_contract(
             relative_path,
             request.artifact_type,
             request.live_data_requested,
+            workspace_has_tools=workspace_has_tools,
         ):
             if not parsed_live_data_connections:
                 raise HTTPException(
@@ -1534,6 +1626,7 @@ class UserSpaceService:
             relative_path,
             request.artifact_type,
             request.live_data_requested,
+            workspace_has_tools=workspace_has_tools,
         ):
             connected_ids = {
                 connection.component_id for connection in parsed_live_data_connections
@@ -1550,6 +1643,19 @@ class UserSpaceService:
                     detail=(
                         "Missing successful live_data_checks verification for component_id(s): "
                         + ", ".join(missing_verified_ids)
+                    ),
+                )
+
+            # Verify server-side execution proofs for declared connections.
+            unproven_ids = self.verify_execution_proofs(workspace_id, connected_ids)
+            if unproven_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "No server-verified execution proof for component_id(s): "
+                        + ", ".join(unproven_ids)
+                        + ". Execute a successful query via the workspace tool or "
+                        "execute-component endpoint before persisting live data connections."
                     ),
                 )
 
@@ -1929,7 +2035,9 @@ class UserSpaceService:
         error_log_prefix: str,
     ) -> ExecuteComponentResponse:
         tool_type, conn_config, tool_config = (
-            await self._resolve_component_execution_config(workspace, request.component_id)
+            await self._resolve_component_execution_config(
+                workspace, request.component_id
+            )
         )
 
         query = self._extract_query_text(request.request)
@@ -1961,10 +2069,22 @@ class UserSpaceService:
                 error=str(exc),
             )
 
-        return self._build_execute_component_response(
+        response = self._build_execute_component_response(
             component_id=request.component_id,
             raw_output=raw_output,
         )
+
+        # Mint server-side execution proof for live-data contract verification.
+        if not response.error:
+            query = self._extract_query_text(request.request)
+            self.record_execution_proof(
+                workspace.id,
+                request.component_id,
+                response.row_count,
+                query,
+            )
+
+        return response
 
     async def _resolve_component_execution_config(
         self,
@@ -1975,8 +2095,7 @@ class UserSpaceService:
             raise HTTPException(
                 status_code=403,
                 detail=(
-                    f"Component {component_id} is not selected "
-                    "for this workspace."
+                    f"Component {component_id} is not selected " "for this workspace."
                 ),
             )
 
@@ -2042,7 +2161,9 @@ class UserSpaceService:
         max_results = tool_config.max_results or 100
 
         if tool_type == "postgres":
-            return await self._execute_postgres_query(conn_config, query, timeout, max_results)
+            return await self._execute_postgres_query(
+                conn_config, query, timeout, max_results
+            )
         elif tool_type == "mssql":
             from ragtime.tools.mssql import execute_mssql_query_async
 
@@ -2141,9 +2262,7 @@ class UserSpaceService:
                         dbname=database,
                         connect_timeout=timeout if timeout > 0 else 30,
                     )
-                    cursor = conn.cursor(
-                        cursor_factory=psycopg2.extras.RealDictCursor
-                    )
+                    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
                     cursor.execute(query)
                     if cursor.description:
                         rows = [dict(row) for row in cursor.fetchall()]
@@ -2173,9 +2292,7 @@ class UserSpaceService:
 
             if timeout > 0:
                 return await asyncio.wait_for(
-                    asyncio.get_event_loop().run_in_executor(
-                        None, run_tunnel_query
-                    ),
+                    asyncio.get_event_loop().run_in_executor(None, run_tunnel_query),
                     timeout=timeout + 5,
                 )
             return await asyncio.get_event_loop().run_in_executor(
@@ -2186,14 +2303,28 @@ class UserSpaceService:
         escaped_query = query.replace("'", "'\\''")
         if host:
             cmd = [
-                "psql", "-h", host, "-p", str(port),
-                "-U", user, "-d", database, "-c", query,
+                "psql",
+                "-h",
+                host,
+                "-p",
+                str(port),
+                "-U",
+                user,
+                "-d",
+                database,
+                "-c",
+                query,
             ]
             env = dict(os.environ)
             env["PGPASSWORD"] = password
         elif container:
             cmd = [
-                "docker", "exec", "-i", container, "bash", "-c",
+                "docker",
+                "exec",
+                "-i",
+                container,
+                "bash",
+                "-c",
                 f'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \'{escaped_query}\'',
             ]
             env = None
@@ -2252,7 +2383,7 @@ class UserSpaceService:
         if end == -1:
             return None
 
-        json_str = output[start + len(start_marker):end]
+        json_str = output[start + len(start_marker) : end]
         try:
             table_data = json.loads(json_str)
         except Exception:
@@ -2276,7 +2407,9 @@ class UserSpaceService:
             if isinstance(raw_row, list):
                 row_dict: dict[str, Any] = {}
                 for index, column_name in enumerate(normalized_columns):
-                    row_dict[column_name] = raw_row[index] if index < len(raw_row) else None
+                    row_dict[column_name] = (
+                        raw_row[index] if index < len(raw_row) else None
+                    )
                 parsed_rows.append(row_dict)
 
         return parsed_rows, normalized_columns

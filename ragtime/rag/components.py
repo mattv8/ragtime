@@ -20,7 +20,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
                                      SystemMessage, ToolMessage)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.tools import StructuredTool
+from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from pydantic import BaseModel, Field
@@ -375,14 +375,40 @@ UI_VISUALIZATION_CHAT_PROMPT = """
 
 UI_VISUALIZATION_USERSPACE_PROMPT = """
 
-### User Space Visualization Rules
+## DATA VISUALIZATION
 
-1. Persist live `data_connection` wiring for reusable dashboards/charts/tables.
-2. Dashboard module writes automatically require `live_data_connections` and `live_data_checks` when the workspace has selected tools.
-3. Chart axes/labels and series data must be sourced from runtime live data payloads via `context.components[componentId].execute()`.
-4. Provide `live_data_checks` proving successful connection and transformation before persisting.
-5. **NEVER embed hardcoded, mock, sample, or static data arrays in module source.** The system will reject writes containing such patterns.
-6. If live wiring is blocked by missing context, persist a scaffold with `execute()` call sites and state the blocker. Do NOT substitute mock data.
+All charts, tables, and visualizations must be built directly in TypeScript module source
+files and persisted via `upsert_userspace_file`.
+
+### Chart.js
+
+Chart.js is preloaded in the User Space preview runtime.
+
+- Use `new (window as any).Chart(canvas, config)` in module code.
+- Supported types: bar, line, pie, doughnut, radar, polarArea, scatter, bubble.
+- The runtime automatically applies theme colors (text, ticks, grid, legend, title). Do NOT set those manually.
+- Only set data-specific colors: dataset `backgroundColor`, `borderColor`, etc.
+
+| Data Type | Chart Type |
+|-----------|------------|
+| Numeric comparisons | bar |
+| Time series, trends | line |
+| Parts of whole, distribution | pie/doughnut (max 7 segments) |
+
+### Tables
+
+- Use standard DOM APIs to create `<table>` elements with sorting/filtering as needed.
+- Style with theme CSS tokens (`var(--color-text-primary)`, `var(--color-border)`, etc.).
+- Do NOT use markdown tables in chat responses for User Space -- build proper DOM tables in modules.
+
+### Live Data Wiring
+
+1. Dashboard module writes in workspaces with selected tools automatically require `live_data_connections`, `live_data_checks`, AND structurally verified `context.components[componentId].execute()` calls in the source code.
+2. Chart axes/labels and series data must be sourced from runtime live data payloads via `context.components[componentId].execute()`.
+3. Provide `live_data_checks` proving successful connection and transformation before persisting.
+4. **NEVER embed hardcoded, mock, sample, or static data arrays in module source.** The system performs AST analysis on the TypeScript source to verify execute() call sites exist and will reject writes that lack structural live data binding.
+5. If live wiring is blocked by missing context, persist a scaffold with `execute()` call sites and state the blocker. Do NOT substitute mock data.
+6. If no tools are selected for the workspace, report the conflict to the user and request tool configuration before proceeding with a dashboard. Do NOT fabricate data.
 """
 
 
@@ -502,6 +528,210 @@ def validate_userspace_runtime_contract(content: str, file_path: str) -> list[st
         )
 
     return violations
+
+
+async def validate_live_data_binding(
+    content: str,
+    file_path: str,
+    declared_component_ids: set[str] | None = None,
+    timeout_seconds: int = 15,
+) -> dict[str, Any]:
+    """Validate dashboard module content for live-data execute() binding via TypeScript AST.
+
+    Uses the TypeScript compiler to walk the AST and verify that the module
+    source structurally contains ``context.components[componentId].execute()``
+    call patterns.  This is a deterministic, non-regex check that cannot be
+    satisfied by fabricating metadata alone.
+
+    Returns a dict with:
+      - has_execute_calls: bool
+      - found_component_ids: list[str]
+      - has_local_imports: bool
+      - has_context_components_access: bool
+      - missing_component_ids: list[str]  (declared IDs not found in code)
+    """
+    _default_fail = {
+        "ok": False,
+        "validator_available": False,
+        "has_execute_calls": False,
+        "found_component_ids": [],
+        "has_local_imports": False,
+        "has_context_components_access": False,
+        "missing_component_ids": [],
+    }
+
+    node_script = r"""
+const fs = require('fs');
+const path = require('path');
+
+const input = fs.readFileSync(0, 'utf8');
+const filePath = process.argv[1] || 'dashboard/main.ts';
+
+let ts;
+try {
+  const tsModulePath = path.join('/ragtime/ragtime/frontend/node_modules/typescript');
+  ts = require(tsModulePath);
+} catch (err) {
+  console.log(JSON.stringify({
+    ok: false,
+    validator_available: false,
+    message: 'TypeScript compiler unavailable for AST analysis',
+    has_execute_calls: false,
+    found_component_ids: [],
+    has_local_imports: false,
+    has_context_components_access: false,
+  }));
+  process.exit(0);
+}
+
+const scriptKind = filePath.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+const sourceFile = ts.createSourceFile(filePath, input, ts.ScriptTarget.ES2020, true, scriptKind);
+
+const foundComponentIds = [];
+const foundIdSet = new Set();
+let hasAnyExecuteCall = false;
+let hasLocalImports = false;
+let hasContextComponentsAccess = false;
+
+function visit(node) {
+  // Detect local workspace imports (static)
+  if (ts.isImportDeclaration(node) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteral(node.moduleSpecifier)) {
+    const spec = node.moduleSpecifier.text;
+    if (spec.startsWith('./') || spec.startsWith('../')) {
+      hasLocalImports = true;
+    }
+  }
+
+  // Detect dynamic imports: import('./...')
+  if (ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      node.arguments.length > 0 &&
+      ts.isStringLiteral(node.arguments[0])) {
+    const spec = node.arguments[0].text;
+    if (spec.startsWith('./') || spec.startsWith('../')) {
+      hasLocalImports = true;
+    }
+  }
+
+  // Detect context.components property access
+  if (ts.isPropertyAccessExpression(node) &&
+      node.name.text === 'components') {
+    const obj = node.expression;
+    if (ts.isIdentifier(obj) && obj.text === 'context') {
+      hasContextComponentsAccess = true;
+    }
+  }
+
+  // Detect context.components[X].execute() call expressions
+  if (ts.isCallExpression(node)) {
+    const expr = node.expression;
+    if (ts.isPropertyAccessExpression(expr) && expr.name.text === 'execute') {
+      const obj = expr.expression;
+
+      // Pattern: context.components["id"].execute()
+      if (ts.isElementAccessExpression(obj)) {
+        const container = obj.expression;
+        if (ts.isPropertyAccessExpression(container) &&
+            container.name.text === 'components') {
+          const root = container.expression;
+          if (ts.isIdentifier(root) && root.text === 'context') {
+            hasAnyExecuteCall = true;
+            hasContextComponentsAccess = true;
+            const arg = obj.argumentExpression;
+            if (ts.isStringLiteral(arg) && !foundIdSet.has(arg.text)) {
+              foundIdSet.add(arg.text);
+              foundComponentIds.push(arg.text);
+            }
+          }
+        }
+      }
+
+      // Pattern: context.components.propName.execute()
+      if (ts.isPropertyAccessExpression(obj)) {
+        const container = obj.expression;
+        if (ts.isPropertyAccessExpression(container) &&
+            container.name.text === 'components') {
+          const root = container.expression;
+          if (ts.isIdentifier(root) && root.text === 'context') {
+            hasAnyExecuteCall = true;
+            hasContextComponentsAccess = true;
+            const propName = obj.name.text;
+            if (!foundIdSet.has(propName)) {
+              foundIdSet.add(propName);
+              foundComponentIds.push(propName);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  ts.forEachChild(node, visit);
+}
+
+visit(sourceFile);
+
+console.log(JSON.stringify({
+  ok: true,
+  validator_available: true,
+  has_execute_calls: hasAnyExecuteCall,
+  found_component_ids: foundComponentIds,
+  has_local_imports: hasLocalImports,
+  has_context_components_access: hasContextComponentsAccess,
+}));
+"""
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "node",
+            "-e",
+            node_script,
+            file_path,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        return {
+            **_default_fail,
+            "message": "Node runtime unavailable for AST validation",
+        }
+
+    try:
+        stdout, _stderr = await asyncio.wait_for(
+            process.communicate(content.encode("utf-8")),
+            timeout=timeout_seconds,
+        )
+    except TimeoutError:
+        process.kill()
+        await process.wait()
+        return {**_default_fail, "message": "AST validation timed out"}
+
+    if process.returncode != 0:
+        return {**_default_fail, "message": "AST validation process failed"}
+
+    raw = stdout.decode("utf-8", errors="replace").strip()
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return {**_default_fail, "message": "AST validation returned invalid output"}
+
+    if not isinstance(parsed, dict):
+        return {
+            **_default_fail,
+            "message": "AST validation returned unexpected payload",
+        }
+
+    # Cross-check declared component IDs against IDs found via AST.
+    if declared_component_ids and parsed.get("ok"):
+        found_ids = set(parsed.get("found_component_ids", []))
+        parsed["missing_component_ids"] = sorted(declared_component_ids - found_ids)
+    else:
+        parsed.setdefault("missing_component_ids", [])
+
+    return parsed
 
 
 async def validate_userspace_typescript_content(
@@ -664,16 +894,17 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Do not import external npm packages (for example `react`, `recharts`, etc.) in User Space modules.
 - Chart.js is preloaded in the isolated User Space preview runtime (`window.Chart` available). Do not inject additional Chart.js CDN scripts from generated modules.
 - The runtime automatically applies theme-matched text, tick, grid, legend, and title colors to every Chart.js instance. Do NOT set `color`, `ticks.color`, `grid.color`, `labels.color`, or `title.color` in chart options; the runtime handles them. Only set data-specific colors (dataset `backgroundColor`, `borderColor`, etc.).
-- Do not inject DataTables CDN scripts in generated User Space modules. For interactive tabular UX, use `create_datatable` outputs and local module rendering.
+- Do not inject DataTables CDN scripts in generated User Space modules. Build tables using DOM APIs in local modules.
 - Use local workspace modules (`./` or `../`) and browser DOM APIs only.
 - If JSX is used, keep it out of `dashboard/main.ts`; maintain `dashboard/main.ts` as a valid TypeScript render entrypoint.
 
 ### Data wiring rules
 
 - Use real tool outputs as the source of truth for rendered data.
-- Persistent User Space dashboards must be live-wired.
-- **NEVER embed hardcoded, mock, sample, dummy, or static data arrays in module source files.** All data must be fetched at runtime via `context.components[componentId].execute()`. The system will reject writes containing hardcoded data patterns.
-- When the workspace has selected tools, dashboard module writes (`dashboard/*` or `artifact_type=module_ts`) automatically require `live_data_connections` and `live_data_checks` -- the `live_data_requested` flag is inferred.
+- Persistent User Space dashboards must be live-wired via `context.components[componentId].execute()`.
+- **NEVER embed hardcoded, mock, sample, dummy, or static data arrays in module source files.** The system performs deterministic AST analysis on the TypeScript source and will reject writes that lack structural evidence of `context.components[componentId].execute()` calls.
+- When the workspace has selected tools, dashboard module writes (`dashboard/*` or `artifact_type=module_ts`) automatically require `live_data_connections`, `live_data_checks`, and verified `execute()` call sites in the source code.
+- If no tools are selected for the workspace, inform the user that live data is unavailable and request tool configuration before building a dashboard. Do NOT fabricate or hardcode data.
 - Each `live_data_connections` entry must include at least `component_kind=tool_config`, `component_id`, and `request`.
 - Include `live_data_checks` for each connection with `connection_check_passed=true` and `transformation_check_passed=true`.
 - Never invent or guess `component_id` values. Use only IDs from ACTIVE TOOL CONNECTIONS FOR THIS REQUEST.
@@ -4112,22 +4343,27 @@ except Exception as e:
             live_data_requested: bool = Field(
                 default=False,
                 description=(
-                    "Set true only when the user explicitly asked for live/real-time/refreshable data. "
-                    "When true on eligible module-source writes, live_data_connections are required."
+                    "Automatically inferred to true when workspace has selected tools "
+                    "and writes target dashboard modules. Explicit true is also accepted. "
+                    "When effective, live_data_connections, live_data_checks, and "
+                    "context.components[componentId].execute() calls are all required."
                 ),
             )
             live_data_connections: list[LiveDataConnectionInput] | None = Field(
                 default=None,
                 description=(
-                    "Structured live data contract metadata for persisted module source files. "
-                    "Required only when live_data_requested=true for writes under dashboard/* or writes where artifact_type=module_ts."
+                    "Required when workspace has selected tools and write targets a dashboard module. "
+                    "Each connection must reference a workspace-selected tool via component_id. "
+                    "The module source must structurally call context.components[component_id].execute() "
+                    "for each declared connection (AST-verified)."
                 ),
             )
             live_data_checks: list[LiveDataCheckInput] | None = Field(
                 default=None,
                 description=(
-                    "Verification metadata for successful live data connection + transformation checks. "
-                    "Required when live_data_requested=true for eligible module-source writes."
+                    "Required when live_data_connections are provided. Each check must report "
+                    "connection_check_passed=true and transformation_check_passed=true for a "
+                    "component_id that matches a declared live_data_connections entry."
                 ),
             )
             reason: str = Field(
@@ -4340,17 +4576,28 @@ except Exception as e:
                 effective_live_data_requested and is_dashboard_module
             )
 
-            # Detect hardcoded mock/sample data in ALL dashboard module
-            # writes regardless of live_data_requested flag.
+            # Detect hardcoded mock/sample data naming patterns.
+            # This is a supplementary warning only; the authoritative
+            # enforcement is the AST-based structural validation below.
             if is_dashboard_module:
                 mock_patterns = find_hardcoded_data_patterns(content)
                 if mock_patterns:
-                    hard_errors.append(
-                        "Hardcoded mock/sample data detected in module source: "
+                    warnings.append(
+                        "Suspicious hardcoded data patterns detected: "
                         + ", ".join(mock_patterns)
-                        + ". All data must be fetched at runtime via context.components[componentId].execute(). "
-                        "Remove hardcoded data arrays and use live data connections."
+                        + ". All data must be fetched at runtime via "
+                        "context.components[componentId].execute()."
                     )
+
+            # No-tools conflict: warn when dashboard module targets a
+            # workspace without any selected tools for live data.
+            if is_dashboard_module and not workspace_has_tools:
+                warnings.append(
+                    "NO LIVE DATA TOOLS AVAILABLE: This workspace has no "
+                    "selected tools. Dashboard data cannot be fetched from "
+                    "live sources. Inform the user that tool configuration "
+                    "is required before live data can be rendered."
+                )
 
             if requires_live_data_contract and not parsed_live_data_connections:
                 hard_errors.append(
@@ -4382,6 +4629,60 @@ except Exception as e:
                             + ", ".join(missing_ids)
                         )
 
+            # AST-based structural validation: verify the module code
+            # contains context.components[id].execute() call patterns.
+            # This is deterministic and cannot be satisfied by fabricating
+            # metadata alone -- the source code must structurally call
+            # the live data execution API.
+            if requires_live_data_contract and is_dashboard_module:
+                declared_ids = (
+                    {c.component_id for c in parsed_live_data_connections}
+                    if parsed_live_data_connections
+                    else set()
+                )
+                binding = await validate_live_data_binding(
+                    content,
+                    path,
+                    declared_component_ids=declared_ids or None,
+                )
+                if binding.get("validator_available", False):
+                    has_execute = binding.get("has_execute_calls", False)
+                    has_imports = binding.get("has_local_imports", False)
+                    has_access = binding.get("has_context_components_access", False)
+                    is_entry = normalized_path == "dashboard/main.ts"
+
+                    # Entry file may delegate data fetching to imported
+                    # sub-modules, so we accept local imports as evidence
+                    # of deferred binding.  Non-entry files that declare
+                    # live connections must call execute() directly.
+                    if not has_execute and not (is_entry and has_imports):
+                        hard_errors.append(
+                            "Live data binding not found in module source. "
+                            "Dashboard modules must call "
+                            "context.components[componentId].execute() to "
+                            "fetch data at runtime. Hardcoded/static data "
+                            "is not permitted when workspace tools are "
+                            "available."
+                        )
+                    elif not has_access and not has_imports:
+                        hard_errors.append(
+                            "Module source does not access "
+                            "context.components anywhere. Dashboard "
+                            "modules with live_data_connections must wire "
+                            "data through "
+                            "context.components[componentId].execute()."
+                        )
+
+                    ast_missing = binding.get("missing_component_ids", [])
+                    if ast_missing and has_execute:
+                        warnings.append(
+                            "Declared component_ids not found in AST "
+                            "execute() calls: "
+                            + ", ".join(ast_missing)
+                            + ". Verify these connections are used in "
+                            "the code."
+                        )
+
             if lower_path.endswith((".ts", ".tsx", ".css", ".scss", ".html")):
                 hard_coded_hex = find_hard_coded_hex_colors(content)
                 if hard_coded_hex:
@@ -4402,16 +4703,10 @@ except Exception as e:
                         )
 
             if hard_errors:
-                response_payload: dict[str, Any] = {
-                    "file": None,
-                    "rejected": True,
-                    "errors": hard_errors,
-                }
+                detail = "LIVE DATA POLICY VIOLATION -- " + " | ".join(hard_errors)
                 if warnings:
-                    response_payload["warnings"] = warnings
-                if typecheck is not None:
-                    response_payload["typescript_validation"] = typecheck
-                return json.dumps(response_payload, indent=2)
+                    detail += " [Warnings: " + "; ".join(warnings) + "]"
+                raise ToolException(detail)
 
             result = await userspace_service.upsert_workspace_file(
                 workspace_id,
@@ -4505,12 +4800,14 @@ except Exception as e:
                 description=(
                     "Create or update a file in the active User Space workspace. "
                     "For interactive reports, write TypeScript modules (artifact_type=module_ts). "
-                    "When the user explicitly requests live data, set live_data_requested=true. "
-                    "Then module-source writes under dashboard/*, and module_ts artifact writes, require non-empty live_data_connections metadata and successful live_data_checks verification. "
-                    "Output may include CSS/theme warnings that must be fixed in follow-up edits. "
-                    "Policy violations are returned as structured rejection payloads in tool output (rejected=true, errors=[...])."
+                    "Dashboard module writes in workspaces with selected tools automatically "
+                    "require live_data_connections, live_data_checks, AND structurally verified "
+                    "context.components[componentId].execute() calls in the source code (AST-checked). "
+                    "Policy violations raise tool errors that must be resolved before retrying. "
+                    "Output may include CSS/theme warnings that must be fixed in follow-up edits."
                 ),
                 args_schema=UpsertUserSpaceFileInput,
+                handle_tool_error=True,
             ),
             StructuredTool.from_function(
                 coroutine=create_userspace_snapshot,
@@ -4839,6 +5136,13 @@ except Exception as e:
                         workspace_id,
                         user_id,
                     )
+                    # Remove inline viz tools -- userspace uses Chart.js directly in modules
+                    runtime_tools = [
+                        t
+                        for t in runtime_tools
+                        if getattr(t, "name", "")
+                        not in {"create_chart", "create_datatable"}
+                    ]
                     runtime_tools.extend(userspace_tools)
                     runtime_tools = (
                         self._apply_mode_specific_tool_description_overrides(
@@ -4977,14 +5281,23 @@ except Exception as e:
             if workspace_id and user_id:
                 workspace = await userspace_service.get_workspace(workspace_id, user_id)
                 workspace_allowed_tool_config_ids = workspace.selected_tool_ids
+                # Suppress UI_VISUALIZATION_COMMON_PROMPT (is_ui=False) --
+                # userspace has its own self-contained visualization guidance.
                 system_prompt = self._build_request_system_prompt(
-                    is_ui=is_ui,
+                    is_ui=False,
                     allowed_tool_config_ids=workspace_allowed_tool_config_ids,
                 )
                 userspace_tools = await self._create_userspace_file_tools(
                     workspace_id,
                     user_id,
                 )
+                # Remove inline viz tools -- userspace uses Chart.js directly in modules
+                runtime_tools = [
+                    t
+                    for t in runtime_tools
+                    if getattr(t, "name", "")
+                    not in {"create_chart", "create_datatable"}
+                ]
                 runtime_tools.extend(userspace_tools)
                 runtime_tools = self._apply_mode_specific_tool_description_overrides(
                     runtime_tools,
