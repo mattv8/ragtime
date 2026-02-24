@@ -24,7 +24,7 @@
   z-index: 500;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
-  background: var(--color-bg-primary);
+  background: var(--color-surface);
 }
 
 /* Embedded mode: no sidebar, no border, fills parent */
@@ -395,6 +395,7 @@
   gap: var(--space-xs);
   font-size: var(--text-xs);
   padding: 6px 12px;
+  min-height: 28px;
   background: transparent;
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-md);
@@ -541,6 +542,23 @@
   display: flex;
   align-items: center;
   gap: var(--space-md);
+}
+
+.chat-header-actions .btn.btn-sm {
+  height: 30px;
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.chat-header-actions .model-selector-trigger {
+  height: 30px;
+  min-height: 30px;
+}
+
+.chat-header-actions .context-usage-pie {
+  width: 30px !important;
+  height: 30px !important;
 }
 
 .chat-context-meter {

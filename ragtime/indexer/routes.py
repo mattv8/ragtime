@@ -30,6 +30,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
+from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.embedding_models import (OPENAI_EMBEDDING_PRIORITY,
                                            get_embedding_models)
@@ -6382,19 +6383,42 @@ async def _resolve_workspace_runtime_scope(
         )
 
     effective_workspace_id = requested_workspace_id or conversation_workspace_id
-    if not effective_workspace_id:
-        return None, None, None
 
-    workspace = await userspace_service.enforce_workspace_role(
-        effective_workspace_id,
-        user.id,
-        required_role,
-    )
-    blocked_tool_names = rag.get_blocked_config_tool_names(workspace.selected_tool_ids)
-    workspace_context = {
-        "workspace_id": effective_workspace_id,
-        "user_id": user.id,
-    }
+    # Fetch conversation tool selections
+    db = Prisma()
+    await db.connect()
+    try:
+        conversation_tool_selections = await db.conversationtoolselection.find_many(
+            where={"conversationId": conversation.id}
+        )
+        conversation_selected_tool_ids = [s.toolConfigId for s in conversation_tool_selections]
+    finally:
+        await db.disconnect()
+
+    # Combine conversation and workspace tool selections
+    selected_tool_ids = set(conversation_selected_tool_ids) if conversation_selected_tool_ids else set()
+
+    workspace_context = None
+    if effective_workspace_id:
+        workspace = await userspace_service.enforce_workspace_role(
+            effective_workspace_id,
+            user.id,
+            required_role,
+        )
+        # Add workspace tools to the selected set
+        selected_tool_ids.update(workspace.selected_tool_ids)
+        workspace_context = {
+            "workspace_id": effective_workspace_id,
+            "user_id": user.id,
+        }
+
+    # If no tools selected at all, return no blocking (all tools available)
+    if not selected_tool_ids:
+        return effective_workspace_id, None, workspace_context
+
+    # Get blocked tool names (tools NOT in selected set)
+    blocked_tool_names = rag.get_blocked_config_tool_names(list(selected_tool_ids))
+
     return effective_workspace_id, blocked_tool_names, workspace_context
 
 
@@ -7444,6 +7468,163 @@ async def cancel_chat_task(task_id: str):
         completed_at=updated_task.completed_at,
         last_update_at=updated_task.last_update_at,
     )
+
+
+@router.get("/conversations/{conversation_id}/members")
+async def get_conversation_members(
+    conversation_id: str,
+    user: User = Depends(get_current_user),
+):
+    """Get conversation members"""
+    db = Prisma()
+    await db.connect()
+    try:
+        # Check if user has access to this conversation
+        conversation = await db.conversation.find_unique(
+            where={"id": conversation_id},
+            include={"members": True}
+        )
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        # Check membership
+        user_member = next((m for m in conversation.members if m.userId == user.id), None)
+        if not user_member and conversation.userId != user.id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        # Return members
+        return [{"user_id": m.userId, "role": m.role} for m in conversation.members]
+    finally:
+        await db.disconnect()
+
+
+@router.put("/conversations/{conversation_id}/members")
+async def update_conversation_members(
+    conversation_id: str,
+    request: dict,
+    user: User = Depends(get_current_user),
+):
+    """Update conversation members (owner only)"""
+    db = Prisma()
+    await db.connect()
+    try:
+        # Check if user is owner
+        conversation = await db.conversation.find_unique(
+            where={"id": conversation_id},
+            include={"members": True}
+        )
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        # Check if user is owner
+        user_member = next((m for m in conversation.members if m.userId == user.id), None)
+        if not user_member or user_member.role != "owner":
+            if conversation.userId != user.id:
+                raise HTTPException(status_code=403, detail="Only owner can manage members")
+
+        members = request.get("members", [])
+
+        # Delete existing non-owner members
+        await db.conversationmember.delete_many(
+            where={
+                "conversationId": conversation_id,
+                "role": {"not": "owner"}
+            }
+        )
+
+        # Add new members
+        for member in members:
+            mid = member["user_id"]
+            role = member["role"]
+            # Normalize non-owner members trying to be owner to editor
+            if role == "owner" and mid != (conversation.userId or user.id):
+                role = "editor"
+            await db.conversationmember.create(
+                data={
+                    "conversationId": conversation_id,
+                    "userId": mid,
+                    "role": role
+                }
+            )
+
+        return {"success": True}
+    finally:
+        await db.disconnect()
+
+
+@router.get("/conversations/{conversation_id}/tools")
+async def get_conversation_tools(
+    conversation_id: str,
+    user: User = Depends(get_current_user),
+):
+    """Get conversation tool selections"""
+    db = Prisma()
+    await db.connect()
+    try:
+        # Check if user has access
+        conversation = await db.conversation.find_unique(
+            where={"id": conversation_id},
+            include={"members": True}
+        )
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        user_member = next((m for m in conversation.members if m.userId == user.id), None)
+        if not user_member and conversation.userId != user.id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        # Get tool selections
+        selections = await db.conversationtoolselection.find_many(
+            where={"conversationId": conversation_id}
+        )
+
+        return {"tool_config_ids": [s.toolConfigId for s in selections]}
+    finally:
+        await db.disconnect()
+
+
+@router.put("/conversations/{conversation_id}/tools")
+async def update_conversation_tools(
+    conversation_id: str,
+    request: dict,
+    user: User = Depends(get_current_user),
+):
+    """Update conversation tool selections (owner/editor only)"""
+    db = Prisma()
+    await db.connect()
+    try:
+        # Check if user can edit
+        conversation = await db.conversation.find_unique(
+            where={"id": conversation_id},
+            include={"members": True}
+        )
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        user_member = next((m for m in conversation.members if m.userId == user.id), None)
+        if not user_member or user_member.role == "viewer":
+            if conversation.userId != user.id:
+                raise HTTPException(status_code=403, detail="Only owner/editor can manage tools")
+
+        tool_config_ids = request.get("tool_config_ids", [])
+
+        # Delete existing selections
+        await db.conversationtoolselection.delete_many(
+            where={"conversationId": conversation_id}
+        )
+
+        # Add new selections
+        for tool_id in tool_config_ids:
+            await db.conversationtoolselection.create(
+                data={
+                    "conversationId": conversation_id,
+                    "toolConfigId": tool_id
+                }
+            )
+
+        return {"success": True}
+    finally:
+        await db.disconnect()
 
 
 # =============================================================================

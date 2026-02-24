@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, ExternalLink, File, History, Link2, Maximize2, Minimize2, Pencil, Plus, Save, Settings, Trash2, Users, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, ExternalLink, File, History, Link2, Maximize2, Minimize2, Pencil, Plus, Save, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 
 import { api } from '@/api';
-import type { User, UserSpaceAvailableTool, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceWorkspace, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, WorkspaceRole } from '@/types';
+import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
+import { ToolSelectorDropdown } from './shared/ToolSelectorDropdown';
+import type { User, UserSpaceAvailableTool, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceWorkspace, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus } from '@/types';
 import { buildUserSpaceTree, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { ChatPanel } from './ChatPanel';
 import { LdapGroupSelect } from './LdapGroupSelect';
@@ -41,6 +43,38 @@ function getDefaultShareSlug(value: string | null | undefined): string {
     return `share_${normalized.slice(0, 24)}`;
   }
   return 'share_workspace';
+}
+
+const LAST_WORKSPACE_COOKIE_PREFIX = 'userspace_last_workspace_id_';
+const LAST_WORKSPACE_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
+
+function getLastWorkspaceCookieName(userId: string): string {
+  return `${LAST_WORKSPACE_COOKIE_PREFIX}${encodeURIComponent(userId)}`;
+}
+
+function getCookieValue(name: string): string | null {
+  const entries = document.cookie ? document.cookie.split('; ') : [];
+  for (const entry of entries) {
+    const separatorIndex = entry.indexOf('=');
+    if (separatorIndex < 0) continue;
+    const key = entry.slice(0, separatorIndex);
+    if (key !== name) continue;
+    const value = entry.slice(separatorIndex + 1);
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      return value;
+    }
+  }
+  return null;
+}
+
+function setCookieValue(name: string, value: string): void {
+  document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=${LAST_WORKSPACE_COOKIE_MAX_AGE_SECONDS}; samesite=lax`;
+}
+
+function clearCookieValue(name: string): void {
+  document.cookie = `${name}=; path=/; max-age=0; samesite=lax`;
 }
 
 export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePanelProps) {
@@ -107,10 +141,11 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const [pendingMembers, setPendingMembers] = useState<UserSpaceWorkspaceMember[]>([]);
   const [savingMembers, setSavingMembers] = useState(false);
   const [showToolPicker, setShowToolPicker] = useState(false);
-  const [showSnapshots, setShowSnapshots] = useState(true);
+  const [showSnapshots, setShowSnapshots] = useState(false);
   const toolPickerRef = useRef<HTMLDivElement>(null);
   const workspaceDropdownRef = useRef<HTMLDivElement>(null);
   const fileContentCacheRef = useRef(fileContentCache);
+  const lastWorkspaceCookieName = useMemo(() => getLastWorkspaceCookieName(currentUser.id), [currentUser.id]);
 
   // Resize state
   const [sidebarWidth, setSidebarWidth] = useState(180);
@@ -262,8 +297,32 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
         setWorkspaces((prev) => [...prev, ...page.items]);
       } else {
         setWorkspaces(page.items);
-        if (!activeWorkspaceId && page.items.length > 0) {
-          setActiveWorkspaceId(page.items[0].id);
+        if (page.items.length === 0) {
+          setActiveWorkspaceId(null);
+          clearCookieValue(lastWorkspaceCookieName);
+        } else if (!activeWorkspaceId) {
+          const lastWorkspaceId = getCookieValue(lastWorkspaceCookieName);
+          const matchingWorkspace = lastWorkspaceId
+            ? page.items.find((workspace) => workspace.id === lastWorkspaceId)
+            : null;
+
+          if (matchingWorkspace) {
+            setActiveWorkspaceId(matchingWorkspace.id);
+          } else if (lastWorkspaceId) {
+            try {
+              const workspace = await api.getUserSpaceWorkspace(lastWorkspaceId);
+              setWorkspaces((prev) => (
+                prev.some((item) => item.id === workspace.id)
+                  ? prev
+                  : [workspace, ...prev]
+              ));
+              setActiveWorkspaceId(workspace.id);
+            } catch {
+              setActiveWorkspaceId(page.items[0].id);
+            }
+          } else {
+            setActiveWorkspaceId(page.items[0].id);
+          }
         }
       }
       setWorkspacesTotal(page.total);
@@ -274,7 +333,12 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [activeWorkspaceId, workspaces.length]);
+  }, [activeWorkspaceId, lastWorkspaceCookieName, workspaces.length]);
+
+  useEffect(() => {
+    if (!activeWorkspaceId) return;
+    setCookieValue(lastWorkspaceCookieName, activeWorkspaceId);
+  }, [activeWorkspaceId, lastWorkspaceCookieName]);
 
   const loadWorkspaceData = useCallback(async (workspaceId: string) => {
     try {
@@ -923,6 +987,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       setIsWorkspaceMenuOpen(false);
       if (activeWorkspaceId === workspaceId) {
         setActiveWorkspaceId(null);
+        clearCookieValue(lastWorkspaceCookieName);
         setFiles([]);
         setSnapshots([]);
         setFileContentCache({});
@@ -933,7 +998,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete workspace');
     }
-  }, [activeWorkspaceId, loadWorkspaces]);
+  }, [activeWorkspaceId, lastWorkspaceCookieName, loadWorkspaces]);
 
   const handleOpenMembersModal = useCallback(async () => {
     if (!activeWorkspace || !isOwner) return;
@@ -947,32 +1012,20 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     setShowMembersModal(true);
   }, [activeWorkspace, isOwner]);
 
-  const handleAddMember = useCallback((userId: string) => {
-    if (pendingMembers.some((m) => m.user_id === userId)) return;
-    setPendingMembers((prev) => [...prev, { user_id: userId, role: 'viewer' as WorkspaceRole }]);
-  }, [pendingMembers]);
-
-  const handleRemoveMember = useCallback((userId: string) => {
-    setPendingMembers((prev) => prev.filter((m) => m.user_id !== userId));
-  }, []);
-
-  const handleChangeMemberRole = useCallback((userId: string, role: WorkspaceRole) => {
-    setPendingMembers((prev) => prev.map((m) => m.user_id === userId ? { ...m, role } : m));
-  }, []);
-
-  const handleSaveMembers = useCallback(async () => {
+  const handleSaveMembers = useCallback(async (members: Member[]) => {
     if (!activeWorkspace || !isOwner) return;
     setSavingMembers(true);
     try {
-      const updated = await api.updateUserSpaceWorkspaceMembers(activeWorkspace.id, { members: pendingMembers });
+      const updated = await api.updateUserSpaceWorkspaceMembers(activeWorkspace.id, { members });
       setWorkspaces((current) => current.map((ws) => ws.id === updated.id ? updated : ws));
       setShowMembersModal(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update members');
+      throw err;
     } finally {
       setSavingMembers(false);
     }
-  }, [activeWorkspace, isOwner, pendingMembers]);
+  }, [activeWorkspace, isOwner]);
 
   const handleStartEditName = useCallback(() => {
     if (!activeWorkspace || !canEditWorkspace) return;
@@ -1604,37 +1657,15 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
           </div>
 
           <div className="userspace-toolbar-actions" aria-label="Workspace editor actions">
-            <div className="userspace-tool-picker-wrap" ref={toolPickerRef}>
-              <button
-                className={`btn btn-secondary btn-sm btn-icon userspace-toolbar-action-btn ${showToolPicker ? 'active' : ''}`}
-                onClick={() => setShowToolPicker(!showToolPicker)}
-                title="Workspace tools"
-              >
-                <Settings size={14} />
-              </button>
-              {showToolPicker && activeWorkspace && (
-                <div className="userspace-tool-dropdown">
-                  <h4>Workspace Tools</h4>
-                  {!canEditWorkspace && <p className="userspace-muted">Read-only access</p>}
-                  <div className="userspace-tool-list">
-                    {availableTools.map((tool) => (
-                      <label key={tool.id} className="checkbox-label userspace-tool-item">
-                        <input
-                          type="checkbox"
-                          checked={selectedToolIds.has(tool.id)}
-                          onChange={() => handleToggleWorkspaceTool(tool.id)}
-                          disabled={savingWorkspaceTools || !canEditWorkspace}
-                        />
-                        <span>
-                          <strong>{tool.name}</strong>
-                          <small className="userspace-muted">{tool.tool_type}</small>
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
+            <ToolSelectorDropdown
+              availableTools={availableTools}
+              selectedToolIds={selectedToolIds}
+              onToggleTool={handleToggleWorkspaceTool}
+              disabled={savingWorkspaceTools}
+              readOnly={!canEditWorkspace}
+              saving={savingWorkspaceTools}
+              title="Workspace Tools"
+            />
             <button
               className="btn btn-secondary btn-sm btn-icon userspace-toolbar-action-btn"
               onClick={toggleFullscreen}
@@ -1842,76 +1873,17 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
 
       {/* === Members modal === */}
       {showMembersModal && activeWorkspace && (
-        <div className="modal-overlay" onClick={() => setShowMembersModal(false)}>
-          <div className="modal-content modal-small userspace-members-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>Manage Members</h3>
-              <button className="modal-close" onClick={() => setShowMembersModal(false)}>&times;</button>
-            </div>
-            <div className="modal-body">
-              <div className="userspace-members-list">
-                <div className="userspace-member-row userspace-member-owner">
-                  <span>{formatUserLabel(currentUser)}</span>
-                  <small className="userspace-muted">owner</small>
-                </div>
-                {pendingMembers.map((member) => {
-                  const user = allUsers.find((u) => u.id === member.user_id);
-                  return (
-                    <div key={member.user_id} className="userspace-member-row">
-                      <span>{formatUserLabel(user, member.user_id)}</span>
-                      <div className="userspace-member-role-toggle" role="group" aria-label="Member role">
-                        <button
-                          type="button"
-                          className={`userspace-member-role-option ${member.role === 'editor' ? 'active' : ''}`}
-                          onClick={() => handleChangeMemberRole(member.user_id, 'editor')}
-                        >
-                          Editor
-                        </button>
-                        <button
-                          type="button"
-                          className={`userspace-member-role-option ${member.role === 'viewer' ? 'active' : ''}`}
-                          onClick={() => handleChangeMemberRole(member.user_id, 'viewer')}
-                        >
-                          Viewer
-                        </button>
-                      </div>
-                      <button className="chat-action-btn" onClick={() => handleRemoveMember(member.user_id)} title="Remove member">
-                        <X size={14} />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-              {allUsers.length > 0 && (
-                <div className="userspace-add-member">
-                  <select
-                    id="userspace-add-member-select"
-                    defaultValue=""
-                    onChange={(e) => {
-                      if (e.target.value) {
-                        handleAddMember(e.target.value);
-                        e.target.value = '';
-                      }
-                    }}
-                  >
-                    <option value="" disabled>Add a member...</option>
-                    {allUsers
-                      .filter((u) => u.id !== activeWorkspace.owner_user_id && !pendingMembers.some((m) => m.user_id === u.id))
-                      .map((u) => (
-                        <option key={u.id} value={u.id}>{formatUserLabel(u, u.id)}</option>
-                      ))}
-                  </select>
-                </div>
-              )}
-            </div>
-            <div className="modal-footer">
-              <button className="btn btn-secondary" onClick={() => setShowMembersModal(false)}>Cancel</button>
-              <button className="btn btn-primary" onClick={handleSaveMembers} disabled={savingMembers}>
-                {savingMembers ? 'Saving...' : 'Save'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <MemberManagementModal
+          isOpen={showMembersModal}
+          onClose={() => setShowMembersModal(false)}
+          members={pendingMembers}
+          onSave={handleSaveMembers}
+          allUsers={allUsers}
+          ownerId={activeWorkspace.owner_user_id}
+          entityType="workspace"
+          formatUserLabel={formatUserLabel}
+          saving={savingMembers}
+        />
       )}
 
       {/* === Share modal === */}

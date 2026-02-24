@@ -1421,6 +1421,19 @@ export interface SendMessageResponse {
   conversation: Conversation;
 }
 
+export interface ConversationMember {
+  user_id: string;
+  role: WorkspaceRole;  // Reuse existing WorkspaceRole type
+}
+
+export interface UpdateConversationMembersRequest {
+  members: ConversationMember[];
+}
+
+export interface UpdateConversationToolsRequest {
+  tool_config_ids: string[];
+}
+
 // =============================================================================
 // User Space Types
 // =============================================================================

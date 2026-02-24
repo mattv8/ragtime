@@ -295,6 +295,9 @@ model ToolConfig {
   // Relation to MCP default route filter tool selections
   mcpDefaultRouteFilterTools McpDefaultRouteFilterToolSelection[]
 
+  // Relation to conversation tool selections
+  conversationSelections ConversationToolSelection[]
+
   @@map("tool_configs")
 }
 
@@ -656,6 +659,7 @@ model User {
   conversations Conversation[]
   ownedWorkspaces Workspace[] @relation("WorkspaceOwner")
   workspaceMemberships WorkspaceMember[]
+  conversationMembers ConversationMember[]
 
   @@map("users")
 }
@@ -760,6 +764,10 @@ model Conversation {
   // Relation to background tasks
   tasks     ChatTask[]
 
+  // Relation to conversation members and tool selections
+  members         ConversationMember[]
+  toolSelections  ConversationToolSelection[]
+
   @@index([workspaceId, updatedAt])
   @@index([userId, workspaceId, updatedAt])
   @@map("conversations")
@@ -859,4 +867,38 @@ model ChatTask {
   conversation   Conversation   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   @@map("chat_tasks")
+}
+
+/// Conversation member ACL entries
+model ConversationMember {
+  id             String        @id @default(uuid())
+  conversationId String        @map("conversation_id")
+  userId         String        @map("user_id")
+  role           WorkspaceRole
+
+  conversation   Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([conversationId, userId])
+  @@index([userId])
+  @@map("conversation_members")
+}
+
+/// Conversation-selected tool configs (many-to-many)
+model ConversationToolSelection {
+  id             String       @id @default(uuid())
+  conversationId String       @map("conversation_id")
+  toolConfigId   String       @map("tool_config_id")
+
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  toolConfig     ToolConfig   @relation(fields: [toolConfigId], references: [id], onDelete: Cascade)
+
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  @@unique([conversationId, toolConfigId])
+  @@index([toolConfigId])
+  @@map("conversation_tool_selections")
 }

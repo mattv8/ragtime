@@ -32,3 +32,7 @@ export { WarningsBanner } from './WarningsBanner';
 export { OcrVectorStoreFields } from './OcrVectorStoreFields';
 export { IndexConfigFields } from './IndexConfigFields';
 export { ReindexIntervalSelect } from './ReindexIntervalSelect';
+export { ContextUsagePie } from './shared/ContextUsagePie';
+export { MemberManagementModal } from './shared/MemberManagementModal';
+export { ToolSelectorDropdown } from './shared/ToolSelectorDropdown';
+export type { Member, MemberRole } from './shared/MemberManagementModal';

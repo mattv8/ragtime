@@ -1,13 +1,16 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo, isValidElement, type ReactNode, type CSSProperties } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, ChevronDown, ChevronRight } from 'lucide-react';
+import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, ChevronDown, ChevronRight, Users } from 'lucide-react';
 import { api } from '@/api';
-import type { Conversation, ChatMessage, AvailableModel, ChatTask, User, ContentPart } from '@/types';
+import type { Conversation, ChatMessage, AvailableModel, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool } from '@/types';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
 import { calculateConversationTokens, calculateStreamingTokens, estimateTokens } from '@/utils/contextUsage';
+import { ContextUsagePie } from './shared/ContextUsagePie';
+import { MemberManagementModal } from './shared/MemberManagementModal';
+import { ToolSelectorDropdown } from './shared/ToolSelectorDropdown';
 
 interface CodeBlockProps {
   inline?: boolean;
@@ -1085,6 +1088,29 @@ export function ChatPanel({
   const [modelsLoading, setModelsLoading] = useState(true);
   const [isWorkspaceConversationMenuOpen, setIsWorkspaceConversationMenuOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [conversationMembers, setConversationMembers] = useState<ConversationMember[]>([]);
+  const [conversationToolIds, setConversationToolIds] = useState<string[]>([]);
+  const [availableTools, setAvailableTools] = useState<UserSpaceAvailableTool[]>([]);
+  const [showMembersModal, setShowMembersModal] = useState(false);
+  const [allUsers, setAllUsers] = useState<User[]>([]);
+  const [savingMembers, setSavingMembers] = useState(false);
+  const [savingTools, setSavingTools] = useState(false);
+
+  // Computed conversation ownership and permissions
+  const conversationOwnerId = useMemo(() => {
+    if (!activeConversation) return null;
+    const ownerMember = conversationMembers.find(m => m.role === 'owner');
+    return ownerMember?.user_id || activeConversation.user_id || null;
+  }, [activeConversation, conversationMembers]);
+
+  const myConversationRole = useMemo(() => {
+    if (!activeConversation || !currentUser) return null;
+    const myMember = conversationMembers.find(m => m.user_id === currentUser.id);
+    return myMember?.role || null;
+  }, [activeConversation, currentUser, conversationMembers]);
+
+  const isConversationOwner = myConversationRole === 'owner' || (activeConversation?.user_id === currentUser?.id && conversationMembers.length === 0);
+  const isConversationViewer = myConversationRole === 'viewer';
 
   const toggleFullscreen = useCallback(() => {
     const next = !isFullscreen;
@@ -1409,6 +1435,108 @@ export function ChatPanel({
       console.error('Failed to load conversations:', err);
     }
   };
+
+  const fetchConversationMembers = useCallback(async (conversationId: string) => {
+    try {
+      const members = await api.getConversationMembers(conversationId);
+      setConversationMembers(members);
+    } catch (err) {
+      console.error('Failed to fetch conversation members:', err);
+      setConversationMembers([]);
+    }
+  }, []);
+
+  const fetchConversationTools = useCallback(async (conversationId: string) => {
+    try {
+      const toolIds = await api.getConversationTools(conversationId);
+      setConversationToolIds(toolIds);
+    } catch (err) {
+      console.error('Failed to fetch conversation tools:', err);
+      setConversationToolIds([]);
+    }
+  }, []);
+
+  const fetchAvailableTools = useCallback(async () => {
+    try {
+      const tools = await api.listUserSpaceAvailableTools();
+      setAvailableTools(tools);
+    } catch (err) {
+      console.error('Failed to fetch available tools:', err);
+      setAvailableTools([]);
+    }
+  }, []);
+
+  // Load conversation members and tools when conversation changes
+  useEffect(() => {
+    if (activeConversation && !embedded) {
+      fetchConversationMembers(activeConversation.id);
+      fetchConversationTools(activeConversation.id);
+    }
+  }, [activeConversation, embedded, fetchConversationMembers, fetchConversationTools]);
+
+  // Load available tools on mount
+  useEffect(() => {
+    if (!embedded) {
+      fetchAvailableTools();
+    }
+  }, [embedded, fetchAvailableTools]);
+
+  const handleOpenMembersModal = useCallback(async () => {
+    if (!activeConversation || !isConversationOwner) return;
+    try {
+      const users = await api.listUsers();
+      setAllUsers(users);
+    } catch {
+      setAllUsers([]);
+    }
+    setShowMembersModal(true);
+  }, [activeConversation, isConversationOwner]);
+
+  const handleSaveMembers = useCallback(async (members: ConversationMember[]) => {
+    if (!activeConversation) return;
+    setSavingMembers(true);
+    try {
+      await api.updateConversationMembers(activeConversation.id, { members });
+      await fetchConversationMembers(activeConversation.id);
+      setShowMembersModal(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update members');
+      throw err;
+    } finally {
+      setSavingMembers(false);
+    }
+  }, [activeConversation, fetchConversationMembers]);
+
+  const handleToggleConversationTool = useCallback(async (toolId: string) => {
+    if (!activeConversation || isConversationViewer) return;
+    const nextSelected = new Set(conversationToolIds);
+    if (nextSelected.has(toolId)) {
+      nextSelected.delete(toolId);
+    } else {
+      nextSelected.add(toolId);
+    }
+
+    setSavingTools(true);
+    try {
+      await api.updateConversationTools(activeConversation.id, {
+        tool_config_ids: Array.from(nextSelected),
+      });
+      setConversationToolIds(Array.from(nextSelected));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update tool selection');
+    } finally {
+      setSavingTools(false);
+    }
+  }, [activeConversation, conversationToolIds, isConversationViewer]);
+
+  const formatUserLabel = useCallback((user?: Pick<User, 'username' | 'display_name'> | null, fallbackId?: string) => {
+    const username = user?.username?.trim() || fallbackId?.trim() || 'unknown';
+    const displayName = user?.display_name?.trim();
+    if (displayName && displayName !== username) {
+      return `${displayName} (@${username})`;
+    }
+    return `@${username}`;
+  }, []);
 
   // Get context limit for a model from API-provided data (uses LiteLLM's dataset)
   const getContextLimit = useCallback((modelId: string): number => {
@@ -2385,45 +2513,39 @@ export function ChatPanel({
                 )}
               </div>
               <div className="chat-header-actions">
-                {!embedded && (
-                  <label className="chat-toggle-control" title="Show/hide tool calls in messages">
-                    <span className="chat-toggle-label">Tools</span>
-                    <label className="toggle-switch">
-                      <input
-                        type="checkbox"
-                        checked={showToolCalls}
-                        onChange={(e) => setShowToolCalls(e.target.checked)}
-                      />
-                      <span className="toggle-slider"></span>
-                    </label>
-                  </label>
+                <ContextUsagePie
+                  currentTokens={contextUsage.currentTokens}
+                  totalTokens={contextUsage.totalTokens}
+                  contextLimit={contextUsage.contextLimit}
+                />
+                {!embedded && activeConversation && isConversationOwner && (
+                  <button
+                    className="btn btn-secondary btn-sm btn-icon"
+                    onClick={handleOpenMembersModal}
+                    title="Manage conversation members"
+                  >
+                    <Users size={14} />
+                  </button>
                 )}
-                <div
-                  className="chat-context-meter"
-                  title={`Context usage: ${contextUsage.contextUsagePercent}% (${contextUsage.totalTokens}/${contextUsage.contextLimit} tokens)`}
-                >
-                  <div className="chat-context-track">
-                    <div
-                      className="chat-context-fill"
-                      style={{
-                        width: `${Math.min(contextUsage.contextUsagePercent, 100)}%`,
-                        backgroundColor: contextUsage.contextUsagePercent > 80 ? 'var(--color-error)' :
-                                         contextUsage.contextUsagePercent > 60 ? 'var(--color-warning)' :
-                                         'var(--color-success)'
-                      }}
-                    />
-                  </div>
-                  <span className="chat-context-label">{contextUsage.contextUsagePercent}%</span>
-                </div>
+                {!embedded && activeConversation && !isConversationViewer && (
+                  <ToolSelectorDropdown
+                    availableTools={availableTools}
+                    selectedToolIds={new Set(conversationToolIds)}
+                    onToggleTool={handleToggleConversationTool}
+                    disabled={false}
+                    readOnly={false}
+                    saving={savingTools}
+                    title="Conversation Tools"
+                    showToolCalls={showToolCalls}
+                    onToggleToolCalls={setShowToolCalls}
+                  />
+                )}
                 <ModelSelector
                   models={availableModels}
                   selectedModelId={parseStoredConversationModel(activeConversation.model).modelId}
                   onModelChange={changeModel}
                   disabled={isStreaming || modelsLoading}
                 />
-                <button className="btn btn-sm btn-secondary" onClick={startFreshConversation} title="Start a new conversation" disabled={readOnly}>
-                  New Chat
-                </button>
                 {!embedded && (
                   <button
                     className="btn btn-secondary btn-sm btn-icon"
@@ -2433,6 +2555,9 @@ export function ChatPanel({
                     {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
                   </button>
                 )}
+                <button className="btn btn-sm btn-secondary" onClick={startFreshConversation} title="Start a new conversation" disabled={readOnly}>
+                  New Chat
+                </button>
               </div>
             </div>
 
@@ -2746,6 +2871,20 @@ export function ChatPanel({
           </div>
         )}
       </div>
+
+      {showMembersModal && activeConversation && conversationOwnerId && (
+        <MemberManagementModal
+          isOpen={showMembersModal}
+          onClose={() => setShowMembersModal(false)}
+          members={conversationMembers}
+          onSave={handleSaveMembers}
+          allUsers={allUsers}
+          ownerId={conversationOwnerId}
+          entityType="conversation"
+          formatUserLabel={formatUserLabel}
+          saving={savingMembers}
+        />
+      )}
 
       {/* Image Modal */}
       {modalImageUrl && (
