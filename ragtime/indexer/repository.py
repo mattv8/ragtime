@@ -15,7 +15,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, cast
 
-from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexStatus as PrismaIndexStatus
 from prisma.enums import ToolType as PrismaToolType
@@ -23,11 +22,13 @@ from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
+from prisma import Json, Prisma
 from ragtime.core.database import get_db
 from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
                                      decrypt_json_passwords, decrypt_secret,
                                      encrypt_json_passwords, encrypt_secret)
 from ragtime.core.logging import get_logger
+from ragtime.core.tokenization import count_tokens
 from ragtime.indexer.models import (SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
                                     AppSettings, ChatMessage, ChatTask,
                                     ChatTaskStatus, ChatTaskStreamingState,
@@ -38,8 +39,6 @@ from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 
 logger = get_logger(__name__)
-
-CHARS_PER_TOKEN = 4
 
 
 def _sanitize_for_postgres(text: str) -> str:
@@ -68,7 +67,7 @@ def _safe_serialize(value: Any) -> str:
 def _estimate_text_tokens(text: str) -> int:
     if not text:
         return 0
-    return (len(text) + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN
+    return count_tokens(text)
 
 
 def _estimate_message_tokens(message: dict[str, Any]) -> int:
@@ -1380,7 +1379,7 @@ class IndexerRepository:
             new_message["events"] = events
         messages.append(new_message)
 
-        # Estimate tokens (rough: 1 token ~= 4 chars) including tool calls and events
+        # Recompute conversation token total from persisted messages (tiktoken-backed)
         total_tokens = _estimate_conversation_tokens(messages)
 
         # Update conversation

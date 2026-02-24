@@ -2063,7 +2063,11 @@ export function ChatPanel({
     setLastSentMessage(userMessage);
 
     // Check context limit before sending
-    const currentTokens = calculateConversationTokens(activeConversation.messages);
+    const estimatedConversationTokens = calculateConversationTokens(activeConversation.messages);
+    const persistedConversationTokens = activeConversation.total_tokens || 0;
+    const currentTokens = persistedConversationTokens > 0
+      ? persistedConversationTokens
+      : estimatedConversationTokens;
     const newMessageTokens = estimateTokens(userMessage);
     const contextLimit = getContextLimit(parseStoredConversationModel(activeConversation.model).modelId);
 
@@ -2325,7 +2329,11 @@ export function ChatPanel({
       };
     }
 
-    const currentTokens = calculateConversationTokens(activeConversation.messages);
+    const estimatedConversationTokens = calculateConversationTokens(activeConversation.messages);
+    const persistedConversationTokens = activeConversation.total_tokens || 0;
+    const currentTokens = persistedConversationTokens > 0
+      ? persistedConversationTokens
+      : estimatedConversationTokens;
     const streamingTokens = isStreaming ? calculateStreamingTokens(streamingEvents as any, streamingContent) : 0;
     const totalTokens = currentTokens + streamingTokens;
     const contextLimit = getContextLimit(parseStoredConversationModel(activeConversation.model).modelId);

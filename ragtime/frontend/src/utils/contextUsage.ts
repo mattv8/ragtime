@@ -49,14 +49,18 @@ export type StreamingRenderEvent =
   | { type: 'tool'; toolCall: { input?: Record<string, unknown>; output?: string } };
 
 export function calculateStreamingTokens(events: StreamingRenderEvent[], streamingContent: string): number {
-  let tokens = estimateTokens(streamingContent || '');
-  for (const event of events) {
-    if (event.type === 'content') {
-      tokens += estimateTokens(event.content || '');
-    } else {
-      tokens += estimateTokensFromObject(event.toolCall.input);
-      tokens += estimateTokens(event.toolCall.output || '');
+  if (events.length > 0) {
+    let tokens = 0;
+    for (const event of events) {
+      if (event.type === 'content') {
+        tokens += estimateTokens(event.content || '');
+      } else {
+        tokens += estimateTokensFromObject(event.toolCall.input);
+        tokens += estimateTokens(event.toolCall.output || '');
+      }
     }
+    return tokens;
   }
-  return tokens;
+
+  return estimateTokens(streamingContent || '');
 }
