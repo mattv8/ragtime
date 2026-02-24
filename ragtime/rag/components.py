@@ -18,8 +18,13 @@ from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
-                                     SystemMessage, ToolMessage)
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -31,35 +36,53 @@ from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit, get_output_limit
 from ragtime.core.ollama import get_model_context_length
-from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
-                                   validate_odoo_code, validate_sql_query,
-                                   validate_ssh_command)
+from ragtime.core.security import (
+    _SSH_ENV_VAR_RE,
+    sanitize_output,
+    validate_odoo_code,
+    validate_sql_query,
+    validate_ssh_command,
+)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
-                              execute_ssh_command, expand_env_vars_via_ssh,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.ssh import (
+    SSHConfig,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    expand_env_vars_via_ssh,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
-                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
-                                 create_chart_tool)
-from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-                                     create_datatable_tool)
+from ragtime.tools.chart import (
+    CHAT_CHART_DESCRIPTION_SUFFIX,
+    USERSPACE_CHART_DESCRIPTION_SUFFIX,
+    create_chart_tool,
+)
+from ragtime.tools.datatable import (
+    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+    create_datatable_tool,
+)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (_is_shallow_repository,
-                                       create_aggregate_git_history_tool,
-                                       create_per_index_git_history_tool)
+from ragtime.tools.git_history import (
+    _is_shallow_repository,
+    create_aggregate_git_history_tool,
+    create_per_index_git_history_tool,
+)
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (ArtifactType, UpsertWorkspaceFileRequest,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection)
+from ragtime.userspace.models import (
+    ArtifactType,
+    UpsertWorkspaceFileRequest,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+)
 from ragtime.userspace.service import userspace_service
 
 logger = get_logger(__name__)
@@ -1026,6 +1049,7 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Start by running `assay_userspace_code` to understand current workspace structure and implementation status before editing.
 - If assay is unavailable for any reason, fallback to `list_userspace_files` and targeted `read_userspace_file` calls.
 - Read any target file before overwriting it.
+- For focused, minimal edits, prefer `patch_userspace_file` with explicit old/new snippets instead of re-rendering entire files.
 - Then create/update files with full content via User Space file tools.
 - For implementation requests, never finish with only prose: ensure at least one artifact file write occurred in the current turn.
 - Before declaring "done" or finalizing, you MUST run `validate_userspace_typescript` on EVERY changed `.ts`/`.tsx` file (including `dashboard/main.ts`) and fix all reported errors first.
@@ -4627,6 +4651,44 @@ except Exception as e:
                 description="Brief description of why this file is being updated",
             )
 
+        class PatchUserSpaceFileInput(BaseModel):
+            class ReplacementInput(BaseModel):
+                old_text: str = Field(
+                    description=(
+                        "Exact text to replace. Must match existing file content."
+                    ),
+                )
+                new_text: str = Field(
+                    description="Replacement text for this occurrence.",
+                )
+                max_replacements: int = Field(
+                    default=1,
+                    ge=1,
+                    le=100,
+                    description=(
+                        "Maximum replacements for this old_text (default 1 for surgical edits)."
+                    ),
+                )
+                required: bool = Field(
+                    default=True,
+                    description=("When true, fail if old_text is not found."),
+                )
+
+            path: str = Field(
+                default="dashboard/main.ts",
+                description="Relative path from workspace root to patch.",
+            )
+            replacements: list[ReplacementInput] = Field(
+                default_factory=list,
+                min_length=1,
+                max_length=50,
+                description="Ordered replacement operations to apply.",
+            )
+            reason: str = Field(
+                default="",
+                description="Brief description of why this patch is being applied",
+            )
+
         class CreateUserSpaceSnapshotInput(BaseModel):
             message: str = Field(
                 default="AI checkpoint",
@@ -4729,6 +4791,148 @@ except Exception as e:
                 workspace_id, path, user_id
             )
             return json.dumps(file_data.model_dump(mode="json"), indent=2)
+
+        async def patch_userspace_file(
+            path: str = "dashboard/main.ts",
+            replacements: list[Any] | None = None,
+            reason: str = "",
+            **_: Any,
+        ) -> str:
+            del reason
+            await userspace_service.enforce_workspace_role(
+                workspace_id, user_id, "editor"
+            )
+
+            normalized_path = (path or "").strip().replace("\\", "/").lstrip("/")
+            if not normalized_path:
+                raise ToolException("Invalid path: path is required.")
+
+            file_data = await userspace_service.get_workspace_file(
+                workspace_id, normalized_path, user_id
+            )
+
+            parsed_replacements: list[PatchUserSpaceFileInput.ReplacementInput] = []
+            for item in replacements or []:
+                payload = (
+                    item.model_dump(mode="python")
+                    if isinstance(item, BaseModel)
+                    else item
+                )
+                parsed_replacements.append(
+                    PatchUserSpaceFileInput.ReplacementInput.model_validate(payload)
+                )
+
+            if not parsed_replacements:
+                raise ToolException(
+                    "No replacements provided. Supply at least one replacement operation."
+                )
+
+            updated_content = file_data.content
+            applied: list[dict[str, Any]] = []
+            skipped: list[dict[str, Any]] = []
+
+            for index, replacement in enumerate(parsed_replacements, start=1):
+                old_text = replacement.old_text
+                new_text = replacement.new_text
+                max_replacements = replacement.max_replacements
+                required = replacement.required
+
+                if not old_text:
+                    raise ToolException(
+                        f"Replacement #{index} invalid: old_text must not be empty."
+                    )
+
+                found_count = updated_content.count(old_text)
+                if found_count == 0:
+                    if required:
+                        raise ToolException(
+                            f"Replacement #{index} failed: old_text not found in {normalized_path}."
+                        )
+                    skipped.append(
+                        {
+                            "index": index,
+                            "reason": "old_text not found",
+                        }
+                    )
+                    continue
+
+                replace_count = min(found_count, max_replacements)
+                updated_content = updated_content.replace(
+                    old_text,
+                    new_text,
+                    replace_count,
+                )
+                applied.append(
+                    {
+                        "index": index,
+                        "matched": found_count,
+                        "replaced": replace_count,
+                    }
+                )
+
+            if updated_content == file_data.content:
+                return json.dumps(
+                    {
+                        "path": normalized_path,
+                        "updated": False,
+                        "message": "No content changes were applied.",
+                        "applied": applied,
+                        "skipped": skipped,
+                    },
+                    indent=2,
+                )
+
+            request_payload = UpsertWorkspaceFileRequest(
+                content=updated_content,
+                artifact_type=file_data.artifact_type,
+                live_data_requested=bool(file_data.live_data_connections),
+                live_data_connections=file_data.live_data_connections,
+                live_data_checks=file_data.live_data_checks,
+            )
+
+            try:
+                result = await userspace_service.upsert_workspace_file(
+                    workspace_id,
+                    normalized_path,
+                    request_payload,
+                    user_id,
+                )
+            except HTTPException as exc:
+                status_code = getattr(exc, "status_code", None)
+                detail_text = str(getattr(exc, "detail", exc))
+                if status_code == 400:
+                    return json.dumps(
+                        {
+                            "rejected": True,
+                            "error": detail_text,
+                            "action_required": (
+                                "Apply the required wiring/contract fixes, then retry patch_userspace_file."
+                            ),
+                            "path": normalized_path,
+                            "applied": applied,
+                            "skipped": skipped,
+                        },
+                        indent=2,
+                    )
+                raise
+
+            typecheck: dict[str, Any] | None = None
+            if normalized_path.lower().endswith((".ts", ".tsx")):
+                typecheck = await validate_userspace_typescript_content(
+                    updated_content,
+                    normalized_path,
+                )
+
+            response_payload: dict[str, Any] = {
+                "updated": True,
+                "path": normalized_path,
+                "file": result.model_dump(mode="json"),
+                "applied": applied,
+                "skipped": skipped,
+            }
+            if typecheck is not None:
+                response_payload["typescript_validation"] = typecheck
+            return json.dumps(response_payload, indent=2)
 
         async def upsert_userspace_file(
             path: str,
@@ -4976,9 +5180,7 @@ except Exception as e:
                         hard_errors
                     )
                 else:
-                    detail = "LIVE DATA POLICY VIOLATION -- " + " | ".join(
-                        hard_errors
-                    )
+                    detail = "LIVE DATA POLICY VIOLATION -- " + " | ".join(hard_errors)
                 if warnings:
                     detail += " [Warnings: " + "; ".join(warnings) + "]"
                 raise ToolException(detail)
@@ -5086,7 +5288,9 @@ except Exception as e:
             file_cache: dict[str, Any] = {}
 
             async def get_file(relative_path: str) -> Any | None:
-                normalized = (relative_path or "").strip().replace("\\", "/").lstrip("/")
+                normalized = (
+                    (relative_path or "").strip().replace("\\", "/").lstrip("/")
+                )
                 if not normalized:
                     return None
                 if normalized in file_cache:
@@ -5128,7 +5332,10 @@ except Exception as e:
                 seen_candidates: set[str] = set()
                 for candidate in candidates:
                     normalized_candidate = candidate.replace("\\", "/").lstrip("/")
-                    if not normalized_candidate or normalized_candidate in seen_candidates:
+                    if (
+                        not normalized_candidate
+                        or normalized_candidate in seen_candidates
+                    ):
                         continue
                     seen_candidates.add(normalized_candidate)
                     if await get_file(normalized_candidate):
@@ -5150,9 +5357,7 @@ except Exception as e:
 
                 file_data = await get_file(current)
                 if not file_data:
-                    missing_message = (
-                        f"{current}: Local module import could not be resolved in workspace files."
-                    )
+                    missing_message = f"{current}: Local module import could not be resolved in workspace files."
                     if missing_message not in aggregate_errors:
                         aggregate_errors.append(missing_message)
                     continue
@@ -5198,7 +5403,9 @@ except Exception as e:
 
             overall_ok = (
                 bool(file_results)
-                and all(bool((res or {}).get("ok", False)) for res in file_results.values())
+                and all(
+                    bool((res or {}).get("ok", False)) for res in file_results.values()
+                )
                 and not aggregate_errors
             )
 
@@ -5209,12 +5416,14 @@ except Exception as e:
 
             result = {
                 "ok": overall_ok,
-                "validator_available": all(
-                    bool((res or {}).get("validator_available", False))
-                    for res in file_results.values()
-                )
-                if file_results
-                else False,
+                "validator_available": (
+                    all(
+                        bool((res or {}).get("validator_available", False))
+                        for res in file_results.values()
+                    )
+                    if file_results
+                    else False
+                ),
                 "error_count": len(aggregate_errors),
                 "errors": aggregate_errors,
                 "runtime_errors": aggregate_runtime_errors,
@@ -5270,6 +5479,17 @@ except Exception as e:
                     "Output may include CSS/theme warnings that must be fixed in follow-up edits."
                 ),
                 args_schema=UpsertUserSpaceFileInput,
+                handle_tool_error=True,
+            ),
+            StructuredTool.from_function(
+                coroutine=patch_userspace_file,
+                name="patch_userspace_file",
+                description=(
+                    "Apply targeted sed-style in-place replacements to an existing User Space file. "
+                    "Use for surgical edits to avoid re-rendering full file content. "
+                    "Supports ordered exact old/new replacements with per-op required flags."
+                ),
+                args_schema=PatchUserSpaceFileInput,
                 handle_tool_error=True,
             ),
             StructuredTool.from_function(
