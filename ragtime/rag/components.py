@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from typing import Any, List, Optional, Union
 
+from fastapi import HTTPException
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain_anthropic import ChatAnthropic
@@ -373,7 +374,15 @@ UI_VISUALIZATION_CHAT_PROMPT = """
 """
 
 
-UI_VISUALIZATION_USERSPACE_PROMPT = """
+USERSPACE_SHARED_LIVE_DATA_GUARDRAILS = """
+
+- **NEVER embed hardcoded, mock, sample, or static data arrays in module source.** The system performs AST analysis on TypeScript source and rejects writes that lack structural `context.components[componentId].execute()` binding.
+- If live wiring is blocked by missing context, persist a scaffold with `execute()` call sites and state the blocker. Do NOT substitute mock data.
+- If no tools are selected for the workspace, report the conflict and request tool configuration before proceeding. Do NOT fabricate data.
+"""
+
+
+UI_VISUALIZATION_USERSPACE_PROMPT = f"""
 
 ## DATA VISUALIZATION
 
@@ -406,9 +415,7 @@ Chart.js is preloaded in the User Space preview runtime.
 1. Dashboard module writes in workspaces with selected tools automatically require `live_data_connections`, `live_data_checks`, AND structurally verified `context.components[componentId].execute()` calls in the source code.
 2. Chart axes/labels and series data must be sourced from runtime live data payloads via `context.components[componentId].execute()`.
 3. Provide `live_data_checks` proving successful connection and transformation before persisting.
-4. **NEVER embed hardcoded, mock, sample, or static data arrays in module source.** The system performs AST analysis on the TypeScript source to verify execute() call sites exist and will reject writes that lack structural live data binding.
-5. If live wiring is blocked by missing context, persist a scaffold with `execute()` call sites and state the blocker. Do NOT substitute mock data.
-6. If no tools are selected for the workspace, report the conflict to the user and request tool configuration before proceeding with a dashboard. Do NOT fabricate data.
+{USERSPACE_SHARED_LIVE_DATA_GUARDRAILS}
 """
 
 
@@ -868,7 +875,7 @@ console.log(JSON.stringify({
     return parsed
 
 
-USERSPACE_MODE_PROMPT_ADDITION = """
+USERSPACE_MODE_PROMPT_ADDITION = f"""
 
 ## USER SPACE MODE
 
@@ -902,9 +909,7 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 
 - Use real tool outputs as the source of truth for rendered data.
 - Persistent User Space dashboards must be live-wired via `context.components[componentId].execute()`.
-- **NEVER embed hardcoded, mock, sample, dummy, or static data arrays in module source files.** The system performs deterministic AST analysis on the TypeScript source and will reject writes that lack structural evidence of `context.components[componentId].execute()` calls.
 - When the workspace has selected tools, dashboard module writes (`dashboard/*` or `artifact_type=module_ts`) automatically require `live_data_connections`, `live_data_checks`, and verified `execute()` call sites in the source code.
-- If no tools are selected for the workspace, inform the user that live data is unavailable and request tool configuration before building a dashboard. Do NOT fabricate or hardcode data.
 - Each `live_data_connections` entry must include at least `component_kind=tool_config`, `component_id`, and `request`.
 - Include `live_data_checks` for each connection with `connection_check_passed=true` and `transformation_check_passed=true`.
 - Never invent or guess `component_id` values. Use only IDs from ACTIVE TOOL CONNECTIONS FOR THIS REQUEST.
@@ -912,7 +917,7 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Data connections are internal components, abstracted from end users.
 - These components map to admin-configured tools from Settings.
 - Persist the connection request (query/command payload + component reference), then read/fetch through `context.components` at render/runtime.
-- If live wiring cannot be completed with available tools/context, persist a UI scaffold with layout, navigation, and `context.components[x].execute()` call sites that return empty rows until the connection is available. State the blocker explicitly. Do NOT substitute mock data.
+{USERSPACE_SHARED_LIVE_DATA_GUARDRAILS.strip()}
 - When creating chart/datatable payloads for reusable artifacts, include `data_connection` as a component reference:
     - `component_kind`: `tool_config`
     - `component_id`: admin-configured tool config ID
@@ -1009,7 +1014,10 @@ These are searched automatically. Use results to understand schemas, business lo
 """
 
 
-def build_tool_system_prompt(tool_configs: List[dict]) -> str:
+def build_tool_system_prompt(
+    tool_configs: List[dict],
+    unavailable_tool_configs: Optional[List[dict]] = None,
+) -> str:
     """
     Build system prompt section describing available system tools.
 
@@ -1020,12 +1028,28 @@ def build_tool_system_prompt(tool_configs: List[dict]) -> str:
         System prompt section with tool descriptions.
     """
     if not tool_configs:
-        return """
+        prompt = """
 
 ## SYSTEM TOOLS
 
 No tools configured. Answer from indexed documentation only.
 """
+        if unavailable_tool_configs:
+            unavailable_lines = []
+            for config in unavailable_tool_configs[:8]:
+                name = config.get("name", "Unnamed")
+                tool_type = config.get("tool_type", "unknown")
+                unavailable_lines.append(f"- **{name}** [{tool_type}]")
+            remaining = len(unavailable_tool_configs) - len(unavailable_lines)
+            if remaining > 0:
+                unavailable_lines.append(f"- ... and {remaining} more")
+
+            prompt += (
+                "\n\n## CONFIGURED BUT UNAVAILABLE IN THIS REQUEST\n\n"
+                + "\n".join(unavailable_lines)
+                + "\n"
+            )
+        return prompt
 
     # Group tools by type for cleaner organization
     type_labels = {
@@ -1049,7 +1073,7 @@ No tools configured. Answer from indexed documentation only.
             line += f": {description}"
         tool_lines.append(line)
 
-    return f"""
+    prompt = f"""
 
 ## SYSTEM TOOLS
 
@@ -1057,6 +1081,23 @@ No tools configured. Answer from indexed documentation only.
 
 Each tool connects to a different system. Read the description to choose the correct one.
 """
+    if unavailable_tool_configs:
+        unavailable_lines = []
+        for config in unavailable_tool_configs[:8]:
+            name = config.get("name", "Unnamed")
+            tool_type = config.get("tool_type", "unknown")
+            unavailable_lines.append(f"- **{name}** [{tool_type}]")
+        remaining = len(unavailable_tool_configs) - len(unavailable_lines)
+        if remaining > 0:
+            unavailable_lines.append(f"- ... and {remaining} more")
+
+        prompt += (
+            "\n\n## CONFIGURED BUT UNAVAILABLE IN THIS REQUEST\n\n"
+            + "\n".join(unavailable_lines)
+            + "\n"
+        )
+
+    return prompt
 
 
 class RAGComponents:
@@ -1103,6 +1144,8 @@ class RAGComponents:
         self._faiss_loading_task: Optional[asyncio.Task] = None  # prevent GC
         # Token optimization settings
         self._scratchpad_window_size: int = 6  # Default, updated from settings
+        # Request-scoped prompt fragments cache
+        self._request_prompt_cache: dict[tuple[Any, ...], str] = {}
 
     @property
     def is_ready(self) -> bool:
@@ -1244,10 +1287,11 @@ class RAGComponents:
         self._app_settings = await get_app_settings()
         self._tool_configs = await get_tool_configs()
         self._index_metadata = await self._load_index_metadata()
+        self._request_prompt_cache.clear()
 
         # Build system prompts with tool and index descriptions
         tool_prompt_section = build_tool_system_prompt(self._tool_configs)
-        index_prompt_section = build_index_system_prompt(self._index_metadata)
+        index_prompt_section = build_index_system_prompt(self._index_metadata or [])
 
         # Base system prompt (for API/MCP)
         self._system_prompt = (
@@ -2072,6 +2116,7 @@ class RAGComponents:
         - agent_executor_ui: Agent with UI-only tools (charts) for chat UI requests
         """
         assert self._app_settings is not None  # Set by initialize()
+        self._request_prompt_cache.clear()
         # Skip agent creation if LLM is not configured
         if self.llm is None:
             logger.warning("Skipping agent creation - no LLM configured")
@@ -4708,18 +4753,41 @@ except Exception as e:
                     detail += " [Warnings: " + "; ".join(warnings) + "]"
                 raise ToolException(detail)
 
-            result = await userspace_service.upsert_workspace_file(
-                workspace_id,
-                path,
-                UpsertWorkspaceFileRequest(
-                    content=content,
-                    artifact_type=artifact_type,
-                    live_data_requested=live_data_requested,
-                    live_data_connections=parsed_live_data_connections,
-                    live_data_checks=parsed_live_data_checks,
-                ),
-                user_id,
-            )
+            try:
+                result = await userspace_service.upsert_workspace_file(
+                    workspace_id,
+                    path,
+                    UpsertWorkspaceFileRequest(
+                        content=content,
+                        artifact_type=artifact_type,
+                        live_data_requested=live_data_requested,
+                        live_data_connections=parsed_live_data_connections,
+                        live_data_checks=parsed_live_data_checks,
+                    ),
+                    user_id,
+                )
+            except HTTPException as exc:
+                status_code = getattr(exc, "status_code", None)
+                detail_text = str(getattr(exc, "detail", exc))
+                if (
+                    status_code == 400
+                    and "No server-verified execution proof for component_id(s):"
+                    in detail_text
+                ):
+                    response_payload: dict[str, Any] = {
+                        "rejected": True,
+                        "error": detail_text,
+                        "action_required": (
+                            "Run a successful live-data query for each declared component_id "
+                            "(workspace tool or execute-component endpoint), then retry upsert_userspace_file."
+                        ),
+                    }
+                    if warnings:
+                        response_payload["warnings"] = warnings
+                    if typecheck is not None:
+                        response_payload["typescript_validation"] = typecheck
+                    return json.dumps(response_payload, indent=2)
+                raise
 
             response_payload: dict[str, Any] = {
                 "file": result.model_dump(mode="json"),
@@ -4848,24 +4916,165 @@ except Exception as e:
 
         return all_config_tool_names - allowed_tool_names
 
+    def _map_runtime_tools_to_runnable_tool_config_ids(
+        self,
+        runtime_tools: list[Any],
+    ) -> set[str]:
+        """Map runtime tool names to runnable ToolConfig IDs for this request."""
+        if not self._tool_configs or not runtime_tools:
+            return set()
+
+        runtime_tool_names = {
+            getattr(tool, "name", "")
+            for tool in runtime_tools
+            if getattr(tool, "name", "")
+        }
+        if not runtime_tool_names:
+            return set()
+
+        runnable_ids: set[str] = set()
+        for config in self._tool_configs:
+            config_id = (config.get("id") or "").strip()
+            if not config_id:
+                continue
+            config_tool_names = self._derive_config_tool_names(config)
+            if runtime_tool_names.intersection(config_tool_names):
+                runnable_ids.add(config_id)
+        return runnable_ids
+
+    async def _build_request_runtime_context(
+        self,
+        *,
+        is_ui: bool,
+        executor: Optional[AgentExecutor],
+        blocked_tool_names: Optional[set[str]],
+        workspace_context: Optional[dict[str, str]],
+        add_chat_visualization_prompt: bool,
+    ) -> dict[str, Any]:
+        """Build request-scoped runtime tools, mode, and prompt additions once."""
+        runtime_tools = list(getattr(executor, "tools", []) if executor else [])
+        if blocked_tool_names:
+            runtime_tools = [
+                tool
+                for tool in runtime_tools
+                if getattr(tool, "name", "") not in blocked_tool_names
+            ]
+
+        mode = "chat"
+        prompt_is_ui = is_ui
+        allowed_tool_config_ids: list[str] | None = None
+        prompt_additions = ""
+
+        workspace_id = (workspace_context or {}).get("workspace_id", "").strip()
+        user_id = (workspace_context or {}).get("user_id", "").strip()
+        has_workspace_context = bool(workspace_id and user_id)
+
+        if has_workspace_context:
+            workspace = await userspace_service.get_workspace(workspace_id, user_id)
+            allowed_tool_config_ids = workspace.selected_tool_ids
+
+            userspace_tools = await self._create_userspace_file_tools(
+                workspace_id,
+                user_id,
+            )
+            runtime_tools = [
+                tool
+                for tool in runtime_tools
+                if getattr(tool, "name", "")
+                not in {"create_chart", "create_datatable"}
+            ]
+            runtime_tools.extend(userspace_tools)
+            runtime_tools = self._apply_mode_specific_tool_description_overrides(
+                runtime_tools,
+                mode="userspace",
+            )
+
+            mode = "userspace"
+            prompt_is_ui = False
+            prompt_additions += UI_VISUALIZATION_USERSPACE_PROMPT
+            prompt_additions += USERSPACE_MODE_PROMPT_ADDITION
+        else:
+            has_workspace_payload = workspace_context is not None
+            has_inline_viz_tools = any(
+                getattr(tool, "name", "") in {"create_chart", "create_datatable"}
+                for tool in runtime_tools
+            )
+            if has_workspace_payload or has_inline_viz_tools:
+                runtime_tools = self._apply_mode_specific_tool_description_overrides(
+                    runtime_tools,
+                    mode="chat",
+                )
+                if add_chat_visualization_prompt:
+                    prompt_additions += UI_VISUALIZATION_CHAT_PROMPT
+
+        return {
+            "mode": mode,
+            "prompt_is_ui": prompt_is_ui,
+            "allowed_tool_config_ids": allowed_tool_config_ids,
+            "runtime_tools": runtime_tools,
+            "prompt_additions": prompt_additions,
+        }
+
     def _build_request_system_prompt(
         self,
         *,
         is_ui: bool,
         allowed_tool_config_ids: list[str] | None,
+        runtime_tools: list[Any] | None = None,
     ) -> str:
         """Build request-scoped system prompt with optional tool visibility filtering."""
-        if allowed_tool_config_ids is None:
+        if allowed_tool_config_ids is None and runtime_tools is None:
             return self._system_prompt_ui if is_ui else self._system_prompt
 
         tool_configs = self._tool_configs or []
-        allowed_ids = set(allowed_tool_config_ids)
-        filtered_tool_configs = [
-            config for config in tool_configs if (config.get("id") or "") in allowed_ids
-        ]
+        if allowed_tool_config_ids is None:
+            candidate_tool_configs = list(tool_configs)
+        else:
+            allowed_ids = set(allowed_tool_config_ids)
+            candidate_tool_configs = [
+                config
+                for config in tool_configs
+                if (config.get("id") or "") in allowed_ids
+            ]
 
-        index_prompt_section = build_index_system_prompt(self._index_metadata)
-        tool_prompt_section = build_tool_system_prompt(filtered_tool_configs)
+        unavailable_tool_configs: list[dict] = []
+        filtered_tool_configs = candidate_tool_configs
+        if runtime_tools is not None:
+            runnable_ids = self._map_runtime_tools_to_runnable_tool_config_ids(
+                runtime_tools
+            )
+            filtered_tool_configs = [
+                config
+                for config in candidate_tool_configs
+                if (config.get("id") or "") in runnable_ids
+            ]
+            unavailable_tool_configs = [
+                config
+                for config in candidate_tool_configs
+                if (config.get("id") or "") not in runnable_ids
+            ]
+
+        cache_key = (
+            "request_system_prompt",
+            bool(is_ui),
+            tuple(sorted((config.get("id") or "") for config in filtered_tool_configs)),
+            tuple(
+                sorted((config.get("id") or "") for config in unavailable_tool_configs)
+            ),
+            bool(
+                self._app_settings
+                and self._app_settings.get("tool_output_mode", "default") == "auto"
+            ),
+        )
+        cached_prompt = self._request_prompt_cache.get(cache_key)
+        if cached_prompt is not None:
+            return cached_prompt
+
+        index_prompt_section = build_index_system_prompt(self._index_metadata or [])
+        tool_prompt_section = build_tool_system_prompt(
+            filtered_tool_configs,
+            unavailable_tool_configs=unavailable_tool_configs,
+        )
 
         prompt = BASE_SYSTEM_PROMPT + index_prompt_section + tool_prompt_section
         if is_ui:
@@ -4875,6 +5084,7 @@ except Exception as e:
                 and self._app_settings.get("tool_output_mode", "default") == "auto"
             ):
                 prompt += TOOL_OUTPUT_VISIBILITY_PROMPT
+        self._request_prompt_cache[cache_key] = prompt
         return prompt
 
     def _build_runtime_executor(
@@ -5103,84 +5313,30 @@ except Exception as e:
             executor = self.agent_executor
             request_llm = await self._get_request_scoped_llm(conversation_model)
             _, request_model_id = self._parse_provider_scoped_model(conversation_model)
-            workspace_allowed_tool_config_ids: list[str] | None = None
-            system_prompt = self._build_request_system_prompt(
+            request_context = await self._build_request_runtime_context(
                 is_ui=False,
-                allowed_tool_config_ids=None,
+                executor=executor,
+                blocked_tool_names=blocked_tool_names,
+                workspace_context=workspace_context,
+                add_chat_visualization_prompt=True,
+            )
+            system_prompt = self._build_request_system_prompt(
+                is_ui=request_context["prompt_is_ui"],
+                allowed_tool_config_ids=request_context["allowed_tool_config_ids"],
+                runtime_tools=request_context["runtime_tools"],
             )
             system_prompt += await self._build_context_headroom_prompt(
                 chat_history=chat_history,
                 user_content=augmented_content,
                 model_id=request_model_id,
             )
-            runtime_tools = list(getattr(executor, "tools", []) if executor else [])
-
-            if blocked_tool_names:
-                runtime_tools = [
-                    t for t in runtime_tools if t.name not in blocked_tool_names
-                ]
-
-            if workspace_context:
-                workspace_id = (workspace_context.get("workspace_id") or "").strip()
-                user_id = (workspace_context.get("user_id") or "").strip()
-                if workspace_id and user_id:
-                    workspace = await userspace_service.get_workspace(
-                        workspace_id, user_id
-                    )
-                    workspace_allowed_tool_config_ids = workspace.selected_tool_ids
-                    system_prompt = self._build_request_system_prompt(
-                        is_ui=False,
-                        allowed_tool_config_ids=workspace_allowed_tool_config_ids,
-                    )
-                    userspace_tools = await self._create_userspace_file_tools(
-                        workspace_id,
-                        user_id,
-                    )
-                    # Remove inline viz tools -- userspace uses Chart.js directly in modules
-                    runtime_tools = [
-                        t
-                        for t in runtime_tools
-                        if getattr(t, "name", "")
-                        not in {"create_chart", "create_datatable"}
-                    ]
-                    runtime_tools.extend(userspace_tools)
-                    runtime_tools = (
-                        self._apply_mode_specific_tool_description_overrides(
-                            runtime_tools,
-                            mode="userspace",
-                        )
-                    )
-                    system_prompt += UI_VISUALIZATION_USERSPACE_PROMPT
-                    system_prompt += USERSPACE_MODE_PROMPT_ADDITION
-                else:
-                    runtime_tools = (
-                        self._apply_mode_specific_tool_description_overrides(
-                            runtime_tools,
-                            mode="chat",
-                        )
-                    )
-                    system_prompt += UI_VISUALIZATION_CHAT_PROMPT
-            elif any(
-                getattr(t, "name", "") in {"create_chart", "create_datatable"}
-                for t in runtime_tools
-            ):
-                runtime_tools = self._apply_mode_specific_tool_description_overrides(
-                    runtime_tools,
-                    mode="chat",
-                )
-                system_prompt += UI_VISUALIZATION_CHAT_PROMPT
+            system_prompt += request_context["prompt_additions"]
+            runtime_tools = request_context["runtime_tools"]
 
             if runtime_tools:
-                prompt_mode = (
-                    "userspace"
-                    if workspace_context
-                    and (workspace_context.get("workspace_id") or "").strip()
-                    and (workspace_context.get("user_id") or "").strip()
-                    else "chat"
-                )
                 scoped_prompt = system_prompt + self._build_request_tool_scope_prompt(
                     runtime_tools,
-                    mode=prompt_mode,
+                    mode=request_context["mode"],
                 )
                 executor = self._build_runtime_executor(
                     runtime_tools,
@@ -5258,78 +5414,30 @@ except Exception as e:
         executor = self.agent_executor_ui if is_ui else self.agent_executor
         request_llm = await self._get_request_scoped_llm(conversation_model)
         _, request_model_id = self._parse_provider_scoped_model(conversation_model)
-        workspace_allowed_tool_config_ids: list[str] | None = None
-        system_prompt = self._build_request_system_prompt(
+        request_context = await self._build_request_runtime_context(
             is_ui=is_ui,
-            allowed_tool_config_ids=None,
+            executor=executor,
+            blocked_tool_names=blocked_tool_names,
+            workspace_context=workspace_context,
+            add_chat_visualization_prompt=is_ui,
+        )
+        system_prompt = self._build_request_system_prompt(
+            is_ui=request_context["prompt_is_ui"],
+            allowed_tool_config_ids=request_context["allowed_tool_config_ids"],
+            runtime_tools=request_context["runtime_tools"],
         )
         system_prompt += await self._build_context_headroom_prompt(
             chat_history=chat_history,
             user_content=langchain_content,
             model_id=request_model_id,
         )
-
-        runtime_tools = list(getattr(executor, "tools", []) if executor else [])
-        if blocked_tool_names:
-            runtime_tools = [
-                t for t in runtime_tools if t.name not in blocked_tool_names
-            ]
-
-        if workspace_context:
-            workspace_id = (workspace_context.get("workspace_id") or "").strip()
-            user_id = (workspace_context.get("user_id") or "").strip()
-            if workspace_id and user_id:
-                workspace = await userspace_service.get_workspace(workspace_id, user_id)
-                workspace_allowed_tool_config_ids = workspace.selected_tool_ids
-                # Suppress UI_VISUALIZATION_COMMON_PROMPT (is_ui=False) --
-                # userspace has its own self-contained visualization guidance.
-                system_prompt = self._build_request_system_prompt(
-                    is_ui=False,
-                    allowed_tool_config_ids=workspace_allowed_tool_config_ids,
-                )
-                userspace_tools = await self._create_userspace_file_tools(
-                    workspace_id,
-                    user_id,
-                )
-                # Remove inline viz tools -- userspace uses Chart.js directly in modules
-                runtime_tools = [
-                    t
-                    for t in runtime_tools
-                    if getattr(t, "name", "")
-                    not in {"create_chart", "create_datatable"}
-                ]
-                runtime_tools.extend(userspace_tools)
-                runtime_tools = self._apply_mode_specific_tool_description_overrides(
-                    runtime_tools,
-                    mode="userspace",
-                )
-                system_prompt += UI_VISUALIZATION_USERSPACE_PROMPT
-                system_prompt += USERSPACE_MODE_PROMPT_ADDITION
-            else:
-                runtime_tools = self._apply_mode_specific_tool_description_overrides(
-                    runtime_tools,
-                    mode="chat",
-                )
-                if is_ui:
-                    system_prompt += UI_VISUALIZATION_CHAT_PROMPT
-        elif is_ui:
-            runtime_tools = self._apply_mode_specific_tool_description_overrides(
-                runtime_tools,
-                mode="chat",
-            )
-            system_prompt += UI_VISUALIZATION_CHAT_PROMPT
+        system_prompt += request_context["prompt_additions"]
+        runtime_tools = request_context["runtime_tools"]
 
         if runtime_tools:
-            prompt_mode = (
-                "userspace"
-                if workspace_context
-                and (workspace_context.get("workspace_id") or "").strip()
-                and (workspace_context.get("user_id") or "").strip()
-                else "chat"
-            )
             scoped_prompt = system_prompt + self._build_request_tool_scope_prompt(
                 runtime_tools,
-                mode=prompt_mode,
+                mode=request_context["mode"],
             )
             executor = self._build_runtime_executor(
                 runtime_tools,
