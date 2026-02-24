@@ -10,7 +10,7 @@ import re
 import resource
 import subprocess
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, List, Optional, Union
 
 from fastapi import HTTPException
@@ -18,13 +18,8 @@ from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (
-    AIMessage,
-    BaseMessage,
-    HumanMessage,
-    SystemMessage,
-    ToolMessage,
-)
+from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
+                                     SystemMessage, ToolMessage)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -36,53 +31,35 @@ from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit, get_output_limit
 from ragtime.core.ollama import get_model_context_length
-from ragtime.core.security import (
-    _SSH_ENV_VAR_RE,
-    sanitize_output,
-    validate_odoo_code,
-    validate_sql_query,
-    validate_ssh_command,
-)
+from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
+                                   validate_odoo_code, validate_sql_query,
+                                   validate_ssh_command)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (
-    SSHConfig,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    execute_ssh_command,
-    expand_env_vars_via_ssh,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
+                              execute_ssh_command, expand_env_vars_via_ssh,
+                              ssh_tunnel_config_from_dict)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (
-    CHAT_CHART_DESCRIPTION_SUFFIX,
-    USERSPACE_CHART_DESCRIPTION_SUFFIX,
-    create_chart_tool,
-)
-from ragtime.tools.datatable import (
-    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-    create_datatable_tool,
-)
+from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
+                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
+                                 create_chart_tool)
+from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+                                     create_datatable_tool)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (
-    _is_shallow_repository,
-    create_aggregate_git_history_tool,
-    create_per_index_git_history_tool,
-)
+from ragtime.tools.git_history import (_is_shallow_repository,
+                                       create_aggregate_git_history_tool,
+                                       create_per_index_git_history_tool)
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (
-    ArtifactType,
-    UpsertWorkspaceFileRequest,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-)
+from ragtime.userspace.models import (ArtifactType, UpsertWorkspaceFileRequest,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection)
 from ragtime.userspace.service import userspace_service
 
 logger = get_logger(__name__)
@@ -597,6 +574,8 @@ const path = require('path');
 
 const input = fs.readFileSync(0, 'utf8');
 const filePath = process.argv[1] || 'dashboard/main.ts';
+const scriptKind = filePath.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+const sourceFile = ts.createSourceFile(filePath, input, ts.ScriptTarget.ES2020, true, scriptKind);
 
 let ts;
 try {
@@ -794,6 +773,9 @@ try {
   process.exit(0);
 }
 
+    const scriptKind = filePath.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+    const sourceFile = ts.createSourceFile(filePath, input, ts.ScriptTarget.ES2020, true, scriptKind);
+
 const result = ts.transpileModule(input, {
   fileName: filePath,
   reportDiagnostics: true,
@@ -813,11 +795,78 @@ const errors = diagnostics.map((d) => {
   return `${d.file.fileName}:${pos.line + 1}:${pos.character + 1} ${message}`;
 });
 
+function isExecuteCall(node) {
+    return ts.isCallExpression(node)
+        && ts.isPropertyAccessExpression(node.expression)
+        && node.expression.name.text === 'execute';
+}
+
+const asyncExecuteVars = new Set();
+function collectExecuteAssignments(node) {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+        if (isExecuteCall(node.initializer)) {
+            asyncExecuteVars.add(node.name.text);
+        }
+    }
+    if (ts.isBinaryExpression(node)
+            && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+            && ts.isIdentifier(node.left)
+            && isExecuteCall(node.right)) {
+        asyncExecuteVars.add(node.left.text);
+    }
+    ts.forEachChild(node, collectExecuteAssignments);
+}
+
+collectExecuteAssignments(sourceFile);
+
+const runtimeErrors = [];
+function addRuntimeError(node, message) {
+    const pos = sourceFile.getLineAndCharacterOfPosition(node.getStart());
+    runtimeErrors.push(`${filePath}:${pos.line + 1}:${pos.character + 1} ${message}`);
+}
+
+function inspectRuntimeMisuse(node) {
+    if (ts.isPropertyAccessExpression(node)
+            && ts.isIdentifier(node.expression)
+            && asyncExecuteVars.has(node.expression.text)) {
+        const prop = node.name.text;
+        if (!['then', 'catch', 'finally'].includes(prop)) {
+            addRuntimeError(
+                node,
+                `Potential async execute() misuse: ${node.expression.text}.${prop} is accessed synchronously after execute(). Await execute() or use .then(...) before reading properties.`
+            );
+        }
+    }
+
+    if (ts.isPropertyAccessExpression(node) && isExecuteCall(node.expression)) {
+        const prop = node.name.text;
+        if (!['then', 'catch', 'finally'].includes(prop)) {
+            addRuntimeError(
+                node,
+                `Potential async execute() misuse: execute().${prop} is accessed synchronously. Await execute() or use .then(...) before reading properties.`
+            );
+        }
+    }
+
+    ts.forEachChild(node, inspectRuntimeMisuse);
+}
+
+inspectRuntimeMisuse(sourceFile);
+
+const mergedErrors = [...errors];
+for (const runtimeError of runtimeErrors) {
+    if (!mergedErrors.includes(runtimeError)) {
+        mergedErrors.push(runtimeError);
+    }
+}
+
 console.log(JSON.stringify({
-  ok: errors.length === 0,
+    ok: mergedErrors.length === 0,
   validator_available: true,
-  error_count: errors.length,
-  errors,
+    error_count: mergedErrors.length,
+    errors: mergedErrors,
+    runtime_errors: runtimeErrors,
+    runtime_error_count: runtimeErrors.length,
 }));
 """
 
@@ -979,7 +1028,7 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Read any target file before overwriting it.
 - Then create/update files with full content via User Space file tools.
 - For implementation requests, never finish with only prose: ensure at least one artifact file write occurred in the current turn.
-- After updating TypeScript files, run `validate_userspace_typescript` and fix all reported errors before finalizing.
+- Before declaring "done" or finalizing, you MUST run `validate_userspace_typescript` on EVERY changed `.ts`/`.tsx` file (including `dashboard/main.ts`) and fix all reported errors first.
 - On every completed user-requested change loop, call `create_userspace_snapshot` immediately with a concise completion message.
 
 ### Theme + CSS rules
@@ -5020,15 +5069,164 @@ except Exception as e:
             await userspace_service.enforce_workspace_role(
                 workspace_id, user_id, "editor"
             )
-            file_data = await userspace_service.get_workspace_file(
-                workspace_id, path, user_id
+            normalized_start_path = (
+                (path or "dashboard/main.ts").strip().replace("\\", "/").lstrip("/")
             )
-            result = await validate_userspace_typescript_content(
-                file_data.content, path
+            module_source_extensions = (
+                ".ts",
+                ".tsx",
+                ".js",
+                ".jsx",
+                ".mjs",
+                ".cjs",
+                ".mts",
+                ".cts",
             )
+
+            file_cache: dict[str, Any] = {}
+
+            async def get_file(relative_path: str) -> Any | None:
+                normalized = (relative_path or "").strip().replace("\\", "/").lstrip("/")
+                if not normalized:
+                    return None
+                if normalized in file_cache:
+                    return file_cache[normalized]
+                try:
+                    file_data = await userspace_service.get_workspace_file(
+                        workspace_id, normalized, user_id
+                    )
+                except HTTPException as exc:
+                    if getattr(exc, "status_code", None) == 404:
+                        return None
+                    raise
+                file_cache[normalized] = file_data
+                return file_data
+
+            async def resolve_local_import(
+                current_path: str,
+                specifier: str,
+            ) -> str | None:
+                spec = (specifier or "").strip()
+                if not spec or not spec.startswith(("./", "../", "/")):
+                    return None
+
+                if spec.startswith("/"):
+                    base = PurePosixPath(spec.lstrip("/"))
+                else:
+                    base = PurePosixPath(current_path).parent / PurePosixPath(spec)
+
+                base_str = base.as_posix().lstrip("/")
+                candidates: list[str] = []
+                if base_str.lower().endswith(module_source_extensions):
+                    candidates.append(base_str)
+                else:
+                    for ext in module_source_extensions:
+                        candidates.append(f"{base_str}{ext}")
+                    for ext in module_source_extensions:
+                        candidates.append(f"{base_str}/index{ext}")
+
+                seen_candidates: set[str] = set()
+                for candidate in candidates:
+                    normalized_candidate = candidate.replace("\\", "/").lstrip("/")
+                    if not normalized_candidate or normalized_candidate in seen_candidates:
+                        continue
+                    seen_candidates.add(normalized_candidate)
+                    if await get_file(normalized_candidate):
+                        return normalized_candidate
+                return None
+
+            visited: set[str] = set()
+            to_visit: list[str] = [normalized_start_path]
+            file_results: dict[str, dict[str, Any]] = {}
+            aggregate_errors: list[str] = []
+            aggregate_contract_errors: list[str] = []
+            aggregate_runtime_errors: list[str] = []
+
+            while to_visit:
+                current = to_visit.pop(0)
+                if current in visited:
+                    continue
+                visited.add(current)
+
+                file_data = await get_file(current)
+                if not file_data:
+                    missing_message = (
+                        f"{current}: Local module import could not be resolved in workspace files."
+                    )
+                    if missing_message not in aggregate_errors:
+                        aggregate_errors.append(missing_message)
+                    continue
+
+                result = await validate_userspace_typescript_content(
+                    file_data.content,
+                    current,
+                )
+                file_results[current] = result
+
+                file_errors = result.get("errors") or []
+                if isinstance(file_errors, list):
+                    for err in file_errors:
+                        if err not in aggregate_errors:
+                            aggregate_errors.append(err)
+
+                file_contract_errors = result.get("contract_errors") or []
+                if isinstance(file_contract_errors, list):
+                    for err in file_contract_errors:
+                        if err not in aggregate_contract_errors:
+                            aggregate_contract_errors.append(err)
+
+                file_runtime_errors = result.get("runtime_errors") or []
+                if isinstance(file_runtime_errors, list):
+                    for err in file_runtime_errors:
+                        if err not in aggregate_runtime_errors:
+                            aggregate_runtime_errors.append(err)
+
+                imports = _IMPORT_SPECIFIER_PATTERN.findall(file_data.content or "")
+                for specifier in imports:
+                    if not specifier.startswith(("./", "../", "/")):
+                        continue
+                    resolved = await resolve_local_import(current, specifier)
+                    if resolved:
+                        if resolved not in visited and resolved not in to_visit:
+                            to_visit.append(resolved)
+                    else:
+                        unresolved_message = (
+                            f"{current}: Unable to resolve local import '{specifier}'."
+                        )
+                        if unresolved_message not in aggregate_errors:
+                            aggregate_errors.append(unresolved_message)
+
+            overall_ok = (
+                bool(file_results)
+                and all(bool((res or {}).get("ok", False)) for res in file_results.values())
+                and not aggregate_errors
+            )
+
+            root_artifact_type = None
+            root_file = file_cache.get(normalized_start_path)
+            if root_file is not None:
+                root_artifact_type = getattr(root_file, "artifact_type", None)
+
+            result = {
+                "ok": overall_ok,
+                "validator_available": all(
+                    bool((res or {}).get("validator_available", False))
+                    for res in file_results.values()
+                )
+                if file_results
+                else False,
+                "error_count": len(aggregate_errors),
+                "errors": aggregate_errors,
+                "runtime_errors": aggregate_runtime_errors,
+                "runtime_error_count": len(aggregate_runtime_errors),
+                "contract_errors": aggregate_contract_errors,
+                "contract_error_count": len(aggregate_contract_errors),
+                "validated_files": sorted(file_results.keys()),
+                "file_results": file_results,
+            }
             response_payload = {
-                "path": path,
-                "artifact_type": file_data.artifact_type,
+                "path": normalized_start_path,
+                "artifact_type": root_artifact_type,
                 "validation": result,
             }
             return json.dumps(response_payload, indent=2)
