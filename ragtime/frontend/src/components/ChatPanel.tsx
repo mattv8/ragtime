@@ -1422,13 +1422,39 @@ export function ChatPanel({
   const loadConversations = async () => {
     try {
       const data = await api.listConversations(workspaceId);
-      setConversations(data);
+      let userspaceConversationIds = new Set<string>();
+
+      const getLinkedWorkspaceId = (conversation: Conversation): string | null => {
+        const camelWorkspaceId = (conversation as Conversation & { workspaceId?: string | null }).workspaceId;
+        return conversation.workspace_id ?? camelWorkspaceId ?? null;
+      };
+
+      if (!workspaceId) {
+        try {
+          const workspacePage = await api.listUserSpaceWorkspaces(0, 200);
+          userspaceConversationIds = new Set(
+            workspacePage.items.flatMap((workspace) => workspace.conversation_ids || [])
+          );
+        } catch (workspaceErr) {
+          console.warn('Failed to load userspace workspaces for conversation filtering:', workspaceErr);
+        }
+      }
+
+      const visibleConversations = data.filter((conversation) => {
+        const linkedWorkspaceId = getLinkedWorkspaceId(conversation);
+        if (workspaceId) {
+          return linkedWorkspaceId === workspaceId;
+        }
+        return !linkedWorkspaceId && !userspaceConversationIds.has(conversation.id);
+      });
+
+      setConversations(visibleConversations);
       setActiveConversation((current) => {
         if (!current) {
-          return data[0] ?? null;
+          return visibleConversations[0] ?? null;
         }
-        const matchingConversation = data.find((conversation) => conversation.id === current.id);
-        return matchingConversation ?? data[0] ?? null;
+        const matchingConversation = visibleConversations.find((conversation) => conversation.id === current.id);
+        return matchingConversation ?? visibleConversations[0] ?? null;
       });
     } catch (err) {
       console.error('Failed to load conversations:', err);
@@ -2522,15 +2548,47 @@ export function ChatPanel({
                     )}
                   </div>
                 ) : (
-                  <h2>{activeConversation.title}</h2>
+                  <div className="chat-header-title-row">
+                    {editingTitle === activeConversation.id ? (
+                      <input
+                        type="text"
+                        value={titleInput}
+                        onChange={(e) => setTitleInput(e.target.value)}
+                        onBlur={() => saveTitle(activeConversation.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') void saveTitle(activeConversation.id);
+                          if (e.key === 'Escape') setEditingTitle(null);
+                        }}
+                        autoFocus
+                        className="chat-title-input chat-header-title-input"
+                      />
+                    ) : (
+                      <>
+                        <h2>{activeConversation.title}</h2>
+                        <button
+                          className="chat-header-title-edit-btn"
+                          onClick={() => {
+                            setEditingTitle(activeConversation.id);
+                            setTitleInput(activeConversation.title);
+                          }}
+                          title="Rename"
+                          aria-label="Rename conversation"
+                        >
+                          <Pencil size={14} />
+                        </button>
+                      </>
+                    )}
+                  </div>
                 )}
               </div>
               <div className="chat-header-actions">
-                <ContextUsagePie
-                  currentTokens={contextUsage.currentTokens}
-                  totalTokens={contextUsage.totalTokens}
-                  contextLimit={contextUsage.contextLimit}
-                />
+                {!modelsLoading && (
+                  <ContextUsagePie
+                    currentTokens={contextUsage.currentTokens}
+                    totalTokens={contextUsage.totalTokens}
+                    contextLimit={contextUsage.contextLimit}
+                  />
+                )}
                 {!embedded && activeConversation && isConversationOwner && (
                   <button
                     className="btn btn-secondary btn-sm btn-icon"

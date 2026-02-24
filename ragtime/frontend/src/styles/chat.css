@@ -302,6 +302,44 @@
   min-width: 150px;
 }
 
+.chat-header-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 0;
+  flex: 1;
+}
+
+.chat-header-title-edit-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.chat-header-title-row:hover .chat-header-title-edit-btn,
+.chat-header-title-row:focus-within .chat-header-title-edit-btn {
+  opacity: 0.85;
+}
+
+.chat-header-title-edit-btn:hover {
+  opacity: 1;
+  background: var(--color-surface-active);
+  color: var(--color-text-primary);
+}
+
+.chat-header-title-input {
+  max-width: min(520px, 100%);
+}
+
 .chat-workspace-conversation-picker {
   position: relative;
   min-width: 220px;

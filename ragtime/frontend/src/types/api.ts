@@ -1395,6 +1395,7 @@ export interface Conversation {
   model: string;
   user_id?: string;
   workspace_id?: string | null;
+  workspaceId?: string | null;
   username?: string;
   display_name?: string;
   messages: ChatMessage[];
@@ -1452,6 +1453,7 @@ export interface UserSpaceWorkspace {
   description?: string | null;
   owner_user_id: string;
   selected_tool_ids: string[];
+  conversation_ids: string[];
   members: UserSpaceWorkspaceMember[];
   created_at: string;
   updated_at: string;
