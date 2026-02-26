@@ -10,9 +10,9 @@ on:
       - 'docker-compose.yml'
       # Application code
       - 'ragtime/**'
+      - 'runtime/**'
       # Dependencies and build config
       - 'pyproject.toml'
-      - 'requirements.txt'
       # Database schema (requires container rebuild for migrations)
       - 'prisma/**'
       # CI workflow itself
@@ -23,6 +23,7 @@ on:
 env:
   REGISTRY: hub.docker.visnovsky.us
   IMAGE_NAME: library/ragtime
+  IMAGE_RUNTIME_NAME: library/runtime
 
 jobs:
   build-and-push:
@@ -42,6 +43,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Validate docker compose manifests
+        run: |
+          cp -n .env.example .env
+          docker compose -f docker-compose.yml config >/dev/null
+          docker compose -f docker/docker-compose.dev.yml config >/dev/null
+
+      - name: Validate userspace runtime modules
+        run: |
+          python -m compileall \
+            ragtime/userspace/runtime_service.py \
+            runtime/manager \
+            runtime/main.py
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -102,6 +115,72 @@ jobs:
           excludePattern: ':latest$|:legacy$|-legacy$'
           keep: '3'
 
+  build-runtime:
+    name: Build Runtime Image
+    runs-on: self-hosted
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build-runtime.outputs.digest }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract branch name
+        id: extract_branch
+        run: |
+          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          SAFE_BRANCH=$(echo "$BRANCH_NAME" | sed 's/\//-/g')
+          echo "branch=$SAFE_BRANCH" >> $GITHUB_OUTPUT
+
+      - name: Determine Runtime Docker tags
+        id: meta
+        run: |
+          BRANCH="${{ steps.extract_branch.outputs.branch }}"
+          SHORT_SHA="${GITHUB_SHA::7}"
+
+          TAGS="${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:${BRANCH}"
+          TAGS="${TAGS},${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:${SHORT_SHA}"
+
+          if [ "$BRANCH" = "main" ]; then
+            TAGS="${TAGS},${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:latest"
+          fi
+
+          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+          echo "image-name=${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:${BRANCH}" >> $GITHUB_OUTPUT
+
+      - name: Log in to Harbor Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Build and push runtime Docker image
+        id: build-runtime
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile.runtime
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Cleanup old runtime Docker images
+        uses: ./.github/actions/cleanup
+        with:
+          repositories: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}
+          tagPattern: '.'
+          excludePattern: ':latest$'
+          keep: '3'
+
   # Build legacy image for older CPUs without X86_V2 support
   build-legacy:
     name: Build Legacy CPU Image
@@ -144,7 +223,7 @@ jobs:
   sign:
     name: Sign Container Images
     runs-on: self-hosted
-    needs: [build-and-push, build-legacy]
+    needs: [build-and-push, build-legacy, build-runtime]
     # Run even if legacy is skipped (non-main branches)
     if: always() && needs.build-and-push.result == 'success'
     permissions:
@@ -189,6 +268,16 @@ jobs:
           echo "Signing legacy image: ${IMAGE_DIGEST}"
 
           # Sign using the full digest reference (registry/repo@sha256:...)
+          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${IMAGE_DIGEST}"
+
+      - name: Sign the runtime image with Cosign
+        if: needs.build-runtime.result == 'success'
+        env:
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+        run: |
+          IMAGE_DIGEST="${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}@${{ needs.build-runtime.outputs.digest }}"
+          echo "Signing runtime image: ${IMAGE_DIGEST}"
           cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${IMAGE_DIGEST}"
 
   sbom:
@@ -236,9 +325,9 @@ jobs:
       - name: Update docker-compose.yml with branch tag
         run: |
           BRANCH="${{ needs.build-and-push.outputs.branch }}"
-          echo "Updating docker-compose.yml image tag to: ${BRANCH}"
-          # Update only non-commented image lines so legacy tag guidance stays untouched
+          echo "Updating docker-compose.yml image tags to: ${BRANCH}"
           sed -i "/^[[:space:]]*#/!s|^\([[:space:]]*\)image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:.*|\1image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${BRANCH}|" docker-compose.yml
+          sed -i "/^[[:space:]]*#/!s|^\([[:space:]]*\)image: ${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:.*|\1image: ${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:${BRANCH}|" docker-compose.yml
           echo "Updated docker-compose.yml:"
           grep "image:" docker-compose.yml
 
@@ -260,7 +349,7 @@ jobs:
   summary:
     name: Build Summary
     runs-on: self-hosted
-    needs: [build-and-push, sign, sbom, build-legacy]
+    needs: [build-and-push, build-runtime, sign, sbom, build-legacy]
     if: always()
     permissions:
       contents: read
@@ -273,6 +362,7 @@ jobs:
           SIGN_STATUS="${{ needs.sign.result }}"
           SBOM_STATUS="${{ needs.sbom.result }}"
           LEGACY_STATUS="${{ needs.build-legacy.result }}"
+          RUNTIME_STATUS="${{ needs.build-runtime.result }}"
 
           echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -284,6 +374,14 @@ jobs:
             echo "### Pull Command" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
             echo "docker pull ${{ needs.build-and-push.outputs.image-name }}" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "$RUNTIME_STATUS" = "success" ]; then
+            echo "### Runtime Pull Command" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+            echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:${{ needs.build-and-push.outputs.branch }}" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
           fi
@@ -311,4 +409,11 @@ jobs:
             echo "**Legacy Image:** Skipped (main branch only)" >> $GITHUB_STEP_SUMMARY
           else
             echo "**Legacy Image:** Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$RUNTIME_STATUS" = "success" ]; then
+            echo "**Runtime Image:** Built" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Runtime Image:** Failed" >> $GITHUB_STEP_SUMMARY
           fi

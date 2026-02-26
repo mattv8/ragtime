@@ -2,7 +2,7 @@
  * API client for Ragtime Indexer
  */
 
-import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, GetSettingsResponse, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, OllamaVisionModelsRequest, OllamaVisionModelsResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, MysqlDiscoverRequest, MysqlDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse, McpRouteConfig, CreateMcpRouteRequest, UpdateMcpRouteRequest, McpRouteListResponse, HealthResponse, UserSpaceWorkspace, CreateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceMembersRequest, UserSpaceFileInfo, UserSpaceFile, UpsertUserSpaceFileRequest, UserSpaceSnapshot, CreateUserSpaceSnapshotRequest, RestoreUserSpaceSnapshotResponse, UserSpaceAvailableTool, PaginatedWorkspacesResponse, ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus, UserSpaceSharedPreviewResponse, WorkspaceShareSlugAvailabilityResponse, UpdateUserSpaceWorkspaceShareAccessRequest, ConversationMember, UpdateConversationMembersRequest, UpdateConversationToolsRequest } from '@/types';
+import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, GetSettingsResponse, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, OllamaVisionModelsRequest, OllamaVisionModelsResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, MysqlDiscoverRequest, MysqlDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse, McpRouteConfig, CreateMcpRouteRequest, UpdateMcpRouteRequest, McpRouteListResponse, HealthResponse, UserSpaceWorkspace, CreateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceMembersRequest, UserSpaceFileInfo, UserSpaceFile, UpsertUserSpaceFileRequest, UserSpaceSnapshot, CreateUserSpaceSnapshotRequest, RestoreUserSpaceSnapshotResponse, UserSpaceAvailableTool, PaginatedWorkspacesResponse, ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus, UserSpaceSharedPreviewResponse, WorkspaceShareSlugAvailabilityResponse, UpdateUserSpaceWorkspaceShareAccessRequest, ConversationMember, UpdateConversationMembersRequest, UpdateConversationToolsRequest, UserSpaceRuntimeSessionResponse, UserSpaceRuntimeStatusResponse, UserSpaceRuntimeActionResponse, UserSpaceCapabilityTokenResponse } from '@/types';
 
 const API_BASE = '/indexes';
 const AUTH_BASE = '/auth';
@@ -1823,6 +1823,105 @@ export const api = {
       body: JSON.stringify(request),
     });
     return handleResponse<ExecuteComponentResponse>(response);
+  },
+
+  async getUserSpaceRuntimeSession(workspaceId: string): Promise<UserSpaceRuntimeSessionResponse> {
+    const response = await apiFetch(`${API_BASE}/userspace/runtime/workspaces/${workspaceId}/session`);
+    return handleResponse<UserSpaceRuntimeSessionResponse>(response);
+  },
+
+  async startUserSpaceRuntimeSession(workspaceId: string): Promise<UserSpaceRuntimeActionResponse> {
+    const response = await apiFetch(`${API_BASE}/userspace/runtime/workspaces/${workspaceId}/session/start`, {
+      method: 'POST',
+    });
+    return handleResponse<UserSpaceRuntimeActionResponse>(response);
+  },
+
+  async stopUserSpaceRuntimeSession(workspaceId: string): Promise<UserSpaceRuntimeActionResponse> {
+    const response = await apiFetch(`${API_BASE}/userspace/runtime/workspaces/${workspaceId}/session/stop`, {
+      method: 'POST',
+    });
+    return handleResponse<UserSpaceRuntimeActionResponse>(response);
+  },
+
+  async getUserSpaceRuntimeDevserverStatus(workspaceId: string): Promise<UserSpaceRuntimeStatusResponse> {
+    const response = await apiFetch(`${API_BASE}/userspace/runtime/workspaces/${workspaceId}/devserver/status`);
+    return handleResponse<UserSpaceRuntimeStatusResponse>(response);
+  },
+
+  async startUserSpaceRuntimeDevserver(workspaceId: string): Promise<UserSpaceRuntimeActionResponse> {
+    const response = await apiFetch(`${API_BASE}/userspace/runtime/workspaces/${workspaceId}/devserver/start`, {
+      method: 'POST',
+    });
+    return handleResponse<UserSpaceRuntimeActionResponse>(response);
+  },
+
+  async restartUserSpaceRuntimeDevserver(workspaceId: string): Promise<UserSpaceRuntimeActionResponse> {
+    const response = await apiFetch(`${API_BASE}/userspace/runtime/workspaces/${workspaceId}/devserver/restart`, {
+      method: 'POST',
+    });
+    return handleResponse<UserSpaceRuntimeActionResponse>(response);
+  },
+
+  async issueUserSpaceCapabilityToken(workspaceId: string, capabilities: string[], sessionId?: string): Promise<UserSpaceCapabilityTokenResponse> {
+    const response = await apiFetch(`${API_BASE}/userspace/runtime/workspaces/${workspaceId}/capability-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ capabilities, session_id: sessionId }),
+    });
+    return handleResponse<UserSpaceCapabilityTokenResponse>(response);
+  },
+
+  getUserSpaceCollabWebSocketUrl(workspaceId: string, filePath: string): string {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const encodedPath = encodeFilePath(filePath);
+    return `${protocol}//${window.location.host}${API_BASE}/userspace/collab/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}`;
+  },
+
+  async createUserSpaceCollabFile(workspaceId: string, filePath: string, content: string = ''): Promise<{ success: boolean; workspace_id: string; file_path: string; version: number }> {
+    const response = await apiFetch(`${API_BASE}/userspace/collab/workspaces/${workspaceId}/files/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_path: filePath, content }),
+    });
+    return handleResponse(response);
+  },
+
+  async renameUserSpaceCollabFile(workspaceId: string, oldPath: string, newPath: string): Promise<{ old_path: string; new_path: string; success: boolean }> {
+    const response = await apiFetch(`${API_BASE}/userspace/collab/workspaces/${workspaceId}/files/rename`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ old_path: oldPath, new_path: newPath }),
+    });
+    return handleResponse(response);
+  },
+
+  async deleteUserSpaceCollabFile(workspaceId: string, filePath: string): Promise<{ file_path: string; success: boolean }> {
+    const response = await apiFetch(`${API_BASE}/userspace/collab/workspaces/${workspaceId}/files/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_path: filePath }),
+    });
+    return handleResponse(response);
+  },
+
+  getUserSpaceRuntimePreviewUrl(workspaceId: string, path: string = ''): string {
+    const normalized = path.replace(/^\/+/, '');
+    return normalized
+      ? `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/preview/${encodeFilePath(normalized)}`
+      : `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/preview`;
+  },
+
+  getUserSpaceSharedPreviewProxyUrl(ownerUsername: string, shareSlug: string, path: string = ''): string {
+    const normalized = path.replace(/^\/+/, '');
+    const base = `${API_BASE}/userspace/shared/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}`;
+    return normalized ? `${base}/${encodeFilePath(normalized)}` : base;
+  },
+
+  getUserSpaceSharedTokenPreviewProxyUrl(shareToken: string, path: string = ''): string {
+    const normalized = path.replace(/^\/+/, '');
+    const base = `${API_BASE}/userspace/shared/${encodeURIComponent(shareToken)}/preview`;
+    return normalized ? `${base}/${encodeFilePath(normalized)}` : base;
   },
 };
 

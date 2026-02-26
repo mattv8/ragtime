@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, ExternalLink, File, History, Link2, Maximize2, Minimize2, Pencil, Plus, Save, Trash2, Users, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, ExternalLink, File, History, Link2, Maximize2, Minimize2, Pencil, Plus, Save, Terminal, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 
 import { api } from '@/api';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { ToolSelectorDropdown } from './shared/ToolSelectorDropdown';
-import type { User, UserSpaceAvailableTool, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceWorkspace, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus } from '@/types';
+import type { User, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceWorkspace, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus } from '@/types';
 import { buildUserSpaceTree, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { ChatPanel } from './ChatPanel';
 import { LdapGroupSelect } from './LdapGroupSelect';
@@ -96,6 +96,17 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const [fileContentCache, setFileContentCache] = useState<Record<string, { content: string; updatedAt: string }>>({});
   const [previewLiveDataConnections, setPreviewLiveDataConnections] = useState<UserSpaceLiveDataConnection[]>([]);
   const [previewExecuting, setPreviewExecuting] = useState(false);
+  const [runtimeStatus, setRuntimeStatus] = useState<UserSpaceRuntimeStatusResponse | null>(null);
+  const [runtimeBusy, setRuntimeBusy] = useState(false);
+  const [activeRightTab, setActiveRightTab] = useState<'preview' | 'console'>('preview');
+  const [collabConnected, setCollabConnected] = useState(false);
+  const [collabReadOnly, setCollabReadOnly] = useState(false);
+  const [collabVersion, setCollabVersion] = useState(0);
+  const [collabPresenceCount, setCollabPresenceCount] = useState(0);
+  const [terminalConnected, setTerminalConnected] = useState(false);
+  const [terminalReadOnly, setTerminalReadOnly] = useState(false);
+  const [terminalInput, setTerminalInput] = useState('');
+  const [terminalOutput, setTerminalOutput] = useState('');
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [sharingWorkspace, setSharingWorkspace] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
@@ -145,6 +156,9 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const toolPickerRef = useRef<HTMLDivElement>(null);
   const workspaceDropdownRef = useRef<HTMLDivElement>(null);
   const fileContentCacheRef = useRef(fileContentCache);
+  const collabSocketRef = useRef<WebSocket | null>(null);
+  const collabSuppressNextSendRef = useRef(false);
+  const terminalSocketRef = useRef<WebSocket | null>(null);
   const lastWorkspaceCookieName = useMemo(() => getLastWorkspaceCookieName(currentUser.id), [currentUser.id]);
 
   // Resize state
@@ -748,6 +762,262 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       setError(err instanceof Error ? err.message : 'Failed to restore snapshot');
     }
   }, [activeWorkspaceId, canEditWorkspace, loadWorkspaceData]);
+
+  const refreshRuntimeStatus = useCallback(async () => {
+    if (!activeWorkspaceId) {
+      setRuntimeStatus(null);
+      return;
+    }
+    try {
+      const status = await api.getUserSpaceRuntimeDevserverStatus(activeWorkspaceId);
+      setRuntimeStatus(status);
+    } catch {
+      setRuntimeStatus(null);
+    }
+  }, [activeWorkspaceId]);
+
+  const handleStartRuntime = useCallback(async () => {
+    if (!activeWorkspaceId || !canEditWorkspace) return;
+    setRuntimeBusy(true);
+    try {
+      await api.startUserSpaceRuntimeSession(activeWorkspaceId);
+      await refreshRuntimeStatus();
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start runtime');
+    } finally {
+      setRuntimeBusy(false);
+    }
+  }, [activeWorkspaceId, canEditWorkspace, refreshRuntimeStatus]);
+
+  const handleStopRuntime = useCallback(async () => {
+    if (!activeWorkspaceId || !canEditWorkspace) return;
+    setRuntimeBusy(true);
+    try {
+      await api.stopUserSpaceRuntimeSession(activeWorkspaceId);
+      await refreshRuntimeStatus();
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to stop runtime');
+    } finally {
+      setRuntimeBusy(false);
+    }
+  }, [activeWorkspaceId, canEditWorkspace, refreshRuntimeStatus]);
+
+  const handleRestartRuntime = useCallback(async () => {
+    if (!activeWorkspaceId || !canEditWorkspace) return;
+    setRuntimeBusy(true);
+    try {
+      await api.restartUserSpaceRuntimeDevserver(activeWorkspaceId);
+      await refreshRuntimeStatus();
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to restart runtime');
+    } finally {
+      setRuntimeBusy(false);
+    }
+  }, [activeWorkspaceId, canEditWorkspace, refreshRuntimeStatus]);
+
+  useEffect(() => {
+    void refreshRuntimeStatus();
+    if (!activeWorkspaceId) return;
+    const timer = window.setInterval(() => {
+      void refreshRuntimeStatus();
+    }, 10000);
+    return () => window.clearInterval(timer);
+  }, [activeWorkspaceId, refreshRuntimeStatus]);
+
+  useEffect(() => {
+    collabSocketRef.current?.close();
+    collabSocketRef.current = null;
+    setCollabConnected(false);
+    setCollabReadOnly(false);
+    setCollabVersion(0);
+    setCollabPresenceCount(0);
+
+    if (!activeWorkspaceId || !selectedFilePath) return;
+
+    const socketUrl = api.getUserSpaceCollabWebSocketUrl(activeWorkspaceId, selectedFilePath);
+    const socket = new WebSocket(socketUrl);
+    collabSocketRef.current = socket;
+
+    socket.onopen = () => {
+      setCollabConnected(true);
+      try {
+        socket.send(JSON.stringify({ type: 'presence' }));
+      } catch {
+        // ignore
+      }
+    };
+
+    socket.onmessage = (event) => {
+      let payload: UserSpaceCollabMessage | null = null;
+      try {
+        payload = JSON.parse(event.data) as UserSpaceCollabMessage;
+      } catch {
+        return;
+      }
+
+      if (!payload) {
+        return;
+      }
+
+      if (payload.type === 'error') {
+        setError(payload.message || 'Collaboration error');
+        return;
+      }
+
+      if (payload.type === 'presence') {
+        setCollabPresenceCount(payload.users.length);
+        return;
+      }
+
+      if (payload.type === 'file_renamed') {
+        if (selectedFilePath === payload.old_path) {
+          setSelectedFilePath(payload.new_path);
+        }
+        return;
+      }
+
+      if (payload.type === 'file_created') {
+        void loadWorkspaceData(activeWorkspaceId);
+        return;
+      }
+
+      if (payload.file_path !== selectedFilePath) {
+        return;
+      }
+
+      if (payload.type === 'snapshot' || payload.type === 'update') {
+        collabSuppressNextSendRef.current = true;
+        setCollabVersion(payload.version);
+        setCollabReadOnly(payload.type === 'snapshot' ? payload.read_only : false);
+        setFileContent(payload.content);
+        setFileDirty(false);
+        setFileContentCache((current) => ({
+          ...current,
+          [selectedFilePath]: {
+            content: payload.content,
+            updatedAt: current[selectedFilePath]?.updatedAt ?? '',
+          },
+        }));
+      }
+      if (payload.type === 'ack') {
+        setCollabVersion(payload.version);
+      }
+    };
+
+    socket.onclose = () => {
+      setCollabConnected(false);
+      setCollabPresenceCount(0);
+    };
+
+    socket.onerror = () => {
+      setCollabConnected(false);
+      setCollabPresenceCount(0);
+    };
+
+    return () => {
+      socket.close();
+      if (collabSocketRef.current === socket) {
+        collabSocketRef.current = null;
+      }
+    };
+  }, [activeWorkspaceId, loadWorkspaceData, selectedFilePath]);
+
+  useEffect(() => {
+    terminalSocketRef.current?.close();
+    terminalSocketRef.current = null;
+    setTerminalConnected(false);
+    setTerminalReadOnly(false);
+    setTerminalOutput('');
+
+    if (activeRightTab !== 'console' || !activeWorkspaceId) {
+      return;
+    }
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/indexes/userspace/runtime/workspaces/${encodeURIComponent(activeWorkspaceId)}/pty`;
+    const socket = new WebSocket(wsUrl);
+    terminalSocketRef.current = socket;
+
+    socket.onopen = () => {
+      setTerminalConnected(true);
+    };
+
+    socket.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data) as { type?: string; data?: string; read_only?: boolean };
+        if (payload.type === 'status') {
+          setTerminalReadOnly(Boolean(payload.read_only));
+          return;
+        }
+        if (payload.type === 'output') {
+          setTerminalOutput((current) => `${current}${payload.data ?? ''}`);
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    socket.onclose = () => {
+      setTerminalConnected(false);
+    };
+
+    socket.onerror = () => {
+      setTerminalConnected(false);
+    };
+
+    return () => {
+      socket.close();
+      if (terminalSocketRef.current === socket) {
+        terminalSocketRef.current = null;
+      }
+    };
+  }, [activeRightTab, activeWorkspaceId]);
+
+  const handleTerminalSubmit = useCallback(() => {
+    const socket = terminalSocketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    const line = terminalInput;
+    if (!line) return;
+    try {
+      socket.send(JSON.stringify({ type: 'input', data: `${line}\n` }));
+      setTerminalInput('');
+    } catch {
+      // ignore
+    }
+  }, [terminalInput]);
+
+  useEffect(() => {
+    const socket = collabSocketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    if (!activeWorkspaceId || !selectedFilePath) return;
+    if (!canEditWorkspace || collabReadOnly) return;
+
+    if (collabSuppressNextSendRef.current) {
+      collabSuppressNextSendRef.current = false;
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      try {
+        socket.send(
+          JSON.stringify({
+            type: 'update',
+            workspace_id: activeWorkspaceId,
+            file_path: selectedFilePath,
+            version: collabVersion,
+            content: fileContent,
+          })
+        );
+      } catch {
+        // Ignore send errors; reconnect happens on workspace/file changes.
+      }
+    }, 250);
+
+    return () => window.clearTimeout(timer);
+  }, [activeWorkspaceId, canEditWorkspace, collabReadOnly, collabVersion, fileContent, selectedFilePath]);
 
   const handleStartCreateFile = useCallback((parentPath = '') => {
     const normalizedParent = normalizeWorkspacePath(parentPath);
@@ -1635,6 +1905,16 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                 {activeWorkspaceRole}{!canEditWorkspace ? ' (read-only)' : ''}
               </span>
             )}
+            {activeWorkspaceId && (
+              <span className="userspace-role-badge" title="Collaborative editor connection state">
+                {collabConnected ? `collab v${collabVersion} (${collabPresenceCount})` : 'collab offline'}
+              </span>
+            )}
+            {runtimeStatus && (
+              <span className="userspace-role-badge" title="Workspace runtime session state">
+                runtime: {runtimeStatus.session_state}
+              </span>
+            )}
           </div>
 
           <div className="userspace-toolbar-actions" aria-label="Workspace sharing actions">
@@ -1826,16 +2106,99 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
         {/* Right pane */}
         {!rightPaneCollapsed && (
         <div className="userspace-right-pane">
-          <div className="userspace-preview-section">
-            <UserSpaceArtifactPreview
-              entryPath={previewEntryPath}
-              workspaceFiles={previewWorkspaceFiles}
-              liveDataConnections={previewLiveDataConnections}
-              previewInstanceKey={activeWorkspaceId ?? ''}
-              workspaceId={activeWorkspaceId ?? undefined}
-              onExecutionStateChange={setPreviewExecuting}
-            />
+          <div className="userspace-toolbar-actions" style={{ justifyContent: 'space-between', padding: '6px 8px' }}>
+            <div className="userspace-toolbar-actions" role="tablist" aria-label="User Space right pane tabs">
+              <button
+                className={`btn btn-secondary btn-sm ${activeRightTab === 'preview' ? 'active' : ''}`}
+                onClick={() => setActiveRightTab('preview')}
+                role="tab"
+                aria-selected={activeRightTab === 'preview'}
+              >
+                Preview
+              </button>
+              <button
+                className={`btn btn-secondary btn-sm ${activeRightTab === 'console' ? 'active' : ''}`}
+                onClick={() => setActiveRightTab('console')}
+                role="tab"
+                aria-selected={activeRightTab === 'console'}
+              >
+                <Terminal size={13} /> Console
+              </button>
+            </div>
+            {activeRightTab === 'console' && canEditWorkspace && activeWorkspaceId && (
+              <div className="userspace-toolbar-actions">
+                <button className="btn btn-secondary btn-sm" onClick={handleStartRuntime} disabled={runtimeBusy}>Start</button>
+                <button className="btn btn-secondary btn-sm" onClick={handleRestartRuntime} disabled={runtimeBusy}>Restart</button>
+                <button className="btn btn-secondary btn-sm" onClick={handleStopRuntime} disabled={runtimeBusy}>Stop</button>
+              </div>
+            )}
           </div>
+
+          {activeRightTab === 'preview' ? (
+            <div className="userspace-preview-section">
+              <UserSpaceArtifactPreview
+                entryPath={previewEntryPath}
+                workspaceFiles={previewWorkspaceFiles}
+                liveDataConnections={previewLiveDataConnections}
+                runtimePreviewUrl={
+                  activeWorkspaceId
+                    ? api.getUserSpaceRuntimePreviewUrl(activeWorkspaceId)
+                    : undefined
+                }
+                previewInstanceKey={activeWorkspaceId ?? ''}
+                workspaceId={activeWorkspaceId ?? undefined}
+                onExecutionStateChange={setPreviewExecuting}
+              />
+            </div>
+          ) : (
+            <div className="userspace-preview-section" style={{ padding: 12 }}>
+              <div className="userspace-snapshot-item" style={{ marginBottom: 8 }}>
+                <div className="userspace-snapshot-info">
+                  <strong>Runtime state</strong>
+                  <span className="userspace-muted">{runtimeStatus?.session_state ?? 'stopped'}</span>
+                </div>
+              </div>
+              <div className="userspace-snapshot-item" style={{ marginBottom: 8 }}>
+                <div className="userspace-snapshot-info">
+                  <strong>Dev server</strong>
+                  <span className="userspace-muted">
+                    {runtimeStatus?.devserver_running ? `running on :${runtimeStatus.devserver_port}` : 'not running'}
+                  </span>
+                </div>
+              </div>
+              <div className="userspace-snapshot-item">
+                <div className="userspace-snapshot-info">
+                  <strong>Collaboration</strong>
+                  <span className="userspace-muted">{collabConnected ? `connected (v${collabVersion}, ${collabPresenceCount} users)` : 'offline'}</span>
+                </div>
+              </div>
+              <div className="userspace-snapshot-item" style={{ marginTop: 12 }}>
+                <div className="userspace-snapshot-info" style={{ width: '100%' }}>
+                  <strong>Terminal</strong>
+                  <span className="userspace-muted">{terminalConnected ? (terminalReadOnly ? 'connected (read-only)' : 'connected') : 'offline'}</span>
+                </div>
+              </div>
+              <pre style={{ whiteSpace: 'pre-wrap', marginTop: 8, maxHeight: 220, overflow: 'auto', padding: 8, background: 'var(--bg-tertiary)', borderRadius: 6 }}>
+                {terminalOutput || '$ waiting for terminal output...'}
+              </pre>
+              <div className="userspace-toolbar-actions" style={{ marginTop: 8 }}>
+                <input
+                  value={terminalInput}
+                  onChange={(event) => setTerminalInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      handleTerminalSubmit();
+                    }
+                  }}
+                  placeholder={terminalReadOnly ? 'Terminal is read-only' : 'Type command and press Enter'}
+                  disabled={!terminalConnected || terminalReadOnly}
+                  style={{ flex: 1 }}
+                />
+                <button className="btn btn-secondary btn-sm" onClick={handleTerminalSubmit} disabled={!terminalConnected || terminalReadOnly || !terminalInput}>Send</button>
+              </div>
+            </div>
+          )}
 
           {/* Snapshots */}
           <div className="userspace-snapshots-section">

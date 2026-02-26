@@ -1,0 +1,37 @@
+# =============================================================================
+# Ragtime - Runtime Manager Dockerfile
+# =============================================================================
+
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    curl \
+    dos2unix \
+    tini \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /runtime
+
+COPY pyproject.toml /runtime/pyproject.toml
+COPY docker/scripts/install_deps_from_pyproject.py /tmp/install_deps_from_pyproject.py
+RUN pip install --no-cache-dir --upgrade pip && \
+    python /tmp/install_deps_from_pyproject.py /runtime/pyproject.toml runtime /tmp/requirements.runtime.txt && \
+    pip install --no-cache-dir -r /tmp/requirements.runtime.txt
+
+COPY runtime/ /runtime/runtime/
+COPY docker/entrypoint.runtime.sh /entrypoint.runtime.sh
+
+RUN dos2unix /entrypoint.runtime.sh \
+    && chmod +x /entrypoint.runtime.sh
+
+EXPOSE 8090
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8090/health || exit 1
+
+ENTRYPOINT ["tini", "--", "/entrypoint.runtime.sh"]

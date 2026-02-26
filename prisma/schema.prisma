@@ -640,6 +640,15 @@ enum WorkspaceRole {
   viewer
 }
 
+/// User Space runtime session state
+enum RuntimeSessionState {
+  starting
+  running
+  stopping
+  stopped
+  error
+}
+
 /// User account (synced from LDAP or local admin)
 model User {
   id            String       @id @default(uuid())
@@ -660,6 +669,8 @@ model User {
   ownedWorkspaces Workspace[] @relation("WorkspaceOwner")
   workspaceMemberships WorkspaceMember[]
   conversationMembers ConversationMember[]
+  runtimeLeases UserSpaceRuntimeSession[] @relation("RuntimeLeaseUser")
+  runtimeAuditEvents UserSpaceRuntimeAuditEvent[] @relation("RuntimeAuditUser")
 
   @@map("users")
 }
@@ -796,6 +807,9 @@ model Workspace {
   members         WorkspaceMember[]
   toolSelections  WorkspaceToolSelection[]
   conversations   Conversation[]
+  runtimeSessions UserSpaceRuntimeSession[]
+  runtimeAuditEvents UserSpaceRuntimeAuditEvent[]
+  collabDocs UserSpaceCollabDoc[]
 
   @@index([ownerUserId])
   @@unique([ownerUserId, nameNormalized])
@@ -901,4 +915,63 @@ model ConversationToolSelection {
   @@unique([conversationId, toolConfigId])
   @@index([toolConfigId])
   @@map("conversation_tool_selections")
+}
+
+/// Runtime session metadata for User Space execution environments
+model UserSpaceRuntimeSession {
+  id                String              @id @default(uuid())
+  workspaceId       String              @map("workspace_id")
+  leasedByUserId    String              @map("leased_by_user_id")
+  state             RuntimeSessionState @default(starting)
+  runtimeProvider   String              @default("microvm_pool_v1") @map("runtime_provider")
+  providerSessionId String?             @map("provider_session_id")
+  previewInternalUrl String?            @map("preview_internal_url")
+  createdAt         DateTime            @default(now()) @map("created_at")
+  updatedAt         DateTime            @default(now()) @updatedAt @map("updated_at")
+  lastHeartbeatAt   DateTime?           @map("last_heartbeat_at")
+  idleExpiresAt     DateTime?           @map("idle_expires_at")
+  ttlExpiresAt      DateTime?           @map("ttl_expires_at")
+  lastError         String?             @map("last_error")
+
+  workspace         Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  leasedByUser      User                @relation("RuntimeLeaseUser", fields: [leasedByUserId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, updatedAt])
+  @@index([leasedByUserId, updatedAt])
+  @@map("userspace_runtime_sessions")
+}
+
+/// Runtime/collaboration audit trail for userspace actions
+model UserSpaceRuntimeAuditEvent {
+  id           String   @id @default(uuid())
+  workspaceId  String   @map("workspace_id")
+  userId       String?  @map("user_id")
+  sessionId    String?  @map("session_id")
+  eventType    String   @map("event_type")
+  eventPayload Json     @default("{}") @map("event_payload")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user         User?     @relation("RuntimeAuditUser", fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
+  @@index([userId, createdAt])
+  @@map("userspace_runtime_audit_events")
+}
+
+/// Checkpointed collaborative document state by workspace file path
+model UserSpaceCollabDoc {
+  id                 String   @id @default(uuid())
+  workspaceId        String   @map("workspace_id")
+  filePath           String   @map("file_path")
+  checkpointVersion  Int      @default(0) @map("checkpoint_version")
+  docStateBase64     String?  @map("doc_state_base64")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @default(now()) @updatedAt @map("updated_at")
+
+  workspace          Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, filePath])
+  @@index([workspaceId, updatedAt])
+  @@map("userspace_collab_docs")
 }

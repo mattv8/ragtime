@@ -94,6 +94,15 @@ export function UserSpaceSharedView({ shareToken, ownerUsername, shareSlug }: Us
         entryPath={previewData.entry_path}
         workspaceFiles={previewData.workspace_files}
         liveDataConnections={previewData.live_data_connections ?? []}
+        runtimePreviewUrl={
+          !submittedSharePassword
+            ? shareToken
+              ? api.getUserSpaceSharedTokenPreviewProxyUrl(shareToken)
+              : ownerUsername && shareSlug
+                ? api.getUserSpaceSharedPreviewProxyUrl(ownerUsername, shareSlug)
+                : undefined
+            : undefined
+        }
         previewInstanceKey={shareToken || `${ownerUsername}/${shareSlug}`}
         workspaceId={previewData.workspace_id}
         shareToken={shareToken}

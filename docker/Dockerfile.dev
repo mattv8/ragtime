@@ -51,10 +51,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /ragtime
 RUN mkdir -p /ragtime/data/faiss_index
 
-# Copy requirements first for better layer caching
-COPY requirements.txt /ragtime/requirements.txt
+# Copy dependency metadata first for better layer caching
+COPY pyproject.toml /ragtime/pyproject.toml
+COPY docker/scripts/install_deps_from_pyproject.py /tmp/install_deps_from_pyproject.py
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r /ragtime/requirements.txt
+    python /tmp/install_deps_from_pyproject.py /ragtime/pyproject.toml app /tmp/requirements.app.txt && \
+    pip install --no-cache-dir -r /tmp/requirements.app.txt
 
 # Copy frontend package.json for npm install layer caching
 COPY ragtime/frontend/package.json ragtime/frontend/package-lock.json* /ragtime/ragtime/frontend/

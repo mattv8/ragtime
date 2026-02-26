@@ -14,6 +14,13 @@ ShareAccessMode = Literal[
     "selected_users",
     "ldap_groups",
 ]
+RuntimeSessionState = Literal[
+    "starting",
+    "running",
+    "stopping",
+    "stopped",
+    "error",
+]
 
 
 class WorkspaceMember(BaseModel):
@@ -177,6 +184,60 @@ class CreateSnapshotRequest(BaseModel):
 class RestoreSnapshotResponse(BaseModel):
     restored_snapshot_id: str
     file_count: int
+
+
+class UserSpaceRuntimeSession(BaseModel):
+    id: str
+    workspace_id: str
+    leased_by_user_id: str
+    state: RuntimeSessionState
+    runtime_provider: str = "microvm_pool_v1"
+    provider_session_id: str | None = None
+    preview_internal_url: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    last_heartbeat_at: datetime | None = None
+    idle_expires_at: datetime | None = None
+    ttl_expires_at: datetime | None = None
+    last_error: str | None = None
+
+
+class UserSpaceRuntimeSessionResponse(BaseModel):
+    workspace_id: str
+    session: UserSpaceRuntimeSession | None = None
+
+
+class UserSpaceRuntimeStatusResponse(BaseModel):
+    workspace_id: str
+    session_state: RuntimeSessionState
+    session_id: str | None = None
+    devserver_running: bool = False
+    devserver_port: int = 5173
+    preview_url: str | None = None
+    last_error: str | None = None
+
+
+class UserSpaceRuntimeActionResponse(BaseModel):
+    workspace_id: str
+    session_id: str
+    state: RuntimeSessionState
+    success: bool = True
+
+
+class UserSpaceCapabilityTokenResponse(BaseModel):
+    token: str
+    expires_at: datetime
+    workspace_id: str
+    session_id: str | None = None
+    capabilities: list[str] = Field(default_factory=list)
+
+
+class UserSpaceCollabSnapshotResponse(BaseModel):
+    workspace_id: str
+    file_path: str
+    version: int
+    content: str
+    read_only: bool
 
 
 class PaginatedWorkspacesResponse(BaseModel):

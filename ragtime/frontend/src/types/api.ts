@@ -1609,6 +1609,118 @@ export interface UserSpaceSharedPreviewResponse {
   live_data_connections?: UserSpaceLiveDataConnection[] | null;
 }
 
+export type UserSpaceRuntimeSessionState = 'starting' | 'running' | 'stopping' | 'stopped' | 'error';
+
+export interface UserSpaceRuntimeSession {
+  id: string;
+  workspace_id: string;
+  leased_by_user_id: string;
+  state: UserSpaceRuntimeSessionState;
+  runtime_provider: string;
+  provider_session_id?: string | null;
+  preview_internal_url?: string | null;
+  created_at: string;
+  updated_at: string;
+  last_heartbeat_at?: string | null;
+  idle_expires_at?: string | null;
+  ttl_expires_at?: string | null;
+  last_error?: string | null;
+}
+
+export interface UserSpaceRuntimeSessionResponse {
+  workspace_id: string;
+  session?: UserSpaceRuntimeSession | null;
+}
+
+export interface UserSpaceRuntimeStatusResponse {
+  workspace_id: string;
+  session_state: UserSpaceRuntimeSessionState;
+  session_id?: string | null;
+  devserver_running: boolean;
+  devserver_port: number;
+  preview_url?: string | null;
+  last_error?: string | null;
+}
+
+export interface UserSpaceRuntimeActionResponse {
+  workspace_id: string;
+  session_id: string;
+  state: UserSpaceRuntimeSessionState;
+  success: boolean;
+}
+
+export interface UserSpaceCapabilityTokenResponse {
+  token: string;
+  expires_at: string;
+  workspace_id: string;
+  session_id?: string | null;
+  capabilities: string[];
+}
+
+export interface UserSpaceCollabSnapshotMessage {
+  type: 'snapshot';
+  workspace_id: string;
+  file_path: string;
+  version: number;
+  content: string;
+  read_only: boolean;
+}
+
+export interface UserSpaceCollabUpdateMessage {
+  type: 'update';
+  workspace_id: string;
+  file_path: string;
+  version: number;
+  content: string;
+}
+
+export interface UserSpaceCollabAckMessage {
+  type: 'ack';
+  workspace_id: string;
+  file_path: string;
+  version: number;
+}
+
+export interface UserSpaceCollabErrorMessage {
+  type: 'error';
+  message: string;
+}
+
+export interface UserSpaceCollabPresenceMessage {
+  type: 'presence';
+  workspace_id: string;
+  file_path: string;
+  users: Array<{
+    user_id: string;
+    cursor?: unknown;
+    selection?: unknown;
+    updated_at?: string;
+  }>;
+}
+
+export interface UserSpaceCollabFileCreatedMessage {
+  type: 'file_created';
+  workspace_id: string;
+  file_path: string;
+  version: number;
+}
+
+export interface UserSpaceCollabFileRenamedMessage {
+  type: 'file_renamed';
+  workspace_id: string;
+  old_path: string;
+  new_path: string;
+}
+
+export type UserSpaceCollabMessage =
+  | UserSpaceCollabSnapshotMessage
+  | UserSpaceCollabUpdateMessage
+  | UserSpaceCollabAckMessage
+  | UserSpaceCollabErrorMessage
+  | UserSpaceCollabPresenceMessage
+  | UserSpaceCollabFileCreatedMessage
+  | UserSpaceCollabFileRenamedMessage;
+
 // Retry visualization request/response
 export interface RetryVisualizationRequest {
   tool_type: 'datatable' | 'chart';

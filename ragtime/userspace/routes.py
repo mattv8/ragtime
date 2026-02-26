@@ -28,6 +28,7 @@ from ragtime.userspace.models import (
     UserSpaceWorkspaceShareLinkStatus,
     WorkspaceShareSlugAvailabilityResponse,
 )
+from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space"])
@@ -408,6 +409,7 @@ async def restore_snapshot(
         snapshot_id,
         user.id,
     )
+    await userspace_runtime_service.invalidate_workspace_runtime_state(workspace_id)
     return RestoreSnapshotResponse(
         restored_snapshot_id=snapshot.id,
         file_count=snapshot.file_count,

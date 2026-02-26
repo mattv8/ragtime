@@ -19,6 +19,7 @@ interface UserSpaceArtifactPreviewProps {
   entryPath: string;
   workspaceFiles: Record<string, string>;
   liveDataConnections?: UserSpaceLiveDataConnection[];
+  runtimePreviewUrl?: string;
   previewInstanceKey?: string;
   workspaceId?: string;
   shareToken?: string;
@@ -32,6 +33,7 @@ export function UserSpaceArtifactPreview({
   entryPath,
   workspaceFiles,
   liveDataConnections = [],
+  runtimePreviewUrl,
   previewInstanceKey,
   workspaceId,
   shareToken,
@@ -41,6 +43,8 @@ export function UserSpaceArtifactPreview({
   onExecutionStateChange,
 }: UserSpaceArtifactPreviewProps) {
   const themeTokens = readThemeTokens();
+  const runtimeContextRequested = Boolean(workspaceId || shareToken || (ownerUsername && shareSlug));
+  const useRuntimePreview = Boolean(runtimePreviewUrl);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const lastExecutionErrorLogRef = useRef<Record<string, number>>({});
   const [executionError, setExecutionError] = useState<string | null>(null);
@@ -80,6 +84,7 @@ export function UserSpaceArtifactPreview({
 
   const handleIframeMessage = useCallback(
     async (event: MessageEvent) => {
+      if (useRuntimePreview) return;
       const frameWindow = iframeRef.current?.contentWindow;
       if (!frameWindow || event.source !== frameWindow) return;
 
@@ -187,13 +192,16 @@ export function UserSpaceArtifactPreview({
         setPendingExecutions((current) => Math.max(0, current - 1));
       }
     },
-    [workspaceId, shareToken, ownerUsername, shareSlug, sharePassword, normalizeExecuteResult]
+    [workspaceId, shareToken, ownerUsername, shareSlug, sharePassword, normalizeExecuteResult, useRuntimePreview]
   );
 
   useEffect(() => {
+    if (useRuntimePreview) {
+      return;
+    }
     window.addEventListener('message', handleIframeMessage);
     return () => window.removeEventListener('message', handleIframeMessage);
-  }, [handleIframeMessage]);
+  }, [handleIframeMessage, useRuntimePreview]);
 
   useEffect(() => {
     setExecutionError(null);
@@ -204,10 +212,31 @@ export function UserSpaceArtifactPreview({
   }, [pendingExecutions, onExecutionStateChange]);
 
   useEffect(() => {
+    if (useRuntimePreview) {
+      setPendingExecutions(0);
+      onExecutionStateChange?.(false);
+      return;
+    }
     setPendingExecutions(0);
-  }, [workspaceId, shareToken, ownerUsername, shareSlug, sharePassword, entryPath, previewInstanceKey]);
+  }, [workspaceId, shareToken, ownerUsername, shareSlug, sharePassword, entryPath, previewInstanceKey, onExecutionStateChange, useRuntimePreview]);
 
   const transpileResult = useMemo(() => {
+    if (runtimeContextRequested && !runtimePreviewUrl) {
+      return {
+        entryPath: normalizePath(entryPath),
+        modules: {} as ModuleMap,
+        errors: 'Runtime preview is not ready yet. Start or restart the workspace runtime to continue.',
+      };
+    }
+
+    if (useRuntimePreview) {
+      return {
+        entryPath: normalizePath(entryPath),
+        modules: {} as ModuleMap,
+        errors: null as string | null,
+      };
+    }
+
     const normalizedEntry = normalizePath(entryPath);
     const normalizedFiles: ModuleMap = {};
     for (const [path, source] of Object.entries(workspaceFiles || {})) {
@@ -304,7 +333,7 @@ export function UserSpaceArtifactPreview({
       modules: transpiledModules,
       errors: null as string | null,
     };
-  }, [entryPath, workspaceFiles]);
+  }, [entryPath, runtimeContextRequested, runtimePreviewUrl, useRuntimePreview, workspaceFiles]);
 
   if (transpileResult.errors) {
     return (
@@ -325,11 +354,12 @@ export function UserSpaceArtifactPreview({
       ) : null}
       <iframe
         ref={iframeRef}
-        key={`${previewInstanceKey ?? ''}:${transpileResult.entryPath}`}
-        title="TypeScript module preview"
+        key={`${previewInstanceKey ?? ''}:${runtimePreviewUrl ?? transpileResult.entryPath}`}
+        title={useRuntimePreview ? 'Runtime preview' : 'TypeScript module preview'}
         className="userspace-preview-frame"
-        sandbox="allow-scripts"
-        srcDoc={buildIframeDoc(transpileResult.entryPath, transpileResult.modules, themeTokens, liveDataConnections)}
+        sandbox={useRuntimePreview ? 'allow-scripts allow-same-origin allow-forms allow-popups' : 'allow-scripts'}
+        src={useRuntimePreview ? runtimePreviewUrl : undefined}
+        srcDoc={useRuntimePreview ? undefined : buildIframeDoc(transpileResult.entryPath, transpileResult.modules, themeTokens, liveDataConnections)}
       />
     </div>
   );

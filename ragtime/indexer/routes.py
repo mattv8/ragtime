@@ -23,77 +23,105 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional
 
 import httpx
-from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException,
-                     UploadFile)
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from prisma import Prisma
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
-from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
-from ragtime.core.embedding_models import (OPENAI_EMBEDDING_PRIORITY,
-                                           get_embedding_models)
+from ragtime.core.embedding_models import (
+    OPENAI_EMBEDDING_PRIORITY,
+    get_embedding_models,
+)
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (MODEL_FAMILY_PATTERNS,
-                                       get_context_limit, get_output_limit,
-                                       supports_function_calling,
-                                       update_model_function_calling,
-                                       update_model_limit)
+from ragtime.core.model_limits import (
+    MODEL_FAMILY_PATTERNS,
+    get_context_limit,
+    get_output_limit,
+    supports_function_calling,
+    update_model_function_calling,
+    update_model_limit,
+)
 from ragtime.core.ollama import get_model_details, is_reachable
 from ragtime.core.ollama import list_models
 from ragtime.core.ollama import list_models as ollama_list_models
 from ragtime.core.security import get_current_user, require_admin
-from ragtime.core.sql_utils import (MssqlConnectionError, MysqlConnectionError,
-                                    mssql_connect, mysql_connect)
-from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
-                              execute_ssh_command, ssh_tunnel_config_from_dict,
-                              test_ssh_connection)
+from ragtime.core.sql_utils import (
+    MssqlConnectionError,
+    MysqlConnectionError,
+    mssql_connect,
+    mysql_connect,
+)
+from ragtime.core.ssh import (
+    SSHConfig,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    ssh_tunnel_config_from_dict,
+    test_ssh_connection,
+)
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.core.vision_models import list_vision_models
 from ragtime.indexer.background_tasks import background_task_service
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
-                                    ChatMessage, ChatTaskResponse,
-                                    ChatTaskStatus, CheckRepoVisibilityRequest,
-                                    ConfigurationWarning, Conversation,
-                                    ConversationResponse,
-                                    CreateConversationRequest,
-                                    CreateIndexRequest,
-                                    CreateToolConfigRequest, EmbeddingStatus,
-                                    FetchBranchesRequest,
-                                    FetchBranchesResponse,
-                                    FilesystemAnalysisJobResponse,
-                                    FilesystemConnectionConfig,
-                                    FilesystemIndexJobResponse,
-                                    IndexAnalysisResult, IndexConfig,
-                                    IndexInfo, IndexJobResponse, IndexStatus,
-                                    MssqlDiscoverRequest,
-                                    MssqlDiscoverResponse,
-                                    MysqlDiscoverRequest,
-                                    MysqlDiscoverResponse, OcrMode,
-                                    PdmDiscoverRequest, PdmDiscoverResponse,
-                                    PdmIndexJobResponse,
-                                    PostgresDiscoverRequest,
-                                    PostgresDiscoverResponse,
-                                    RepoVisibilityResponse,
-                                    RetryVisualizationRequest,
-                                    RetryVisualizationResponse,
-                                    SchemaIndexJobResponse, SendMessageRequest,
-                                    ToolConfig, ToolTestRequest, ToolType,
-                                    TriggerFilesystemIndexRequest,
-                                    TriggerPdmIndexRequest,
-                                    TriggerSchemaIndexRequest,
-                                    UpdateSettingsRequest,
-                                    UpdateToolConfigRequest, VectorStoreType)
+from ragtime.indexer.models import (
+    AnalyzeIndexRequest,
+    AppSettings,
+    ChatMessage,
+    ChatTaskResponse,
+    ChatTaskStatus,
+    CheckRepoVisibilityRequest,
+    ConfigurationWarning,
+    Conversation,
+    ConversationResponse,
+    CreateConversationRequest,
+    CreateIndexRequest,
+    CreateToolConfigRequest,
+    EmbeddingStatus,
+    FetchBranchesRequest,
+    FetchBranchesResponse,
+    FilesystemAnalysisJobResponse,
+    FilesystemConnectionConfig,
+    FilesystemIndexJobResponse,
+    IndexAnalysisResult,
+    IndexConfig,
+    IndexInfo,
+    IndexJobResponse,
+    IndexStatus,
+    MssqlDiscoverRequest,
+    MssqlDiscoverResponse,
+    MysqlDiscoverRequest,
+    MysqlDiscoverResponse,
+    OcrMode,
+    PdmDiscoverRequest,
+    PdmDiscoverResponse,
+    PdmIndexJobResponse,
+    PostgresDiscoverRequest,
+    PostgresDiscoverResponse,
+    RepoVisibilityResponse,
+    RetryVisualizationRequest,
+    RetryVisualizationResponse,
+    SchemaIndexJobResponse,
+    SendMessageRequest,
+    ToolConfig,
+    ToolTestRequest,
+    ToolType,
+    TriggerFilesystemIndexRequest,
+    TriggerPdmIndexRequest,
+    TriggerSchemaIndexRequest,
+    UpdateSettingsRequest,
+    UpdateToolConfigRequest,
+    VectorStoreType,
+)
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
-                                            schema_indexer)
+from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
 from ragtime.indexer.service import indexer
 from ragtime.indexer.title_generation import schedule_title_generation
 from ragtime.indexer.utils import safe_tool_name
@@ -1624,8 +1652,7 @@ async def update_tool_config(
 
                 # Check for name conflicts with existing indexes
                 if is_faiss and new_index_name != old_index_name:
-                    from ragtime.indexer.vector_backends import \
-                        FAISS_INDEX_BASE_PATH
+                    from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 
                     new_path = FAISS_INDEX_BASE_PATH / new_index_name
                     if new_path.exists():
@@ -1646,8 +1673,7 @@ async def update_tool_config(
             # For FAISS filesystem indexes, rename using the backend
             if is_faiss and old_index_name and new_index_name:
                 if old_index_name != new_index_name:
-                    from ragtime.indexer.vector_backends import \
-                        get_faiss_backend
+                    from ragtime.indexer.vector_backends import get_faiss_backend
 
                     faiss_backend = get_faiss_backend()
                     success = await faiss_backend.rename_index(
@@ -6391,12 +6417,15 @@ async def _resolve_workspace_runtime_scope(
         conversation_tool_selections = await db.conversationtoolselection.find_many(
             where={"conversationId": conversation.id}
         )
-        conversation_selected_tool_ids = [s.toolConfigId for s in conversation_tool_selections]
+        conversation_selected_tool_ids = [
+            s.toolConfigId for s in conversation_tool_selections
+        ]
     finally:
         await db.disconnect()
 
-    # Combine conversation and workspace tool selections
-    selected_tool_ids = set(conversation_selected_tool_ids) if conversation_selected_tool_ids else set()
+    selected_tool_ids = (
+        set(conversation_selected_tool_ids) if conversation_selected_tool_ids else set()
+    )
 
     workspace_context = None
     if effective_workspace_id:
@@ -6405,8 +6434,8 @@ async def _resolve_workspace_runtime_scope(
             user.id,
             required_role,
         )
-        # Add workspace tools to the selected set
-        selected_tool_ids.update(workspace.selected_tool_ids)
+        # Workspace scope enforces strict selected-tool bounds.
+        selected_tool_ids = set(workspace.selected_tool_ids)
         workspace_context = {
             "workspace_id": effective_workspace_id,
             "user_id": user.id,
@@ -7481,14 +7510,15 @@ async def get_conversation_members(
     try:
         # Check if user has access to this conversation
         conversation = await db.conversation.find_unique(
-            where={"id": conversation_id},
-            include={"members": True}
+            where={"id": conversation_id}, include={"members": True}
         )
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
         # Check membership
-        user_member = next((m for m in conversation.members if m.userId == user.id), None)
+        user_member = next(
+            (m for m in conversation.members if m.userId == user.id), None
+        )
         if not user_member and conversation.userId != user.id:
             raise HTTPException(status_code=403, detail="Access denied")
 
@@ -7510,26 +7540,26 @@ async def update_conversation_members(
     try:
         # Check if user is owner
         conversation = await db.conversation.find_unique(
-            where={"id": conversation_id},
-            include={"members": True}
+            where={"id": conversation_id}, include={"members": True}
         )
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
         # Check if user is owner
-        user_member = next((m for m in conversation.members if m.userId == user.id), None)
+        user_member = next(
+            (m for m in conversation.members if m.userId == user.id), None
+        )
         if not user_member or user_member.role != "owner":
             if conversation.userId != user.id:
-                raise HTTPException(status_code=403, detail="Only owner can manage members")
+                raise HTTPException(
+                    status_code=403, detail="Only owner can manage members"
+                )
 
         members = request.get("members", [])
 
         # Delete existing non-owner members
         await db.conversationmember.delete_many(
-            where={
-                "conversationId": conversation_id,
-                "role": {"not": "owner"}
-            }
+            where={"conversationId": conversation_id, "role": {"not": "owner"}}
         )
 
         # Add new members
@@ -7540,11 +7570,7 @@ async def update_conversation_members(
             if role == "owner" and mid != (conversation.userId or user.id):
                 role = "editor"
             await db.conversationmember.create(
-                data={
-                    "conversationId": conversation_id,
-                    "userId": mid,
-                    "role": role
-                }
+                data={"conversationId": conversation_id, "userId": mid, "role": role}
             )
 
         return {"success": True}
@@ -7563,13 +7589,14 @@ async def get_conversation_tools(
     try:
         # Check if user has access
         conversation = await db.conversation.find_unique(
-            where={"id": conversation_id},
-            include={"members": True}
+            where={"id": conversation_id}, include={"members": True}
         )
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
-        user_member = next((m for m in conversation.members if m.userId == user.id), None)
+        user_member = next(
+            (m for m in conversation.members if m.userId == user.id), None
+        )
         if not user_member and conversation.userId != user.id:
             raise HTTPException(status_code=403, detail="Access denied")
 
@@ -7595,16 +7622,19 @@ async def update_conversation_tools(
     try:
         # Check if user can edit
         conversation = await db.conversation.find_unique(
-            where={"id": conversation_id},
-            include={"members": True}
+            where={"id": conversation_id}, include={"members": True}
         )
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
-        user_member = next((m for m in conversation.members if m.userId == user.id), None)
+        user_member = next(
+            (m for m in conversation.members if m.userId == user.id), None
+        )
         if not user_member or user_member.role == "viewer":
             if conversation.userId != user.id:
-                raise HTTPException(status_code=403, detail="Only owner/editor can manage tools")
+                raise HTTPException(
+                    status_code=403, detail="Only owner/editor can manage tools"
+                )
 
         tool_config_ids = request.get("tool_config_ids", [])
 
@@ -7616,10 +7646,7 @@ async def update_conversation_tools(
         # Add new selections
         for tool_id in tool_config_ids:
             await db.conversationtoolselection.create(
-                data={
-                    "conversationId": conversation_id,
-                    "toolConfigId": tool_id
-                }
+                data={"conversationId": conversation_id, "toolConfigId": tool_id}
             )
 
         return {"success": True}

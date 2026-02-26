@@ -42,18 +42,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Install Python dependencies
+# Install Python dependencies from pyproject groups
 # For legacy CPU support, use NumPy 1.x which has better compatibility with older CPUs
-# Install all deps first, then force-reinstall legacy packages to override numpy 2.x
-COPY requirements.txt requirements-legacy.txt /tmp/
+# Install all app deps first, then force-reinstall legacy overrides.
+COPY pyproject.toml /tmp/pyproject.toml
+COPY docker/scripts/install_deps_from_pyproject.py /tmp/install_deps_from_pyproject.py
 RUN pip install --no-cache-dir --upgrade pip && \
+    python /tmp/install_deps_from_pyproject.py /tmp/pyproject.toml app /tmp/requirements.app.txt && \
     if [ "$LEGACY_CPU" = "1" ]; then \
         echo "Installing all dependencies..." && \
-        pip install --no-cache-dir -r /tmp/requirements.txt && \
+        pip install --no-cache-dir -r /tmp/requirements.app.txt && \
+        python /tmp/install_deps_from_pyproject.py /tmp/pyproject.toml legacy /tmp/requirements.legacy.txt && \
         echo "Force-reinstalling legacy CPU packages (NumPy 1.x, rawpy <0.22)..." && \
-        pip install --no-cache-dir --force-reinstall --no-deps -r /tmp/requirements-legacy.txt; \
+        pip install --no-cache-dir --force-reinstall --no-deps -r /tmp/requirements.legacy.txt; \
     else \
-        pip install --no-cache-dir -r /tmp/requirements.txt; \
+        pip install --no-cache-dir -r /tmp/requirements.app.txt; \
     fi
 
 # =============================================================================

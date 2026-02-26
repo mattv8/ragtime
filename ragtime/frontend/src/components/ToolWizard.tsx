@@ -34,7 +34,7 @@ const SYSTEM_MOUNT_PATTERNS = [
   '/docker-scripts',
   '/docker-entrypoint',
   '/ragtime/ragtime',
-  '/ragtime/requirements.txt',
+  '/ragtime/pyproject.toml',
   '/ragtime/prisma',
   '/ragtime/data',
   '/ragtime/scripts',

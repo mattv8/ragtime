@@ -44,6 +44,7 @@ services:
       - ALLOWED_ORIGINS=*
       - INDEX_DATA_PATH=/data
       - API_PORT=${API_PORT:-8001}
+      - USERSPACE_RUNTIME_MANAGER_URL=${USERSPACE_RUNTIME_MANAGER_URL:-http://runtime:8090}
       # Authentication settings (from .env file via env_file)
       - JWT_EXPIRE_HOURS=${JWT_EXPIRE_HOURS:-24}
       - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-false}
@@ -54,8 +55,6 @@ services:
       - ../scripts:/ragtime/scripts:ro
       # Mount node_modules as named volume (prevents overwrite by source mount)
       - ragtime-node-modules:/ragtime/ragtime/frontend/node_modules
-      # Mount requirements for runtime install
-      - ../requirements.txt:/ragtime/requirements.txt:ro
       # Mount Prisma schema for client generation
       - ../prisma:/ragtime/prisma:ro
       # Mount data directory (indexes, SSL certs, etc.)
@@ -74,8 +73,33 @@ services:
     depends_on:
       ragtime-db:
         condition: service_healthy
+      runtime:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  runtime:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.runtime
+    container_name: runtime
+    environment:
+      - DEBUG_MODE=true
+      - USERSPACE_RUNTIME_DEFAULT_PREVIEW_URL=${USERSPACE_RUNTIME_DEFAULT_PREVIEW_URL:-http://ragtime:8001}
+      - USERSPACE_RUNTIME_POOL_SIZE=${USERSPACE_RUNTIME_POOL_SIZE:-2}
+      - USERSPACE_RUNTIME_MAX_POOL_SIZE=${USERSPACE_RUNTIME_MAX_POOL_SIZE:-6}
+      - USERSPACE_RUNTIME_LEASE_TTL_SECONDS=${USERSPACE_RUNTIME_LEASE_TTL_SECONDS:-3600}
+      - USERSPACE_RUNTIME_IDLE_EVICT_SECONDS=${USERSPACE_RUNTIME_IDLE_EVICT_SECONDS:-1200}
+      - USERSPACE_RUNTIME_RECONCILE_INTERVAL_SECONDS=${USERSPACE_RUNTIME_RECONCILE_INTERVAL_SECONDS:-15}
+    volumes:
+      - ../runtime:/runtime/runtime
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
       interval: 30s
       timeout: 10s
       retries: 3

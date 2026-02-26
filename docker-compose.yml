@@ -44,6 +44,7 @@ services:
       DATABASE_URL: postgresql://ragtime:${POSTGRES_PASSWORD}@ragtime-db:5432/ragtime
       # Recommended defaults
       DEBUG_MODE: "false"
+      USERSPACE_RUNTIME_MANAGER_URL: ${USERSPACE_RUNTIME_MANAGER_URL:-http://runtime:8090}
     volumes:
       # Data persistence (indexes, SSL certs, etc.)
       - ./data:/data
@@ -58,12 +59,35 @@ services:
     depends_on:
       ragtime-db:
         condition: service_healthy
+      runtime:
+        condition: service_started
     healthcheck:
       test: ["CMD", "sh", "-c", "if [ \"$ENABLE_HTTPS\" = \"true\" ]; then curl -fsk https://localhost:8000/health; else curl -fs http://localhost:8000/health; fi"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 15s
+
+  runtime:
+    image: hub.docker.visnovsky.us/library/runtime:main
+    container_name: runtime
+    restart: unless-stopped
+    environment:
+      PORT: "8090"
+      USERSPACE_RUNTIME_DEFAULT_PREVIEW_URL: ${USERSPACE_RUNTIME_DEFAULT_PREVIEW_URL:-http://runtime:5173}
+      USERSPACE_RUNTIME_POOL_SIZE: ${USERSPACE_RUNTIME_POOL_SIZE:-2}
+      USERSPACE_RUNTIME_MAX_POOL_SIZE: ${USERSPACE_RUNTIME_MAX_POOL_SIZE:-6}
+      USERSPACE_RUNTIME_LEASE_TTL_SECONDS: ${USERSPACE_RUNTIME_LEASE_TTL_SECONDS:-3600}
+      USERSPACE_RUNTIME_IDLE_EVICT_SECONDS: ${USERSPACE_RUNTIME_IDLE_EVICT_SECONDS:-1200}
+      USERSPACE_RUNTIME_RECONCILE_INTERVAL_SECONDS: ${USERSPACE_RUNTIME_RECONCILE_INTERVAL_SECONDS:-15}
+    networks:
+      - ragtime-network
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8090/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
 
 networks:
   ragtime-network:

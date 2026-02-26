@@ -25,22 +25,24 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
-                               RedirectResponse)
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from ragtime import __version__
 from ragtime.api import router
-from ragtime.api.auth import (AUTH_CODE_EXPIRY, _auth_codes,
-                              _cleanup_expired_auth_codes, authenticate)
+from ragtime.api.auth import (
+    AUTH_CODE_EXPIRY,
+    _auth_codes,
+    _cleanup_expired_auth_codes,
+    authenticate,
+)
 from ragtime.api.auth import oauth2_token as _oauth2_token_handler
 from ragtime.api.auth import router as auth_router
 from ragtime.api.auth import validate_redirect_uri
 from ragtime.config import settings
-from ragtime.core.auth import (create_access_token, create_session,
-                               validate_session)
+from ragtime.core.auth import create_access_token, create_session, validate_session
 from ragtime.core.database import connect_db, disconnect_db, get_db
 from ragtime.core.logging import setup_logging
 from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, limiter
@@ -55,13 +57,13 @@ from ragtime.indexer.routes import DIST_DIR
 from ragtime.indexer.routes import router as indexer_router
 from ragtime.indexer.schema_service import schema_indexer
 from ragtime.indexer.service import indexer
-from ragtime.mcp.config_routes import \
-    default_filter_router as mcp_default_filter_router
+from ragtime.mcp.config_routes import default_filter_router as mcp_default_filter_router
 from ragtime.mcp.config_routes import router as mcp_config_router
 from ragtime.mcp.routes import get_mcp_routes, mcp_lifespan_manager
 from ragtime.mcp.routes import router as mcp_router
 from ragtime.rag import rag
 from ragtime.userspace.routes import router as userspace_router
+from ragtime.userspace.runtime_routes import router as userspace_runtime_router
 from ragtime.userspace.service import userspace_service
 
 # Import indexer routes (always available now that it's part of ragtime)
@@ -298,6 +300,7 @@ app.include_router(auth_router)
 # Include indexer routes
 app.include_router(indexer_router)
 app.include_router(userspace_router)
+app.include_router(userspace_runtime_router)
 # Mount static files for indexer UI assets at root
 # Ensure assets directory exists so static file mount always works
 INDEXER_ASSETS_DIR.mkdir(parents=True, exist_ok=True)
@@ -728,7 +731,11 @@ async def token_endpoint(
     )
 
 
-@app.get("/{owner_username}/{share_slug}", response_class=HTMLResponse, include_in_schema=False)
+@app.get(
+    "/{owner_username}/{share_slug}",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
 async def userspace_share_path(owner_username: str, share_slug: str):
     """Serve User Space shared dashboard URLs as SPA routes."""
     reserved_roots = {

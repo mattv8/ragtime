@@ -392,12 +392,20 @@ class UserSpaceService:
             raise HTTPException(status_code=400, detail="Invalid file path")
         return target
 
+    def resolve_workspace_file_path(
+        self, workspace_id: str, relative_path: str
+    ) -> Path:
+        return self._resolve_workspace_file_path(workspace_id, relative_path)
+
     def _is_reserved_internal_path(self, relative_path: str) -> bool:
         normalized = relative_path.strip("/")
         if normalized.endswith(".artifact.json"):
             return True
         parts = Path(normalized).parts
         return ".git" in parts
+
+    def is_reserved_internal_path(self, relative_path: str) -> bool:
+        return self._is_reserved_internal_path(relative_path)
 
     @staticmethod
     def _generate_share_token() -> str:
@@ -735,6 +743,11 @@ class UserSpaceService:
             )
         except Exception:
             logger.debug("Failed to update workspace timestamp for %s", workspace_id)
+
+    async def touch_workspace(
+        self, workspace_id: str, ts: datetime | None = None
+    ) -> None:
+        await self._touch_workspace(workspace_id, ts=ts)
 
     def _workspace_from_record(self, record: Any) -> UserSpaceWorkspace:
         member_rows = list(getattr(record, "members", []) or [])

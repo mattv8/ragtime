@@ -67,6 +67,23 @@ class Settings(BaseSettings):
     # Indexer settings
     index_data_path: str = Field(default="/data", alias="INDEX_DATA_PATH")
 
+    # User Space runtime provider settings
+    userspace_runtime_manager_url: str = Field(
+        default="http://runtime:8090",
+        alias="USERSPACE_RUNTIME_MANAGER_URL",
+        description="Base URL for external runtime manager API",
+    )
+    userspace_runtime_manager_timeout_seconds: float = Field(
+        default=5.0,
+        alias="USERSPACE_RUNTIME_MANAGER_TIMEOUT_SECONDS",
+        description="Timeout in seconds for runtime manager HTTP requests",
+    )
+    userspace_runtime_manager_auth_token: str = Field(
+        default="",
+        alias="USERSPACE_RUNTIME_MANAGER_AUTH_TOKEN",
+        description="Optional bearer token used when calling runtime manager",
+    )
+
     # Server
     host: str = Field(default="0.0.0.0", alias="HOST")
     port: int = Field(default=8000, alias="PORT")
