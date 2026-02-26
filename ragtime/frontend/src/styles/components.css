@@ -889,6 +889,26 @@ textarea:focus {
   padding: 0;
 }
 
+.userspace-runtime-terminal-wrap {
+  margin-top: var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-tertiary);
+  min-height: 220px;
+  max-height: 320px;
+  overflow: hidden;
+}
+
+.userspace-runtime-terminal {
+  height: 100%;
+  width: 100%;
+  padding: var(--space-xs);
+}
+
+.userspace-runtime-terminal .xterm {
+  height: 100%;
+}
+
 /* Preview cards */
 
 .userspace-preview-card {

@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronDown, ChevronRight, ExternalLink, File, History, Link2, Maximize2, Minimize2, Pencil, Plus, Save, Terminal, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
+import { Terminal as XTerm } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import '@xterm/xterm/css/xterm.css';
 
 import { api } from '@/api';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
@@ -105,8 +108,6 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const [collabPresenceCount, setCollabPresenceCount] = useState(0);
   const [terminalConnected, setTerminalConnected] = useState(false);
   const [terminalReadOnly, setTerminalReadOnly] = useState(false);
-  const [terminalInput, setTerminalInput] = useState('');
-  const [terminalOutput, setTerminalOutput] = useState('');
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [sharingWorkspace, setSharingWorkspace] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
@@ -159,6 +160,11 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const collabSocketRef = useRef<WebSocket | null>(null);
   const collabSuppressNextSendRef = useRef(false);
   const terminalSocketRef = useRef<WebSocket | null>(null);
+  const terminalReadOnlyRef = useRef(false);
+  const terminalContainerRef = useRef<HTMLDivElement | null>(null);
+  const terminalRef = useRef<XTerm | null>(null);
+  const terminalFitRef = useRef<FitAddon | null>(null);
+  const terminalResizeObserverRef = useRef<ResizeObserver | null>(null);
   const lastWorkspaceCookieName = useMemo(() => getLastWorkspaceCookieName(currentUser.id), [currentUser.id]);
 
   // Resize state
@@ -288,6 +294,10 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
 
   const canEditWorkspace = activeWorkspaceRole === 'owner' || activeWorkspaceRole === 'editor';
   const isOwner = activeWorkspaceRole === 'owner';
+  const runtimeSessionState = runtimeStatus?.session_state ?? 'stopped';
+  const showStartRuntimeButton = runtimeSessionState === 'stopped' || runtimeSessionState === 'error';
+  const showRestartRuntimeButton = runtimeSessionState === 'running';
+  const showStopRuntimeButton = runtimeSessionState === 'running' || runtimeSessionState === 'starting';
 
   const formatUserLabel = useCallback((user?: Pick<User, 'username' | 'display_name'> | null, fallbackId?: string) => {
     const username = user?.username?.trim() || fallbackId?.trim() || 'unknown';
@@ -928,35 +938,94 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   useEffect(() => {
     terminalSocketRef.current?.close();
     terminalSocketRef.current = null;
+    terminalResizeObserverRef.current?.disconnect();
+    terminalResizeObserverRef.current = null;
+    terminalFitRef.current = null;
+    terminalRef.current?.dispose();
+    terminalRef.current = null;
     setTerminalConnected(false);
     setTerminalReadOnly(false);
-    setTerminalOutput('');
+    terminalReadOnlyRef.current = false;
 
     if (activeRightTab !== 'console' || !activeWorkspaceId) {
       return;
     }
+
+    const terminalContainer = terminalContainerRef.current;
+    if (!terminalContainer) {
+      return;
+    }
+
+    const fitAddon = new FitAddon();
+    const terminal = new XTerm({
+      convertEol: true,
+      cursorBlink: true,
+      disableStdin: false,
+      fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)',
+      fontSize: 12,
+    });
+    terminal.loadAddon(fitAddon);
+    terminal.open(terminalContainer);
+    fitAddon.fit();
+    terminal.writeln('$ waiting for terminal output...');
+
+    terminalRef.current = terminal;
+    terminalFitRef.current = fitAddon;
+
+    const resizeObserver = new ResizeObserver(() => {
+      try {
+        fitAddon.fit();
+      } catch {
+        // ignore sizing errors during rapid layout changes
+      }
+    });
+    resizeObserver.observe(terminalContainer);
+    terminalResizeObserverRef.current = resizeObserver;
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/indexes/userspace/runtime/workspaces/${encodeURIComponent(activeWorkspaceId)}/pty`;
     const socket = new WebSocket(wsUrl);
     terminalSocketRef.current = socket;
 
+    const dataDisposable = terminal.onData((data) => {
+      if (terminalReadOnlyRef.current) {
+        return;
+      }
+      if (socket.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      try {
+        socket.send(JSON.stringify({ type: 'input', data }));
+      } catch {
+        // ignore
+      }
+    });
+
     socket.onopen = () => {
       setTerminalConnected(true);
+      try {
+        fitAddon.fit();
+      } catch {
+        // ignore
+      }
     };
 
     socket.onmessage = (event) => {
       try {
         const payload = JSON.parse(event.data) as { type?: string; data?: string; read_only?: boolean };
         if (payload.type === 'status') {
-          setTerminalReadOnly(Boolean(payload.read_only));
+          const isReadOnly = Boolean(payload.read_only);
+          terminalReadOnlyRef.current = isReadOnly;
+          setTerminalReadOnly(isReadOnly);
+          terminal.options.disableStdin = isReadOnly;
           return;
         }
         if (payload.type === 'output') {
-          setTerminalOutput((current) => `${current}${payload.data ?? ''}`);
+          terminal.write(payload.data ?? '');
+          return;
         }
       } catch {
-        // ignore
+        terminal.write(String(event.data ?? ''));
       }
     };
 
@@ -969,25 +1038,20 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     };
 
     return () => {
+      dataDisposable.dispose();
       socket.close();
       if (terminalSocketRef.current === socket) {
         terminalSocketRef.current = null;
       }
+      if (terminalResizeObserverRef.current) {
+        terminalResizeObserverRef.current.disconnect();
+        terminalResizeObserverRef.current = null;
+      }
+      terminalFitRef.current = null;
+      terminalRef.current?.dispose();
+      terminalRef.current = null;
     };
   }, [activeRightTab, activeWorkspaceId]);
-
-  const handleTerminalSubmit = useCallback(() => {
-    const socket = terminalSocketRef.current;
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    const line = terminalInput;
-    if (!line) return;
-    try {
-      socket.send(JSON.stringify({ type: 'input', data: `${line}\n` }));
-      setTerminalInput('');
-    } catch {
-      // ignore
-    }
-  }, [terminalInput]);
 
   useEffect(() => {
     const socket = collabSocketRef.current;
@@ -2127,9 +2191,15 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
             </div>
             {activeRightTab === 'console' && canEditWorkspace && activeWorkspaceId && (
               <div className="userspace-toolbar-actions">
-                <button className="btn btn-secondary btn-sm" onClick={handleStartRuntime} disabled={runtimeBusy}>Start</button>
-                <button className="btn btn-secondary btn-sm" onClick={handleRestartRuntime} disabled={runtimeBusy}>Restart</button>
-                <button className="btn btn-secondary btn-sm" onClick={handleStopRuntime} disabled={runtimeBusy}>Stop</button>
+                {showStartRuntimeButton && (
+                  <button className="btn btn-secondary btn-sm" onClick={handleStartRuntime} disabled={runtimeBusy}>Start</button>
+                )}
+                {showRestartRuntimeButton && (
+                  <button className="btn btn-secondary btn-sm" onClick={handleRestartRuntime} disabled={runtimeBusy}>Restart</button>
+                )}
+                {showStopRuntimeButton && (
+                  <button className="btn btn-secondary btn-sm" onClick={handleStopRuntime} disabled={runtimeBusy}>Stop</button>
+                )}
               </div>
             )}
           </div>
@@ -2178,24 +2248,13 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                   <span className="userspace-muted">{terminalConnected ? (terminalReadOnly ? 'connected (read-only)' : 'connected') : 'offline'}</span>
                 </div>
               </div>
-              <pre style={{ whiteSpace: 'pre-wrap', marginTop: 8, maxHeight: 220, overflow: 'auto', padding: 8, background: 'var(--bg-tertiary)', borderRadius: 6 }}>
-                {terminalOutput || '$ waiting for terminal output...'}
-              </pre>
+              <div className="userspace-runtime-terminal-wrap">
+                <div ref={terminalContainerRef} className="userspace-runtime-terminal" />
+              </div>
               <div className="userspace-toolbar-actions" style={{ marginTop: 8 }}>
-                <input
-                  value={terminalInput}
-                  onChange={(event) => setTerminalInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault();
-                      handleTerminalSubmit();
-                    }
-                  }}
-                  placeholder={terminalReadOnly ? 'Terminal is read-only' : 'Type command and press Enter'}
-                  disabled={!terminalConnected || terminalReadOnly}
-                  style={{ flex: 1 }}
-                />
-                <button className="btn btn-secondary btn-sm" onClick={handleTerminalSubmit} disabled={!terminalConnected || terminalReadOnly || !terminalInput}>Send</button>
+                <span className="userspace-muted">
+                  {terminalReadOnly ? 'Terminal is read-only for your workspace role.' : 'Terminal input is live; focus terminal and type commands directly.'}
+                </span>
               </div>
             </div>
           )}
