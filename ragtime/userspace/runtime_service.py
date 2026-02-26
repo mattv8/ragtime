@@ -354,15 +354,65 @@ class UserSpaceRuntimeService:
         if current:
             session = self._to_runtime_session(current)
             target_provider_name = self._runtime_provider_name()
+            provider_status: dict[str, Any] | None = None
             if (
                 session.state == "running"
                 and session.runtime_provider == target_provider_name
             ):
-                return session
+                provider_status = await self._runtime_provider_get_status(
+                    session.provider_session_id
+                )
+                if provider_status is not None:
+                    state_value = str(provider_status.get("state") or "").strip()
+                    state_value = (
+                        state_value
+                        if state_value
+                        in {
+                            "starting",
+                            "running",
+                            "stopping",
+                            "stopped",
+                            "error",
+                        }
+                        else session.state
+                    )
+                    preview_value = str(
+                        provider_status.get("preview_internal_url") or ""
+                    ).strip()
+                    if not preview_value:
+                        preview_value = (
+                            session.preview_internal_url
+                            or _RUNTIME_PREVIEW_DEFAULT_BASE
+                        )
+                    last_error_value = provider_status.get("last_error")
+                    if not isinstance(last_error_value, str):
+                        last_error_value = session.last_error
+
+                    if (
+                        state_value != session.state
+                        or preview_value != session.preview_internal_url
+                        or last_error_value != session.last_error
+                    ):
+                        current = await model.update(
+                            where={"id": session.id},
+                            data={
+                                "state": state_value,
+                                "previewInternalUrl": preview_value,
+                                "lastError": last_error_value,
+                                "lastHeartbeatAt": self._utc_now(),
+                            },
+                        )
+                        return self._to_runtime_session(current)
+                    return session
+
+                logger.warning(
+                    "Runtime provider session missing for workspace %s; recreating transparently",
+                    workspace_id,
+                )
 
             provider_data = await self._runtime_provider_start_session(
                 workspace_id,
-                leased_by_user_id,
+                session.leased_by_user_id or leased_by_user_id,
                 existing_provider_session_id=(
                     session.provider_session_id
                     if session.runtime_provider == target_provider_name
@@ -640,6 +690,21 @@ class UserSpaceRuntimeService:
         provider_status = await self._runtime_provider_get_status(
             session.provider_session_id
         )
+
+        if (
+            provider_status is None
+            and session.runtime_provider == self._runtime_provider_name()
+            and session.state in {"starting", "running"}
+        ):
+            logger.warning(
+                "Runtime provider status missing for workspace %s; auto-recovering session",
+                workspace_id,
+            )
+            provider_status = await self._runtime_provider_start_session(
+                workspace_id,
+                session.leased_by_user_id or user_id,
+                existing_provider_session_id=session.provider_session_id,
+            )
 
         state_for_response = session.state
         preview_internal_url = session.preview_internal_url

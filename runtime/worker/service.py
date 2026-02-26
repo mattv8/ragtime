@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import os
+import socket
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 
+import httpx
 from fastapi import HTTPException
 
 from runtime.manager.models import (
@@ -27,6 +29,8 @@ class WorkerSession:
     pty_access_token: str
     state: RuntimeSessionState
     devserver_running: bool
+    devserver_port: int | None
+    devserver_command: list[str] | None
     last_error: str | None
     updated_at: datetime
 
@@ -45,6 +49,10 @@ class WorkerService:
         self._root = Path(
             os.getenv("RUNTIME_WORKSPACE_ROOT", "/data/_userspace")
         ).resolve()
+        self._devserver_processes: dict[str, asyncio.subprocess.Process] = {}
+        self._devserver_start_timeout_seconds = int(
+            os.getenv("RUNTIME_DEVSERVER_START_TIMEOUT_SECONDS", "25")
+        )
 
     @staticmethod
     def _utc_now() -> datetime:
@@ -56,6 +64,13 @@ class WorkerService:
         if not normalized or any(part == ".." for part in path.parts):
             raise HTTPException(status_code=400, detail="Invalid file path")
         return "/".join(path.parts)
+
+    def _resolve_workspace_root(self, workspace_id: str) -> Path:
+        canonical_root = self._root / "workspaces" / workspace_id / "files"
+        if canonical_root.exists() and canonical_root.is_dir():
+            return canonical_root
+        legacy_root = self._root / workspace_id
+        return legacy_root
 
     def _session_response(self, session: WorkerSession) -> WorkerSessionResponse:
         return WorkerSessionResponse(
@@ -80,6 +95,136 @@ class WorkerService:
             updated_at=session.updated_at,
         )
 
+    def _pick_free_port(self) -> int:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            return int(sock.getsockname()[1])
+
+    def _resolve_devserver_command(
+        self,
+        workspace_root: Path,
+        port: int,
+    ) -> tuple[list[str] | None, str | None]:
+        package_json = workspace_root / "package.json"
+        if package_json.exists() and package_json.is_file():
+            return (
+                [
+                    "npm",
+                    "run",
+                    "dev",
+                    "--",
+                    "--host",
+                    "0.0.0.0",
+                    "--port",
+                    str(port),
+                ],
+                None,
+            )
+
+        index_html = workspace_root / "index.html"
+        if index_html.exists() and index_html.is_file():
+            return (
+                [
+                    "python3",
+                    "-m",
+                    "http.server",
+                    str(port),
+                    "--bind",
+                    "0.0.0.0",
+                    "--directory",
+                    str(workspace_root),
+                ],
+                None,
+            )
+
+        return (
+            None,
+            "No runnable web entrypoint found. Create package.json (dev script) or index.html.",
+        )
+
+    async def _wait_devserver_ready(self, port: int) -> bool:
+        deadline = (
+            asyncio.get_event_loop().time() + self._devserver_start_timeout_seconds
+        )
+        probe_url = f"http://127.0.0.1:{port}/"
+        timeout = httpx.Timeout(connect=0.5, read=1.0, write=1.0, pool=0.5)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            while asyncio.get_event_loop().time() < deadline:
+                try:
+                    response = await client.get(probe_url)
+                    if response.status_code < 500:
+                        return True
+                except Exception:
+                    pass
+                await asyncio.sleep(0.25)
+        return False
+
+    async def _terminate_devserver_locked(self, session_id: str) -> None:
+        process = self._devserver_processes.pop(session_id, None)
+        if process is None:
+            return
+        if process.returncode is None:
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=3)
+            except Exception:
+                process.kill()
+                await process.wait()
+
+    async def _sync_devserver_state_locked(self, session: WorkerSession) -> None:
+        process = self._devserver_processes.get(session.id)
+        if process is None:
+            session.devserver_running = False
+            return
+        if process.returncode is None:
+            session.devserver_running = True
+            return
+
+        self._devserver_processes.pop(session.id, None)
+        session.devserver_running = False
+        if process.returncode != 0:
+            session.last_error = f"Dev server exited with code {process.returncode}"
+        session.updated_at = self._utc_now()
+
+    async def _start_devserver_locked(self, session: WorkerSession) -> None:
+        await self._sync_devserver_state_locked(session)
+        if session.devserver_running:
+            return
+
+        port = session.devserver_port or self._pick_free_port()
+        command, command_error = self._resolve_devserver_command(
+            session.workspace_root, port
+        )
+        session.devserver_port = port
+
+        if not command:
+            session.devserver_running = False
+            session.last_error = command_error
+            session.updated_at = self._utc_now()
+            return
+
+        await self._terminate_devserver_locked(session.id)
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            cwd=str(session.workspace_root),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        self._devserver_processes[session.id] = process
+        session.devserver_command = command
+
+        ready = await self._wait_devserver_ready(port)
+        if not ready:
+            await self._terminate_devserver_locked(session.id)
+            session.devserver_running = False
+            session.last_error = "Dev server failed to become ready"
+            session.updated_at = self._utc_now()
+            return
+
+        session.devserver_running = True
+        session.last_error = None
+        session.updated_at = self._utc_now()
+
     async def start_session(
         self,
         request: WorkerStartSessionRequest,
@@ -91,14 +236,13 @@ class WorkerService:
             if existing_session_id and existing_session_id in self._sessions:
                 session = self._sessions[existing_session_id]
                 session.state = "running"
-                session.devserver_running = True
-                session.last_error = None
                 session.pty_access_token = request.pty_access_token
+                await self._start_devserver_locked(session)
                 session.updated_at = self._utc_now()
                 return self._session_response(session)
 
             session_id = f"wkr-{request.workspace_id[:8]}-{os.urandom(4).hex()}"
-            workspace_root = self._root / request.workspace_id
+            workspace_root = self._resolve_workspace_root(request.workspace_id)
             workspace_root.mkdir(parents=True, exist_ok=True)
             session = WorkerSession(
                 id=session_id,
@@ -107,12 +251,15 @@ class WorkerService:
                 workspace_root=workspace_root,
                 pty_access_token=request.pty_access_token,
                 state="running",
-                devserver_running=True,
+                devserver_running=False,
+                devserver_port=None,
+                devserver_command=None,
                 last_error=None,
                 updated_at=self._utc_now(),
             )
             self._sessions[session_id] = session
             self._provider_to_session[request.provider_session_id] = session_id
+            await self._start_devserver_locked(session)
             return self._session_response(session)
 
     async def get_session(self, worker_session_id: str) -> WorkerSessionResponse:
@@ -120,6 +267,7 @@ class WorkerService:
             session = self._sessions.get(worker_session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Worker session not found")
+            await self._sync_devserver_state_locked(session)
             session.updated_at = self._utc_now()
             return self._session_response(session)
 
@@ -128,6 +276,7 @@ class WorkerService:
             session = self._sessions.get(worker_session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Worker session not found")
+            await self._terminate_devserver_locked(session.id)
             session.state = "stopped"
             session.devserver_running = False
             session.updated_at = self._utc_now()
@@ -138,9 +287,9 @@ class WorkerService:
             session = self._sessions.get(worker_session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Worker session not found")
+            await self._terminate_devserver_locked(session.id)
             session.state = "running"
-            session.devserver_running = True
-            session.last_error = None
+            await self._start_devserver_locked(session)
             session.updated_at = self._utc_now()
             return self._session_response(session)
 
@@ -192,22 +341,48 @@ class WorkerService:
             session.updated_at = self._utc_now()
             return {"success": True, "path": rel_path}
 
-    async def preview_html(self, worker_session_id: str, path: str) -> str:
+    async def preview_response(
+        self,
+        worker_session_id: str,
+        path: str,
+        query: str | None = None,
+    ) -> tuple[bytes | str, str, int]:
         async with self._lock:
             session = self._sessions.get(worker_session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Worker session not found")
             if session.state not in {"running", "starting"}:
                 raise HTTPException(status_code=409, detail="Worker session not active")
+            await self._sync_devserver_state_locked(session)
+            if not session.devserver_running:
+                await self._start_devserver_locked(session)
+
+            if not session.devserver_running or not session.devserver_port:
+                error_message = session.last_error or "Dev server is not running"
+                raise HTTPException(status_code=502, detail=error_message)
+
             normalized = self._normalize_file_path(path) if path else ""
-            if normalized:
-                candidate = session.workspace_root / normalized
-                if candidate.exists() and candidate.is_file():
-                    return candidate.read_text(encoding="utf-8")
-            return (
-                "<!doctype html><html><head><meta charset='utf-8'><title>Runtime Preview</title></head>"
-                "<body><main><h2>Runtime session active</h2><p>Runtime preview is running.</p></main></body></html>"
+            upstream_base = f"http://127.0.0.1:{session.devserver_port}"
+            upstream_url = (
+                f"{upstream_base}/{normalized}" if normalized else f"{upstream_base}/"
             )
+            if query:
+                upstream_url = f"{upstream_url}?{query}"
+
+        timeout = httpx.Timeout(connect=2.0, read=30.0, write=30.0, pool=5.0)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            try:
+                upstream_response = await client.get(upstream_url)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Runtime dev server unavailable: {exc}",
+                ) from exc
+
+        media_type = (
+            upstream_response.headers.get("content-type") or "application/octet-stream"
+        )
+        return upstream_response.content, media_type, upstream_response.status_code
 
     async def verify_pty_token(
         self, worker_session_id: str, token: str
@@ -222,6 +397,8 @@ class WorkerService:
 
     async def health(self) -> WorkerHealthResponse:
         async with self._lock:
+            for session in self._sessions.values():
+                await self._sync_devserver_state_locked(session)
             active_sessions = sum(
                 1
                 for session in self._sessions.values()

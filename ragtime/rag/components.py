@@ -355,7 +355,7 @@ TOOL_USAGE_REMINDER = """[CRITICAL: Use the tool calling API. Do NOT write fake 
 
 """
 
-USERSPACE_TURN_REMINDER = """[USER SPACE TURN CHECKLIST: Before finalizing, run validate_userspace_typescript on EVERY changed .ts/.tsx file (including dashboard/main.ts) and fix all reported errors. Persist implementation changes via userspace file tools (not chat-only prose). Treat any tool result with rejected=true as a failed step (even if replacement counts are shown), and fix/retry before claiming success. Never use hardcoded/mock/sample/static data in dashboard modules; wire live data via context.components[componentId].execute() with required metadata/checks. After each completed change loop, call create_userspace_snapshot with a concise completion message.]
+USERSPACE_TURN_REMINDER = """[USER SPACE TURN CHECKLIST: Before finalizing, run validate_userspace_code on EVERY changed .ts/.tsx file (including dashboard/main.ts) and fix all reported errors. Persist implementation changes via userspace file tools (not chat-only prose). Treat any tool result with rejected=true as a failed step (even if replacement counts are shown), and fix/retry before claiming success. Never use hardcoded/mock/sample/static data in dashboard modules; wire live data via context.components[componentId].execute() with required metadata/checks. After each completed change loop, call create_userspace_snapshot with a concise completion message.]
 
 """
 
@@ -1056,7 +1056,7 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - For focused, minimal edits, prefer `patch_userspace_file` with explicit old/new snippets instead of re-rendering entire files.
 - Then create/update files with full content via User Space file tools.
 - For implementation requests, never finish with only prose: ensure at least one artifact file write occurred in the current turn.
-- Before declaring "done" or finalizing, you MUST run `validate_userspace_typescript` on EVERY changed `.ts`/`.tsx` file (including `dashboard/main.ts`) and fix all reported errors first.
+- Before declaring "done" or finalizing, you MUST run `validate_userspace_code` on EVERY changed `.ts`/`.tsx` file (including `dashboard/main.ts`) and fix all reported errors first.
 - On every completed user-requested change loop, call `create_userspace_snapshot` immediately with a concise completion message.
 
 ### Theme + CSS rules
@@ -4710,16 +4710,14 @@ except Exception as e:
                 description="Brief description of why snapshot is being created",
             )
 
-        class ValidateUserSpaceTypeScriptInput(BaseModel):
+        class ValidateUserSpaceCodeInput(BaseModel):
             path: str = Field(
                 default="dashboard/main.ts",
-                description=(
-                    "Relative path from workspace files root to validate as TypeScript."
-                ),
+                description=("Relative path from workspace files root to validate."),
             )
             reason: str = Field(
                 default="",
-                description="Brief description of why TypeScript validation is needed",
+                description="Brief description of why code validation is needed",
             )
 
         async def list_userspace_files(reason: str = "", **_: Any) -> str:
@@ -5199,7 +5197,7 @@ except Exception as e:
                     diagnostics = typecheck.get("errors") or []
                     if diagnostics:
                         warnings.append(
-                            "TypeScript/runtime diagnostics detected. Run validate_userspace_typescript and fix reported errors before finalizing."
+                            "TypeScript/runtime diagnostics detected. Run validate_userspace_code and fix reported errors before finalizing."
                         )
 
             if hard_errors:
@@ -5303,7 +5301,7 @@ except Exception as e:
             )
             return json.dumps(snapshot.model_dump(mode="json"), indent=2)
 
-        async def validate_userspace_typescript(
+        async def validate_userspace_code(
             path: str = "dashboard/main.ts",
             reason: str = "",
             **_: Any,
@@ -5442,6 +5440,19 @@ except Exception as e:
                         if unresolved_message not in aggregate_errors:
                             aggregate_errors.append(unresolved_message)
 
+            should_check_runnable_entrypoint = normalized_start_path.startswith(
+                "dashboard/"
+            )
+            if should_check_runnable_entrypoint:
+                runnable_entrypoint_error = "No runnable web entrypoint found. Create package.json (dev script) or index.html."
+                has_package_json = await get_file("package.json") is not None
+                has_index_html = await get_file("index.html") is not None
+                if not has_package_json and not has_index_html:
+                    if runnable_entrypoint_error not in aggregate_runtime_errors:
+                        aggregate_runtime_errors.append(runnable_entrypoint_error)
+                    if runnable_entrypoint_error not in aggregate_errors:
+                        aggregate_errors.append(runnable_entrypoint_error)
+
             overall_ok = (
                 bool(file_results)
                 and all(
@@ -5543,13 +5554,13 @@ except Exception as e:
                 args_schema=CreateUserSpaceSnapshotInput,
             ),
             StructuredTool.from_function(
-                coroutine=validate_userspace_typescript,
-                name="validate_userspace_typescript",
+                coroutine=validate_userspace_code,
+                name="validate_userspace_code",
                 description=(
-                    "Validate a workspace TypeScript file and return diagnostics with file/line details. "
-                    "Use after TypeScript edits and before creating snapshots."
+                    "Validate a workspace code file and return TypeScript/runtime diagnostics with file/line details. "
+                    "Use after edits and before creating snapshots."
                 ),
-                args_schema=ValidateUserSpaceTypeScriptInput,
+                args_schema=ValidateUserSpaceCodeInput,
             ),
         ]
 

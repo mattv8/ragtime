@@ -11,10 +11,11 @@ from fastapi import (
     FastAPI,
     Header,
     HTTPException,
+    Request,
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import HTMLResponse
+from fastapi.responses import Response
 
 from runtime.manager.models import (
     RuntimeFileReadResponse,
@@ -130,10 +131,15 @@ async def delete_file(
 @router.get("/worker/sessions/{worker_session_id}/preview/{path:path}")
 async def preview(
     worker_session_id: str,
+    request: Request,
     path: str = "",
-) -> HTMLResponse:
-    content = await get_worker_service().preview_html(worker_session_id, path)
-    return HTMLResponse(content=content)
+) -> Response:
+    content, media_type, status_code = await get_worker_service().preview_response(
+        worker_session_id,
+        path,
+        query=request.url.query or None,
+    )
+    return Response(content=content, media_type=media_type, status_code=status_code)
 
 
 @router.websocket("/worker/sessions/{worker_session_id}/pty")
