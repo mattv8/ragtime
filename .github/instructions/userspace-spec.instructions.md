@@ -39,14 +39,18 @@ Implemented now:
 - Runtime container supports explicit service mode (`manager` or `worker`) via `RUNTIME_SERVICE_MODE` (default deployment uses `manager`).
 - Preview proxying supports HTTP + websocket upgrades.
 - Shared preview proxy supports both slug and token route shapes.
+- Runtime capability token issuance is live for scoped runtime operations.
 - Collaboration supports text-sync updates, conflict resync, presence events, and file create/rename/delete broadcasts.
 - Runtime PTY websocket is now offloaded through manager→worker proxy chain; ragtime no longer spawns local PTY subprocesses.
 - Runtime FS routes are manager-backed and synced to worker runtime sessions.
+- Runtime worker filesystem root resolution prefers `${INDEX_DATA_PATH}/_userspace/workspaces/{workspace_id}/files` with fallback to legacy `${INDEX_DATA_PATH}/_userspace/{workspace_id}`.
+- Preview traffic is proxied to a session-managed internal devserver port (currently dynamic per session).
 - Legacy frontend `srcDoc` preview fallback has been removed; preview is runtime-only.
 
 Still pending for full hard-cutover:
 
 - Replace in-container worker session backend with MicroVM pool/session orchestration backend (provider seam retained).
+- Move from per-session dynamic internal devserver ports to fixed internal devserver port invariant (`5173`) per hard-cutover plan.
 - Replace text-sync collaboration with CRDT/Yjs semantics.
 - Finish operator runbook + end-to-end runtime validation checklist.
 
@@ -69,6 +73,10 @@ Still pending for full hard-cutover:
   - `GET /indexes/userspace/runtime/workspaces/{workspace_id}/devserver/status`
   - `POST /indexes/userspace/runtime/workspaces/{workspace_id}/devserver/start`
   - `POST /indexes/userspace/runtime/workspaces/{workspace_id}/devserver/restart`
+  - `POST /indexes/userspace/runtime/workspaces/{workspace_id}/capability-token`
+  - `GET /indexes/userspace/runtime/workspaces/{workspace_id}/fs/{file_path:path}`
+  - `PUT /indexes/userspace/runtime/workspaces/{workspace_id}/fs/{file_path:path}`
+  - `DELETE /indexes/userspace/runtime/workspaces/{workspace_id}/fs/{file_path:path}`
   - `WS /indexes/userspace/runtime/workspaces/{workspace_id}/pty`
 - Collaboration:
   - `WS /indexes/userspace/collab/workspaces/{workspace_id}/files/{file_path:path}`
@@ -93,11 +101,22 @@ Still pending for full hard-cutover:
 3. Workspace preview route responds (200 when upstream exists, 502 with clear error when unavailable).
 4. No new stack traces in `docker logs ragtime-dev` for touched endpoints.
 5. Any touched frontend/runtime types pass diagnostics (`get_errors`).
+6. Frontend production build succeeds in-container:
+  - `docker exec ragtime-dev sh -c "cd /ragtime/ragtime/frontend && npm run build"`
 
 ## Runtime Plan Reference
 
 `User Space Runtime Plan v2.md` is the target roadmap.
 If a plan item is not implemented, document it explicitly in PR/summary rather than implying completion.
+
+## Apparent Gaps vs Runtime Plan v2
+
+These are the key, currently visible deltas between implementation and `User Space Runtime Plan v2.md`:
+
+- Fixed internal devserver port invariant (`5173`) is not yet enforced; runtime currently uses a session-allocated dynamic port behind proxying.
+- Collaboration transport is not yet CRDT/Yjs; current protocol is text snapshot/update with version-conflict resync and presence.
+- MicroVM warm-pool leasing backend is not yet active; current runtime backend remains in-container manager/worker orchestration.
+- The plan's full multi-editor CRDT semantics (document-level merge guarantees and binary Yjs protocol) are pending.
 
 ## Runtime Offload Implementation Notes (Current)
 
@@ -105,4 +124,4 @@ If a plan item is not implemented, document it explicitly in PR/summary rather t
 - Data plane execution now lives in isolated runtime worker services (filesystem writes, PTY process execution, preview serving).
 - Manager contract remains stable for start/get/stop/restart/health; additional manager endpoints support PTY URL and FS operations.
 - Compose stacks run ragtime + runtime (manager mode); runtime hosts internal isolated sessions and ragtime must be configured with matching manager auth token.
-- Runtime webroots are rooted at `${INDEX_DATA_PATH}/_userspace/{workspace_id}` in the runtime container (`/data/_userspace/{workspace_id}` in compose defaults).
+- Runtime webroots are rooted at `${INDEX_DATA_PATH}/_userspace/workspaces/{workspace_id}/files` (with fallback to legacy `${INDEX_DATA_PATH}/_userspace/{workspace_id}` for compatibility).
