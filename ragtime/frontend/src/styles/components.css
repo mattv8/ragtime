@@ -856,11 +856,15 @@ textarea:focus {
   border-top: none;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .userspace-chat-section .chat-panel {
   height: 100%;
+}
+
+.userspace-chat-section .chat-panel-embedded {
+  overflow: visible;
 }
 
 .userspace-chat-placeholder {
@@ -1291,7 +1295,7 @@ textarea:focus {
   flex-shrink: 0;
   background: var(--color-border);
   position: relative;
-  z-index: 5;
+  z-index: 1;
   transition: background var(--transition-fast);
 }
 

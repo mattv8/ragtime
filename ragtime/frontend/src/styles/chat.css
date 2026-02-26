@@ -34,6 +34,22 @@
   border-radius: 0;
   container-type: inline-size;
   container-name: chat-embedded;
+  overflow: visible;
+}
+
+.chat-panel-embedded .chat-main {
+  overflow: visible;
+}
+
+.chat-panel-embedded .chat-header,
+.chat-panel-embedded .chat-input-area {
+  position: relative;
+  z-index: 2;
+}
+
+.chat-panel-embedded .chat-messages {
+  position: relative;
+  z-index: 1;
 }
 
 .chat-panel-embedded .chat-header-embedded {
@@ -934,7 +950,7 @@
 
 .chat-input-wrapper {
   flex: 1;
-  min-height: 0;
+  min-height: 44px;
   width: 100%;
   position: relative;
   display: flex;
@@ -952,9 +968,9 @@
 
 .chat-input-wrapper .chat-input {
   flex: 1;
-  min-height: 100%;
+  min-height: 36px;
   max-height: none;
-  padding: 12px 60px 12px 52px; /* Extra right padding to inset scrollbar */
+  padding: 12px 108px 12px 52px; /* Right padding leaves room for tool + send controls */
   background: transparent;
   border: none;
   border-radius: 0;
@@ -963,7 +979,6 @@
   font-size: var(--text-base);
   font-family: inherit;
   resize: none;
-  min-height: 24px;
   height: auto;
   line-height: 1.5;
   overflow-y: auto;
@@ -1009,11 +1024,17 @@
 }
 
 /* Inline send/stop buttons */
+.chat-input-inline-actions {
+  position: absolute;
+  right: 12px;
+  bottom: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .chat-send-btn-inline,
 .chat-stop-btn-inline {
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1027,6 +1048,31 @@
   cursor: pointer;
   transition: all 0.2s;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.chat-input-inline-actions .userspace-tool-picker-wrap {
+  position: relative;
+}
+
+.chat-input-inline-actions .userspace-toolbar-action-btn {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  min-height: 36px;
+  border-radius: 50%;
+  padding: 0;
+}
+
+.chat-input-inline-actions .userspace-tool-dropdown {
+  top: auto;
+  bottom: calc(100% + 6px);
+  right: 0;
+  z-index: 1200;
+}
+
+.chat-input-inline-actions .tool-count-badge {
+  top: -4px;
+  right: -2px;
 }
 
 .chat-send-btn-inline:hover:not(:disabled) {

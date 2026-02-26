@@ -445,7 +445,7 @@
     min-height: 44px; /* Touch friendly minimum */
     max-height: 150px;
     /* Reduce left padding (file btn) and right padding (send btn) */
-    padding: 10px 48px 10px 40px;
+    padding: 10px 92px 10px 40px;
     font-size: 16px; /* 16px prevents iOS zoom on focus */
   }
 
@@ -457,12 +457,24 @@
   }
 
   /* Send/Stop buttons */
-  .chat-send-btn-inline,
-  .chat-stop-btn-inline {
-    width: 40px;
-    height: 40px;
-    right: 4px;
+  .chat-input-inline-actions {
+    right: 8px;
     bottom: 2px;
+    gap: 4px;
+  }
+
+  .chat-input-inline-actions .tool-count-badge {
+    top: -3px;
+    right: -1px;
+  }
+
+  .chat-send-btn-inline,
+  .chat-stop-btn-inline,
+  .chat-input-inline-actions .userspace-toolbar-action-btn {
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+    min-height: 40px;
   }
 
   /* Settings */

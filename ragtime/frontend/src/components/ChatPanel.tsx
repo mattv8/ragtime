@@ -1046,6 +1046,9 @@ export function ChatPanel({
   readOnly = false,
   readOnlyMessage,
 }: ChatPanelProps) {
+  const MIN_INPUT_AREA_HEIGHT = 96;
+  const INPUT_AREA_COLLAPSE_THRESHOLD = 80;
+
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [inputValue, setInputValue] = useState('');
@@ -1056,7 +1059,7 @@ export function ChatPanel({
   const [error, setError] = useState<string | null>(null);
   const [showSidebar, setShowSidebar] = useState(!embedded);
   const [sidebarWidth, setSidebarWidth] = useState(280);
-  const [inputAreaHeight, setInputAreaHeight] = useState(96);
+  const [inputAreaHeight, setInputAreaHeight] = useState(MIN_INPUT_AREA_HEIGHT);
   const [isInputAreaCollapsed, setIsInputAreaCollapsed] = useState(false);
   const [isMessagesCollapsed, setIsMessagesCollapsed] = useState(false);
   const [editingTitle, setEditingTitle] = useState<string | null>(null);
@@ -1157,7 +1160,7 @@ export function ChatPanel({
   const workspaceConversationDropdownRef = useRef<HTMLDivElement>(null);
   const chatMainRef = useRef<HTMLDivElement>(null);
   const prevSidebarWidth = useRef(280);
-  const prevInputAreaHeight = useRef(96);
+  const prevInputAreaHeight = useRef(MIN_INPUT_AREA_HEIGHT);
 
   const handleResizeSidebar = useCallback((delta: number) => {
     if (embedded) return;
@@ -1184,12 +1187,12 @@ export function ChatPanel({
       const proposed = prev - delta;
       const draggingDown = delta > 0;
       const draggingUp = delta < 0;
-      const atMinHeight = prev <= 72;
-      const crossedCollapseThreshold = proposed < 56;
+      const atMinHeight = prev <= MIN_INPUT_AREA_HEIGHT;
+      const crossedCollapseThreshold = proposed < INPUT_AREA_COLLAPSE_THRESHOLD;
 
       // --- Collapse input area (dragging down) ---
       if (draggingDown && (atMinHeight || crossedCollapseThreshold)) {
-        if (!isInputAreaCollapsed && prev > 72) {
+        if (!isInputAreaCollapsed && prev > MIN_INPUT_AREA_HEIGHT) {
           prevInputAreaHeight.current = prev;
         }
         setIsInputAreaCollapsed(true);
@@ -1222,7 +1225,7 @@ export function ChatPanel({
         return maxInputHeight;
       }
 
-      const next = Math.min(maxInputHeight, Math.max(72, proposed));
+      const next = Math.min(maxInputHeight, Math.max(MIN_INPUT_AREA_HEIGHT, proposed));
       prevInputAreaHeight.current = next;
       if (isInputAreaCollapsed) {
         setIsInputAreaCollapsed(false);
@@ -1232,18 +1235,18 @@ export function ChatPanel({
       }
       return next;
     });
-  }, [isInputAreaCollapsed, isMessagesCollapsed]);
+  }, [INPUT_AREA_COLLAPSE_THRESHOLD, MIN_INPUT_AREA_HEIGHT, isInputAreaCollapsed, isMessagesCollapsed]);
 
   const expandInputArea = useCallback(() => {
     setIsInputAreaCollapsed(false);
-    setInputAreaHeight(Math.max(72, prevInputAreaHeight.current || 96));
+    setInputAreaHeight(Math.max(MIN_INPUT_AREA_HEIGHT, prevInputAreaHeight.current || MIN_INPUT_AREA_HEIGHT));
     requestAnimationFrame(() => inputRef.current?.focus());
-  }, []);
+  }, [MIN_INPUT_AREA_HEIGHT]);
 
   const expandMessages = useCallback(() => {
     setIsMessagesCollapsed(false);
-    setInputAreaHeight(Math.max(72, prevInputAreaHeight.current || 96));
-  }, []);
+    setInputAreaHeight(Math.max(MIN_INPUT_AREA_HEIGHT, prevInputAreaHeight.current || MIN_INPUT_AREA_HEIGHT));
+  }, [MIN_INPUT_AREA_HEIGHT]);
 
   // Auto-size textarea to fit content while filling resized input pane
   useEffect(() => {
@@ -1493,18 +1496,20 @@ export function ChatPanel({
 
   // Load conversation members and tools when conversation changes
   useEffect(() => {
-    if (activeConversation && !embedded) {
-      fetchConversationMembers(activeConversation.id);
+    if (activeConversation) {
       fetchConversationTools(activeConversation.id);
+      if (!embedded) {
+        fetchConversationMembers(activeConversation.id);
+      }
     }
   }, [activeConversation, embedded, fetchConversationMembers, fetchConversationTools]);
 
   // Load available tools on mount
   useEffect(() => {
-    if (!embedded) {
+    if (!embedded || Boolean(workspaceId)) {
       fetchAvailableTools();
     }
-  }, [embedded, fetchAvailableTools]);
+  }, [embedded, fetchAvailableTools, workspaceId]);
 
   const handleOpenMembersModal = useCallback(async () => {
     if (!activeConversation || !isConversationOwner) return;
@@ -2353,6 +2358,9 @@ export function ChatPanel({
   }, [activeConversation, getContextLimit, inputValue, isStreaming, streamingContent, streamingEvents]);
 
   const showWorkspaceConversationSelect = embedded && Boolean(workspaceId);
+  const showInlineToolSelector = Boolean(activeConversation)
+    && !isConversationViewer
+    && !readOnly;
 
   const renderConversationItem = (conv: Conversation) => {
     const metaText = `${conv.messages.length} messages | ${formatRelativeTime(conv.updated_at)}`;
@@ -2912,31 +2920,58 @@ export function ChatPanel({
                   disabled={readOnly}
                 />
                 {isStreaming ? (
-                  <button
-                    type="button"
-                    className="btn chat-stop-btn-inline"
-                    onClick={stopStreaming}
-                    title="Stop generating"
-                  >
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                      <rect x="6" y="6" width="12" height="12" rx="2"></rect>
-                    </svg>
-                  </button>
-                ) : (
-                  !readOnly &&
-                  (inputValue.trim() || attachments.length > 0) && (
+                  <div className="chat-input-inline-actions">
+                    {showInlineToolSelector && (
+                      <ToolSelectorDropdown
+                        availableTools={availableTools}
+                        selectedToolIds={new Set(conversationToolIds)}
+                        onToggleTool={handleToggleConversationTool}
+                        disabled={savingTools}
+                        readOnly={false}
+                        saving={savingTools}
+                        title="Workspace Tools"
+                      />
+                    )}
                     <button
                       type="button"
-                      className="btn chat-send-btn-inline"
-                      onClick={sendMessage}
-                      disabled={!activeConversation || !contextUsage.hasHeadroom}
-                      title={contextUsage.hasHeadroom ? 'Send message' : `Context headroom too low (${contextUsage.projectedInputPercent}%)`}
+                      className="btn chat-stop-btn-inline"
+                      onClick={stopStreaming}
+                      title="Stop generating"
                     >
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <line x1="12" y1="19" x2="12" y2="5"></line>
-                        <polyline points="5 12 12 5 19 12"></polyline>
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                        <rect x="6" y="6" width="12" height="12" rx="2"></rect>
                       </svg>
                     </button>
+                  </div>
+                ) : (
+                  !readOnly && (
+                    <div className="chat-input-inline-actions">
+                      {showInlineToolSelector && (
+                        <ToolSelectorDropdown
+                          availableTools={availableTools}
+                          selectedToolIds={new Set(conversationToolIds)}
+                          onToggleTool={handleToggleConversationTool}
+                          disabled={savingTools}
+                          readOnly={false}
+                          saving={savingTools}
+                          title="Workspace Tools"
+                        />
+                      )}
+                      {(inputValue.trim() || attachments.length > 0) && (
+                        <button
+                          type="button"
+                          className="btn chat-send-btn-inline"
+                          onClick={sendMessage}
+                          disabled={!activeConversation || !contextUsage.hasHeadroom}
+                          title={contextUsage.hasHeadroom ? 'Send message' : `Context headroom too low (${contextUsage.projectedInputPercent}%)`}
+                        >
+                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <line x1="12" y1="19" x2="12" y2="5"></line>
+                            <polyline points="5 12 12 5 19 12"></polyline>
+                          </svg>
+                        </button>
+                      )}
+                    </div>
                   )
                 )}
               </div>
