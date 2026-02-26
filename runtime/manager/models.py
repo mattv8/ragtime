@@ -19,6 +19,10 @@ class ManagerSession:
     worker_session_id: str
     pty_access_token: str
     preview_internal_url: str
+    launch_framework: str | None
+    launch_command: str | None
+    launch_cwd: str | None
+    launch_port: int | None
     state: RuntimeSessionState
     devserver_running: bool
     last_error: str | None
@@ -52,6 +56,22 @@ class RuntimeSessionResponse(BaseModel):
     workspace_id: str = Field(description="Workspace ID")
     state: RuntimeSessionState = Field(description="Runtime state")
     preview_internal_url: str = Field(description="Internal preview URL")
+    launch_framework: str | None = Field(
+        default=None,
+        description="Detected runtime framework",
+    )
+    launch_command: str | None = Field(
+        default=None,
+        description="Launch command for the runtime devserver",
+    )
+    launch_cwd: str | None = Field(
+        default=None,
+        description="Workspace-relative directory used to launch runtime",
+    )
+    launch_port: int | None = Field(
+        default=None,
+        description="Worker-local devserver port",
+    )
     devserver_running: bool = Field(description="Whether devserver is running")
     last_error: str | None = Field(default=None, description="Last runtime error")
     updated_at: datetime = Field(description="Session update time")
@@ -68,6 +88,22 @@ class WorkerSessionResponse(BaseModel):
     workspace_id: str = Field(description="Workspace ID")
     state: RuntimeSessionState = Field(description="Worker runtime state")
     preview_internal_url: str = Field(description="Worker preview internal URL")
+    launch_framework: str | None = Field(
+        default=None,
+        description="Detected runtime framework",
+    )
+    launch_command: str | None = Field(
+        default=None,
+        description="Launch command for runtime devserver",
+    )
+    launch_cwd: str | None = Field(
+        default=None,
+        description="Workspace-relative launch cwd",
+    )
+    launch_port: int | None = Field(
+        default=None,
+        description="Worker-local devserver port",
+    )
     devserver_running: bool = Field(description="Whether worker devserver is running")
     last_error: str | None = Field(
         default=None, description="Last worker runtime error"

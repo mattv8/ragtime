@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import socket
 from dataclasses import dataclass
@@ -31,6 +32,8 @@ class WorkerSession:
     devserver_running: bool
     devserver_port: int | None
     devserver_command: list[str] | None
+    launch_framework: str | None
+    launch_cwd: str | None
     last_error: str | None
     updated_at: datetime
 
@@ -53,6 +56,7 @@ class WorkerService:
         self._devserver_start_timeout_seconds = int(
             os.getenv("RUNTIME_DEVSERVER_START_TIMEOUT_SECONDS", "25")
         )
+        self._runtime_config_file = ".ragtime/runtime-entrypoint.json"
 
     @staticmethod
     def _utc_now() -> datetime:
@@ -72,12 +76,29 @@ class WorkerService:
         legacy_root = self._root / workspace_id
         return legacy_root
 
+    def _resolve_launch_cwd(self, session: WorkerSession) -> Path:
+        relative = (session.launch_cwd or ".").strip().replace("\\", "/")
+        if relative in {"", "."}:
+            return session.workspace_root
+        normalized = Path(relative)
+        if normalized.is_absolute() or any(part == ".." for part in normalized.parts):
+            return session.workspace_root
+        return session.workspace_root / normalized
+
     def _session_response(self, session: WorkerSession) -> WorkerSessionResponse:
         return WorkerSessionResponse(
             worker_session_id=session.id,
             workspace_id=session.workspace_id,
             state=session.state,
             preview_internal_url=f"{self._base_url}/worker/sessions/{session.id}/preview",
+            launch_framework=session.launch_framework,
+            launch_command=(
+                " ".join(session.devserver_command)
+                if session.devserver_command
+                else None
+            ),
+            launch_cwd=session.launch_cwd,
+            launch_port=session.devserver_port,
             devserver_running=session.devserver_running,
             last_error=session.last_error,
             updated_at=session.updated_at,
@@ -100,11 +121,101 @@ class WorkerService:
             sock.bind(("127.0.0.1", 0))
             return int(sock.getsockname()[1])
 
+    def _read_runtime_entrypoint_config(self, workspace_root: Path) -> dict[str, str]:
+        config_path = workspace_root / self._runtime_config_file
+        if not config_path.exists() or not config_path.is_file():
+            return {}
+        try:
+            raw = json.loads(config_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        command = str(raw.get("command") or "").strip()
+        cwd = str(raw.get("cwd") or "").strip().replace("\\", "/")
+        framework = str(raw.get("framework") or "").strip().lower()
+        return {
+            "command": command,
+            "cwd": cwd,
+            "framework": framework,
+        }
+
+    def _resolve_python_launch(
+        self,
+        workspace_root: Path,
+        port: int,
+    ) -> tuple[list[str] | None, str | None, str | None]:
+        if (workspace_root / "manage.py").exists():
+            return (
+                ["python3", "manage.py", "runserver", f"0.0.0.0:{port}"],
+                "django",
+                ".",
+            )
+
+        for filename in ("main.py", "app.py"):
+            target = workspace_root / filename
+            if not target.exists() or not target.is_file():
+                continue
+            try:
+                content = target.read_text(encoding="utf-8")
+            except Exception:
+                content = ""
+            if "FastAPI" in content:
+                return (
+                    [
+                        "python3",
+                        "-m",
+                        "uvicorn",
+                        f"{filename[:-3]}:app",
+                        "--host",
+                        "0.0.0.0",
+                        "--port",
+                        str(port),
+                    ],
+                    "fastapi",
+                    ".",
+                )
+            if "Flask" in content:
+                return (
+                    [
+                        "python3",
+                        "-m",
+                        "flask",
+                        "--app",
+                        filename,
+                        "run",
+                        "--host",
+                        "0.0.0.0",
+                        "--port",
+                        str(port),
+                    ],
+                    "flask",
+                    ".",
+                )
+
+        return (None, None, None)
+
     def _resolve_devserver_command(
         self,
         workspace_root: Path,
         port: int,
-    ) -> tuple[list[str] | None, str | None]:
+    ) -> tuple[list[str] | None, str | None, str | None, str | None]:
+        config = self._read_runtime_entrypoint_config(workspace_root)
+        config_command = config.get("command", "")
+        if config_command:
+            config_cwd = config.get("cwd") or "."
+            config_framework = config.get("framework") or "custom"
+            return (
+                [
+                    "sh",
+                    "-lc",
+                    f"PORT={port} {config_command}",
+                ],
+                None,
+                config_framework,
+                config_cwd,
+            )
+
         package_json = workspace_root / "package.json"
         if package_json.exists() and package_json.is_file():
             return (
@@ -119,6 +230,20 @@ class WorkerService:
                     str(port),
                 ],
                 None,
+                "node",
+                ".",
+            )
+
+        python_command, python_framework, python_cwd = self._resolve_python_launch(
+            workspace_root,
+            port,
+        )
+        if python_command:
+            return (
+                python_command,
+                None,
+                python_framework,
+                python_cwd,
             )
 
         index_html = workspace_root / "index.html"
@@ -135,11 +260,18 @@ class WorkerService:
                     str(workspace_root),
                 ],
                 None,
+                "static",
+                ".",
             )
 
         return (
             None,
-            "No runnable web entrypoint found. Create package.json (dev script) or index.html.",
+            (
+                "No runnable web entrypoint found. Add .ragtime/runtime-entrypoint.json "
+                "with a command/cwd or provide package.json dev script, Python app.py/main.py, or index.html."
+            ),
+            None,
+            None,
         )
 
     async def _wait_devserver_ready(self, port: int) -> bool:
@@ -192,10 +324,12 @@ class WorkerService:
             return
 
         port = session.devserver_port or self._pick_free_port()
-        command, command_error = self._resolve_devserver_command(
+        command, command_error, framework, launch_cwd = self._resolve_devserver_command(
             session.workspace_root, port
         )
         session.devserver_port = port
+        session.launch_framework = framework
+        session.launch_cwd = launch_cwd
 
         if not command:
             session.devserver_running = False
@@ -206,7 +340,7 @@ class WorkerService:
         await self._terminate_devserver_locked(session.id)
         process = await asyncio.create_subprocess_exec(
             *command,
-            cwd=str(session.workspace_root),
+            cwd=str(self._resolve_launch_cwd(session)),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -254,6 +388,8 @@ class WorkerService:
                 devserver_running=False,
                 devserver_port=None,
                 devserver_command=None,
+                launch_framework=None,
+                launch_cwd=None,
                 last_error=None,
                 updated_at=self._utc_now(),
             )

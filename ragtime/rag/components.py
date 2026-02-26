@@ -475,9 +475,6 @@ _IMPORT_SPECIFIER_PATTERN = re.compile(
     r"^\s*import(?:\s+type)?(?:[\s\w{},*]+from\s*)?[\"']([^\"']+)[\"']",
     re.MULTILINE,
 )
-_RENDER_EXPORT_PATTERN = re.compile(
-    r"\bexport\s+(?:async\s+)?function\s+render\b|\bexport\s+const\s+render\b"
-)
 _JSX_TAG_PATTERN = re.compile(r"<\s*[A-Za-z][A-Za-z0-9_:\-]*(?:\s|>|/)")
 
 # Patterns that indicate hardcoded mock/sample data in module source.
@@ -532,12 +529,11 @@ def find_hardcoded_data_patterns(content: str) -> list[str]:
 
 
 def validate_userspace_runtime_contract(content: str, file_path: str) -> list[str]:
-    """Validate constraints required by the isolated User Space runtime."""
+    """Validate constraints required by the User Space runtime/tooling path."""
     violations: list[str] = []
     normalized_path = (file_path or "").strip()
-    runtime_path = normalized_path.replace("\\", "/").lstrip("/")
 
-    # Isolated iframe runtime cannot resolve npm/bare module specifiers.
+    # User Space module tooling expects workspace-local import paths.
     imports = _IMPORT_SPECIFIER_PATTERN.findall(content or "")
     unsupported_imports = [
         spec for spec in imports if not spec.startswith(("./", "../", "/"))
@@ -545,21 +541,14 @@ def validate_userspace_runtime_contract(content: str, file_path: str) -> list[st
     if unsupported_imports:
         sample = ", ".join(sorted(set(unsupported_imports))[:8])
         violations.append(
-            "Unsupported bare imports for isolated runtime: "
+            "Unsupported bare imports for userspace module tooling: "
             f"{sample}. Use local workspace modules only."
         )
-
-    # Entry modules must expose render(container, context).
-    if runtime_path == "dashboard/main.ts":
-        if not _RENDER_EXPORT_PATTERN.search(content or ""):
-            violations.append(
-                "Missing required entrypoint export: export function render(container, context)."
-            )
 
     # JSX in .ts files creates parse errors in TypeScript validator path.
     if normalized_path.endswith(".ts") and _JSX_TAG_PATTERN.search(content or ""):
         violations.append(
-            "JSX-like syntax detected in a .ts file. Move JSX to .tsx modules and keep dashboard/main.ts as a thin render entrypoint."
+            "JSX-like syntax detected in a .ts file. Move JSX to .tsx modules and keep dashboard/main.ts as a thin composition entrypoint."
         )
 
     return violations
@@ -601,8 +590,6 @@ const path = require('path');
 
 const input = fs.readFileSync(0, 'utf8');
 const filePath = process.argv[1] || 'dashboard/main.ts';
-const scriptKind = filePath.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
-const sourceFile = ts.createSourceFile(filePath, input, ts.ScriptTarget.ES2020, true, scriptKind);
 
 let ts;
 try {
@@ -1018,10 +1005,9 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 ### Runtime contract (must follow)
 
 - User Space preview runs in a Node.js-managed devserver/runtime session (not browser `srcDoc` execution).
-- The workspace must have a runnable web entrypoint: either `package.json` with a `dev` script, or `index.html` at workspace root.
-- If a runnable web entrypoint is missing, preview fails with: `No runnable web entrypoint found. Create package.json (dev script) or index.html.`
-- For module-style dashboard artifacts, `dashboard/main.ts` must export `render(container, context)`.
-- Do not rely on `export default` as the module entrypoint.
+- The workspace must have a runnable web entrypoint, resolved in this order: `.ragtime/runtime-entrypoint.json` (`command`, optional `cwd`, optional `framework`), `package.json` with `dev` script, Python app (`manage.py`, `main.py`, or `app.py`), or `index.html` fallback.
+- If a runnable web entrypoint is missing, preview fails with: `No runnable web entrypoint found. Add .ragtime/runtime-entrypoint.json with a command/cwd or provide package.json dev script, Python app.py/main.py, or index.html.`
+- For module-style dashboard artifacts, keep `dashboard/main.ts` present as the thin composition entrypoint for dashboard modules.
 - npm dependencies are allowed when explicitly declared in `package.json`; do not assume globally preloaded libraries.
 - Do not inject CDN scripts for runtime dependencies in generated modules.
 - The runtime automatically applies theme-matched text, tick, grid, legend, and title colors to every Chart.js instance. Do NOT set `color`, `ticks.color`, `grid.color`, `labels.color`, or `title.color` in chart options; the runtime handles them. Only set data-specific colors (dataset `backgroundColor`, `borderColor`, etc.).
@@ -5447,7 +5433,10 @@ except Exception as e:
                 "dashboard/"
             )
             if should_check_runnable_entrypoint:
-                runnable_entrypoint_error = "No runnable web entrypoint found. Create package.json (dev script) or index.html."
+                runnable_entrypoint_error = (
+                    "No runnable web entrypoint found. Add .ragtime/runtime-entrypoint.json "
+                    "with a command/cwd or provide package.json dev script, Python app.py/main.py, or index.html."
+                )
                 has_package_json = await get_file("package.json") is not None
                 has_index_html = await get_file("index.html") is not None
                 if not has_package_json and not has_index_html:

@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 WorkspaceRole = Literal["owner", "editor", "viewer"]
 ArtifactType = Literal["module_ts"]
+SqlitePersistenceMode = Literal["include", "exclude"]
 ShareAccessMode = Literal[
     "token",
     "password",
@@ -39,6 +40,7 @@ class UserSpaceWorkspace(BaseModel):
     id: str
     name: str
     description: str | None = None
+    sqlite_persistence_mode: SqlitePersistenceMode = "include"
     owner_user_id: str
     selected_tool_ids: list[str] = Field(default_factory=list)
     conversation_ids: list[str] = Field(default_factory=list)
@@ -50,12 +52,14 @@ class UserSpaceWorkspace(BaseModel):
 class CreateWorkspaceRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=1000)
+    sqlite_persistence_mode: SqlitePersistenceMode = "include"
     selected_tool_ids: list[str] = Field(default_factory=list)
 
 
 class UpdateWorkspaceRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=1000)
+    sqlite_persistence_mode: SqlitePersistenceMode | None = None
     selected_tool_ids: list[str] | None = None
 
 
@@ -194,6 +198,10 @@ class UserSpaceRuntimeSession(BaseModel):
     runtime_provider: str = "microvm_pool_v1"
     provider_session_id: str | None = None
     preview_internal_url: str | None = None
+    launch_framework: str | None = None
+    launch_command: str | None = None
+    launch_cwd: str | None = None
+    launch_port: int | None = None
     created_at: datetime
     updated_at: datetime
     last_heartbeat_at: datetime | None = None
@@ -213,6 +221,9 @@ class UserSpaceRuntimeStatusResponse(BaseModel):
     session_id: str | None = None
     devserver_running: bool = False
     devserver_port: int = 5173
+    launch_framework: str | None = None
+    launch_command: str | None = None
+    launch_cwd: str | None = None
     preview_url: str | None = None
     last_error: str | None = None
 

@@ -45,6 +45,9 @@ Implemented now:
 - Runtime FS routes are manager-backed and synced to worker runtime sessions.
 - Runtime worker filesystem root resolution prefers `${INDEX_DATA_PATH}/_userspace/workspaces/{workspace_id}/files` with fallback to legacy `${INDEX_DATA_PATH}/_userspace/{workspace_id}`.
 - Preview traffic is proxied to a session-managed internal devserver port (currently dynamic per session).
+- Runtime launch contract metadata is exposed (framework/command/cwd/port) from worker -> manager -> ragtime runtime status/session APIs.
+- Runtime entrypoint guidance supports `.ragtime/runtime-entrypoint.json` (`command`, `cwd`, `framework`) as an explicit launch override.
+- Workspace SQLite snapshot persistence policy is configurable (`include` or `exclude`) and respected during snapshot staging.
 - Legacy frontend `srcDoc` preview fallback has been removed; preview is runtime-only.
 
 Still pending for full hard-cutover:

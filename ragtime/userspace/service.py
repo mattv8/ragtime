@@ -42,6 +42,7 @@ from ragtime.userspace.models import (
     ExecuteComponentResponse,
     PaginatedWorkspacesResponse,
     ShareAccessMode,
+    SqlitePersistenceMode,
     UpdateWorkspaceMembersRequest,
     UpdateWorkspaceRequest,
     UpdateWorkspaceShareAccessRequest,
@@ -98,6 +99,12 @@ _USERSPACE_PREVIEW_ENTRY_PATH = "dashboard/main.ts"
 _DEFAULT_SHARE_SLUG_PREFIX = "share"
 _USERSPACE_PREVIEW_MAX_FILES = 200
 _USERSPACE_PREVIEW_MAX_BYTES = 3_000_000
+_SQLITE_EXCLUDE_GLOBS = (
+    "*.sqlite",
+    "*.sqlite3",
+    "*.db",
+    "*.db3",
+)
 
 _MODULE_SOURCE_EXTENSIONS = (
     ".ts",
@@ -273,6 +280,11 @@ def _entrypoint_references_module(main_content: str, candidates: list[str]) -> b
         ):
             return True
     return False
+
+
+def _normalize_sqlite_persistence_mode(value: str | None) -> str:
+    mode = (value or "include").strip().lower()
+    return mode if mode in {"include", "exclude"} else "include"
 
 
 class UserSpaceService:
@@ -749,6 +761,68 @@ class UserSpaceService:
     ) -> None:
         await self._touch_workspace(workspace_id, ts=ts)
 
+    def _build_dashboard_entrypoint_content(self, relative_path: str) -> str:
+        normalized = (relative_path or "").replace("\\", "/")
+        module_rel = (
+            normalized[len("dashboard/") :]
+            if normalized.startswith("dashboard/")
+            else normalized
+        )
+        module_without_ext = module_rel
+        for extension in _MODULE_SOURCE_EXTENSIONS:
+            if module_without_ext.lower().endswith(extension):
+                module_without_ext = module_without_ext[: -len(extension)]
+                break
+        specifier = f"./{module_without_ext}".replace("//", "/")
+        return (
+            "import React from 'react';\n"
+            "import { createRoot } from 'react-dom/client';\n"
+            f"import App from '{specifier}';\n\n"
+            "const rootElement = document.getElementById('root') || (() => {\n"
+            "  const element = document.createElement('div');\n"
+            "  element.id = 'root';\n"
+            "  document.body.appendChild(element);\n"
+            "  return element;\n"
+            "})();\n\n"
+            "createRoot(rootElement).render(\n"
+            "  <React.StrictMode>\n"
+            "    <App />\n"
+            "  </React.StrictMode>\n"
+            ");\n"
+        )
+
+    def _append_dashboard_entrypoint_reference(
+        self,
+        existing_content: str,
+        relative_path: str,
+    ) -> str:
+        candidates = _entrypoint_module_specifier_candidates(relative_path)
+        if _entrypoint_references_module(existing_content, candidates):
+            return existing_content
+        if candidates:
+            specifier = candidates[0]
+            trimmed = existing_content.rstrip()
+            suffix = f"\nimport '{specifier}';\n"
+            return f"{trimmed}{suffix}" if trimmed else suffix
+        return existing_content
+
+    async def _apply_snapshot_sqlite_policy(self, workspace_id: str) -> None:
+        db = await get_db()
+        workspace = await db.workspace.find_unique(where={"id": workspace_id})
+        mode = _normalize_sqlite_persistence_mode(
+            str(getattr(workspace, "sqlitePersistenceMode", "include") or "include")
+            if workspace
+            else "include"
+        )
+        if mode != "exclude":
+            return
+        for pattern in _SQLITE_EXCLUDE_GLOBS:
+            await self._run_git(
+                workspace_id,
+                ["reset", "--", pattern],
+                check=False,
+            )
+
     def _workspace_from_record(self, record: Any) -> UserSpaceWorkspace:
         member_rows = list(getattr(record, "members", []) or [])
         members: list[WorkspaceMember] = []
@@ -788,6 +862,14 @@ class UserSpaceService:
             id=record.id,
             name=record.name,
             description=record.description,
+            sqlite_persistence_mode=cast(
+                SqlitePersistenceMode,
+                _normalize_sqlite_persistence_mode(
+                    str(
+                        getattr(record, "sqlitePersistenceMode", "include") or "include"
+                    )
+                ),
+            ),
             owner_user_id=record.ownerUserId,
             selected_tool_ids=selected_tool_ids,
             conversation_ids=[],
@@ -899,6 +981,9 @@ class UserSpaceService:
                     "name": final_name,
                     "nameNormalized": name_normalized,
                     "description": request.description,
+                    "sqlitePersistenceMode": _normalize_sqlite_persistence_mode(
+                        request.sqlite_persistence_mode
+                    ),
                     "ownerUserId": user_id,
                     "createdAt": now,
                     "updatedAt": now,
@@ -1390,6 +1475,10 @@ class UserSpaceService:
             update_data["nameNormalized"] = normalized_name
         if request.description is not None:
             update_data["description"] = request.description
+        if request.sqlite_persistence_mode is not None:
+            update_data["sqlitePersistenceMode"] = _normalize_sqlite_persistence_mode(
+                request.sqlite_persistence_mode
+            )
 
         try:
             await db.workspace.update(where={"id": workspace_id}, data=update_data)
@@ -1510,13 +1599,10 @@ class UserSpaceService:
                 _USERSPACE_PREVIEW_ENTRY_PATH,
             )
             if not main_path.exists() or not main_path.is_file():
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "Entry-point wiring required: dashboard/main.ts is missing. "
-                        "Create/update dashboard/main.ts to import and render this module "
-                        f"before upserting {relative_path}."
-                    ),
+                main_path.parent.mkdir(parents=True, exist_ok=True)
+                main_path.write_text(
+                    self._build_dashboard_entrypoint_content(relative_path),
+                    encoding="utf-8",
                 )
 
             try:
@@ -1526,13 +1612,12 @@ class UserSpaceService:
 
             candidates = _entrypoint_module_specifier_candidates(relative_path)
             if not _entrypoint_references_module(main_content, candidates):
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "Entry-point wiring required: dashboard/main.ts does not reference "
-                        f"{relative_path}. Update dashboard/main.ts to import/compose this module "
-                        "before persisting non-entry dashboard modules."
+                main_path.write_text(
+                    self._append_dashboard_entrypoint_reference(
+                        main_content,
+                        relative_path,
                     ),
+                    encoding="utf-8",
                 )
 
         parsed_live_data_connections = request.live_data_connections or []
@@ -1714,6 +1799,7 @@ class UserSpaceService:
         )
         await self._ensure_workspace_git_repo(workspace_id)
         await self._run_git(workspace_id, ["add", "-A"])
+        await self._apply_snapshot_sqlite_policy(workspace_id)
 
         normalized_message = (message or "Snapshot").strip()
         commit_subject = (

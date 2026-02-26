@@ -649,6 +649,12 @@ enum RuntimeSessionState {
   error
 }
 
+/// Workspace snapshot policy for SQLite files
+enum SqlitePersistenceMode {
+  include
+  exclude
+}
+
 /// User account (synced from LDAP or local admin)
 model User {
   id            String       @id @default(uuid())
@@ -790,6 +796,7 @@ model Workspace {
   name        String
   nameNormalized String? @map("name_normalized")
   description String?  @default("")
+  sqlitePersistenceMode SqlitePersistenceMode @default(include) @map("sqlite_persistence_mode")
   shareToken  String?  @unique @map("share_token")
   shareTokenCreatedAt DateTime? @map("share_token_created_at")
   shareSlug   String?  @map("share_slug")
@@ -926,6 +933,10 @@ model UserSpaceRuntimeSession {
   runtimeProvider   String              @default("microvm_pool_v1") @map("runtime_provider")
   providerSessionId String?             @map("provider_session_id")
   previewInternalUrl String?            @map("preview_internal_url")
+  launchFramework   String?             @map("launch_framework")
+  launchCommand     String?             @map("launch_command")
+  launchCwd         String?             @map("launch_cwd")
+  launchPort        Int?                @map("launch_port")
   createdAt         DateTime            @default(now()) @map("created_at")
   updatedAt         DateTime            @default(now()) @updatedAt @map("updated_at")
   lastHeartbeatAt   DateTime?           @map("last_heartbeat_at")

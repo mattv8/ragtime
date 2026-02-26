@@ -14,9 +14,9 @@ from uuid import uuid4
 import httpx
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-from prisma import fields as prisma_fields
 from starlette.websockets import WebSocket
 
+from prisma import fields as prisma_fields
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
@@ -69,6 +69,34 @@ class UserSpaceRuntimeService:
     def _utc_now() -> datetime:
         return datetime.now(timezone.utc)
 
+    @staticmethod
+    def _optional_int(value: Any) -> int | None:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(cast(float, value))
+        if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+            return int(cast(str, value).strip())
+        return None
+
+    @staticmethod
+    def _resolve_provider_last_error(
+        payload: dict[str, Any],
+        fallback: str | None = None,
+    ) -> str | None:
+        if "last_error" not in payload:
+            return fallback
+        raw_value = payload.get("last_error")
+        if raw_value is None:
+            return None
+        if isinstance(raw_value, str):
+            normalized = raw_value.strip()
+            return normalized or None
+        normalized = str(raw_value).strip()
+        return normalized or None
+
     def _runtime_session_model(self, db: Any) -> Any:
         return getattr(db, "userspaceruntimesession")
 
@@ -96,6 +124,10 @@ class UserSpaceRuntimeService:
             runtime_provider=str(getattr(row, "runtimeProvider", "microvm_pool_v1")),
             provider_session_id=getattr(row, "providerSessionId", None),
             preview_internal_url=getattr(row, "previewInternalUrl", None),
+            launch_framework=getattr(row, "launchFramework", None),
+            launch_command=getattr(row, "launchCommand", None),
+            launch_cwd=getattr(row, "launchCwd", None),
+            launch_port=getattr(row, "launchPort", None),
             created_at=getattr(row, "createdAt"),
             updated_at=getattr(row, "updatedAt"),
             last_heartbeat_at=getattr(row, "lastHeartbeatAt", None),
@@ -384,13 +416,34 @@ class UserSpaceRuntimeService:
                             session.preview_internal_url
                             or _RUNTIME_PREVIEW_DEFAULT_BASE
                         )
-                    last_error_value = provider_status.get("last_error")
-                    if not isinstance(last_error_value, str):
-                        last_error_value = session.last_error
+                    launch_framework = (
+                        str(provider_status.get("launch_framework") or "").strip()
+                        or session.launch_framework
+                    )
+                    launch_command = (
+                        str(provider_status.get("launch_command") or "").strip()
+                        or session.launch_command
+                    )
+                    launch_cwd = (
+                        str(provider_status.get("launch_cwd") or "").strip()
+                        or session.launch_cwd
+                    )
+                    launch_port = (
+                        self._optional_int(provider_status.get("launch_port"))
+                        or session.launch_port
+                    )
+                    last_error_value = self._resolve_provider_last_error(
+                        provider_status,
+                        fallback=session.last_error,
+                    )
 
                     if (
                         state_value != session.state
                         or preview_value != session.preview_internal_url
+                        or launch_framework != session.launch_framework
+                        or launch_command != session.launch_command
+                        or launch_cwd != session.launch_cwd
+                        or launch_port != session.launch_port
                         or last_error_value != session.last_error
                     ):
                         current = await model.update(
@@ -398,6 +451,10 @@ class UserSpaceRuntimeService:
                             data={
                                 "state": state_value,
                                 "previewInternalUrl": preview_value,
+                                "launchFramework": launch_framework,
+                                "launchCommand": launch_command,
+                                "launchCwd": launch_cwd,
+                                "launchPort": launch_port,
                                 "lastError": last_error_value,
                                 "lastHeartbeatAt": self._utc_now(),
                             },
@@ -434,6 +491,24 @@ class UserSpaceRuntimeService:
                         or session.preview_internal_url
                         or _RUNTIME_PREVIEW_DEFAULT_BASE
                     ),
+                    "launchFramework": str(
+                        provider_data.get("launch_framework")
+                        or session.launch_framework
+                        or ""
+                    )
+                    or None,
+                    "launchCommand": str(
+                        provider_data.get("launch_command")
+                        or session.launch_command
+                        or ""
+                    )
+                    or None,
+                    "launchCwd": str(
+                        provider_data.get("launch_cwd") or session.launch_cwd or ""
+                    )
+                    or None,
+                    "launchPort": self._optional_int(provider_data.get("launch_port"))
+                    or session.launch_port,
                     "lastHeartbeatAt": self._utc_now(),
                     "lastError": provider_data.get("last_error"),
                 },
@@ -460,6 +535,11 @@ class UserSpaceRuntimeService:
                     provider_data.get("preview_internal_url")
                     or _RUNTIME_PREVIEW_DEFAULT_BASE
                 ),
+                "launchFramework": str(provider_data.get("launch_framework") or "")
+                or None,
+                "launchCommand": str(provider_data.get("launch_command") or "") or None,
+                "launchCwd": str(provider_data.get("launch_cwd") or "") or None,
+                "launchPort": self._optional_int(provider_data.get("launch_port")),
                 "createdAt": now,
                 "updatedAt": now,
                 "lastHeartbeatAt": now,
@@ -708,6 +788,10 @@ class UserSpaceRuntimeService:
 
         state_for_response = session.state
         preview_internal_url = session.preview_internal_url
+        launch_framework = session.launch_framework
+        launch_command = session.launch_command
+        launch_cwd = session.launch_cwd
+        launch_port = session.launch_port
         last_error = session.last_error
 
         if provider_status:
@@ -725,9 +809,28 @@ class UserSpaceRuntimeService:
             ).strip()
             if preview_candidate:
                 preview_internal_url = preview_candidate
-            provider_last_error = provider_status.get("last_error")
-            if isinstance(provider_last_error, str):
-                last_error = provider_last_error
+            provider_launch_framework = str(
+                provider_status.get("launch_framework") or ""
+            ).strip()
+            if provider_launch_framework:
+                launch_framework = provider_launch_framework
+            provider_launch_command = str(
+                provider_status.get("launch_command") or ""
+            ).strip()
+            if provider_launch_command:
+                launch_command = provider_launch_command
+            provider_launch_cwd = str(provider_status.get("launch_cwd") or "").strip()
+            if provider_launch_cwd:
+                launch_cwd = provider_launch_cwd
+            provider_launch_port = self._optional_int(
+                provider_status.get("launch_port")
+            )
+            if provider_launch_port is not None:
+                launch_port = provider_launch_port
+            last_error = self._resolve_provider_last_error(
+                provider_status,
+                fallback=last_error,
+            )
 
             if (
                 state_for_response != session.state
@@ -741,6 +844,10 @@ class UserSpaceRuntimeService:
                     data={
                         "state": state_for_response,
                         "previewInternalUrl": preview_internal_url,
+                        "launchFramework": launch_framework,
+                        "launchCommand": launch_command,
+                        "launchCwd": launch_cwd,
+                        "launchPort": launch_port,
                         "lastError": last_error,
                         "lastHeartbeatAt": self._utc_now(),
                     },
@@ -756,6 +863,10 @@ class UserSpaceRuntimeService:
                 runtime_provider=session.runtime_provider,
                 provider_session_id=session.provider_session_id,
                 preview_internal_url=preview_internal_url,
+                launch_framework=launch_framework,
+                launch_command=launch_command,
+                launch_cwd=launch_cwd,
+                launch_port=launch_port,
                 created_at=session.created_at,
                 updated_at=session.updated_at,
                 last_heartbeat_at=session.last_heartbeat_at,
@@ -773,12 +884,17 @@ class UserSpaceRuntimeService:
                 "running",
             } and await self._probe_preview_base_url(base_url)
 
+        devserver_port = launch_port or _RUNTIME_DEVSERVER_PORT
+
         return UserSpaceRuntimeStatusResponse(
             workspace_id=workspace_id,
             session_state=state_for_response,
             session_id=session.id,
             devserver_running=devserver_running,
-            devserver_port=_RUNTIME_DEVSERVER_PORT,
+            devserver_port=devserver_port,
+            launch_framework=launch_framework,
+            launch_command=launch_command,
+            launch_cwd=launch_cwd,
             preview_url=f"/indexes/userspace/workspaces/{workspace_id}/preview/",
             last_error=last_error,
         )
@@ -806,6 +922,28 @@ class UserSpaceRuntimeService:
                         "state": str(provider_restart.get("state") or "running"),
                         "lastHeartbeatAt": self._utc_now(),
                         "lastError": provider_restart.get("last_error"),
+                        "launchFramework": str(
+                            provider_restart.get("launch_framework")
+                            or active_session.launch_framework
+                            or ""
+                        )
+                        or None,
+                        "launchCommand": str(
+                            provider_restart.get("launch_command")
+                            or active_session.launch_command
+                            or ""
+                        )
+                        or None,
+                        "launchCwd": str(
+                            provider_restart.get("launch_cwd")
+                            or active_session.launch_cwd
+                            or ""
+                        )
+                        or None,
+                        "launchPort": self._optional_int(
+                            provider_restart.get("launch_port")
+                        )
+                        or active_session.launch_port,
                         "previewInternalUrl": str(
                             provider_restart.get("preview_internal_url")
                             or active_session.preview_internal_url

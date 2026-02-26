@@ -75,6 +75,10 @@ class SessionManager:
             workspace_id=session.workspace_id,
             state=session.state,
             preview_internal_url=session.preview_internal_url,
+            launch_framework=session.launch_framework,
+            launch_command=session.launch_command,
+            launch_cwd=session.launch_cwd,
+            launch_port=session.launch_port,
             devserver_running=session.devserver_running,
             last_error=session.last_error,
             updated_at=session.updated_at,
@@ -110,6 +114,10 @@ class SessionManager:
             worker_session_id=worker_data.worker_session_id,
             pty_access_token=pty_access_token,
             preview_internal_url=worker_data.preview_internal_url,
+            launch_framework=worker_data.launch_framework,
+            launch_command=worker_data.launch_command,
+            launch_cwd=worker_data.launch_cwd,
+            launch_port=worker_data.launch_port,
             state=worker_data.state,
             devserver_running=worker_data.devserver_running,
             last_error=worker_data.last_error,
@@ -121,6 +129,10 @@ class SessionManager:
         parsed = await self._worker_service.get_session(session.worker_session_id)
         session.state = parsed.state
         session.preview_internal_url = parsed.preview_internal_url
+        session.launch_framework = parsed.launch_framework
+        session.launch_command = parsed.launch_command
+        session.launch_cwd = parsed.launch_cwd
+        session.launch_port = parsed.launch_port
         session.devserver_running = parsed.devserver_running
         session.last_error = parsed.last_error
         session.updated_at = self._utc_now()

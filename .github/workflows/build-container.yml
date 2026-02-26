@@ -51,7 +51,12 @@ jobs:
 
       - name: Validate userspace runtime modules
         run: |
-          python -m compileall \
+          PYTHON_BIN="$(command -v python3 || command -v python || true)"
+          if [ -z "$PYTHON_BIN" ]; then
+            echo "Python interpreter not found (expected python3 or python in PATH)"
+            exit 127
+          fi
+          "$PYTHON_BIN" -m compileall \
             ragtime/userspace/runtime_service.py \
             runtime/manager \
             runtime/main.py
