@@ -1017,13 +1017,16 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 
 ### Runtime contract (must follow)
 
-- The isolated renderer requires `export function render(container, context)` in `dashboard/main.ts`.
-- Do not rely on `export default` as the entrypoint.
-- Do not import external npm packages (for example `react`, `recharts`, etc.) in User Space modules.
-- Chart.js is preloaded in the isolated User Space preview runtime (`window.Chart` available). Do not inject additional Chart.js CDN scripts from generated modules.
+- User Space preview runs in a Node.js-managed devserver/runtime session (not browser `srcDoc` execution).
+- The workspace must have a runnable web entrypoint: either `package.json` with a `dev` script, or `index.html` at workspace root.
+- If a runnable web entrypoint is missing, preview fails with: `No runnable web entrypoint found. Create package.json (dev script) or index.html.`
+- For module-style dashboard artifacts, `dashboard/main.ts` must export `render(container, context)`.
+- Do not rely on `export default` as the module entrypoint.
+- npm dependencies are allowed when explicitly declared in `package.json`; do not assume globally preloaded libraries.
+- Do not inject CDN scripts for runtime dependencies in generated modules.
 - The runtime automatically applies theme-matched text, tick, grid, legend, and title colors to every Chart.js instance. Do NOT set `color`, `ticks.color`, `grid.color`, `labels.color`, or `title.color` in chart options; the runtime handles them. Only set data-specific colors (dataset `backgroundColor`, `borderColor`, etc.).
-- Do not inject DataTables CDN scripts in generated User Space modules. Build tables using DOM APIs in local modules.
-- Use local workspace modules (`./` or `../`) and browser DOM APIs only.
+- Do not inject DataTables CDN scripts in generated User Space modules.
+- Prefer local workspace modules (`./` or `../`) for internal code organization.
 - If JSX is used, keep it out of `dashboard/main.ts`; maintain `dashboard/main.ts` as a valid TypeScript render entrypoint.
 
 ### Data wiring rules
