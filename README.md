@@ -153,6 +153,23 @@ FAISS indexes are loaded into memory at startup; pgvector indexes stay in Postgr
 
    # Database URL (auto-configured by docker-compose, override for external DB)
    # DATABASE_URL=postgresql://ragtime:password@hostname:5432/ragtime
+
+   # Runtime manager base URL override. Set to blank/non-http to force local
+   # placeholder runtime mode.
+   # RUNTIME_MANAGER_URL=http://runtime:8090
+
+   # Optional bearer token for runtime-manager calls
+   # RUNTIME_MANAGER_AUTH_TOKEN=
+
+   # Runtime manager HTTP timeout in seconds
+   # RUNTIME_MANAGER_TIMEOUT_SECONDS=5
+
+   # Runtime manager pool orchestration settings (runtime container)
+   # RUNTIME_POOL_SIZE=2
+   # RUNTIME_MAX_POOL_SIZE=6
+   # RUNTIME_LEASE_TTL_SECONDS=3600
+   # RUNTIME_IDLE_EVICT_SECONDS=1200
+   # RUNTIME_RECONCILE_INTERVAL_SECONDS=15
    ```
 
    </details>
@@ -201,7 +218,7 @@ FAISS indexes are loaded into memory at startup; pgvector indexes stay in Postgr
      ragtime:
        # For older CPUs without X86_V2 support, use the legacy tag:
        # image: hub.docker.visnovsky.us/library/ragtime:legacy
-       image: hub.docker.visnovsky.us/library/ragtime:main
+       image: hub.docker.visnovsky.us/library/ragtime:userspace-v2
        container_name: ragtime
        restart: unless-stopped
        ports:
@@ -213,6 +230,8 @@ FAISS indexes are loaded into memory at startup; pgvector indexes stay in Postgr
          DATABASE_URL: postgresql://ragtime:${POSTGRES_PASSWORD}@ragtime-db:5432/ragtime
          # Recommended defaults
          DEBUG_MODE: "false"
+         RUNTIME_MANAGER_URL: ${RUNTIME_MANAGER_URL:-http://runtime:8090}
+         RUNTIME_MANAGER_AUTH_TOKEN: ${RUNTIME_MANAGER_AUTH_TOKEN:-runtime-manager-token}
        volumes:
          # Data persistence (indexes, SSL certs, etc.)
          - ./data:/data
@@ -227,12 +246,39 @@ FAISS indexes are loaded into memory at startup; pgvector indexes stay in Postgr
        depends_on:
          ragtime-db:
            condition: service_healthy
+         runtime:
+           condition: service_started
        healthcheck:
          test: ["CMD", "sh", "-c", "if [ \"$ENABLE_HTTPS\" = \"true\" ]; then curl -fsk https://localhost:8000/health; else curl -fs http://localhost:8000/health; fi"]
          interval: 30s
          timeout: 10s
          retries: 3
          start_period: 15s
+
+     runtime:
+       image: hub.docker.visnovsky.us/library/runtime:userspace-v2
+       container_name: runtime
+       restart: unless-stopped
+       environment:
+         PORT: "8090"
+         RUNTIME_SERVICE_MODE: manager
+         RUNTIME_MANAGER_AUTH_TOKEN: ${RUNTIME_MANAGER_AUTH_TOKEN:-runtime-manager-token}
+         RUNTIME_WORKER_AUTH_TOKEN: ${RUNTIME_WORKER_AUTH_TOKEN:-runtime-worker-token}
+         RUNTIME_WORKER_BASE_URL: ${RUNTIME_WORKER_BASE_URL:-http://runtime:8090}
+         RUNTIME_WORKSPACE_ROOT: ${RUNTIME_WORKSPACE_ROOT:-/data/_userspace}
+         RUNTIME_MAX_SESSIONS: ${RUNTIME_MAX_SESSIONS:-12}
+         RUNTIME_LEASE_TTL_SECONDS: ${RUNTIME_LEASE_TTL_SECONDS:-3600}
+         RUNTIME_RECONCILE_INTERVAL_SECONDS: ${RUNTIME_RECONCILE_INTERVAL_SECONDS:-15}
+       volumes:
+         - ./data:/data
+       networks:
+         - ragtime-network
+       healthcheck:
+         test: ["CMD", "curl", "-fs", "http://localhost:8090/health"]
+         interval: 30s
+         timeout: 10s
+         retries: 3
+         start_period: 5s
 
    networks:
      ragtime-network:
