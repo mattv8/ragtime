@@ -50,6 +50,9 @@
   --color-info-light: rgba(59, 130, 246, 0.15);
   --color-info-border: rgba(59, 130, 246, 0.3);
 
+  /* Terminal surface */
+  --color-terminal-surface: #000000;
+
   /* Border colors */
   --color-border: rgba(255, 255, 255, 0.1);
   --color-border-strong: rgba(255, 255, 255, 0.2);
@@ -156,6 +159,9 @@
   --color-info: #2563eb;
   --color-info-light: rgba(37, 99, 235, 0.1);
   --color-info-border: rgba(37, 99, 235, 0.25);
+
+  /* Terminal surface */
+  --color-terminal-surface: #111827;
 
   /* Border colors */
   --color-border: rgba(0, 0, 0, 0.08);

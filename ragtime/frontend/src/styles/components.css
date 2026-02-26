@@ -880,6 +880,11 @@ textarea:focus {
   overflow: hidden;
 }
 
+.userspace-right-pane .userspace-toolbar-actions {
+  border-left: none;
+  padding-left: 0;
+}
+
 .userspace-preview-section {
   flex: 1;
   display: flex;
@@ -891,9 +896,9 @@ textarea:focus {
 
 .userspace-runtime-terminal-wrap {
   margin-top: var(--space-sm);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-bg-tertiary);
+  border: 8px solid var(--color-terminal-surface);
+  border-radius: var(--radius-sm);
+  background: var(--color-terminal-surface);
   min-height: 220px;
   max-height: 320px;
   overflow: hidden;
@@ -902,7 +907,7 @@ textarea:focus {
 .userspace-runtime-terminal {
   height: 100%;
   width: 100%;
-  padding: var(--space-xs);
+  padding: 0;
 }
 
 .userspace-runtime-terminal .xterm {
