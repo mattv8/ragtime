@@ -24,6 +24,7 @@ from ragtime.userspace.models import (
     RuntimeSessionState,
     UserSpaceCapabilityTokenResponse,
     UserSpaceCollabSnapshotResponse,
+    UserSpaceFileResponse,
     UserSpaceRuntimeActionResponse,
     UserSpaceRuntimeSession,
     UserSpaceRuntimeSessionResponse,
@@ -36,7 +37,6 @@ logger = get_logger(__name__)
 _RUNTIME_CAPABILITY_TTL_SECONDS = 900
 _RUNTIME_DEVSERVER_PORT = 5173
 _RUNTIME_PREVIEW_DEFAULT_BASE = f"http://127.0.0.1:{_RUNTIME_DEVSERVER_PORT}"
-_RUNTIME_PROVIDER_LOCAL = "microvm_pool_v1"
 _RUNTIME_PROVIDER_MANAGER = "runtime_manager_v1"
 
 
@@ -149,15 +149,21 @@ class UserSpaceRuntimeService:
         return False
 
     def _runtime_provider_name(self) -> str:
-        if self._runtime_manager_enabled():
-            return _RUNTIME_PROVIDER_MANAGER
-        return _RUNTIME_PROVIDER_LOCAL
+        return _RUNTIME_PROVIDER_MANAGER
 
     def _runtime_manager_enabled(self) -> bool:
         manager_url = str(
             getattr(settings, "userspace_runtime_manager_url", "")
         ).strip()
         return manager_url.startswith("http://") or manager_url.startswith("https://")
+
+    def _require_runtime_manager(self) -> None:
+        if self._runtime_manager_enabled():
+            return
+        raise HTTPException(
+            status_code=503,
+            detail="Runtime manager is required for userspace runtime offload",
+        )
 
     async def _runtime_manager_request(
         self,
@@ -222,16 +228,7 @@ class UserSpaceRuntimeService:
         leased_by_user_id: str,
         existing_provider_session_id: str | None = None,
     ) -> dict[str, Any]:
-        if not self._runtime_manager_enabled():
-            provider_session_id = existing_provider_session_id or (
-                f"local-{workspace_id[:8]}-{uuid4().hex[:8]}"
-            )
-            return {
-                "provider_session_id": provider_session_id,
-                "preview_internal_url": _RUNTIME_PREVIEW_DEFAULT_BASE,
-                "state": "running",
-                "last_error": None,
-            }
+        self._require_runtime_manager()
 
         payload: dict[str, Any] = {
             "workspace_id": workspace_id,
@@ -252,8 +249,7 @@ class UserSpaceRuntimeService:
     ) -> None:
         if not provider_session_id:
             return
-        if not self._runtime_manager_enabled():
-            return
+        self._require_runtime_manager()
         await self._runtime_manager_request(
             "POST",
             f"/sessions/{provider_session_id}/stop",
@@ -265,8 +261,7 @@ class UserSpaceRuntimeService:
     ) -> dict[str, Any] | None:
         if not provider_session_id:
             return None
-        if not self._runtime_manager_enabled():
-            return None
+        self._require_runtime_manager()
         try:
             return await self._runtime_manager_request(
                 "GET",
@@ -283,11 +278,69 @@ class UserSpaceRuntimeService:
     ) -> dict[str, Any] | None:
         if not provider_session_id:
             return None
-        if not self._runtime_manager_enabled():
-            return None
+        self._require_runtime_manager()
         return await self._runtime_manager_request(
             "POST",
             f"/sessions/{provider_session_id}/restart",
+        )
+
+    async def _runtime_provider_get_pty_ws_url(
+        self,
+        provider_session_id: str | None,
+    ) -> str:
+        if not provider_session_id:
+            raise HTTPException(status_code=404, detail="Runtime session unavailable")
+        self._require_runtime_manager()
+        response = await self._runtime_manager_request(
+            "GET",
+            f"/sessions/{provider_session_id}/pty/ws-url",
+        )
+        ws_url = str(response.get("ws_url") or "").strip()
+        if not ws_url.startswith("ws://") and not ws_url.startswith("wss://"):
+            raise HTTPException(
+                status_code=502, detail="Runtime PTY upstream unavailable"
+            )
+        return ws_url
+
+    async def _runtime_provider_read_file(
+        self,
+        provider_session_id: str | None,
+        file_path: str,
+    ) -> dict[str, Any]:
+        if not provider_session_id:
+            raise HTTPException(status_code=404, detail="Runtime session unavailable")
+        self._require_runtime_manager()
+        return await self._runtime_manager_request(
+            "GET",
+            f"/sessions/{provider_session_id}/fs/{quote(file_path, safe='/@._-~')}",
+        )
+
+    async def _runtime_provider_write_file(
+        self,
+        provider_session_id: str | None,
+        file_path: str,
+        content: str,
+    ) -> dict[str, Any]:
+        if not provider_session_id:
+            raise HTTPException(status_code=404, detail="Runtime session unavailable")
+        self._require_runtime_manager()
+        return await self._runtime_manager_request(
+            "PUT",
+            f"/sessions/{provider_session_id}/fs/{quote(file_path, safe='/@._-~')}",
+            json_payload={"content": content},
+        )
+
+    async def _runtime_provider_delete_file(
+        self,
+        provider_session_id: str | None,
+        file_path: str,
+    ) -> dict[str, Any]:
+        if not provider_session_id:
+            raise HTTPException(status_code=404, detail="Runtime session unavailable")
+        self._require_runtime_manager()
+        return await self._runtime_manager_request(
+            "DELETE",
+            f"/sessions/{provider_session_id}/fs/{quote(file_path, safe='/@._-~')}",
         )
 
     async def _ensure_session_row(
@@ -300,7 +353,6 @@ class UserSpaceRuntimeService:
         current = await self._get_active_session_row(workspace_id)
         if current:
             session = self._to_runtime_session(current)
-            manager_enabled = self._runtime_manager_enabled()
             target_provider_name = self._runtime_provider_name()
             if (
                 session.state == "running"
@@ -313,8 +365,7 @@ class UserSpaceRuntimeService:
                 leased_by_user_id,
                 existing_provider_session_id=(
                     session.provider_session_id
-                    if manager_enabled
-                    and session.runtime_provider == target_provider_name
+                    if session.runtime_provider == target_provider_name
                     else None
                 ),
             )
@@ -353,7 +404,7 @@ class UserSpaceRuntimeService:
                 "runtimeProvider": self._runtime_provider_name(),
                 "providerSessionId": str(
                     provider_data.get("provider_session_id")
-                    or f"local-{workspace_id[:8]}-{uuid4().hex[:8]}"
+                    or f"runtime-{workspace_id[:8]}-{uuid4().hex[:8]}"
                 ),
                 "previewInternalUrl": str(
                     provider_data.get("preview_internal_url")
@@ -407,6 +458,15 @@ class UserSpaceRuntimeService:
         if query:
             upstream = f"{upstream}?{query}"
         return upstream
+
+    async def build_workspace_pty_upstream_ws_url(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> str:
+        await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
+        session = await self.ensure_workspace_preview_session(workspace_id, user_id)
+        return await self._runtime_provider_get_pty_ws_url(session.provider_session_id)
 
     async def build_shared_preview_upstream_url(
         self,
@@ -794,6 +854,88 @@ class UserSpaceRuntimeService:
             ) from exc
         await userspace_service.touch_workspace(workspace_id)
 
+        active = await self._get_active_session_row(workspace_id)
+        if active:
+            active_session = self._to_runtime_session(active)
+            await self._runtime_provider_write_file(
+                active_session.provider_session_id,
+                normalized_path,
+                content,
+            )
+
+    async def runtime_fs_read(
+        self,
+        workspace_id: str,
+        file_path: str,
+        user_id: str,
+    ) -> UserSpaceFileResponse:
+        await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
+        normalized_path = self._normalize_file_path(file_path)
+        session = await self.ensure_workspace_preview_session(workspace_id, user_id)
+        payload = await self._runtime_provider_read_file(
+            session.provider_session_id,
+            normalized_path,
+        )
+        return UserSpaceFileResponse(
+            path=normalized_path,
+            content=str(payload.get("content", "")),
+            artifact_type=None,
+            live_data_connections=None,
+            live_data_checks=None,
+            updated_at=self._utc_now(),
+        )
+
+    async def runtime_fs_write(
+        self,
+        workspace_id: str,
+        file_path: str,
+        content: str,
+        user_id: str,
+    ) -> UserSpaceFileResponse:
+        await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
+        normalized_path = self._normalize_file_path(file_path)
+        await self._persist_file_content(workspace_id, normalized_path, content)
+        await self._audit(
+            workspace_id,
+            "runtime_fs_write",
+            user_id=user_id,
+            payload={"file_path": normalized_path},
+        )
+        return UserSpaceFileResponse(
+            path=normalized_path,
+            content=content,
+            artifact_type=None,
+            live_data_connections=None,
+            live_data_checks=None,
+            updated_at=self._utc_now(),
+        )
+
+    async def runtime_fs_delete(
+        self,
+        workspace_id: str,
+        file_path: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
+        normalized_path = self._normalize_file_path(file_path)
+        target = userspace_service.resolve_workspace_file_path(
+            workspace_id, normalized_path
+        )
+        if target.exists() and target.is_file():
+            target.unlink()
+            await userspace_service.touch_workspace(workspace_id)
+        session = await self.ensure_workspace_preview_session(workspace_id, user_id)
+        await self._runtime_provider_delete_file(
+            session.provider_session_id, normalized_path
+        )
+        await self._audit(
+            workspace_id,
+            "runtime_fs_delete",
+            user_id=user_id,
+            payload={"file_path": normalized_path},
+        )
+        return {"success": True}
+
     async def get_collab_snapshot(
         self,
         workspace_id: str,
@@ -1070,6 +1212,20 @@ class UserSpaceRuntimeService:
         new_target.parent.mkdir(parents=True, exist_ok=True)
         old_target.rename(new_target)
 
+        active = await self._get_active_session_row(workspace_id)
+        if active:
+            active_session = self._to_runtime_session(active)
+            content = await self._load_file_content(workspace_id, normalized_new)
+            await self._runtime_provider_write_file(
+                active_session.provider_session_id,
+                normalized_new,
+                content,
+            )
+            await self._runtime_provider_delete_file(
+                active_session.provider_session_id,
+                normalized_old,
+            )
+
         async with self._collab_lock:
             old_key = (workspace_id, normalized_old)
             new_key = (workspace_id, normalized_new)
@@ -1115,6 +1271,14 @@ class UserSpaceRuntimeService:
         if not target.exists() or not target.is_file():
             raise HTTPException(status_code=404, detail="File not found")
         target.unlink()
+
+        active = await self._get_active_session_row(workspace_id)
+        if active:
+            active_session = self._to_runtime_session(active)
+            await self._runtime_provider_delete_file(
+                active_session.provider_session_id,
+                normalized_path,
+            )
 
         async with self._collab_lock:
             key = (workspace_id, normalized_path)

@@ -1,10 +1,10 @@
 ---
-applyTo: 'ragtime/userspace/**'
+applyTo: 'ragtime/userspace/**, runtime/**'
 ---
 
 # User Space Feature Implementation Instructions
 
-Last updated: 2026-02-25
+Last updated: 2026-02-25 (full-offload cutover update)
 
 ## Purpose
 
@@ -30,20 +30,24 @@ Keep changes scoped, incremental, and aligned with runtime hard-cutover goals.
 Implemented now:
 
 - Runtime session persistence + API routes are live.
-- Runtime provider seam is live (inferred from `USERSPACE_RUNTIME_MANAGER_URL` HTTP(S) value).
+- Runtime provider seam is live (inferred from `RUNTIME_MANAGER_URL` HTTP(S) value).
 - HTTP runtime-manager service contract is live (`/sessions/start`, `/sessions/{id}`, `/sessions/{id}/stop`, `/sessions/{id}/restart`).
 - Runtime manager code is organized under `runtime/manager/{models,service,api}.py` with `runtime/main.py` as the runtime container entrypoint.
-- Runtime manager includes pool/session orchestration scaffolding in-container (warm slots, lease TTL, idle eviction, reconcile loop).
+- Runtime manager now orchestrates real isolated worker runtimes over HTTP (`RUNTIME_WORKER_URLS`) and no longer relies on warm-slot in-memory execution stubs.
+- Runtime manager now orchestrates isolated runtime sessions inside the runtime container process boundary (no dedicated worker compose services).
+- Runtime manager exposes manager-side FS and PTY upstream endpoints per provider session.
+- Runtime container supports explicit service mode (`manager` or `worker`) via `RUNTIME_SERVICE_MODE` (default deployment uses `manager`).
 - Preview proxying supports HTTP + websocket upgrades.
 - Shared preview proxy supports both slug and token route shapes.
 - Collaboration supports text-sync updates, conflict resync, presence events, and file create/rename/delete broadcasts.
-- Runtime PTY websocket streams a real subprocess; write access is editor/owner only.
+- Runtime PTY websocket is now offloaded through manager→worker proxy chain; ragtime no longer spawns local PTY subprocesses.
+- Runtime FS routes are manager-backed and synced to worker runtime sessions.
+- Legacy frontend `srcDoc` preview fallback has been removed; preview is runtime-only.
 
 Still pending for full hard-cutover:
 
-- Replace runtime-manager in-memory orchestration scaffold with real MicroVM pool/session orchestration backend.
+- Replace in-container worker session backend with MicroVM pool/session orchestration backend (provider seam retained).
 - Replace text-sync collaboration with CRDT/Yjs semantics.
-- Remove remaining legacy `srcDoc` fallback behavior.
 - Finish operator runbook + end-to-end runtime validation checklist.
 
 ## Required Engineering Rules
@@ -94,3 +98,11 @@ Still pending for full hard-cutover:
 
 `User Space Runtime Plan v2.md` is the target roadmap.
 If a plan item is not implemented, document it explicitly in PR/summary rather than implying completion.
+
+## Runtime Offload Implementation Notes (Current)
+
+- Control plane remains in ragtime (`runtime_service`/`runtime_routes`) with role checks, audit events, and reverse proxy entrypoints.
+- Data plane execution now lives in isolated runtime worker services (filesystem writes, PTY process execution, preview serving).
+- Manager contract remains stable for start/get/stop/restart/health; additional manager endpoints support PTY URL and FS operations.
+- Compose stacks run ragtime + runtime (manager mode); runtime hosts internal isolated sessions and ragtime must be configured with matching manager auth token.
+- Runtime webroots are rooted at `${INDEX_DATA_PATH}/_userspace/{workspace_id}` in the runtime container (`/data/_userspace/{workspace_id}` in compose defaults).

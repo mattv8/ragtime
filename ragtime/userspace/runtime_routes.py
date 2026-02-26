@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 import importlib
 import json
-import os
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -30,7 +29,6 @@ from ragtime.userspace.models import (
     UserSpaceRuntimeSessionResponse,
     UserSpaceRuntimeStatusResponse,
 )
-from ragtime.userspace.models import UpsertWorkspaceFileRequest
 from ragtime.userspace.runtime_service import (
     RuntimeVersionConflictError,
     userspace_runtime_service,
@@ -297,8 +295,11 @@ async def runtime_fs_read(
     file_path: str,
     user: Any = Depends(get_current_user),
 ):
-    await userspace_service.enforce_workspace_role(workspace_id, user.id, "viewer")
-    return await userspace_service.get_workspace_file(workspace_id, file_path, user.id)
+    return await userspace_runtime_service.runtime_fs_read(
+        workspace_id,
+        file_path,
+        user.id,
+    )
 
 
 @router.put(
@@ -311,19 +312,12 @@ async def runtime_fs_write(
     payload: dict[str, Any],
     user: Any = Depends(get_current_user),
 ):
-    await userspace_service.enforce_workspace_role(workspace_id, user.id, "editor")
-    request = UpsertWorkspaceFileRequest(
-        content=str(payload.get("content", "")),
-        artifact_type="module_ts",
-    )
-    updated = await userspace_service.upsert_workspace_file(
+    return await userspace_runtime_service.runtime_fs_write(
         workspace_id,
         file_path,
-        request,
+        str(payload.get("content", "")),
         user.id,
     )
-    await userspace_runtime_service.invalidate_workspace_runtime_state(workspace_id)
-    return updated
 
 
 @router.delete("/runtime/workspaces/{workspace_id}/fs/{file_path:path}")
@@ -332,10 +326,11 @@ async def runtime_fs_delete(
     file_path: str,
     user: Any = Depends(get_current_user),
 ):
-    await userspace_service.enforce_workspace_role(workspace_id, user.id, "editor")
-    await userspace_service.delete_workspace_file(workspace_id, file_path, user.id)
-    await userspace_runtime_service.invalidate_workspace_runtime_state(workspace_id)
-    return {"success": True}
+    return await userspace_runtime_service.runtime_fs_delete(
+        workspace_id,
+        file_path,
+        user.id,
+    )
 
 
 @router.websocket("/runtime/workspaces/{workspace_id}/pty")
@@ -357,86 +352,27 @@ async def runtime_pty(workspace_id: str, websocket: WebSocket):
     except HTTPException:
         can_write = False
 
-    await websocket.accept()
-    shell = os.environ.get("SHELL", "/bin/bash")
-    process = await asyncio.create_subprocess_exec(
-        shell,
-        "-i",
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-
-    await websocket.send_text(
-        json.dumps(
-            {
-                "type": "status",
-                "read_only": not can_write,
-                "message": "PTY bridge online",
-                "pid": process.pid,
-            }
-        )
-    )
-
-    async def _pump_stream(reader: asyncio.StreamReader) -> None:
-        while True:
-            chunk = await reader.read(1024)
-            if not chunk:
-                break
-            await websocket.send_text(
-                json.dumps(
-                    {
-                        "type": "output",
-                        "data": chunk.decode("utf-8", errors="replace"),
-                    }
-                )
-            )
-
-    if process.stdout is None or process.stderr is None:
+    if not can_write:
+        await websocket.accept()
         await websocket.send_text(
             json.dumps(
                 {
                     "type": "status",
                     "read_only": True,
-                    "message": "Terminal streams unavailable",
+                    "message": "Read-only terminal session",
                 }
             )
         )
-        with contextlib.suppress(Exception):
-            await websocket.close(code=1011)
+        await websocket.close(code=1000)
         return
 
-    stdout_task = asyncio.create_task(_pump_stream(process.stdout))
-    stderr_task = asyncio.create_task(_pump_stream(process.stderr))
-    try:
-        while True:
-            data = await websocket.receive_text()
-            payload = json.loads(data)
-            if payload.get("type") != "input":
-                continue
-            if not can_write:
-                await websocket.send_text(
-                    json.dumps(
-                        {"type": "output", "data": "Read-only terminal session\n"}
-                    )
-                )
-                continue
-            if process.stdin is None:
-                continue
-            line = str(payload.get("data", ""))
-            process.stdin.write(line.encode("utf-8", errors="ignore"))
-            await process.stdin.drain()
-    except WebSocketDisconnect:
-        pass
-    finally:
-        if process.returncode is None:
-            process.terminate()
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(process.wait(), timeout=2)
-        for task in (stdout_task, stderr_task):
-            task.cancel()
-            with contextlib.suppress(Exception):
-                await task
+    upstream_ws_url = (
+        await userspace_runtime_service.build_workspace_pty_upstream_ws_url(
+            workspace_id,
+            user.id,
+        )
+    )
+    await _proxy_websocket_request(websocket, upstream_ws_url)
 
 
 @router.websocket("/collab/workspaces/{workspace_id}/files/{file_path:path}")

@@ -70,17 +70,17 @@ class Settings(BaseSettings):
     # User Space runtime provider settings
     userspace_runtime_manager_url: str = Field(
         default="http://runtime:8090",
-        alias="USERSPACE_RUNTIME_MANAGER_URL",
+        alias="RUNTIME_MANAGER_URL",
         description="Base URL for external runtime manager API",
     )
     userspace_runtime_manager_timeout_seconds: float = Field(
         default=5.0,
-        alias="USERSPACE_RUNTIME_MANAGER_TIMEOUT_SECONDS",
+        alias="RUNTIME_MANAGER_TIMEOUT_SECONDS",
         description="Timeout in seconds for runtime manager HTTP requests",
     )
     userspace_runtime_manager_auth_token: str = Field(
         default="",
-        alias="USERSPACE_RUNTIME_MANAGER_AUTH_TOKEN",
+        alias="RUNTIME_MANAGER_AUTH_TOKEN",
         description="Optional bearer token used when calling runtime manager",
     )
 
