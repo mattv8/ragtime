@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, cast
 
 from fastapi import FastAPI, Header, HTTPException
 
@@ -10,6 +10,8 @@ from runtime.manager.models import (
     RuntimeFileWriteRequest,
     RuntimeManagerHealthResponse,
     RuntimePtyUrlResponse,
+    RuntimeScreenshotRequest,
+    RuntimeScreenshotResponse,
     RuntimeSessionResponse,
     StartSessionRequest,
 )
@@ -134,6 +136,18 @@ def create_app() -> FastAPI:
     ) -> dict[str, Any]:
         _authorize_manager_call(authorization)
         return await manager.delete_file(provider_session_id, file_path)
+
+    @application.post(
+        "/sessions/{provider_session_id}/screenshot",
+        response_model=RuntimeScreenshotResponse,
+    )
+    async def capture_screenshot(
+        provider_session_id: str,
+        payload: RuntimeScreenshotRequest,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> RuntimeScreenshotResponse:
+        _authorize_manager_call(authorization)
+        return await cast(Any, manager).capture_screenshot(provider_session_id, payload)
 
     return application
 

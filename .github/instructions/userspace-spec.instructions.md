@@ -43,7 +43,7 @@ Implemented now:
 - Collaboration supports text-sync updates, conflict resync, presence events, and file create/rename/delete broadcasts.
 - Runtime PTY websocket is now offloaded through manager→worker proxy chain; ragtime no longer spawns local PTY subprocesses.
 - Runtime FS routes are manager-backed and synced to worker runtime sessions.
-- Runtime worker filesystem root resolution prefers `${INDEX_DATA_PATH}/_userspace/workspaces/{workspace_id}/files` with fallback to legacy `${INDEX_DATA_PATH}/_userspace/{workspace_id}`.
+- Runtime worker filesystem root is `${INDEX_DATA_PATH}/_userspace/workspaces/{workspace_id}/files` (created on session start).
 - Preview traffic is proxied to a session-managed internal devserver port (currently dynamic per session).
 - Runtime launch contract metadata is exposed (framework/command/cwd/port) from worker -> manager -> ragtime runtime status/session APIs.
 - Runtime entrypoint guidance supports `.ragtime/runtime-entrypoint.json` (`command`, `cwd`, `framework`) as an explicit launch override.
@@ -134,4 +134,4 @@ These are the key, currently visible deltas between implementation and `User Spa
 - Data plane execution now lives in isolated runtime worker services (filesystem writes, PTY process execution, preview serving).
 - Manager contract remains stable for start/get/stop/restart/health; additional manager endpoints support PTY URL and FS operations.
 - Compose stacks run ragtime + runtime (manager mode); runtime hosts internal isolated sessions and ragtime must be configured with matching manager auth token.
-- Runtime webroots are rooted at `${INDEX_DATA_PATH}/_userspace/workspaces/{workspace_id}/files` (with fallback to legacy `${INDEX_DATA_PATH}/_userspace/{workspace_id}` for compatibility).
+- Runtime webroots are rooted at `${INDEX_DATA_PATH}/_userspace/workspaces/{workspace_id}/files`.

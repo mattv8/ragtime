@@ -396,7 +396,7 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
 
     await websocket.accept()
     await userspace_runtime_service.register_collab_client(
-        workspace_id, snapshot.file_path, websocket
+        workspace_id, snapshot.file_path, websocket, user.id
     )
     await websocket.send_text(
         json.dumps(

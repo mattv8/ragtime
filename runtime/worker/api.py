@@ -20,6 +20,8 @@ from fastapi.responses import Response
 
 from runtime.manager.models import (
     RuntimeFileReadResponse,
+    RuntimeScreenshotRequest,
+    RuntimeScreenshotResponse,
     WorkerHealthResponse,
     WorkerSessionResponse,
     WorkerStartSessionRequest,
@@ -126,6 +128,23 @@ async def delete_file(
 ) -> dict[str, Any]:
     _authorize_worker_call(authorization)
     return await get_worker_service().delete_file(worker_session_id, file_path)
+
+
+@router.post(
+    "/worker/sessions/{worker_session_id}/screenshot",
+    response_model=RuntimeScreenshotResponse,
+)
+async def capture_screenshot(
+    worker_session_id: str,
+    payload: RuntimeScreenshotRequest,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> RuntimeScreenshotResponse:
+    _authorize_worker_call(authorization)
+    service = get_worker_service()
+    capture_method = getattr(service, "capture_screenshot", None)
+    if capture_method is None:
+        raise HTTPException(status_code=503, detail="Runtime screenshot not available")
+    return await capture_method(worker_session_id, payload)
 
 
 @router.get("/worker/sessions/{worker_session_id}/preview")

@@ -21,77 +21,52 @@ from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (
-    AIMessage,
-    BaseMessage,
-    HumanMessage,
-    SystemMessage,
-    ToolMessage,
-)
+from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
+                                     SystemMessage, ToolMessage)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
-from ragtime.core.file_constants import (
-    USERSPACE_MODULE_SOURCE_EXTENSIONS,
-    USERSPACE_STRICT_FRONTEND_EXTENSIONS,
-    USERSPACE_THEME_AUDIT_EXTENSIONS,
-    USERSPACE_TYPESCRIPT_EXTENSIONS,
-)
+from ragtime.core.file_constants import (USERSPACE_MODULE_SOURCE_EXTENSIONS,
+                                         USERSPACE_STRICT_FRONTEND_EXTENSIONS,
+                                         USERSPACE_THEME_AUDIT_EXTENSIONS,
+                                         USERSPACE_TYPESCRIPT_EXTENSIONS)
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit, get_output_limit
 from ragtime.core.ollama import get_model_context_length
-from ragtime.core.security import (
-    _SSH_ENV_VAR_RE,
-    sanitize_output,
-    validate_odoo_code,
-    validate_sql_query,
-    validate_ssh_command,
-)
+from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
+                                   validate_odoo_code, validate_sql_query,
+                                   validate_ssh_command)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (
-    SSHConfig,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    execute_ssh_command,
-    expand_env_vars_via_ssh,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
+                              execute_ssh_command, expand_env_vars_via_ssh,
+                              ssh_tunnel_config_from_dict)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (
-    CHAT_CHART_DESCRIPTION_SUFFIX,
-    USERSPACE_CHART_DESCRIPTION_SUFFIX,
-    create_chart_tool,
-)
-from ragtime.tools.datatable import (
-    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-    create_datatable_tool,
-)
+from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
+                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
+                                 create_chart_tool)
+from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+                                     create_datatable_tool)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (
-    _is_shallow_repository,
-    create_aggregate_git_history_tool,
-    create_per_index_git_history_tool,
-)
+from ragtime.tools.git_history import (_is_shallow_repository,
+                                       create_aggregate_git_history_tool,
+                                       create_per_index_git_history_tool)
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (
-    ArtifactType,
-    UpsertWorkspaceFileRequest,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-)
+from ragtime.userspace.models import (ArtifactType, UpsertWorkspaceFileRequest,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -1030,6 +1005,7 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Prefer TypeScript modules for interactive reports and dashboards.
 - Build one cohesive frontend app with `dashboard/main.ts` as the fixed entry artifact.
 - If `dashboard/main.ts` exists, treat it as the authoritative app entrypoint for feature work. Do not implement dashboard behavior changes in `index.html` unless the user explicitly asks to edit `index.html`.
+- In `module_dashboard` workspaces, do not create or modify `index.html` to resolve runtime behavior issues; implement/fix behavior in `dashboard/*` (and runtime config only when explicitly requested).
 - For any request to create/build/update a report, dashboard, or frontend, you MUST write/update workspace files via `upsert_userspace_file` before finalizing.
 - Do not end with chat-only guidance when the user asked for implementation; persist a runnable scaffold first, then describe blockers.
 - Do not keep all logic in `dashboard/main.ts` once complexity grows.
@@ -1044,6 +1020,9 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - The workspace must have a runnable web entrypoint, resolved in this order: `.ragtime/runtime-entrypoint.json` (`command`, optional `cwd`, optional `framework`), `package.json` with `dev` script, Python app (`manage.py`, `main.py`, or `app.py`), or `index.html` fallback.
 - If a runnable web entrypoint is missing, preview fails with: `No runnable web entrypoint found. Add .ragtime/runtime-entrypoint.json with a command/cwd or provide package.json dev script, Python app.py/main.py, or index.html.`
 - For module-style dashboard artifacts, keep `dashboard/main.ts` present as the thin composition entrypoint for dashboard modules.
+- In `module_dashboard` mode, runtime stabilization means fixing `dashboard/*` code first. Do not create `index.html`, `public/index.html`, ad-hoc Python servers, or alternate runtime entrypoints unless the user explicitly requests runtime-config changes.
+- If preview probe reports HTTP 200 and no hard runtime error, treat runtime as available and continue with dashboard code fixes instead of runtime scaffolding changes.
+- If a `STRUCTURE GUARDRAIL` blocks an `index.html` write, do not retry with path variants (`public/index.html`, nested index files) or bypass attempts; pivot to `dashboard/*` edits.
 - npm dependencies are allowed when explicitly declared in `package.json`; do not assume globally preloaded libraries.
 - Do not inject CDN scripts for runtime dependencies in generated modules.
 - The runtime automatically applies theme-matched text, tick, grid, legend, and title colors to every Chart.js instance. Do NOT set `color`, `ticks.color`, `grid.color`, `labels.color`, or `title.color` in chart options; the runtime handles them. Only set data-specific colors (dataset `backgroundColor`, `borderColor`, etc.).
@@ -4715,12 +4694,33 @@ except Exception as e:
                 default_factory=list,
                 min_length=1,
                 max_length=50,
-                description="Ordered replacement operations to apply.",
+                description=(
+                    "Ordered replacement operations to apply. Provide as a JSON array "
+                    "of objects, not a quoted JSON string."
+                ),
             )
             reason: str = Field(
                 default="",
                 description="Brief description of why this patch is being applied",
             )
+
+            @field_validator("replacements", mode="before")
+            @classmethod
+            def _coerce_replacements(cls, value: Any) -> Any:
+                if isinstance(value, str):
+                    raw = value.strip()
+                    if not raw:
+                        return []
+                    try:
+                        parsed = json.loads(raw)
+                    except Exception as exc:
+                        raise ValueError(
+                            "replacements must be a list (or a JSON string that decodes to a list)."
+                        ) from exc
+                    return parsed
+                if isinstance(value, tuple):
+                    return list(value)
+                return value
 
         class CreateUserSpaceSnapshotInput(BaseModel):
             message: str = Field(
@@ -4870,12 +4870,17 @@ except Exception as e:
                 "workspace_mode_reason": workspace_mode_reason,
                 "authoritative_entrypoint": authoritative_entrypoint,
                 "has_dashboard_entry": "dashboard/main.ts" in file_paths,
-                "has_index_html": "index.html" in file_paths,
+                "has_index_html": any(
+                    PurePosixPath(path).name.lower() == "index.html"
+                    for path in file_paths
+                ),
             }
 
         def _is_index_html_path(path: str) -> bool:
             normalized = (path or "").strip().replace("\\", "/").lstrip("/")
-            return normalized.lower() == "index.html"
+            if not normalized:
+                return False
+            return PurePosixPath(normalized).name.lower() == "index.html"
 
         async def assay_userspace_code(
             max_files: int = 12,
@@ -4996,7 +5001,8 @@ except Exception as e:
             ):
                 raise ToolException(
                     "STRUCTURE GUARDRAIL: This workspace uses dashboard/main.ts as the module entrypoint. "
-                    "Patch dashboard/* files for feature or behavior updates. index.html edits are blocked to avoid no-op changes."
+                    "Patch dashboard/* files for feature or behavior updates. index.html edits are blocked to avoid no-op changes. "
+                    "Do not create/patch index.html for module-dashboard runtime fixes."
                 )
 
             file_data = await userspace_service.get_workspace_file(
@@ -5178,7 +5184,8 @@ except Exception as e:
             ):
                 raise ToolException(
                     "STRUCTURE GUARDRAIL: This workspace uses dashboard/main.ts as the module entrypoint. "
-                    "Use upsert_userspace_file on dashboard/* files for feature changes; index.html writes are blocked to prevent ineffective updates."
+                    "Use upsert_userspace_file on dashboard/* files for feature changes; index.html writes are blocked to prevent ineffective updates. "
+                    "Do not create index.html to resolve module-dashboard runtime issues."
                 )
 
             parsed_live_data_connections: list[UserSpaceLiveDataConnection] | None = (
@@ -5867,258 +5874,27 @@ except Exception as e:
             **_: Any,
         ) -> str:
             del reason
-            await userspace_service.enforce_workspace_role(
-                workspace_id, user_id, "viewer"
-            )
-
-            requested_width = max(320, int(width))
-            requested_height = max(240, int(height))
-            width = min(requested_width, MAX_USERSPACE_SCREENSHOT_WIDTH)
-            height = min(requested_height, MAX_USERSPACE_SCREENSHOT_HEIGHT)
-
-            requested_pixels = width * height
-            if requested_pixels > MAX_USERSPACE_SCREENSHOT_PIXELS:
-                scale = (MAX_USERSPACE_SCREENSHOT_PIXELS / requested_pixels) ** 0.5
-                width = max(320, int(width * scale))
-                height = max(240, int(height * scale))
-
-            normalized_preview_path = (path or "").strip().lstrip("/")
-            upstream_url = (
-                await userspace_runtime_service.build_workspace_preview_upstream_url(
-                    workspace_id,
-                    user_id,
-                    normalized_preview_path,
-                )
-            )
-            cache_busted_url = (
-                f"{upstream_url}{'&' if '?' in upstream_url else '?'}"
-                f"_ragtime_screenshot_ts={int(time.time() * 1000)}"
-            )
-
-            index_data_root = Path(getattr(settings, "index_data_path", ".data"))
-            output_dir = index_data_root / "_tmp" / workspace_id
-            output_dir.mkdir(parents=True, exist_ok=True)
-
-            timestamp = int(time.time() * 1000)
-            if filename and str(filename).strip():
-                candidate = str(filename).strip().replace("\\", "/").split("/")[-1]
-            else:
-                path_slug = (
-                    normalized_preview_path.replace("/", "_").replace(" ", "_")
-                    or "root"
-                )
-                candidate = f"preview_{path_slug}_{timestamp}.png"
-
-            safe_candidate = re.sub(r"[^A-Za-z0-9._-]", "_", candidate)[:200]
-            if not safe_candidate:
-                safe_candidate = f"preview_{timestamp}.png"
-            if not safe_candidate.lower().endswith(".png"):
-                safe_candidate += ".png"
-
-            output_path = output_dir / safe_candidate
-
-            selector_value = (wait_for_selector or "").strip()
-            node_script = r"""
-const targetUrl = process.argv[1];
-const outputPath = process.argv[2];
-const viewportWidth = Number(process.argv[3] || 1440);
-const viewportHeight = Number(process.argv[4] || 900);
-const captureFullPage = (process.argv[5] || 'true') === 'true';
-const timeoutMs = Number(process.argv[6] || 25000);
-const waitForSelector = process.argv[7] || '';
-const waitAfterLoadMs = Number(process.argv[8] || 900);
-const refreshBeforeCapture = (process.argv[9] || 'true') === 'true';
-const maxPixels = Number(process.argv[10] || 1440000);
-
-let playwright;
-try {
-    playwright = require('/ragtime/ragtime/frontend/node_modules/playwright');
-} catch (_) {
-    playwright = require('playwright');
-}
-
-async function run() {
-    const browser = await playwright.chromium.launch({
-        headless: true,
-        args: ['--disable-dev-shm-usage'],
-    });
-
-    try {
-        const context = await browser.newContext({
-            viewport: { width: viewportWidth, height: viewportHeight },
-            deviceScaleFactor: 1,
-        });
-        const page = await context.newPage();
-        page.setDefaultTimeout(timeoutMs);
-
-        const initialResponse = await page.goto(targetUrl, {
-            waitUntil: 'domcontentloaded',
-            timeout: timeoutMs,
-        });
-
-        await page.waitForLoadState('networkidle', {
-            timeout: Math.min(timeoutMs, 8000),
-        }).catch(() => null);
-
-        if (refreshBeforeCapture) {
-            await page.reload({
-                waitUntil: 'domcontentloaded',
-                timeout: timeoutMs,
-            });
-            await page.waitForLoadState('networkidle', {
-                timeout: Math.min(timeoutMs, 8000),
-            }).catch(() => null);
-        }
-
-        if (waitForSelector) {
-            await page.waitForSelector(waitForSelector, {
-                state: 'visible',
-                timeout: Math.min(timeoutMs, 10000),
-            }).catch(() => null);
-        }
-
-        if (waitAfterLoadMs > 0) {
-            await page.waitForTimeout(waitAfterLoadMs);
-        }
-
-        const screenshotOptions = {
-            path: outputPath,
-            animations: 'disabled',
-        };
-
-        let effectiveWidth = viewportWidth;
-        let effectiveHeight = viewportHeight;
-        let effectiveFullPage = captureFullPage;
-
-        if (captureFullPage) {
-            const fullHeight = await page.evaluate(() => {
-                const bodyHeight = document.body ? document.body.scrollHeight : 0;
-                const docHeight = document.documentElement
-                    ? document.documentElement.scrollHeight
-                    : 0;
-                return Math.max(bodyHeight, docHeight, window.innerHeight || 0);
-            });
-
-            if (viewportWidth * fullHeight <= maxPixels) {
-                screenshotOptions.fullPage = true;
-                effectiveHeight = fullHeight;
-            } else {
-                effectiveFullPage = false;
-                const clipHeight = Math.max(240, Math.floor(maxPixels / Math.max(1, viewportWidth)));
-                screenshotOptions.clip = {
-                    x: 0,
-                    y: 0,
-                    width: viewportWidth,
-                    height: clipHeight,
-                };
-                effectiveHeight = clipHeight;
-            }
-        } else if (viewportWidth * viewportHeight > maxPixels) {
-            const scale = Math.sqrt(maxPixels / (viewportWidth * viewportHeight));
-            const clipWidth = Math.max(320, Math.floor(viewportWidth * scale));
-            const clipHeight = Math.max(240, Math.floor(viewportHeight * scale));
-            screenshotOptions.clip = {
-                x: 0,
-                y: 0,
-                width: clipWidth,
-                height: clipHeight,
-            };
-            effectiveWidth = clipWidth;
-            effectiveHeight = clipHeight;
-        }
-
-        await page.screenshot(screenshotOptions);
-
-        const title = await page.title().catch(() => '');
-        const htmlLength = await page
-            .content()
-            .then((html) => html.length)
-            .catch(() => null);
-
-        const output = {
-            ok: true,
-            status_code: initialResponse ? initialResponse.status() : null,
-            title,
-            html_length: htmlLength,
-            output_path: outputPath,
-            screenshot_url: targetUrl,
-            effective_width: effectiveWidth,
-            effective_height: effectiveHeight,
-            effective_full_page: effectiveFullPage,
-        };
-        process.stdout.write(JSON.stringify(output));
-    } finally {
-        await browser.close();
-    }
-}
-
-run().catch((error) => {
-    const message = error && error.message ? error.message : String(error);
-    process.stderr.write(message);
-    process.exit(1);
-});
-"""
-
-            process = await asyncio.create_subprocess_exec(
-                "node",
-                "-e",
-                node_script,
-                cache_busted_url,
-                str(output_path),
-                str(width),
-                str(height),
-                "true" if full_page else "false",
-                str(timeout_ms),
-                selector_value,
-                str(wait_after_load_ms),
-                "true" if refresh_before_capture else "false",
-                str(MAX_USERSPACE_SCREENSHOT_PIXELS),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-
-            stdout, stderr = await process.communicate()
-            stdout_text = stdout.decode("utf-8", errors="replace").strip()
-            stderr_text = stderr.decode("utf-8", errors="replace").strip()
-
-            if process.returncode != 0:
-                raise ToolException(
-                    "Screenshot capture failed. "
-                    "Ensure Playwright + Chromium are installed in the container. "
-                    f"Details: {stderr_text or stdout_text or 'unknown error'}"
-                )
-
-            parsed: dict[str, Any]
             try:
-                parsed = json.loads(stdout_text) if stdout_text else {}
-            except json.JSONDecodeError:
-                parsed = {}
-
-            if not output_path.exists():
-                raise ToolException(
-                    "Screenshot capture reported success but no file was written. "
-                    f"Output path: {output_path}"
+                response_payload = (
+                    await userspace_runtime_service.capture_workspace_screenshot(
+                        workspace_id=workspace_id,
+                        user_id=user_id,
+                        path=path,
+                        width=width,
+                        height=height,
+                        full_page=full_page,
+                        timeout_ms=timeout_ms,
+                        wait_for_selector=wait_for_selector,
+                        wait_after_load_ms=wait_after_load_ms,
+                        refresh_before_capture=refresh_before_capture,
+                        filename=filename,
+                    )
                 )
-
-            response_payload = {
-                "ok": True,
-                "workspace_id": workspace_id,
-                "preview_path": normalized_preview_path,
-                "screenshot_path": str(output_path),
-                "screenshot_size_bytes": output_path.stat().st_size,
-                "render": {
-                    "requested_width": requested_width,
-                    "requested_height": requested_height,
-                    "width": width,
-                    "height": height,
-                    "full_page": full_page,
-                    "max_pixels": MAX_USERSPACE_SCREENSHOT_PIXELS,
-                    "wait_for_selector": selector_value or None,
-                    "wait_after_load_ms": wait_after_load_ms,
-                    "refresh_before_capture": refresh_before_capture,
-                },
-                "probe": parsed,
-            }
+            except HTTPException as exc:
+                detail_text = str(getattr(exc, "detail", exc)).strip() or str(exc)
+                raise ToolException(
+                    f"Runtime screenshot capture failed: {detail_text}"
+                ) from exc
             return json.dumps(response_payload, indent=2)
 
         return [

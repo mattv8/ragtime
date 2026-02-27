@@ -118,11 +118,46 @@ class RuntimePtyUrlResponse(BaseModel):
 class RuntimeFileReadResponse(BaseModel):
     path: str = Field(description="Workspace-relative path")
     content: str = Field(description="File content")
+    exists: bool = Field(description="Whether the file exists")
     updated_at: datetime = Field(description="Updated timestamp")
 
 
 class RuntimeFileWriteRequest(BaseModel):
     content: str = Field(description="File content to persist")
+
+
+class RuntimeScreenshotRequest(BaseModel):
+    path: str = Field(default="", description="Workspace-relative preview path")
+    width: int = Field(default=1440, description="Requested viewport width")
+    height: int = Field(default=900, description="Requested viewport height")
+    full_page: bool = Field(default=True, description="Capture full page screenshot")
+    timeout_ms: int = Field(default=25000, description="Navigation timeout in ms")
+    wait_for_selector: str = Field(
+        default="body",
+        description="Optional selector to wait for before capture",
+    )
+    wait_after_load_ms: int = Field(
+        default=900,
+        description="Extra wait after page load before capture",
+    )
+    refresh_before_capture: bool = Field(
+        default=True,
+        description="Refresh the page once before screenshot capture",
+    )
+    filename: str | None = Field(
+        default=None,
+        description="Optional filename for saved screenshot",
+    )
+
+
+class RuntimeScreenshotResponse(BaseModel):
+    ok: bool = Field(description="Whether screenshot capture succeeded")
+    workspace_id: str = Field(description="Workspace ID")
+    preview_path: str = Field(description="Workspace-relative preview path")
+    screenshot_path: str = Field(description="Absolute screenshot file path")
+    screenshot_size_bytes: int = Field(description="Screenshot file size in bytes")
+    render: dict[str, Any] = Field(description="Capture/render settings metadata")
+    probe: dict[str, Any] = Field(description="Captured browser probe metadata")
 
 
 class RuntimeManagerHealthResponse(BaseModel):

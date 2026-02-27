@@ -4,7 +4,7 @@ import asyncio
 import os
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -14,6 +14,8 @@ from runtime.manager.models import (
     ManagerSession,
     RuntimeFileReadResponse,
     RuntimePtyUrlResponse,
+    RuntimeScreenshotRequest,
+    RuntimeScreenshotResponse,
     RuntimeSessionResponse,
     StartSessionRequest,
     WorkerSessionResponse,
@@ -334,6 +336,20 @@ class SessionManager:
                 raise HTTPException(status_code=404, detail="Runtime session not found")
             return await self._worker_service.delete_file(
                 session.worker_session_id, file_path
+            )
+
+    async def capture_screenshot(
+        self,
+        provider_session_id: str,
+        payload: RuntimeScreenshotRequest,
+    ) -> RuntimeScreenshotResponse:
+        async with self._lock:
+            session = self._sessions.get(provider_session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Runtime session not found")
+            return await cast(Any, self._worker_service).capture_screenshot(
+                session.worker_session_id,
+                payload,
             )
 
     async def pool_status(self) -> dict[str, int]:

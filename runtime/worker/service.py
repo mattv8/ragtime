@@ -7,23 +7,39 @@ import os
 import re
 import shutil
 import socket
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 import httpx
 from fastapi import HTTPException
 
-from runtime.manager.models import (RuntimeFileReadResponse,
-                                    RuntimeSessionState, WorkerHealthResponse,
-                                    WorkerSessionResponse,
-                                    WorkerStartSessionRequest)
+from runtime.manager.models import (
+    RuntimeFileReadResponse,
+    RuntimeScreenshotRequest,
+    RuntimeScreenshotResponse,
+    RuntimeSessionState,
+    WorkerHealthResponse,
+    WorkerSessionResponse,
+    WorkerStartSessionRequest,
+)
 
 _PORT_PATTERNS = (
     re.compile(r"(?:^|\s)--port(?:=|\s+)(\d{2,5})(?:\s|$)"),
     re.compile(r"(?:^|\s)-p\s+(\d{2,5})(?:\s|$)"),
     re.compile(r"(?:^|\s)PORT=(\d{2,5})(?:\s|$)"),
+)
+_PORT_REWRITE_PATTERNS = (
+    (re.compile(r"(^|\s)--port=(\d{2,5})(?=\s|$)"), r"\1--port={port}"),
+    (re.compile(r"(^|\s)--port\s+(\d{2,5})(?=\s|$)"), r"\1--port {port}"),
+    (re.compile(r"(^|\s)-p\s+(\d{2,5})(?=\s|$)"), r"\1-p {port}"),
+    (re.compile(r"(^|\s)PORT=(\d{2,5})(?=\s|$)"), r"\1PORT={port}"),
+)
+_PY_HTTP_SERVER_PORT_PATTERN = re.compile(
+    r"(^|\s)(python3?\s+-m\s+http\.server\s+)(\d{2,5})(?=\s|$)"
 )
 _COMMAND_TOKEN_PATTERNS = {
     "npx": re.compile(r"(?:^|\s)npx(?:\s|$)"),
@@ -36,6 +52,151 @@ _WORKSPACE_BOOTSTRAP_GUIDANCE = (
 )
 _RUNTIME_BOOTSTRAP_CONFIG_PATH = ".ragtime/runtime-bootstrap.json"
 _RUNTIME_BOOTSTRAP_STAMP_PATH = ".ragtime/.runtime-bootstrap.done"
+MAX_USERSPACE_SCREENSHOT_WIDTH = 1600
+MAX_USERSPACE_SCREENSHOT_HEIGHT = 1200
+MAX_USERSPACE_SCREENSHOT_PIXELS = 1_440_000
+
+_SCREENSHOT_NODE_SCRIPT = r"""
+const targetUrl = process.argv[1];
+const outputPath = process.argv[2];
+const viewportWidth = Number(process.argv[3] || 1440);
+const viewportHeight = Number(process.argv[4] || 900);
+const captureFullPage = (process.argv[5] || 'true') === 'true';
+const timeoutMs = Number(process.argv[6] || 25000);
+const waitForSelector = process.argv[7] || '';
+const waitAfterLoadMs = Number(process.argv[8] || 900);
+const refreshBeforeCapture = (process.argv[9] || 'true') === 'true';
+const maxPixels = Number(process.argv[10] || 1440000);
+
+let playwright;
+try {
+    playwright = require('playwright');
+} catch (_) {
+    process.stderr.write('Playwright package is not installed in runtime container.');
+    process.exit(1);
+}
+
+async function run() {
+    const browser = await playwright.chromium.launch({
+        headless: true,
+        args: ['--disable-dev-shm-usage'],
+    });
+
+    try {
+        const context = await browser.newContext({
+            viewport: { width: viewportWidth, height: viewportHeight },
+            deviceScaleFactor: 1,
+        });
+        const page = await context.newPage();
+        page.setDefaultTimeout(timeoutMs);
+
+        const initialResponse = await page.goto(targetUrl, {
+            waitUntil: 'domcontentloaded',
+            timeout: timeoutMs,
+        });
+
+        await page.waitForLoadState('networkidle', {
+            timeout: Math.min(timeoutMs, 8000),
+        }).catch(() => null);
+
+        if (refreshBeforeCapture) {
+            await page.reload({
+                waitUntil: 'domcontentloaded',
+                timeout: timeoutMs,
+            });
+            await page.waitForLoadState('networkidle', {
+                timeout: Math.min(timeoutMs, 8000),
+            }).catch(() => null);
+        }
+
+        if (waitForSelector) {
+            await page.waitForSelector(waitForSelector, {
+                state: 'visible',
+                timeout: Math.min(timeoutMs, 10000),
+            }).catch(() => null);
+        }
+
+        if (waitAfterLoadMs > 0) {
+            await page.waitForTimeout(waitAfterLoadMs);
+        }
+
+        const screenshotOptions = {
+            path: outputPath,
+            animations: 'disabled',
+        };
+
+        let effectiveWidth = viewportWidth;
+        let effectiveHeight = viewportHeight;
+        let effectiveFullPage = captureFullPage;
+
+        if (captureFullPage) {
+            const fullHeight = await page.evaluate(() => {
+                const bodyHeight = document.body ? document.body.scrollHeight : 0;
+                const docHeight = document.documentElement
+                    ? document.documentElement.scrollHeight
+                    : 0;
+                return Math.max(bodyHeight, docHeight, window.innerHeight || 0);
+            });
+
+            if (viewportWidth * fullHeight <= maxPixels) {
+                screenshotOptions.fullPage = true;
+                effectiveHeight = fullHeight;
+            } else {
+                effectiveFullPage = false;
+                const clipHeight = Math.max(240, Math.floor(maxPixels / Math.max(1, viewportWidth)));
+                screenshotOptions.clip = {
+                    x: 0,
+                    y: 0,
+                    width: viewportWidth,
+                    height: clipHeight,
+                };
+                effectiveHeight = clipHeight;
+            }
+        } else if (viewportWidth * viewportHeight > maxPixels) {
+            const scale = Math.sqrt(maxPixels / (viewportWidth * viewportHeight));
+            const clipWidth = Math.max(320, Math.floor(viewportWidth * scale));
+            const clipHeight = Math.max(240, Math.floor(viewportHeight * scale));
+            screenshotOptions.clip = {
+                x: 0,
+                y: 0,
+                width: clipWidth,
+                height: clipHeight,
+            };
+            effectiveWidth = clipWidth;
+            effectiveHeight = clipHeight;
+        }
+
+        await page.screenshot(screenshotOptions);
+
+        const title = await page.title().catch(() => '');
+        const htmlLength = await page
+            .content()
+            .then((html) => html.length)
+            .catch(() => null);
+
+        const output = {
+            ok: true,
+            status_code: initialResponse ? initialResponse.status() : null,
+            title,
+            html_length: htmlLength,
+            output_path: outputPath,
+            screenshot_url: targetUrl,
+            effective_width: effectiveWidth,
+            effective_height: effectiveHeight,
+            effective_full_page: effectiveFullPage,
+        };
+        process.stdout.write(JSON.stringify(output));
+    } finally {
+        await browser.close();
+    }
+}
+
+run().catch((error) => {
+    const message = error && error.message ? error.message : String(error);
+    process.stderr.write(message);
+    process.exit(1);
+});
+"""
 
 
 @dataclass
@@ -91,10 +252,8 @@ class WorkerService:
 
     def _resolve_workspace_root(self, workspace_id: str) -> Path:
         canonical_root = self._root / "workspaces" / workspace_id / "files"
-        if canonical_root.exists() and canonical_root.is_dir():
-            return canonical_root
-        legacy_root = self._root / workspace_id
-        return legacy_root
+        canonical_root.mkdir(parents=True, exist_ok=True)
+        return canonical_root
 
     def _resolve_launch_cwd(self, session: WorkerSession) -> Path:
         relative = (session.launch_cwd or ".").strip().replace("\\", "/")
@@ -129,10 +288,12 @@ class WorkerService:
         session: WorkerSession,
         rel_path: str,
         content: str,
+        exists: bool,
     ) -> RuntimeFileReadResponse:
         return RuntimeFileReadResponse(
             path=rel_path,
             content=content,
+            exists=exists,
             updated_at=session.updated_at,
         )
 
@@ -160,7 +321,9 @@ class WorkerService:
             "framework": framework,
         }
 
-    def _read_runtime_bootstrap_config(self, workspace_root: Path) -> list[dict[str, str]]:
+    def _read_runtime_bootstrap_config(
+        self, workspace_root: Path
+    ) -> list[dict[str, str]]:
         config_path = workspace_root / _RUNTIME_BOOTSTRAP_CONFIG_PATH
         if not config_path.exists() or not config_path.is_file():
             return []
@@ -245,7 +408,9 @@ class WorkerService:
             command_name = command_cfg.get("name") or "bootstrap"
             run = command_cfg.get("run", "")
 
-            when_path = self._resolve_bootstrap_relative_path(workspace_root, when_exists)
+            when_path = self._resolve_bootstrap_relative_path(
+                workspace_root, when_exists
+            )
             unless_path = self._resolve_bootstrap_relative_path(
                 workspace_root,
                 unless_exists,
@@ -398,6 +563,31 @@ class WorkerService:
             f"{_WORKSPACE_BOOTSTRAP_GUIDANCE}"
         )
 
+    def _rewrite_command_port(self, command: str, port: int) -> str:
+        python_http_server_match = _PY_HTTP_SERVER_PORT_PATTERN.search(command)
+        if python_http_server_match:
+            prefix = python_http_server_match.group(1)
+            command_prefix = python_http_server_match.group(2)
+            replacement = f"{prefix}{command_prefix}{port}"
+            return (
+                f"{command[:python_http_server_match.start()]}"
+                f"{replacement}"
+                f"{command[python_http_server_match.end():]}"
+            )
+
+        rewritten = command
+        for pattern, template in _PORT_REWRITE_PATTERNS:
+            match = pattern.search(rewritten)
+            if not match:
+                continue
+            replacement = template.format(port=port).replace("\\1", match.group(1))
+            rewritten = (
+                f"{rewritten[:match.start()]}{replacement}{rewritten[match.end():]}"
+            )
+            if replacement:
+                return rewritten
+        return rewritten
+
     def _resolve_devserver_command(
         self,
         workspace_root: Path,
@@ -408,9 +598,12 @@ class WorkerService:
         if config_command:
             config_cwd = config.get("cwd") or "."
             config_framework = config.get("framework") or "custom"
-            configured_port = self._extract_explicit_port(config_command)
-            effective_port = configured_port or port
-            if self._command_uses_tool(config_command, "npx") and not shutil.which("npx"):
+            effective_port = port
+            final_command = self._rewrite_command_port(config_command, effective_port)
+
+            if self._command_uses_tool(config_command, "npx") and not shutil.which(
+                "npx"
+            ):
                 return (
                     None,
                     self._missing_tool_error("npx"),
@@ -418,7 +611,9 @@ class WorkerService:
                     config_cwd,
                     effective_port,
                 )
-            if self._command_uses_tool(config_command, "npm") and not shutil.which("npm"):
+            if self._command_uses_tool(config_command, "npm") and not shutil.which(
+                "npm"
+            ):
                 return (
                     None,
                     self._missing_tool_error("npm"),
@@ -430,7 +625,7 @@ class WorkerService:
                 [
                     "sh",
                     "-lc",
-                    f"PORT={effective_port} {config_command}",
+                    f"PORT={effective_port} {final_command}",
                 ],
                 None,
                 config_framework,
@@ -722,10 +917,10 @@ class WorkerService:
             rel_path = self._normalize_file_path(file_path)
             target = session.workspace_root / rel_path
             if not target.exists() or not target.is_file():
-                return self._runtime_file_response(session, rel_path, "")
+                return self._runtime_file_response(session, rel_path, "", False)
             content = target.read_text(encoding="utf-8")
             session.updated_at = self._utc_now()
-            return self._runtime_file_response(session, rel_path, content)
+            return self._runtime_file_response(session, rel_path, content, True)
 
     async def write_file(
         self,
@@ -742,7 +937,7 @@ class WorkerService:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
             session.updated_at = self._utc_now()
-            return self._runtime_file_response(session, rel_path, content)
+            return self._runtime_file_response(session, rel_path, content, True)
 
     async def delete_file(
         self, worker_session_id: str, file_path: str
@@ -757,6 +952,152 @@ class WorkerService:
                 target.unlink()
             session.updated_at = self._utc_now()
             return {"success": True, "path": rel_path}
+
+    async def capture_screenshot(
+        self,
+        worker_session_id: str,
+        payload: RuntimeScreenshotRequest,
+    ) -> RuntimeScreenshotResponse:
+        async with self._lock:
+            session = self._sessions.get(worker_session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Worker session not found")
+            if session.state not in {"running", "starting"}:
+                raise HTTPException(status_code=409, detail="Worker session not active")
+
+            await self._sync_devserver_state_locked(session)
+            if not session.devserver_running:
+                await self._start_devserver_locked(session)
+            if not session.devserver_running or not session.devserver_port:
+                raise HTTPException(
+                    status_code=502,
+                    detail=session.last_error or "Dev server is not running",
+                )
+
+            requested_width = max(320, int(payload.width))
+            requested_height = max(240, int(payload.height))
+            width = min(requested_width, MAX_USERSPACE_SCREENSHOT_WIDTH)
+            height = min(requested_height, MAX_USERSPACE_SCREENSHOT_HEIGHT)
+            requested_pixels = width * height
+            if requested_pixels > MAX_USERSPACE_SCREENSHOT_PIXELS:
+                scale = (MAX_USERSPACE_SCREENSHOT_PIXELS / requested_pixels) ** 0.5
+                width = max(320, int(width * scale))
+                height = max(240, int(height * scale))
+
+            normalized_preview_path = (payload.path or "").strip().lstrip("/")
+            if normalized_preview_path:
+                normalized_preview_path = self._normalize_file_path(
+                    normalized_preview_path
+                )
+            upstream_base = f"http://127.0.0.1:{session.devserver_port}"
+            upstream_url = (
+                f"{upstream_base}/{normalized_preview_path}"
+                if normalized_preview_path
+                else f"{upstream_base}/"
+            )
+            cache_busted_url = (
+                f"{upstream_url}{'&' if '?' in upstream_url else '?'}"
+                f"_ragtime_screenshot_ts={int(time.time() * 1000)}"
+            )
+
+            index_data_root = Path(os.getenv("INDEX_DATA_PATH", "/data"))
+            output_dir = index_data_root / "_tmp" / session.workspace_id
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            timestamp = int(time.time() * 1000)
+            if payload.filename and str(payload.filename).strip():
+                candidate = (
+                    str(payload.filename).strip().replace("\\", "/").split("/")[-1]
+                )
+            else:
+                path_slug = (
+                    normalized_preview_path.replace("/", "_").replace(" ", "_")
+                    or "root"
+                )
+                candidate = f"preview_{path_slug}_{timestamp}.png"
+
+            safe_candidate = re.sub(r"[^A-Za-z0-9._-]", "_", candidate)[:200]
+            if not safe_candidate:
+                safe_candidate = f"preview_{timestamp}.png"
+            if not safe_candidate.lower().endswith(".png"):
+                safe_candidate += ".png"
+
+            output_path = output_dir / safe_candidate
+
+        node_binary = shutil.which("node")
+        if not node_binary:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Runtime screenshot capture requires Node.js in runtime container "
+                    "but it is not installed."
+                ),
+            )
+
+        process = await asyncio.create_subprocess_exec(
+            node_binary,
+            "-e",
+            _SCREENSHOT_NODE_SCRIPT,
+            cache_busted_url,
+            str(output_path),
+            str(width),
+            str(height),
+            "true" if payload.full_page else "false",
+            str(payload.timeout_ms),
+            str(payload.wait_for_selector or "").strip(),
+            str(payload.wait_after_load_ms),
+            "true" if payload.refresh_before_capture else "false",
+            str(MAX_USERSPACE_SCREENSHOT_PIXELS),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        stdout_text = stdout.decode("utf-8", errors="replace").strip()
+        stderr_text = stderr.decode("utf-8", errors="replace").strip()
+
+        if process.returncode != 0:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "Runtime screenshot capture failed. Ensure Playwright + Chromium "
+                    f"are available in runtime container. {stderr_text or stdout_text or 'unknown error'}"
+                ),
+            )
+
+        probe: dict[str, Any]
+        try:
+            probe = json.loads(stdout_text) if stdout_text else {}
+        except Exception:
+            probe = {}
+
+        if not output_path.exists() or not output_path.is_file():
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "Runtime screenshot capture reported success but no file was written"
+                ),
+            )
+
+        return RuntimeScreenshotResponse(
+            ok=True,
+            workspace_id=session.workspace_id,
+            preview_path=normalized_preview_path,
+            screenshot_path=str(output_path),
+            screenshot_size_bytes=int(output_path.stat().st_size),
+            render={
+                "requested_width": requested_width,
+                "requested_height": requested_height,
+                "width": width,
+                "height": height,
+                "full_page": bool(payload.full_page),
+                "max_pixels": MAX_USERSPACE_SCREENSHOT_PIXELS,
+                "wait_for_selector": str(payload.wait_for_selector or "").strip()
+                or None,
+                "wait_after_load_ms": int(payload.wait_after_load_ms),
+                "refresh_before_capture": bool(payload.refresh_before_capture),
+            },
+            probe=probe if isinstance(probe, dict) else {},
+        )
 
     async def preview_response(
         self,

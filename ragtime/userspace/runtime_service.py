@@ -20,14 +20,16 @@ from starlette.websockets import WebSocket
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
-from ragtime.userspace.models import (RuntimeSessionState,
-                                      UserSpaceCapabilityTokenResponse,
-                                      UserSpaceCollabSnapshotResponse,
-                                      UserSpaceFileResponse,
-                                      UserSpaceRuntimeActionResponse,
-                                      UserSpaceRuntimeSession,
-                                      UserSpaceRuntimeSessionResponse,
-                                      UserSpaceRuntimeStatusResponse)
+from ragtime.userspace.models import (
+    RuntimeSessionState,
+    UserSpaceCapabilityTokenResponse,
+    UserSpaceCollabSnapshotResponse,
+    UserSpaceFileResponse,
+    UserSpaceRuntimeActionResponse,
+    UserSpaceRuntimeSession,
+    UserSpaceRuntimeSessionResponse,
+    UserSpaceRuntimeStatusResponse,
+)
 from ragtime.userspace.service import userspace_service
 
 logger = get_logger(__name__)
@@ -478,6 +480,20 @@ class UserSpaceRuntimeService:
         return await self._runtime_manager_request(
             "DELETE",
             f"/sessions/{provider_session_id}/fs/{quote(file_path, safe='/@._-~')}",
+        )
+
+    async def _runtime_provider_capture_screenshot(
+        self,
+        provider_session_id: str | None,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not provider_session_id:
+            raise HTTPException(status_code=404, detail="Runtime session unavailable")
+        self._require_runtime_manager()
+        return await self._runtime_manager_request(
+            "POST",
+            f"/sessions/{provider_session_id}/screenshot",
+            json_payload=payload,
         )
 
     async def _ensure_session_row(
@@ -1137,45 +1153,33 @@ class UserSpaceRuntimeService:
 
         return claims
 
-    async def _load_file_content(self, workspace_id: str, normalized_path: str) -> str:
-        target = userspace_service.resolve_workspace_file_path(
-            workspace_id, normalized_path
+    async def _load_file_content(
+        self,
+        workspace_id: str,
+        normalized_path: str,
+        user_id: str,
+    ) -> str:
+        session = await self.ensure_workspace_preview_session(workspace_id, user_id)
+        payload = await self._runtime_provider_read_file(
+            session.provider_session_id,
+            normalized_path,
         )
-        if not target.exists() or not target.is_file():
-            return ""
-        try:
-            return target.read_text(encoding="utf-8")
-        except Exception as exc:
-            raise HTTPException(
-                status_code=500, detail=f"Failed to read file: {exc}"
-            ) from exc
+        return str(payload.get("content", ""))
 
     async def _persist_file_content(
         self,
         workspace_id: str,
         normalized_path: str,
         content: str,
+        user_id: str,
     ) -> None:
-        target = userspace_service.resolve_workspace_file_path(
-            workspace_id, normalized_path
+        session = await self.ensure_workspace_preview_session(workspace_id, user_id)
+        await self._runtime_provider_write_file(
+            session.provider_session_id,
+            normalized_path,
+            content,
         )
-        target.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            target.write_text(content, encoding="utf-8")
-        except Exception as exc:
-            raise HTTPException(
-                status_code=500, detail=f"Failed to write file: {exc}"
-            ) from exc
         await userspace_service.touch_workspace(workspace_id)
-
-        active = await self._get_active_session_row(workspace_id)
-        if active:
-            active_session = self._to_runtime_session(active)
-            await self._runtime_provider_write_file(
-                active_session.provider_session_id,
-                normalized_path,
-                content,
-            )
 
     async def runtime_fs_read(
         self,
@@ -1208,7 +1212,12 @@ class UserSpaceRuntimeService:
     ) -> UserSpaceFileResponse:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
         normalized_path = self._normalize_file_path(file_path)
-        await self._persist_file_content(workspace_id, normalized_path, content)
+        await self._persist_file_content(
+            workspace_id,
+            normalized_path,
+            content,
+            user_id,
+        )
         await self._audit(
             workspace_id,
             "runtime_fs_write",
@@ -1232,16 +1241,11 @@ class UserSpaceRuntimeService:
     ) -> dict[str, Any]:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
         normalized_path = self._normalize_file_path(file_path)
-        target = userspace_service.resolve_workspace_file_path(
-            workspace_id, normalized_path
-        )
-        if target.exists() and target.is_file():
-            target.unlink()
-            await userspace_service.touch_workspace(workspace_id)
         session = await self.ensure_workspace_preview_session(workspace_id, user_id)
         await self._runtime_provider_delete_file(
             session.provider_session_id, normalized_path
         )
+        await userspace_service.touch_workspace(workspace_id)
         await self._audit(
             workspace_id,
             "runtime_fs_delete",
@@ -1271,7 +1275,11 @@ class UserSpaceRuntimeService:
         async with self._collab_lock:
             state = self._collab_docs.get(key)
             if state is None:
-                content = await self._load_file_content(workspace_id, normalized_path)
+                content = await self._load_file_content(
+                    workspace_id,
+                    normalized_path,
+                    user_id,
+                )
                 state = _CollabDocState(
                     workspace_id=workspace_id,
                     file_path=normalized_path,
@@ -1293,13 +1301,18 @@ class UserSpaceRuntimeService:
         workspace_id: str,
         file_path: str,
         websocket: WebSocket,
+        user_id: str,
     ) -> UserSpaceCollabSnapshotResponse:
         normalized_path = self._normalize_file_path(file_path)
         key = (workspace_id, normalized_path)
         async with self._collab_lock:
             state = self._collab_docs.get(key)
             if state is None:
-                content = await self._load_file_content(workspace_id, normalized_path)
+                content = await self._load_file_content(
+                    workspace_id,
+                    normalized_path,
+                    user_id,
+                )
                 state = _CollabDocState(
                     workspace_id=workspace_id,
                     file_path=normalized_path,
@@ -1407,7 +1420,11 @@ class UserSpaceRuntimeService:
         async with self._collab_lock:
             state = self._collab_docs.get(key)
             if state is None:
-                existing = await self._load_file_content(workspace_id, normalized_path)
+                existing = await self._load_file_content(
+                    workspace_id,
+                    normalized_path,
+                    user_id,
+                )
                 state = _CollabDocState(
                     workspace_id=workspace_id,
                     file_path=normalized_path,
@@ -1427,7 +1444,12 @@ class UserSpaceRuntimeService:
             version = state.version
             recipients = list(state.clients)
 
-        await self._persist_file_content(workspace_id, normalized_path, content)
+        await self._persist_file_content(
+            workspace_id,
+            normalized_path,
+            content,
+            user_id,
+        )
         await self._store_collab_checkpoint(
             workspace_id, normalized_path, content, version
         )
@@ -1476,7 +1498,12 @@ class UserSpaceRuntimeService:
     ) -> UserSpaceCollabSnapshotResponse:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
         normalized_path = self._normalize_file_path(file_path)
-        await self._persist_file_content(workspace_id, normalized_path, content)
+        await self._persist_file_content(
+            workspace_id,
+            normalized_path,
+            content,
+            user_id,
+        )
 
         async with self._collab_lock:
             state = _CollabDocState(
@@ -1512,33 +1539,33 @@ class UserSpaceRuntimeService:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
         normalized_old = self._normalize_file_path(old_path)
         normalized_new = self._normalize_file_path(new_path)
-
-        old_target = userspace_service.resolve_workspace_file_path(
-            workspace_id, normalized_old
+        session = await self.ensure_workspace_preview_session(workspace_id, user_id)
+        source_payload = await self._runtime_provider_read_file(
+            session.provider_session_id,
+            normalized_old,
         )
-        new_target = userspace_service.resolve_workspace_file_path(
-            workspace_id, normalized_new
-        )
-        if not old_target.exists() or not old_target.is_file():
+        source_exists = bool(source_payload.get("exists", True))
+        if not source_exists:
             raise HTTPException(status_code=404, detail="File not found")
-        if new_target.exists():
-            raise HTTPException(status_code=409, detail="Target file already exists")
-        new_target.parent.mkdir(parents=True, exist_ok=True)
-        old_target.rename(new_target)
 
-        active = await self._get_active_session_row(workspace_id)
-        if active:
-            active_session = self._to_runtime_session(active)
-            content = await self._load_file_content(workspace_id, normalized_new)
-            await self._runtime_provider_write_file(
-                active_session.provider_session_id,
-                normalized_new,
-                content,
-            )
-            await self._runtime_provider_delete_file(
-                active_session.provider_session_id,
-                normalized_old,
-            )
+        target_payload = await self._runtime_provider_read_file(
+            session.provider_session_id,
+            normalized_new,
+        )
+        target_exists = bool(target_payload.get("exists", False))
+        if target_exists:
+            raise HTTPException(status_code=409, detail="Target file already exists")
+
+        content = str(source_payload.get("content", ""))
+        await self._runtime_provider_write_file(
+            session.provider_session_id,
+            normalized_new,
+            content,
+        )
+        await self._runtime_provider_delete_file(
+            session.provider_session_id,
+            normalized_old,
+        )
 
         async with self._collab_lock:
             old_key = (workspace_id, normalized_old)
@@ -1579,20 +1606,18 @@ class UserSpaceRuntimeService:
     ) -> dict[str, Any]:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
         normalized_path = self._normalize_file_path(file_path)
-        target = userspace_service.resolve_workspace_file_path(
-            workspace_id, normalized_path
+        session = await self.ensure_workspace_preview_session(workspace_id, user_id)
+        source_payload = await self._runtime_provider_read_file(
+            session.provider_session_id,
+            normalized_path,
         )
-        if not target.exists() or not target.is_file():
+        source_exists = bool(source_payload.get("exists", True))
+        if not source_exists:
             raise HTTPException(status_code=404, detail="File not found")
-        target.unlink()
-
-        active = await self._get_active_session_row(workspace_id)
-        if active:
-            active_session = self._to_runtime_session(active)
-            await self._runtime_provider_delete_file(
-                active_session.provider_session_id,
-                normalized_path,
-            )
+        await self._runtime_provider_delete_file(
+            session.provider_session_id,
+            normalized_path,
+        )
 
         async with self._collab_lock:
             key = (workspace_id, normalized_path)
@@ -1612,6 +1637,38 @@ class UserSpaceRuntimeService:
             payload={"file_path": normalized_path},
         )
         return {"file_path": normalized_path, "success": True}
+
+    async def capture_workspace_screenshot(
+        self,
+        workspace_id: str,
+        user_id: str,
+        path: str = "",
+        width: int = 1440,
+        height: int = 900,
+        full_page: bool = True,
+        timeout_ms: int = 25000,
+        wait_for_selector: str = "body",
+        wait_after_load_ms: int = 900,
+        refresh_before_capture: bool = True,
+        filename: str | None = None,
+    ) -> dict[str, Any]:
+        await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
+        session = await self.ensure_workspace_preview_session(workspace_id, user_id)
+        payload: dict[str, Any] = {
+            "path": str(path or ""),
+            "width": int(width),
+            "height": int(height),
+            "full_page": bool(full_page),
+            "timeout_ms": int(timeout_ms),
+            "wait_for_selector": str(wait_for_selector or ""),
+            "wait_after_load_ms": int(wait_after_load_ms),
+            "refresh_before_capture": bool(refresh_before_capture),
+            "filename": filename,
+        }
+        return await self._runtime_provider_capture_screenshot(
+            session.provider_session_id,
+            payload,
+        )
 
     async def _store_collab_checkpoint(
         self,
