@@ -158,7 +158,9 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const [showSnapshots, setShowSnapshots] = useState(false);
   const toolPickerRef = useRef<HTMLDivElement>(null);
   const workspaceDropdownRef = useRef<HTMLDivElement>(null);
+  const selectedFilePathRef = useRef(selectedFilePath);
   const fileContentCacheRef = useRef(fileContentCache);
+  const loadWorkspaceDataRequestIdRef = useRef(0);
   const collabSocketRef = useRef<WebSocket | null>(null);
   const collabReconnectTimerRef = useRef<number | null>(null);
   const collabSuppressNextSendRef = useRef(false);
@@ -369,11 +371,18 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   }, [activeWorkspaceId, lastWorkspaceCookieName]);
 
   const loadWorkspaceData = useCallback(async (workspaceId: string) => {
+    const requestId = ++loadWorkspaceDataRequestIdRef.current;
+
     try {
       const [nextFiles, nextSnapshots] = await Promise.all([
         api.listUserSpaceFiles(workspaceId),
         api.listUserSpaceSnapshots(workspaceId),
       ]);
+
+      if (requestId !== loadWorkspaceDataRequestIdRef.current) {
+        return;
+      }
+
       setFiles(nextFiles);
       setSnapshots(nextSnapshots);
 
@@ -388,14 +397,18 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
         return next;
       });
 
-      const selectedExists = nextFiles.some((file) => file.path === selectedFilePath);
+      const currentSelectedPath = selectedFilePathRef.current;
+      const selectedExists = nextFiles.some((file) => file.path === currentSelectedPath);
       const preferredPath = selectedExists
-        ? selectedFilePath
+        ? currentSelectedPath
         : nextFiles.some((file) => file.path === previewEntryPath)
           ? previewEntryPath
           : nextFiles[0]?.path ?? previewEntryPath;
 
-      setSelectedFilePath(preferredPath);
+      if (selectedFilePathRef.current !== preferredPath) {
+        selectedFilePathRef.current = preferredPath;
+        setSelectedFilePath(preferredPath);
+      }
 
       if (nextFiles.some((file) => file.path === preferredPath)) {
         const preferredMeta = nextFiles.find((file) => file.path === preferredPath);
@@ -403,9 +416,17 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
         const cached = fileContentCacheRef.current[preferredPath];
 
         if (cached && cached.updatedAt === preferredUpdatedAt) {
+          if (requestId !== loadWorkspaceDataRequestIdRef.current || selectedFilePathRef.current !== preferredPath) {
+            return;
+          }
           setFileContent(cached.content);
         } else {
           const file = await api.getUserSpaceFile(workspaceId, preferredPath);
+
+          if (requestId !== loadWorkspaceDataRequestIdRef.current || selectedFilePathRef.current !== preferredPath) {
+            return;
+          }
+
           setFileContent(file.content);
           setFileContentCache((current) => ({
             ...current,
@@ -422,9 +443,12 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       setFileDirty(false);
       setError(null);
     } catch (err) {
+      if (requestId !== loadWorkspaceDataRequestIdRef.current) {
+        return;
+      }
       setError(err instanceof Error ? err.message : 'Failed to load workspace data');
     }
-  }, [previewEntryPath, selectedFilePath]);
+  }, [previewEntryPath]);
 
   useEffect(() => {
     loadWorkspaces();
@@ -492,6 +516,10 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   useEffect(() => {
     fileContentCacheRef.current = fileContentCache;
   }, [fileContentCache]);
+
+  useEffect(() => {
+    selectedFilePathRef.current = selectedFilePath;
+  }, [selectedFilePath]);
 
   useEffect(() => {
     if (!activeWorkspaceId) return;
@@ -682,6 +710,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const handleSelectFile = useCallback(async (path: string) => {
     if (!activeWorkspaceId) return;
 
+    selectedFilePathRef.current = path;
     setSelectedFilePath(path);
 
     try {
