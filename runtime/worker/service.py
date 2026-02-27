@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import time
 from dataclasses import dataclass
@@ -755,11 +756,21 @@ class WorkerService:
                     pass
             return
         if process.returncode is None:
-            process.terminate()
+            # Kill the entire process group so that grandchild processes
+            # (e.g. esbuild spawned via sh -lc) are also terminated.
+            try:
+                pgid = os.getpgid(process.pid)
+                os.killpg(pgid, signal.SIGTERM)
+            except (ProcessLookupError, OSError):
+                process.terminate()
             try:
                 await asyncio.wait_for(process.wait(), timeout=3)
             except Exception:
-                process.kill()
+                try:
+                    pgid = os.getpgid(process.pid)
+                    os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    process.kill()
                 await process.wait()
         if log_handle:
             try:
@@ -850,6 +861,7 @@ class WorkerService:
                 cwd=str(self._resolve_launch_cwd(session)),
                 stdout=log_handle,
                 stderr=asyncio.subprocess.STDOUT,
+                start_new_session=True,
             )
         except FileNotFoundError:
             try:

@@ -1863,6 +1863,15 @@ export const api = {
     return handleResponse<UserSpaceRuntimeActionResponse>(response);
   },
 
+  /**
+   * Subscribe to workspace change events via SSE.
+   * Returns an EventSource that emits 'message' events with JSON payload { generation: number }.
+   */
+  subscribeWorkspaceEvents(workspaceId: string, afterGeneration: number = 0): EventSource {
+    const url = `${API_BASE}/userspace/runtime/workspaces/${encodeURIComponent(workspaceId)}/events?after=${afterGeneration}`;
+    return new EventSource(url);
+  },
+
   async issueUserSpaceCapabilityToken(workspaceId: string, capabilities: string[], sessionId?: string): Promise<UserSpaceCapabilityTokenResponse> {
     const response = await apiFetch(`${API_BASE}/userspace/runtime/workspaces/${workspaceId}/capability-token`, {
       method: 'POST',
@@ -1919,7 +1928,7 @@ export const api = {
 
   getUserSpaceSharedPreviewProxyUrl(ownerUsername: string, shareSlug: string, path: string = ''): string {
     const normalized = path.replace(/^\/+/, '');
-    const base = `${API_BASE}/userspace/shared/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}`;
+    const base = `${API_BASE}/userspace/shared/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/preview`;
     return normalized ? `${base}/${encodeFilePath(normalized)}` : base;
   },
 

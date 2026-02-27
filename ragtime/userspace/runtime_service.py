@@ -20,16 +20,14 @@ from prisma import fields as prisma_fields
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
-from ragtime.userspace.models import (
-    RuntimeSessionState,
-    UserSpaceCapabilityTokenResponse,
-    UserSpaceCollabSnapshotResponse,
-    UserSpaceFileResponse,
-    UserSpaceRuntimeActionResponse,
-    UserSpaceRuntimeSession,
-    UserSpaceRuntimeSessionResponse,
-    UserSpaceRuntimeStatusResponse,
-)
+from ragtime.userspace.models import (RuntimeSessionState,
+                                      UserSpaceCapabilityTokenResponse,
+                                      UserSpaceCollabSnapshotResponse,
+                                      UserSpaceFileResponse,
+                                      UserSpaceRuntimeActionResponse,
+                                      UserSpaceRuntimeSession,
+                                      UserSpaceRuntimeSessionResponse,
+                                      UserSpaceRuntimeStatusResponse)
 from ragtime.userspace.service import userspace_service
 
 logger = get_logger(__name__)
@@ -73,6 +71,7 @@ class UserSpaceRuntimeService:
         self._collab_lock = asyncio.Lock()
         self._workspace_generation: dict[str, int] = {}
         self._collab_presence: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+        self._workspace_events: dict[str, asyncio.Condition] = {}
 
     @staticmethod
     def _utc_now() -> datetime:
@@ -1407,9 +1406,7 @@ class UserSpaceRuntimeService:
         await self._store_collab_checkpoint(
             workspace_id, normalized_path, content, version
         )
-        self._workspace_generation[workspace_id] = (
-            self._workspace_generation.get(workspace_id, 0) + 1
-        )
+        await self.bump_workspace_generation(workspace_id, "collab_update")
         await self._audit(
             workspace_id,
             "collab_update",
@@ -1666,9 +1663,7 @@ class UserSpaceRuntimeService:
             for key in keys_to_drop:
                 self._collab_docs.pop(key, None)
                 self._collab_presence.pop(key, None)
-        self._workspace_generation[workspace_id] = (
-            self._workspace_generation.get(workspace_id, 0) + 1
-        )
+        await self.bump_workspace_generation(workspace_id, "invalidate")
 
         db = await get_db()
         model = self._runtime_session_model(db)
@@ -1691,6 +1686,47 @@ class UserSpaceRuntimeService:
             )
 
     async def get_workspace_generation(self, workspace_id: str) -> int:
+        return self._workspace_generation.get(workspace_id, 0)
+
+    def _get_workspace_condition(self, workspace_id: str) -> asyncio.Condition:
+        cond = self._workspace_events.get(workspace_id)
+        if cond is None:
+            cond = asyncio.Condition()
+            self._workspace_events[workspace_id] = cond
+        return cond
+
+    async def bump_workspace_generation(
+        self,
+        workspace_id: str,
+        event_type: str = "update",  # noqa: ARG002
+    ) -> int:
+        """Increment generation counter and wake SSE subscribers."""
+        gen = self._workspace_generation.get(workspace_id, 0) + 1
+        self._workspace_generation[workspace_id] = gen
+        cond = self._get_workspace_condition(workspace_id)
+        async with cond:
+            cond.notify_all()
+        return gen
+
+    async def wait_workspace_generation(
+        self,
+        workspace_id: str,
+        after_generation: int,
+        timeout: float = 30.0,
+    ) -> int:
+        """Block until workspace generation exceeds *after_generation* or timeout."""
+        cond = self._get_workspace_condition(workspace_id)
+        try:
+            async with cond:
+                await asyncio.wait_for(
+                    cond.wait_for(
+                        lambda: self._workspace_generation.get(workspace_id, 0)
+                        > after_generation
+                    ),
+                    timeout=timeout,
+                )
+        except asyncio.TimeoutError:
+            pass
         return self._workspace_generation.get(workspace_id, 0)
 
 

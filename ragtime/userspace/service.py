@@ -476,6 +476,13 @@ class UserSpaceService:
         files_dir.mkdir(parents=True, exist_ok=True)
         git_dir = self._workspace_git_dir(workspace_id)
         if git_dir.exists() and git_dir.is_dir():
+            # Ensure .gitignore exists even for pre-existing repos
+            gitignore = files_dir / ".gitignore"
+            if not gitignore.exists():
+                gitignore.write_text(
+                    "node_modules/\ndist/\n__pycache__/\n",
+                    encoding="utf-8",
+                )
             return
 
         await self._run_git(workspace_id, ["init"])
@@ -487,6 +494,13 @@ class UserSpaceService:
             workspace_id,
             ["config", "user.email", "userspace@ragtime.local"],
         )
+
+        gitignore = files_dir / ".gitignore"
+        if not gitignore.exists():
+            gitignore.write_text(
+                "node_modules/\ndist/\n__pycache__/\n",
+                encoding="utf-8",
+            )
 
     def _resolve_workspace_file_path(
         self, workspace_id: str, relative_path: str
@@ -505,12 +519,16 @@ class UserSpaceService:
     ) -> Path:
         return self._resolve_workspace_file_path(workspace_id, relative_path)
 
+    _HIDDEN_DIRS = frozenset(
+        {".git", "node_modules", "__pycache__", ".ragtime", "dist"}
+    )
+
     def _is_reserved_internal_path(self, relative_path: str) -> bool:
         normalized = relative_path.strip("/")
         if normalized.endswith(".artifact.json"):
             return True
         parts = Path(normalized).parts
-        return ".git" in parts
+        return bool(self._HIDDEN_DIRS.intersection(parts))
 
     def is_reserved_internal_path(self, relative_path: str) -> bool:
         return self._is_reserved_internal_path(relative_path)

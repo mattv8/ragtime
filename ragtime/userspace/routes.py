@@ -6,28 +6,24 @@ from fastapi import APIRouter, Depends, Header, Query, Request
 
 from ragtime.core.security import get_current_user, get_current_user_optional
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (
-    CreateSnapshotRequest,
-    CreateWorkspaceRequest,
-    ExecuteComponentRequest,
-    ExecuteComponentResponse,
-    PaginatedWorkspacesResponse,
-    RestoreSnapshotResponse,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest,
-    UpdateWorkspaceShareSlugRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceAvailableTool,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot,
-    UserSpaceWorkspace,
-    UserSpaceWorkspaceShareLink,
-    UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceShareSlugAvailabilityResponse,
-)
+from ragtime.userspace.models import (CreateSnapshotRequest,
+                                      CreateWorkspaceRequest,
+                                      ExecuteComponentRequest,
+                                      ExecuteComponentResponse,
+                                      PaginatedWorkspacesResponse,
+                                      RestoreSnapshotResponse,
+                                      UpdateWorkspaceMembersRequest,
+                                      UpdateWorkspaceRequest,
+                                      UpdateWorkspaceShareAccessRequest,
+                                      UpdateWorkspaceShareSlugRequest,
+                                      UpsertWorkspaceFileRequest,
+                                      UserSpaceAvailableTool,
+                                      UserSpaceFileInfo, UserSpaceFileResponse,
+                                      UserSpaceSharedPreviewResponse,
+                                      UserSpaceSnapshot, UserSpaceWorkspace,
+                                      UserSpaceWorkspaceShareLink,
+                                      UserSpaceWorkspaceShareLinkStatus,
+                                      WorkspaceShareSlugAvailabilityResponse)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -150,9 +146,11 @@ async def upsert_workspace_file(
     request: UpsertWorkspaceFileRequest,
     user: Any = Depends(get_current_user),
 ):
-    return await userspace_service.upsert_workspace_file(
+    result = await userspace_service.upsert_workspace_file(
         workspace_id, file_path, request, user.id
     )
+    await userspace_runtime_service.bump_workspace_generation(workspace_id, "file_upsert")
+    return result
 
 
 @router.get(
@@ -174,6 +172,7 @@ async def delete_workspace_file(
     user: Any = Depends(get_current_user),
 ):
     await userspace_service.delete_workspace_file(workspace_id, file_path, user.id)
+    await userspace_runtime_service.bump_workspace_generation(workspace_id, "file_delete")
     return {"success": True}
 
 
@@ -390,9 +389,11 @@ async def create_snapshot(
     request: CreateSnapshotRequest,
     user: Any = Depends(get_current_user),
 ):
-    return await userspace_service.create_snapshot(
+    result = await userspace_service.create_snapshot(
         workspace_id, user.id, request.message
     )
+    await userspace_runtime_service.bump_workspace_generation(workspace_id, "snapshot")
+    return result
 
 
 @router.post(

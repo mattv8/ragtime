@@ -4,35 +4,25 @@ import asyncio
 import contextlib
 import importlib
 import json
+import re
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
-from fastapi import (
-    APIRouter,
-    Depends,
-    Header,
-    HTTPException,
-    Request,
-    WebSocket,
-    WebSocketDisconnect,
-)
-from fastapi.responses import Response
+from fastapi import (APIRouter, Depends, Header, HTTPException, Request,
+                     WebSocket, WebSocketDisconnect)
+from fastapi.responses import Response, StreamingResponse
 
 from ragtime.core.auth import validate_session
 from ragtime.core.database import get_db
 from ragtime.core.security import get_current_user, get_current_user_optional
-from ragtime.userspace.models import (
-    UserSpaceCapabilityTokenResponse,
-    UserSpaceFileResponse,
-    UserSpaceRuntimeActionResponse,
-    UserSpaceRuntimeSessionResponse,
-    UserSpaceRuntimeStatusResponse,
-)
-from ragtime.userspace.runtime_service import (
-    RuntimeVersionConflictError,
-    userspace_runtime_service,
-)
+from ragtime.userspace.models import (UserSpaceCapabilityTokenResponse,
+                                      UserSpaceFileResponse,
+                                      UserSpaceRuntimeActionResponse,
+                                      UserSpaceRuntimeSessionResponse,
+                                      UserSpaceRuntimeStatusResponse)
+from ragtime.userspace.runtime_service import (RuntimeVersionConflictError,
+                                               userspace_runtime_service)
 from ragtime.userspace.service import userspace_service
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space Runtime"])
@@ -174,7 +164,12 @@ async def _proxy_websocket_request(
         await websocket.close(code=1011)
 
 
-async def _proxy_http_request(request: Request, upstream_url: str) -> Response:
+async def _proxy_http_request(
+    request: Request,
+    upstream_url: str,
+    *,
+    proxy_base_path: str | None = None,
+) -> Response:
     if request.headers.get("upgrade", "").lower() == "websocket":
         raise HTTPException(
             status_code=501,
@@ -197,12 +192,41 @@ async def _proxy_http_request(request: Request, upstream_url: str) -> Response:
                 detail=f"Runtime preview upstream unavailable: {exc}",
             ) from exc
 
+    content = upstream_response.content
+    media_type = upstream_response.headers.get("content-type", "")
+    resp_headers = _proxy_response_headers(upstream_response.headers)
+
+    if proxy_base_path and "text/html" in media_type:
+        content = _rewrite_root_relative_urls(content, proxy_base_path)
+        # Content length changed after rewriting; drop stale header so
+        # Starlette re-calculates it from the actual body.
+        resp_headers.pop("content-length", None)
+
     return Response(
-        content=upstream_response.content,
+        content=content,
         status_code=upstream_response.status_code,
-        headers=_proxy_response_headers(upstream_response.headers),
-        media_type=upstream_response.headers.get("content-type"),
+        headers=resp_headers,
+        media_type=media_type or None,
     )
+
+
+# Regex: match src="/...", href="/...", action="/..." but NOT protocol-relative "//..."
+_ROOT_REL_ATTR_RE = re.compile(
+    rb"""((?:src|href|action)\s*=\s*(?P<q>["']))(/(?!/))""",
+    re.IGNORECASE,
+)
+
+
+def _rewrite_root_relative_urls(html: bytes, proxy_base_path: str) -> bytes:
+    """Rewrite root-relative URLs (``/path``) in HTML so they route through the
+    preview proxy.  Protocol-relative (``//``) and absolute URLs are untouched.
+    """
+    base = proxy_base_path.rstrip("/").encode()
+
+    def _replace(m: re.Match[bytes]) -> bytes:
+        return m.group(1) + base + m.group(3)
+
+    return _ROOT_REL_ATTR_RE.sub(_replace, html)
 
 
 async def _websocket_user(websocket: WebSocket) -> Any | None:
@@ -254,6 +278,50 @@ async def stop_runtime_session(
     user: Any = Depends(get_current_user),
 ):
     return await userspace_runtime_service.stop_runtime_session(workspace_id, user.id)
+
+
+@router.get(
+    "/runtime/workspaces/{workspace_id}/events",
+)
+async def workspace_events_sse(
+    workspace_id: str,
+    request: Request,
+    after: int = 0,
+    user: Any = Depends(get_current_user),  # noqa: ARG001 – auth required
+):
+    """SSE stream that emits a message whenever the workspace generation advances."""
+
+    async def _stream():
+        # Always emit the current generation so the client knows the
+        # connection is live and what the baseline is.
+        generation = await userspace_runtime_service.get_workspace_generation(
+            workspace_id
+        )
+        yield f"data: {json.dumps({'generation': generation})}\n\n"
+
+        while True:
+            if await request.is_disconnected():
+                break
+            new_gen = await userspace_runtime_service.wait_workspace_generation(
+                workspace_id, generation, timeout=25.0
+            )
+            if await request.is_disconnected():
+                break
+            if new_gen > generation:
+                generation = new_gen
+                yield f"data: {json.dumps({'generation': generation})}\n\n"
+            else:
+                # Keepalive – SSE comment to prevent proxy/browser timeouts
+                yield ": keepalive\n\n"
+
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get(
@@ -649,12 +717,16 @@ async def workspace_preview_proxy(
         path,
         query=request.url.query or None,
     )
-    return await _proxy_http_request(request, upstream_url)
+    base = f"/indexes/userspace/workspaces/{workspace_id}/preview"
+    return await _proxy_http_request(request, upstream_url, proxy_base_path=base)
 
 
-@router.api_route("/shared/{owner_username}/{share_slug}", methods=_PROXY_METHODS)
 @router.api_route(
-    "/shared/{owner_username}/{share_slug}/{path:path}", methods=_PROXY_METHODS
+    "/shared/{owner_username}/{share_slug}/preview", methods=_PROXY_METHODS
+)
+@router.api_route(
+    "/shared/{owner_username}/{share_slug}/preview/{path:path}",
+    methods=_PROXY_METHODS,
 )
 async def shared_preview_proxy(
     owner_username: str,
@@ -677,7 +749,8 @@ async def shared_preview_proxy(
         path,
         query=request.url.query or None,
     )
-    return await _proxy_http_request(request, upstream_url)
+    base = f"/indexes/userspace/shared/{owner_username}/{share_slug}/preview"
+    return await _proxy_http_request(request, upstream_url, proxy_base_path=base)
 
 
 @router.api_route("/shared/{share_token}/preview", methods=_PROXY_METHODS)
@@ -701,7 +774,8 @@ async def shared_token_preview_proxy(
         path,
         query=request.url.query or None,
     )
-    return await _proxy_http_request(request, upstream_url)
+    base = f"/indexes/userspace/shared/{share_token}/preview"
+    return await _proxy_http_request(request, upstream_url, proxy_base_path=base)
 
 
 @router.websocket("/workspaces/{workspace_id}/preview")

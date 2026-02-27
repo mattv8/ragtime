@@ -99,6 +99,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const [fileContentCache, setFileContentCache] = useState<Record<string, { content: string; updatedAt: string }>>({});
   const [previewLiveDataConnections, setPreviewLiveDataConnections] = useState<UserSpaceLiveDataConnection[]>([]);
   const [previewExecuting, setPreviewExecuting] = useState(false);
+  const [previewRefreshCounter, setPreviewRefreshCounter] = useState(0);
   const [runtimeStatus, setRuntimeStatus] = useState<UserSpaceRuntimeStatusResponse | null>(null);
   const [runtimeBusy, setRuntimeBusy] = useState(false);
   const [activeRightTab, setActiveRightTab] = useState<'preview' | 'console'>('preview');
@@ -160,6 +161,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const selectedFilePathRef = useRef(selectedFilePath);
   const fileContentCacheRef = useRef(fileContentCache);
   const loadWorkspaceDataRequestIdRef = useRef(0);
+  const fileDirtyRef = useRef(false);
   const collabSocketRef = useRef<WebSocket | null>(null);
   const collabReconnectTimerRef = useRef<number | null>(null);
   const collabSuppressNextSendRef = useRef(false);
@@ -525,6 +527,42 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   useEffect(() => {
     fileContentCacheRef.current = fileContentCache;
   }, [fileContentCache]);
+
+  useEffect(() => {
+    fileDirtyRef.current = fileDirty;
+  }, [fileDirty]);
+
+  // SSE subscription for workspace change events (file upsert/patch/delete, snapshots).
+  // Bumps previewRefreshCounter to remount the preview iframe and reloads workspace data.
+  useEffect(() => {
+    if (!activeWorkspaceId) return;
+
+    const source = api.subscribeWorkspaceEvents(activeWorkspaceId, 0);
+    let lastGeneration = 0;
+
+    source.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as { generation: number };
+        if (data.generation > lastGeneration) {
+          lastGeneration = data.generation;
+          setPreviewRefreshCounter((c) => c + 1);
+          if (!fileDirtyRef.current) {
+            void loadWorkspaceData(activeWorkspaceId);
+          }
+        }
+      } catch {
+        // ignore malformed messages
+      }
+    };
+
+    source.onerror = () => {
+      // EventSource auto-reconnects; nothing to do
+    };
+
+    return () => {
+      source.close();
+    };
+  }, [activeWorkspaceId, loadWorkspaceData]);
 
   useEffect(() => {
     selectedFilePathRef.current = selectedFilePath;
@@ -2343,7 +2381,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                 }
                 runtimeAvailable={runtimeStatus?.devserver_running}
                 runtimeError={runtimeStatus?.last_error ?? undefined}
-                previewInstanceKey={activeWorkspaceId ?? ''}
+                previewInstanceKey={`${activeWorkspaceId ?? ''}:${previewRefreshCounter}`}
                 workspaceId={activeWorkspaceId ?? undefined}
                 onExecutionStateChange={setPreviewExecuting}
               />

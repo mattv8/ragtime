@@ -1030,7 +1030,7 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Prefer TypeScript modules for interactive reports and dashboards.
 - Build one cohesive frontend app with `dashboard/main.ts` as the fixed entry artifact.
 - If `dashboard/main.ts` exists, treat it as the authoritative app entrypoint for feature work. Do not implement dashboard behavior changes in `index.html` unless the user explicitly asks to edit `index.html`.
-- In `module_dashboard` workspaces, do not create or modify `index.html` to resolve runtime behavior issues; implement/fix behavior in `dashboard/*` (and runtime config only when explicitly requested).
+- In `module_dashboard` workspaces, prefer implementing behavior changes in `dashboard/*` files. `index.html` is allowed for runtime scaffolding (e.g., loading bundled scripts, including CDN resources like Chart.js) but should not contain application logic.
 - For any request to create/build/update a report, dashboard, or frontend, you MUST write/update workspace files via `upsert_userspace_file` before finalizing.
 - Do not end with chat-only guidance when the user asked for implementation; persist a runnable scaffold first, then describe blockers.
 - Do not keep all logic in `dashboard/main.ts` once complexity grows.
@@ -1045,10 +1045,9 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - The workspace must have a runnable web entrypoint, resolved in this order: `.ragtime/runtime-entrypoint.json` (`command`, optional `cwd`, optional `framework`), `package.json` with `dev` script, Python app (`manage.py`, `main.py`, or `app.py`), or `index.html` fallback.
 - If a runnable web entrypoint is missing, preview fails with: `No runnable web entrypoint found. Add .ragtime/runtime-entrypoint.json with a command/cwd or provide package.json dev script, Python app.py/main.py, or index.html.`
 - For module-style dashboard artifacts, keep `dashboard/main.ts` present as the thin composition entrypoint for dashboard modules.
-- In `module_dashboard` mode, runtime stabilization means fixing `dashboard/*` code first. Do not create `index.html`, `public/index.html`, ad-hoc Python servers, or alternate runtime entrypoints unless the user explicitly requests runtime-config changes.
-- In `module_dashboard` mode, do not create or modify `.ragtime/runtime-entrypoint.json` to point at ad-hoc Python/static servers. Prefer `package.json` `dev` script flows, and avoid hardcoded port commands (for example `python3 app.py` binding fixed ports).
+- In `module_dashboard` mode, runtime stabilization means fixing `dashboard/*` code first. If the runtime needs an HTML entry point (e.g., for esbuild `--servedir`), create `index.html` or `public/index.html` with minimal scaffolding that loads the bundled output.
+- In `module_dashboard` mode, prefer `package.json` `dev` script flows. Avoid ad-hoc Python servers or hardcoded port commands (for example `python3 app.py` binding fixed ports).
 - If preview probe reports HTTP 200 and no hard runtime error, treat runtime as available and continue with dashboard code fixes instead of runtime scaffolding changes.
-- If a `STRUCTURE GUARDRAIL` blocks an `index.html` write, do not retry with path variants (`public/index.html`, nested index files) or bypass attempts; pivot to `dashboard/*` edits.
 - npm dependencies are allowed when explicitly declared in `package.json`; do not assume globally preloaded libraries.
 - Do not inject CDN scripts for runtime dependencies in generated modules.
 - The runtime automatically applies theme-matched text, tick, grid, legend, and title colors to every Chart.js instance. Do NOT set `color`, `ticks.color`, `grid.color`, `labels.color`, or `title.color` in chart options; the runtime handles them. Only set data-specific colors (dataset `backgroundColor`, `borderColor`, etc.).
@@ -1060,11 +1059,12 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 
 - Use real tool outputs as the source of truth for rendered data.
 - Persistent User Space dashboards must be live-wired via `context.components[componentId].execute()`.
-- When the workspace has selected tools, dashboard module writes (`dashboard/*` or `artifact_type=module_ts`) automatically require `live_data_connections`, `live_data_checks`, and verified `execute()` call sites in the source code.
+- When the workspace has selected tools, only `dashboard/main.ts` (the entry module) requires `live_data_connections`, `live_data_checks`, and verified `execute()` call sites.
+- Helper components under `dashboard/` (e.g., `dashboard/components/*`, `dashboard/charts/*`) do NOT need live_data_connections. They receive data as parameters from the entry module.
 - Each `live_data_connections` entry must include at least `component_kind=tool_config`, `component_id`, and `request`.
 - Include `live_data_checks` for each connection with `connection_check_passed=true` and `transformation_check_passed=true`.
 - Never invent or guess `component_id` values. Use only IDs from ACTIVE TOOL CONNECTIONS FOR THIS REQUEST.
-- Do not persist dashboard files without connection metadata, even when scaffolding.
+- Do not persist `dashboard/main.ts` without connection metadata when workspace has tools.
 - Data connections are internal components, abstracted from end users.
 - These components map to admin-configured tools from Settings.
 - Persist the connection request (query/command payload + component reference), then read/fetch through `context.components` at render/runtime.
@@ -5003,9 +5003,31 @@ except Exception as e:
         async def read_userspace_file(path: str, reason: str = "", **_: Any) -> str:
             del reason
             normalized_path = (path or "").strip().replace("\\", "/").lstrip("/")
-            file_data = await userspace_service.get_workspace_file(
-                workspace_id, normalized_path, user_id
-            )
+            try:
+                file_data = await userspace_service.get_workspace_file(
+                    workspace_id, normalized_path, user_id
+                )
+            except HTTPException as exc:
+                if exc.status_code == 404:
+                    return json.dumps(
+                        {
+                            "error": "file_not_found",
+                            "path": normalized_path,
+                            "message": f"File '{normalized_path}' does not exist in this workspace.",
+                            "suggestion": "Use list_userspace_files to see available files.",
+                        },
+                        indent=2,
+                    )
+                if exc.status_code == 415:
+                    return json.dumps(
+                        {
+                            "error": "not_utf8_text",
+                            "path": normalized_path,
+                            "message": f"File '{normalized_path}' is a binary file and cannot be read as text.",
+                        },
+                        indent=2,
+                    )
+                raise
             payload = file_data.model_dump(mode="json")
             structure = await _get_workspace_structure()
             if (
@@ -5030,6 +5052,9 @@ except Exception as e:
                 normalized_path,
                 user_id,
             )
+            await userspace_runtime_service.bump_workspace_generation(
+                workspace_id, "file_delete"
+            )
             return json.dumps(
                 {
                     "deleted": True,
@@ -5052,17 +5077,6 @@ except Exception as e:
             normalized_path = (path or "").strip().replace("\\", "/").lstrip("/")
             if not normalized_path:
                 raise ToolException("Invalid path: path is required.")
-
-            structure = await _get_workspace_structure()
-            if (
-                _is_index_html_path(normalized_path)
-                and structure["workspace_mode"] == "module_dashboard"
-            ):
-                raise ToolException(
-                    "STRUCTURE GUARDRAIL: This workspace uses dashboard/main.ts as the module entrypoint. "
-                    "Patch dashboard/* files for feature or behavior updates. index.html edits are blocked to avoid no-op changes. "
-                    "Do not create/patch index.html for module-dashboard runtime fixes."
-                )
 
             file_data = await userspace_service.get_workspace_file(
                 workspace_id, normalized_path, user_id
@@ -5140,14 +5154,8 @@ except Exception as e:
                 )
 
             normalized_lower_path = normalized_path.lower()
-            patch_is_module_source = is_userspace_module_source_path(
-                normalized_lower_path
-            )
-            patch_is_dashboard_module = patch_is_module_source and (
-                normalized_lower_path.startswith("dashboard/")
-                or file_data.artifact_type == "module_ts"
-            )
-            if patch_is_dashboard_module:
+            patch_is_dashboard_entry = normalized_lower_path == "dashboard/main.ts"
+            if patch_is_dashboard_entry:
                 mock_patterns = find_hardcoded_data_patterns(updated_content)
                 if mock_patterns:
                     raise ToolException(
@@ -5213,6 +5221,9 @@ except Exception as e:
             }
             if typecheck is not None:
                 response_payload["typescript_validation"] = typecheck
+            await userspace_runtime_service.bump_workspace_generation(
+                workspace_id, "file_patch"
+            )
             return json.dumps(response_payload, indent=2)
 
         async def upsert_userspace_file(
@@ -5241,10 +5252,10 @@ except Exception as e:
                 _is_index_html_path(path)
                 and structure["workspace_mode"] == "module_dashboard"
             ):
-                raise ToolException(
-                    "STRUCTURE GUARDRAIL: This workspace uses dashboard/main.ts as the module entrypoint. "
-                    "Use upsert_userspace_file on dashboard/* files for feature changes; index.html writes are blocked to prevent ineffective updates. "
-                    "Do not create index.html to resolve module-dashboard runtime issues."
+                warnings.append(
+                    "This workspace uses dashboard/main.ts as the module entrypoint. "
+                    "Prefer dashboard/* files for feature changes. "
+                    "index.html is allowed for runtime scaffolding but should not contain application logic."
                 )
 
             parsed_live_data_connections: list[UserSpaceLiveDataConnection] | None = (
@@ -5301,27 +5312,28 @@ except Exception as e:
                             f"component_id={check.component_id}."
                         )
 
-            is_module_source = is_userspace_module_source_path(normalized_path)
-            is_dashboard_module = is_module_source and (
-                normalized_path.startswith("dashboard/") or artifact_type == "module_ts"
-            )
+            # Live data contract only applies to the dashboard entry
+            # module (dashboard/main.ts), not helper components under
+            # dashboard/ or arbitrary .ts files elsewhere.
+            is_dashboard_entry = normalized_path == "dashboard/main.ts"
 
             # Auto-require live data contract when workspace has selected
-            # tools and the write targets a dashboard module.  The agent
-            # should not be able to bypass the contract by leaving
-            # live_data_requested=false while embedding hardcoded data.
+            # tools and the write targets the dashboard entry module.
+            # Helper components under dashboard/ receive data as
+            # parameters and do not need their own live data wiring.
             workspace_has_tools = bool(workspace.selected_tool_ids)
             effective_live_data_requested = live_data_requested or (
-                workspace_has_tools and is_dashboard_module
+                workspace_has_tools and is_dashboard_entry
             )
 
             requires_live_data_contract = (
-                effective_live_data_requested and is_dashboard_module
+                effective_live_data_requested and is_dashboard_entry
             )
 
             # Detect hardcoded mock/sample data naming patterns.
-            # Hardcoded data is always a hard policy violation.
-            if is_dashboard_module:
+            # Hardcoded data is always a hard policy violation in the
+            # dashboard entry module.
+            if is_dashboard_entry:
                 mock_patterns = find_hardcoded_data_patterns(content)
                 if mock_patterns:
                     hard_errors.append(
@@ -5331,9 +5343,9 @@ except Exception as e:
                         "context.components[componentId].execute()."
                     )
 
-            # No-tools conflict: warn when dashboard module targets a
+            # No-tools conflict: warn when dashboard entry targets a
             # workspace without any selected tools for live data.
-            if is_dashboard_module and not workspace_has_tools:
+            if is_dashboard_entry and not workspace_has_tools:
                 warnings.append(
                     "NO LIVE DATA TOOLS AVAILABLE: This workspace has no "
                     "selected tools. Dashboard data cannot be fetched from "
@@ -5343,7 +5355,7 @@ except Exception as e:
 
             if requires_live_data_contract and not parsed_live_data_connections:
                 hard_errors.append(
-                    "Missing required live_data_connections contract metadata for this module source write. "
+                    "Missing required live_data_connections contract metadata for dashboard/main.ts. "
                     "Provide at least one connection with component_kind=tool_config, component_id, and request, or set live_data_requested=false for scaffolding."
                 )
 
@@ -5376,7 +5388,7 @@ except Exception as e:
             # This is deterministic and cannot be satisfied by fabricating
             # metadata alone -- the source code must structurally call
             # the live data execution API.
-            if requires_live_data_contract and is_dashboard_module:
+            if requires_live_data_contract and is_dashboard_entry:
                 declared_ids = (
                     {c.component_id for c in parsed_live_data_connections}
                     if parsed_live_data_connections
@@ -5571,6 +5583,9 @@ except Exception as e:
                 success_response_payload["created_with_violations"] = True
             if typecheck is not None:
                 success_response_payload["typescript_validation"] = typecheck
+            await userspace_runtime_service.bump_workspace_generation(
+                workspace_id, "file_upsert"
+            )
             return json.dumps(success_response_payload, indent=2)
 
         async def create_userspace_snapshot(
@@ -5586,6 +5601,9 @@ except Exception as e:
                 workspace_id,
                 user_id,
                 message.strip() or "AI checkpoint",
+            )
+            await userspace_runtime_service.bump_workspace_generation(
+                workspace_id, "snapshot"
             )
             return json.dumps(snapshot.model_dump(mode="json"), indent=2)
 
