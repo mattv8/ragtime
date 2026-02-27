@@ -2717,8 +2717,8 @@ class UserSpaceService:
     @staticmethod
     def _extract_local_module_specifiers(source: str) -> list[str]:
         pattern = re.compile(
-            r"(?:import|export)\\s+(?:[^\"']*?\\s+from\\s+)?[\"']([^\"']+)[\"']|"
-            r"import\\(\\s*[\"']([^\"']+)[\"']\\s*\\)"
+            r"(?:import|export)\s+(?:[^\"']*?\s+from\s+)?[\"']([^\"']+)[\"']|"
+            r"import\(\s*[\"']([^\"']+)[\"']\s*\)"
         )
         specifiers: list[str] = []
         for match in pattern.findall(source):

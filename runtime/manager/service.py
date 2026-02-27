@@ -4,8 +4,8 @@ import asyncio
 import os
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
-from typing import Any, cast
-from urllib.parse import quote
+from typing import Any
+from urllib.parse import quote, urlparse
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -98,6 +98,21 @@ class SessionManager:
                 detail="Runtime capacity exhausted. Retry after an active session stops.",
             )
 
+    @staticmethod
+    def _apply_worker_state(
+        session: ManagerSession,
+        worker_data: WorkerSessionResponse,
+    ) -> None:
+        """Sync mutable session fields from worker response (single source of truth)."""
+        session.state = worker_data.state
+        session.preview_internal_url = worker_data.preview_internal_url
+        session.launch_framework = worker_data.launch_framework
+        session.launch_command = worker_data.launch_command
+        session.launch_cwd = worker_data.launch_cwd
+        session.launch_port = worker_data.launch_port
+        session.devserver_running = worker_data.devserver_running
+        session.last_error = worker_data.last_error
+
     def _create_session(
         self,
         provider_session_id: str,
@@ -111,8 +126,6 @@ class SessionManager:
             provider_session_id=provider_session_id,
             workspace_id=workspace_id,
             leased_by_user_id=leased_by_user_id,
-            worker_id="runtime-internal",
-            worker_base_url="internal",
             worker_session_id=worker_data.worker_session_id,
             pty_access_token=pty_access_token,
             preview_internal_url=worker_data.preview_internal_url,
@@ -128,19 +141,11 @@ class SessionManager:
         )
 
     async def _sync_session_from_worker(self, session: ManagerSession) -> None:
-        parsed = await self._worker_service.get_session(session.worker_session_id)
-        session.state = parsed.state
-        session.preview_internal_url = parsed.preview_internal_url
-        session.launch_framework = parsed.launch_framework
-        session.launch_command = parsed.launch_command
-        session.launch_cwd = parsed.launch_cwd
-        session.launch_port = parsed.launch_port
-        session.devserver_running = parsed.devserver_running
-        session.last_error = parsed.last_error
-        session.updated_at = self._utc_now()
-        session.lease_expires_at = self._utc_now() + timedelta(
-            seconds=self._lease_ttl_seconds
-        )
+        worker_data = await self._worker_service.get_session(session.worker_session_id)
+        self._apply_worker_state(session, worker_data)
+        now = self._utc_now()
+        session.updated_at = now
+        session.lease_expires_at = now + timedelta(seconds=self._lease_ttl_seconds)
 
     async def _cleanup_expired_sessions_locked(self, now: datetime) -> None:
         for provider_session_id, session in list(self._sessions.items()):
@@ -243,10 +248,10 @@ class SessionManager:
             session = self._sessions.get(provider_session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Runtime session not found")
-            parsed = await self._worker_service.stop_session(session.worker_session_id)
-            session.state = parsed.state
-            session.devserver_running = parsed.devserver_running
-            session.last_error = parsed.last_error
+            worker_data = await self._worker_service.stop_session(
+                session.worker_session_id
+            )
+            self._apply_worker_state(session, worker_data)
             session.updated_at = self._utc_now()
             self._workspace_index.pop(session.workspace_id, None)
             self._sessions.pop(provider_session_id, None)
@@ -260,54 +265,51 @@ class SessionManager:
             session = self._sessions.get(provider_session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Runtime session not found")
-            parsed = await self._worker_service.restart_session(
+            worker_data = await self._worker_service.restart_session(
                 session.worker_session_id
             )
-            session.state = parsed.state
-            session.preview_internal_url = parsed.preview_internal_url
-            session.devserver_running = parsed.devserver_running
-            session.last_error = parsed.last_error
-            session.updated_at = self._utc_now()
-            session.lease_expires_at = self._utc_now() + timedelta(
-                seconds=self._lease_ttl_seconds
-            )
+            self._apply_worker_state(session, worker_data)
+            now = self._utc_now()
+            session.updated_at = now
+            session.lease_expires_at = now + timedelta(seconds=self._lease_ttl_seconds)
             return self._as_response(session)
+
+    def _get_session_or_raise(self, provider_session_id: str) -> ManagerSession:
+        """Look up a session without acquiring the lock (caller must hold it or accept race)."""
+        session = self._sessions.get(provider_session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Runtime session not found")
+        return session
 
     async def get_pty_websocket_url(
         self,
         provider_session_id: str,
     ) -> RuntimePtyUrlResponse:
-        async with self._lock:
-            session = self._sessions.get(provider_session_id)
-            if not session:
-                raise HTTPException(status_code=404, detail="Runtime session not found")
-            base_url = session.preview_internal_url
-            if base_url.startswith("https://"):
-                ws_base = "wss://" + base_url[8:].split("/worker/sessions/")[0]
-            elif base_url.startswith("http://"):
-                ws_base = "ws://" + base_url[7:].split("/worker/sessions/")[0]
-            else:
-                raise HTTPException(
-                    status_code=502, detail="Runtime preview URL invalid"
-                )
-            ws_url = (
-                f"{ws_base}/worker/sessions/{quote(session.worker_session_id, safe='')}/pty"
-                f"?token={quote(session.pty_access_token, safe='')}"
-            )
-            return RuntimePtyUrlResponse(ws_url=ws_url)
+        session = self._get_session_or_raise(provider_session_id)
+        parsed = urlparse(session.preview_internal_url)
+        if parsed.scheme == "https":
+            ws_scheme = "wss"
+        elif parsed.scheme == "http":
+            ws_scheme = "ws"
+        else:
+            raise HTTPException(status_code=502, detail="Runtime preview URL invalid")
+        ws_url = (
+            f"{ws_scheme}://{parsed.hostname}"
+            f"{':%d' % parsed.port if parsed.port else ''}"
+            f"/worker/sessions/{quote(session.worker_session_id, safe='')}/pty"
+            f"?token={quote(session.pty_access_token, safe='')}"
+        )
+        return RuntimePtyUrlResponse(ws_url=ws_url)
 
     async def read_file(
         self,
         provider_session_id: str,
         file_path: str,
     ) -> RuntimeFileReadResponse:
-        async with self._lock:
-            session = self._sessions.get(provider_session_id)
-            if not session:
-                raise HTTPException(status_code=404, detail="Runtime session not found")
-            return await self._worker_service.read_file(
-                session.worker_session_id, file_path
-            )
+        session = self._get_session_or_raise(provider_session_id)
+        return await self._worker_service.read_file(
+            session.worker_session_id, file_path
+        )
 
     async def write_file(
         self,
@@ -315,52 +317,51 @@ class SessionManager:
         file_path: str,
         content: str,
     ) -> RuntimeFileReadResponse:
-        async with self._lock:
-            session = self._sessions.get(provider_session_id)
-            if not session:
-                raise HTTPException(status_code=404, detail="Runtime session not found")
-            return await self._worker_service.write_file(
-                session.worker_session_id,
-                file_path,
-                content,
-            )
+        session = self._get_session_or_raise(provider_session_id)
+        return await self._worker_service.write_file(
+            session.worker_session_id,
+            file_path,
+            content,
+        )
 
     async def delete_file(
         self,
         provider_session_id: str,
         file_path: str,
     ) -> dict[str, Any]:
-        async with self._lock:
-            session = self._sessions.get(provider_session_id)
-            if not session:
-                raise HTTPException(status_code=404, detail="Runtime session not found")
-            return await self._worker_service.delete_file(
-                session.worker_session_id, file_path
-            )
+        session = self._get_session_or_raise(provider_session_id)
+        return await self._worker_service.delete_file(
+            session.worker_session_id, file_path
+        )
 
     async def capture_screenshot(
         self,
         provider_session_id: str,
         payload: RuntimeScreenshotRequest,
     ) -> RuntimeScreenshotResponse:
-        async with self._lock:
-            session = self._sessions.get(provider_session_id)
-            if not session:
-                raise HTTPException(status_code=404, detail="Runtime session not found")
-            return await cast(Any, self._worker_service).capture_screenshot(
-                session.worker_session_id,
-                payload,
-            )
+        session = self._get_session_or_raise(provider_session_id)
+        return await self._worker_service.capture_screenshot(
+            session.worker_session_id,
+            payload,
+        )
 
-    async def pool_status(self) -> dict[str, int]:
+    async def pool_status(self) -> dict[str, Any]:
         async with self._lock:
-            active_sessions = sum(
-                1
-                for session in self._sessions.values()
-                if session.state in {"running", "starting"}
-            )
+            active = [
+                s for s in self._sessions.values() if s.state in {"running", "starting"}
+            ]
             return {
                 "workers_total": 1,
-                "workers_leased": active_sessions,
-                "active_sessions": active_sessions,
+                "workers_leased": len(active),
+                "active_sessions": len(active),
+                "max_sessions": self._max_sessions,
+                "sessions": [
+                    {
+                        "provider_session_id": s.provider_session_id,
+                        "workspace_id": s.workspace_id,
+                        "state": s.state,
+                        "devserver_running": s.devserver_running,
+                    }
+                    for s in active
+                ],
             }

@@ -205,6 +205,7 @@ class UserSpaceRuntimeSession(BaseModel):
     created_at: datetime
     updated_at: datetime
     last_heartbeat_at: datetime | None = None
+    # Vestigial — never populated by the current provider. Kept for API compat.
     idle_expires_at: datetime | None = None
     ttl_expires_at: datetime | None = None
     last_error: str | None = None

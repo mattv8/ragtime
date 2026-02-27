@@ -246,6 +246,8 @@ async def get_devserver_status(
 @router.post(
     "/runtime/workspaces/{workspace_id}/devserver/start",
     response_model=UserSpaceRuntimeActionResponse,
+    deprecated=True,
+    description="Alias for session/start. Prefer POST .../session/start instead.",
 )
 async def start_devserver(
     workspace_id: str,
@@ -460,12 +462,13 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
 
             content = str(payload.get("content", ""))
             client_version_raw = payload.get("version")
-            client_version = (
-                int(client_version_raw)
-                if isinstance(client_version_raw, (int, float, str))
-                and str(client_version_raw).strip().lstrip("-").isdigit()
-                else None
-            )
+            client_version: int | None = None
+            if isinstance(client_version_raw, (int, float, str)):
+                version_str = str(client_version_raw).strip()
+                if version_str.isdigit():
+                    parsed = int(version_str)
+                    if parsed > 0:
+                        client_version = parsed
             try:
                 updated = await userspace_runtime_service.apply_collab_update(
                     workspace_id,

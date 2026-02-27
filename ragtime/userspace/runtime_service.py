@@ -37,7 +37,7 @@ logger = get_logger(__name__)
 _RUNTIME_CAPABILITY_TTL_SECONDS = 900
 _RUNTIME_DEVSERVER_PORT = 5173
 _RUNTIME_PREVIEW_DEFAULT_BASE = f"http://127.0.0.1:{_RUNTIME_DEVSERVER_PORT}"
-_RUNTIME_PROVIDER_MANAGER = "runtime_manager_v1"
+_RUNTIME_PROVIDER_MANAGER = "microvm_pool_v1"
 
 
 @dataclass
@@ -129,51 +129,65 @@ class UserSpaceRuntimeService:
             cleaned[key] = value
         return cleaned
 
+    async def _prisma_write_with_field_fallback(
+        self,
+        model: Any,
+        operation: str,
+        data: dict[str, Any],
+        *,
+        where: dict[str, Any] | None = None,
+    ) -> Any:
+        """Execute a Prisma create/update, auto-stripping unknown fields on retry.
+
+        Args:
+            model: Prisma model handle.
+            operation: ``"create"`` or ``"update"``.
+            data: Field payload (will be copied and sanitized).
+            where: Required for ``"update"`` operations.
+        """
+        payload = self._sanitize_pg_strings(dict(data))
+        op_fn = getattr(model, operation)
+        attempts = 0
+        while True:
+            try:
+                kwargs: dict[str, Any] = {"data": payload}
+                if where is not None:
+                    kwargs["where"] = where
+                return await op_fn(**kwargs)
+            except Exception as exc:
+                attempts += 1
+                missing_field = self._missing_runtime_session_field(exc)
+                if not missing_field or missing_field not in payload or attempts > 8:
+                    raise
+                payload.pop(missing_field, None)
+                logger.warning(
+                    "Runtime session %s dropped unsupported prisma field '%s'",
+                    operation,
+                    missing_field,
+                )
+
     async def _runtime_session_update_row(
         self,
         model: Any,
         row_id: str,
         data: dict[str, Any],
     ) -> Any:
-        payload = self._sanitize_pg_strings(dict(data))
-        attempts = 0
-        while True:
-            try:
-                return await model.update(where={"id": row_id}, data=payload)
-            except Exception as exc:
-                attempts += 1
-                missing_field = self._missing_runtime_session_field(exc)
-                if not missing_field or missing_field not in payload or attempts > 8:
-                    raise
-                payload.pop(missing_field, None)
-                logger.warning(
-                    "Runtime session update dropped unsupported prisma field '%s'",
-                    missing_field,
-                )
+        return await self._prisma_write_with_field_fallback(
+            model, "update", data, where={"id": row_id}
+        )
 
     async def _runtime_session_create_row(
         self,
         model: Any,
         data: dict[str, Any],
     ) -> Any:
-        payload = self._sanitize_pg_strings(dict(data))
-        attempts = 0
-        while True:
-            try:
-                return await model.create(data=payload)
-            except Exception as exc:
-                attempts += 1
-                missing_field = self._missing_runtime_session_field(exc)
-                if not missing_field or missing_field not in payload or attempts > 8:
-                    raise
-                payload.pop(missing_field, None)
-                logger.warning(
-                    "Runtime session create dropped unsupported prisma field '%s'",
-                    missing_field,
-                )
+        return await self._prisma_write_with_field_fallback(model, "create", data)
 
     def _runtime_audit_model(self, db: Any) -> Any:
         return getattr(db, "userspaceruntimeauditevent")
+
+    # Cached audit insert shape index to avoid probing every call.
+    _audit_shape_index: int | None = None
 
     def _collab_doc_model(self, db: Any) -> Any:
         return getattr(db, "userspacecollabdoc")
@@ -207,6 +221,60 @@ class UserSpaceRuntimeService:
             ttl_expires_at=getattr(row, "ttlExpiresAt", None),
             last_error=getattr(row, "lastError", None),
         )
+
+    def _merge_provider_status(
+        self,
+        session: UserSpaceRuntimeSession,
+        provider_status: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build a Prisma update payload by merging provider status into session fields.
+
+        Returns only fields that actually changed.  The caller can persist
+        or discard the delta as appropriate.
+        """
+        _valid = {"starting", "running", "stopping", "stopped", "error"}
+        state_raw = str(provider_status.get("state") or "").strip()
+        state = state_raw if state_raw in _valid else session.state
+
+        preview = (
+            str(provider_status.get("preview_internal_url") or "").strip()
+            or session.preview_internal_url
+            or _RUNTIME_PREVIEW_DEFAULT_BASE
+        )
+        framework = (
+            str(provider_status.get("launch_framework") or "").strip()
+            or session.launch_framework
+        )
+        command = (
+            str(provider_status.get("launch_command") or "").strip()
+            or session.launch_command
+        )
+        cwd = str(provider_status.get("launch_cwd") or "").strip() or session.launch_cwd
+        port = (
+            self._optional_int(provider_status.get("launch_port"))
+            or session.launch_port
+        )
+        last_error = self._resolve_provider_last_error(
+            provider_status, fallback=session.last_error
+        )
+
+        update: dict[str, Any] = {}
+        if state != session.state:
+            update["state"] = state
+        if preview != session.preview_internal_url:
+            update["previewInternalUrl"] = preview
+        if framework != session.launch_framework:
+            update["launchFramework"] = framework
+        if command != session.launch_command:
+            update["launchCommand"] = command
+        if cwd != session.launch_cwd:
+            update["launchCwd"] = cwd
+        if port != session.launch_port:
+            update["launchPort"] = port
+        if last_error != session.last_error:
+            update["lastError"] = last_error
+
+        return update
 
     def _normalize_file_path(self, file_path: str) -> str:
         normalized = posixpath.normpath((file_path or "").replace("\\", "/")).strip()
@@ -526,70 +594,13 @@ class UserSpaceRuntimeService:
                     session.provider_session_id
                 )
                 if provider_status is not None:
-                    state_value = str(provider_status.get("state") or "").strip()
-                    state_value = (
-                        state_value
-                        if state_value
-                        in {
-                            "starting",
-                            "running",
-                            "stopping",
-                            "stopped",
-                            "error",
-                        }
-                        else session.state
-                    )
-                    preview_value = str(
-                        provider_status.get("preview_internal_url") or ""
-                    ).strip()
-                    if not preview_value:
-                        preview_value = (
-                            session.preview_internal_url
-                            or _RUNTIME_PREVIEW_DEFAULT_BASE
-                        )
-                    launch_framework = (
-                        str(provider_status.get("launch_framework") or "").strip()
-                        or session.launch_framework
-                    )
-                    launch_command = (
-                        str(provider_status.get("launch_command") or "").strip()
-                        or session.launch_command
-                    )
-                    launch_cwd = (
-                        str(provider_status.get("launch_cwd") or "").strip()
-                        or session.launch_cwd
-                    )
-                    launch_port = (
-                        self._optional_int(provider_status.get("launch_port"))
-                        or session.launch_port
-                    )
-                    last_error_value = self._resolve_provider_last_error(
-                        provider_status,
-                        fallback=session.last_error,
-                    )
-
-                    if (
-                        state_value != session.state
-                        or preview_value != session.preview_internal_url
-                        or launch_framework != session.launch_framework
-                        or launch_command != session.launch_command
-                        or launch_cwd != session.launch_cwd
-                        or launch_port != session.launch_port
-                        or last_error_value != session.last_error
-                    ):
+                    delta = self._merge_provider_status(session, provider_status)
+                    if delta:
+                        delta["lastHeartbeatAt"] = self._utc_now()
                         current = await self._runtime_session_update_row(
                             model,
                             session.id,
-                            {
-                                "state": state_value,
-                                "previewInternalUrl": preview_value,
-                                "launchFramework": launch_framework,
-                                "launchCommand": launch_command,
-                                "launchCwd": launch_cwd,
-                                "launchPort": launch_port,
-                                "lastError": last_error_value,
-                                "lastHeartbeatAt": self._utc_now(),
-                            },
+                            delta,
                         )
                         return self._to_runtime_session(current)
                     return session
@@ -608,43 +619,25 @@ class UserSpaceRuntimeService:
                     else None
                 ),
             )
-            current = await self._runtime_session_update_row(
-                model,
-                session.id,
+            delta = self._merge_provider_status(session, provider_data)
+            delta.update(
                 {
-                    "state": str(provider_data.get("state") or "running"),
+                    "state": delta.get(
+                        "state", str(provider_data.get("state") or "running")
+                    ),
                     "runtimeProvider": self._runtime_provider_name(),
                     "providerSessionId": str(
                         provider_data.get("provider_session_id")
                         or session.provider_session_id
                         or ""
                     ),
-                    "previewInternalUrl": str(
-                        provider_data.get("preview_internal_url")
-                        or session.preview_internal_url
-                        or _RUNTIME_PREVIEW_DEFAULT_BASE
-                    ),
-                    "launchFramework": str(
-                        provider_data.get("launch_framework")
-                        or session.launch_framework
-                        or ""
-                    )
-                    or None,
-                    "launchCommand": str(
-                        provider_data.get("launch_command")
-                        or session.launch_command
-                        or ""
-                    )
-                    or None,
-                    "launchCwd": str(
-                        provider_data.get("launch_cwd") or session.launch_cwd or ""
-                    )
-                    or None,
-                    "launchPort": self._optional_int(provider_data.get("launch_port"))
-                    or session.launch_port,
                     "lastHeartbeatAt": self._utc_now(),
-                    "lastError": provider_data.get("last_error"),
-                },
+                }
+            )
+            current = await self._runtime_session_update_row(
+                model,
+                session.id,
+                delta,
             )
             return self._to_runtime_session(current)
 
@@ -761,38 +754,53 @@ class UserSpaceRuntimeService:
         model = self._runtime_audit_model(db)
         normalized_payload = json.loads(json.dumps(payload or {}, default=str))
         payload_json = prisma_fields.Json(normalized_payload)
-        attempts: list[dict[str, Any]] = [
-            {
-                "workspaceId": workspace_id,
-                "userId": user_id,
-                "sessionId": session_id,
-                "eventType": event_type,
-                "eventPayload": payload_json,
-            },
-            {
-                "workspace_id": workspace_id,
-                "user_id": user_id,
-                "session_id": session_id,
-                "event_type": event_type,
-                "event_payload": payload_json,
-            },
-        ]
 
-        if user_id:
-            attempts.append(
+        def _build_shapes() -> list[dict[str, Any]]:
+            shapes: list[dict[str, Any]] = [
                 {
-                    "workspace": {"connect": {"id": workspace_id}},
-                    "user": {"connect": {"id": user_id}},
+                    "workspaceId": workspace_id,
+                    "userId": user_id,
                     "sessionId": session_id,
                     "eventType": event_type,
                     "eventPayload": payload_json,
-                }
-            )
+                },
+                {
+                    "workspace_id": workspace_id,
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "event_type": event_type,
+                    "event_payload": payload_json,
+                },
+            ]
+            if user_id:
+                shapes.append(
+                    {
+                        "workspace": {"connect": {"id": workspace_id}},
+                        "user": {"connect": {"id": user_id}},
+                        "sessionId": session_id,
+                        "eventType": event_type,
+                        "eventPayload": payload_json,
+                    }
+                )
+            return shapes
 
         try:
-            for data in attempts:
+            shapes = _build_shapes()
+            # Fast path: use cached shape index if we already know which works.
+            if self._audit_shape_index is not None:
+                idx = self._audit_shape_index
+                if idx < len(shapes):
+                    try:
+                        await model.create(data=shapes[idx])
+                        return
+                    except Exception:
+                        # Cached shape no longer valid; fall through to probe.
+                        self._audit_shape_index = None
+
+            for idx, data in enumerate(shapes):
                 try:
                     await model.create(data=data)
+                    self._audit_shape_index = idx
                     return
                 except Exception:
                     continue
@@ -922,7 +930,6 @@ class UserSpaceRuntimeService:
             )
 
         state_for_response = session.state
-        preview_internal_url = session.preview_internal_url
         launch_framework = session.launch_framework
         launch_command = session.launch_command
         launch_cwd = session.launch_cwd
@@ -930,87 +937,30 @@ class UserSpaceRuntimeService:
         last_error = session.last_error
 
         if provider_status:
-            state_candidate = str(provider_status.get("state") or "").strip()
-            if state_candidate in {
-                "starting",
-                "running",
-                "stopping",
-                "stopped",
-                "error",
-            }:
-                state_for_response = cast(RuntimeSessionState, state_candidate)
-            preview_candidate = str(
-                provider_status.get("preview_internal_url") or ""
-            ).strip()
-            if preview_candidate:
-                preview_internal_url = preview_candidate
-            provider_launch_framework = str(
-                provider_status.get("launch_framework") or ""
-            ).strip()
-            if provider_launch_framework:
-                launch_framework = provider_launch_framework
-            provider_launch_command = str(
-                provider_status.get("launch_command") or ""
-            ).strip()
-            if provider_launch_command:
-                launch_command = provider_launch_command
-            provider_launch_cwd = str(provider_status.get("launch_cwd") or "").strip()
-            if provider_launch_cwd:
-                launch_cwd = provider_launch_cwd
-            provider_launch_port = self._optional_int(
-                provider_status.get("launch_port")
+            delta = self._merge_provider_status(session, provider_status)
+            # Apply merged values for local use in this method
+            state_for_response = cast(
+                RuntimeSessionState,
+                delta.get("state", session.state),
             )
-            if provider_launch_port is not None:
-                launch_port = provider_launch_port
-            last_error = self._resolve_provider_last_error(
-                provider_status,
-                fallback=last_error,
-            )
+            launch_framework = delta.get("launchFramework", session.launch_framework)
+            launch_command = delta.get("launchCommand", session.launch_command)
+            launch_cwd = delta.get("launchCwd", session.launch_cwd)
+            launch_port = delta.get("launchPort", session.launch_port)
+            last_error = delta.get("lastError", session.last_error)
 
-            if (
-                state_for_response != session.state
-                or preview_internal_url != session.preview_internal_url
-                or last_error != session.last_error
-            ):
+            if delta:
+                delta["lastHeartbeatAt"] = self._utc_now()
                 db = await get_db()
                 model = self._runtime_session_model(db)
                 updated = await self._runtime_session_update_row(
                     model,
                     session.id,
-                    {
-                        "state": state_for_response,
-                        "previewInternalUrl": preview_internal_url,
-                        "launchFramework": launch_framework,
-                        "launchCommand": launch_command,
-                        "launchCwd": launch_cwd,
-                        "launchPort": launch_port,
-                        "lastError": last_error,
-                        "lastHeartbeatAt": self._utc_now(),
-                    },
+                    delta,
                 )
                 session = self._to_runtime_session(updated)
 
-        base_url = self._resolve_preview_base_url(
-            UserSpaceRuntimeSession(
-                id=session.id,
-                workspace_id=session.workspace_id,
-                leased_by_user_id=session.leased_by_user_id,
-                state=state_for_response,
-                runtime_provider=session.runtime_provider,
-                provider_session_id=session.provider_session_id,
-                preview_internal_url=preview_internal_url,
-                launch_framework=launch_framework,
-                launch_command=launch_command,
-                launch_cwd=launch_cwd,
-                launch_port=launch_port,
-                created_at=session.created_at,
-                updated_at=session.updated_at,
-                last_heartbeat_at=session.last_heartbeat_at,
-                idle_expires_at=session.idle_expires_at,
-                ttl_expires_at=session.ttl_expires_at,
-                last_error=last_error,
-            )
-        )
+        base_url = self._resolve_preview_base_url(session)
 
         if provider_status and "devserver_running" in provider_status:
             devserver_running = bool(provider_status.get("devserver_running"))
@@ -1050,43 +1000,21 @@ class UserSpaceRuntimeService:
                 active_session.provider_session_id
             )
             if provider_restart:
+                delta = self._merge_provider_status(active_session, provider_restart)
+                delta.update(
+                    {
+                        "state": delta.get(
+                            "state", str(provider_restart.get("state") or "running")
+                        ),
+                        "lastHeartbeatAt": self._utc_now(),
+                    }
+                )
                 db = await get_db()
                 model = self._runtime_session_model(db)
                 await self._runtime_session_update_row(
                     model,
                     active_session.id,
-                    {
-                        "state": str(provider_restart.get("state") or "running"),
-                        "lastHeartbeatAt": self._utc_now(),
-                        "lastError": provider_restart.get("last_error"),
-                        "launchFramework": str(
-                            provider_restart.get("launch_framework")
-                            or active_session.launch_framework
-                            or ""
-                        )
-                        or None,
-                        "launchCommand": str(
-                            provider_restart.get("launch_command")
-                            or active_session.launch_command
-                            or ""
-                        )
-                        or None,
-                        "launchCwd": str(
-                            provider_restart.get("launch_cwd")
-                            or active_session.launch_cwd
-                            or ""
-                        )
-                        or None,
-                        "launchPort": self._optional_int(
-                            provider_restart.get("launch_port")
-                        )
-                        or active_session.launch_port,
-                        "previewInternalUrl": str(
-                            provider_restart.get("preview_internal_url")
-                            or active_session.preview_internal_url
-                            or _RUNTIME_PREVIEW_DEFAULT_BASE
-                        ),
-                    },
+                    delta,
                 )
         await self._audit(
             workspace_id,

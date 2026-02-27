@@ -17,12 +17,21 @@ from typing import Any
 import httpx
 from fastapi import HTTPException
 
-from runtime.manager.models import (RuntimeFileReadResponse,
-                                    RuntimeScreenshotRequest,
-                                    RuntimeScreenshotResponse,
-                                    RuntimeSessionState, WorkerHealthResponse,
-                                    WorkerSessionResponse,
-                                    WorkerStartSessionRequest)
+from runtime.manager.models import (
+    RuntimeFileReadResponse,
+    RuntimeScreenshotRequest,
+    RuntimeScreenshotResponse,
+    WorkerHealthResponse,
+    WorkerSessionResponse,
+    WorkerStartSessionRequest,
+)
+
+from runtime.shared import (
+    RUNTIME_BOOTSTRAP_CONFIG_PATH,
+    RUNTIME_BOOTSTRAP_STAMP_PATH,
+    RuntimeSessionState,
+    normalize_file_path,
+)
 
 _PORT_PATTERNS = (
     re.compile(r"(?:^|\s)--port(?:=|\s+)(\d{2,5})(?:\s|$)"),
@@ -47,155 +56,30 @@ _WORKSPACE_BOOTSTRAP_GUIDANCE = (
     "(for example a package manager install step) or update "
     ".ragtime/runtime-entrypoint.json to use executables available in this runtime image."
 )
-_RUNTIME_BOOTSTRAP_CONFIG_PATH = ".ragtime/runtime-bootstrap.json"
-_RUNTIME_BOOTSTRAP_STAMP_PATH = ".ragtime/.runtime-bootstrap.done"
+
 _RUNTIME_DEVSERVER_LOG_DIR = "/tmp/ragtime-runtime-devserver"
 _RUNTIME_DEVSERVER_LOG_TAIL_CHARS = 400
 MAX_USERSPACE_SCREENSHOT_WIDTH = 1600
 MAX_USERSPACE_SCREENSHOT_HEIGHT = 1200
 MAX_USERSPACE_SCREENSHOT_PIXELS = 1_440_000
 
-_SCREENSHOT_NODE_SCRIPT = r"""
-const targetUrl = process.argv[1];
-const outputPath = process.argv[2];
-const viewportWidth = Number(process.argv[3] || 1440);
-const viewportHeight = Number(process.argv[4] || 900);
-const captureFullPage = (process.argv[5] || 'true') === 'true';
-const timeoutMs = Number(process.argv[6] || 25000);
-const waitForSelector = process.argv[7] || '';
-const waitAfterLoadMs = Number(process.argv[8] || 900);
-const refreshBeforeCapture = (process.argv[9] || 'true') === 'true';
-const maxPixels = Number(process.argv[10] || 1440000);
+_SCREENSHOT_JS_PATH = Path(__file__).with_name("screenshot.js")
 
-let playwright;
-try {
-    playwright = require('playwright');
-} catch (_) {
-    process.stderr.write('Playwright package is not installed in runtime container.');
-    process.exit(1);
-}
 
-async function run() {
-    const browser = await playwright.chromium.launch({
-        headless: true,
-        args: ['--disable-dev-shm-usage'],
-    });
+def _load_screenshot_script() -> str:
+    """Load the Playwright screenshot script from the adjacent JS file."""
+    return _SCREENSHOT_JS_PATH.read_text(encoding="utf-8")
 
-    try {
-        const context = await browser.newContext({
-            viewport: { width: viewportWidth, height: viewportHeight },
-            deviceScaleFactor: 1,
-        });
-        const page = await context.newPage();
-        page.setDefaultTimeout(timeoutMs);
 
-        const initialResponse = await page.goto(targetUrl, {
-            waitUntil: 'domcontentloaded',
-            timeout: timeoutMs,
-        });
+@dataclass
+class DevserverResolution:
+    """Result of resolving a devserver launch command for a workspace."""
 
-        await page.waitForLoadState('networkidle', {
-            timeout: Math.min(timeoutMs, 8000),
-        }).catch(() => null);
-
-        if (refreshBeforeCapture) {
-            await page.reload({
-                waitUntil: 'domcontentloaded',
-                timeout: timeoutMs,
-            });
-            await page.waitForLoadState('networkidle', {
-                timeout: Math.min(timeoutMs, 8000),
-            }).catch(() => null);
-        }
-
-        if (waitForSelector) {
-            await page.waitForSelector(waitForSelector, {
-                state: 'visible',
-                timeout: Math.min(timeoutMs, 10000),
-            }).catch(() => null);
-        }
-
-        if (waitAfterLoadMs > 0) {
-            await page.waitForTimeout(waitAfterLoadMs);
-        }
-
-        const screenshotOptions = {
-            path: outputPath,
-            animations: 'disabled',
-        };
-
-        let effectiveWidth = viewportWidth;
-        let effectiveHeight = viewportHeight;
-        let effectiveFullPage = captureFullPage;
-
-        if (captureFullPage) {
-            const fullHeight = await page.evaluate(() => {
-                const bodyHeight = document.body ? document.body.scrollHeight : 0;
-                const docHeight = document.documentElement
-                    ? document.documentElement.scrollHeight
-                    : 0;
-                return Math.max(bodyHeight, docHeight, window.innerHeight || 0);
-            });
-
-            if (viewportWidth * fullHeight <= maxPixels) {
-                screenshotOptions.fullPage = true;
-                effectiveHeight = fullHeight;
-            } else {
-                effectiveFullPage = false;
-                const clipHeight = Math.max(240, Math.floor(maxPixels / Math.max(1, viewportWidth)));
-                screenshotOptions.clip = {
-                    x: 0,
-                    y: 0,
-                    width: viewportWidth,
-                    height: clipHeight,
-                };
-                effectiveHeight = clipHeight;
-            }
-        } else if (viewportWidth * viewportHeight > maxPixels) {
-            const scale = Math.sqrt(maxPixels / (viewportWidth * viewportHeight));
-            const clipWidth = Math.max(320, Math.floor(viewportWidth * scale));
-            const clipHeight = Math.max(240, Math.floor(viewportHeight * scale));
-            screenshotOptions.clip = {
-                x: 0,
-                y: 0,
-                width: clipWidth,
-                height: clipHeight,
-            };
-            effectiveWidth = clipWidth;
-            effectiveHeight = clipHeight;
-        }
-
-        await page.screenshot(screenshotOptions);
-
-        const title = await page.title().catch(() => '');
-        const htmlLength = await page
-            .content()
-            .then((html) => html.length)
-            .catch(() => null);
-
-        const output = {
-            ok: true,
-            status_code: initialResponse ? initialResponse.status() : null,
-            title,
-            html_length: htmlLength,
-            output_path: outputPath,
-            screenshot_url: targetUrl,
-            effective_width: effectiveWidth,
-            effective_height: effectiveHeight,
-            effective_full_page: effectiveFullPage,
-        };
-        process.stdout.write(JSON.stringify(output));
-    } finally {
-        await browser.close();
-    }
-}
-
-run().catch((error) => {
-    const message = error && error.message ? error.message : String(error);
-    process.stderr.write(message);
-    process.exit(1);
-});
-"""
+    command: list[str] | None = None
+    error: str | None = None
+    framework: str | None = None
+    cwd: str | None = None
+    port: int | None = None
 
 
 @dataclass
@@ -246,11 +130,7 @@ class WorkerService:
         return datetime.now(timezone.utc)
 
     def _normalize_file_path(self, file_path: str) -> str:
-        normalized = file_path.replace("\\", "/").strip().lstrip("/")
-        path = Path(normalized)
-        if not normalized or any(part == ".." for part in path.parts):
-            raise HTTPException(status_code=400, detail="Invalid file path")
-        return "/".join(path.parts)
+        return normalize_file_path(file_path)
 
     def _resolve_workspace_root(self, workspace_id: str) -> Path:
         canonical_root = self._root / "workspaces" / workspace_id / "files"
@@ -341,7 +221,7 @@ class WorkerService:
     def _read_runtime_bootstrap_config(
         self, workspace_root: Path
     ) -> list[dict[str, str]]:
-        config_path = workspace_root / _RUNTIME_BOOTSTRAP_CONFIG_PATH
+        config_path = workspace_root / RUNTIME_BOOTSTRAP_CONFIG_PATH
         if not config_path.exists() or not config_path.is_file():
             return []
         try:
@@ -372,7 +252,7 @@ class WorkerService:
         return normalized
 
     def _runtime_bootstrap_config_digest(self, workspace_root: Path) -> str | None:
-        config_path = workspace_root / _RUNTIME_BOOTSTRAP_CONFIG_PATH
+        config_path = workspace_root / RUNTIME_BOOTSTRAP_CONFIG_PATH
         if not config_path.exists() or not config_path.is_file():
             return None
         try:
@@ -401,7 +281,7 @@ class WorkerService:
         session: WorkerSession,
     ) -> str | None:
         workspace_root = session.workspace_root
-        stamp_path = workspace_root / _RUNTIME_BOOTSTRAP_STAMP_PATH
+        stamp_path = workspace_root / RUNTIME_BOOTSTRAP_STAMP_PATH
         config_digest = self._runtime_bootstrap_config_digest(workspace_root)
         existing_digest = ""
         if stamp_path.exists() and stamp_path.is_file():
@@ -628,12 +508,8 @@ class WorkerService:
             or "cannot find module" in lowered
         )
 
-    _ESBUILD_SERVEDIR_PATTERN: re.Pattern[str] = re.compile(
-        r"--servedir=(\S+)"
-    )
-    _ESBUILD_SERVE_PATTERN: re.Pattern[str] = re.compile(
-        r"--serve=\S+"
-    )
+    _ESBUILD_SERVEDIR_PATTERN: re.Pattern[str] = re.compile(r"--servedir=(\S+)")
+    _ESBUILD_SERVE_PATTERN: re.Pattern[str] = re.compile(r"--serve=\S+")
     _INDEX_HTML_SEARCH_DIRS: list[str] = ["public", "static", "src", "www"]
 
     def _fix_esbuild_servedir(self, command: str, workspace_root: Path) -> str:
@@ -661,7 +537,7 @@ class WorkerService:
         return f"{command} {serve_flag}"
 
     def _invalidate_bootstrap_stamp(self, session: WorkerSession) -> None:
-        stamp_path = session.workspace_root / _RUNTIME_BOOTSTRAP_STAMP_PATH
+        stamp_path = session.workspace_root / RUNTIME_BOOTSTRAP_STAMP_PATH
         try:
             if stamp_path.exists() and stamp_path.is_file():
                 stamp_path.unlink()
@@ -697,7 +573,7 @@ class WorkerService:
         self,
         workspace_root: Path,
         port: int,
-    ) -> tuple[list[str] | None, str | None, str | None, str | None, int | None]:
+    ) -> DevserverResolution:
         package_json = workspace_root / "package.json"
         module_dashboard = self._is_module_dashboard_workspace(workspace_root)
         config = self._read_runtime_entrypoint_config(workspace_root)
@@ -720,33 +596,30 @@ class WorkerService:
             if self._command_uses_tool(config_command, "npx") and not shutil.which(
                 "npx"
             ):
-                return (
-                    None,
-                    self._missing_tool_error("npx"),
-                    config_framework,
-                    config_cwd,
-                    effective_port,
+                return DevserverResolution(
+                    error=self._missing_tool_error("npx"),
+                    framework=config_framework,
+                    cwd=config_cwd,
+                    port=effective_port,
                 )
             if self._command_uses_tool(config_command, "npm") and not shutil.which(
                 "npm"
             ):
-                return (
-                    None,
-                    self._missing_tool_error("npm"),
-                    config_framework,
-                    config_cwd,
-                    effective_port,
+                return DevserverResolution(
+                    error=self._missing_tool_error("npm"),
+                    framework=config_framework,
+                    cwd=config_cwd,
+                    port=effective_port,
                 )
-            return (
-                [
+            return DevserverResolution(
+                command=[
                     "sh",
                     "-lc",
                     f"PORT={effective_port} {final_command}",
                 ],
-                None,
-                config_framework,
-                config_cwd,
-                effective_port,
+                framework=config_framework,
+                cwd=config_cwd,
+                port=effective_port,
             )
 
         if package_json.exists() and package_json.is_file():
@@ -762,15 +635,14 @@ class WorkerService:
                     cmd_text = self._inject_esbuild_serve_flag(cmd_text, port)
                     if "--watch" in dev_script and "--watch=forever" not in dev_script:
                         cmd_text = cmd_text.replace("--watch", "--watch=forever")
-                    return (
-                        ["sh", "-lc", cmd_text],
-                        None,
-                        "node",
-                        ".",
-                        port,
+                    return DevserverResolution(
+                        command=["sh", "-lc", cmd_text],
+                        framework="node",
+                        cwd=".",
+                        port=port,
                     )
-                return (
-                    [
+                return DevserverResolution(
+                    command=[
                         npm_path,
                         "run",
                         "dev",
@@ -778,24 +650,19 @@ class WorkerService:
                         "--port",
                         str(port),
                     ],
-                    None,
-                    "node",
-                    ".",
-                    port,
+                    framework="node",
+                    cwd=".",
+                    port=port,
                 )
             if self._index_requires_typescript_runtime(workspace_root):
-                return (
-                    None,
-                    (
+                return DevserverResolution(
+                    error=(
                         "This workspace references TypeScript modules in index.html "
                         "but npm is unavailable in the isolated runtime container, so "
                         "no transpilation can occur. Add a runtime entrypoint that builds/serves JS, "
                         "or use JavaScript assets for static preview. "
                         f"{_WORKSPACE_BOOTSTRAP_GUIDANCE}"
                     ),
-                    None,
-                    None,
-                    None,
                 )
 
         python_command, python_framework, python_cwd = self._resolve_python_launch(
@@ -803,18 +670,17 @@ class WorkerService:
             port,
         )
         if python_command:
-            return (
-                python_command,
-                None,
-                python_framework,
-                python_cwd,
-                port,
+            return DevserverResolution(
+                command=python_command,
+                framework=python_framework,
+                cwd=python_cwd,
+                port=port,
             )
 
         index_html = workspace_root / "index.html"
         if index_html.exists() and index_html.is_file():
-            return (
-                [
+            return DevserverResolution(
+                command=[
                     "python3",
                     "-m",
                     "http.server",
@@ -824,23 +690,18 @@ class WorkerService:
                     "--directory",
                     str(workspace_root),
                 ],
-                None,
-                "static",
-                ".",
-                port,
+                framework="static",
+                cwd=".",
+                port=port,
             )
 
-        return (
-            None,
-            (
+        return DevserverResolution(
+            error=(
                 "No runnable web entrypoint found. Add .ragtime/runtime-entrypoint.json "
                 "with a command/cwd or provide package.json dev script, Python app.py/main.py, or index.html. "
                 "If package.json exists, ensure npm is installed in the runtime environment. "
                 f"{_WORKSPACE_BOOTSTRAP_GUIDANCE}"
             ),
-            None,
-            None,
-            None,
         )
 
     async def _wait_devserver_ready(self, port: int) -> bool:
@@ -935,25 +796,19 @@ class WorkerService:
             return
 
         port = session.devserver_port or self._pick_free_port()
-        (
-            command,
-            command_error,
-            framework,
-            launch_cwd,
-            resolved_port,
-        ) = self._resolve_devserver_command(session.workspace_root, port)
-        session.launch_framework = framework
-        session.launch_cwd = launch_cwd
+        resolution = self._resolve_devserver_command(session.workspace_root, port)
+        session.launch_framework = resolution.framework
+        session.launch_cwd = resolution.cwd
 
-        if not command:
-            session.devserver_port = resolved_port
+        if not resolution.command:
+            session.devserver_port = resolution.port
             session.devserver_command = None
             session.devserver_running = False
-            session.last_error = command_error
+            session.last_error = resolution.error
             session.updated_at = self._utc_now()
             return
 
-        session.devserver_port = resolved_port or port
+        session.devserver_port = resolution.port or port
 
         await self._terminate_devserver_locked(session.id)
         log_path = self._resolve_devserver_log_path(session.id)
@@ -968,7 +823,7 @@ class WorkerService:
         self._devserver_log_handles[session.id] = log_handle
         try:
             process = await asyncio.create_subprocess_exec(
-                *command,
+                *resolution.command,
                 cwd=str(self._resolve_launch_cwd(session)),
                 stdout=log_handle,
                 stderr=asyncio.subprocess.STDOUT,
@@ -982,7 +837,7 @@ class WorkerService:
             session.devserver_running = False
             session.last_error = (
                 "Dev server command not found: "
-                f"{command[0]}. Install the required runtime dependency or "
+                f"{resolution.command[0]}. Install the required runtime dependency or "
                 "set .ragtime/runtime-entrypoint.json command to an available executable. "
                 f"{_WORKSPACE_BOOTSTRAP_GUIDANCE}"
             )
@@ -999,7 +854,7 @@ class WorkerService:
             session.updated_at = self._utc_now()
             return
         self._devserver_processes[session.id] = process
-        session.devserver_command = command
+        session.devserver_command = resolution.command
 
         ready = await self._wait_devserver_ready(session.devserver_port)
         if not ready:
@@ -1104,7 +959,7 @@ class WorkerService:
             target = session.workspace_root / rel_path
             if not target.exists() or not target.is_file():
                 return self._runtime_file_response(session, rel_path, "", False)
-            content = target.read_text(encoding="utf-8")
+            content = await asyncio.to_thread(target.read_text, encoding="utf-8")
             session.updated_at = self._utc_now()
             return self._runtime_file_response(session, rel_path, content, True)
 
@@ -1121,7 +976,7 @@ class WorkerService:
             rel_path = self._normalize_file_path(file_path)
             target = session.workspace_root / rel_path
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
+            await asyncio.to_thread(target.write_text, content, encoding="utf-8")
             session.updated_at = self._utc_now()
             return self._runtime_file_response(session, rel_path, content, True)
 
@@ -1223,7 +1078,7 @@ class WorkerService:
         process = await asyncio.create_subprocess_exec(
             node_binary,
             "-e",
-            _SCREENSHOT_NODE_SCRIPT,
+            _load_screenshot_script(),
             cache_busted_url,
             str(output_path),
             str(width),

@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import fcntl
 import json
 import os
 import pty as pty_module
+import struct
+import termios
 from typing import Any
 
 from fastapi import (
     APIRouter,
     FastAPI,
-    Header,
     HTTPException,
     Request,
     WebSocket,
@@ -18,6 +20,7 @@ from fastapi import (
 )
 from fastapi.responses import Response
 
+from runtime.auth import WorkerAuth
 from runtime.manager.models import (
     RuntimeFileReadResponse,
     RuntimeScreenshotRequest,
@@ -30,16 +33,22 @@ from runtime.worker.service import get_worker_service
 
 router = APIRouter(tags=["Runtime Worker"])
 
-
-def _authorize_worker_call(authorization: str | None) -> None:
-    worker_auth_token = os.getenv("RUNTIME_WORKER_AUTH_TOKEN", "").strip()
-    if not worker_auth_token:
-        return
-    value = (authorization or "").strip()
-    if not value.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing runtime worker auth")
-    if value[7:] != worker_auth_token:
-        raise HTTPException(status_code=403, detail="Invalid runtime worker auth")
+# Safe environment variables to forward into PTY sessions.
+_PTY_ENV_ALLOWLIST = {
+    "HOME",
+    "PATH",
+    "TERM",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "SHELL",
+    "USER",
+    "LOGNAME",
+    "HOSTNAME",
+    "PWD",
+    "RUNTIME_WORKSPACE_ROOT",
+    "INDEX_DATA_PATH",
+}
 
 
 @router.get("/worker/health", response_model=WorkerHealthResponse)
@@ -50,9 +59,8 @@ async def health() -> WorkerHealthResponse:
 @router.post("/worker/sessions/start", response_model=WorkerSessionResponse)
 async def start_session(
     payload: WorkerStartSessionRequest,
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    _auth: None = WorkerAuth,
 ) -> WorkerSessionResponse:
-    _authorize_worker_call(authorization)
     return await get_worker_service().start_session(payload)
 
 
@@ -61,9 +69,8 @@ async def start_session(
 )
 async def get_session(
     worker_session_id: str,
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    _auth: None = WorkerAuth,
 ) -> WorkerSessionResponse:
-    _authorize_worker_call(authorization)
     return await get_worker_service().get_session(worker_session_id)
 
 
@@ -72,9 +79,8 @@ async def get_session(
 )
 async def stop_session(
     worker_session_id: str,
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    _auth: None = WorkerAuth,
 ) -> WorkerSessionResponse:
-    _authorize_worker_call(authorization)
     return await get_worker_service().stop_session(worker_session_id)
 
 
@@ -83,9 +89,8 @@ async def stop_session(
 )
 async def restart_session(
     worker_session_id: str,
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    _auth: None = WorkerAuth,
 ) -> WorkerSessionResponse:
-    _authorize_worker_call(authorization)
     return await get_worker_service().restart_session(worker_session_id)
 
 
@@ -96,9 +101,8 @@ async def restart_session(
 async def read_file(
     worker_session_id: str,
     file_path: str,
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    _auth: None = WorkerAuth,
 ) -> RuntimeFileReadResponse:
-    _authorize_worker_call(authorization)
     return await get_worker_service().read_file(worker_session_id, file_path)
 
 
@@ -110,9 +114,8 @@ async def write_file(
     worker_session_id: str,
     file_path: str,
     payload: dict[str, Any],
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    _auth: None = WorkerAuth,
 ) -> RuntimeFileReadResponse:
-    _authorize_worker_call(authorization)
     return await get_worker_service().write_file(
         worker_session_id,
         file_path,
@@ -124,9 +127,8 @@ async def write_file(
 async def delete_file(
     worker_session_id: str,
     file_path: str,
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    _auth: None = WorkerAuth,
 ) -> dict[str, Any]:
-    _authorize_worker_call(authorization)
     return await get_worker_service().delete_file(worker_session_id, file_path)
 
 
@@ -137,9 +139,8 @@ async def delete_file(
 async def capture_screenshot(
     worker_session_id: str,
     payload: RuntimeScreenshotRequest,
-    authorization: str | None = Header(default=None, alias="Authorization"),
+    _auth: None = WorkerAuth,
 ) -> RuntimeScreenshotResponse:
-    _authorize_worker_call(authorization)
     service = get_worker_service()
     capture_method = getattr(service, "capture_screenshot", None)
     if capture_method is None:
@@ -177,9 +178,12 @@ async def pty(worker_session_id: str, websocket: WebSocket):
     if os.path.basename(shell).endswith("bash"):
         shell_command = [shell, "--noprofile", "--norc", "-i"]
     master_fd, slave_fd = pty_module.openpty()
-    environment = os.environ.copy()
+    # Only forward safe env vars into the PTY to avoid leaking secrets
+    # (e.g. RUNTIME_WORKER_AUTH_TOKEN, API keys)
+    environment = {k: v for k, v in os.environ.items() if k in _PTY_ENV_ALLOWLIST}
     environment.setdefault("TERM", "xterm-256color")
-    environment["PS1"] = "root# "
+    user = os.environ.get("USER", "user")
+    environment["PS1"] = f"{user}$ "
     environment["PROMPT_COMMAND"] = ""
 
     try:
@@ -206,6 +210,14 @@ async def pty(worker_session_id: str, websocket: WebSocket):
         )
     )
 
+    def _resize_pty(fd: int, cols: int, rows: int) -> None:
+        """Send TIOCSWINSZ to resize the PTY."""
+        try:
+            winsize = struct.pack("HHHH", rows, cols, 0, 0)
+            fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
+        except OSError:
+            pass
+
     async def _pump_stream() -> None:
         while True:
             try:
@@ -227,7 +239,13 @@ async def pty(worker_session_id: str, websocket: WebSocket):
     try:
         while True:
             payload = await websocket.receive_json()
-            if payload.get("type") != "input":
+            msg_type = payload.get("type")
+            if msg_type == "resize":
+                cols = int(payload.get("cols", 80))
+                rows = int(payload.get("rows", 24))
+                await asyncio.to_thread(_resize_pty, master_fd, cols, rows)
+                continue
+            if msg_type != "input":
                 continue
             line = str(payload.get("data", ""))
             try:

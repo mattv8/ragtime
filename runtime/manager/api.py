@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import os
-from typing import Any, cast
+from contextlib import asynccontextmanager
+from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI
 
+from runtime.auth import ManagerAuth
 from runtime.manager.models import (
     RuntimeFileReadResponse,
     RuntimeFileWriteRequest,
@@ -19,26 +20,19 @@ from runtime.manager.service import SessionManager
 
 
 def create_app() -> FastAPI:
-    application = FastAPI(title="Ragtime User Space Runtime Manager", version="0.1.0")
     manager = SessionManager()
-    manager_auth_token = os.getenv("RUNTIME_MANAGER_AUTH_TOKEN", "").strip()
 
-    def _authorize_manager_call(authorization: str | None) -> None:
-        if not manager_auth_token:
-            return
-        value = (authorization or "").strip()
-        if not value.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="Missing runtime manager auth")
-        if value[7:] != manager_auth_token:
-            raise HTTPException(status_code=403, detail="Invalid runtime manager auth")
-
-    @application.on_event("startup")
-    async def on_startup() -> None:
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
         await manager.startup()
-
-    @application.on_event("shutdown")
-    async def on_shutdown() -> None:
+        yield
         await manager.shutdown()
+
+    application = FastAPI(
+        title="Ragtime User Space Runtime Manager",
+        version="0.1.0",
+        lifespan=lifespan,
+    )
 
     @application.get("/health", response_model=RuntimeManagerHealthResponse)
     async def health() -> RuntimeManagerHealthResponse:
@@ -48,14 +42,15 @@ def create_app() -> FastAPI:
             workers_total=pool["workers_total"],
             workers_leased=pool["workers_leased"],
             active_sessions=pool["active_sessions"],
+            max_sessions=pool["max_sessions"],
+            sessions=pool["sessions"],
         )
 
     @application.post("/sessions/start", response_model=RuntimeSessionResponse)
     async def start_session(
         request: StartSessionRequest,
-        authorization: str | None = Header(default=None, alias="Authorization"),
+        _auth: None = ManagerAuth,
     ) -> RuntimeSessionResponse:
-        _authorize_manager_call(authorization)
         return await manager.start_session(request)
 
     @application.get(
@@ -63,9 +58,8 @@ def create_app() -> FastAPI:
     )
     async def get_session(
         provider_session_id: str,
-        authorization: str | None = Header(default=None, alias="Authorization"),
+        _auth: None = ManagerAuth,
     ) -> RuntimeSessionResponse:
-        _authorize_manager_call(authorization)
         return await manager.get_session(provider_session_id)
 
     @application.post(
@@ -73,9 +67,8 @@ def create_app() -> FastAPI:
     )
     async def stop_session(
         provider_session_id: str,
-        authorization: str | None = Header(default=None, alias="Authorization"),
+        _auth: None = ManagerAuth,
     ) -> RuntimeSessionResponse:
-        _authorize_manager_call(authorization)
         return await manager.stop_session(provider_session_id)
 
     @application.post(
@@ -83,9 +76,8 @@ def create_app() -> FastAPI:
     )
     async def restart_session(
         provider_session_id: str,
-        authorization: str | None = Header(default=None, alias="Authorization"),
+        _auth: None = ManagerAuth,
     ) -> RuntimeSessionResponse:
-        _authorize_manager_call(authorization)
         return await manager.restart_devserver(provider_session_id)
 
     @application.get(
@@ -94,9 +86,8 @@ def create_app() -> FastAPI:
     )
     async def get_pty_ws_url(
         provider_session_id: str,
-        authorization: str | None = Header(default=None, alias="Authorization"),
+        _auth: None = ManagerAuth,
     ) -> RuntimePtyUrlResponse:
-        _authorize_manager_call(authorization)
         return await manager.get_pty_websocket_url(provider_session_id)
 
     @application.get(
@@ -106,9 +97,8 @@ def create_app() -> FastAPI:
     async def read_file(
         provider_session_id: str,
         file_path: str,
-        authorization: str | None = Header(default=None, alias="Authorization"),
+        _auth: None = ManagerAuth,
     ) -> RuntimeFileReadResponse:
-        _authorize_manager_call(authorization)
         return await manager.read_file(provider_session_id, file_path)
 
     @application.put(
@@ -119,9 +109,8 @@ def create_app() -> FastAPI:
         provider_session_id: str,
         file_path: str,
         payload: RuntimeFileWriteRequest,
-        authorization: str | None = Header(default=None, alias="Authorization"),
+        _auth: None = ManagerAuth,
     ) -> RuntimeFileReadResponse:
-        _authorize_manager_call(authorization)
         return await manager.write_file(
             provider_session_id,
             file_path,
@@ -132,9 +121,8 @@ def create_app() -> FastAPI:
     async def delete_file(
         provider_session_id: str,
         file_path: str,
-        authorization: str | None = Header(default=None, alias="Authorization"),
+        _auth: None = ManagerAuth,
     ) -> dict[str, Any]:
-        _authorize_manager_call(authorization)
         return await manager.delete_file(provider_session_id, file_path)
 
     @application.post(
@@ -144,10 +132,9 @@ def create_app() -> FastAPI:
     async def capture_screenshot(
         provider_session_id: str,
         payload: RuntimeScreenshotRequest,
-        authorization: str | None = Header(default=None, alias="Authorization"),
+        _auth: None = ManagerAuth,
     ) -> RuntimeScreenshotResponse:
-        _authorize_manager_call(authorization)
-        return await cast(Any, manager).capture_screenshot(provider_session_id, payload)
+        return await manager.capture_screenshot(provider_session_id, payload)
 
     return application
 

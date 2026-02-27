@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field
 
-RuntimeSessionState = Literal["starting", "running", "stopping", "stopped", "error"]
+from runtime.shared import RuntimeSessionState
 
 
 @dataclass
@@ -14,8 +14,6 @@ class ManagerSession:
     provider_session_id: str
     workspace_id: str
     leased_by_user_id: str
-    worker_id: str
-    worker_base_url: str
     worker_session_id: str
     pty_access_token: str
     preview_internal_url: str
@@ -30,18 +28,6 @@ class ManagerSession:
     lease_expires_at: datetime
 
 
-@dataclass
-class PoolSlot:
-    slot_id: str
-    vm_id: str
-    lease_provider_session_id: str | None
-    workspace_id: str | None
-    state: Literal["warm", "leased"]
-    created_at: datetime
-    updated_at: datetime
-    last_used_at: datetime
-
-
 class StartSessionRequest(BaseModel):
     workspace_id: str = Field(description="Workspace ID")
     leased_by_user_id: str = Field(description="User ID leasing the runtime")
@@ -51,8 +37,9 @@ class StartSessionRequest(BaseModel):
     )
 
 
-class RuntimeSessionResponse(BaseModel):
-    provider_session_id: str = Field(description="Runtime provider session identifier")
+class _BaseSessionFields(BaseModel):
+    """Shared fields across manager and worker session responses."""
+
     workspace_id: str = Field(description="Workspace ID")
     state: RuntimeSessionState = Field(description="Runtime state")
     preview_internal_url: str = Field(description="Internal preview URL")
@@ -77,38 +64,18 @@ class RuntimeSessionResponse(BaseModel):
     updated_at: datetime = Field(description="Session update time")
 
 
+class RuntimeSessionResponse(_BaseSessionFields):
+    provider_session_id: str = Field(description="Runtime provider session identifier")
+
+
 class WorkerStartSessionRequest(BaseModel):
     workspace_id: str = Field(description="Workspace ID")
     provider_session_id: str = Field(description="Manager provider session identifier")
     pty_access_token: str = Field(description="Manager-issued PTY access token")
 
 
-class WorkerSessionResponse(BaseModel):
+class WorkerSessionResponse(_BaseSessionFields):
     worker_session_id: str = Field(description="Worker-local session id")
-    workspace_id: str = Field(description="Workspace ID")
-    state: RuntimeSessionState = Field(description="Worker runtime state")
-    preview_internal_url: str = Field(description="Worker preview internal URL")
-    launch_framework: str | None = Field(
-        default=None,
-        description="Detected runtime framework",
-    )
-    launch_command: str | None = Field(
-        default=None,
-        description="Launch command for runtime devserver",
-    )
-    launch_cwd: str | None = Field(
-        default=None,
-        description="Workspace-relative launch cwd",
-    )
-    launch_port: int | None = Field(
-        default=None,
-        description="Worker-local devserver port",
-    )
-    devserver_running: bool = Field(description="Whether worker devserver is running")
-    last_error: str | None = Field(
-        default=None, description="Last worker runtime error"
-    )
-    updated_at: datetime = Field(description="Worker session update time")
 
 
 class RuntimePtyUrlResponse(BaseModel):
@@ -160,11 +127,22 @@ class RuntimeScreenshotResponse(BaseModel):
     probe: dict[str, Any] = Field(description="Captured browser probe metadata")
 
 
+class ManagerSessionSummary(BaseModel):
+    provider_session_id: str = Field(description="Provider session ID")
+    workspace_id: str = Field(description="Workspace ID")
+    state: str = Field(description="Session state")
+    devserver_running: bool = Field(description="Whether devserver is running")
+
+
 class RuntimeManagerHealthResponse(BaseModel):
     status: str = Field(description="Service status")
     workers_total: int = Field(description="Configured worker count")
     workers_leased: int = Field(description="Currently leased worker count")
     active_sessions: int = Field(description="Active runtime session count")
+    max_sessions: int = Field(description="Maximum concurrent sessions")
+    sessions: list[ManagerSessionSummary] = Field(
+        default_factory=list, description="Summary of active sessions"
+    )
 
 
 class WorkerHealthResponse(BaseModel):
