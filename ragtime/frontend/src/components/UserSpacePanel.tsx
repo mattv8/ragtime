@@ -1029,8 +1029,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     resizeObserver.observe(terminalContainer);
     terminalResizeObserverRef.current = resizeObserver;
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/indexes/userspace/runtime/workspaces/${encodeURIComponent(activeWorkspaceId)}/pty`;
+    const wsUrl = api.getUserSpaceRuntimePtyWebSocketUrl(activeWorkspaceId);
     const socket = new WebSocket(wsUrl);
     terminalSocketRef.current = socket;
 
@@ -1050,6 +1049,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
 
     socket.onopen = () => {
       setTerminalConnected(true);
+      terminal.clear();
       if (terminalReconnectTimerRef.current !== null) {
         window.clearTimeout(terminalReconnectTimerRef.current);
         terminalReconnectTimerRef.current = null;
@@ -1072,7 +1072,9 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
           return;
         }
         if (payload.type === 'output') {
-          terminal.write(payload.data ?? '');
+          const workspaceRoot = `/data/_userspace/workspaces/${activeWorkspaceId}/files`;
+          const output = (payload.data ?? '').split(workspaceRoot).join('<workspace>');
+          terminal.write(output);
           return;
         }
       } catch {

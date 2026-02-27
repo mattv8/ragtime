@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import os
+import pty as pty_module
 from typing import Any
 
 from fastapi import (
@@ -153,14 +154,28 @@ async def pty(worker_session_id: str, websocket: WebSocket):
 
     await websocket.accept()
     shell = os.environ.get("SHELL", "/bin/bash")
-    process = await asyncio.create_subprocess_exec(
-        shell,
-        "-i",
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=str(session.workspace_root),
-    )
+    shell_command = [shell, "-i"]
+    if os.path.basename(shell).endswith("bash"):
+        shell_command = [shell, "--noprofile", "--norc", "-i"]
+    master_fd, slave_fd = pty_module.openpty()
+    environment = os.environ.copy()
+    environment.setdefault("TERM", "xterm-256color")
+    environment["PS1"] = "root# "
+    environment["PROMPT_COMMAND"] = ""
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *shell_command,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            cwd=str(session.workspace_root),
+            env=environment,
+            start_new_session=True,
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            os.close(slave_fd)
 
     await websocket.send_text(
         json.dumps(
@@ -172,9 +187,12 @@ async def pty(worker_session_id: str, websocket: WebSocket):
         )
     )
 
-    async def _pump_stream(reader: asyncio.StreamReader) -> None:
+    async def _pump_stream() -> None:
         while True:
-            chunk = await reader.read(1024)
+            try:
+                chunk = await asyncio.to_thread(os.read, master_fd, 1024)
+            except OSError:
+                break
             if not chunk:
                 break
             await websocket.send_text(
@@ -186,22 +204,21 @@ async def pty(worker_session_id: str, websocket: WebSocket):
                 )
             )
 
-    if process.stdout is None or process.stderr is None:
-        await websocket.close(code=1011)
-        return
-
-    stdout_task = asyncio.create_task(_pump_stream(process.stdout))
-    stderr_task = asyncio.create_task(_pump_stream(process.stderr))
+    stream_task = asyncio.create_task(_pump_stream())
     try:
         while True:
             payload = await websocket.receive_json()
             if payload.get("type") != "input":
                 continue
-            if process.stdin is None:
-                continue
             line = str(payload.get("data", ""))
-            process.stdin.write(line.encode("utf-8", errors="ignore"))
-            await process.stdin.drain()
+            try:
+                await asyncio.to_thread(
+                    os.write,
+                    master_fd,
+                    line.encode("utf-8", errors="ignore"),
+                )
+            except OSError:
+                break
     except WebSocketDisconnect:
         pass
     finally:
@@ -209,10 +226,11 @@ async def pty(worker_session_id: str, websocket: WebSocket):
             process.terminate()
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(process.wait(), timeout=2)
-        for task in (stdout_task, stderr_task):
-            task.cancel()
-            with contextlib.suppress(Exception):
-                await task
+        stream_task.cancel()
+        with contextlib.suppress(Exception):
+            await stream_task
+        with contextlib.suppress(Exception):
+            os.close(master_fd)
 
 
 def include_worker_routes(application: FastAPI) -> None:

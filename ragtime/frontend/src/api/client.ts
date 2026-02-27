@@ -1878,6 +1878,11 @@ export const api = {
     return `${protocol}//${window.location.host}${API_BASE}/userspace/collab/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}`;
   },
 
+  getUserSpaceRuntimePtyWebSocketUrl(workspaceId: string): string {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${window.location.host}${API_BASE}/userspace/runtime/workspaces/${encodeURIComponent(workspaceId)}/pty`;
+  },
+
   async createUserSpaceCollabFile(workspaceId: string, filePath: string, content: string = ''): Promise<{ success: boolean; workspace_id: string; file_path: string; version: number }> {
     const response = await apiFetch(`${API_BASE}/userspace/collab/workspaces/${workspaceId}/files/create`, {
       method: 'POST',

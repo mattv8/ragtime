@@ -44,6 +44,7 @@ export default defineConfig({
       '^/(indexes|auth|authorize|token|health|docs|redoc|openapi.json|v1|mcp-routes|mcp-debug|mcp)': {
         target: `${backendProtocol}://127.0.0.1:${backendPort}`,
         changeOrigin: true,
+        ws: true,
         secure: false, // Allow self-signed certs
       },
     },
