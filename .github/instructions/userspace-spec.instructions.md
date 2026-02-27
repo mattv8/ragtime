@@ -4,7 +4,7 @@ applyTo: 'ragtime/userspace/**, runtime/**'
 
 # User Space Feature Implementation Instructions
 
-Last updated: 2026-02-25 (full-offload cutover update)
+Last updated: 2026-02-26 (runtime bootstrap-on-create update)
 
 ## Purpose
 
@@ -47,6 +47,9 @@ Implemented now:
 - Preview traffic is proxied to a session-managed internal devserver port (currently dynamic per session).
 - Runtime launch contract metadata is exposed (framework/command/cwd/port) from worker -> manager -> ragtime runtime status/session APIs.
 - Runtime entrypoint guidance supports `.ragtime/runtime-entrypoint.json` (`command`, `cwd`, `framework`) as an explicit launch override.
+- Workspace creation now seeds `.ragtime/runtime-bootstrap.json` with default dependency bootstrap commands (npm/pip).
+- Managed runtime bootstrap templates are auto-backfilled for existing workspaces on access when `template_version` increases (or when legacy default template is detected).
+- Runtime worker executes workspace bootstrap commands before devserver launch and persists a config-digest stamp at `.ragtime/.runtime-bootstrap.done` so bootstrap reruns automatically when `.ragtime/runtime-bootstrap.json` changes.
 - Workspace SQLite snapshot persistence policy is configurable (`include` or `exclude`) and respected during snapshot staging.
 - Legacy frontend `srcDoc` preview fallback has been removed; preview is runtime-only.
 
@@ -106,6 +109,10 @@ Still pending for full hard-cutover:
 5. Any touched frontend/runtime types pass diagnostics (`get_errors`).
 6. Frontend production build succeeds in-container:
   - `docker exec ragtime-dev sh -c "cd /ragtime/ragtime/frontend && npm run build"`
+7. Workspace bootstrap-on-create is present and consumed:
+  - New workspace contains `.ragtime/runtime-bootstrap.json`
+  - First runtime start either creates `.ragtime/.runtime-bootstrap.done` (digest value) or returns a clear bootstrap command failure in devserver status.
+  - Editing `.ragtime/runtime-bootstrap.json` causes bootstrap to re-run on next runtime start (stamp digest changes).
 
 ## Runtime Plan Reference
 

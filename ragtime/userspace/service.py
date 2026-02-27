@@ -22,43 +22,31 @@ from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (
-    DB_TYPE_POSTGRES,
-    add_table_metadata_to_psql_output,
-    enforce_max_results,
-    format_query_result,
-    validate_sql_query,
-)
-from ragtime.core.ssh import (
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
+                                    add_table_metadata_to_psql_output,
+                                    enforce_max_results, format_query_result,
+                                    validate_sql_query)
+from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
+                              ssh_tunnel_config_from_dict)
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (
-    ArtifactType,
-    CreateWorkspaceRequest,
-    ExecuteComponentRequest,
-    ExecuteComponentResponse,
-    PaginatedWorkspacesResponse,
-    ShareAccessMode,
-    SqlitePersistenceMode,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-    UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot,
-    UserSpaceWorkspace,
-    UserSpaceWorkspaceShareLink,
-    UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceMember,
-    WorkspaceShareSlugAvailabilityResponse,
-)
+from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
+                                      ExecuteComponentRequest,
+                                      ExecuteComponentResponse,
+                                      PaginatedWorkspacesResponse,
+                                      ShareAccessMode, SqlitePersistenceMode,
+                                      UpdateWorkspaceMembersRequest,
+                                      UpdateWorkspaceRequest,
+                                      UpdateWorkspaceShareAccessRequest,
+                                      UpsertWorkspaceFileRequest,
+                                      UserSpaceFileInfo, UserSpaceFileResponse,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection,
+                                      UserSpaceSharedPreviewResponse,
+                                      UserSpaceSnapshot, UserSpaceWorkspace,
+                                      UserSpaceWorkspaceShareLink,
+                                      UserSpaceWorkspaceShareLinkStatus,
+                                      WorkspaceMember,
+                                      WorkspaceShareSlugAvailabilityResponse)
 
 logger = get_logger(__name__)
 
@@ -116,6 +104,8 @@ _MODULE_SOURCE_EXTENSIONS = (
     ".mts",
     ".cts",
 )
+_RUNTIME_BOOTSTRAP_CONFIG_PATH = ".ragtime/runtime-bootstrap.json"
+_RUNTIME_BOOTSTRAP_TEMPLATE_VERSION = 2
 
 
 def _utc_now() -> datetime:
@@ -337,6 +327,88 @@ class UserSpaceService:
 
     def _workspace_files_dir(self, workspace_id: str) -> Path:
         return self._workspace_dir(workspace_id) / "files"
+
+    @staticmethod
+    def _default_runtime_bootstrap_config() -> dict[str, Any]:
+        return {
+            "version": 1,
+            "managed_by": "ragtime",
+            "template_version": _RUNTIME_BOOTSTRAP_TEMPLATE_VERSION,
+            "auto_update": True,
+            "commands": [
+                {
+                    "name": "npm_ci",
+                    "when_exists": "package-lock.json",
+                    "run": "npm ci",
+                },
+                {
+                    "name": "npm_install",
+                    "when_exists": "package.json",
+                    "unless_exists": "node_modules",
+                    "run": "npm install",
+                },
+                {
+                    "name": "pip_requirements",
+                    "when_exists": "requirements.txt",
+                    "run": "python3 -m pip install -r requirements.txt",
+                },
+            ],
+        }
+
+    @staticmethod
+    def _is_legacy_default_bootstrap(payload: dict[str, Any]) -> bool:
+        if payload.get("managed_by") is not None or payload.get("template_version") is not None:
+            return False
+        if int(payload.get("version") or 0) != 1:
+            return False
+        commands = payload.get("commands")
+        if not isinstance(commands, list):
+            return False
+        command_names = {
+            str(item.get("name") or "").strip()
+            for item in commands
+            if isinstance(item, dict)
+        }
+        return command_names == {"npm_ci", "npm_install", "pip_requirements"}
+
+    def _sync_runtime_bootstrap_config(self, workspace_id: str) -> None:
+        files_dir = self._workspace_files_dir(workspace_id)
+        config_path = files_dir / _RUNTIME_BOOTSTRAP_CONFIG_PATH
+        default_payload = self._default_runtime_bootstrap_config()
+
+        if not config_path.exists():
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(
+                json.dumps(default_payload, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            return
+
+        try:
+            existing = json.loads(config_path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        if not isinstance(existing, dict):
+            return
+
+        managed_by = str(existing.get("managed_by") or "").strip()
+        auto_update = bool(existing.get("auto_update", managed_by == "ragtime"))
+        template_version = int(existing.get("template_version") or 0)
+        is_legacy_default = self._is_legacy_default_bootstrap(existing)
+        should_update = (
+            (managed_by == "ragtime" and auto_update and template_version < _RUNTIME_BOOTSTRAP_TEMPLATE_VERSION)
+            or is_legacy_default
+        )
+        if not should_update:
+            return
+
+        config_path.write_text(
+            json.dumps(default_payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    def _seed_runtime_bootstrap_config(self, workspace_id: str) -> None:
+        self._sync_runtime_bootstrap_config(workspace_id)
 
     def _workspace_git_dir(self, workspace_id: str) -> Path:
         return self._workspace_files_dir(workspace_id) / ".git"
@@ -916,6 +988,7 @@ class UserSpaceService:
         if required_role == "owner" and user_role != "owner":
             raise HTTPException(status_code=403, detail="Owner access required")
 
+        self._sync_runtime_bootstrap_config(workspace_id)
         return self._workspace_from_record(workspace)
 
     async def _get_workspace_record(self, workspace_id: str) -> Any:
@@ -1018,6 +1091,7 @@ class UserSpaceService:
             )
 
         self._workspace_files_dir(workspace_id).mkdir(parents=True, exist_ok=True)
+        self._seed_runtime_bootstrap_config(workspace_id)
         await self._ensure_workspace_git_repo(workspace_id)
 
         refreshed = await db.workspace.find_unique(

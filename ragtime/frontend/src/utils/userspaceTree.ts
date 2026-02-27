@@ -1,5 +1,8 @@
 import type { UserSpaceFileInfo } from '@/types';
 
+/** Paths (top-level segments) hidden from the file tree UI. */
+const HIDDEN_ROOT_DIRS = new Set(['.ragtime']);
+
 export interface UserSpaceTreeNode {
   name: string;
   path: string;
@@ -53,6 +56,9 @@ export function getAncestorFolderPaths(filePath: string): string[] {
 export function listFolderPaths(files: UserSpaceFileInfo[]): Set<string> {
   const folderPaths = new Set<string>();
   for (const file of files) {
+    const firstSegment = normalizePath(file.path).split('/')[0];
+    if (firstSegment && HIDDEN_ROOT_DIRS.has(firstSegment)) continue;
+
     for (const folderPath of getAncestorFolderPaths(file.path)) {
       folderPaths.add(folderPath);
     }
@@ -70,6 +76,11 @@ export function buildUserSpaceTree(files: UserSpaceFileInfo[]): UserSpaceTreeNod
     }
 
     const segments = normalizedPath.split('/').filter(Boolean);
+
+    // Skip files inside hidden root directories
+    if (segments.length > 0 && HIDDEN_ROOT_DIRS.has(segments[0])) {
+      continue;
+    }
     let currentMap = rootMap;
 
     for (let index = 0; index < segments.length; index += 1) {

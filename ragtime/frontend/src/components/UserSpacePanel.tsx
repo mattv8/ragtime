@@ -2308,6 +2308,8 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                     ? api.getUserSpaceRuntimePreviewUrl(activeWorkspaceId)
                     : undefined
                 }
+                runtimeAvailable={runtimeStatus?.devserver_running}
+                runtimeError={runtimeStatus?.last_error ?? undefined}
                 previewInstanceKey={activeWorkspaceId ?? ''}
                 workspaceId={activeWorkspaceId ?? undefined}
                 onExecutionStateChange={setPreviewExecuting}

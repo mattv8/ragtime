@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 from dataclasses import dataclass
@@ -13,13 +15,27 @@ from pathlib import Path
 import httpx
 from fastapi import HTTPException
 
-from runtime.manager.models import (
-    RuntimeFileReadResponse,
-    RuntimeSessionState,
-    WorkerHealthResponse,
-    WorkerSessionResponse,
-    WorkerStartSessionRequest,
+from runtime.manager.models import (RuntimeFileReadResponse,
+                                    RuntimeSessionState, WorkerHealthResponse,
+                                    WorkerSessionResponse,
+                                    WorkerStartSessionRequest)
+
+_PORT_PATTERNS = (
+    re.compile(r"(?:^|\s)--port(?:=|\s+)(\d{2,5})(?:\s|$)"),
+    re.compile(r"(?:^|\s)-p\s+(\d{2,5})(?:\s|$)"),
+    re.compile(r"(?:^|\s)PORT=(\d{2,5})(?:\s|$)"),
 )
+_COMMAND_TOKEN_PATTERNS = {
+    "npx": re.compile(r"(?:^|\s)npx(?:\s|$)"),
+    "npm": re.compile(r"(?:^|\s)npm(?:\s|$)"),
+}
+_WORKSPACE_BOOTSTRAP_GUIDANCE = (
+    "Initialize the workspace with required runtime dependencies "
+    "(for example a package manager install step) or update "
+    ".ragtime/runtime-entrypoint.json to use executables available in this runtime image."
+)
+_RUNTIME_BOOTSTRAP_CONFIG_PATH = ".ragtime/runtime-bootstrap.json"
+_RUNTIME_BOOTSTRAP_STAMP_PATH = ".ragtime/.runtime-bootstrap.done"
 
 
 @dataclass
@@ -55,7 +71,10 @@ class WorkerService:
         ).resolve()
         self._devserver_processes: dict[str, asyncio.subprocess.Process] = {}
         self._devserver_start_timeout_seconds = int(
-            os.getenv("RUNTIME_DEVSERVER_START_TIMEOUT_SECONDS", "25")
+            os.getenv("RUNTIME_DEVSERVER_START_TIMEOUT_SECONDS", "90")
+        )
+        self._runtime_bootstrap_timeout_seconds = int(
+            os.getenv("RUNTIME_BOOTSTRAP_TIMEOUT_SECONDS", "180")
         )
         self._runtime_config_file = ".ragtime/runtime-entrypoint.json"
 
@@ -141,6 +160,144 @@ class WorkerService:
             "framework": framework,
         }
 
+    def _read_runtime_bootstrap_config(self, workspace_root: Path) -> list[dict[str, str]]:
+        config_path = workspace_root / _RUNTIME_BOOTSTRAP_CONFIG_PATH
+        if not config_path.exists() or not config_path.is_file():
+            return []
+        try:
+            raw = json.loads(config_path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        if not isinstance(raw, dict):
+            return []
+        commands = raw.get("commands")
+        if not isinstance(commands, list):
+            return []
+        normalized: list[dict[str, str]] = []
+        for item in commands:
+            if not isinstance(item, dict):
+                continue
+            run = str(item.get("run") or "").strip()
+            if not run:
+                continue
+            normalized.append(
+                {
+                    "name": str(item.get("name") or "").strip(),
+                    "run": run,
+                    "when_exists": str(item.get("when_exists") or "").strip(),
+                    "unless_exists": str(item.get("unless_exists") or "").strip(),
+                    "cwd": str(item.get("cwd") or ".").strip(),
+                }
+            )
+        return normalized
+
+    def _runtime_bootstrap_config_digest(self, workspace_root: Path) -> str | None:
+        config_path = workspace_root / _RUNTIME_BOOTSTRAP_CONFIG_PATH
+        if not config_path.exists() or not config_path.is_file():
+            return None
+        try:
+            payload = config_path.read_bytes()
+        except Exception:
+            return None
+        if not payload:
+            return None
+        return hashlib.sha256(payload).hexdigest()
+
+    def _resolve_bootstrap_relative_path(
+        self,
+        workspace_root: Path,
+        relative_path: str,
+    ) -> Path | None:
+        normalized = (relative_path or "").strip().replace("\\", "/")
+        if not normalized or normalized in {".", "./"}:
+            return workspace_root
+        candidate = Path(normalized)
+        if candidate.is_absolute() or any(part == ".." for part in candidate.parts):
+            return None
+        return workspace_root / candidate
+
+    async def _run_workspace_bootstrap_if_needed(
+        self,
+        session: WorkerSession,
+    ) -> str | None:
+        workspace_root = session.workspace_root
+        stamp_path = workspace_root / _RUNTIME_BOOTSTRAP_STAMP_PATH
+        config_digest = self._runtime_bootstrap_config_digest(workspace_root)
+        existing_digest = ""
+        if stamp_path.exists() and stamp_path.is_file():
+            try:
+                existing_digest = stamp_path.read_text(encoding="utf-8").strip()
+            except Exception:
+                existing_digest = ""
+            if config_digest and existing_digest == config_digest:
+                return None
+            if not config_digest and existing_digest:
+                return None
+
+        commands = self._read_runtime_bootstrap_config(workspace_root)
+        if not commands:
+            return None
+
+        for command_cfg in commands:
+            when_exists = command_cfg.get("when_exists", "")
+            unless_exists = command_cfg.get("unless_exists", "")
+            cwd_value = command_cfg.get("cwd", ".")
+            command_name = command_cfg.get("name") or "bootstrap"
+            run = command_cfg.get("run", "")
+
+            when_path = self._resolve_bootstrap_relative_path(workspace_root, when_exists)
+            unless_path = self._resolve_bootstrap_relative_path(
+                workspace_root,
+                unless_exists,
+            )
+            cwd_path = self._resolve_bootstrap_relative_path(workspace_root, cwd_value)
+
+            if cwd_path is None:
+                return (
+                    "Runtime bootstrap config has invalid cwd path. "
+                    "Use workspace-relative paths only."
+                )
+            if when_exists and (when_path is None or not when_path.exists()):
+                continue
+            if unless_exists and unless_path is not None and unless_path.exists():
+                continue
+
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    "sh",
+                    "-lc",
+                    run,
+                    cwd=str(cwd_path),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    process.communicate(),
+                    timeout=self._runtime_bootstrap_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                return (
+                    f"Runtime bootstrap command '{command_name}' timed out after "
+                    f"{self._runtime_bootstrap_timeout_seconds}s."
+                )
+            except Exception as exc:
+                return f"Runtime bootstrap command '{command_name}' failed to launch: {exc}"
+
+            returncode = process.returncode or 0
+            if returncode != 0:
+                stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+                stdout_text = stdout_bytes.decode("utf-8", errors="replace").strip()
+                output = stderr_text or stdout_text or "unknown error"
+                return (
+                    f"Runtime bootstrap command '{command_name}' failed with code {returncode}: "
+                    f"{output[:300]}. {_WORKSPACE_BOOTSTRAP_GUIDANCE}"
+                )
+
+        stamp_path.parent.mkdir(parents=True, exist_ok=True)
+        stamp_value = config_digest or self._utc_now().isoformat()
+        stamp_path.write_text(stamp_value, encoding="utf-8")
+        return None
+
     def _resolve_python_launch(
         self,
         workspace_root: Path,
@@ -196,25 +353,89 @@ class WorkerService:
 
         return (None, None, None)
 
+    def _index_requires_typescript_runtime(self, workspace_root: Path) -> bool:
+        index_html = workspace_root / "index.html"
+        if not index_html.exists() or not index_html.is_file():
+            return False
+        try:
+            content = index_html.read_text(encoding="utf-8")
+        except Exception:
+            return False
+        script_src_pattern = re.compile(
+            r"<script[^>]+src=[\"'][^\"']+\.(ts|tsx)(\?[^\"']*)?[\"']",
+            re.IGNORECASE,
+        )
+        module_import_pattern = re.compile(
+            r"import\s+[^;]*['\"][^'\"]+\.(ts|tsx)(\?[^'\"]*)?['\"]",
+            re.IGNORECASE,
+        )
+        return bool(
+            script_src_pattern.search(content) or module_import_pattern.search(content)
+        )
+
+    def _extract_explicit_port(self, command: str) -> int | None:
+        for pattern in _PORT_PATTERNS:
+            match = pattern.search(command)
+            if not match:
+                continue
+            try:
+                candidate = int(match.group(1))
+            except (TypeError, ValueError):
+                continue
+            if 1 <= candidate <= 65535:
+                return candidate
+        return None
+
+    def _command_uses_tool(self, command: str, tool: str) -> bool:
+        pattern = _COMMAND_TOKEN_PATTERNS.get(tool)
+        if not pattern:
+            return False
+        return bool(pattern.search(command))
+
+    def _missing_tool_error(self, tool: str) -> str:
+        return (
+            f"Runtime entrypoint uses '{tool}' but it is not installed in this isolated runtime container. "
+            f"{_WORKSPACE_BOOTSTRAP_GUIDANCE}"
+        )
+
     def _resolve_devserver_command(
         self,
         workspace_root: Path,
         port: int,
-    ) -> tuple[list[str] | None, str | None, str | None, str | None]:
+    ) -> tuple[list[str] | None, str | None, str | None, str | None, int | None]:
         config = self._read_runtime_entrypoint_config(workspace_root)
         config_command = config.get("command", "")
         if config_command:
             config_cwd = config.get("cwd") or "."
             config_framework = config.get("framework") or "custom"
+            configured_port = self._extract_explicit_port(config_command)
+            effective_port = configured_port or port
+            if self._command_uses_tool(config_command, "npx") and not shutil.which("npx"):
+                return (
+                    None,
+                    self._missing_tool_error("npx"),
+                    config_framework,
+                    config_cwd,
+                    effective_port,
+                )
+            if self._command_uses_tool(config_command, "npm") and not shutil.which("npm"):
+                return (
+                    None,
+                    self._missing_tool_error("npm"),
+                    config_framework,
+                    config_cwd,
+                    effective_port,
+                )
             return (
                 [
                     "sh",
                     "-lc",
-                    f"PORT={port} {config_command}",
+                    f"PORT={effective_port} {config_command}",
                 ],
                 None,
                 config_framework,
                 config_cwd,
+                effective_port,
             )
 
         package_json = workspace_root / "package.json"
@@ -235,6 +456,21 @@ class WorkerService:
                     None,
                     "node",
                     ".",
+                    port,
+                )
+            if self._index_requires_typescript_runtime(workspace_root):
+                return (
+                    None,
+                    (
+                        "This workspace references TypeScript modules in index.html "
+                        "but npm is unavailable in the isolated runtime container, so "
+                        "no transpilation can occur. Add a runtime entrypoint that builds/serves JS, "
+                        "or use JavaScript assets for static preview. "
+                        f"{_WORKSPACE_BOOTSTRAP_GUIDANCE}"
+                    ),
+                    None,
+                    None,
+                    None,
                 )
 
         python_command, python_framework, python_cwd = self._resolve_python_launch(
@@ -247,6 +483,7 @@ class WorkerService:
                 None,
                 python_framework,
                 python_cwd,
+                port,
             )
 
         index_html = workspace_root / "index.html"
@@ -265,6 +502,7 @@ class WorkerService:
                 None,
                 "static",
                 ".",
+                port,
             )
 
         return (
@@ -272,8 +510,10 @@ class WorkerService:
             (
                 "No runnable web entrypoint found. Add .ragtime/runtime-entrypoint.json "
                 "with a command/cwd or provide package.json dev script, Python app.py/main.py, or index.html. "
-                "If package.json exists, ensure npm is installed in the runtime environment."
+                "If package.json exists, ensure npm is installed in the runtime environment. "
+                f"{_WORKSPACE_BOOTSTRAP_GUIDANCE}"
             ),
+            None,
             None,
             None,
         )
@@ -327,19 +567,33 @@ class WorkerService:
         if session.devserver_running:
             return
 
+        bootstrap_error = await self._run_workspace_bootstrap_if_needed(session)
+        if bootstrap_error:
+            session.devserver_running = False
+            session.last_error = bootstrap_error
+            session.updated_at = self._utc_now()
+            return
+
         port = session.devserver_port or self._pick_free_port()
-        command, command_error, framework, launch_cwd = self._resolve_devserver_command(
-            session.workspace_root, port
-        )
-        session.devserver_port = port
+        (
+            command,
+            command_error,
+            framework,
+            launch_cwd,
+            resolved_port,
+        ) = self._resolve_devserver_command(session.workspace_root, port)
         session.launch_framework = framework
         session.launch_cwd = launch_cwd
 
         if not command:
+            session.devserver_port = resolved_port
+            session.devserver_command = None
             session.devserver_running = False
             session.last_error = command_error
             session.updated_at = self._utc_now()
             return
+
+        session.devserver_port = resolved_port or port
 
         await self._terminate_devserver_locked(session.id)
         try:
@@ -354,7 +608,8 @@ class WorkerService:
             session.last_error = (
                 "Dev server command not found: "
                 f"{command[0]}. Install the required runtime dependency or "
-                "set .ragtime/runtime-entrypoint.json command to an available executable."
+                "set .ragtime/runtime-entrypoint.json command to an available executable. "
+                f"{_WORKSPACE_BOOTSTRAP_GUIDANCE}"
             )
             session.updated_at = self._utc_now()
             return
@@ -366,11 +621,18 @@ class WorkerService:
         self._devserver_processes[session.id] = process
         session.devserver_command = command
 
-        ready = await self._wait_devserver_ready(port)
+        ready = await self._wait_devserver_ready(session.devserver_port)
         if not ready:
+            await self._sync_devserver_state_locked(session)
             await self._terminate_devserver_locked(session.id)
             session.devserver_running = False
-            session.last_error = "Dev server failed to become ready"
+            if not session.last_error:
+                session.last_error = (
+                    "Dev server failed to become ready on "
+                    f"port {session.devserver_port} within "
+                    f"{self._devserver_start_timeout_seconds}s. "
+                    "Ensure the runtime-entrypoint command serves HTTP on PORT."
+                )
             session.updated_at = self._utc_now()
             return
 

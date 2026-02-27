@@ -74,9 +74,19 @@ class Settings(BaseSettings):
         description="Base URL for external runtime manager API",
     )
     userspace_runtime_manager_timeout_seconds: float = Field(
-        default=5.0,
+        default=60.0,
         alias="RUNTIME_MANAGER_TIMEOUT_SECONDS",
         description="Timeout in seconds for runtime manager HTTP requests",
+    )
+    userspace_runtime_manager_retry_attempts: int = Field(
+        default=3,
+        alias="RUNTIME_MANAGER_RETRY_ATTEMPTS",
+        description="Retry attempts for runtime manager HTTP requests",
+    )
+    userspace_runtime_manager_retry_delay_seconds: float = Field(
+        default=0.2,
+        alias="RUNTIME_MANAGER_RETRY_DELAY_SECONDS",
+        description="Base retry delay in seconds for runtime manager HTTP requests",
     )
     userspace_runtime_manager_auth_token: str = Field(
         default="",

@@ -60,7 +60,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # Copy frontend package.json for npm install layer caching
 COPY ragtime/frontend/package.json ragtime/frontend/package-lock.json* /ragtime/ragtime/frontend/
-RUN cd /ragtime/ragtime/frontend && npm ci --loglevel=error
+RUN cd /ragtime/ragtime/frontend \
+    && npm ci --loglevel=error \
+    && npx playwright install --with-deps chromium
 
 # Copy entrypoint and scripts
 COPY docker/entrypoint.sh /entrypoint.sh

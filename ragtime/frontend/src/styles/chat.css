@@ -939,6 +939,16 @@
   overflow: visible;
 }
 
+/* Content-driven auto-resize: smooth grow, fast shrink */
+.chat-input-area.auto-resizing {
+  transition: height 150ms ease-in-out, min-height 150ms ease-in-out;
+}
+
+.chat-input-area.auto-resizing.shrinking,
+.chat-input-area.auto-resizing.shrinking .chat-input {
+  transition-duration: 60ms;
+}
+
 .chat-readonly-note {
   font-size: var(--text-xs);
   color: var(--color-text-secondary);
@@ -985,6 +995,10 @@
   overflow-x: hidden;
   scrollbar-width: thin;
   scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}
+
+.chat-input-area.auto-resizing .chat-input {
+  transition: height 150ms ease-in-out;
 }
 
 /* Webkit scrollbar styling */

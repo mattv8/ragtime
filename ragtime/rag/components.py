@@ -101,6 +101,11 @@ logger = get_logger(__name__)
 # AI can request up to this limit; configured per-tool timeout is the default
 MAX_TOOL_TIMEOUT_SECONDS = 300
 
+# User Space screenshot caps to keep vision payloads useful but bounded.
+MAX_USERSPACE_SCREENSHOT_WIDTH = 1600
+MAX_USERSPACE_SCREENSHOT_HEIGHT = 1200
+MAX_USERSPACE_SCREENSHOT_PIXELS = 1_440_000
+
 
 def resolve_effective_timeout(requested_timeout: int, timeout_max_seconds: int) -> int:
     """Resolve runtime timeout using per-tool max (0 = unlimited)."""
@@ -1024,6 +1029,7 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Persist implementation as files, not only chat text.
 - Prefer TypeScript modules for interactive reports and dashboards.
 - Build one cohesive frontend app with `dashboard/main.ts` as the fixed entry artifact.
+- If `dashboard/main.ts` exists, treat it as the authoritative app entrypoint for feature work. Do not implement dashboard behavior changes in `index.html` unless the user explicitly asks to edit `index.html`.
 - For any request to create/build/update a report, dashboard, or frontend, you MUST write/update workspace files via `upsert_userspace_file` before finalizing.
 - Do not end with chat-only guidance when the user asked for implementation; persist a runnable scaffold first, then describe blockers.
 - Do not keep all logic in `dashboard/main.ts` once complexity grows.
@@ -4739,10 +4745,137 @@ except Exception as e:
                 description="Brief description of why code validation is needed",
             )
 
+        class CaptureUserSpaceScreenshotInput(BaseModel):
+            path: str = Field(
+                default="",
+                description=(
+                    "Optional preview subpath to capture (for example: dashboard or reports/sales). "
+                    "Default captures the preview root."
+                ),
+            )
+            width: int = Field(
+                default=1440,
+                ge=320,
+                le=MAX_USERSPACE_SCREENSHOT_WIDTH,
+                description=(
+                    "Viewport width in pixels. Hard-capped for AI-friendly screenshot size."
+                ),
+            )
+            height: int = Field(
+                default=900,
+                ge=240,
+                le=MAX_USERSPACE_SCREENSHOT_HEIGHT,
+                description=(
+                    "Viewport height in pixels. Hard-capped for AI-friendly screenshot size."
+                ),
+            )
+            full_page: bool = Field(
+                default=True,
+                description="Capture full page when true; viewport only when false.",
+            )
+            timeout_ms: int = Field(
+                default=25000,
+                ge=3000,
+                le=120000,
+                description="Navigation and screenshot timeout in milliseconds.",
+            )
+            wait_for_selector: str = Field(
+                default="body",
+                description=(
+                    "Selector that should be visible before capture. "
+                    "Use a stable app-root selector when possible."
+                ),
+            )
+            wait_after_load_ms: int = Field(
+                default=900,
+                ge=0,
+                le=15000,
+                description="Additional post-render delay before screenshot capture.",
+            )
+            refresh_before_capture: bool = Field(
+                default=True,
+                description="Reload once after initial load to reduce stale render races.",
+            )
+            filename: str | None = Field(
+                default=None,
+                description=(
+                    "Optional output filename ('.png' added automatically if missing). "
+                    "Stored under ./.data/_tmp/{workspace_id}/."
+                ),
+            )
+            reason: str = Field(
+                default="",
+                description="Brief description of why the screenshot is needed",
+            )
+
         async def list_userspace_files(reason: str = "", **_: Any) -> str:
             del reason
             files = await userspace_service.list_workspace_files(workspace_id, user_id)
             return json.dumps([f.model_dump(mode="json") for f in files], indent=2)
+
+        def _compute_workspace_mode(
+            file_paths: set[str],
+        ) -> tuple[str, str, str | None]:
+            if "dashboard/main.ts" in file_paths:
+                return (
+                    "module_dashboard",
+                    "dashboard/main.ts is present and is the authoritative module entrypoint.",
+                    "dashboard/main.ts",
+                )
+
+            if ".ragtime/runtime-entrypoint.json" in file_paths:
+                return (
+                    "custom_entrypoint",
+                    ".ragtime/runtime-entrypoint.json exists and can override runtime launch behavior.",
+                    ".ragtime/runtime-entrypoint.json",
+                )
+
+            if "package.json" in file_paths:
+                return (
+                    "node_app",
+                    "package.json exists; runtime typically resolves launch via npm dev script.",
+                    "package.json",
+                )
+
+            for python_entry in ("manage.py", "main.py", "app.py"):
+                if python_entry in file_paths:
+                    return (
+                        "python_app",
+                        f"{python_entry} exists and can serve as a Python runtime entrypoint.",
+                        python_entry,
+                    )
+
+            if "index.html" in file_paths:
+                return (
+                    "static_html",
+                    "index.html exists without dashboard/main.ts.",
+                    "index.html",
+                )
+
+            return (
+                "unknown",
+                "No recognized web entrypoint files detected in workspace.",
+                None,
+            )
+
+        async def _get_workspace_structure() -> dict[str, Any]:
+            files = await userspace_service.list_workspace_files(workspace_id, user_id)
+            file_paths = {file.path for file in files}
+            workspace_mode, workspace_mode_reason, authoritative_entrypoint = (
+                _compute_workspace_mode(file_paths)
+            )
+            return {
+                "files": files,
+                "workspace_mode": workspace_mode,
+                "workspace_mode_reason": workspace_mode_reason,
+                "authoritative_entrypoint": authoritative_entrypoint,
+                "has_dashboard_entry": "dashboard/main.ts" in file_paths,
+                "has_index_html": "index.html" in file_paths,
+            }
+
+        def _is_index_html_path(path: str) -> bool:
+            normalized = (path or "").strip().replace("\\", "/").lstrip("/")
+            return normalized.lower() == "index.html"
 
         async def assay_userspace_code(
             max_files: int = 12,
@@ -4755,7 +4888,13 @@ except Exception as e:
                 workspace_id, user_id, "editor"
             )
 
-            files = await userspace_service.list_workspace_files(workspace_id, user_id)
+            structure = await _get_workspace_structure()
+            files = structure["files"]
+            has_dashboard_entry = bool(structure["has_dashboard_entry"])
+            has_index_html = bool(structure["has_index_html"])
+            workspace_mode = str(structure["workspace_mode"])
+            workspace_mode_reason = str(structure["workspace_mode_reason"])
+            authoritative_entrypoint = structure["authoritative_entrypoint"]
 
             dashboard_paths = sorted(
                 [file.path for file in files if file.path.startswith("dashboard/")]
@@ -4798,24 +4937,42 @@ except Exception as e:
                     "dashboard_file_count": len(
                         [file for file in files if file.path.startswith("dashboard/")]
                     ),
-                    "has_dashboard_entry": any(
-                        file.path == "dashboard/main.ts" for file in files
-                    ),
+                    "has_dashboard_entry": has_dashboard_entry,
                     "inspected_file_count": len(inspected),
+                },
+                "structure": {
+                    "workspace_mode": workspace_mode,
+                    "workspace_mode_reason": workspace_mode_reason,
+                    "authoritative_entrypoint": authoritative_entrypoint,
+                    "has_dashboard_entry": has_dashboard_entry,
+                    "has_index_html": has_index_html,
                 },
                 "inspected_files": inspected,
                 "next_step": (
                     "Read target files in full before overwrite, then update files and validate TypeScript."
+                ),
+                "editing_guidance": (
+                    "When dashboard/main.ts exists, implement dashboard feature changes in dashboard/* files and avoid index.html edits for behavior changes."
                 ),
             }
             return json.dumps(assay, indent=2)
 
         async def read_userspace_file(path: str, reason: str = "", **_: Any) -> str:
             del reason
+            normalized_path = (path or "").strip().replace("\\", "/").lstrip("/")
             file_data = await userspace_service.get_workspace_file(
-                workspace_id, path, user_id
+                workspace_id, normalized_path, user_id
             )
-            return json.dumps(file_data.model_dump(mode="json"), indent=2)
+            payload = file_data.model_dump(mode="json")
+            structure = await _get_workspace_structure()
+            if (
+                _is_index_html_path(normalized_path)
+                and structure["workspace_mode"] == "module_dashboard"
+            ):
+                payload["warning"] = (
+                    "This workspace has dashboard/main.ts. For dashboard behavior changes, edit dashboard/* files (especially dashboard/main.ts and imported modules) instead of index.html."
+                )
+            return json.dumps(payload, indent=2)
 
         async def patch_userspace_file(
             path: str = "dashboard/main.ts",
@@ -4831,6 +4988,16 @@ except Exception as e:
             normalized_path = (path or "").strip().replace("\\", "/").lstrip("/")
             if not normalized_path:
                 raise ToolException("Invalid path: path is required.")
+
+            structure = await _get_workspace_structure()
+            if (
+                _is_index_html_path(normalized_path)
+                and structure["workspace_mode"] == "module_dashboard"
+            ):
+                raise ToolException(
+                    "STRUCTURE GUARDRAIL: This workspace uses dashboard/main.ts as the module entrypoint. "
+                    "Patch dashboard/* files for feature or behavior updates. index.html edits are blocked to avoid no-op changes."
+                )
 
             file_data = await userspace_service.get_workspace_file(
                 workspace_id, normalized_path, user_id
@@ -5003,6 +5170,16 @@ except Exception as e:
             hard_errors: list[str] = []
             lower_path = (path or "").lower()
             normalized_path = lower_path.replace("\\", "/")
+
+            structure = await _get_workspace_structure()
+            if (
+                _is_index_html_path(path)
+                and structure["workspace_mode"] == "module_dashboard"
+            ):
+                raise ToolException(
+                    "STRUCTURE GUARDRAIL: This workspace uses dashboard/main.ts as the module entrypoint. "
+                    "Use upsert_userspace_file on dashboard/* files for feature changes; index.html writes are blocked to prevent ineffective updates."
+                )
 
             parsed_live_data_connections: list[UserSpaceLiveDataConnection] | None = (
                 None
@@ -5676,6 +5853,274 @@ except Exception as e:
             }
             return json.dumps(response_payload, indent=2)
 
+        async def capture_userspace_screenshot(
+            path: str = "",
+            width: int = 1440,
+            height: int = 900,
+            full_page: bool = True,
+            timeout_ms: int = 25000,
+            wait_for_selector: str = "body",
+            wait_after_load_ms: int = 900,
+            refresh_before_capture: bool = True,
+            filename: str | None = None,
+            reason: str = "",
+            **_: Any,
+        ) -> str:
+            del reason
+            await userspace_service.enforce_workspace_role(
+                workspace_id, user_id, "viewer"
+            )
+
+            requested_width = max(320, int(width))
+            requested_height = max(240, int(height))
+            width = min(requested_width, MAX_USERSPACE_SCREENSHOT_WIDTH)
+            height = min(requested_height, MAX_USERSPACE_SCREENSHOT_HEIGHT)
+
+            requested_pixels = width * height
+            if requested_pixels > MAX_USERSPACE_SCREENSHOT_PIXELS:
+                scale = (MAX_USERSPACE_SCREENSHOT_PIXELS / requested_pixels) ** 0.5
+                width = max(320, int(width * scale))
+                height = max(240, int(height * scale))
+
+            normalized_preview_path = (path or "").strip().lstrip("/")
+            upstream_url = (
+                await userspace_runtime_service.build_workspace_preview_upstream_url(
+                    workspace_id,
+                    user_id,
+                    normalized_preview_path,
+                )
+            )
+            cache_busted_url = (
+                f"{upstream_url}{'&' if '?' in upstream_url else '?'}"
+                f"_ragtime_screenshot_ts={int(time.time() * 1000)}"
+            )
+
+            index_data_root = Path(getattr(settings, "index_data_path", ".data"))
+            output_dir = index_data_root / "_tmp" / workspace_id
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            timestamp = int(time.time() * 1000)
+            if filename and str(filename).strip():
+                candidate = str(filename).strip().replace("\\", "/").split("/")[-1]
+            else:
+                path_slug = (
+                    normalized_preview_path.replace("/", "_").replace(" ", "_")
+                    or "root"
+                )
+                candidate = f"preview_{path_slug}_{timestamp}.png"
+
+            safe_candidate = re.sub(r"[^A-Za-z0-9._-]", "_", candidate)[:200]
+            if not safe_candidate:
+                safe_candidate = f"preview_{timestamp}.png"
+            if not safe_candidate.lower().endswith(".png"):
+                safe_candidate += ".png"
+
+            output_path = output_dir / safe_candidate
+
+            selector_value = (wait_for_selector or "").strip()
+            node_script = r"""
+const targetUrl = process.argv[1];
+const outputPath = process.argv[2];
+const viewportWidth = Number(process.argv[3] || 1440);
+const viewportHeight = Number(process.argv[4] || 900);
+const captureFullPage = (process.argv[5] || 'true') === 'true';
+const timeoutMs = Number(process.argv[6] || 25000);
+const waitForSelector = process.argv[7] || '';
+const waitAfterLoadMs = Number(process.argv[8] || 900);
+const refreshBeforeCapture = (process.argv[9] || 'true') === 'true';
+const maxPixels = Number(process.argv[10] || 1440000);
+
+let playwright;
+try {
+    playwright = require('/ragtime/ragtime/frontend/node_modules/playwright');
+} catch (_) {
+    playwright = require('playwright');
+}
+
+async function run() {
+    const browser = await playwright.chromium.launch({
+        headless: true,
+        args: ['--disable-dev-shm-usage'],
+    });
+
+    try {
+        const context = await browser.newContext({
+            viewport: { width: viewportWidth, height: viewportHeight },
+            deviceScaleFactor: 1,
+        });
+        const page = await context.newPage();
+        page.setDefaultTimeout(timeoutMs);
+
+        const initialResponse = await page.goto(targetUrl, {
+            waitUntil: 'domcontentloaded',
+            timeout: timeoutMs,
+        });
+
+        await page.waitForLoadState('networkidle', {
+            timeout: Math.min(timeoutMs, 8000),
+        }).catch(() => null);
+
+        if (refreshBeforeCapture) {
+            await page.reload({
+                waitUntil: 'domcontentloaded',
+                timeout: timeoutMs,
+            });
+            await page.waitForLoadState('networkidle', {
+                timeout: Math.min(timeoutMs, 8000),
+            }).catch(() => null);
+        }
+
+        if (waitForSelector) {
+            await page.waitForSelector(waitForSelector, {
+                state: 'visible',
+                timeout: Math.min(timeoutMs, 10000),
+            }).catch(() => null);
+        }
+
+        if (waitAfterLoadMs > 0) {
+            await page.waitForTimeout(waitAfterLoadMs);
+        }
+
+        const screenshotOptions = {
+            path: outputPath,
+            animations: 'disabled',
+        };
+
+        let effectiveWidth = viewportWidth;
+        let effectiveHeight = viewportHeight;
+        let effectiveFullPage = captureFullPage;
+
+        if (captureFullPage) {
+            const fullHeight = await page.evaluate(() => {
+                const bodyHeight = document.body ? document.body.scrollHeight : 0;
+                const docHeight = document.documentElement
+                    ? document.documentElement.scrollHeight
+                    : 0;
+                return Math.max(bodyHeight, docHeight, window.innerHeight || 0);
+            });
+
+            if (viewportWidth * fullHeight <= maxPixels) {
+                screenshotOptions.fullPage = true;
+                effectiveHeight = fullHeight;
+            } else {
+                effectiveFullPage = false;
+                const clipHeight = Math.max(240, Math.floor(maxPixels / Math.max(1, viewportWidth)));
+                screenshotOptions.clip = {
+                    x: 0,
+                    y: 0,
+                    width: viewportWidth,
+                    height: clipHeight,
+                };
+                effectiveHeight = clipHeight;
+            }
+        } else if (viewportWidth * viewportHeight > maxPixels) {
+            const scale = Math.sqrt(maxPixels / (viewportWidth * viewportHeight));
+            const clipWidth = Math.max(320, Math.floor(viewportWidth * scale));
+            const clipHeight = Math.max(240, Math.floor(viewportHeight * scale));
+            screenshotOptions.clip = {
+                x: 0,
+                y: 0,
+                width: clipWidth,
+                height: clipHeight,
+            };
+            effectiveWidth = clipWidth;
+            effectiveHeight = clipHeight;
+        }
+
+        await page.screenshot(screenshotOptions);
+
+        const title = await page.title().catch(() => '');
+        const htmlLength = await page
+            .content()
+            .then((html) => html.length)
+            .catch(() => null);
+
+        const output = {
+            ok: true,
+            status_code: initialResponse ? initialResponse.status() : null,
+            title,
+            html_length: htmlLength,
+            output_path: outputPath,
+            screenshot_url: targetUrl,
+            effective_width: effectiveWidth,
+            effective_height: effectiveHeight,
+            effective_full_page: effectiveFullPage,
+        };
+        process.stdout.write(JSON.stringify(output));
+    } finally {
+        await browser.close();
+    }
+}
+
+run().catch((error) => {
+    const message = error && error.message ? error.message : String(error);
+    process.stderr.write(message);
+    process.exit(1);
+});
+"""
+
+            process = await asyncio.create_subprocess_exec(
+                "node",
+                "-e",
+                node_script,
+                cache_busted_url,
+                str(output_path),
+                str(width),
+                str(height),
+                "true" if full_page else "false",
+                str(timeout_ms),
+                selector_value,
+                str(wait_after_load_ms),
+                "true" if refresh_before_capture else "false",
+                str(MAX_USERSPACE_SCREENSHOT_PIXELS),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+            stdout, stderr = await process.communicate()
+            stdout_text = stdout.decode("utf-8", errors="replace").strip()
+            stderr_text = stderr.decode("utf-8", errors="replace").strip()
+
+            if process.returncode != 0:
+                raise ToolException(
+                    "Screenshot capture failed. "
+                    "Ensure Playwright + Chromium are installed in the container. "
+                    f"Details: {stderr_text or stdout_text or 'unknown error'}"
+                )
+
+            parsed: dict[str, Any]
+            try:
+                parsed = json.loads(stdout_text) if stdout_text else {}
+            except json.JSONDecodeError:
+                parsed = {}
+
+            if not output_path.exists():
+                raise ToolException(
+                    "Screenshot capture reported success but no file was written. "
+                    f"Output path: {output_path}"
+                )
+
+            response_payload = {
+                "ok": True,
+                "workspace_id": workspace_id,
+                "preview_path": normalized_preview_path,
+                "screenshot_path": str(output_path),
+                "screenshot_size_bytes": output_path.stat().st_size,
+                "render": {
+                    "requested_width": requested_width,
+                    "requested_height": requested_height,
+                    "width": width,
+                    "height": height,
+                    "full_page": full_page,
+                    "max_pixels": MAX_USERSPACE_SCREENSHOT_PIXELS,
+                    "wait_for_selector": selector_value or None,
+                    "wait_after_load_ms": wait_after_load_ms,
+                    "refresh_before_capture": refresh_before_capture,
+                },
+                "probe": parsed,
+            }
+            return json.dumps(response_payload, indent=2)
+
         return [
             StructuredTool.from_function(
                 coroutine=assay_userspace_code,
@@ -5745,6 +6190,17 @@ except Exception as e:
                     "Use after edits and before creating snapshots."
                 ),
                 args_schema=ValidateUserSpaceCodeInput,
+            ),
+            StructuredTool.from_function(
+                coroutine=capture_userspace_screenshot,
+                name="capture_userspace_screenshot",
+                description=(
+                    "Capture a rendered screenshot of the live User Space preview using Playwright. "
+                    "Waits for load/refresh before capture to reduce race conditions and helps diagnose runtime errors "
+                    "(blank screen, crashes, broken layout). Saves PNG files under ./.data/_tmp/{workspace_id}/."
+                ),
+                args_schema=CaptureUserSpaceScreenshotInput,
+                handle_tool_error=True,
             ),
         ]
 

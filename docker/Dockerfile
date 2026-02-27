@@ -118,6 +118,12 @@ WORKDIR /ragtime
 COPY prisma/ /ragtime/prisma/
 RUN cd /ragtime && python -m prisma generate
 
+# Install frontend node modules for runtime tooling (Playwright screenshots)
+COPY ragtime/frontend/package.json ragtime/frontend/package-lock.json* /ragtime/ragtime/frontend/
+RUN cd /ragtime/ragtime/frontend \
+    && npm ci --loglevel=error \
+    && npx playwright install --with-deps chromium
+
 # Copy application code (includes indexer module)
 COPY ragtime/ /ragtime/ragtime/
 

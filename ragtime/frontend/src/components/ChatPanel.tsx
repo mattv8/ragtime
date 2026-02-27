@@ -1272,16 +1272,61 @@ export function ChatPanel({
     setInputAreaHeight(Math.max(MIN_INPUT_AREA_HEIGHT, prevInputAreaHeight.current || MIN_INPUT_AREA_HEIGHT));
   }, [MIN_INPUT_AREA_HEIGHT]);
 
-  // Auto-size textarea to fit content while filling resized input pane
-  useEffect(() => {
-    const textarea = inputRef.current;
-    if (textarea) {
-      textarea.style.height = '0px';
-      const scrollHeight = textarea.scrollHeight;
-      const wrapperHeight = textarea.parentElement?.clientHeight ?? 0;
-      textarea.style.height = Math.max(scrollHeight, wrapperHeight) + 'px';
+  // Grow/shrink the input area container to fit the textarea content.
+  // Measures scrollHeight with height temporarily collapsed to 0 so we get
+  // true intrinsic content height, independent of the flex container size.
+  const autoResizeInput = useCallback((el?: HTMLTextAreaElement | null) => {
+    const textarea = el ?? inputRef.current;
+    if (!textarea) return;
+
+    // Collapse to 0 so scrollHeight reports intrinsic content height,
+    // not the flex-inflated container height.
+    textarea.style.height = '0px';
+    const contentHeight = textarea.scrollHeight;
+    textarea.style.height = `${contentHeight}px`;
+
+    // Grow or shrink the container to fit.  The wrapper has padding/border
+    // that sit outside the textarea, so account for its overhead.
+    const wrapper = textarea.closest('.chat-input-area') as HTMLElement | null;
+    if (wrapper) {
+      const wrapperStyle = getComputedStyle(wrapper);
+      const verticalPadding = parseFloat(wrapperStyle.paddingTop) + parseFloat(wrapperStyle.paddingBottom);
+      const borderWidth = parseFloat(wrapperStyle.borderTopWidth) + parseFloat(wrapperStyle.borderBottomWidth);
+      const needed = contentHeight + verticalPadding + borderWidth;
+      const target = Math.max(MIN_INPUT_AREA_HEIGHT, Math.ceil(needed));
+
+      setInputAreaHeight((prev) => {
+        if (prev === target) return prev;
+        // Enable transition classes for content-driven resize only;
+        // these are removed after the transition so manual drag is unaffected.
+        const shrinking = target < prev;
+        wrapper.classList.add('auto-resizing');
+        wrapper.classList.toggle('shrinking', shrinking);
+
+        const cleanup = () => {
+          wrapper.classList.remove('auto-resizing', 'shrinking');
+          wrapper.removeEventListener('transitionend', cleanup);
+        };
+        wrapper.addEventListener('transitionend', cleanup, { once: true });
+        // Fallback removal in case transitionend doesn't fire
+        setTimeout(cleanup, shrinking ? 80 : 180);
+
+        return target;
+      });
     }
-  }, [inputValue, inputAreaHeight]);
+  }, [MIN_INPUT_AREA_HEIGHT]);
+
+  // Cover programmatic value changes: clearing after send, loading a conversation, etc.
+  useEffect(() => {
+    autoResizeInput();
+  }, [autoResizeInput, inputValue]);
+
+  // onChange handler: resize synchronously — e.target.scrollHeight is already
+  // correct for the new value (including pasted text) by the time onChange fires.
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setInputValue(e.target.value);
+    autoResizeInput(e.target);
+  }, [autoResizeInput]);
 
   useEffect(() => {
     if (!isWorkspaceConversationMenuOpen) return;
@@ -2946,7 +2991,7 @@ export function ChatPanel({
                 <textarea
                   ref={inputRef}
                   value={inputValue}
-                  onChange={(e) => setInputValue(e.target.value)}
+                  onChange={handleInputChange}
                   onKeyDown={handleKeyDown}
                   placeholder={readOnly ? effectiveReadOnlyMessage : 'Ask a question or paste an image (Ctrl+V)...'}
                   rows={1}

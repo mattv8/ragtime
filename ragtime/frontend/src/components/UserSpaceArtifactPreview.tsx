@@ -7,6 +7,8 @@ interface UserSpaceArtifactPreviewProps {
   workspaceFiles: Record<string, string>;
   liveDataConnections?: UserSpaceLiveDataConnection[];
   runtimePreviewUrl?: string;
+  runtimeAvailable?: boolean;
+  runtimeError?: string;
   previewInstanceKey?: string;
   workspaceId?: string;
   shareToken?: string;
@@ -18,6 +20,8 @@ interface UserSpaceArtifactPreviewProps {
 
 export function UserSpaceArtifactPreview({
   runtimePreviewUrl,
+  runtimeAvailable,
+  runtimeError,
   previewInstanceKey,
   onExecutionStateChange,
 }: UserSpaceArtifactPreviewProps) {
@@ -27,10 +31,13 @@ export function UserSpaceArtifactPreview({
 
   const unavailableMessage = useMemo(() => {
     if (runtimePreviewUrl) {
+      if (runtimeAvailable === false) {
+        return runtimeError || 'Runtime preview is unavailable. Start or restart the workspace runtime and try again.';
+      }
       return null;
     }
     return 'Runtime preview is not available. Start or restart the workspace runtime and try again.';
-  }, [runtimePreviewUrl]);
+  }, [runtimeError, runtimeAvailable, runtimePreviewUrl]);
 
   if (unavailableMessage) {
     return (
