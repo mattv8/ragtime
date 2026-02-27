@@ -919,6 +919,18 @@ class UserSpaceRuntimeService:
             and session.runtime_provider == self._runtime_provider_name()
             and session.state in {"starting", "running"}
         ):
+            # Re-read the DB row to guard against a concurrent stop_runtime_session
+            # that set the state to "stopped" after our initial read.
+            fresh_row = await self._get_active_session_row(workspace_id)
+            if not fresh_row:
+                return UserSpaceRuntimeStatusResponse(
+                    workspace_id=workspace_id,
+                    session_state="stopped",
+                    session_id=session.id,
+                    devserver_running=False,
+                    devserver_port=_RUNTIME_DEVSERVER_PORT,
+                    preview_url=f"/indexes/userspace/workspaces/{workspace_id}/preview/",
+                )
             logger.warning(
                 "Runtime provider status missing for workspace %s; auto-recovering session",
                 workspace_id,
@@ -950,15 +962,19 @@ class UserSpaceRuntimeService:
             last_error = delta.get("lastError", session.last_error)
 
             if delta:
-                delta["lastHeartbeatAt"] = self._utc_now()
-                db = await get_db()
-                model = self._runtime_session_model(db)
-                updated = await self._runtime_session_update_row(
-                    model,
-                    session.id,
-                    delta,
-                )
-                session = self._to_runtime_session(updated)
+                # Guard against a concurrent stop overwrite: only persist if the
+                # session is still active in DB.
+                fresh_check = await self._get_active_session_row(workspace_id)
+                if fresh_check and getattr(fresh_check, "id", None) == session.id:
+                    delta["lastHeartbeatAt"] = self._utc_now()
+                    db = await get_db()
+                    model = self._runtime_session_model(db)
+                    updated = await self._runtime_session_update_row(
+                        model,
+                        session.id,
+                        delta,
+                    )
+                    session = self._to_runtime_session(updated)
 
         base_url = self._resolve_preview_base_url(session)
 

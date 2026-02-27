@@ -102,7 +102,12 @@ def _to_websocket_url(http_url: str) -> str:
     )
 
 
-async def _proxy_websocket_request(websocket: WebSocket, upstream_url: str) -> None:
+async def _proxy_websocket_request(
+    websocket: WebSocket,
+    upstream_url: str,
+    *,
+    read_only: bool = False,
+) -> None:
     try:
         websockets_module = importlib.import_module("websockets")
     except Exception:
@@ -110,6 +115,18 @@ async def _proxy_websocket_request(websocket: WebSocket, upstream_url: str) -> N
         return
 
     await websocket.accept()
+
+    if read_only:
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "status",
+                    "read_only": True,
+                    "message": "Read-only terminal session",
+                }
+            )
+        )
+
     try:
         async with websockets_module.connect(upstream_url, max_size=None) as upstream:
 
@@ -121,6 +138,13 @@ async def _proxy_websocket_request(websocket: WebSocket, upstream_url: str) -> N
                         break
                     text = message.get("text")
                     data = message.get("bytes")
+                    if read_only and text is not None:
+                        try:
+                            payload = json.loads(text)
+                            if payload.get("type") == "input":
+                                continue
+                        except (json.JSONDecodeError, TypeError):
+                            pass
                     if text is not None:
                         await upstream.send(text)
                     elif data is not None:
@@ -354,26 +378,20 @@ async def runtime_pty(workspace_id: str, websocket: WebSocket):
     except HTTPException:
         can_write = False
 
-    if not can_write:
-        await websocket.accept()
-        await websocket.send_text(
-            json.dumps(
-                {
-                    "type": "status",
-                    "read_only": True,
-                    "message": "Read-only terminal session",
-                }
-            )
-        )
-        await websocket.close(code=1000)
-        return
-
     upstream_ws_url = (
         await userspace_runtime_service.build_workspace_pty_upstream_ws_url(
             workspace_id,
             user.id,
         )
     )
+    if not can_write:
+        await _proxy_websocket_request(
+            websocket,
+            upstream_ws_url,
+            read_only=True,
+        )
+        return
+
     await _proxy_websocket_request(websocket, upstream_ws_url)
 
 

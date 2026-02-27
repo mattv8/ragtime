@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, ExternalLink, File, History, Link2, Maximize2, Minimize2, Pencil, Plus, Save, Terminal, Trash2, Users, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, ExternalLink, File, History, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RotateCw, Save, Square, Terminal, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { Terminal as XTerm } from '@xterm/xterm';
@@ -107,7 +107,6 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const [collabVersion, setCollabVersion] = useState(0);
   const [collabPresenceCount, setCollabPresenceCount] = useState(0);
   const [collabReconnectNonce, setCollabReconnectNonce] = useState(0);
-  const [terminalConnected, setTerminalConnected] = useState(false);
   const [terminalReadOnly, setTerminalReadOnly] = useState(false);
   const [terminalReconnectNonce, setTerminalReconnectNonce] = useState(0);
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
@@ -300,10 +299,20 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
 
   const canEditWorkspace = activeWorkspaceRole === 'owner' || activeWorkspaceRole === 'editor';
   const isOwner = activeWorkspaceRole === 'owner';
-  const runtimeSessionState = runtimeStatus?.session_state ?? 'stopped';
-  const showStartRuntimeButton = runtimeSessionState === 'stopped' || runtimeSessionState === 'error';
-  const showRestartRuntimeButton = runtimeSessionState === 'running';
-  const showStopRuntimeButton = runtimeSessionState === 'running' || runtimeSessionState === 'starting';
+
+  // Derive effective runtime display state from session_state + devserver_running
+  const runtimeDisplayState = useMemo(() => {
+    if (!runtimeStatus) return 'stopped';
+    const { session_state, devserver_running, last_error } = runtimeStatus;
+    if (session_state === 'running' && !devserver_running) {
+      return last_error ? 'error' : 'starting';
+    }
+    return session_state;
+  }, [runtimeStatus]);
+
+  const showStartRuntimeButton = runtimeDisplayState === 'stopped' || runtimeDisplayState === 'error';
+  const showRestartRuntimeButton = runtimeDisplayState === 'running';
+  const showStopRuntimeButton = runtimeDisplayState === 'running' || runtimeDisplayState === 'starting';
 
   const formatUserLabel = useCallback((user?: Pick<User, 'username' | 'display_name'> | null, fallbackId?: string) => {
     const username = user?.username?.trim() || fallbackId?.trim() || 'unknown';
@@ -822,6 +831,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const handleStartRuntime = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
     setRuntimeBusy(true);
+    setRuntimeStatus((prev) => prev ? { ...prev, session_state: 'starting' } : prev);
     try {
       await api.startUserSpaceRuntimeSession(activeWorkspaceId);
       await refreshRuntimeStatus();
@@ -836,6 +846,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const handleStopRuntime = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
     setRuntimeBusy(true);
+    setRuntimeStatus((prev) => prev ? { ...prev, session_state: 'stopping' } : prev);
     try {
       await api.stopUserSpaceRuntimeSession(activeWorkspaceId);
       await refreshRuntimeStatus();
@@ -850,6 +861,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const handleRestartRuntime = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
     setRuntimeBusy(true);
+    setRuntimeStatus((prev) => prev ? { ...prev, session_state: 'starting' } : prev);
     try {
       await api.restartUserSpaceRuntimeDevserver(activeWorkspaceId);
       await refreshRuntimeStatus();
@@ -864,11 +876,14 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   useEffect(() => {
     void refreshRuntimeStatus();
     if (!activeWorkspaceId) return;
+    // Poll faster during transitional states (starting/stopping)
+    const isTransitional = runtimeDisplayState === 'starting' || runtimeDisplayState === 'stopping';
+    const interval = isTransitional ? 2000 : 10000;
     const timer = window.setInterval(() => {
       void refreshRuntimeStatus();
-    }, 10000);
+    }, interval);
     return () => window.clearInterval(timer);
-  }, [activeWorkspaceId, refreshRuntimeStatus]);
+  }, [activeWorkspaceId, refreshRuntimeStatus, runtimeDisplayState]);
 
   useEffect(() => {
     if (collabReconnectTimerRef.current !== null) {
@@ -1008,11 +1023,10 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     terminalFitRef.current = null;
     terminalRef.current?.dispose();
     terminalRef.current = null;
-    setTerminalConnected(false);
-    setTerminalReadOnly(false);
-    terminalReadOnlyRef.current = false;
+    setTerminalReadOnly(!canEditWorkspace);
+    terminalReadOnlyRef.current = !canEditWorkspace;
 
-    if (activeRightTab !== 'console' || !activeWorkspaceId || !canEditWorkspace) {
+    if (activeRightTab !== 'console' || !activeWorkspaceId) {
       return;
     }
 
@@ -1033,10 +1047,11 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     }
 
     const fitAddon = new FitAddon();
+    const isReadOnlyInitial = !canEditWorkspace;
     const terminal = new XTerm({
       convertEol: true,
-      cursorBlink: true,
-      disableStdin: false,
+      cursorBlink: !isReadOnlyInitial,
+      disableStdin: isReadOnlyInitial,
       fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)',
       fontSize: 12,
     });
@@ -1077,7 +1092,6 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     });
 
     socket.onopen = () => {
-      setTerminalConnected(true);
       terminal.clear();
       if (terminalReconnectTimerRef.current !== null) {
         window.clearTimeout(terminalReconnectTimerRef.current);
@@ -1112,12 +1126,10 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     };
 
     socket.onclose = () => {
-      setTerminalConnected(false);
       scheduleReconnect();
     };
 
     socket.onerror = () => {
-      setTerminalConnected(false);
       scheduleReconnect();
     };
 
@@ -2054,21 +2066,76 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
               </span>
             )}
             {activeWorkspace && (
-              <span className="userspace-role-badge">
+              <span className="userspace-status-pill userspace-status-pill-info">
                 {activeWorkspaceRole}{!canEditWorkspace ? ' (read-only)' : ''}
               </span>
             )}
             {activeWorkspaceId && (
-              <span className="userspace-role-badge" title="Collaborative editor connection state">
-                {collabConnected ? `collab v${collabVersion} (${collabPresenceCount})` : 'collab offline'}
+              <span
+                className={`userspace-status-pill ${collabConnected ? 'userspace-status-pill-success' : 'userspace-status-pill-muted'}`}
+                title="Collaborative editor connection state"
+              >
+                {collabConnected ? `collab (${collabPresenceCount})` : 'collab offline'}
               </span>
             )}
             {runtimeStatus && (
-              <span className="userspace-role-badge" title="Workspace runtime session state">
-                runtime: {runtimeStatus.session_state}
+              <span
+                className={`userspace-status-pill ${
+                  runtimeDisplayState === 'running'
+                    ? 'userspace-status-pill-success'
+                    : runtimeDisplayState === 'starting' || runtimeDisplayState === 'stopping'
+                      ? 'userspace-status-pill-warning'
+                      : runtimeDisplayState === 'error' || runtimeDisplayState === 'stopped'
+                        ? 'userspace-status-pill-danger'
+                        : 'userspace-status-pill-muted'
+                }`}
+                title={runtimeStatus.last_error || 'Workspace runtime session state'}
+              >
+                {runtimeDisplayState}
               </span>
             )}
           </div>
+
+          {activeWorkspaceId && (
+            <div className="userspace-toolbar-tabs" role="tablist" aria-label="Right pane tabs">
+              <button
+                className={`userspace-toolbar-tab ${activeRightTab === 'preview' ? 'active' : ''}`}
+                onClick={() => setActiveRightTab('preview')}
+                role="tab"
+                aria-selected={activeRightTab === 'preview'}
+              >
+                Preview
+              </button>
+              <button
+                className={`userspace-toolbar-tab ${activeRightTab === 'console' ? 'active' : ''}`}
+                onClick={() => setActiveRightTab('console')}
+                role="tab"
+                aria-selected={activeRightTab === 'console'}
+              >
+                <Terminal size={13} /> Console
+              </button>
+            </div>
+          )}
+
+          {canEditWorkspace && activeWorkspaceId && (
+            <div className="userspace-toolbar-runtime-controls">
+              {showStartRuntimeButton && (
+                <button className="btn btn-secondary btn-sm btn-icon" onClick={handleStartRuntime} disabled={runtimeBusy} title="Start runtime">
+                  <Play size={14} />
+                </button>
+              )}
+              {showRestartRuntimeButton && (
+                <button className="btn btn-secondary btn-sm btn-icon" onClick={handleRestartRuntime} disabled={runtimeBusy} title="Restart runtime">
+                  <RotateCw size={14} />
+                </button>
+              )}
+              {showStopRuntimeButton && (
+                <button className="btn btn-secondary btn-sm btn-icon" onClick={handleStopRuntime} disabled={runtimeBusy} title="Stop runtime">
+                  <Square size={14} />
+                </button>
+              )}
+            </div>
+          )}
 
           <div className="userspace-toolbar-actions" aria-label="Workspace sharing actions">
             <button
@@ -2263,40 +2330,6 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
         {/* Right pane */}
         {!rightPaneCollapsed && (
         <div className="userspace-right-pane">
-          <div className="userspace-toolbar-actions" style={{ justifyContent: 'space-between', padding: '6px 8px' }}>
-            <div className="userspace-toolbar-actions" role="tablist" aria-label="User Space right pane tabs">
-              <button
-                className={`btn btn-secondary btn-sm ${activeRightTab === 'preview' ? 'active' : ''}`}
-                onClick={() => setActiveRightTab('preview')}
-                role="tab"
-                aria-selected={activeRightTab === 'preview'}
-              >
-                Preview
-              </button>
-              <button
-                className={`btn btn-secondary btn-sm ${activeRightTab === 'console' ? 'active' : ''}`}
-                onClick={() => setActiveRightTab('console')}
-                role="tab"
-                aria-selected={activeRightTab === 'console'}
-              >
-                <Terminal size={13} /> Console
-              </button>
-            </div>
-            {canEditWorkspace && activeWorkspaceId && (
-              <div className="userspace-toolbar-actions">
-                {showStartRuntimeButton && (
-                  <button className="btn btn-secondary btn-sm" onClick={handleStartRuntime} disabled={runtimeBusy}>Start</button>
-                )}
-                {showRestartRuntimeButton && (
-                  <button className="btn btn-secondary btn-sm" onClick={handleRestartRuntime} disabled={runtimeBusy}>Restart</button>
-                )}
-                {showStopRuntimeButton && (
-                  <button className="btn btn-secondary btn-sm" onClick={handleStopRuntime} disabled={runtimeBusy}>Stop</button>
-                )}
-              </div>
-            )}
-          </div>
-
           {activeRightTab === 'preview' ? (
             <div className="userspace-preview-section">
               <UserSpaceArtifactPreview
@@ -2317,40 +2350,14 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
             </div>
           ) : (
             <div className="userspace-preview-section" style={{ padding: 12 }}>
-              <div className="userspace-snapshot-item" style={{ marginBottom: 8 }}>
-                <div className="userspace-snapshot-info">
-                  <strong>Runtime state</strong>
-                  <span className="userspace-muted">{runtimeStatus?.session_state ?? 'stopped'}</span>
-                </div>
-              </div>
-              <div className="userspace-snapshot-item" style={{ marginBottom: 8 }}>
-                <div className="userspace-snapshot-info">
-                  <strong>Dev server</strong>
-                  <span className="userspace-muted">
-                    {runtimeStatus?.devserver_running ? `running on :${runtimeStatus.devserver_port}` : 'not running'}
-                  </span>
-                </div>
-              </div>
-              {!runtimeStatus?.devserver_running && runtimeStatus?.last_error && (
+              {runtimeStatus?.last_error && (
                 <div className="userspace-snapshot-item" style={{ marginBottom: 8 }}>
                   <div className="userspace-snapshot-info">
-                    <strong>Runtime error</strong>
+                    <strong>Error</strong>
                     <span className="userspace-muted">{runtimeStatus.last_error}</span>
                   </div>
                 </div>
               )}
-              <div className="userspace-snapshot-item">
-                <div className="userspace-snapshot-info">
-                  <strong>Collaboration</strong>
-                  <span className="userspace-muted">{collabConnected ? `connected (v${collabVersion}, ${collabPresenceCount} users)` : 'offline'}</span>
-                </div>
-              </div>
-              <div className="userspace-snapshot-item" style={{ marginTop: 12 }}>
-                <div className="userspace-snapshot-info" style={{ width: '100%' }}>
-                  <strong>Terminal</strong>
-                  <span className="userspace-muted">{terminalConnected ? (terminalReadOnly ? 'connected (read-only)' : 'connected') : 'offline'}</span>
-                </div>
-              </div>
               <div className="userspace-runtime-terminal-wrap">
                 <div ref={terminalContainerRef} className="userspace-runtime-terminal" />
               </div>

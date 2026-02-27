@@ -25,7 +25,6 @@ from runtime.manager.models import (
     WorkerSessionResponse,
     WorkerStartSessionRequest,
 )
-
 from runtime.shared import (
     RUNTIME_BOOTSTRAP_CONFIG_PATH,
     RUNTIME_BOOTSTRAP_STAMP_PATH,
@@ -510,10 +509,15 @@ class WorkerService:
 
     _ESBUILD_SERVEDIR_PATTERN: re.Pattern[str] = re.compile(r"--servedir=(\S+)")
     _ESBUILD_SERVE_PATTERN: re.Pattern[str] = re.compile(r"--serve=\S+")
+    _ESBUILD_OUTFILE_PATTERN: re.Pattern[str] = re.compile(r"--outfile=(\S+)")
     _INDEX_HTML_SEARCH_DIRS: list[str] = ["public", "static", "src", "www"]
 
     def _fix_esbuild_servedir(self, command: str, workspace_root: Path) -> str:
-        """If esbuild --servedir points to a dir without index.html, try to fix it."""
+        """If esbuild --servedir points to a dir without index.html, try to fix it.
+
+        When the servedir changes, also move --outfile inside the new servedir so
+        esbuild doesn't reject the command (output dir must be inside serve dir).
+        """
         match = self._ESBUILD_SERVEDIR_PATTERN.search(command)
         if not match:
             return command
@@ -524,9 +528,20 @@ class WorkerService:
         for candidate in self._INDEX_HTML_SEARCH_DIRS:
             candidate_path = workspace_root / candidate
             if (candidate_path / "index.html").exists():
-                return command.replace(
+                result = command.replace(
                     f"--servedir={servedir}", f"--servedir={candidate}"
                 )
+                # Relocate --outfile inside new servedir so esbuild accepts it.
+                outfile_match = self._ESBUILD_OUTFILE_PATTERN.search(result)
+                if outfile_match:
+                    outfile = outfile_match.group(1)
+                    # Only relocate if outfile is not already under the new servedir
+                    if not outfile.startswith(f"{candidate}/"):
+                        new_outfile = f"{candidate}/{outfile}"
+                        result = result.replace(
+                            f"--outfile={outfile}", f"--outfile={new_outfile}"
+                        )
+                return result
         return command
 
     def _inject_esbuild_serve_flag(self, command: str, port: int) -> str:
@@ -615,7 +630,7 @@ class WorkerService:
                 command=[
                     "sh",
                     "-lc",
-                    f"PORT={effective_port} {final_command}",
+                    f"export PATH=./node_modules/.bin:$PATH && PORT={effective_port} {final_command}",
                 ],
                 framework=config_framework,
                 cwd=config_cwd,
@@ -635,8 +650,14 @@ class WorkerService:
                     cmd_text = self._inject_esbuild_serve_flag(cmd_text, port)
                     if "--watch" in dev_script and "--watch=forever" not in dev_script:
                         cmd_text = cmd_text.replace("--watch", "--watch=forever")
+                    # npm adds node_modules/.bin to PATH when running scripts;
+                    # replicate that here since we run the raw command directly.
                     return DevserverResolution(
-                        command=["sh", "-lc", cmd_text],
+                        command=[
+                            "sh",
+                            "-lc",
+                            f"export PATH=./node_modules/.bin:$PATH && {cmd_text}",
+                        ],
                         framework="node",
                         cwd=".",
                         port=port,
@@ -932,6 +953,7 @@ class WorkerService:
             await self._terminate_devserver_locked(session.id)
             session.state = "stopped"
             session.devserver_running = False
+            session.last_error = None
             session.updated_at = self._utc_now()
             return self._session_response(session)
 
@@ -941,6 +963,9 @@ class WorkerService:
             if not session:
                 raise HTTPException(status_code=404, detail="Worker session not found")
             await self._terminate_devserver_locked(session.id)
+            # Pick a fresh port to avoid TIME_WAIT "address already in use"
+            session.devserver_port = self._pick_free_port()
+            session.last_error = None
             session.state = "running"
             await self._start_devserver_locked(session)
             session.updated_at = self._utc_now()

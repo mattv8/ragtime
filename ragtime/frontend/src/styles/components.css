@@ -276,12 +276,13 @@ textarea:focus {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-md);
+  gap: var(--space-sm);
   padding: var(--space-xs) var(--space-md);
   background: var(--color-surface-hover);
   border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
   min-height: 44px;
+  flex-wrap: wrap;
 }
 
 .userspace-toolbar-group {
@@ -293,6 +294,7 @@ textarea:focus {
 .userspace-toolbar-group-right {
   margin-left: auto;
   gap: var(--space-sm);
+  flex-wrap: wrap;
 }
 
 .userspace-toolbar-status-group {
@@ -305,8 +307,6 @@ textarea:focus {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding-left: var(--space-sm);
-  border-left: 1px solid var(--color-border);
 }
 
 .userspace-toolbar .btn.btn-sm {
@@ -441,13 +441,96 @@ textarea:focus {
   border: 1px solid var(--color-border-strong);
 }
 
-.userspace-role-badge {
+/* --- Status pill badges --- */
+
+.userspace-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: var(--text-xs);
-  color: var(--color-text-muted);
-  padding: 4px 8px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
+  font-weight: 500;
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
   white-space: nowrap;
+  line-height: 1.4;
+  user-select: none;
+}
+
+.userspace-status-pill-info {
+  color: var(--color-info);
+  background: var(--color-info-light);
+  border: 1px solid var(--color-info-border);
+}
+
+.userspace-status-pill-success {
+  color: var(--color-success);
+  background: var(--color-success-light);
+  border: 1px solid var(--color-success-border);
+}
+
+.userspace-status-pill-warning {
+  color: var(--color-warning);
+  background: var(--color-warning-light);
+  border: 1px solid var(--color-warning-border);
+}
+
+.userspace-status-pill-danger {
+  color: var(--color-error);
+  background: var(--color-error-light);
+  border: 1px solid var(--color-error-border);
+}
+
+.userspace-status-pill-muted {
+  color: var(--color-text-muted);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+}
+
+/* --- Toolbar tabs (Preview / Console) --- */
+
+.userspace-toolbar-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--color-surface);
+  border-radius: var(--radius-md);
+  padding: 2px;
+  border: 1px solid var(--color-border);
+}
+
+.userspace-toolbar-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: calc(var(--radius-md) - 2px);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+
+.userspace-toolbar-tab:hover {
+  color: var(--color-text-primary);
+  background: var(--color-surface-hover);
+}
+
+.userspace-toolbar-tab.active {
+  color: var(--color-text-primary);
+  background: var(--color-surface-hover);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+/* --- Toolbar runtime controls --- */
+
+.userspace-toolbar-runtime-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 /* --- Tool picker dropdown --- */
@@ -882,11 +965,6 @@ textarea:focus {
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
-}
-
-.userspace-right-pane .userspace-toolbar-actions {
-  border-left: none;
-  padding-left: 0;
 }
 
 .userspace-preview-section {

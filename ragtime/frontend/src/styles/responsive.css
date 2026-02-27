@@ -477,6 +477,35 @@
     min-height: 40px;
   }
 
+  /* User Space toolbar responsive */
+  .userspace-toolbar {
+    gap: var(--space-xs);
+    padding: var(--space-xs) var(--space-sm);
+  }
+
+  .userspace-toolbar-group-right {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .userspace-toolbar-status-group {
+    flex-wrap: wrap;
+  }
+
+  .userspace-status-pill {
+    font-size: 10px;
+    padding: 1px 7px;
+  }
+
+  .userspace-toolbar-tabs {
+    order: -1;
+  }
+
+  .userspace-toolbar-tab {
+    padding: 3px 8px;
+    font-size: 10px;
+  }
+
   /* Settings */
   fieldset {
     padding: var(--space-sm);
