@@ -11,7 +11,7 @@ import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, cast
+from typing import Any, Literal, cast
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -1846,6 +1846,7 @@ class UserSpaceService:
         workspace_id: str,
         relative_path: str,
         user_id: str,
+        decode_errors: Literal["strict", "replace"] = "strict",
     ) -> UserSpaceFileResponse:
         await self._enforce_workspace_access(workspace_id, user_id)
         await self._ensure_workspace_git_repo(workspace_id)
@@ -1861,6 +1862,7 @@ class UserSpaceService:
                 await asyncio.to_thread(
                     self._read_workspace_file_sync,
                     file_path,
+                    decode_errors,
                 )
             )
         except _NonUtf8WorkspaceFileError as exc:
@@ -2690,6 +2692,7 @@ class UserSpaceService:
     def _read_workspace_file_sync(
         self,
         file_path: Path,
+        decode_errors: Literal["strict", "replace"] = "strict",
     ) -> tuple[
         ArtifactType | None,
         list[UserSpaceLiveDataConnection] | None,
@@ -2701,7 +2704,7 @@ class UserSpaceService:
             self._read_artifact_sidecar(file_path)
         )
         try:
-            content = file_path.read_text(encoding="utf-8")
+            content = file_path.read_text(encoding="utf-8", errors=decode_errors)
         except UnicodeDecodeError as exc:
             raise _NonUtf8WorkspaceFileError(file_path) from exc
         stat = file_path.stat()

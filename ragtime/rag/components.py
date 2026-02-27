@@ -4922,7 +4922,10 @@ except Exception as e:
             inspected: list[dict[str, Any]] = []
             for path in selected_paths:
                 file_data = await userspace_service.get_workspace_file(
-                    workspace_id, path, user_id
+                    workspace_id,
+                    path,
+                    user_id,
+                    decode_errors="replace",
                 )
                 content = file_data.content
                 line_count = content.count("\n") + (1 if content else 0)
