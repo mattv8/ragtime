@@ -318,6 +318,36 @@ GO_EXTENSIONS: set[str] = {".go"}
 RUST_EXTENSIONS: set[str] = {".rs"}
 JAVA_EXTENSIONS: set[str] = {".java", ".kt", ".kts"}
 
+# User Space runtime/module file extension constants.
+# Keep this as the single source of truth for userspace module checks.
+USERSPACE_MODULE_SOURCE_EXTENSIONS: tuple[str, ...] = (
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+    ".mts",
+    ".cts",
+)
+
+USERSPACE_TYPESCRIPT_EXTENSIONS: tuple[str, ...] = (
+    ".ts",
+    ".tsx",
+)
+
+USERSPACE_THEME_AUDIT_EXTENSIONS: tuple[str, ...] = (
+    *USERSPACE_TYPESCRIPT_EXTENSIONS,
+    ".css",
+    ".scss",
+    ".html",
+)
+
+USERSPACE_STRICT_FRONTEND_EXTENSIONS: tuple[str, ...] = (
+    *USERSPACE_MODULE_SOURCE_EXTENSIONS,
+    ".html",
+)
+
 # =============================================================================
 # ALL DOCUMENT EXTENSIONS
 # =============================================================================

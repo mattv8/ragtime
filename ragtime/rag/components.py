@@ -8,11 +8,14 @@ import json
 import os
 import re
 import resource
+import shlex
+import shutil
 import subprocess
 import time
 from pathlib import Path, PurePosixPath
 from typing import Any, List, Optional, Union
 
+import httpx
 from fastapi import HTTPException
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
@@ -33,6 +36,12 @@ from pydantic import BaseModel, Field
 
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
+from ragtime.core.file_constants import (
+    USERSPACE_MODULE_SOURCE_EXTENSIONS,
+    USERSPACE_STRICT_FRONTEND_EXTENSIONS,
+    USERSPACE_THEME_AUDIT_EXTENSIONS,
+    USERSPACE_TYPESCRIPT_EXTENSIONS,
+)
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit, get_output_limit
 from ragtime.core.ollama import get_model_context_length
@@ -83,6 +92,7 @@ from ragtime.userspace.models import (
     UserSpaceLiveDataCheck,
     UserSpaceLiveDataConnection,
 )
+from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
 logger = get_logger(__name__)
@@ -526,6 +536,26 @@ def find_hardcoded_data_patterns(content: str) -> list[str]:
         if pattern.search(content):
             findings.append(description)
     return findings
+
+
+def is_userspace_module_source_path(path: str) -> bool:
+    """Return True when the path is a userspace module source file."""
+    return (path or "").lower().endswith(USERSPACE_MODULE_SOURCE_EXTENSIONS)
+
+
+def is_userspace_typescript_path(path: str) -> bool:
+    """Return True when the path is a TypeScript userspace file."""
+    return (path or "").lower().endswith(USERSPACE_TYPESCRIPT_EXTENSIONS)
+
+
+def is_userspace_theme_audit_path(path: str) -> bool:
+    """Return True when the file should be audited for hardcoded theme colors."""
+    return (path or "").lower().endswith(USERSPACE_THEME_AUDIT_EXTENSIONS)
+
+
+def is_userspace_strict_frontend_path(path: str) -> bool:
+    """Return True when strict runtime probe should apply to this frontend file."""
+    return (path or "").lower().endswith(USERSPACE_STRICT_FRONTEND_EXTENSIONS)
 
 
 def validate_userspace_runtime_contract(content: str, file_path: str) -> list[str]:
@@ -4878,8 +4908,8 @@ except Exception as e:
                 )
 
             normalized_lower_path = normalized_path.lower()
-            patch_is_module_source = normalized_lower_path.endswith(
-                (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts")
+            patch_is_module_source = is_userspace_module_source_path(
+                normalized_lower_path
             )
             patch_is_dashboard_module = patch_is_module_source and (
                 normalized_lower_path.startswith("dashboard/")
@@ -4936,7 +4966,7 @@ except Exception as e:
                 raise
 
             typecheck: dict[str, Any] | None = None
-            if normalized_path.lower().endswith((".ts", ".tsx")):
+            if is_userspace_typescript_path(normalized_path):
                 typecheck = await validate_userspace_typescript_content(
                     updated_content,
                     normalized_path,
@@ -5028,17 +5058,7 @@ except Exception as e:
                             f"component_id={check.component_id}."
                         )
 
-            module_source_extensions = (
-                ".ts",
-                ".tsx",
-                ".js",
-                ".jsx",
-                ".mjs",
-                ".cjs",
-                ".mts",
-                ".cts",
-            )
-            is_module_source = normalized_path.endswith(module_source_extensions)
+            is_module_source = is_userspace_module_source_path(normalized_path)
             is_dashboard_module = is_module_source and (
                 normalized_path.startswith("dashboard/") or artifact_type == "module_ts"
             )
@@ -5162,7 +5182,7 @@ except Exception as e:
                             "the code."
                         )
 
-            if lower_path.endswith((".ts", ".tsx", ".css", ".scss", ".html")):
+            if is_userspace_theme_audit_path(lower_path):
                 hard_coded_hex = find_hard_coded_hex_colors(content)
                 if hard_coded_hex:
                     sample = ", ".join(hard_coded_hex[:8])
@@ -5172,7 +5192,7 @@ except Exception as e:
                     )
 
             typecheck: dict[str, Any] | None = None
-            if lower_path.endswith((".ts", ".tsx")):
+            if is_userspace_typescript_path(lower_path):
                 typecheck = await validate_userspace_typescript_content(content, path)
                 if not typecheck.get("ok", False):
                     contract_errors = typecheck.get("contract_errors") or []
@@ -5302,16 +5322,6 @@ except Exception as e:
             normalized_start_path = (
                 (path or "dashboard/main.ts").strip().replace("\\", "/").lstrip("/")
             )
-            module_source_extensions = (
-                ".ts",
-                ".tsx",
-                ".js",
-                ".jsx",
-                ".mjs",
-                ".cjs",
-                ".mts",
-                ".cts",
-            )
 
             file_cache: dict[str, Any] = {}
 
@@ -5349,12 +5359,12 @@ except Exception as e:
 
                 base_str = base.as_posix().lstrip("/")
                 candidates: list[str] = []
-                if base_str.lower().endswith(module_source_extensions):
+                if is_userspace_module_source_path(base_str):
                     candidates.append(base_str)
                 else:
-                    for ext in module_source_extensions:
+                    for ext in USERSPACE_MODULE_SOURCE_EXTENSIONS:
                         candidates.append(f"{base_str}{ext}")
-                    for ext in module_source_extensions:
+                    for ext in USERSPACE_MODULE_SOURCE_EXTENSIONS:
                         candidates.append(f"{base_str}/index{ext}")
 
                 seen_candidates: set[str] = set()
@@ -5376,6 +5386,27 @@ except Exception as e:
             aggregate_errors: list[str] = []
             aggregate_contract_errors: list[str] = []
             aggregate_runtime_errors: list[str] = []
+            aggregate_runtime_warnings: list[str] = []
+            runtime_probe: dict[str, Any] = {
+                "attempted": False,
+                "devserver_running": None,
+                "preview_status_code": None,
+                "upstream_url": None,
+            }
+
+            def add_runtime_warning(message: str) -> None:
+                text = (message or "").strip()
+                if text and text not in aggregate_runtime_warnings:
+                    aggregate_runtime_warnings.append(text)
+
+            def add_runtime_error(message: str) -> None:
+                text = (message or "").strip()
+                if not text:
+                    return
+                if text not in aggregate_runtime_errors:
+                    aggregate_runtime_errors.append(text)
+                if text not in aggregate_errors:
+                    aggregate_errors.append(text)
 
             while to_visit:
                 current = to_visit.pop(0)
@@ -5437,13 +5468,171 @@ except Exception as e:
                     "No runnable web entrypoint found. Add .ragtime/runtime-entrypoint.json "
                     "with a command/cwd or provide package.json dev script, Python app.py/main.py, or index.html."
                 )
+                runtime_config_file = await get_file(".ragtime/runtime-entrypoint.json")
+                runtime_config_command_present = False
+                if runtime_config_file is not None:
+                    runtime_config_raw = runtime_config_file.content or ""
+                    try:
+                        runtime_config_payload = json.loads(runtime_config_raw)
+                    except json.JSONDecodeError as exc:
+                        add_runtime_warning(
+                            "Runtime preflight: .ragtime/runtime-entrypoint.json is invalid JSON "
+                            f"({exc.msg} at line {exc.lineno}). The runtime will ignore it and use fallback entrypoint detection."
+                        )
+                    else:
+                        if isinstance(runtime_config_payload, dict):
+                            runtime_command = str(
+                                runtime_config_payload.get("command") or ""
+                            ).strip()
+                            runtime_config_command_present = bool(runtime_command)
+                            if runtime_config_command_present:
+                                if shutil.which("sh") is None:
+                                    add_runtime_warning(
+                                        "Runtime preflight: shell executable 'sh' is unavailable, so .ragtime/runtime-entrypoint.json command launch may fail."
+                                    )
+                                try:
+                                    command_tokens = shlex.split(runtime_command)
+                                except ValueError as exc:
+                                    add_runtime_warning(
+                                        "Runtime preflight: .ragtime/runtime-entrypoint.json command parsing failed "
+                                        f"({exc}). Launch may fail at runtime."
+                                    )
+                                else:
+                                    if command_tokens:
+                                        primary_command = command_tokens[0]
+                                        if (
+                                            "/" not in primary_command
+                                            and shutil.which(primary_command) is None
+                                        ):
+                                            add_runtime_warning(
+                                                "Runtime preflight: .ragtime/runtime-entrypoint.json command references "
+                                                f"'{primary_command}', which is not found in PATH."
+                                            )
+                                    else:
+                                        add_runtime_warning(
+                                            "Runtime preflight: .ragtime/runtime-entrypoint.json command is empty after parsing."
+                                        )
+                        else:
+                            add_runtime_warning(
+                                "Runtime preflight: .ragtime/runtime-entrypoint.json should be a JSON object with command/cwd/framework keys."
+                            )
+
                 has_package_json = await get_file("package.json") is not None
                 has_index_html = await get_file("index.html") is not None
-                if not has_package_json and not has_index_html:
-                    if runnable_entrypoint_error not in aggregate_runtime_errors:
-                        aggregate_runtime_errors.append(runnable_entrypoint_error)
-                    if runnable_entrypoint_error not in aggregate_errors:
-                        aggregate_errors.append(runnable_entrypoint_error)
+                package_json_has_dev_script = False
+                if has_package_json:
+                    package_file = await get_file("package.json")
+                    try:
+                        package_payload = json.loads(
+                            (getattr(package_file, "content", "") or "")
+                        )
+                    except json.JSONDecodeError as exc:
+                        add_runtime_warning(
+                            "Runtime preflight: package.json is invalid JSON "
+                            f"({exc.msg} at line {exc.lineno}). npm-based launch may fail."
+                        )
+                    else:
+                        scripts = (
+                            package_payload.get("scripts", {})
+                            if isinstance(package_payload, dict)
+                            else {}
+                        )
+                        if isinstance(scripts, dict):
+                            package_json_has_dev_script = bool(
+                                str(scripts.get("dev") or "").strip()
+                            )
+                        if not package_json_has_dev_script:
+                            add_runtime_warning(
+                                "Runtime preflight: package.json is present but scripts.dev is missing; npm run dev will fail unless .ragtime/runtime-entrypoint.json overrides launch."
+                            )
+
+                npm_available = shutil.which("npm") is not None
+                python_available = shutil.which("python3") is not None
+                manage_py = await get_file("manage.py") is not None
+                main_py = await get_file("main.py") is not None
+                app_py = await get_file("app.py") is not None
+                has_python_entrypoint = manage_py or main_py or app_py
+
+                if has_package_json and not npm_available:
+                    add_runtime_warning(
+                        "Runtime preflight: npm is not available in this environment; Node devserver launch may fail."
+                    )
+                if has_python_entrypoint and not python_available:
+                    add_runtime_warning(
+                        "Runtime preflight: python3 is not available in this environment; Python/static fallback launch may fail."
+                    )
+
+                has_effective_runtime_candidate = (
+                    runtime_config_command_present
+                    or (has_package_json and npm_available)
+                    or (has_python_entrypoint and python_available)
+                    or (has_index_html and python_available)
+                )
+
+                if not has_effective_runtime_candidate:
+                    add_runtime_error(runnable_entrypoint_error)
+
+            strict_frontend_candidate = is_userspace_strict_frontend_path(
+                normalized_start_path
+            )
+            should_probe_runtime = (
+                should_check_runnable_entrypoint or strict_frontend_candidate
+            )
+
+            if should_probe_runtime:
+                runtime_probe["attempted"] = True
+                try:
+                    status = await userspace_runtime_service.get_devserver_status(
+                        workspace_id,
+                        user_id,
+                    )
+                    runtime_probe["devserver_running"] = bool(status.devserver_running)
+                    if not status.devserver_running:
+                        state = status.session_state or "unknown"
+                        last_error = status.last_error or "unknown"
+                        add_runtime_error(
+                            "Runtime strict validation failed: devserver is not running "
+                            f"(state={state}, last_error={last_error})."
+                        )
+
+                    upstream_url = await userspace_runtime_service.build_workspace_preview_upstream_url(
+                        workspace_id,
+                        user_id,
+                        "",
+                    )
+                    runtime_probe["upstream_url"] = upstream_url
+
+                    timeout = httpx.Timeout(connect=2.0, read=12.0, write=8.0, pool=4.0)
+                    async with httpx.AsyncClient(
+                        timeout=timeout, follow_redirects=False
+                    ) as client:
+                        response = await client.get(upstream_url)
+
+                    runtime_probe["preview_status_code"] = response.status_code
+                    if response.status_code >= 400:
+                        body_preview = (response.text or "")[:200].strip()
+                        detail_suffix = f" Body: {body_preview}" if body_preview else ""
+                        add_runtime_error(
+                            "Runtime strict validation failed: preview upstream returned "
+                            f"HTTP {response.status_code}.{detail_suffix}"
+                        )
+                except HTTPException as exc:
+                    detail_text = str(getattr(exc, "detail", exc)).strip() or str(exc)
+                    add_runtime_error(
+                        "Runtime strict validation failed: runtime session/preview setup failed. "
+                        f"{detail_text}"
+                    )
+                except Exception as exc:
+                    add_runtime_error(
+                        "Runtime strict validation failed: runtime probe request failed. "
+                        f"{exc}"
+                    )
+
+            if aggregate_runtime_warnings:
+                for warning in aggregate_runtime_warnings:
+                    add_runtime_error(
+                        f"Runtime strict validation warning treated as error: {warning}"
+                    )
 
             overall_ok = (
                 bool(file_results)
@@ -5472,6 +5661,9 @@ except Exception as e:
                 "errors": aggregate_errors,
                 "runtime_errors": aggregate_runtime_errors,
                 "runtime_error_count": len(aggregate_runtime_errors),
+                "runtime_warnings": aggregate_runtime_warnings,
+                "runtime_warning_count": len(aggregate_runtime_warnings),
+                "runtime_probe": runtime_probe,
                 "contract_errors": aggregate_contract_errors,
                 "contract_error_count": len(aggregate_contract_errors),
                 "validated_files": sorted(file_results.keys()),

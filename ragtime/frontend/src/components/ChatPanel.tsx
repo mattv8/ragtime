@@ -1028,6 +1028,10 @@ const ChatTitle = memo(({ title }: { title: string }) => {
 interface ChatPanelProps {
   currentUser: User;
   workspaceId?: string;
+  workspaceAvailableTools?: UserSpaceAvailableTool[];
+  workspaceSelectedToolIds?: string[];
+  onToggleWorkspaceTool?: (toolId: string) => void | Promise<void>;
+  workspaceSavingTools?: boolean;
   onUserMessageSubmitted?: (message: string) => void | Promise<void>;
   onTaskComplete?: () => void;
   onFullscreenChange?: (fullscreen: boolean) => void;
@@ -1039,6 +1043,10 @@ interface ChatPanelProps {
 export function ChatPanel({
   currentUser,
   workspaceId,
+  workspaceAvailableTools,
+  workspaceSelectedToolIds,
+  onToggleWorkspaceTool,
+  workspaceSavingTools = false,
   onUserMessageSubmitted,
   onTaskComplete,
   onFullscreenChange,
@@ -1098,6 +1106,22 @@ export function ChatPanel({
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [savingMembers, setSavingMembers] = useState(false);
   const [savingTools, setSavingTools] = useState(false);
+
+  const useWorkspaceToolSource = Boolean(
+    embedded
+    && workspaceId
+    && workspaceAvailableTools
+    && workspaceSelectedToolIds
+    && onToggleWorkspaceTool,
+  );
+
+  const effectiveAvailableTools = useWorkspaceToolSource
+    ? (workspaceAvailableTools ?? [])
+    : availableTools;
+  const effectiveToolIds = useWorkspaceToolSource
+    ? (workspaceSelectedToolIds ?? [])
+    : conversationToolIds;
+  const effectiveSavingTools = useWorkspaceToolSource ? workspaceSavingTools : savingTools;
 
   // Computed conversation ownership and permissions
   const conversationOwnerId = useMemo(() => {
@@ -1497,19 +1521,21 @@ export function ChatPanel({
   // Load conversation members and tools when conversation changes
   useEffect(() => {
     if (activeConversation) {
-      fetchConversationTools(activeConversation.id);
+      if (!useWorkspaceToolSource) {
+        fetchConversationTools(activeConversation.id);
+      }
       if (!embedded) {
         fetchConversationMembers(activeConversation.id);
       }
     }
-  }, [activeConversation, embedded, fetchConversationMembers, fetchConversationTools]);
+  }, [activeConversation, embedded, fetchConversationMembers, fetchConversationTools, useWorkspaceToolSource]);
 
   // Load available tools on mount
   useEffect(() => {
-    if (!embedded || Boolean(workspaceId)) {
+    if ((!embedded || Boolean(workspaceId)) && !useWorkspaceToolSource) {
       fetchAvailableTools();
     }
-  }, [embedded, fetchAvailableTools, workspaceId]);
+  }, [embedded, fetchAvailableTools, useWorkspaceToolSource, workspaceId]);
 
   const handleOpenMembersModal = useCallback(async () => {
     if (!activeConversation || !isConversationOwner) return;
@@ -1558,6 +1584,14 @@ export function ChatPanel({
       setSavingTools(false);
     }
   }, [activeConversation, conversationToolIds, isConversationViewer]);
+
+  const handleToggleInlineTool = useCallback(async (toolId: string) => {
+    if (useWorkspaceToolSource && onToggleWorkspaceTool) {
+      await onToggleWorkspaceTool(toolId);
+      return;
+    }
+    await handleToggleConversationTool(toolId);
+  }, [handleToggleConversationTool, onToggleWorkspaceTool, useWorkspaceToolSource]);
 
   const formatUserLabel = useCallback((user?: Pick<User, 'username' | 'display_name'> | null, fallbackId?: string) => {
     const username = user?.username?.trim() || fallbackId?.trim() || 'unknown';
@@ -2923,12 +2957,12 @@ export function ChatPanel({
                   <div className="chat-input-inline-actions">
                     {showInlineToolSelector && (
                       <ToolSelectorDropdown
-                        availableTools={availableTools}
-                        selectedToolIds={new Set(conversationToolIds)}
-                        onToggleTool={handleToggleConversationTool}
-                        disabled={savingTools}
+                        availableTools={effectiveAvailableTools}
+                        selectedToolIds={new Set(effectiveToolIds)}
+                        onToggleTool={handleToggleInlineTool}
+                        disabled={effectiveSavingTools}
                         readOnly={false}
-                        saving={savingTools}
+                        saving={effectiveSavingTools}
                         title="Workspace Tools"
                       />
                     )}
@@ -2948,12 +2982,12 @@ export function ChatPanel({
                     <div className="chat-input-inline-actions">
                       {showInlineToolSelector && (
                         <ToolSelectorDropdown
-                          availableTools={availableTools}
-                          selectedToolIds={new Set(conversationToolIds)}
-                          onToggleTool={handleToggleConversationTool}
-                          disabled={savingTools}
+                          availableTools={effectiveAvailableTools}
+                          selectedToolIds={new Set(effectiveToolIds)}
+                          onToggleTool={handleToggleInlineTool}
+                          disabled={effectiveSavingTools}
                           readOnly={false}
-                          saving={savingTools}
+                          saving={effectiveSavingTools}
                           title="Workspace Tools"
                         />
                       )}

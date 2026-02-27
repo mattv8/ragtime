@@ -2209,6 +2209,10 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                 key={activeWorkspaceId}
                 currentUser={currentUser}
                 workspaceId={activeWorkspaceId}
+                workspaceAvailableTools={availableTools}
+                workspaceSelectedToolIds={activeWorkspace?.selected_tool_ids ?? []}
+                onToggleWorkspaceTool={handleToggleWorkspaceTool}
+                workspaceSavingTools={savingWorkspaceTools}
                 onUserMessageSubmitted={canEditWorkspace ? handleUserMessageSubmitted : undefined}
                 embedded
                 readOnly={!canEditWorkspace}

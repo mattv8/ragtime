@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import socket
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -218,21 +219,23 @@ class WorkerService:
 
         package_json = workspace_root / "package.json"
         if package_json.exists() and package_json.is_file():
-            return (
-                [
-                    "npm",
-                    "run",
-                    "dev",
-                    "--",
-                    "--host",
-                    "0.0.0.0",
-                    "--port",
-                    str(port),
-                ],
-                None,
-                "node",
-                ".",
-            )
+            npm_path = shutil.which("npm")
+            if npm_path:
+                return (
+                    [
+                        npm_path,
+                        "run",
+                        "dev",
+                        "--",
+                        "--host",
+                        "0.0.0.0",
+                        "--port",
+                        str(port),
+                    ],
+                    None,
+                    "node",
+                    ".",
+                )
 
         python_command, python_framework, python_cwd = self._resolve_python_launch(
             workspace_root,
@@ -268,7 +271,8 @@ class WorkerService:
             None,
             (
                 "No runnable web entrypoint found. Add .ragtime/runtime-entrypoint.json "
-                "with a command/cwd or provide package.json dev script, Python app.py/main.py, or index.html."
+                "with a command/cwd or provide package.json dev script, Python app.py/main.py, or index.html. "
+                "If package.json exists, ensure npm is installed in the runtime environment."
             ),
             None,
             None,
@@ -338,12 +342,27 @@ class WorkerService:
             return
 
         await self._terminate_devserver_locked(session.id)
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            cwd=str(self._resolve_launch_cwd(session)),
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=str(self._resolve_launch_cwd(session)),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            session.devserver_running = False
+            session.last_error = (
+                "Dev server command not found: "
+                f"{command[0]}. Install the required runtime dependency or "
+                "set .ragtime/runtime-entrypoint.json command to an available executable."
+            )
+            session.updated_at = self._utc_now()
+            return
+        except Exception as exc:
+            session.devserver_running = False
+            session.last_error = f"Failed to launch dev server: {exc}"
+            session.updated_at = self._utc_now()
+            return
         self._devserver_processes[session.id] = process
         session.devserver_command = command
 

@@ -100,6 +100,59 @@ class UserSpaceRuntimeService:
     def _runtime_session_model(self, db: Any) -> Any:
         return getattr(db, "userspaceruntimesession")
 
+    @staticmethod
+    def _missing_runtime_session_field(exc: Exception) -> str | None:
+        detail = str(exc)
+        marker = "UserSpaceRuntimeSession.data."
+        if marker not in detail:
+            return None
+        tail = detail.split(marker, 1)[1]
+        missing_field = tail.split("`", 1)[0].split()[0].strip()
+        return missing_field or None
+
+    async def _runtime_session_update_row(
+        self,
+        model: Any,
+        row_id: str,
+        data: dict[str, Any],
+    ) -> Any:
+        payload = dict(data)
+        attempts = 0
+        while True:
+            try:
+                return await model.update(where={"id": row_id}, data=payload)
+            except Exception as exc:
+                attempts += 1
+                missing_field = self._missing_runtime_session_field(exc)
+                if not missing_field or missing_field not in payload or attempts > 8:
+                    raise
+                payload.pop(missing_field, None)
+                logger.warning(
+                    "Runtime session update dropped unsupported prisma field '%s'",
+                    missing_field,
+                )
+
+    async def _runtime_session_create_row(
+        self,
+        model: Any,
+        data: dict[str, Any],
+    ) -> Any:
+        payload = dict(data)
+        attempts = 0
+        while True:
+            try:
+                return await model.create(data=payload)
+            except Exception as exc:
+                attempts += 1
+                missing_field = self._missing_runtime_session_field(exc)
+                if not missing_field or missing_field not in payload or attempts > 8:
+                    raise
+                payload.pop(missing_field, None)
+                logger.warning(
+                    "Runtime session create dropped unsupported prisma field '%s'",
+                    missing_field,
+                )
+
     def _runtime_audit_model(self, db: Any) -> Any:
         return getattr(db, "userspaceruntimeauditevent")
 
@@ -446,9 +499,10 @@ class UserSpaceRuntimeService:
                         or launch_port != session.launch_port
                         or last_error_value != session.last_error
                     ):
-                        current = await model.update(
-                            where={"id": session.id},
-                            data={
+                        current = await self._runtime_session_update_row(
+                            model,
+                            session.id,
+                            {
                                 "state": state_value,
                                 "previewInternalUrl": preview_value,
                                 "launchFramework": launch_framework,
@@ -476,9 +530,10 @@ class UserSpaceRuntimeService:
                     else None
                 ),
             )
-            current = await model.update(
-                where={"id": session.id},
-                data={
+            current = await self._runtime_session_update_row(
+                model,
+                session.id,
+                {
                     "state": str(provider_data.get("state") or "running"),
                     "runtimeProvider": self._runtime_provider_name(),
                     "providerSessionId": str(
@@ -520,8 +575,9 @@ class UserSpaceRuntimeService:
             workspace_id,
             leased_by_user_id,
         )
-        row = await model.create(
-            data={
+        row = await self._runtime_session_create_row(
+            model,
+            {
                 "id": str(uuid4()),
                 "workspaceId": workspace_id,
                 "leasedByUserId": leased_by_user_id,
@@ -546,7 +602,7 @@ class UserSpaceRuntimeService:
                 "idleExpiresAt": now + timedelta(hours=4),
                 "ttlExpiresAt": now + timedelta(hours=24),
                 "lastError": provider_data.get("last_error"),
-            }
+            },
         )
         return self._to_runtime_session(row)
 
@@ -727,9 +783,10 @@ class UserSpaceRuntimeService:
 
         db = await get_db()
         model = self._runtime_session_model(db)
-        row = await model.update(
-            where={"id": active_session.id},
-            data={
+        row = await self._runtime_session_update_row(
+            model,
+            active_session.id,
+            {
                 "state": "stopped",
                 "lastHeartbeatAt": self._utc_now(),
                 "lastError": provider_stop_error,
@@ -839,9 +896,10 @@ class UserSpaceRuntimeService:
             ):
                 db = await get_db()
                 model = self._runtime_session_model(db)
-                updated = await model.update(
-                    where={"id": session.id},
-                    data={
+                updated = await self._runtime_session_update_row(
+                    model,
+                    session.id,
+                    {
                         "state": state_for_response,
                         "previewInternalUrl": preview_internal_url,
                         "launchFramework": launch_framework,
@@ -916,9 +974,10 @@ class UserSpaceRuntimeService:
             if provider_restart:
                 db = await get_db()
                 model = self._runtime_session_model(db)
-                await model.update(
-                    where={"id": active_session.id},
-                    data={
+                await self._runtime_session_update_row(
+                    model,
+                    active_session.id,
+                    {
                         "state": str(provider_restart.get("state") or "running"),
                         "lastHeartbeatAt": self._utc_now(),
                         "lastError": provider_restart.get("last_error"),
