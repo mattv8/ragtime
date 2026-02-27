@@ -14,9 +14,9 @@ from uuid import uuid4
 import httpx
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-from prisma import fields as prisma_fields
 from starlette.websockets import WebSocket
 
+from prisma import fields as prisma_fields
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
@@ -119,13 +119,23 @@ class UserSpaceRuntimeService:
         missing_field = tail.split("`", 1)[0].split()[0].strip()
         return missing_field or None
 
+    @staticmethod
+    def _sanitize_pg_strings(data: dict[str, Any]) -> dict[str, Any]:
+        """Strip null bytes (0x00) that PostgreSQL text columns reject."""
+        cleaned: dict[str, Any] = {}
+        for key, value in data.items():
+            if isinstance(value, str) and "\x00" in value:
+                value = value.replace("\x00", "")
+            cleaned[key] = value
+        return cleaned
+
     async def _runtime_session_update_row(
         self,
         model: Any,
         row_id: str,
         data: dict[str, Any],
     ) -> Any:
-        payload = dict(data)
+        payload = self._sanitize_pg_strings(dict(data))
         attempts = 0
         while True:
             try:
@@ -146,7 +156,7 @@ class UserSpaceRuntimeService:
         model: Any,
         data: dict[str, Any],
     ) -> Any:
-        payload = dict(data)
+        payload = self._sanitize_pg_strings(dict(data))
         attempts = 0
         while True:
             try:

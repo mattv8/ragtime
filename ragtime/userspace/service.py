@@ -22,31 +22,43 @@ from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
-                                    add_table_metadata_to_psql_output,
-                                    enforce_max_results, format_query_result,
-                                    validate_sql_query)
-from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.sql_utils import (
+    DB_TYPE_POSTGRES,
+    add_table_metadata_to_psql_output,
+    enforce_max_results,
+    format_query_result,
+    validate_sql_query,
+)
+from ragtime.core.ssh import (
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
-                                      ExecuteComponentRequest,
-                                      ExecuteComponentResponse,
-                                      PaginatedWorkspacesResponse,
-                                      ShareAccessMode, SqlitePersistenceMode,
-                                      UpdateWorkspaceMembersRequest,
-                                      UpdateWorkspaceRequest,
-                                      UpdateWorkspaceShareAccessRequest,
-                                      UpsertWorkspaceFileRequest,
-                                      UserSpaceFileInfo, UserSpaceFileResponse,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection,
-                                      UserSpaceSharedPreviewResponse,
-                                      UserSpaceSnapshot, UserSpaceWorkspace,
-                                      UserSpaceWorkspaceShareLink,
-                                      UserSpaceWorkspaceShareLinkStatus,
-                                      WorkspaceMember,
-                                      WorkspaceShareSlugAvailabilityResponse)
+from ragtime.userspace.models import (
+    ArtifactType,
+    CreateWorkspaceRequest,
+    ExecuteComponentRequest,
+    ExecuteComponentResponse,
+    PaginatedWorkspacesResponse,
+    ShareAccessMode,
+    SqlitePersistenceMode,
+    UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+    UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot,
+    UserSpaceWorkspace,
+    UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceMember,
+    WorkspaceShareSlugAvailabilityResponse,
+)
 
 logger = get_logger(__name__)
 
@@ -78,6 +90,14 @@ class _GitCommandResult:
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
+
+
+class _NonUtf8WorkspaceFileError(Exception):
+    __slots__ = ("file_path",)
+
+    def __init__(self, file_path: Path) -> None:
+        self.file_path = file_path
+        super().__init__(f"Non-UTF8 workspace file: {file_path}")
 
 
 _EXECUTION_PROOF_MAX_AGE_SECONDS = 3600  # 1 hour
@@ -357,7 +377,10 @@ class UserSpaceService:
 
     @staticmethod
     def _is_legacy_default_bootstrap(payload: dict[str, Any]) -> bool:
-        if payload.get("managed_by") is not None or payload.get("template_version") is not None:
+        if (
+            payload.get("managed_by") is not None
+            or payload.get("template_version") is not None
+        ):
             return False
         if int(payload.get("version") or 0) != 1:
             return False
@@ -396,9 +419,10 @@ class UserSpaceService:
         template_version = int(existing.get("template_version") or 0)
         is_legacy_default = self._is_legacy_default_bootstrap(existing)
         should_update = (
-            (managed_by == "ragtime" and auto_update and template_version < _RUNTIME_BOOTSTRAP_TEMPLATE_VERSION)
-            or is_legacy_default
-        )
+            managed_by == "ragtime"
+            and auto_update
+            and template_version < _RUNTIME_BOOTSTRAP_TEMPLATE_VERSION
+        ) or is_legacy_default
         if not should_update:
             return
 
@@ -1832,12 +1856,22 @@ class UserSpaceService:
         if not file_path.exists() or not file_path.is_file():
             raise HTTPException(status_code=404, detail="File not found")
 
-        artifact_type, live_data_connections, live_data_checks, content, stat = (
-            await asyncio.to_thread(
-                self._read_workspace_file_sync,
-                file_path,
+        try:
+            artifact_type, live_data_connections, live_data_checks, content, stat = (
+                await asyncio.to_thread(
+                    self._read_workspace_file_sync,
+                    file_path,
+                )
             )
-        )
+        except _NonUtf8WorkspaceFileError as exc:
+            raise HTTPException(
+                status_code=415,
+                detail=(
+                    "Workspace file is not UTF-8 text and cannot be opened in the text editor. "
+                    f"Path: {relative_path}"
+                ),
+            ) from exc
+
         return UserSpaceFileResponse(
             path=relative_path,
             content=content,
@@ -2666,7 +2700,10 @@ class UserSpaceService:
         artifact_type, live_data_connections, live_data_checks = (
             self._read_artifact_sidecar(file_path)
         )
-        content = file_path.read_text(encoding="utf-8")
+        try:
+            content = file_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise _NonUtf8WorkspaceFileError(file_path) from exc
         stat = file_path.stat()
         return artifact_type, live_data_connections, live_data_checks, content, stat
 

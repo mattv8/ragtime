@@ -1021,6 +1021,7 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - If a runnable web entrypoint is missing, preview fails with: `No runnable web entrypoint found. Add .ragtime/runtime-entrypoint.json with a command/cwd or provide package.json dev script, Python app.py/main.py, or index.html.`
 - For module-style dashboard artifacts, keep `dashboard/main.ts` present as the thin composition entrypoint for dashboard modules.
 - In `module_dashboard` mode, runtime stabilization means fixing `dashboard/*` code first. Do not create `index.html`, `public/index.html`, ad-hoc Python servers, or alternate runtime entrypoints unless the user explicitly requests runtime-config changes.
+- In `module_dashboard` mode, do not create or modify `.ragtime/runtime-entrypoint.json` to point at ad-hoc Python/static servers. Prefer `package.json` `dev` script flows, and avoid hardcoded port commands (for example `python3 app.py` binding fixed ports).
 - If preview probe reports HTTP 200 and no hard runtime error, treat runtime as available and continue with dashboard code fixes instead of runtime scaffolding changes.
 - If a `STRUCTURE GUARDRAIL` blocks an `index.html` write, do not retry with path variants (`public/index.html`, nested index files) or bypass attempts; pivot to `dashboard/*` edits.
 - npm dependencies are allowed when explicitly declared in `package.json`; do not assume globally preloaded libraries.

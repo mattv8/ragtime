@@ -17,15 +17,12 @@ from typing import Any
 import httpx
 from fastapi import HTTPException
 
-from runtime.manager.models import (
-    RuntimeFileReadResponse,
-    RuntimeScreenshotRequest,
-    RuntimeScreenshotResponse,
-    RuntimeSessionState,
-    WorkerHealthResponse,
-    WorkerSessionResponse,
-    WorkerStartSessionRequest,
-)
+from runtime.manager.models import (RuntimeFileReadResponse,
+                                    RuntimeScreenshotRequest,
+                                    RuntimeScreenshotResponse,
+                                    RuntimeSessionState, WorkerHealthResponse,
+                                    WorkerSessionResponse,
+                                    WorkerStartSessionRequest)
 
 _PORT_PATTERNS = (
     re.compile(r"(?:^|\s)--port(?:=|\s+)(\d{2,5})(?:\s|$)"),
@@ -52,6 +49,8 @@ _WORKSPACE_BOOTSTRAP_GUIDANCE = (
 )
 _RUNTIME_BOOTSTRAP_CONFIG_PATH = ".ragtime/runtime-bootstrap.json"
 _RUNTIME_BOOTSTRAP_STAMP_PATH = ".ragtime/.runtime-bootstrap.done"
+_RUNTIME_DEVSERVER_LOG_DIR = "/tmp/ragtime-runtime-devserver"
+_RUNTIME_DEVSERVER_LOG_TAIL_CHARS = 400
 MAX_USERSPACE_SCREENSHOT_WIDTH = 1600
 MAX_USERSPACE_SCREENSHOT_HEIGHT = 1200
 MAX_USERSPACE_SCREENSHOT_PIXELS = 1_440_000
@@ -231,6 +230,9 @@ class WorkerService:
             os.getenv("RUNTIME_WORKSPACE_ROOT", "/data/_userspace")
         ).resolve()
         self._devserver_processes: dict[str, asyncio.subprocess.Process] = {}
+        self._devserver_log_paths: dict[str, Path] = {}
+        self._devserver_log_handles: dict[str, Any] = {}
+        self._bootstrap_retry_flags: dict[str, bool] = {}
         self._devserver_start_timeout_seconds = int(
             os.getenv("RUNTIME_DEVSERVER_START_TIMEOUT_SECONDS", "90")
         )
@@ -320,6 +322,21 @@ class WorkerService:
             "cwd": cwd,
             "framework": framework,
         }
+
+    def _read_package_dev_script(self, workspace_root: Path) -> str:
+        package_json = workspace_root / "package.json"
+        if not package_json.exists() or not package_json.is_file():
+            return ""
+        try:
+            payload = json.loads(package_json.read_text(encoding="utf-8"))
+        except Exception:
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        scripts = payload.get("scripts")
+        if not isinstance(scripts, dict):
+            return ""
+        return str(scripts.get("dev") or "").strip()
 
     def _read_runtime_bootstrap_config(
         self, workspace_root: Path
@@ -563,6 +580,94 @@ class WorkerService:
             f"{_WORKSPACE_BOOTSTRAP_GUIDANCE}"
         )
 
+    def _is_module_dashboard_workspace(self, workspace_root: Path) -> bool:
+        return (workspace_root / "dashboard" / "main.ts").exists()
+
+    def _command_uses_runtime_port(self, command: str) -> bool:
+        if self._extract_explicit_port(command) is not None:
+            return True
+        return bool(re.search(r"\$\{?PORT\}?", command))
+
+    def _resolve_devserver_log_path(self, session_id: str) -> Path:
+        log_dir = Path(
+            os.getenv("RUNTIME_DEVSERVER_LOG_DIR", _RUNTIME_DEVSERVER_LOG_DIR)
+        )
+        log_dir.mkdir(parents=True, exist_ok=True)
+        return log_dir / f"{session_id}.log"
+
+    def _read_devserver_log_tail(self, session_id: str) -> str:
+        log_path = self._devserver_log_paths.get(session_id)
+        if not log_path:
+            return ""
+        try:
+            if not log_path.exists() or not log_path.is_file():
+                return ""
+            content = log_path.read_text(encoding="utf-8", errors="replace").strip()
+            # PostgreSQL text columns reject null bytes (0x00)
+            content = content.replace("\x00", "")
+        except Exception:
+            return ""
+        if not content:
+            return ""
+        compact = " ".join(content.split())
+        if len(compact) > _RUNTIME_DEVSERVER_LOG_TAIL_CHARS:
+            return compact[-_RUNTIME_DEVSERVER_LOG_TAIL_CHARS:]
+        return compact
+
+    def _should_retry_bootstrap_after_exit(
+        self,
+        returncode: int,
+        log_tail: str,
+    ) -> bool:
+        lowered = (log_tail or "").lower()
+        if returncode == 127:
+            return True
+        return (
+            "command not found" in lowered
+            or "not found" in lowered
+            or "cannot find module" in lowered
+        )
+
+    _ESBUILD_SERVEDIR_PATTERN: re.Pattern[str] = re.compile(
+        r"--servedir=(\S+)"
+    )
+    _ESBUILD_SERVE_PATTERN: re.Pattern[str] = re.compile(
+        r"--serve=\S+"
+    )
+    _INDEX_HTML_SEARCH_DIRS: list[str] = ["public", "static", "src", "www"]
+
+    def _fix_esbuild_servedir(self, command: str, workspace_root: Path) -> str:
+        """If esbuild --servedir points to a dir without index.html, try to fix it."""
+        match = self._ESBUILD_SERVEDIR_PATTERN.search(command)
+        if not match:
+            return command
+        servedir = match.group(1)
+        servedir_path = workspace_root / servedir
+        if (servedir_path / "index.html").exists():
+            return command
+        for candidate in self._INDEX_HTML_SEARCH_DIRS:
+            candidate_path = workspace_root / candidate
+            if (candidate_path / "index.html").exists():
+                return command.replace(
+                    f"--servedir={servedir}", f"--servedir={candidate}"
+                )
+        return command
+
+    def _inject_esbuild_serve_flag(self, command: str, port: int) -> str:
+        """Ensure --serve=0.0.0.0:PORT is present, replacing any existing --serve flag."""
+        serve_flag = f"--serve=0.0.0.0:{port}"
+        if self._ESBUILD_SERVE_PATTERN.search(command):
+            return self._ESBUILD_SERVE_PATTERN.sub(serve_flag, command)
+        return f"{command} {serve_flag}"
+
+    def _invalidate_bootstrap_stamp(self, session: WorkerSession) -> None:
+        stamp_path = session.workspace_root / _RUNTIME_BOOTSTRAP_STAMP_PATH
+        try:
+            if stamp_path.exists() and stamp_path.is_file():
+                stamp_path.unlink()
+        except Exception:
+            pass
+
     def _rewrite_command_port(self, command: str, port: int) -> str:
         python_http_server_match = _PY_HTTP_SERVER_PORT_PATTERN.search(command)
         if python_http_server_match:
@@ -593,8 +698,19 @@ class WorkerService:
         workspace_root: Path,
         port: int,
     ) -> tuple[list[str] | None, str | None, str | None, str | None, int | None]:
+        package_json = workspace_root / "package.json"
+        module_dashboard = self._is_module_dashboard_workspace(workspace_root)
         config = self._read_runtime_entrypoint_config(workspace_root)
         config_command = config.get("command", "")
+        if (
+            config_command
+            and module_dashboard
+            and package_json.exists()
+            and package_json.is_file()
+            and not self._command_uses_runtime_port(config_command)
+        ):
+            config_command = ""
+
         if config_command:
             config_cwd = config.get("cwd") or "."
             config_framework = config.get("framework") or "custom"
@@ -633,18 +749,32 @@ class WorkerService:
                 effective_port,
             )
 
-        package_json = workspace_root / "package.json"
         if package_json.exists() and package_json.is_file():
             npm_path = shutil.which("npm")
             if npm_path:
+                dev_script_raw = self._read_package_dev_script(workspace_root)
+                dev_script = dev_script_raw.lower()
+                if "esbuild" in dev_script:
+                    # Build corrected esbuild command instead of blindly appending
+                    # args, so we can fix --servedir when index.html is missing.
+                    cmd_text = dev_script_raw
+                    cmd_text = self._fix_esbuild_servedir(cmd_text, workspace_root)
+                    cmd_text = self._inject_esbuild_serve_flag(cmd_text, port)
+                    if "--watch" in dev_script and "--watch=forever" not in dev_script:
+                        cmd_text = cmd_text.replace("--watch", "--watch=forever")
+                    return (
+                        ["sh", "-lc", cmd_text],
+                        None,
+                        "node",
+                        ".",
+                        port,
+                    )
                 return (
                     [
                         npm_path,
                         "run",
                         "dev",
                         "--",
-                        "--host",
-                        "0.0.0.0",
                         "--port",
                         str(port),
                     ],
@@ -732,7 +862,13 @@ class WorkerService:
 
     async def _terminate_devserver_locked(self, session_id: str) -> None:
         process = self._devserver_processes.pop(session_id, None)
+        log_handle = self._devserver_log_handles.pop(session_id, None)
         if process is None:
+            if log_handle:
+                try:
+                    log_handle.close()
+                except Exception:
+                    pass
             return
         if process.returncode is None:
             process.terminate()
@@ -741,6 +877,11 @@ class WorkerService:
             except Exception:
                 process.kill()
                 await process.wait()
+        if log_handle:
+            try:
+                log_handle.close()
+            except Exception:
+                pass
 
     async def _sync_devserver_state_locked(self, session: WorkerSession) -> None:
         process = self._devserver_processes.get(session.id)
@@ -753,8 +894,32 @@ class WorkerService:
 
         self._devserver_processes.pop(session.id, None)
         session.devserver_running = False
+        log_handle = self._devserver_log_handles.pop(session.id, None)
+        if log_handle:
+            try:
+                log_handle.close()
+            except Exception:
+                pass
         if process.returncode != 0:
-            session.last_error = f"Dev server exited with code {process.returncode}"
+            log_tail = self._read_devserver_log_tail(session.id)
+            if log_tail:
+                session.last_error = (
+                    f"Dev server exited with code {process.returncode}: {log_tail}"
+                )
+            else:
+                session.last_error = f"Dev server exited with code {process.returncode}"
+
+            if not self._bootstrap_retry_flags.get(
+                session.id, False
+            ) and self._should_retry_bootstrap_after_exit(
+                process.returncode,
+                log_tail,
+            ):
+                self._bootstrap_retry_flags[session.id] = True
+                self._invalidate_bootstrap_stamp(session)
+                session.last_error = (
+                    f"{session.last_error} Retrying workspace bootstrap on next start."
+                )
         session.updated_at = self._utc_now()
 
     async def _start_devserver_locked(self, session: WorkerSession) -> None:
@@ -791,14 +956,29 @@ class WorkerService:
         session.devserver_port = resolved_port or port
 
         await self._terminate_devserver_locked(session.id)
+        log_path = self._resolve_devserver_log_path(session.id)
+        try:
+            log_handle = open(log_path, "wb", buffering=0)
+        except Exception as exc:
+            session.devserver_running = False
+            session.last_error = f"Failed to initialize devserver log file: {exc}"
+            session.updated_at = self._utc_now()
+            return
+        self._devserver_log_paths[session.id] = log_path
+        self._devserver_log_handles[session.id] = log_handle
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
                 cwd=str(self._resolve_launch_cwd(session)),
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
+                stdout=log_handle,
+                stderr=asyncio.subprocess.STDOUT,
             )
         except FileNotFoundError:
+            try:
+                log_handle.close()
+            except Exception:
+                pass
+            self._devserver_log_handles.pop(session.id, None)
             session.devserver_running = False
             session.last_error = (
                 "Dev server command not found: "
@@ -809,6 +989,11 @@ class WorkerService:
             session.updated_at = self._utc_now()
             return
         except Exception as exc:
+            try:
+                log_handle.close()
+            except Exception:
+                pass
+            self._devserver_log_handles.pop(session.id, None)
             session.devserver_running = False
             session.last_error = f"Failed to launch dev server: {exc}"
             session.updated_at = self._utc_now()
@@ -833,6 +1018,7 @@ class WorkerService:
 
         session.devserver_running = True
         session.last_error = None
+        self._bootstrap_retry_flags.pop(session.id, None)
         session.updated_at = self._utc_now()
 
     async def start_session(
