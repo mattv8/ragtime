@@ -6,7 +6,8 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/runtime
+    PYTHONPATH=/runtime \
+    NODE_PATH=/usr/local/lib/node_modules
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
@@ -16,6 +17,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     npm \
     tini \
     && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g playwright \
+    && playwright install --with-deps chromium \
+    && npm cache clean --force
 
 WORKDIR /runtime
 

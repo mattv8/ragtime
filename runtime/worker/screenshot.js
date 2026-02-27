@@ -8,7 +8,7 @@ const viewportHeight = Number(process.argv[4] || 900);
 const captureFullPage = (process.argv[5] || 'true') === 'true';
 const timeoutMs = Number(process.argv[6] || 25000);
 const waitForSelector = process.argv[7] || '';
-const waitAfterLoadMs = Number(process.argv[8] || 900);
+const waitAfterLoadMs = Number(process.argv[8] || 1800);
 const refreshBeforeCapture = (process.argv[9] || 'true') === 'true';
 const maxPixels = Number(process.argv[10] || 1440000);
 
@@ -18,6 +18,58 @@ try {
 } catch (_) {
     process.stderr.write('Playwright package is not installed in runtime container.');
     process.exit(1);
+}
+
+async function waitForHmrSettle(page, minimumWaitMs) {
+    const baseline = Math.max(0, Number(minimumWaitMs) || 0);
+    const maxExtraWaitMs = 2500;
+    const stableWindowMs = 650;
+    const pollEveryMs = 250;
+    const startedAt = Date.now();
+    let stableSince = 0;
+    let previousSignature = '';
+
+    const readSignature = async () => {
+        return await page.evaluate(() => {
+            const title = document.title || '';
+            const ready = document.readyState || '';
+            const href = String(location.href || '');
+            const body = document.body;
+            const root = document.documentElement;
+            const bodyChars = body && body.innerText ? body.innerText.length : 0;
+            const bodyHtml = body && body.innerHTML ? body.innerHTML.length : 0;
+            const rootHtml = root && root.innerHTML ? root.innerHTML.length : 0;
+            return [title, ready, href, bodyChars, bodyHtml, rootHtml].join('|');
+        });
+    };
+
+    while (Date.now() - startedAt <= baseline + maxExtraWaitMs) {
+        const elapsed = Date.now() - startedAt;
+        if (elapsed < baseline) {
+            await page.waitForTimeout(Math.min(pollEveryMs, baseline - elapsed));
+            continue;
+        }
+
+        const signature = await readSignature().catch(() => '');
+        if (!signature) {
+            await page.waitForTimeout(pollEveryMs);
+            continue;
+        }
+
+        if (signature === previousSignature) {
+            if (!stableSince) {
+                stableSince = Date.now();
+            }
+            if (Date.now() - stableSince >= stableWindowMs) {
+                return;
+            }
+        } else {
+            previousSignature = signature;
+            stableSince = 0;
+        }
+
+        await page.waitForTimeout(pollEveryMs);
+    }
 }
 
 async function run() {
@@ -60,9 +112,9 @@ async function run() {
             }).catch(() => null);
         }
 
-        if (waitAfterLoadMs > 0) {
-            await page.waitForTimeout(waitAfterLoadMs);
-        }
+        const settleFloorMs = refreshBeforeCapture ? 1800 : 900;
+        const settleWaitMs = Math.max(waitAfterLoadMs, settleFloorMs);
+        await waitForHmrSettle(page, settleWaitMs);
 
         const screenshotOptions = {
             path: outputPath,
@@ -128,6 +180,8 @@ async function run() {
             effective_width: effectiveWidth,
             effective_height: effectiveHeight,
             effective_full_page: effectiveFullPage,
+            wait_after_load_ms: waitAfterLoadMs,
+            effective_wait_after_load_ms: settleWaitMs,
         };
         process.stdout.write(JSON.stringify(output));
     } finally {

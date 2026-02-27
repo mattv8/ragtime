@@ -104,8 +104,8 @@ class RuntimeScreenshotRequest(BaseModel):
         description="Optional selector to wait for before capture",
     )
     wait_after_load_ms: int = Field(
-        default=900,
-        description="Extra wait after page load before capture",
+        default=1800,
+        description="Extra post-load settle wait before capture (helps absorb HMR reloads)",
     )
     refresh_before_capture: bool = Field(
         default=True,

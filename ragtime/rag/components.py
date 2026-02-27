@@ -21,8 +21,13 @@ from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
-                                     SystemMessage, ToolMessage)
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -31,42 +36,62 @@ from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
-from ragtime.core.file_constants import (USERSPACE_MODULE_SOURCE_EXTENSIONS,
-                                         USERSPACE_STRICT_FRONTEND_EXTENSIONS,
-                                         USERSPACE_THEME_AUDIT_EXTENSIONS,
-                                         USERSPACE_TYPESCRIPT_EXTENSIONS)
+from ragtime.core.file_constants import (
+    USERSPACE_MODULE_SOURCE_EXTENSIONS,
+    USERSPACE_STRICT_FRONTEND_EXTENSIONS,
+    USERSPACE_THEME_AUDIT_EXTENSIONS,
+    USERSPACE_TYPESCRIPT_EXTENSIONS,
+)
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit, get_output_limit
 from ragtime.core.ollama import get_model_context_length
-from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
-                                   validate_odoo_code, validate_sql_query,
-                                   validate_ssh_command)
+from ragtime.core.security import (
+    _SSH_ENV_VAR_RE,
+    sanitize_output,
+    validate_odoo_code,
+    validate_sql_query,
+    validate_ssh_command,
+)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
-                              execute_ssh_command, expand_env_vars_via_ssh,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.ssh import (
+    SSHConfig,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    expand_env_vars_via_ssh,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
-                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
-                                 create_chart_tool)
-from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-                                     create_datatable_tool)
+from ragtime.tools.chart import (
+    CHAT_CHART_DESCRIPTION_SUFFIX,
+    USERSPACE_CHART_DESCRIPTION_SUFFIX,
+    create_chart_tool,
+)
+from ragtime.tools.datatable import (
+    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+    create_datatable_tool,
+)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (_is_shallow_repository,
-                                       create_aggregate_git_history_tool,
-                                       create_per_index_git_history_tool)
+from ragtime.tools.git_history import (
+    _is_shallow_repository,
+    create_aggregate_git_history_tool,
+    create_per_index_git_history_tool,
+)
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (ArtifactType, UpsertWorkspaceFileRequest,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection)
+from ragtime.userspace.models import (
+    ArtifactType,
+    UpsertWorkspaceFileRequest,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -4565,6 +4590,15 @@ except Exception as e:
                 description="Brief description of why this file is being read",
             )
 
+        class DeleteUserSpaceFileInput(BaseModel):
+            path: str = Field(
+                description="Relative path from the workspace files root to delete.",
+            )
+            reason: str = Field(
+                default="",
+                description="Brief description of why this file is being deleted",
+            )
+
         class UpsertUserSpaceFileInput(BaseModel):
             class LiveDataConnectionInput(BaseModel):
                 component_kind: str = Field(
@@ -4788,10 +4822,10 @@ except Exception as e:
                 ),
             )
             wait_after_load_ms: int = Field(
-                default=900,
+                default=1800,
                 ge=0,
                 le=15000,
-                description="Additional post-render delay before screenshot capture.",
+                description="Additional post-render settle delay before screenshot capture (helps absorb HMR reloads).",
             )
             refresh_before_capture: bool = Field(
                 default=True,
@@ -4982,6 +5016,27 @@ except Exception as e:
                     "This workspace has dashboard/main.ts. For dashboard behavior changes, edit dashboard/* files (especially dashboard/main.ts and imported modules) instead of index.html."
                 )
             return json.dumps(payload, indent=2)
+
+        async def delete_userspace_file(path: str, reason: str = "", **_: Any) -> str:
+            del reason
+            await userspace_service.enforce_workspace_role(
+                workspace_id, user_id, "editor"
+            )
+            normalized_path = (path or "").strip().replace("\\", "/").lstrip("/")
+            if not normalized_path:
+                raise ToolException("Invalid path: path is required.")
+            await userspace_service.delete_workspace_file(
+                workspace_id,
+                normalized_path,
+                user_id,
+            )
+            return json.dumps(
+                {
+                    "deleted": True,
+                    "path": normalized_path,
+                },
+                indent=2,
+            )
 
         async def patch_userspace_file(
             path: str = "dashboard/main.ts",
@@ -5410,7 +5465,43 @@ except Exception as e:
                     detail = "LIVE DATA POLICY VIOLATION -- " + " | ".join(hard_errors)
                 if warnings:
                     detail += " [Warnings: " + "; ".join(warnings) + "]"
-                raise ToolException(detail)
+                lower_errors = [err.lower() for err in hard_errors]
+                is_contract_repairable = any(
+                    marker in err
+                    for err in lower_errors
+                    for marker in (
+                        "live_data_connections",
+                        "live_data_checks",
+                        "context.components",
+                        "execute()",
+                    )
+                )
+
+                rejected_payload: dict[str, Any] = {
+                    "rejected": True,
+                    "status": "rejected_not_persisted",
+                    "error": detail,
+                    "path": path,
+                    "persisted": False,
+                    "policy_violations": hard_errors,
+                }
+                if is_contract_repairable:
+                    rejected_payload["action_required"] = (
+                        "Add/verify live_data_connections + live_data_checks metadata and wire runtime calls in code via "
+                        "context.components[componentId].execute(), then retry upsert_userspace_file."
+                    )
+                    rejected_payload["suggested_next_tools"] = [
+                        "read_userspace_file",
+                        "patch_userspace_file",
+                        "validate_userspace_code",
+                    ]
+                if warnings:
+                    rejected_payload["warnings"] = warnings
+                if allowed_violations:
+                    rejected_payload["allowed_violations"] = allowed_violations
+                if typecheck is not None:
+                    rejected_payload["typescript_validation"] = typecheck
+                return json.dumps(rejected_payload, indent=2)
 
             try:
                 result = await userspace_service.upsert_workspace_file(
@@ -5871,7 +5962,7 @@ except Exception as e:
             full_page: bool = True,
             timeout_ms: int = 25000,
             wait_for_selector: str = "body",
-            wait_after_load_ms: int = 900,
+            wait_after_load_ms: int = 1800,
             refresh_before_capture: bool = True,
             filename: str | None = None,
             reason: str = "",
@@ -5926,6 +6017,16 @@ except Exception as e:
                     "Read a file from the active User Space workspace by relative path."
                 ),
                 args_schema=ReadUserSpaceFileInput,
+            ),
+            StructuredTool.from_function(
+                coroutine=delete_userspace_file,
+                name="delete_userspace_file",
+                description=(
+                    "Delete a file from the active User Space workspace by relative path. "
+                    "Use to remove stale/conflicting files that block runtime builds."
+                ),
+                args_schema=DeleteUserSpaceFileInput,
+                handle_tool_error=True,
             ),
             StructuredTool.from_function(
                 coroutine=upsert_userspace_file,

@@ -61,6 +61,8 @@ _RUNTIME_DEVSERVER_LOG_TAIL_CHARS = 400
 MAX_USERSPACE_SCREENSHOT_WIDTH = 1600
 MAX_USERSPACE_SCREENSHOT_HEIGHT = 1200
 MAX_USERSPACE_SCREENSHOT_PIXELS = 1_440_000
+_SCREENSHOT_WAIT_AFTER_LOAD_FLOOR_MS = 900
+_SCREENSHOT_WAIT_AFTER_LOAD_HMR_FLOOR_MS = 1800
 
 _SCREENSHOT_JS_PATH = Path(__file__).with_name("screenshot.js")
 
@@ -1042,6 +1044,16 @@ class WorkerService:
 
             requested_width = max(320, int(payload.width))
             requested_height = max(240, int(payload.height))
+            requested_wait_after_load_ms = max(0, int(payload.wait_after_load_ms))
+            wait_after_load_floor_ms = (
+                _SCREENSHOT_WAIT_AFTER_LOAD_HMR_FLOOR_MS
+                if bool(payload.refresh_before_capture)
+                else _SCREENSHOT_WAIT_AFTER_LOAD_FLOOR_MS
+            )
+            effective_wait_after_load_ms = max(
+                requested_wait_after_load_ms,
+                wait_after_load_floor_ms,
+            )
             width = min(requested_width, MAX_USERSPACE_SCREENSHOT_WIDTH)
             height = min(requested_height, MAX_USERSPACE_SCREENSHOT_HEIGHT)
             requested_pixels = width * height
@@ -1100,6 +1112,9 @@ class WorkerService:
                 ),
             )
 
+        # Ensure Node.js can resolve globally-installed packages (e.g. playwright)
+        node_env = {**os.environ, "NODE_PATH": "/usr/local/lib/node_modules"}
+
         process = await asyncio.create_subprocess_exec(
             node_binary,
             "-e",
@@ -1111,11 +1126,12 @@ class WorkerService:
             "true" if payload.full_page else "false",
             str(payload.timeout_ms),
             str(payload.wait_for_selector or "").strip(),
-            str(payload.wait_after_load_ms),
+            str(effective_wait_after_load_ms),
             "true" if payload.refresh_before_capture else "false",
             str(MAX_USERSPACE_SCREENSHOT_PIXELS),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=node_env,
         )
         stdout, stderr = await process.communicate()
         stdout_text = stdout.decode("utf-8", errors="replace").strip()
@@ -1159,7 +1175,8 @@ class WorkerService:
                 "max_pixels": MAX_USERSPACE_SCREENSHOT_PIXELS,
                 "wait_for_selector": str(payload.wait_for_selector or "").strip()
                 or None,
-                "wait_after_load_ms": int(payload.wait_after_load_ms),
+                "wait_after_load_ms": requested_wait_after_load_ms,
+                "effective_wait_after_load_ms": effective_wait_after_load_ms,
                 "refresh_before_capture": bool(payload.refresh_before_capture),
             },
             probe=probe if isinstance(probe, dict) else {},

@@ -1602,7 +1602,7 @@ class UserSpaceRuntimeService:
         full_page: bool = True,
         timeout_ms: int = 25000,
         wait_for_selector: str = "body",
-        wait_after_load_ms: int = 900,
+        wait_after_load_ms: int = 1800,
         refresh_before_capture: bool = True,
         filename: str | None = None,
     ) -> dict[str, Any]:
