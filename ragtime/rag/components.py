@@ -1079,6 +1079,13 @@ You are operating in User Space mode for a persistent workspace artifact workflo
     - `refresh_interval_seconds`: optional refresh cadence
 - Do not expose credentials, hostnames, or connection internals in user-facing narrative.
 
+### Resilient data loading
+
+- Always wrap every `context.components[componentId].execute()` call in a try/catch block.
+- When a data source is offline, timed-out, or returns an error, the dashboard must still render a visible layout with a user-friendly status message (e.g., "Data unavailable - source offline") instead of silently failing or rendering a blank page.
+- Render static layout elements (headers, navigation, empty table/chart placeholders) first, then load data asynchronously inside individual try/catch blocks so one failed source doesn't block the entire dashboard.
+- A single offline component must never prevent the rest of the dashboard from rendering.
+
 ### File tool workflow
 
 - Start by running `assay_userspace_code` to understand current workspace structure and implementation status before editing.
@@ -5844,6 +5851,22 @@ except Exception as e:
                                 "Runtime preflight: package.json is present but scripts.dev is missing; npm run dev will fail unless .ragtime/runtime-entrypoint.json overrides launch."
                             )
 
+                        # Check esbuild dev script for missing --format=esm
+                        if package_json_has_dev_script:
+                            dev_script_text = str(scripts.get("dev") or "")
+                            if (
+                                "esbuild" in dev_script_text
+                                and "--bundle" in dev_script_text
+                            ):
+                                if "--format=esm" not in dev_script_text:
+                                    add_runtime_error(
+                                        "Bootstrap mismatch: package.json dev script uses esbuild --bundle "
+                                        "without --format=esm. esbuild defaults to IIFE format which wraps "
+                                        "exports in a closure, making them inaccessible from inline scripts. "
+                                        "Add --format=esm to the esbuild command and load the bundle with "
+                                        '<script type="module"> and import {{ render }} from "./dist/main.js".'
+                                    )
+
                 npm_available = shutil.which("npm") is not None
                 python_available = shutil.which("python3") is not None
                 manage_py = await get_file("manage.py") is not None
@@ -5925,6 +5948,20 @@ except Exception as e:
                         "Runtime strict validation failed: runtime probe request failed. "
                         f"{exc}"
                     )
+
+            # Validate index.html bootstrap pattern when present
+            if should_check_runnable_entrypoint:
+                index_html_file = await get_file("index.html")
+                if index_html_file is not None:
+                    html_content = getattr(index_html_file, "content", "") or ""
+                    if "window.render" in html_content:
+                        add_runtime_error(
+                            "Bootstrap mismatch: index.html references window.render, which is "
+                            "inaccessible when esbuild bundles in IIFE format (the default). "
+                            'Use <script type="module"> with '
+                            'import {{ render }} from "./dist/main.js" instead, and ensure '
+                            "the esbuild command includes --format=esm."
+                        )
 
             if aggregate_runtime_warnings:
                 for warning in aggregate_runtime_warnings:
