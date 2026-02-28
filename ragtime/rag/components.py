@@ -1047,6 +1047,7 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - For module-style dashboard artifacts, keep `dashboard/main.ts` present as the thin composition entrypoint for dashboard modules.
 - In `module_dashboard` mode, runtime stabilization means fixing `dashboard/*` code first. If the runtime needs an HTML entry point (e.g., for esbuild `--servedir`), create `index.html` or `public/index.html` with minimal scaffolding that loads the bundled output.
 - In `module_dashboard` mode, prefer `package.json` `dev` script flows. Avoid ad-hoc Python servers or hardcoded port commands (for example `python3 app.py` binding fixed ports).
+- When using esbuild with `--bundle`, always add `--format=esm` to produce ES module output. In `index.html`, load the bundle with `<script type="module">` and use `import {{ render }} from './dist/main.js'` to call the entry render function. Never rely on `window.render` or other global-scope assumptions; esbuild IIFE format wraps exports in a closure where they are inaccessible from inline scripts.
 - If preview probe reports HTTP 200 and no hard runtime error, treat runtime as available and continue with dashboard code fixes instead of runtime scaffolding changes.
 - npm dependencies are allowed when explicitly declared in `package.json`; do not assume globally preloaded libraries.
 - Do not inject CDN scripts for runtime dependencies in generated modules.

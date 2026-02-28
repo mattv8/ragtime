@@ -1923,19 +1923,19 @@ export const api = {
     const normalized = path.replace(/^\/+/, '');
     return normalized
       ? `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/preview/${encodeFilePath(normalized)}`
-      : `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/preview`;
+      : `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/preview/`;
   },
 
   getUserSpaceSharedPreviewProxyUrl(ownerUsername: string, shareSlug: string, path: string = ''): string {
     const normalized = path.replace(/^\/+/, '');
     const base = `${API_BASE}/userspace/shared/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/preview`;
-    return normalized ? `${base}/${encodeFilePath(normalized)}` : base;
+    return normalized ? `${base}/${encodeFilePath(normalized)}` : `${base}/`;
   },
 
   getUserSpaceSharedTokenPreviewProxyUrl(shareToken: string, path: string = ''): string {
     const normalized = path.replace(/^\/+/, '');
     const base = `${API_BASE}/userspace/shared/${encodeURIComponent(shareToken)}/preview`;
-    return normalized ? `${base}/${encodeFilePath(normalized)}` : base;
+    return normalized ? `${base}/${encodeFilePath(normalized)}` : `${base}/`;
   },
 };
 

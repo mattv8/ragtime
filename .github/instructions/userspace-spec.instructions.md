@@ -63,6 +63,7 @@ Still pending for full hard-cutover:
 ## Required Engineering Rules
 
 - Reuse existing service/router helpers before adding new code paths.
+- **No application-layer HTML rewriting in the preview proxy.** The proxy (`runtime_routes.py`) may only perform transport-level rewrites (e.g., root-relative URL path prefixing for `src`, `href`, `action` attributes). It must never regex-match or transform application-level constructs such as bootstrap scripts, render calls, or module loading patterns. If workspace HTML is broken, the fix belongs in the code-generation prompts or runtime tooling, not in the proxy layer.
 - Enforce workspace role checks in every runtime/collab route:
   - viewer: read-only preview/collab observation
   - editor/owner: mutating collab/fs + terminal input + runtime controls

@@ -977,12 +977,12 @@ textarea:focus {
 }
 
 .userspace-runtime-terminal-wrap {
+  flex: 1;
   margin-top: var(--space-sm);
   border: 8px solid var(--color-terminal-surface);
   border-radius: var(--radius-sm);
   background: var(--color-terminal-surface);
-  min-height: 220px;
-  max-height: 320px;
+  min-height: 120px;
   overflow: hidden;
 }
 
