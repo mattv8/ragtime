@@ -23,19 +23,17 @@ Self-hosted, OpenAI-compatible RAG API + MCP server that plugs local knowledge i
 
 <div align="center">
   <img src=".github/images/2026-01-12.png" alt="Screenshot 1" height="360" />
-  <img src=".github/images/Screenshot%202026-01-12%20110434.png" alt="Screenshot 2" height="360" />
+  <img src=".github/images/Screenshot 2026-02-28 131951.png" alt="Screenshot 2" height="360" />
 </div>
 
 ## Features
 
-- **OpenAI-compatible `/v1/chat/completions`** endpoint with streaming: works with [OpenWebUI](#connecting-to-openwebui), Continue, and any OpenAI client
-- **Built-in chat UI** at `/` with tool visualization, interactive charts, and DataTables: no external client required
+- **Chat UI** built in, with tool visualization, interactive charts, and DataTables: no external client required
+- **[Workspaces](#workspaces)** with live previews run in isolated runtime sessions; shared links use clean public URLs (`/{owner}/{slug}`), with optional password-protected full-page access
 - **[MCP server](#model-context-protocol-mcp-integration)** (HTTP Streamable + stdio transports) exposing tools to Claude Desktop, VS Code Copilot, Cursor, and JetBrains IDEs with auth
+- **OpenAI-compatible API** `/v1/chat/completions` endpoint with streaming: works with [OpenWebUI](#connecting-to-openwebui), Continue, and any OpenAI client
 - **Dual vector store**: Choose FAISS or pgvector for Upload/Git indexes; pgvector for schema/PDM and optional filesystem indexing ([details](#vector-store-abstraction))
-- **[LangChain tool calling](#tool-configuration)**: PostgreSQL, MSSQL, MySQL/MariaDB, Odoo ORM, SSH shell: read-only by default, write-ops opt-in
-- **Auto-discovered tools**: drop a `<name>_tool` StructuredTool in `ragtime/tools/` and it registers at startup (see [CONTRIBUTING.md](CONTRIBUTING.md))
 - **[Tool security](#security)**: SQL injection prevention via allowlist patterns, LIMIT enforcement, Odoo code validation, optional write-ops flag
-- **Auth**: Local admin + optional LDAP, rate-limited login, encrypted secrets ([Fernet](https://cryptography.io/en/latest/fernet/)), httpOnly session cookies
 
 ## Architecture
 
@@ -58,20 +56,6 @@ flowchart LR
   style Ragtime fill:#1a365d,stroke:#3182ce,stroke-width:3px,color:#fff
 ```
 
-## Vector Store Abstraction
-
-Ragtime uses **two vector backends**: **FAISS** (in-memory, loaded at startup) and **pgvector** (PostgreSQL, persistent). Upload and Git indexes use a unified indexer and can use either backend.
-
-See [Creating Indexes](#creating-indexes) for a detailed breakdown of index types and their storage backends.
-
-FAISS indexes are loaded into memory at startup; pgvector indexes stay in PostgreSQL and use cosine similarity search. Embedding provider (OpenAI or Ollama) is configured once in Settings and applies to all index types. Swapping embedding model or dimensions after initial indexing requires a full re-index.
-
-## Who This Is For / Not For
-
-**Good fit**: Teams that want to query internal docs and databases through existing chat UIs without shipping data to third-party RAG SaaS: especially if you already run OpenWebUI, Claude Desktop, or VS Code with MCP.
-
-**Not a fit**: If you need multi-tenant SaaS, fine-grained RBAC beyond admin/user, or sub-second latency at scale, consider managed solutions or a custom LangServe deployment.
-
 ## Table of Contents
 
 - [Quick Start](#quick-start)
@@ -84,6 +68,26 @@ FAISS indexes are loaded into memory at startup; pgvector indexes stay in Postgr
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
 - [License](#license)
+
+## Workspaces
+
+<div align="center">
+  <img src=".github/images/Screenshot 2026-02-28 131359.png " alt="Screenshot 1" height="360" />
+</div>
+
+**Workspaces** are Ragtime’s agentic development sandboxes: each workspace combines files, conversations, selected infrastructure tools, and an isolated runtime preview session. Think Replit-style sandboxing, but connected to your real environment through Ragtime tools (SQL, SSH, Odoo, filesystem indexers, and more), so agents can do useful work with live context.
+
+- Previews are runtime-only and proxied from session-managed devservers.
+- Public sharing uses direct routes (`/{owner}/{slug}` and `/shared/{token}`), with token links redirecting to canonical slug URLs.
+- Password-protected shares are handled server-side with a full-page prompt.
+
+## Vector Store Abstraction
+
+Ragtime uses **two vector backends**: **FAISS** (in-memory, loaded at startup) and **pgvector** (PostgreSQL, persistent). Upload and Git indexes use a unified indexer and can use either backend.
+
+See [Creating Indexes](#creating-indexes) for a detailed breakdown of index types and their storage backends.
+
+FAISS indexes are loaded into memory at startup; pgvector indexes stay in PostgreSQL and use cosine similarity search. Embedding provider (OpenAI or Ollama) is configured once in Settings and applies to all index types. Swapping embedding model or dimensions after initial indexing requires a full re-index.
 
 ## Quick Start
 

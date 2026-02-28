@@ -4,135 +4,69 @@ applyTo: 'ragtime/userspace/**, runtime/**'
 
 # User Space Feature Implementation Instructions
 
-Last updated: 2026-02-26 (runtime bootstrap-on-create update)
+Last updated: 2026-02-28 (codebase-scanned; concise agent-focused)
 
-## Purpose
+## Scope
 
-Use this file as the implementation guardrail for User Space feature work.
-Keep changes scoped, incremental, and aligned with runtime hard-cutover goals.
+- Apply to User Space runtime/collab/share work in `ragtime/userspace/**` and `runtime/**`.
+- Keep changes incremental; do not invent new UX or role semantics.
+- Endpoint details belong in `/docs` (do not maintain static route dumps here).
 
-## In Scope (Active)
+## Big Picture (How User Space Actually Works)
 
-- Runtime session APIs and lifecycle in `ragtime/userspace/runtime_service.py` and `ragtime/userspace/runtime_routes.py`.
-- Runtime preview proxying (HTTP + WS) for workspace and shared routes.
-- Collaboration transport and file operations under `/indexes/userspace/collab/*`.
-- Terminal websocket behavior and role-based write restrictions.
-- Runtime status/session/preview UX wiring in User Space frontend components.
+- Control plane is in Ragtime app code (`ragtime/userspace/runtime_service.py`, `ragtime/userspace/runtime_routes.py`).
+- Data plane runs in runtime manager/worker code (`runtime/manager/**`, `runtime/worker/**`).
+- `runtime/main.py` chooses service mode via `RUNTIME_SERVICE_MODE`; manager mode also mounts worker routes.
+- Workspace runtime files live under `${INDEX_DATA_PATH}/_userspace/workspaces/{workspace_id}/files`.
+- Preview is runtime-only (legacy frontend `srcDoc` fallback is gone).
 
-## Out of Scope (Do Not Invent)
+## Share Routing Split (Critical)
 
-- New UX surfaces, pages, or workflows not explicitly requested.
-- New role semantics or auth flows outside existing `owner/editor/viewer` policy.
-- New runtime provider protocols beyond current `local` + `http` provider seam.
+- Public share URLs are top-level routes in `ragtime/main.py`:
+  - `/{owner_username}/{share_slug}` (canonical)
+  - `/shared/{share_token}` (redirects to canonical slug route)
+- Internal editor-preview share routes are in `ragtime/userspace/runtime_routes.py` under `/indexes/userspace/shared/.../preview`.
+- Public and internal routes are different paths with different auth contexts; when changing share behavior, update both layers intentionally.
+- Public password-protected shares use FastAPI-rendered full-page HTML prompt + scoped cookie (`userspace_share_pw_*`) in `main.py`.
 
-## Current Cutover Status (Authoritative)
+## Runtime + Bootstrap Conventions
 
-Implemented now:
+- Runtime bootstrap config is workspace-local: `.ragtime/runtime-bootstrap.json`.
+- Bootstrap execution stamp is `.ragtime/.runtime-bootstrap.done` (`runtime/shared.py`).
+- Default bootstrap template is managed in `ragtime/userspace/service.py` (`_default_runtime_bootstrap_config`, template versioning + auto-update logic).
+- Worker startup reads bootstrap config and reruns commands when config digest changes (`runtime/worker/service.py`).
+- Runtime launch override is `.ragtime/runtime-entrypoint.json` (command/cwd/framework) consumed by worker service.
 
-- Runtime session persistence + API routes are live.
-- Runtime provider seam is live (inferred from `RUNTIME_MANAGER_URL` HTTP(S) value).
-- HTTP runtime-manager service contract is live (`/sessions/start`, `/sessions/{id}`, `/sessions/{id}/stop`, `/sessions/{id}/restart`).
-- Runtime manager code is organized under `runtime/manager/{models,service,api}.py` with `runtime/main.py` as the runtime container entrypoint.
-- Runtime manager now orchestrates real isolated worker runtimes over HTTP (`RUNTIME_WORKER_URLS`) and no longer relies on warm-slot in-memory execution stubs.
-- Runtime manager now orchestrates isolated runtime sessions inside the runtime container process boundary (no dedicated worker compose services).
-- Runtime manager exposes manager-side FS and PTY upstream endpoints per provider session.
-- Runtime container supports explicit service mode (`manager` or `worker`) via `RUNTIME_SERVICE_MODE` (default deployment uses `manager`).
-- Preview proxying supports HTTP + websocket upgrades.
-- Shared preview proxy supports both slug and token route shapes.
-- Runtime capability token issuance is live for scoped runtime operations.
-- Collaboration supports text-sync updates, conflict resync, presence events, and file create/rename/delete broadcasts.
-- Runtime PTY websocket is now offloaded through manager→worker proxy chain; ragtime no longer spawns local PTY subprocesses.
-- Runtime FS routes are manager-backed and synced to worker runtime sessions.
-- Runtime worker filesystem root is `${INDEX_DATA_PATH}/_userspace/workspaces/{workspace_id}/files` (created on session start).
-- Preview traffic is proxied to a session-managed internal devserver port (currently dynamic per session).
-- Runtime launch contract metadata is exposed (framework/command/cwd/port) from worker -> manager -> ragtime runtime status/session APIs.
-- Runtime entrypoint guidance supports `.ragtime/runtime-entrypoint.json` (`command`, `cwd`, `framework`) as an explicit launch override.
-- Workspace creation now seeds `.ragtime/runtime-bootstrap.json` with default dependency bootstrap commands (npm/pip).
-- Managed runtime bootstrap templates are auto-backfilled for existing workspaces on access when `template_version` increases (or when legacy default template is detected).
-- Runtime worker executes workspace bootstrap commands before devserver launch and persists a config-digest stamp at `.ragtime/.runtime-bootstrap.done` so bootstrap reruns automatically when `.ragtime/runtime-bootstrap.json` changes.
-- Workspace SQLite snapshot persistence policy is configurable (`include` or `exclude`) and respected during snapshot staging.
-- Legacy frontend `srcDoc` preview fallback has been removed; preview is runtime-only.
+## Security + Proxy Rules (Do Not Violate)
 
-Still pending for full hard-cutover:
+- Keep role enforcement strict on runtime/collab mutations: viewer is read-only; editor/owner can mutate.
+- Never forward ragtime session credentials to user devservers: preserve blocked header behavior in `_proxy_request_headers`.
+- Keep hop-by-hop header filtering in proxy request/response paths.
+- No application-layer HTML rewriting in preview proxy; only transport-level root-relative URL rewriting is allowed.
+- Keep path normalization/traversal protections (`normalize_file_path` and reserved-path checks) intact.
 
-- Replace in-container worker session backend with MicroVM pool/session orchestration backend (provider seam retained).
-- Move from per-session dynamic internal devserver ports to fixed internal devserver port invariant (`5173`) per hard-cutover plan.
-- Replace text-sync collaboration with CRDT/Yjs semantics.
-- Finish operator runbook + end-to-end runtime validation checklist.
+## Non-Obvious Product Constraints
 
-## Required Engineering Rules
+- Current runtime backend is manager/worker orchestration, not MicroVM leasing yet.
+- Devserver port is still effectively dynamic per session (fixed internal `5173` invariant is not fully enforced yet).
+- Collaboration is text-sync + version-conflict resync; CRDT/Yjs is not active.
 
-- Reuse existing service/router helpers before adding new code paths.
-- **No application-layer HTML rewriting in the preview proxy.** The proxy (`runtime_routes.py`) may only perform transport-level rewrites (e.g., root-relative URL path prefixing for `src`, `href`, `action` attributes). It must never regex-match or transform application-level constructs such as bootstrap scripts, render calls, or module loading patterns. If workspace HTML is broken, the fix belongs in the code-generation prompts or runtime tooling, not in the proxy layer.
-- Enforce workspace role checks in every runtime/collab route:
-  - viewer: read-only preview/collab observation
-  - editor/owner: mutating collab/fs + terminal input + runtime controls
-- Keep runtime and collab writes auditable; do not silently skip failures.
-- Keep preview proxy header filtering strict; do not forward hop-by-hop headers.
-- Keep path handling traversal-safe using existing normalization helpers.
+## Known Validation Gaps (Important for Agent Output Quality)
 
-## API Contract Surface (Feature Work)
+- `validate_userspace_code` can pass while preview is still blank if workspace bootstrap expects `window.render` but bundle format hides it (IIFE export mismatch).
+- Component `execute()` timeouts can still blank dashboards if generated code lacks try/catch fallback rendering.
+- Prefer prompt/tooling fixes for these issues; do not patch proxy layer to compensate.
 
-- Runtime:
-  - `GET /indexes/userspace/runtime/workspaces/{workspace_id}/session`
-  - `POST /indexes/userspace/runtime/workspaces/{workspace_id}/session/start`
-  - `POST /indexes/userspace/runtime/workspaces/{workspace_id}/session/stop`
-  - `GET /indexes/userspace/runtime/workspaces/{workspace_id}/devserver/status`
-  - `POST /indexes/userspace/runtime/workspaces/{workspace_id}/devserver/start`
-  - `POST /indexes/userspace/runtime/workspaces/{workspace_id}/devserver/restart`
-  - `POST /indexes/userspace/runtime/workspaces/{workspace_id}/capability-token`
-  - `GET /indexes/userspace/runtime/workspaces/{workspace_id}/fs/{file_path:path}`
-  - `PUT /indexes/userspace/runtime/workspaces/{workspace_id}/fs/{file_path:path}`
-  - `DELETE /indexes/userspace/runtime/workspaces/{workspace_id}/fs/{file_path:path}`
-  - `WS /indexes/userspace/runtime/workspaces/{workspace_id}/pty`
-- Collaboration:
-  - `WS /indexes/userspace/collab/workspaces/{workspace_id}/files/{file_path:path}`
-  - `POST /indexes/userspace/collab/workspaces/{workspace_id}/files/create`
-  - `POST /indexes/userspace/collab/workspaces/{workspace_id}/files/rename`
-  - `POST /indexes/userspace/collab/workspaces/{workspace_id}/files/delete`
-- Preview proxy:
-  - `ANY /indexes/userspace/workspaces/{workspace_id}/preview[/{path:path}]`
-  - `WS  /indexes/userspace/workspaces/{workspace_id}/preview[/{path:path}]`
-  - `ANY /indexes/userspace/shared/{owner_username}/{share_slug}[/{path:path}]`
-  - `WS  /indexes/userspace/shared/{owner_username}/{share_slug}[/{path:path}]`
-  - `ANY /indexes/userspace/shared/{share_token}/preview[/{path:path}]`
-  - `WS  /indexes/userspace/shared/{share_token}/preview[/{path:path}]`
+## Fast Workflow for User Space Changes
 
-## Verification Checklist (Before Claiming Done)
+- Check runtime health + logs first (see `.github/instructions/debugging.instructions.md`).
+- Validate the exact User Space behavior touched (not full-system sweeps):
+  - share route changes: verify both top-level and internal preview flows
+  - bootstrap changes: verify config seed + stamp update behavior
+  - proxy changes: verify header filtering and websocket pass-through still work
+- Use `/docs` for endpoint signatures and payload shapes.
 
-1. `python -m prisma migrate deploy` succeeds in the app container.
-2. Authenticated runtime session flow works:
-   - session `GET` returns 200
-   - `POST .../session/start` returns success
-   - `GET .../devserver/status` returns expected state payload
-3. Workspace preview route responds (200 when upstream exists, 502 with clear error when unavailable).
-4. No new stack traces in `docker logs ragtime-dev` for touched endpoints.
-5. Any touched frontend/runtime types pass diagnostics (`get_errors`).
-6. Frontend production build succeeds in-container:
-  - `docker exec ragtime-dev sh -c "cd /ragtime/ragtime/frontend && npm run build"`
-7. Workspace bootstrap-on-create is present and consumed:
-  - New workspace contains `.ragtime/runtime-bootstrap.json`
-  - First runtime start either creates `.ragtime/.runtime-bootstrap.done` (digest value) or returns a clear bootstrap command failure in devserver status.
-  - Editing `.ragtime/runtime-bootstrap.json` causes bootstrap to re-run on next runtime start (stamp digest changes).
+## Sources Used for This Guide
 
-## Runtime Plan Reference
-
-`User Space Runtime Plan v2.md` is the target roadmap.
-If a plan item is not implemented, document it explicitly in PR/summary rather than implying completion.
-
-## Apparent Gaps vs Runtime Plan v2
-
-These are the key, currently visible deltas between implementation and `User Space Runtime Plan v2.md`:
-
-- Fixed internal devserver port invariant (`5173`) is not yet enforced; runtime currently uses a session-allocated dynamic port behind proxying.
-- Collaboration transport is not yet CRDT/Yjs; current protocol is text snapshot/update with version-conflict resync and presence.
-- MicroVM warm-pool leasing backend is not yet active; current runtime backend remains in-container manager/worker orchestration.
-- The plan's full multi-editor CRDT semantics (document-level merge guarantees and binary Yjs protocol) are pending.
-
-## Runtime Offload Implementation Notes (Current)
-
-- Control plane remains in ragtime (`runtime_service`/`runtime_routes`) with role checks, audit events, and reverse proxy entrypoints.
-- Data plane execution now lives in isolated runtime worker services (filesystem writes, PTY process execution, preview serving).
-- Manager contract remains stable for start/get/stop/restart/health; additional manager endpoints support PTY URL and FS operations.
-- Compose stacks run ragtime + runtime (manager mode); runtime hosts internal isolated sessions and ragtime must be configured with matching manager auth token.
-- Runtime webroots are rooted at `${INDEX_DATA_PATH}/_userspace/workspaces/{workspace_id}/files`.
+- Conventions search requested by user found `README.md` only (no `AGENTS.md`/`copilot-instructions.md` in repo).
+- Primary implementation references: `ragtime/main.py`, `ragtime/userspace/runtime_routes.py`, `ragtime/userspace/runtime_service.py`, `ragtime/userspace/service.py`, `runtime/main.py`, `runtime/shared.py`, `runtime/worker/service.py`.

@@ -13,6 +13,38 @@
 | Tool registry | `ragtime/tools/registry.py` | Auto-discovery of `<name>_tool` exports |
 | Security | `ragtime/core/security.py` | SQL validation, injection prevention |
 
+### Authentication
+
+- Session auth uses the `ragtime_session` httpOnly cookie; bearer token fallback is handled by `get_session_token()` in `ragtime/core/security.py`.
+- Auth endpoints and login/session handling live in `ragtime/api/auth.py`.
+- User/session validation dependencies are in `ragtime/core/security.py` (`get_current_user`, `require_admin`).
+- Local admin auth is always available; LDAP is optional and configured via admin settings.
+- Login is rate-limited; keep this behavior intact when changing auth flows.
+
+### User Space Runtime Scope
+
+| Area | Path(s) | Notes |
+|------|---------|-------|
+| User Space control plane | `ragtime/userspace/runtime_service.py`, `ragtime/userspace/runtime_routes.py` | Session lifecycle, collab, preview proxying, capability checks |
+| Public share routes | `ragtime/main.py` | Canonical public sharing routes (`/{owner}/{slug}`) and token redirect (`/shared/{token}`) |
+| Runtime manager/worker data plane | `runtime/manager/**`, `runtime/worker/**`, `runtime/main.py` | Isolated runtime execution, devserver lifecycle, FS and PTY upstreams |
+| Bootstrap + launch config | `.ragtime/runtime-bootstrap.json`, `.ragtime/runtime-entrypoint.json` | Bootstrap commands and runtime launch overrides |
+
+### What Workspaces Are
+
+Workspaces are the core User Space unit: an agentic sandbox backed by real project files, membership/roles, conversation context, selected tool access, and a runtime preview session.
+
+- Workspace API and model surface: `ragtime/userspace/routes.py`, `ragtime/userspace/models.py` (`selected_tool_ids`, files, snapshots, sharing).
+- Runtime-backed preview lifecycle: `ragtime/userspace/runtime_service.py` with preview proxy routes in `ragtime/userspace/runtime_routes.py`.
+- Runtime service mode split: `runtime/main.py` chooses manager/worker behavior via `RUNTIME_SERVICE_MODE`.
+- Agent infrastructure access path: `ragtime/mcp/tools.py` dynamically materializes enabled tool configs (`get_tool_configs()`), applies health filtering, and exposes tool execution through MCP.
+
+Current User Space scope is runtime-backed preview + sharing. Keep endpoint contract details in `/docs` and avoid duplicating full route inventories in docs.
+
+When changing sharing behavior, validate both route layers:
+- public top-level routes in `ragtime/main.py`
+- internal editor preview routes under `/indexes/userspace/shared/*` in `ragtime/userspace/runtime_routes.py`
+
 ### Vector Store Implementation
 
 | Index Type | Service | Storage |
@@ -91,6 +123,11 @@ curl -X POST http://localhost:8000/v1/chat/completions \
    - **UI (Vite hot-reload):** http://localhost:8001
    - **API:** http://localhost:8000
    - **API Docs:** http://localhost:8000/docs
+
+4. **User Space sanity checks (for runtime/share changes):**
+  - Verify runtime/session endpoints in `/docs`
+  - Verify both public and internal share flows (slug/token + preview proxy)
+  - Verify runtime bootstrap stamp behavior (`.ragtime/.runtime-bootstrap.done`) after editing bootstrap config
 
 ## Adding Tools
 
