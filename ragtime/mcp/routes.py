@@ -40,6 +40,8 @@ from ragtime.mcp.server import (
     get_custom_route_server,
     get_default_route_filtered_server,
     mcp_server,
+    notify_tools_changed,
+    register_tools_changed_callback,
 )
 from ragtime.mcp.tools import mcp_tool_adapter
 
@@ -60,6 +62,16 @@ _custom_route_servers: dict[str, MCPServer[Any, Any]] = {}
 # We use the low-level server directly for filtered requests since
 # StreamableHTTPSessionManager requires run() to be called before handling requests
 _default_filter_servers: dict[str, MCPServer[Any, Any]] = {}
+
+
+def invalidate_http_route_cache() -> None:
+    """Invalidate HTTP MCP route server caches."""
+    _custom_route_servers.clear()
+    _default_filter_servers.clear()
+
+
+# Ensure notify_tools_changed() also clears HTTP route-level caches.
+register_tools_changed_callback(invalidate_http_route_cache)
 
 
 def get_session_manager() -> StreamableHTTPSessionManager:
@@ -88,8 +100,6 @@ async def get_filtered_server(
     Returns:
         MCP server configured with the filter's tool restrictions, or None
     """
-    global _default_filter_servers
-
     # Check cache
     if filter_id in _default_filter_servers:
         return _default_filter_servers[filter_id]
@@ -174,8 +184,6 @@ async def get_custom_route_server_cached(
         Tuple of (server, require_auth, auth_password, auth_method, allowed_group)
         or None if route not found
     """
-    global _custom_route_servers
-
     # Get route config (always need fresh auth info)
     result = await get_custom_route_server(route_path)
     if not result:
@@ -924,11 +932,7 @@ async def invalidate_mcp_cache(_user: User = Depends(require_admin)):
     Forces a fresh heartbeat check on the next tool list request.
     Useful after adding/modifying tool configurations.
     """
-    mcp_tool_adapter.invalidate_cache()
-    # Clear custom route server cache
-    _custom_route_servers.clear()
-    # Clear default filter server cache
-    _default_filter_servers.clear()
+    notify_tools_changed()
     return {"status": "cache_invalidated"}
 
 

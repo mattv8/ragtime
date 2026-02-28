@@ -17,14 +17,16 @@ import argparse
 import asyncio
 import logging
 import sys
+import weakref
+from collections.abc import Callable
 from typing import Any
 
 from mcp.server import Server
+from mcp.server.session import ServerSession
 from mcp.types import TextContent, Tool
 
 from ragtime.core.app_settings import get_app_settings
-from ragtime.core.database import connect_db, disconnect_db
-from ragtime.core.database import get_db
+from ragtime.core.database import connect_db, disconnect_db, get_db
 from ragtime.core.logging import get_logger
 from ragtime.mcp.tools import McpRouteFilter, MCPToolAdapter, mcp_tool_adapter
 from ragtime.rag import rag
@@ -41,6 +43,40 @@ _custom_route_adapters: dict[str, MCPToolAdapter] = {}
 # Cache of default route filter servers (keyed by filter ID)
 _default_filter_servers: dict[str, Server] = {}
 _default_filter_adapters: dict[str, MCPToolAdapter] = {}
+
+# Active MCP sessions (for best-effort tools/list_changed notifications)
+_active_sessions: weakref.WeakSet[ServerSession] = weakref.WeakSet()
+
+# Callbacks invoked when tools/routes change (used by HTTP transport layer caches)
+_tools_changed_callbacks: list[Callable[[], None]] = []
+
+
+def register_tools_changed_callback(callback: Callable[[], None]) -> None:
+    """Register a callback to run when MCP tools/routes are invalidated."""
+    if callback in _tools_changed_callbacks:
+        return
+    _tools_changed_callbacks.append(callback)
+
+
+def _track_active_session(server: Server) -> None:
+    """Track the current MCP session if running inside a request context."""
+    try:
+        session = server.request_context.session
+    except LookupError:
+        return
+    _active_sessions.add(session)
+
+
+async def _notify_active_sessions_tool_list_changed() -> None:
+    """Best-effort broadcast of tools/list_changed to active MCP sessions."""
+    if not _active_sessions:
+        return
+
+    for session in list(_active_sessions):
+        try:
+            await session.send_tool_list_changed()
+        except Exception:
+            logger.debug("Failed to send tools/list_changed to MCP session")
 
 
 async def get_mcp_server() -> Server:
@@ -75,6 +111,22 @@ def notify_tools_changed() -> None:
     _custom_route_adapters.clear()
     _default_filter_servers.clear()
     _default_filter_adapters.clear()
+
+    # Notify additional cache owners (e.g., HTTP route-level server caches)
+    for callback in _tools_changed_callbacks:
+        try:
+            callback()
+        except Exception:
+            logger.exception("Failed to run MCP tools-changed callback")
+
+    # Best-effort notify connected sessions (if transport/session supports it)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is not None:
+        loop.create_task(_notify_active_sessions_tool_list_changed())
+
     logger.info("MCP tool cache invalidated - tools list has changed")
 
 
@@ -97,6 +149,7 @@ def _register_handlers(
         Only healthy tools (passing heartbeat check) are exposed.
         """
         tools: list[Tool] = []
+        _track_active_session(server)
 
         try:
             tool_definitions = await tool_adapter.get_available_tools(
@@ -132,6 +185,7 @@ def _register_handlers(
         Returns:
             List containing a single TextContent with the result
         """
+        _track_active_session(server)
         logger.info(f"MCP call_tool: {name}")
         logger.debug(f"MCP call_tool arguments: {arguments}")
 
