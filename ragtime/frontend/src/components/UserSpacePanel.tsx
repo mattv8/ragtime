@@ -63,9 +63,15 @@ function areSameNormalizedStringArrays(left: string[], right: string[]): boolean
 
 const LAST_WORKSPACE_COOKIE_PREFIX = 'userspace_last_workspace_id_';
 const LAST_WORKSPACE_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
+const USERSPACE_LAYOUT_COOKIE_PREFIX = 'userspace_layout_';
 
 function getLastWorkspaceCookieName(userId: string): string {
   return `${LAST_WORKSPACE_COOKIE_PREFIX}${encodeURIComponent(userId)}`;
+}
+
+function getUserSpaceLayoutCookieName(userId: string, workspaceId: string | null): string {
+  const scope = workspaceId ? encodeURIComponent(workspaceId) : 'global';
+  return `${USERSPACE_LAYOUT_COOKIE_PREFIX}${encodeURIComponent(userId)}_${scope}`;
 }
 
 function getCookieValue(name: string): string | null {
@@ -89,8 +95,45 @@ function setCookieValue(name: string, value: string): void {
   document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=${LAST_WORKSPACE_COOKIE_MAX_AGE_SECONDS}; samesite=lax`;
 }
 
+function setSessionCookieValue(name: string, value: string): void {
+  document.cookie = `${name}=${encodeURIComponent(value)}; path=/; samesite=lax`;
+}
+
 function clearCookieValue(name: string): void {
   document.cookie = `${name}=; path=/; max-age=0; samesite=lax`;
+}
+
+interface StoredUserSpaceLayout {
+  sidebarWidth: number;
+  sidebarCollapsed: boolean;
+  leftPaneFraction: number;
+  rightPaneCollapsed: boolean;
+  editorFraction: number;
+  editorChatCollapsedSide: 'before' | 'after' | null;
+}
+
+function readStoredUserSpaceLayout(cookieName: string): StoredUserSpaceLayout | null {
+  const raw = getCookieValue(cookieName);
+  if (!raw) return null;
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<StoredUserSpaceLayout>;
+    const collapsedSide = parsed.editorChatCollapsedSide;
+    return {
+      sidebarWidth: typeof parsed.sidebarWidth === 'number' ? parsed.sidebarWidth : 180,
+      sidebarCollapsed: Boolean(parsed.sidebarCollapsed),
+      leftPaneFraction: typeof parsed.leftPaneFraction === 'number' ? parsed.leftPaneFraction : 0.5,
+      rightPaneCollapsed: Boolean(parsed.rightPaneCollapsed),
+      editorFraction: typeof parsed.editorFraction === 'number' ? parsed.editorFraction : 0.6,
+      editorChatCollapsedSide: collapsedSide === 'before' || collapsedSide === 'after' ? collapsedSide : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePanelProps) {
@@ -185,6 +228,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const terminalFitRef = useRef<FitAddon | null>(null);
   const terminalResizeObserverRef = useRef<ResizeObserver | null>(null);
   const lastWorkspaceCookieName = useMemo(() => getLastWorkspaceCookieName(currentUser.id), [currentUser.id]);
+  const userSpaceLayoutCookieName = useMemo(() => getUserSpaceLayoutCookieName(currentUser.id, activeWorkspaceId), [currentUser.id, activeWorkspaceId]);
 
   // Resize state
   const [sidebarWidth, setSidebarWidth] = useState(180);
@@ -200,6 +244,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const prevSidebarWidth = useRef(180);
   const prevLeftPaneFraction = useRef(0.5);
   const prevEditorFraction = useRef(0.6);
+  const skipNextLayoutPersistRef = useRef(true);
 
   const SIDEBAR_COLLAPSE_THRESHOLD = 60;
   const MAIN_COLLAPSE_LEFT_THRESHOLD = 0.08;
@@ -279,6 +324,79 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     const restored = prevEditorFraction.current || 0.6;
     setEditorFraction(Math.min(0.9, Math.max(0.1, restored)));
   }, []);
+
+  useEffect(() => {
+    skipNextLayoutPersistRef.current = true;
+    const stored = readStoredUserSpaceLayout(userSpaceLayoutCookieName);
+
+    if (!stored) {
+      setSidebarWidth(180);
+      setSidebarCollapsed(false);
+      setLeftPaneFraction(0.5);
+      setRightPaneCollapsed(false);
+      setEditorFraction(0.6);
+      setEditorChatCollapsedSide(null);
+      prevSidebarWidth.current = 180;
+      prevLeftPaneFraction.current = 0.5;
+      prevEditorFraction.current = 0.6;
+      return;
+    }
+
+    const restoredSidebarWidth = clampNumber(stored.sidebarWidth, SIDEBAR_COLLAPSE_THRESHOLD, 400);
+    const restoredLeftPaneFraction = clampNumber(stored.leftPaneFraction, 0.1, 0.9);
+    const restoredEditorFraction = clampNumber(stored.editorFraction, 0.1, 0.9);
+
+    setSidebarCollapsed(stored.sidebarCollapsed);
+    setSidebarWidth(stored.sidebarCollapsed ? 0 : restoredSidebarWidth);
+    setRightPaneCollapsed(stored.rightPaneCollapsed);
+    setLeftPaneFraction(stored.rightPaneCollapsed ? 1 : restoredLeftPaneFraction);
+    setEditorChatCollapsedSide(stored.editorChatCollapsedSide);
+
+    if (stored.editorChatCollapsedSide === 'before') {
+      setEditorFraction(0);
+    } else if (stored.editorChatCollapsedSide === 'after') {
+      setEditorFraction(1);
+    } else {
+      setEditorFraction(restoredEditorFraction);
+    }
+
+    prevSidebarWidth.current = restoredSidebarWidth;
+    prevLeftPaneFraction.current = restoredLeftPaneFraction;
+    prevEditorFraction.current = restoredEditorFraction;
+  }, [SIDEBAR_COLLAPSE_THRESHOLD, userSpaceLayoutCookieName]);
+
+  useEffect(() => {
+    if (skipNextLayoutPersistRef.current) {
+      skipNextLayoutPersistRef.current = false;
+      return;
+    }
+
+    const payload: StoredUserSpaceLayout = {
+      sidebarWidth: sidebarCollapsed
+        ? clampNumber(prevSidebarWidth.current || 180, SIDEBAR_COLLAPSE_THRESHOLD, 400)
+        : clampNumber(sidebarWidth, SIDEBAR_COLLAPSE_THRESHOLD, 400),
+      sidebarCollapsed,
+      leftPaneFraction: rightPaneCollapsed
+        ? clampNumber(prevLeftPaneFraction.current || 0.5, 0.1, 0.9)
+        : clampNumber(leftPaneFraction, 0.1, 0.9),
+      rightPaneCollapsed,
+      editorFraction: editorChatCollapsedSide
+        ? clampNumber(prevEditorFraction.current || 0.6, 0.1, 0.9)
+        : clampNumber(editorFraction, 0.1, 0.9),
+      editorChatCollapsedSide,
+    };
+
+    setSessionCookieValue(userSpaceLayoutCookieName, JSON.stringify(payload));
+  }, [
+    SIDEBAR_COLLAPSE_THRESHOLD,
+    editorChatCollapsedSide,
+    editorFraction,
+    leftPaneFraction,
+    rightPaneCollapsed,
+    sidebarCollapsed,
+    sidebarWidth,
+    userSpaceLayoutCookieName,
+  ]);
   const [editingName, setEditingName] = useState(false);
   const [draftName, setDraftName] = useState('');
 

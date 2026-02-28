@@ -15,9 +15,11 @@ interface ResizeHandleProps {
   collapsed?: 'before' | 'after';
   /** Called when the user activates the collapsed handle to restore a pane */
   onExpand?: () => void;
+  /** Called when a drag gesture ends or collapsed handle is activated */
+  onResizeEnd?: () => void;
 }
 
-export function ResizeHandle({ direction, onResize, className, collapsed, onExpand }: ResizeHandleProps) {
+export function ResizeHandle({ direction, onResize, className, collapsed, onExpand, onResizeEnd }: ResizeHandleProps) {
   const startPos = useRef(0);
   const onResizeRef = useRef(onResize);
   onResizeRef.current = onResize;
@@ -52,8 +54,20 @@ export function ResizeHandle({ direction, onResize, className, collapsed, onExpa
       e.currentTarget.releasePointerCapture(e.pointerId);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      onResizeEnd?.();
     },
-    [],
+    [onResizeEnd],
+  );
+
+  const handlePointerCancel = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+      e.currentTarget.releasePointerCapture(e.pointerId);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      onResizeEnd?.();
+    },
+    [onResizeEnd],
   );
 
   const cls = className ?? `resize-handle resize-handle-${direction}`;
@@ -73,6 +87,7 @@ export function ResizeHandle({ direction, onResize, className, collapsed, onExpa
         onPointerDown={(e) => {
           e.preventDefault();
           onExpand?.();
+          onResizeEnd?.();
         }}
         title="Expand pane"
       >
@@ -87,6 +102,7 @@ export function ResizeHandle({ direction, onResize, className, collapsed, onExpa
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerCancel}
       style={{ touchAction: 'none' }}
     />
   );

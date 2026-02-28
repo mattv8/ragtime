@@ -937,6 +937,9 @@
   border-top: 1px solid var(--color-border);
   background: var(--color-surface-hover);
   overflow: visible;
+  box-sizing: border-box;
+  position: relative;
+  z-index: 10;
 }
 
 /* Content-driven auto-resize: smooth grow, fast shrink */
@@ -961,6 +964,8 @@
 .chat-input-wrapper {
   flex: 1;
   min-height: 44px;
+  max-height: 100%;
+  box-sizing: border-box;
   width: 100%;
   position: relative;
   display: flex;
@@ -978,8 +983,7 @@
 
 .chat-input-wrapper .chat-input {
   flex: 1;
-  min-height: 36px;
-  max-height: none;
+  min-height: 0;
   padding: 12px 108px 12px 52px; /* Right padding leaves room for tool + send controls */
   background: transparent;
   border: none;
@@ -989,7 +993,9 @@
   font-size: var(--text-base);
   font-family: inherit;
   resize: none;
-  height: auto;
+  height: 100%; /* Fill wrapper height — container height controls sizing */
+  max-height: 100%;
+  box-sizing: border-box;
   line-height: 1.5;
   overflow-y: auto;
   overflow-x: hidden;

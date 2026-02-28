@@ -225,6 +225,65 @@ interface DataTableData {
   };
 }
 
+interface StoredChatLayout {
+  showSidebar: boolean;
+  sidebarWidth: number;
+  inputAreaHeight: number;
+  isInputAreaCollapsed: boolean;
+  isMessagesCollapsed: boolean;
+}
+
+const CHAT_LAYOUT_COOKIE_PREFIX = 'chat_layout_';
+
+function getChatLayoutCookieName(userId: string, workspaceId?: string, embedded?: boolean): string {
+  const scope = workspaceId ? encodeURIComponent(workspaceId) : 'global';
+  const mode = embedded ? 'embedded' : 'default';
+  return `${CHAT_LAYOUT_COOKIE_PREFIX}${encodeURIComponent(userId)}_${mode}_${scope}`;
+}
+
+function getCookieValue(name: string): string | null {
+  if (typeof document === 'undefined') return null;
+  const entries = document.cookie ? document.cookie.split('; ') : [];
+  const prefix = `${name}=`;
+  for (const entry of entries) {
+    if (!entry.startsWith(prefix)) continue;
+    const raw = entry.slice(prefix.length);
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
+  }
+  return null;
+}
+
+function setSessionCookieValue(name: string, value: string): void {
+  if (typeof document === 'undefined') return;
+  document.cookie = `${name}=${encodeURIComponent(value)}; path=/; samesite=lax`;
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function readStoredChatLayout(cookieName: string): StoredChatLayout | null {
+  const raw = getCookieValue(cookieName);
+  if (!raw) return null;
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<StoredChatLayout>;
+    return {
+      showSidebar: parsed.showSidebar ?? true,
+      sidebarWidth: typeof parsed.sidebarWidth === 'number' ? parsed.sidebarWidth : 280,
+      inputAreaHeight: typeof parsed.inputAreaHeight === 'number' ? parsed.inputAreaHeight : 96,
+      isInputAreaCollapsed: Boolean(parsed.isInputAreaCollapsed),
+      isMessagesCollapsed: Boolean(parsed.isMessagesCollapsed),
+    };
+  } catch {
+    return null;
+  }
+}
+
 function parseChartData(output: string): ChartData | null {
   try {
     const parsed = JSON.parse(output);
@@ -1056,6 +1115,7 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const MIN_INPUT_AREA_HEIGHT = 96;
   const INPUT_AREA_COLLAPSE_THRESHOLD = 80;
+  const chatLayoutCookieName = getChatLayoutCookieName(currentUser.id, workspaceId, embedded);
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
@@ -1070,6 +1130,8 @@ export function ChatPanel({
   const [inputAreaHeight, setInputAreaHeight] = useState(MIN_INPUT_AREA_HEIGHT);
   const [isInputAreaCollapsed, setIsInputAreaCollapsed] = useState(false);
   const [isMessagesCollapsed, setIsMessagesCollapsed] = useState(false);
+  const [isManualResize, setIsManualResize] = useState(false);
+  const [autoResizeState, setAutoResizeState] = useState<'growing' | 'shrinking' | null>(null);
   const [editingTitle, setEditingTitle] = useState<string | null>(null);
   const [titleInput, setTitleInput] = useState('');
   const [editingMessageIdx, setEditingMessageIdx] = useState<number | null>(null);
@@ -1185,6 +1247,65 @@ export function ChatPanel({
   const chatMainRef = useRef<HTMLDivElement>(null);
   const prevSidebarWidth = useRef(280);
   const prevInputAreaHeight = useRef(MIN_INPUT_AREA_HEIGHT);
+  const skipNextLayoutPersistRef = useRef(true);
+
+  useEffect(() => {
+    skipNextLayoutPersistRef.current = true;
+    const stored = readStoredChatLayout(chatLayoutCookieName);
+
+    if (!stored) {
+      setShowSidebar(!embedded);
+      setSidebarWidth(280);
+      setInputAreaHeight(MIN_INPUT_AREA_HEIGHT);
+      setIsInputAreaCollapsed(false);
+      setIsMessagesCollapsed(false);
+      prevSidebarWidth.current = 280;
+      prevInputAreaHeight.current = MIN_INPUT_AREA_HEIGHT;
+      return;
+    }
+
+    const nextSidebarWidth = clampNumber(stored.sidebarWidth, 0, 480);
+    const nextInputAreaHeight = Math.max(MIN_INPUT_AREA_HEIGHT, stored.inputAreaHeight);
+    const nextIsInputAreaCollapsed = stored.isInputAreaCollapsed;
+    const nextIsMessagesCollapsed = nextIsInputAreaCollapsed ? false : stored.isMessagesCollapsed;
+
+    setShowSidebar(embedded ? false : stored.showSidebar);
+    setSidebarWidth(nextSidebarWidth);
+    setInputAreaHeight(nextInputAreaHeight);
+    setIsInputAreaCollapsed(nextIsInputAreaCollapsed);
+    setIsMessagesCollapsed(nextIsMessagesCollapsed);
+
+    if (nextSidebarWidth >= 120) {
+      prevSidebarWidth.current = nextSidebarWidth;
+    }
+    prevInputAreaHeight.current = nextInputAreaHeight;
+  }, [MIN_INPUT_AREA_HEIGHT, chatLayoutCookieName, embedded]);
+
+  useEffect(() => {
+    if (skipNextLayoutPersistRef.current) {
+      skipNextLayoutPersistRef.current = false;
+      return;
+    }
+
+    const persisted: StoredChatLayout = {
+      showSidebar: embedded ? false : showSidebar,
+      sidebarWidth: clampNumber(sidebarWidth, 0, 480),
+      inputAreaHeight: Math.max(MIN_INPUT_AREA_HEIGHT, inputAreaHeight),
+      isInputAreaCollapsed,
+      isMessagesCollapsed: isInputAreaCollapsed ? false : isMessagesCollapsed,
+    };
+
+    setSessionCookieValue(chatLayoutCookieName, JSON.stringify(persisted));
+  }, [
+    MIN_INPUT_AREA_HEIGHT,
+    chatLayoutCookieName,
+    embedded,
+    inputAreaHeight,
+    isInputAreaCollapsed,
+    isMessagesCollapsed,
+    showSidebar,
+    sidebarWidth,
+  ]);
 
   const handleResizeSidebar = useCallback((delta: number) => {
     if (embedded) return;
@@ -1206,7 +1327,36 @@ export function ChatPanel({
     setSidebarWidth(Math.min(480, Math.max(180, restored)));
   }, []);
 
+  const getMaxInputAreaHeight = useCallback(() => {
+    const chatMain = chatMainRef.current;
+    if (!chatMain) return 600;
+
+    const containerHeight = chatMain.clientHeight;
+    let occupiedHeight = 0;
+
+    for (const child of Array.from(chatMain.children)) {
+      const el = child as HTMLElement;
+      if (el.classList.contains('chat-input-area')) continue;
+      if (el.classList.contains('chat-messages')) continue;
+      occupiedHeight += el.getBoundingClientRect().height;
+    }
+
+    return Math.max(MIN_INPUT_AREA_HEIGHT, containerHeight - occupiedHeight);
+  }, [MIN_INPUT_AREA_HEIGHT]);
+
   const handleResizeInputArea = useCallback((delta: number) => {
+    // Switch to manual-resize mode — textarea fills via CSS, container height
+    // is drag-controlled.
+    setIsManualResize(true);
+    const inputArea = chatMainRef.current?.querySelector('.chat-input-area') as HTMLElement | null;
+    if (inputArea) {
+      const ta = inputArea.querySelector('.chat-input') as HTMLElement | null;
+      if (ta) {
+        ta.style.height = '';
+        ta.style.maxHeight = '';
+      }
+    }
+
     setInputAreaHeight((prev) => {
       const proposed = prev - delta;
       const draggingDown = delta > 0;
@@ -1221,24 +1371,12 @@ export function ChatPanel({
         }
         setIsInputAreaCollapsed(true);
         if (isMessagesCollapsed) setIsMessagesCollapsed(false);
+        setIsManualResize(false);
         return prev;
       }
 
       // --- Compute max input height from container ---
-      const container = chatMainRef.current;
-      let maxInputHeight = 600; // fallback
-      if (container) {
-        const containerHeight = container.clientHeight;
-        // Measure all non-input siblings (header, error, handle) to get exact available space
-        let occupiedHeight = 0;
-        for (const child of Array.from(container.children)) {
-          const el = child as HTMLElement;
-          if (el.classList.contains('chat-input-area')) continue;   // skip the input area itself
-          if (el.classList.contains('chat-messages')) continue;     // skip messages (will be collapsed)
-          occupiedHeight += el.getBoundingClientRect().height;
-        }
-        maxInputHeight = containerHeight - occupiedHeight;
-      }
+      const maxInputHeight = getMaxInputAreaHeight();
 
       // --- Collapse messages area (dragging up past max) ---
       if (draggingUp && proposed >= maxInputHeight) {
@@ -1246,6 +1384,7 @@ export function ChatPanel({
           prevInputAreaHeight.current = prev;
           setIsMessagesCollapsed(true);
         }
+        setIsManualResize(false);
         return maxInputHeight;
       }
 
@@ -1259,62 +1398,84 @@ export function ChatPanel({
       }
       return next;
     });
-  }, [INPUT_AREA_COLLAPSE_THRESHOLD, MIN_INPUT_AREA_HEIGHT, isInputAreaCollapsed, isMessagesCollapsed]);
+  }, [INPUT_AREA_COLLAPSE_THRESHOLD, MIN_INPUT_AREA_HEIGHT, getMaxInputAreaHeight, isInputAreaCollapsed, isMessagesCollapsed]);
 
   const expandInputArea = useCallback(() => {
     setIsInputAreaCollapsed(false);
     setInputAreaHeight(Math.max(MIN_INPUT_AREA_HEIGHT, prevInputAreaHeight.current || MIN_INPUT_AREA_HEIGHT));
+    setIsManualResize(false);
     requestAnimationFrame(() => inputRef.current?.focus());
   }, [MIN_INPUT_AREA_HEIGHT]);
 
   const expandMessages = useCallback(() => {
     setIsMessagesCollapsed(false);
     setInputAreaHeight(Math.max(MIN_INPUT_AREA_HEIGHT, prevInputAreaHeight.current || MIN_INPUT_AREA_HEIGHT));
+    setIsManualResize(false);
   }, [MIN_INPUT_AREA_HEIGHT]);
 
-  // Grow/shrink the input area container to fit the textarea content.
-  // Measures scrollHeight with height temporarily collapsed to 0 so we get
-  // true intrinsic content height, independent of the flex container size.
+  // Adjust the input area container height to fit the textarea content.
+  // The textarea itself always fills its container via CSS (height: 100%);
+  // this function only manages the container height.
   const autoResizeInput = useCallback((el?: HTMLTextAreaElement | null) => {
     const textarea = el ?? inputRef.current;
     if (!textarea) return;
 
-    // Collapse to 0 so scrollHeight reports intrinsic content height,
-    // not the flex-inflated container height.
-    textarea.style.height = '0px';
-    const contentHeight = textarea.scrollHeight;
-    textarea.style.height = `${contentHeight}px`;
-
-    // Grow or shrink the container to fit.  The wrapper has padding/border
-    // that sit outside the textarea, so account for its overhead.
     const wrapper = textarea.closest('.chat-input-area') as HTMLElement | null;
+
+    let wrapperOverhead = 0;
     if (wrapper) {
       const wrapperStyle = getComputedStyle(wrapper);
       const verticalPadding = parseFloat(wrapperStyle.paddingTop) + parseFloat(wrapperStyle.paddingBottom);
       const borderWidth = parseFloat(wrapperStyle.borderTopWidth) + parseFloat(wrapperStyle.borderBottomWidth);
-      const needed = contentHeight + verticalPadding + borderWidth;
-      const target = Math.max(MIN_INPUT_AREA_HEIGHT, Math.ceil(needed));
-
-      setInputAreaHeight((prev) => {
-        if (prev === target) return prev;
-        // Enable transition classes for content-driven resize only;
-        // these are removed after the transition so manual drag is unaffected.
-        const shrinking = target < prev;
-        wrapper.classList.add('auto-resizing');
-        wrapper.classList.toggle('shrinking', shrinking);
-
-        const cleanup = () => {
-          wrapper.classList.remove('auto-resizing', 'shrinking');
-          wrapper.removeEventListener('transitionend', cleanup);
-        };
-        wrapper.addEventListener('transitionend', cleanup, { once: true });
-        // Fallback removal in case transitionend doesn't fire
-        setTimeout(cleanup, shrinking ? 80 : 180);
-
-        return target;
-      });
+      wrapperOverhead = verticalPadding + borderWidth;
     }
-  }, [MIN_INPUT_AREA_HEIGHT]);
+
+    // Measure intrinsic content height by collapsing textarea to 0.
+    // The inline style overrides the CSS height:100% during measurement.
+    textarea.style.height = '0px';
+    const contentHeight = textarea.scrollHeight;
+    // Clear inline height — let CSS height:100% fill the container.
+    textarea.style.height = '';
+
+    // In manual-resize mode (user dragged the resize handle), we DO NOT grow
+    // the container when text is added. We just let the textarea scroll.
+    // However, if the text is completely cleared, we exit manual mode
+    // and reset to minimum height.
+    if (isManualResize) {
+      const needed = contentHeight + wrapperOverhead;
+      if (needed <= MIN_INPUT_AREA_HEIGHT) {
+        setIsManualResize(false);
+        setInputAreaHeight(MIN_INPUT_AREA_HEIGHT);
+      }
+      return;
+    }
+
+    // Content-driven auto-resize: grow or shrink container to fit.
+    const rawMax = getMaxInputAreaHeight();
+    const maxInputHeight = embedded
+      ? rawMax
+      : Math.min(rawMax, Math.floor(window.innerHeight * 0.5));
+
+    const needed = contentHeight + wrapperOverhead;
+    const target = Math.min(maxInputHeight, Math.max(MIN_INPUT_AREA_HEIGHT, Math.ceil(needed)));
+
+    setInputAreaHeight((prev) => {
+      if (prev === target) return prev;
+      // Enable transition classes for content-driven resize only
+      const shrinking = target < prev;
+      setAutoResizeState(shrinking ? 'shrinking' : 'growing');
+
+      const cleanup = () => {
+        setAutoResizeState(null);
+        wrapper?.removeEventListener('transitionend', cleanup);
+      };
+      wrapper?.addEventListener('transitionend', cleanup, { once: true });
+      // Fallback removal in case transitionend doesn't fire
+      setTimeout(cleanup, shrinking ? 80 : 180);
+
+      return target;
+    });
+  }, [MIN_INPUT_AREA_HEIGHT, embedded, getMaxInputAreaHeight, isManualResize]);
 
   // Cover programmatic value changes: clearing after send, loading a conversation, etc.
   useEffect(() => {
@@ -2976,7 +3137,10 @@ export function ChatPanel({
 
             {/* Input Area */}
             {!isInputAreaCollapsed && (
-            <div className="chat-input-area" style={{ height: `${inputAreaHeight}px`, minHeight: `${inputAreaHeight}px` }}>
+            <div
+              className={`chat-input-area ${isManualResize ? 'manual-resize' : ''} ${autoResizeState ? 'auto-resizing' : ''} ${autoResizeState === 'shrinking' ? 'shrinking' : ''}`.trim().replace(/\s+/g, ' ')}
+              style={isMessagesCollapsed ? { flex: 1, minHeight: 'auto' } : { height: `${inputAreaHeight}px`, minHeight: `${inputAreaHeight}px` }}
+            >
               {readOnly && (
                 <div className="chat-readonly-note" role="status">
                   {effectiveReadOnlyMessage}
