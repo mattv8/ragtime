@@ -107,6 +107,12 @@ MAX_USERSPACE_SCREENSHOT_HEIGHT = 1200
 MAX_USERSPACE_SCREENSHOT_PIXELS = 1_440_000
 
 
+def escape_prompt_template_braces(text: str) -> str:
+    """Escape single braces for LangChain prompt templates while preserving doubles."""
+    escaped_open = re.sub(r"(?<!\{)\{(?!\{)", "{{", text)
+    return re.sub(r"(?<!\})\}(?!\})", "}}", escaped_open)
+
+
 def resolve_effective_timeout(requested_timeout: int, timeout_max_seconds: int) -> int:
     """Resolve runtime timeout using per-tool max (0 = unlimited)."""
     requested = max(0, int(requested_timeout))
@@ -2449,7 +2455,7 @@ class RAGComponents:
         # Create standard agent (for API/MCP)
         prompt = ChatPromptTemplate.from_messages(
             [
-                ("system", self._system_prompt),
+                ("system", escape_prompt_template_braces(self._system_prompt)),
                 MessagesPlaceholder(variable_name="chat_history", optional=True),
                 ("human", "{input}"),
                 MessagesPlaceholder(variable_name="agent_scratchpad"),
@@ -2483,7 +2489,7 @@ class RAGComponents:
 
         prompt_ui = ChatPromptTemplate.from_messages(
             [
-                ("system", self._system_prompt_ui),
+                ("system", escape_prompt_template_braces(self._system_prompt_ui)),
                 MessagesPlaceholder(variable_name="chat_history", optional=True),
                 ("human", "{input}"),
                 MessagesPlaceholder(variable_name="agent_scratchpad"),
@@ -6348,7 +6354,7 @@ except Exception as e:
 
         prompt = ChatPromptTemplate.from_messages(
             [
-                ("system", system_prompt),
+                ("system", escape_prompt_template_braces(system_prompt)),
                 MessagesPlaceholder(variable_name="chat_history", optional=True),
                 ("human", "{input}"),
                 MessagesPlaceholder(variable_name="agent_scratchpad"),
