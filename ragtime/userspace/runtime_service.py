@@ -14,20 +14,22 @@ from uuid import uuid4
 import httpx
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-from prisma import fields as prisma_fields
 from starlette.websockets import WebSocket
 
+from prisma import fields as prisma_fields
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
-from ragtime.userspace.models import (RuntimeSessionState,
-                                      UserSpaceCapabilityTokenResponse,
-                                      UserSpaceCollabSnapshotResponse,
-                                      UserSpaceFileResponse,
-                                      UserSpaceRuntimeActionResponse,
-                                      UserSpaceRuntimeSession,
-                                      UserSpaceRuntimeSessionResponse,
-                                      UserSpaceRuntimeStatusResponse)
+from ragtime.userspace.models import (
+    RuntimeSessionState,
+    UserSpaceCapabilityTokenResponse,
+    UserSpaceCollabSnapshotResponse,
+    UserSpaceFileResponse,
+    UserSpaceRuntimeActionResponse,
+    UserSpaceRuntimeSession,
+    UserSpaceRuntimeSessionResponse,
+    UserSpaceRuntimeStatusResponse,
+)
 from ragtime.userspace.service import userspace_service
 
 logger = get_logger(__name__)
@@ -297,6 +299,14 @@ class UserSpaceRuntimeService:
                 "workspaceId": workspace_id,
                 "state": {"in": ["starting", "running"]},
             },
+            order={"updatedAt": "desc"},
+        )
+
+    async def _get_latest_session_row(self, workspace_id: str) -> Any | None:
+        db = await get_db()
+        model = self._runtime_session_model(db)
+        return await model.find_first(
+            where={"workspaceId": workspace_id},
             order={"updatedAt": "desc"},
         )
 
@@ -577,6 +587,8 @@ class UserSpaceRuntimeService:
         self,
         workspace_id: str,
         leased_by_user_id: str,
+        *,
+        auto_start: bool = False,
     ) -> UserSpaceRuntimeSession:
         db = await get_db()
         model = self._runtime_session_model(db)
@@ -639,6 +651,26 @@ class UserSpaceRuntimeService:
                 delta,
             )
             return self._to_runtime_session(current)
+
+        if not auto_start:
+            latest = await self._get_latest_session_row(workspace_id)
+            if latest:
+                latest_session = self._to_runtime_session(latest)
+                if latest_session.state in {"stopped", "stopping", "error"}:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "Runtime session is stopped. Start it from the workspace runtime controls."
+                        ),
+                    )
+                raise HTTPException(
+                    status_code=503,
+                    detail="Runtime session is unavailable",
+                )
+            logger.info(
+                "Runtime session missing for workspace %s; creating new session",
+                workspace_id,
+            )
 
         now = self._utc_now()
         provider_data = await self._runtime_provider_start_session(
@@ -826,7 +858,11 @@ class UserSpaceRuntimeService:
     ) -> UserSpaceRuntimeActionResponse:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
 
-        session = await self._ensure_session_row(workspace_id, user_id)
+        session = await self._ensure_session_row(
+            workspace_id,
+            user_id,
+            auto_start=True,
+        )
         await self._audit(
             workspace_id,
             "session_start",
