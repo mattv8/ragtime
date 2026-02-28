@@ -79,15 +79,16 @@ def get_external_base_url(request: Request) -> str:
     """
     Get the external base URL for OAuth endpoints.
 
-    This considers reverse proxy headers (X-Forwarded-Proto, X-Forwarded-Host)
-    to ensure OAuth metadata returns correct URLs when behind a proxy.
-
-    Args:
-        request: The incoming request
-
-    Returns:
-        The external base URL (e.g., 'https://ragtime.example.com')
+    When ``EXTERNAL_BASE_URL`` is configured it is returned directly, which
+    prevents untrusted ``X-Forwarded-*`` headers from influencing OAuth
+    metadata.  Otherwise the function falls back to the forwarded headers
+    (useful behind a trusted reverse proxy) and finally to the request's
+    own URL.
     """
+    # Prefer explicit configuration (safe from header injection)
+    if settings.external_base_url:
+        return settings.external_base_url.rstrip("/")
+
     # Check for forwarded protocol (from reverse proxy)
     proto = request.headers.get("x-forwarded-proto", "").lower()
     if not proto:
@@ -232,28 +233,39 @@ app = FastAPI(
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """
-    Log detailed validation errors to help debug malformed requests.
-    This is especially useful when behind reverse proxies or with external clients.
-    """
-    body = None
-    try:
-        body = await request.body()
-        body_str = body.decode("utf-8")[:1000]  # Limit to first 1000 chars
-    except Exception:
-        body_str = "<unable to read body>"
+    Log validation errors to help debug malformed requests.
 
+    Security: headers and body are only logged in debug mode to avoid leaking
+    Authorization tokens, cookies, or other secrets to container logs.
+    The response never echoes back the request body.
+    """
     logger.error(
         f"Validation error on {request.method} {request.url.path}: {exc.errors()}"
     )
-    logger.error(f"Request body: {body_str}")
-    logger.error(f"Request headers: {dict(request.headers)}")
+
+    if settings.debug_mode:
+        # Only log body/headers in debug mode; redact sensitive headers
+        try:
+            body = await request.body()
+            body_str = body.decode("utf-8")[:500]
+        except Exception:
+            body_str = "<unable to read body>"
+        _sensitive_header_keys = {
+            "authorization",
+            "cookie",
+            "x-api-key",
+            "proxy-authorization",
+        }
+        safe_headers = {
+            k: ("***" if k.lower() in _sensitive_header_keys else v)
+            for k, v in request.headers.items()
+        }
+        logger.debug(f"Request body (debug): {body_str}")
+        logger.debug(f"Request headers (debug): {safe_headers}")
 
     return JSONResponse(
         status_code=422,
-        content={
-            "detail": exc.errors(),
-            "body": body_str if body else None,
-        },
+        content={"detail": exc.errors()},
     )
 
 

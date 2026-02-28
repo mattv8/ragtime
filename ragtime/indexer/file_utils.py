@@ -327,6 +327,7 @@ def extract_archive(
     archive_name = archive_path.name.lower()
     total_size = 0
     file_count = 0
+    extract_dir_resolved = extract_dir.resolve()
 
     if archive_name.endswith(".zip"):
         with zipfile.ZipFile(archive_path, "r") as zf:
@@ -340,6 +341,12 @@ def extract_archive(
                 if total_size > max_total_size:
                     raise ValueError(
                         f"Archive too large when extracted (max: {max_total_size // (1024*1024*1024)} GB)"
+                    )
+                # Zip Slip protection: reject entries that escape extract_dir
+                target = (extract_dir_resolved / info.filename).resolve()
+                if not target.is_relative_to(extract_dir_resolved):
+                    raise ValueError(
+                        f"Archive member would escape target directory: {info.filename}"
                     )
             zf.extractall(extract_dir)
 
@@ -357,7 +364,9 @@ def extract_archive(
                     raise ValueError(
                         f"Archive too large when extracted (max: {max_total_size // (1024*1024*1024)} GB)"
                     )
-            tf.extractall(extract_dir)
+            # Use filter='data' to strip path traversal, absolute paths,
+            # and dangerous special members (Python 3.12+).
+            tf.extractall(extract_dir, filter="data")
 
     else:
         raise ValueError(

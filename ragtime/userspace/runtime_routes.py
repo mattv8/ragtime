@@ -9,20 +9,32 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
-from fastapi import (APIRouter, Depends, Header, HTTPException, Request,
-                     WebSocket, WebSocketDisconnect)
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import Response, StreamingResponse
 
+from ragtime.config.settings import settings
 from ragtime.core.auth import validate_session
 from ragtime.core.database import get_db
 from ragtime.core.security import get_current_user, get_current_user_optional
-from ragtime.userspace.models import (UserSpaceCapabilityTokenResponse,
-                                      UserSpaceFileResponse,
-                                      UserSpaceRuntimeActionResponse,
-                                      UserSpaceRuntimeSessionResponse,
-                                      UserSpaceRuntimeStatusResponse)
-from ragtime.userspace.runtime_service import (RuntimeVersionConflictError,
-                                               userspace_runtime_service)
+from ragtime.userspace.models import (
+    UserSpaceCapabilityTokenResponse,
+    UserSpaceFileResponse,
+    UserSpaceRuntimeActionResponse,
+    UserSpaceRuntimeSessionResponse,
+    UserSpaceRuntimeStatusResponse,
+)
+from ragtime.userspace.runtime_service import (
+    RuntimeVersionConflictError,
+    userspace_runtime_service,
+)
 from ragtime.userspace.service import userspace_service
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space Runtime"])
@@ -46,7 +58,13 @@ async def _broadcast_collab_message(
 
 
 def _proxy_request_headers(request: Request) -> dict[str, str]:
-    hop_by_hop = {
+    """Build headers to forward to the workspace devserver.
+
+    Sensitive credentials from the *Ragtime* session must not leak to
+    the untrusted user-controlled devserver process.
+    """
+    _blocked = {
+        # Hop-by-hop
         "host",
         "connection",
         "keep-alive",
@@ -57,11 +75,16 @@ def _proxy_request_headers(request: Request) -> dict[str, str]:
         "transfer-encoding",
         "upgrade",
         "content-length",
+        # Credentials - must not reach the untrusted devserver
+        "authorization",
+        "cookie",
+        "x-api-key",
+        "x-userspace-share-password",
     }
     return {
         key: value
         for key, value in request.headers.items()
-        if key.lower() not in hop_by_hop
+        if key.lower() not in _blocked
     }
 
 
@@ -177,6 +200,13 @@ async def _proxy_http_request(
         )
 
     body = await request.body()
+    headers = _proxy_request_headers(request)
+
+    # Inject runtime worker auth token for upstream worker requests
+    worker_token = getattr(settings, "userspace_runtime_worker_auth_token", "") or ""
+    if worker_token:
+        headers["authorization"] = f"Bearer {worker_token}"
+
     timeout = httpx.Timeout(connect=2.0, read=30.0, write=30.0, pool=5.0)
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
         try:
@@ -184,7 +214,7 @@ async def _proxy_http_request(
                 method=request.method,
                 url=upstream_url,
                 content=body if body else None,
-                headers=_proxy_request_headers(request),
+                headers=headers,
             )
         except httpx.RequestError as exc:
             raise HTTPException(

@@ -45,6 +45,15 @@ class Settings(BaseSettings):
     # Security
     api_key: str = Field(default="", alias="API_KEY")  # API key for auth
     allowed_origins: str = Field(default="*", alias="ALLOWED_ORIGINS")
+    external_base_url: str = Field(
+        default="",
+        alias="EXTERNAL_BASE_URL",
+        description=(
+            "Canonical external base URL (e.g. https://ragtime.example.com). "
+            "When set, OAuth metadata and other public-facing URLs use this "
+            "value instead of trusting X-Forwarded-* request headers."
+        ),
+    )
     enable_https: bool = Field(
         default=False,
         alias="ENABLE_HTTPS",
@@ -92,6 +101,11 @@ class Settings(BaseSettings):
         default="",
         alias="RUNTIME_MANAGER_AUTH_TOKEN",
         description="Optional bearer token used when calling runtime manager",
+    )
+    userspace_runtime_worker_auth_token: str = Field(
+        default="",
+        alias="RUNTIME_WORKER_AUTH_TOKEN",
+        description="Bearer token for authenticating preview proxy requests to the runtime worker",
     )
 
     # Server

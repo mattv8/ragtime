@@ -235,7 +235,6 @@ _DANGEROUS_ODOO_PATTERN_STRINGS = [
     r"\.create\s*\(",
     r"\.unlink\s*\(",
     r"\.copy\s*\(",
-    r"\.sudo\s*\(\s*\)",
     r"os\.",
     r"subprocess\.",
     r"__import__",

@@ -154,6 +154,7 @@ async def preview(
     worker_session_id: str,
     request: Request,
     path: str = "",
+    _auth: None = WorkerAuth,
 ) -> Response:
     content, media_type, status_code = await get_worker_service().preview_response(
         worker_session_id,
