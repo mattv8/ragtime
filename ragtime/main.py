@@ -12,6 +12,8 @@ Usage:
 """
 
 import asyncio
+import hashlib
+import html
 import os
 import secrets
 import time
@@ -19,10 +21,10 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import Optional
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Form, HTTPException, Query, Request
+from fastapi import FastAPI, Form, HTTPException, Query, Request, WebSocket
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
@@ -63,7 +65,13 @@ from ragtime.mcp.routes import get_mcp_routes, mcp_lifespan_manager
 from ragtime.mcp.routes import router as mcp_router
 from ragtime.rag import rag
 from ragtime.userspace.routes import router as userspace_router
+from ragtime.userspace.runtime_routes import (
+    _proxy_http_request,
+    _proxy_websocket_request,
+    _to_websocket_url,
+)
 from ragtime.userspace.runtime_routes import router as userspace_runtime_router
+from ragtime.userspace.runtime_routes import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
 # Import indexer routes (always available now that it's part of ragtime)
@@ -73,6 +81,8 @@ load_dotenv()
 
 # Set up logging
 logger = setup_logging("rag_api")
+
+_SHARE_PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 
 
 def get_external_base_url(request: Request) -> str:
@@ -743,14 +753,8 @@ async def token_endpoint(
     )
 
 
-@app.get(
-    "/{owner_username}/{share_slug}",
-    response_class=HTMLResponse,
-    include_in_schema=False,
-)
-async def userspace_share_path(owner_username: str, share_slug: str):
-    """Serve User Space shared dashboard URLs as SPA routes."""
-    reserved_roots = {
+def _share_reserved_roots() -> set[str]:
+    return {
         "auth",
         "assets",
         "docs",
@@ -760,18 +764,236 @@ async def userspace_share_path(owner_username: str, share_slug: str):
         "mcp-routes",
         "openapi.json",
         "redoc",
+        "shared",
         "v1",
     }
-    if owner_username in reserved_roots:
+
+
+def _share_password_cookie_name(owner_username: str, share_slug: str) -> str:
+    digest = hashlib.sha256(
+        f"{owner_username}:{share_slug}".encode("utf-8")
+    ).hexdigest()[:16]
+    return f"userspace_share_pw_{digest}"
+
+
+def _render_share_password_prompt(
+    owner_username: str, share_slug: str, error: str | None = None
+) -> str:
+    safe_error = html.escape(error) if error else ""
+    safe_owner = html.escape(owner_username)
+    safe_slug = html.escape(share_slug)
+    error_block = (
+        f"<p style='color:#fca5a5;margin:0 0 12px 0;font-size:14px'>{safe_error}</p>"
+        if safe_error
+        else ""
+    )
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>Shared Workspace</title></head><body style='margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0f172a;color:#e2e8f0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif'>"
+        "<form method='post' style='width:min(92vw,360px);padding:20px;border:1px solid #334155;border-radius:12px;background:#111827'>"
+        f"<h1 style='font-size:18px;margin:0 0 6px 0'>Unlock shared workspace</h1><p style='margin:0 0 14px 0;color:#94a3b8;font-size:13px'>{safe_owner}/{safe_slug}</p>"
+        f"{error_block}"
+        "<label for='share_password' style='display:block;margin-bottom:8px;font-size:13px'>Password</label>"
+        "<input id='share_password' name='share_password' type='password' required autofocus autocomplete='current-password' style='width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;border:1px solid #334155;background:#0b1220;color:#e2e8f0'>"
+        "<button type='submit' style='margin-top:12px;width:100%;padding:10px 12px;border-radius:8px;border:1px solid #334155;background:#1d4ed8;color:#fff;cursor:pointer'>Continue</button>"
+        "</form></body></html>"
+    )
+
+
+async def _share_current_user_from_request(request: Request):
+    session_cookie = request.cookies.get("ragtime_session")
+    if not session_cookie:
+        return None
+    token_data = await validate_session(session_cookie)
+    if not token_data:
+        return None
+    db = await get_db()
+    return await db.user.find_unique(where={"id": token_data.user_id})
+
+
+async def _share_current_user_from_websocket(websocket: WebSocket):
+    session_cookie = websocket.cookies.get("ragtime_session")
+    if not session_cookie:
+        return None
+    token_data = await validate_session(session_cookie)
+    if not token_data:
+        return None
+    db = await get_db()
+    return await db.user.find_unique(where={"id": token_data.user_id})
+
+
+async def _shared_proxy_http(
+    owner_username: str,
+    share_slug: str,
+    request: Request,
+    path: str,
+):
+    if owner_username in _share_reserved_roots():
         raise HTTPException(status_code=404, detail="Not found")
 
-    await userspace_service.get_shared_preview_by_slug(owner_username, share_slug)
+    current_user = await _share_current_user_from_request(request)
+    cookie_name = _share_password_cookie_name(owner_username, share_slug)
+    share_password = request.headers.get(
+        "x-userspace-share-password"
+    ) or request.cookies.get(cookie_name)
 
-    dist_index = DIST_DIR / "index.html"
-    if dist_index.exists():
-        return FileResponse(dist_index, media_type="text/html")
+    try:
+        preview = await userspace_service.get_shared_preview_by_slug(
+            owner_username,
+            share_slug,
+            current_user=current_user,
+            password=share_password,
+        )
+    except HTTPException as exc:
+        detail = str(exc.detail).lower() if isinstance(exc.detail, str) else ""
+        is_password_error = exc.status_code == 401 and (
+            "password required" in detail or "invalid password" in detail
+        )
+        if is_password_error and request.method == "GET" and not path:
+            response = HTMLResponse(
+                _render_share_password_prompt(
+                    owner_username,
+                    share_slug,
+                    "Invalid password" if "invalid password" in detail else None,
+                )
+            )
+            response.delete_cookie(
+                cookie_name,
+                path=f"/{quote(owner_username, safe='')}/{quote(share_slug, safe='')}",
+            )
+            return response
+        raise
 
-    raise HTTPException(status_code=404, detail="Shared dashboard UI not available")
+    upstream_url = await userspace_runtime_service.build_shared_preview_upstream_url(
+        preview.workspace_id,
+        path,
+        query=request.url.query or None,
+    )
+    proxy_base = f"/{quote(owner_username, safe='')}/{quote(share_slug, safe='')}"
+    return await _proxy_http_request(request, upstream_url, proxy_base_path=proxy_base)
+
+
+@app.get(
+    "/shared/{share_token}", response_class=RedirectResponse, include_in_schema=False
+)
+async def userspace_share_token_path(share_token: str, request: Request):
+    token = (share_token or "").strip()
+    if not token:
+        raise HTTPException(status_code=404, detail="Shared workspace not found")
+
+    db = await get_db()
+    workspace = await db.workspace.find_first(where={"shareToken": token})
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Shared workspace not found")
+
+    share_slug = str(getattr(workspace, "shareSlug", "") or "").strip()
+    owner_user_id = str(getattr(workspace, "ownerUserId", "") or "").strip()
+    if not share_slug or not owner_user_id:
+        raise HTTPException(status_code=404, detail="Shared workspace not found")
+
+    owner = await db.user.find_unique(where={"id": owner_user_id})
+    if not owner:
+        raise HTTPException(status_code=404, detail="Shared workspace not found")
+    public_owner = str(getattr(owner, "username", "") or "").strip().lower()
+    if public_owner.startswith("local:"):
+        public_owner = public_owner.split(":", 1)[1]
+    if not public_owner:
+        raise HTTPException(status_code=404, detail="Shared workspace not found")
+    target_path = f"/{quote(public_owner, safe='')}/{quote(share_slug, safe='')}"
+    query = request.url.query
+    target = f"{target_path}?{query}" if query else target_path
+    return RedirectResponse(url=target, status_code=307)
+
+
+@app.api_route(
+    "/{owner_username}/{share_slug}",
+    methods=["GET", "POST"],
+    include_in_schema=False,
+)
+async def userspace_share_root_proxy(
+    owner_username: str, share_slug: str, request: Request
+):
+    if request.method == "POST":
+        try:
+            form = await request.form()
+        except Exception:
+            form = None
+        if form is not None and "share_password" in form:
+            share_password = str(form.get("share_password", "") or "").strip()
+            if not share_password:
+                return HTMLResponse(
+                    _render_share_password_prompt(
+                        owner_username, share_slug, "Password is required"
+                    ),
+                    status_code=400,
+                )
+            response = RedirectResponse(
+                url=f"/{quote(owner_username, safe='')}/{quote(share_slug, safe='')}",
+                status_code=303,
+            )
+            response.set_cookie(
+                key=_share_password_cookie_name(owner_username, share_slug),
+                value=share_password,
+                max_age=60 * 30,
+                httponly=True,
+                secure=settings.session_cookie_secure,
+                samesite="lax",
+                path=f"/{quote(owner_username, safe='')}/{quote(share_slug, safe='')}",
+            )
+            return response
+
+    return await _shared_proxy_http(owner_username, share_slug, request, path="")
+
+
+@app.api_route(
+    "/{owner_username}/{share_slug}/{path:path}",
+    methods=_SHARE_PROXY_METHODS,
+    include_in_schema=False,
+)
+async def userspace_share_path_proxy(
+    owner_username: str,
+    share_slug: str,
+    path: str,
+    request: Request,
+):
+    return await _shared_proxy_http(owner_username, share_slug, request, path)
+
+
+@app.websocket("/{owner_username}/{share_slug}")
+@app.websocket("/{owner_username}/{share_slug}/{path:path}")
+async def userspace_share_websocket_proxy(
+    owner_username: str,
+    share_slug: str,
+    websocket: WebSocket,
+    path: str = "",
+):
+    if owner_username in _share_reserved_roots():
+        await websocket.close(code=4404)
+        return
+
+    current_user = await _share_current_user_from_websocket(websocket)
+    cookie_name = _share_password_cookie_name(owner_username, share_slug)
+    share_password = websocket.headers.get(
+        "x-userspace-share-password"
+    ) or websocket.cookies.get(cookie_name)
+
+    try:
+        preview = await userspace_service.get_shared_preview_by_slug(
+            owner_username,
+            share_slug,
+            current_user=current_user,
+            password=share_password,
+        )
+    except HTTPException as exc:
+        await websocket.close(code=4403 if exc.status_code == 403 else 4404)
+        return
+
+    upstream_url = await userspace_runtime_service.build_shared_preview_upstream_url(
+        preview.workspace_id,
+        path,
+        query=websocket.url.query or None,
+    )
+    await _proxy_websocket_request(websocket, _to_websocket_url(upstream_url))
 
 
 # Root endpoint - serve Indexer UI or API info

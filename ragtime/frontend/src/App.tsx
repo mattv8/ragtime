@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/api';
-import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, UserSpacePanel, UserSpaceSharedView, LoginPage, OAuthLoginPage, MemoryStatus, UserMenu, SecurityBanner, ConfigurationBanner } from '@/components';
+import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, UserSpacePanel, LoginPage, OAuthLoginPage, MemoryStatus, UserMenu, SecurityBanner, ConfigurationBanner } from '@/components';
 import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob, ToolConfig, ConfigurationWarning } from '@/types';
 import type { OAuthParams } from '@/components';
 import '@/styles/global.css';
@@ -71,6 +71,16 @@ function getUserSpaceSharedRoute(): UserSpaceSharedRoute {
   }
 
   return null;
+}
+
+function getUserSpaceSharedProxyUrl(route: UserSpaceSharedRoute): string {
+  if (!route) {
+    return '/';
+  }
+  if (route.mode === 'token') {
+    return `/shared/${encodeURIComponent(route.token)}`;
+  }
+  return `/${encodeURIComponent(route.ownerUsername)}/${encodeURIComponent(route.shareSlug)}`;
 }
 
 export function App() {
@@ -286,10 +296,19 @@ export function App() {
     window.history.replaceState({}, '', newUrl);
   }, [activeView, highlightSetting, oauthParams, isAdmin, userspaceSharedRoute]);
 
+  useEffect(() => {
+    if (!userspaceSharedRoute) {
+      return;
+    }
+    const target = getUserSpaceSharedProxyUrl(userspaceSharedRoute);
+    const current = `${window.location.pathname}${window.location.search}`;
+    if (target !== current) {
+      window.location.replace(target);
+    }
+  }, [userspaceSharedRoute]);
+
   if (userspaceSharedRoute) {
-    return userspaceSharedRoute.mode === 'token'
-      ? <UserSpaceSharedView shareToken={userspaceSharedRoute.token} />
-      : <UserSpaceSharedView ownerUsername={userspaceSharedRoute.ownerUsername} shareSlug={userspaceSharedRoute.shareSlug} />;
+    return <div className="chat-status-text">Redirecting to shared preview…</div>;
   }
 
   const loadJobs = useCallback(async () => {

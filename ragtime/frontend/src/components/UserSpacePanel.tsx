@@ -48,6 +48,19 @@ function getDefaultShareSlug(value: string | null | undefined): string {
   return 'share_workspace';
 }
 
+function normalizeUniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean))).sort();
+}
+
+function areSameNormalizedStringArrays(left: string[], right: string[]): boolean {
+  const normalizedLeft = normalizeUniqueStrings(left);
+  const normalizedRight = normalizeUniqueStrings(right);
+  if (normalizedLeft.length !== normalizedRight.length) {
+    return false;
+  }
+  return normalizedLeft.every((value, index) => value === normalizedRight[index]);
+}
+
 const LAST_WORKSPACE_COOKIE_PREFIX = 'userspace_last_workspace_id_';
 const LAST_WORKSPACE_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
 
@@ -121,7 +134,6 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const [autoCreateShareLinkAttempted, setAutoCreateShareLinkAttempted] = useState(false);
   const [shareSlugDraft, setShareSlugDraft] = useState('');
   const [checkingShareSlug, setCheckingShareSlug] = useState(false);
-  const [savingShareSlug, setSavingShareSlug] = useState(false);
   const [shareSlugAvailable, setShareSlugAvailable] = useState<boolean | null>(null);
   const [shareAccessMode, setShareAccessMode] = useState<UserSpaceShareAccessMode>('token');
   const [sharePasswordDraft, setSharePasswordDraft] = useState('');
@@ -1672,6 +1684,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       const created = await handleEnsureShareLink(false);
       url = created?.share_url ?? null;
     }
+
     if (!url) return;
     window.open(url, '_blank', 'noopener,noreferrer');
   }, [handleEnsureShareLink, shareLinkStatus?.share_url]);
@@ -1721,29 +1734,6 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     };
   }, [showShareModal, activeWorkspaceId, canEditWorkspace, shareSlugDraft]);
 
-  const handleSaveShareSlug = useCallback(async () => {
-    if (!activeWorkspaceId || !canEditWorkspace) return;
-    const normalized = normalizeShareSlugInput(shareSlugDraft);
-    if (!normalized) {
-      setError('Share slug is required');
-      return;
-    }
-
-    setSavingShareSlug(true);
-    try {
-      const status = await api.updateUserSpaceWorkspaceShareSlug(activeWorkspaceId, normalized);
-      setShareLinkStatus(status);
-      setShareSlugDraft(status.share_slug ?? normalized);
-      setShareSlugAvailable(true);
-      setError(null);
-    } catch (err) {
-      setShareSlugAvailable(false);
-      setError(err instanceof Error ? err.message : 'Failed to save share slug');
-    } finally {
-      setSavingShareSlug(false);
-    }
-  }, [activeWorkspaceId, canEditWorkspace, shareSlugDraft]);
-
   const handleToggleShareSelectedUser = useCallback((userId: string) => {
     setShareSelectedUserIdsDraft((current) => (
       current.includes(userId)
@@ -1767,15 +1757,54 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
 
   const handleSaveShareAccess = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
+
+    const normalizedSlug = normalizeShareSlugInput(shareSlugDraft);
+    if (!normalizedSlug) {
+      setError('Share slug is required');
+      return;
+    }
+
+    let currentStatus = shareLinkStatus;
+    if (!currentStatus?.has_share_link) {
+      currentStatus = await handleEnsureShareLink(false);
+    }
+    if (!currentStatus) {
+      return;
+    }
+
+    if (shareAccessMode === 'password' && !currentStatus.has_password && !sharePasswordDraft.trim()) {
+      setError('Share password is required for password-protected access');
+      return;
+    }
+
     setSavingShareAccess(true);
     try {
-      const status = await api.updateUserSpaceWorkspaceShareAccess(activeWorkspaceId, {
-        share_access_mode: shareAccessMode,
-        password: sharePasswordDraft.trim() || undefined,
-        selected_user_ids: shareSelectedUserIdsDraft,
-        selected_ldap_groups: shareSelectedLdapGroupsDraft,
-      });
+      let status = currentStatus;
+
+      if ((status.share_slug ?? '') !== normalizedSlug) {
+        status = await api.updateUserSpaceWorkspaceShareSlug(activeWorkspaceId, normalizedSlug);
+      }
+
+      const selectedUserIds = normalizeUniqueStrings(shareSelectedUserIdsDraft);
+      const selectedLdapGroups = normalizeUniqueStrings(shareSelectedLdapGroupsDraft);
+      const hasAccessChanges =
+        shareAccessMode !== status.share_access_mode
+        || !areSameNormalizedStringArrays(selectedUserIds, status.selected_user_ids ?? [])
+        || !areSameNormalizedStringArrays(selectedLdapGroups, status.selected_ldap_groups ?? [])
+        || (shareAccessMode === 'password' && Boolean(sharePasswordDraft.trim()));
+
+      if (hasAccessChanges) {
+        status = await api.updateUserSpaceWorkspaceShareAccess(activeWorkspaceId, {
+          share_access_mode: shareAccessMode,
+          password: sharePasswordDraft.trim() || undefined,
+          selected_user_ids: selectedUserIds,
+          selected_ldap_groups: selectedLdapGroups,
+        });
+      }
+
       setShareLinkStatus(status);
+      setShareSlugDraft(status.share_slug ?? normalizedSlug);
+      setShareSlugAvailable(true);
       setShareAccessMode(status.share_access_mode);
       setShareSelectedUserIdsDraft(status.selected_user_ids ?? []);
       setShareSelectedLdapGroupsDraft(status.selected_ldap_groups ?? []);
@@ -1789,8 +1818,11 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   }, [
     activeWorkspaceId,
     canEditWorkspace,
+    handleEnsureShareLink,
     shareAccessMode,
+    shareLinkStatus,
     sharePasswordDraft,
+    shareSlugDraft,
     shareSelectedLdapGroupsDraft,
     shareSelectedUserIdsDraft,
   ]);
@@ -1811,6 +1843,38 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     ));
     return fallbackUsers;
   }, [activeWorkspace, allUsers, currentUser]);
+
+  const shareHasUnsavedChanges = useMemo(() => {
+    if (!showShareModal || !shareLinkStatus) {
+      return false;
+    }
+
+    const slugChanged = normalizeShareSlugInput(shareSlugDraft) !== normalizeShareSlugInput(shareLinkStatus.share_slug ?? '');
+    const accessModeChanged = shareAccessMode !== shareLinkStatus.share_access_mode;
+    const selectedUsersChanged = !areSameNormalizedStringArrays(
+      shareSelectedUserIdsDraft,
+      shareLinkStatus.selected_user_ids ?? [],
+    );
+    const selectedLdapGroupsChanged = !areSameNormalizedStringArrays(
+      shareSelectedLdapGroupsDraft,
+      shareLinkStatus.selected_ldap_groups ?? [],
+    );
+    const pendingPasswordChange = shareAccessMode === 'password' && Boolean(sharePasswordDraft.trim());
+
+    return slugChanged
+      || accessModeChanged
+      || selectedUsersChanged
+      || selectedLdapGroupsChanged
+      || pendingPasswordChange;
+  }, [
+    shareAccessMode,
+    shareLinkStatus,
+    sharePasswordDraft,
+    shareSelectedLdapGroupsDraft,
+    shareSelectedUserIdsDraft,
+    shareSlugDraft,
+    showShareModal,
+  ]);
 
   const handleSaveName = useCallback(async () => {
     if (!activeWorkspace || !canEditWorkspace || !draftName.trim()) return;
@@ -2186,9 +2250,9 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
             </button>
             <button
               className="btn btn-secondary btn-sm btn-icon userspace-toolbar-action-btn"
-              onClick={handleOpenShareModal}
+              onClick={handleOpenFullPreview}
               disabled={!activeWorkspaceId || !canEditWorkspace || sharingWorkspace}
-              title="Manage shared preview"
+              title="Open shared preview"
             >
               <ExternalLink size={14} />
             </button>
@@ -2482,13 +2546,6 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                         placeholder="custom_slug"
                         autoComplete="off"
                       />
-                      <button
-                        className="btn btn-secondary"
-                        onClick={handleSaveShareSlug}
-                        disabled={savingShareSlug || checkingShareSlug || sharingWorkspace || revokingShareLink}
-                      >
-                        {savingShareSlug ? 'Saving...' : 'Save Slug'}
-                      </button>
                     </div>
                     {shareSlugAvailable !== null && (
                       <div className={`userspace-share-meta ${shareSlugAvailable ? '' : 'userspace-error'}`}>
@@ -2612,7 +2669,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                       <button
                         className="btn btn-secondary"
                         onClick={handleSaveShareAccess}
-                        disabled={savingShareAccess || sharingWorkspace || revokingShareLink || savingShareSlug || checkingShareSlug}
+                        disabled={savingShareAccess || sharingWorkspace || revokingShareLink || checkingShareSlug}
                       >
                         {savingShareAccess ? 'Saving Access...' : 'Save Access'}
                       </button>
@@ -2623,28 +2680,28 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                       <button
                         className="btn btn-secondary"
                         onClick={handleCopyShareLink}
-                        disabled={sharingWorkspace || revokingShareLink || savingShareSlug || checkingShareSlug || savingShareAccess}
+                        disabled={sharingWorkspace || revokingShareLink || checkingShareSlug || savingShareAccess || shareHasUnsavedChanges}
                       >
                         {shareCopied ? 'Copied' : 'Copy Link'}
                       </button>
                       <button
                         className="btn btn-secondary"
                         onClick={handleOpenFullPreview}
-                        disabled={sharingWorkspace || revokingShareLink || savingShareSlug || checkingShareSlug || savingShareAccess}
+                        disabled={sharingWorkspace || revokingShareLink || checkingShareSlug || savingShareAccess || shareHasUnsavedChanges}
                       >
                         Open Preview
                       </button>
                       <button
                         className="btn btn-secondary"
                         onClick={handleRotateShareLink}
-                        disabled={sharingWorkspace || revokingShareLink || savingShareSlug || checkingShareSlug || savingShareAccess}
+                        disabled={sharingWorkspace || revokingShareLink || checkingShareSlug || savingShareAccess}
                       >
                         {rotatingShareLink ? 'Rotating...' : 'Rotate Link'}
                       </button>
                       <button
                         className="btn btn-secondary"
                         onClick={handleRevokeShareLink}
-                        disabled={revokingShareLink || sharingWorkspace || savingShareSlug || checkingShareSlug || savingShareAccess || !shareLinkStatus?.has_share_link}
+                        disabled={revokingShareLink || sharingWorkspace || checkingShareSlug || savingShareAccess || !shareLinkStatus?.has_share_link}
                       >
                         {revokingShareLink ? 'Revoking...' : 'Revoke Link'}
                       </button>
