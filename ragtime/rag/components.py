@@ -21,13 +21,8 @@ from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (
-    AIMessage,
-    BaseMessage,
-    HumanMessage,
-    SystemMessage,
-    ToolMessage,
-)
+from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
+                                     SystemMessage, ToolMessage)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -36,62 +31,42 @@ from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
-from ragtime.core.file_constants import (
-    USERSPACE_MODULE_SOURCE_EXTENSIONS,
-    USERSPACE_STRICT_FRONTEND_EXTENSIONS,
-    USERSPACE_THEME_AUDIT_EXTENSIONS,
-    USERSPACE_TYPESCRIPT_EXTENSIONS,
-)
+from ragtime.core.file_constants import (USERSPACE_MODULE_SOURCE_EXTENSIONS,
+                                         USERSPACE_STRICT_FRONTEND_EXTENSIONS,
+                                         USERSPACE_THEME_AUDIT_EXTENSIONS,
+                                         USERSPACE_TYPESCRIPT_EXTENSIONS)
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit, get_output_limit
 from ragtime.core.ollama import get_model_context_length
-from ragtime.core.security import (
-    _SSH_ENV_VAR_RE,
-    sanitize_output,
-    validate_odoo_code,
-    validate_sql_query,
-    validate_ssh_command,
-)
+from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
+                                   validate_odoo_code, validate_sql_query,
+                                   validate_ssh_command)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (
-    SSHConfig,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    execute_ssh_command,
-    expand_env_vars_via_ssh,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
+                              execute_ssh_command, expand_env_vars_via_ssh,
+                              ssh_tunnel_config_from_dict)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (
-    CHAT_CHART_DESCRIPTION_SUFFIX,
-    USERSPACE_CHART_DESCRIPTION_SUFFIX,
-    create_chart_tool,
-)
-from ragtime.tools.datatable import (
-    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-    create_datatable_tool,
-)
+from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
+                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
+                                 create_chart_tool)
+from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+                                     create_datatable_tool)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (
-    _is_shallow_repository,
-    create_aggregate_git_history_tool,
-    create_per_index_git_history_tool,
-)
+from ragtime.tools.git_history import (_is_shallow_repository,
+                                       create_aggregate_git_history_tool,
+                                       create_per_index_git_history_tool)
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (
-    ArtifactType,
-    UpsertWorkspaceFileRequest,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-)
+from ragtime.userspace.models import (ArtifactType, UpsertWorkspaceFileRequest,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -4603,6 +4578,18 @@ except Exception as e:
                     "Default entry file: dashboard/main.ts"
                 ),
             )
+            start_line: Optional[int] = Field(
+                default=None,
+                description="Optional starting line number (1-indexed, inclusive) to read a partial file. Useful to focus on specific sections.",
+            )
+            end_line: Optional[int] = Field(
+                default=None,
+                description="Optional ending line number (1-indexed, inclusive) to read a partial file.",
+            )
+            search_query: Optional[str] = Field(
+                default=None,
+                description="Optional exact string or keyword to locate relevant context lines. If provided, returns matching lines and their surrounding context. 'start_line'/'end_line' take precedence if both are strictly specified, otherwise they can filter the search range.",
+            )
             reason: str = Field(
                 default="",
                 description="Brief description of why this file is being read",
@@ -5018,7 +5005,14 @@ except Exception as e:
             }
             return json.dumps(assay, indent=2)
 
-        async def read_userspace_file(path: str, reason: str = "", **_: Any) -> str:
+        async def read_userspace_file(
+            path: str,
+            start_line: Optional[int] = None,
+            end_line: Optional[int] = None,
+            search_query: Optional[str] = None,
+            reason: str = "",
+            **_: Any,
+        ) -> str:
             del reason
             normalized_path = (path or "").strip().replace("\\", "/").lstrip("/")
             try:
@@ -5047,6 +5041,56 @@ except Exception as e:
                     )
                 raise
             payload = file_data.model_dump(mode="json")
+
+            if payload.get("content") and (start_line is not None or end_line is not None or search_query):
+                lines = payload["content"].splitlines(keepends=True)
+                total_lines = len(lines)
+
+                if total_lines > 0:
+                    s_line = start_line if start_line is not None else 1
+                    e_line = end_line if end_line is not None else total_lines
+                    s_line = max(1, min(s_line, total_lines))
+                    e_line = max(1, max(s_line, min(e_line, total_lines)))
+
+                    if search_query:
+                        search_query_lower = search_query.lower()
+                        context_padding = 5
+                        match_indices = []
+                        bounded_start = s_line - 1
+                        bounded_end = e_line
+
+                        for i in range(bounded_start, bounded_end):
+                            if search_query_lower in lines[i].lower():
+                                match_indices.append(i)
+
+                        if not match_indices:
+                            payload["content"] = f"No matches found for '{search_query}' in the specified range (lines {s_line}-{e_line})."
+                            payload["_meta"] = {"search_query": search_query, "matches_found": 0}
+                        else:
+                            output_lines = []
+                            last_end = -1
+                            for idx in match_indices:
+                                window_start = max(bounded_start, idx - context_padding)
+                                window_end = min(bounded_end, idx + context_padding + 1)
+
+                                if last_end != -1 and window_start > last_end:
+                                    output_lines.append("... [omitted lines] ...\n")
+                                else:
+                                    window_start = max(window_start, last_end)
+
+                                for i in range(window_start, window_end):
+                                    output_lines.append(f"{i+1:5d} | {lines[i]}")
+                                last_end = window_end
+
+                            payload["content"] = "".join(output_lines)
+                            payload["_meta"] = {"search_query": search_query, "matches_found": len(match_indices), "total_lines": total_lines}
+                    else:
+                        output_lines = []
+                        for i in range(s_line - 1, e_line):
+                            output_lines.append(f"{i+1:5d} | {lines[i]}")
+                        payload["content"] = "".join(output_lines)
+                        payload["_meta"] = {"start_line": s_line, "end_line": e_line, "total_lines": total_lines}
+
             structure = await _get_workspace_structure()
             if (
                 _is_index_html_path(normalized_path)
@@ -5549,6 +5593,35 @@ except Exception as e:
             except HTTPException as exc:
                 status_code = getattr(exc, "status_code", None)
                 detail_text = str(getattr(exc, "detail", exc))
+                lower_detail_text = detail_text.lower()
+                if status_code == 400 and any(
+                    marker in lower_detail_text
+                    for marker in (
+                        "missing required live_data_connections",
+                        "missing required live_data_checks",
+                        "missing successful live_data_checks verification",
+                        "invalid live_data_connections component_id",
+                        "invalid live_data_checks component_id",
+                        "live_data_checks must indicate successful connection and transformation",
+                    )
+                ):
+                    policy_response_payload: dict[str, Any] = {
+                        "rejected": True,
+                        "error": detail_text,
+                        "action_required": (
+                            "Provide valid live_data_connections + live_data_checks metadata for selected workspace tools, "
+                            "or set live_data_requested=false for scaffolding writes without live wiring."
+                        ),
+                    }
+                    if warnings:
+                        policy_response_payload["warnings"] = warnings
+                    if allowed_violations:
+                        policy_response_payload["allowed_violations"] = (
+                            allowed_violations
+                        )
+                    if typecheck is not None:
+                        policy_response_payload["typescript_validation"] = typecheck
+                    return json.dumps(policy_response_payload, indent=2)
                 if (
                     status_code == 400
                     and "No server-verified execution proof for component_id(s):"

@@ -14,9 +14,9 @@ from uuid import uuid4
 import httpx
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
+from prisma import fields as prisma_fields
 from starlette.websockets import WebSocket
 
-from prisma import fields as prisma_fields
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
