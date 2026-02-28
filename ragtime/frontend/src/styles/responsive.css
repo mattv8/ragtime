@@ -506,6 +506,65 @@
     font-size: 10px;
   }
 
+  .userspace-layout {
+    border-radius: var(--radius-md);
+  }
+
+  .userspace-content {
+    display: flex;
+    flex-direction: column;
+    grid-template-columns: none !important;
+  }
+
+  .userspace-content > .resize-handle-horizontal,
+  .userspace-left-pane > .resize-handle-vertical,
+  .userspace-editor-section > .resize-handle-horizontal {
+    display: none;
+  }
+
+  .userspace-left-pane,
+  .userspace-right-pane {
+    min-height: 0;
+  }
+
+  .userspace-left-pane {
+    flex: 1 1 55%;
+  }
+
+  .userspace-right-pane {
+    flex: 1 1 45%;
+    border-top: 1px solid var(--color-border);
+  }
+
+  .userspace-editor-section {
+    flex-direction: column;
+  }
+
+  .userspace-file-sidebar {
+    width: 100% !important;
+    max-height: 34vh;
+    border-right: none;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .userspace-code-editor {
+    min-height: 220px;
+  }
+
+  .userspace-chat-section {
+    min-height: 220px;
+    border-top: 1px solid var(--color-border);
+  }
+
+  .userspace-runtime-terminal-wrap {
+    margin-top: 0;
+    border-width: 4px;
+  }
+
+  .userspace-snapshots-list {
+    max-height: 160px;
+  }
+
   /* Settings */
   fieldset {
     padding: var(--space-sm);
@@ -722,10 +781,20 @@
   }
 
   .chat-input-wrapper .chat-input {
-    min-height: 70px;
+    min-height: 56px;
     max-height: 180px;
-    padding: var(--space-sm);
-    font-size: var(--text-sm);
+    padding: 10px 88px 10px 40px;
+    font-size: 16px;
+  }
+
+  .chat-input-inline-actions {
+    right: 6px;
+    bottom: 2px;
+  }
+
+  .btn-attach-menu {
+    width: 34px;
+    height: 34px;
   }
 
   .chat-send-btn,
@@ -733,6 +802,55 @@
     flex: 1;
     padding: var(--space-sm) var(--space-md);
     min-width: auto;
+  }
+
+  .userspace-toolbar-group,
+  .userspace-toolbar-group-right,
+  .userspace-toolbar-status-group {
+    width: 100%;
+  }
+
+  .userspace-toolbar-group {
+    flex-wrap: wrap;
+  }
+
+  .userspace-ws-select,
+  .userspace-workspace-picker,
+  .userspace-filepath-input {
+    min-width: 0;
+    max-width: 100%;
+    width: 100%;
+  }
+
+  .userspace-toolbar-tabs {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .userspace-toolbar-actions,
+  .userspace-toolbar-runtime-controls {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .userspace-toolbar-action-btn {
+    width: 36px;
+    min-width: 36px;
+    height: 36px;
+  }
+
+  .userspace-file-sidebar {
+    max-height: 30vh;
+  }
+
+  .userspace-code-editor,
+  .userspace-chat-section {
+    min-height: 200px;
+  }
+
+  .userspace-snapshot-item {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .modal-overlay {

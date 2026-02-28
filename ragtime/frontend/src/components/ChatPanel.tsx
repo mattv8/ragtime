@@ -1282,6 +1282,34 @@ export function ChatPanel({
   }, [MIN_INPUT_AREA_HEIGHT, chatLayoutCookieName, embedded]);
 
   useEffect(() => {
+    if (embedded || typeof window === 'undefined') {
+      return;
+    }
+
+    const mediaQuery = window.matchMedia('(max-width: 768px)');
+
+    const collapseOnMobile = (matches: boolean) => {
+      if (matches) {
+        setShowSidebar(false);
+      }
+    };
+
+    collapseOnMobile(mediaQuery.matches);
+
+    const listener = (event: MediaQueryListEvent) => {
+      collapseOnMobile(event.matches);
+    };
+
+    if (typeof mediaQuery.addEventListener === 'function') {
+      mediaQuery.addEventListener('change', listener);
+      return () => mediaQuery.removeEventListener('change', listener);
+    }
+
+    mediaQuery.addListener(listener);
+    return () => mediaQuery.removeListener(listener);
+  }, [embedded]);
+
+  useEffect(() => {
     if (skipNextLayoutPersistRef.current) {
       skipNextLayoutPersistRef.current = false;
       return;
