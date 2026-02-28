@@ -1056,6 +1056,9 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - When using esbuild with `--bundle`, always add `--format=esm` to produce ES module output. In `index.html`, load the bundle with `<script type="module">` and use `import {{ render }} from './dist/main.js'` to call the entry render function. Never rely on `window.render` or other global-scope assumptions; esbuild IIFE format wraps exports in a closure where they are inaccessible from inline scripts.
 - If preview probe reports HTTP 200 and no hard runtime error, treat runtime as available and continue with dashboard code fixes instead of runtime scaffolding changes.
 - npm dependencies are allowed when explicitly declared in `package.json`; do not assume globally preloaded libraries.
+- Node workspaces include managed Tailwind tooling bootstrap (`tailwindcss` + `@tailwindcss/cli`) when `package.json` is present, so you may use Tailwind utility classes when they improve implementation speed.
+- Tailwind is optional. Keep styling flexible and prompt-driven; use plain CSS tokens when that is a better fit for the request.
+- Do not import from `tailwindcss` directly inside `dashboard/*.ts` module files. Wire Tailwind through workspace CSS/build entrypoints (`index.html`, bundler CSS entry, or generated stylesheet) and keep module logic focused on app behavior.
 - Do not inject CDN scripts for runtime dependencies in generated modules.
 - The runtime automatically applies theme-matched text, tick, grid, legend, and title colors to every Chart.js instance. Do NOT set `color`, `ticks.color`, `grid.color`, `labels.color`, or `title.color` in chart options; the runtime handles them. Only set data-specific colors (dataset `backgroundColor`, `borderColor`, etc.).
 - Do not inject DataTables CDN scripts in generated User Space modules.
@@ -1107,6 +1110,7 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 
 - Style rendered modules to match the active app theme.
 - Prefer CSS variables/tokens over hard-coded values, especially for colors, spacing, and radii.
+- Tailwind utilities are available for layout/spacing/composition, but keep semantic theming token-based (`var(--color-*)`, `var(--space-*)`, etc.) so dark/light mode remains consistent.
 - If module code injects CSS dynamically, keep the same token-based approach so dark/light mode stays consistent.
 - Do not introduce custom font stacks, raw hex palettes, or fixed theme-specific colors unless explicitly requested.
 - Available CSS variable tokens (always use `var(--token-name)` syntax):

@@ -125,7 +125,7 @@ _MODULE_SOURCE_EXTENSIONS = (
     ".cts",
 )
 _RUNTIME_BOOTSTRAP_CONFIG_PATH = ".ragtime/runtime-bootstrap.json"
-_RUNTIME_BOOTSTRAP_TEMPLATE_VERSION = 2
+_RUNTIME_BOOTSTRAP_TEMPLATE_VERSION = 3
 
 
 def _utc_now() -> datetime:
@@ -366,6 +366,12 @@ class UserSpaceService:
                     "when_exists": "package.json",
                     "unless_exists": "node_modules",
                     "run": "npm install",
+                },
+                {
+                    "name": "npm_tailwind_tooling",
+                    "when_exists": "package.json",
+                    "unless_exists": "node_modules/.bin/tailwindcss",
+                    "run": "npm install -D tailwindcss @tailwindcss/cli",
                 },
                 {
                     "name": "pip_requirements",
