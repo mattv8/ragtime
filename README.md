@@ -161,6 +161,9 @@ FAISS indexes are loaded into memory at startup; pgvector indexes stay in Postgr
    # Optional bearer token for runtime-manager calls
    # RUNTIME_MANAGER_AUTH_TOKEN=
 
+   # Optional bearer token for preview proxy calls to the runtime worker
+   # RUNTIME_WORKER_AUTH_TOKEN=
+
    # Runtime manager HTTP timeout in seconds
    # RUNTIME_MANAGER_TIMEOUT_SECONDS=5
 
@@ -232,6 +235,7 @@ FAISS indexes are loaded into memory at startup; pgvector indexes stay in Postgr
          DEBUG_MODE: "false"
          RUNTIME_MANAGER_URL: ${RUNTIME_MANAGER_URL:-http://runtime:8090}
          RUNTIME_MANAGER_AUTH_TOKEN: ${RUNTIME_MANAGER_AUTH_TOKEN:-runtime-manager-token}
+         RUNTIME_WORKER_AUTH_TOKEN: ${RUNTIME_WORKER_AUTH_TOKEN:-runtime-worker-token}
        volumes:
          # Data persistence (indexes, SSL certs, etc.)
          - ./data:/data
