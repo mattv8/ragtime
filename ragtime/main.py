@@ -913,6 +913,10 @@ async def userspace_share_token_path(share_token: str, request: Request):
 async def userspace_share_root_proxy(
     owner_username: str, share_slug: str, request: Request
 ):
+    normalized_share_root = (
+        f"/{quote(owner_username, safe='')}/{quote(share_slug, safe='')}/"
+    )
+
     if request.method == "POST":
         try:
             form = await request.form()
@@ -928,7 +932,7 @@ async def userspace_share_root_proxy(
                     status_code=400,
                 )
             response = RedirectResponse(
-                url=f"/{quote(owner_username, safe='')}/{quote(share_slug, safe='')}",
+                url=normalized_share_root,
                 status_code=303,
             )
             response.set_cookie(
@@ -942,7 +946,9 @@ async def userspace_share_root_proxy(
             )
             return response
 
-    return await _shared_proxy_http(owner_username, share_slug, request, path="")
+    query = request.url.query
+    target = f"{normalized_share_root}?{query}" if query else normalized_share_root
+    return RedirectResponse(url=target, status_code=307)
 
 
 @app.api_route(
