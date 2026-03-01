@@ -1247,6 +1247,7 @@ export function ChatPanel({
   const chatMainRef = useRef<HTMLDivElement>(null);
   const prevSidebarWidth = useRef(280);
   const prevInputAreaHeight = useRef(MIN_INPUT_AREA_HEIGHT);
+  const prevInputLengthRef = useRef(0);
   const skipNextLayoutPersistRef = useRef(true);
 
   useEffect(() => {
@@ -1274,6 +1275,9 @@ export function ChatPanel({
     setInputAreaHeight(nextInputAreaHeight);
     setIsInputAreaCollapsed(nextIsInputAreaCollapsed);
     setIsMessagesCollapsed(nextIsMessagesCollapsed);
+    if (nextInputAreaHeight > MIN_INPUT_AREA_HEIGHT) {
+      setIsManualResize(true);
+    }
 
     if (nextSidebarWidth >= 120) {
       prevSidebarWidth.current = nextSidebarWidth;
@@ -1430,15 +1434,25 @@ export function ChatPanel({
 
   const expandInputArea = useCallback(() => {
     setIsInputAreaCollapsed(false);
-    setInputAreaHeight(Math.max(MIN_INPUT_AREA_HEIGHT, prevInputAreaHeight.current || MIN_INPUT_AREA_HEIGHT));
-    setIsManualResize(false);
+    const nextHeight = Math.max(MIN_INPUT_AREA_HEIGHT, prevInputAreaHeight.current || MIN_INPUT_AREA_HEIGHT);
+    setInputAreaHeight(nextHeight);
+    if (nextHeight > MIN_INPUT_AREA_HEIGHT) {
+      setIsManualResize(true);
+    } else {
+      setIsManualResize(false);
+    }
     requestAnimationFrame(() => inputRef.current?.focus());
   }, [MIN_INPUT_AREA_HEIGHT]);
 
   const expandMessages = useCallback(() => {
     setIsMessagesCollapsed(false);
-    setInputAreaHeight(Math.max(MIN_INPUT_AREA_HEIGHT, prevInputAreaHeight.current || MIN_INPUT_AREA_HEIGHT));
-    setIsManualResize(false);
+    const nextHeight = Math.max(MIN_INPUT_AREA_HEIGHT, prevInputAreaHeight.current || MIN_INPUT_AREA_HEIGHT);
+    setInputAreaHeight(nextHeight);
+    if (nextHeight > MIN_INPUT_AREA_HEIGHT) {
+      setIsManualResize(true);
+    } else {
+      setIsManualResize(false);
+    }
   }, [MIN_INPUT_AREA_HEIGHT]);
 
   // Adjust the input area container height to fit the textarea content.
@@ -1447,6 +1461,17 @@ export function ChatPanel({
   const autoResizeInput = useCallback((el?: HTMLTextAreaElement | null) => {
     const textarea = el ?? inputRef.current;
     if (!textarea) return;
+
+    if (isManualResize) {
+      if (textarea.value === '' && prevInputLengthRef.current > 0) {
+        setIsManualResize(false);
+        setInputAreaHeight(MIN_INPUT_AREA_HEIGHT);
+      }
+      prevInputLengthRef.current = textarea.value.length;
+      return;
+    }
+
+    prevInputLengthRef.current = textarea.value.length;
 
     const wrapper = textarea.closest('.chat-input-area') as HTMLElement | null;
 
@@ -1464,19 +1489,6 @@ export function ChatPanel({
     const contentHeight = textarea.scrollHeight;
     // Clear inline height — let CSS height:100% fill the container.
     textarea.style.height = '';
-
-    // In manual-resize mode (user dragged the resize handle), we DO NOT grow
-    // the container when text is added. We just let the textarea scroll.
-    // However, if the text is completely cleared, we exit manual mode
-    // and reset to minimum height.
-    if (isManualResize) {
-      const needed = contentHeight + wrapperOverhead;
-      if (needed <= MIN_INPUT_AREA_HEIGHT) {
-        setIsManualResize(false);
-        setInputAreaHeight(MIN_INPUT_AREA_HEIGHT);
-      }
-      return;
-    }
 
     // Content-driven auto-resize: grow or shrink container to fit.
     const rawMax = getMaxInputAreaHeight();
