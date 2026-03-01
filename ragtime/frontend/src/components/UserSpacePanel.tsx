@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, Database, ExternalLink, File, History, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RotateCw, Save, Square, Terminal, Trash2, Users, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Database, ExternalLink, File, History, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RotateCw, Save, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { keymap } from '@codemirror/view';
@@ -2198,6 +2198,11 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     });
   }, [canEditWorkspace, deleteConfirmFileId, deleteConfirmFolderPath, expandedFolders, handleDeleteFile, handleDeleteFolder, handleRenameFile, handleRenameFolder, handleSelectFile, handleStartCreateFile, handleToggleFolder, renameValue, renamingFilePath, renamingFolderPath, selectedFilePath]);
 
+  const sqliteLiveDataOnlyMode = activeWorkspace?.sqlite_persistence_mode === 'exclude';
+  const sqlitePersistenceModeTitle = sqliteLiveDataOnlyMode
+    ? 'Live data only mode. Local SQLite files are not persisted with workspace snapshots. Click to enable SQLite local persistence mode.'
+    : 'SQLite local persistence mode. Local SQLite files are persisted with workspace snapshots. Click to switch to live data only mode.';
+
   return (
     <div className={`userspace-layout${isFullscreen ? ' userspace-fullscreen' : ''}`}>
       {/* === Top toolbar === */}
@@ -2435,14 +2440,16 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
               title="Workspace Tools"
             />
             <button
-              className={`btn btn-sm btn-icon userspace-toolbar-action-btn ${activeWorkspace?.sqlite_persistence_mode === 'include' ? 'btn-primary' : 'btn-secondary'}`}
+              className={`btn btn-sm btn-icon userspace-toolbar-action-btn ${sqliteLiveDataOnlyMode ? 'btn-secondary userspace-sqlite-mode-excluded' : 'btn-primary'}`}
               onClick={handleToggleSqlitePersistence}
               disabled={!activeWorkspaceId || !canEditWorkspace}
-              title={activeWorkspace?.sqlite_persistence_mode === 'include'
-                ? 'SQLite snapshots: included (click to exclude)'
-                : 'SQLite snapshots: excluded (click to include)'}
+              title={sqlitePersistenceModeTitle}
+              aria-label={sqliteLiveDataOnlyMode ? 'Live data only mode' : 'SQLite local persistence mode'}
             >
-              <Database size={14} />
+              <span className="userspace-sqlite-mode-icon" aria-hidden="true">
+                <Database size={14} />
+                {sqliteLiveDataOnlyMode && <Slash size={12} className="userspace-sqlite-mode-slash" />}
+              </span>
             </button>
             <button
               className="btn btn-secondary btn-sm btn-icon userspace-toolbar-action-btn"

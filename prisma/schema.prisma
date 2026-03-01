@@ -796,7 +796,7 @@ model Workspace {
   name        String
   nameNormalized String? @map("name_normalized")
   description String?  @default("")
-  sqlitePersistenceMode SqlitePersistenceMode @default(include) @map("sqlite_persistence_mode")
+  sqlitePersistenceMode SqlitePersistenceMode @default(exclude) @map("sqlite_persistence_mode")
   shareToken  String?  @unique @map("share_token")
   shareTokenCreatedAt DateTime? @map("share_token_created_at")
   shareSlug   String?  @map("share_slug")

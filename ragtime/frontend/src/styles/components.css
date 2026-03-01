@@ -328,6 +328,32 @@ textarea:focus {
   min-height: 30px;
 }
 
+.userspace-toolbar-action-btn.userspace-sqlite-mode-excluded {
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  border-color: var(--color-border);
+}
+
+.userspace-toolbar-action-btn.userspace-sqlite-mode-excluded:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  color: var(--color-text-secondary);
+}
+
+.userspace-sqlite-mode-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+}
+
+.userspace-sqlite-mode-slash {
+  position: absolute;
+  inset: 1px;
+  pointer-events: none;
+}
+
 .userspace-toolbar-live-status {
   display: inline-flex;
   align-items: center;

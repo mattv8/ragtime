@@ -298,8 +298,8 @@ def _entrypoint_references_module(main_content: str, candidates: list[str]) -> b
 
 
 def _normalize_sqlite_persistence_mode(value: str | None) -> str:
-    mode = (value or "include").strip().lower()
-    return mode if mode in {"include", "exclude"} else "include"
+    mode = (value or "exclude").strip().lower()
+    return mode if mode in {"include", "exclude"} else "exclude"
 
 
 class UserSpaceService:
@@ -1120,9 +1120,9 @@ if __name__ == "__main__":
         db = await get_db()
         workspace = await db.workspace.find_unique(where={"id": workspace_id})
         mode = _normalize_sqlite_persistence_mode(
-            str(getattr(workspace, "sqlitePersistenceMode", "include") or "include")
+            str(getattr(workspace, "sqlitePersistenceMode", "exclude") or "exclude")
             if workspace
-            else "include"
+            else "exclude"
         )
         if mode != "exclude":
             return
@@ -1176,7 +1176,7 @@ if __name__ == "__main__":
                 SqlitePersistenceMode,
                 _normalize_sqlite_persistence_mode(
                     str(
-                        getattr(record, "sqlitePersistenceMode", "include") or "include"
+                        getattr(record, "sqlitePersistenceMode", "exclude") or "exclude"
                     )
                 ),
             ),

@@ -21,8 +21,13 @@ from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
-                                     SystemMessage, ToolMessage)
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -31,42 +36,62 @@ from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
-from ragtime.core.file_constants import (USERSPACE_MODULE_SOURCE_EXTENSIONS,
-                                         USERSPACE_STRICT_FRONTEND_EXTENSIONS,
-                                         USERSPACE_THEME_AUDIT_EXTENSIONS,
-                                         USERSPACE_TYPESCRIPT_EXTENSIONS)
+from ragtime.core.file_constants import (
+    USERSPACE_MODULE_SOURCE_EXTENSIONS,
+    USERSPACE_STRICT_FRONTEND_EXTENSIONS,
+    USERSPACE_THEME_AUDIT_EXTENSIONS,
+    USERSPACE_TYPESCRIPT_EXTENSIONS,
+)
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit, get_output_limit
 from ragtime.core.ollama import get_model_context_length
-from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
-                                   validate_odoo_code, validate_sql_query,
-                                   validate_ssh_command)
+from ragtime.core.security import (
+    _SSH_ENV_VAR_RE,
+    sanitize_output,
+    validate_odoo_code,
+    validate_sql_query,
+    validate_ssh_command,
+)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
-                              execute_ssh_command, expand_env_vars_via_ssh,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.ssh import (
+    SSHConfig,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    expand_env_vars_via_ssh,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
-                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
-                                 create_chart_tool)
-from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-                                     create_datatable_tool)
+from ragtime.tools.chart import (
+    CHAT_CHART_DESCRIPTION_SUFFIX,
+    USERSPACE_CHART_DESCRIPTION_SUFFIX,
+    create_chart_tool,
+)
+from ragtime.tools.datatable import (
+    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+    create_datatable_tool,
+)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (_is_shallow_repository,
-                                       create_aggregate_git_history_tool,
-                                       create_per_index_git_history_tool)
+from ragtime.tools.git_history import (
+    _is_shallow_repository,
+    create_aggregate_git_history_tool,
+    create_per_index_git_history_tool,
+)
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (ArtifactType, UpsertWorkspaceFileRequest,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection)
+from ragtime.userspace.models import (
+    ArtifactType,
+    UpsertWorkspaceFileRequest,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -407,6 +432,8 @@ USERSPACE_SHARED_LIVE_DATA_GUARDRAILS = """
 
 - **NEVER embed hardcoded, mock, sample, or static data arrays in module source.** The system performs AST analysis on TypeScript source and rejects writes that lack structural `context.components[componentId].execute()` binding.
 - Chat query tools may enforce `LIMIT` for safe exploration, but persisted `live_data_connections.request` payloads do not require `LIMIT` unless intentionally desired.
+- When workspace tools are available, treat live tool responses as the dashboard source of truth. Do not route dashboard datasets through local SQLite as a substitute for live wiring.
+- Use SQLite only for out-of-scope local persistence (for example: UI preferences, drafts, local cache, or non-live operational state).
 - If live wiring is blocked by missing context, persist a scaffold with `execute()` call sites and state the blocker. Do NOT substitute mock data.
 - If no tools are selected for the workspace, report the conflict and request tool configuration before proceeding. Do NOT fabricate data.
 """
@@ -843,7 +870,8 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 
 #### SQLite persistence (devcontainer-friendly)
 
-- For workspace-local app data, prefer SQLite at `.ragtime/db/app.sqlite3` unless the user explicitly requests another engine.
+- Use SQLite at `.ragtime/db/app.sqlite3` for out-of-scope local persistence (for example: UI state, cache, drafts, local operational data).
+- Do not treat local SQLite as the source of truth for persistent dashboard datasets when workspace live tools are available.
 - Migration convention is `.ragtime/db/migrations/*.sql` in lexical order (`0001_init.sql`, `0002_add_table.sql`, ...).
 - Runtime bootstrap runs `.ragtime/scripts/sqlite_migrate.py --db .ragtime/db/app.sqlite3 --migrations .ragtime/db/migrations` when present.
 - `.ragtime/scripts/sqlite_migrate.py` tracks applied migrations in `_ragtime_migrations` with SHA-256 checksums.
@@ -869,6 +897,7 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 ### Data wiring rules
 
 - Use real tool outputs as the source of truth for rendered data.
+- In tool-enabled workspaces, do not replace live dashboard data connections with SQLite snapshots or seeded local tables.
 - Persistent User Space dashboards must be live-wired via `context.components[componentId].execute()`.
 - When the workspace has selected tools, only `dashboard/main.ts` (the entry module) requires `live_data_connections`, `live_data_checks`, and verified `execute()` call sites.
 - Helper components under `dashboard/` (e.g., `dashboard/components/*`, `dashboard/charts/*`) do NOT need live_data_connections. They receive data as parameters from the entry module.

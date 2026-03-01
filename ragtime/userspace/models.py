@@ -40,7 +40,7 @@ class UserSpaceWorkspace(BaseModel):
     id: str
     name: str
     description: str | None = None
-    sqlite_persistence_mode: SqlitePersistenceMode = "include"
+    sqlite_persistence_mode: SqlitePersistenceMode = "exclude"
     owner_user_id: str
     selected_tool_ids: list[str] = Field(default_factory=list)
     conversation_ids: list[str] = Field(default_factory=list)
@@ -52,7 +52,7 @@ class UserSpaceWorkspace(BaseModel):
 class CreateWorkspaceRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=1000)
-    sqlite_persistence_mode: SqlitePersistenceMode = "include"
+    sqlite_persistence_mode: SqlitePersistenceMode = "exclude"
     selected_tool_ids: list[str] = Field(default_factory=list)
 
 
