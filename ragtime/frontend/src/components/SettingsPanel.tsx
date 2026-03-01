@@ -910,6 +910,20 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     );
   }
 
+  const openAiConfigured = Boolean((formData.openai_api_key ?? settings?.openai_api_key)?.trim());
+  const claudeConfigured = Boolean((formData.anthropic_api_key ?? settings?.anthropic_api_key)?.trim());
+  const ollamaConfigured = Boolean(
+    (formData.llm_ollama_protocol ?? settings?.llm_ollama_protocol) &&
+    (formData.llm_ollama_host ?? settings?.llm_ollama_host)?.trim() &&
+    (formData.llm_ollama_port ?? settings?.llm_ollama_port)
+  );
+  const embeddingOpenAiConfigured = Boolean((formData.openai_api_key ?? settings?.openai_api_key)?.trim());
+  const embeddingOllamaConfigured = Boolean(
+    (formData.ollama_protocol ?? settings?.ollama_protocol) &&
+    (formData.ollama_host ?? settings?.ollama_host)?.trim() &&
+    (formData.ollama_port ?? settings?.ollama_port)
+  );
+
   return (
     <div className="card">
       <h2>Settings</h2>
@@ -1032,7 +1046,33 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
 
         {/* LLM Configuration */}
         <fieldset>
-          <legend>LLM Configuration (Chat/RAG)</legend>
+          <legend className="legend-with-status">
+            <span>LLM Configuration (Chat/RAG)</span>
+            <span className="legend-divider" aria-hidden="true" />
+            <span className="llm-provider-status-inline" aria-label="LLM provider configuration status">
+              <span className="llm-provider-status-item" title={openAiConfigured ? 'OpenAI configured' : 'OpenAI not configured'}>
+                <span
+                  className={`llm-provider-status-dot ${openAiConfigured ? 'configured' : ''}`}
+                  aria-label={openAiConfigured ? 'OpenAI configured' : 'OpenAI not configured'}
+                />
+                <span className="llm-provider-status-label">OpenAI</span>
+              </span>
+              <span className="llm-provider-status-item" title={claudeConfigured ? 'Claude configured' : 'Claude not configured'}>
+                <span
+                  className={`llm-provider-status-dot ${claudeConfigured ? 'configured' : ''}`}
+                  aria-label={claudeConfigured ? 'Claude configured' : 'Claude not configured'}
+                />
+                <span className="llm-provider-status-label">Claude</span>
+              </span>
+              <span className="llm-provider-status-item" title={ollamaConfigured ? 'Ollama configured' : 'Ollama not configured'}>
+                <span
+                  className={`llm-provider-status-dot ${ollamaConfigured ? 'configured' : ''}`}
+                  aria-label={ollamaConfigured ? 'Ollama configured' : 'Ollama not configured'}
+                />
+                <span className="llm-provider-status-label">Ollama</span>
+              </span>
+            </span>
+          </legend>
           <p className="fieldset-help">
             Configure the language model used for answering questions and tool calls.
           </p>
@@ -1410,7 +1450,26 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
 
         {/* Embedding Configuration */}
         <fieldset id="setting-embedding_config">
-          <legend>Embedding Configuration</legend>
+          <legend className="legend-with-status">
+            <span>Embedding Configuration</span>
+            <span className="legend-divider" aria-hidden="true" />
+            <span className="llm-provider-status-inline" aria-label="Embedding provider configuration status">
+              <span className="llm-provider-status-item" title={embeddingOpenAiConfigured ? 'OpenAI configured' : 'OpenAI not configured'}>
+                <span
+                  className={`llm-provider-status-dot ${embeddingOpenAiConfigured ? 'configured' : ''}`}
+                  aria-label={embeddingOpenAiConfigured ? 'OpenAI configured' : 'OpenAI not configured'}
+                />
+                <span className="llm-provider-status-label">OpenAI</span>
+              </span>
+              <span className="llm-provider-status-item" title={embeddingOllamaConfigured ? 'Ollama configured' : 'Ollama not configured'}>
+                <span
+                  className={`llm-provider-status-dot ${embeddingOllamaConfigured ? 'configured' : ''}`}
+                  aria-label={embeddingOllamaConfigured ? 'Ollama configured' : 'Ollama not configured'}
+                />
+                <span className="llm-provider-status-label">Ollama</span>
+              </span>
+            </span>
+          </legend>
           <p className="fieldset-help">
             Configure how document embeddings are generated for FAISS indexes.
           </p>

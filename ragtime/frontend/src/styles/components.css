@@ -2242,11 +2242,57 @@ fieldset legend {
   padding: 0 var(--space-sm);
 }
 
+fieldset legend.legend-with-status {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  box-sizing: border-box;
+  gap: var(--space-sm);
+}
+
+fieldset legend.legend-with-status .legend-divider {
+  flex: 1;
+  height: 0;
+  border-top: 1px solid var(--color-border);
+  opacity: 0.9;
+}
+
 .fieldset-help {
   color: var(--color-text-secondary);
   font-size: var(--text-sm);
   margin-bottom: var(--space-sm);
   line-height: var(--leading-relaxed);
+}
+
+.llm-provider-status-inline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.llm-provider-status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.llm-provider-status-label {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+
+.llm-provider-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  background: var(--color-text-muted);
+  opacity: 0.7;
+}
+
+.llm-provider-status-dot.configured {
+  background: var(--color-success);
+  opacity: 1;
 }
 
 /* =============================================================================

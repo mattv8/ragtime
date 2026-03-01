@@ -171,6 +171,7 @@ body {
    ============================================================================= */
 
 .security-banner {
+  width: 100%;
   max-width: var(--container-max-width);
   margin: 0 auto var(--space-md);
   padding: var(--space-sm) var(--space-md);
@@ -241,6 +242,7 @@ body {
    ============================================================================= */
 
 .config-banner {
+  width: 100%;
   max-width: var(--container-max-width);
   margin: 0 auto var(--space-md);
   padding: var(--space-sm) var(--space-md);
