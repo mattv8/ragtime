@@ -22,43 +22,31 @@ from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (
-    DB_TYPE_POSTGRES,
-    add_table_metadata_to_psql_output,
-    enforce_max_results,
-    format_query_result,
-    validate_sql_query,
-)
-from ragtime.core.ssh import (
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
+                                    add_table_metadata_to_psql_output,
+                                    enforce_max_results, format_query_result,
+                                    validate_sql_query)
+from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
+                              ssh_tunnel_config_from_dict)
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (
-    ArtifactType,
-    CreateWorkspaceRequest,
-    ExecuteComponentRequest,
-    ExecuteComponentResponse,
-    PaginatedWorkspacesResponse,
-    ShareAccessMode,
-    SqlitePersistenceMode,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-    UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot,
-    UserSpaceWorkspace,
-    UserSpaceWorkspaceShareLink,
-    UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceMember,
-    WorkspaceShareSlugAvailabilityResponse,
-)
+from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
+                                      ExecuteComponentRequest,
+                                      ExecuteComponentResponse,
+                                      PaginatedWorkspacesResponse,
+                                      ShareAccessMode, SqlitePersistenceMode,
+                                      UpdateWorkspaceMembersRequest,
+                                      UpdateWorkspaceRequest,
+                                      UpdateWorkspaceShareAccessRequest,
+                                      UpsertWorkspaceFileRequest,
+                                      UserSpaceFileInfo, UserSpaceFileResponse,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection,
+                                      UserSpaceSharedPreviewResponse,
+                                      UserSpaceSnapshot, UserSpaceWorkspace,
+                                      UserSpaceWorkspaceShareLink,
+                                      UserSpaceWorkspaceShareLinkStatus,
+                                      WorkspaceMember,
+                                      WorkspaceShareSlugAvailabilityResponse)
 
 logger = get_logger(__name__)
 
@@ -209,17 +197,15 @@ def _requires_live_data_contract(
     if not is_module_source:
         return False
 
-    is_dashboard_module = artifact_type == "module_ts" or normalized_path.startswith(
-        "dashboard/"
-    )
-    if not is_dashboard_module:
-        return False
-
-    # Auto-require live data contract when workspace has tools,
-    # regardless of the explicit live_data_requested flag.
-    if workspace_has_tools:
+    # Auto-require live data contract only for the dashboard entry
+    # module (dashboard/main.ts) when workspace has tools.  Helper
+    # components under dashboard/ receive data as parameters and do
+    # not need their own live data wiring.
+    is_dashboard_entry = normalized_path == "dashboard/main.ts"
+    if is_dashboard_entry and workspace_has_tools:
         return True
 
+    # All other module sources: only when explicitly requested.
     return live_data_requested
 
 
@@ -1744,6 +1730,7 @@ class UserSpaceService:
         relative_path: str,
         request: UpsertWorkspaceFileRequest,
         user_id: str,
+        skip_live_data_enforcement: bool = False,
     ) -> UserSpaceFileResponse:
         workspace = await self._enforce_workspace_access(
             workspace_id,
@@ -1784,7 +1771,7 @@ class UserSpaceService:
         parsed_live_data_connections = request.live_data_connections or []
         parsed_live_data_checks = request.live_data_checks or []
         workspace_has_tools = bool(workspace.selected_tool_ids)
-        if _requires_live_data_contract(
+        if not skip_live_data_enforcement and _requires_live_data_contract(
             relative_path,
             request.artifact_type,
             request.live_data_requested,
@@ -1835,7 +1822,7 @@ class UserSpaceService:
                             "for this workspace."
                         ),
                     )
-                if (
+                if not skip_live_data_enforcement and (
                     not check.connection_check_passed
                     or not check.transformation_check_passed
                 ):
@@ -1847,7 +1834,7 @@ class UserSpaceService:
                         ),
                     )
 
-        if _requires_live_data_contract(
+        if not skip_live_data_enforcement and _requires_live_data_contract(
             relative_path,
             request.artifact_type,
             request.live_data_requested,

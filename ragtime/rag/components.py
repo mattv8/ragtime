@@ -351,7 +351,7 @@ TOOL_USAGE_REMINDER = """[CRITICAL: Use the tool calling API. Do NOT write fake 
 
 """
 
-USERSPACE_TURN_REMINDER = """[USER SPACE TURN CHECKLIST: Before finalizing, run validate_userspace_code on EVERY changed .ts/.tsx file (including dashboard/main.ts) and fix all reported errors. Persist implementation changes via userspace file tools (not chat-only prose). Treat any tool result with rejected=true as a failed step (even if replacement counts are shown), and fix/retry before claiming success. Never use hardcoded/mock/sample/static data in dashboard modules; wire live data via context.components[componentId].execute() with required metadata/checks. After validation passes with no errors, call create_userspace_snapshot with a concise completion message. Never skip validation or snapshot -- the finalization sequence is: validate -> fix errors -> validate again -> snapshot.]
+USERSPACE_TURN_REMINDER = """[USER SPACE TURN CHECKLIST: Before finalizing, run validate_userspace_code on EVERY changed .ts/.tsx file (including dashboard/main.ts) and fix all reported errors. Persist implementation changes via userspace file tools (not chat-only prose). Treat any tool result with rejected=true as a failed step and fix/retry. If a tool result has persisted_with_violations=true, the file WAS saved but has contract issues -- use patch_userspace_file to fix the specific violations listed in contract_violations (do NOT re-send the full file content). Never use hardcoded/mock/sample/static data in dashboard modules; wire live data via context.components[componentId].execute() with required metadata/checks. After validation passes with no errors, call create_userspace_snapshot with a concise completion message. Never skip validation or snapshot -- the finalization sequence is: validate -> fix errors -> validate again -> snapshot.]
 
 """
 
@@ -1071,7 +1071,7 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Each `live_data_connections` entry must include at least `component_kind=tool_config`, `component_id`, and `request`.
 - Include `live_data_checks` for each connection with `connection_check_passed=true` and `transformation_check_passed=true`.
 - Never invent or guess `component_id` values. Use only IDs from ACTIVE TOOL CONNECTIONS FOR THIS REQUEST.
-- Do not persist `dashboard/main.ts` without connection metadata when workspace has tools.
+- Do not persist `dashboard/main.ts` without connection metadata when workspace has tools. If the file is persisted with contract violations, fix the violations via `patch_userspace_file` rather than regenerating the entire file.
 - Data connections are internal components, abstracted from end users.
 - These components map to admin-configured tools from Settings.
 - Persist the connection request (query/command payload + component reference), then read/fetch through `context.components` at render/runtime.
@@ -5302,6 +5302,7 @@ except Exception as e:
                     normalized_path,
                     request_payload,
                     user_id,
+                    skip_live_data_enforcement=True,
                 )
             except HTTPException as exc:
                 status_code = getattr(exc, "status_code", None)
@@ -5367,6 +5368,7 @@ except Exception as e:
             warnings: list[str] = []
             allowed_violations: list[str] = []
             hard_errors: list[str] = []
+            contract_violations: list[str] = []
             lower_path = (path or "").lower()
             normalized_path = lower_path.replace("\\", "/")
 
@@ -5430,7 +5432,7 @@ except Exception as e:
                         not check.connection_check_passed
                         or not check.transformation_check_passed
                     ):
-                        hard_errors.append(
+                        contract_violations.append(
                             "live_data_checks must indicate successful connection and transformation for "
                             f"component_id={check.component_id}."
                         )
@@ -5477,14 +5479,14 @@ except Exception as e:
                 )
 
             if requires_live_data_contract and not parsed_live_data_connections:
-                hard_errors.append(
+                contract_violations.append(
                     "Missing required live_data_connections contract metadata for dashboard/main.ts. "
                     "Provide at least one connection with component_kind=tool_config, component_id, and request, or set live_data_requested=false for scaffolding."
                 )
 
             if requires_live_data_contract:
                 if not parsed_live_data_checks:
-                    hard_errors.append(
+                    contract_violations.append(
                         "Missing required live_data_checks verification metadata for this module source write. "
                         "Provide checks with successful connection and transformation for each component_id."
                     )
@@ -5501,7 +5503,7 @@ except Exception as e:
                     }
                     missing_ids = sorted(connection_ids - verified_ids)
                     if missing_ids:
-                        hard_errors.append(
+                        contract_violations.append(
                             "Missing successful live_data_checks verification for component_id(s): "
                             + ", ".join(missing_ids)
                         )
@@ -5533,7 +5535,7 @@ except Exception as e:
                     # of deferred binding.  Non-entry files that declare
                     # live connections must call execute() directly.
                     if not has_execute and not (is_entry and has_imports):
-                        hard_errors.append(
+                        contract_violations.append(
                             "Live data binding not found in module source. "
                             "Dashboard modules must call "
                             "context.components[componentId].execute() to "
@@ -5542,7 +5544,7 @@ except Exception as e:
                             "available."
                         )
                     elif not has_access and not has_imports:
-                        hard_errors.append(
+                        contract_violations.append(
                             "Module source does not access "
                             "context.components anywhere. Dashboard "
                             "modules with live_data_connections must wire "
@@ -5600,17 +5602,6 @@ except Exception as e:
                     detail = "LIVE DATA POLICY VIOLATION -- " + " | ".join(hard_errors)
                 if warnings:
                     detail += " [Warnings: " + "; ".join(warnings) + "]"
-                lower_errors = [err.lower() for err in hard_errors]
-                is_contract_repairable = any(
-                    marker in err
-                    for err in lower_errors
-                    for marker in (
-                        "live_data_connections",
-                        "live_data_checks",
-                        "context.components",
-                        "execute()",
-                    )
-                )
 
                 rejected_payload: dict[str, Any] = {
                     "rejected": True,
@@ -5619,17 +5610,13 @@ except Exception as e:
                     "path": path,
                     "persisted": False,
                     "policy_violations": hard_errors,
+                    "action_required": (
+                        "Fix the hard policy violations listed above, then retry "
+                        "upsert_userspace_file."
+                    ),
                 }
-                if is_contract_repairable:
-                    rejected_payload["action_required"] = (
-                        "Add/verify live_data_connections + live_data_checks metadata and wire runtime calls in code via "
-                        "context.components[componentId].execute(), then retry upsert_userspace_file."
-                    )
-                    rejected_payload["suggested_next_tools"] = [
-                        "read_userspace_file",
-                        "patch_userspace_file",
-                        "validate_userspace_code",
-                    ]
+                if contract_violations:
+                    rejected_payload["contract_violations"] = contract_violations
                 if warnings:
                     rejected_payload["warnings"] = warnings
                 if allowed_violations:
@@ -5637,6 +5624,14 @@ except Exception as e:
                 if typecheck is not None:
                     rejected_payload["typescript_validation"] = typecheck
                 return json.dumps(rejected_payload, indent=2)
+
+            # Persist the file.  When contract_violations exist (but no
+            # hard_errors), still write the file and tell the service
+            # layer to skip live-data enforcement so the write succeeds.
+            # The response will flag the violations so the agent can fix
+            # them with a follow-up patch instead of regenerating the
+            # entire content blob.
+            skip_live_data = bool(contract_violations)
 
             try:
                 result = await userspace_service.upsert_workspace_file(
@@ -5650,70 +5645,48 @@ except Exception as e:
                         live_data_checks=parsed_live_data_checks,
                     ),
                     user_id,
+                    skip_live_data_enforcement=skip_live_data,
                 )
             except HTTPException as exc:
                 status_code = getattr(exc, "status_code", None)
                 detail_text = str(getattr(exc, "detail", exc))
                 lower_detail_text = detail_text.lower()
-                if status_code == 400 and any(
-                    marker in lower_detail_text
-                    for marker in (
-                        "invalid file path",
-                        "missing required live_data_connections",
-                        "missing required live_data_checks",
-                        "missing successful live_data_checks verification",
-                        "invalid live_data_connections component_id",
-                        "invalid live_data_checks component_id",
-                        "live_data_checks must indicate successful connection and transformation",
-                    )
-                ):
-                    error_text = detail_text
-                    action_required = (
-                        "Provide valid live_data_connections + live_data_checks metadata for selected workspace tools, "
-                        "or set live_data_requested=false for scaffolding writes without live wiring."
-                    )
-                    if "invalid file path" in lower_detail_text:
-                        error_text = (
-                            f"File not found: {path}. The requested path does not exist "
-                            "or is not accessible in this workspace."
-                        )
-                        action_required = (
-                            "Use list_userspace_files to choose an existing path, or provide a valid relative file path under the workspace files root."
-                        )
+                if status_code == 400 and "invalid file path" in lower_detail_text:
                     policy_response_payload: dict[str, Any] = {
                         "rejected": True,
-                        "error": error_text,
-                        "action_required": action_required,
-                    }
-                    if warnings:
-                        policy_response_payload["warnings"] = warnings
-                    if allowed_violations:
-                        policy_response_payload["allowed_violations"] = (
-                            allowed_violations
-                        )
-                    if typecheck is not None:
-                        policy_response_payload["typescript_validation"] = typecheck
-                    return json.dumps(policy_response_payload, indent=2)
-                if (
-                    status_code == 400
-                    and "No server-verified execution proof for component_id(s):"
-                    in detail_text
-                ):
-                    response_payload: dict[str, Any] = {
-                        "rejected": True,
-                        "error": detail_text,
+                        "error": (
+                            f"File not found: {path}. The requested path does not exist "
+                            "or is not accessible in this workspace."
+                        ),
                         "action_required": (
-                            "Run a successful live-data query for each declared component_id "
-                            "(workspace tool or execute-component endpoint), then retry upsert_userspace_file."
+                            "Use list_userspace_files to choose an existing path, or provide "
+                            "a valid relative file path under the workspace files root."
                         ),
                     }
                     if warnings:
-                        response_payload["warnings"] = warnings
-                    if allowed_violations:
-                        response_payload["allowed_violations"] = allowed_violations
+                        policy_response_payload["warnings"] = warnings
                     if typecheck is not None:
-                        response_payload["typescript_validation"] = typecheck
-                    return json.dumps(response_payload, indent=2)
+                        policy_response_payload["typescript_validation"] = typecheck
+                    return json.dumps(policy_response_payload, indent=2)
+                if status_code == 400 and any(
+                    marker in lower_detail_text
+                    for marker in (
+                        "invalid live_data_connections component_id",
+                        "invalid live_data_checks component_id",
+                    )
+                ):
+                    policy_response_payload = {
+                        "rejected": True,
+                        "error": detail_text,
+                        "action_required": (
+                            "Use only component_ids from tools selected for this workspace."
+                        ),
+                    }
+                    if warnings:
+                        policy_response_payload["warnings"] = warnings
+                    if typecheck is not None:
+                        policy_response_payload["typescript_validation"] = typecheck
+                    return json.dumps(policy_response_payload, indent=2)
                 if status_code == 400 and detail_text.startswith(
                     "Entry-point wiring required:"
                 ):
@@ -5727,10 +5700,6 @@ except Exception as e:
                     }
                     if warnings:
                         entrypoint_response_payload["warnings"] = warnings
-                    if allowed_violations:
-                        entrypoint_response_payload["allowed_violations"] = (
-                            allowed_violations
-                        )
                     if typecheck is not None:
                         entrypoint_response_payload["typescript_validation"] = typecheck
                     return json.dumps(entrypoint_response_payload, indent=2)
@@ -5739,6 +5708,14 @@ except Exception as e:
             success_response_payload: dict[str, Any] = {
                 "file": result.model_dump(mode="json"),
             }
+            if contract_violations:
+                success_response_payload["persisted_with_violations"] = True
+                success_response_payload["contract_violations"] = contract_violations
+                success_response_payload["action_required"] = (
+                    "File was persisted but has live data contract violations. "
+                    "Use patch_userspace_file to fix the issues listed in "
+                    "contract_violations, then run validate_userspace_code."
+                )
             if warnings:
                 success_response_payload["warnings"] = warnings
             if allowed_violations:
