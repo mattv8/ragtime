@@ -932,6 +932,86 @@ textarea:focus {
   color: var(--color-text-primary);
 }
 
+.userspace-code-editor .cm-editor .cm-panels {
+  background-color: var(--color-surface);
+  color: var(--color-text-primary);
+  border-top: 1px solid var(--color-border);
+  z-index: 3;
+}
+
+.userspace-code-editor .cm-editor .cm-panels .cm-search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+}
+
+.userspace-code-editor .cm-editor .cm-panels .cm-search label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+
+.userspace-code-editor .cm-editor .cm-panels .cm-search input[type='checkbox'] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  border-radius: 3px;
+  border: 1px solid var(--color-input-border);
+  background: var(--color-input-bg);
+  accent-color: var(--color-primary);
+  cursor: pointer;
+}
+
+.userspace-code-editor .cm-editor .cm-panels .cm-search input[type='checkbox']:hover {
+  border-color: var(--color-border-strong);
+}
+
+.userspace-code-editor .cm-editor .cm-panels .cm-search input[type='checkbox']:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--color-primary-light);
+  border-color: var(--color-input-focus);
+}
+
+.userspace-code-editor .cm-editor .cm-panels .cm-textfield {
+  min-height: 28px;
+  padding: 4px var(--space-xs);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-input-border);
+  background-color: var(--color-input-bg);
+  color: var(--color-text-primary);
+  font-size: var(--text-xs);
+}
+
+.userspace-code-editor .cm-editor .cm-panels .cm-textfield:focus {
+  outline: none;
+  border-color: var(--color-input-focus);
+}
+
+.userspace-code-editor .cm-editor .cm-panels .cm-button {
+  min-height: 28px;
+  padding: 4px var(--space-sm);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+  font-size: var(--text-xs);
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.userspace-code-editor .cm-editor .cm-panels .cm-button:hover {
+  background: var(--color-surface-active);
+  border-color: var(--color-border-strong);
+}
+
+.userspace-code-editor .cm-editor .cm-panels .cm-button:focus {
+  outline: none;
+  border-color: var(--color-input-focus);
+}
+
 /* Chat section */
 
 .userspace-chat-section {

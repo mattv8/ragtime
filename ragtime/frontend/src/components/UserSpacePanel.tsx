@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronDown, ChevronRight, ExternalLink, File, History, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RotateCw, Save, Square, Terminal, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
+import { keymap } from '@codemirror/view';
+import { openSearchPanel } from '@codemirror/search';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
@@ -64,6 +66,16 @@ function areSameNormalizedStringArrays(left: string[], right: string[]): boolean
 const LAST_WORKSPACE_COOKIE_PREFIX = 'userspace_last_workspace_id_';
 const LAST_WORKSPACE_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
 const USERSPACE_LAYOUT_COOKIE_PREFIX = 'userspace_layout_';
+const USERSPACE_CODEMIRROR_BASIC_SETUP = {
+  lineNumbers: true,
+  foldGutter: true,
+  bracketMatching: true,
+  closeBrackets: true,
+  autocompletion: true,
+  highlightActiveLine: true,
+  indentOnInput: true,
+  tabSize: 2,
+};
 
 function getLastWorkspaceCookieName(userId: string): string {
   return `${LAST_WORKSPACE_COOKIE_PREFIX}${encodeURIComponent(userId)}`;
@@ -236,6 +248,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const [editorFraction, setEditorFraction] = useState(0.6);
   const contentRef = useRef<HTMLDivElement>(null);
   const leftPaneRef = useRef<HTMLDivElement>(null);
+  const codeEditorRef = useRef<HTMLDivElement>(null);
 
   // Collapse state: track which panes are collapsed + their last size for restore
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -323,6 +336,14 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     setEditorChatCollapsedSide(null);
     const restored = prevEditorFraction.current || 0.6;
     setEditorFraction(Math.min(0.9, Math.max(0.1, restored)));
+  }, []);
+
+  const isCodeEditorFocused = useCallback(() => {
+    const activeElement = document.activeElement;
+    if (!activeElement || !codeEditorRef.current) {
+      return false;
+    }
+    return codeEditorRef.current.contains(activeElement);
   }, []);
 
   useEffect(() => {
@@ -431,6 +452,20 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
 
   const canEditWorkspace = activeWorkspaceRole === 'owner' || activeWorkspaceRole === 'editor';
   const isOwner = activeWorkspaceRole === 'owner';
+
+  const codeMirrorExtensions = useMemo(
+    () => [
+      javascript({ typescript: true, jsx: true }),
+      keymap.of([
+        {
+          key: 'Mod-f',
+          run: openSearchPanel,
+          preventDefault: true,
+        },
+      ]),
+    ],
+    []
+  );
 
   // Derive effective runtime display state from session_state + devserver_running
   const runtimeDisplayState = useMemo(() => {
@@ -645,14 +680,14 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     if (!activeWorkspaceId) return;
 
     const refreshInterval = window.setInterval(() => {
-      if (fileDirty || savingFile) return;
+      if (fileDirty || savingFile || isCodeEditorFocused()) return;
       loadWorkspaceData(activeWorkspaceId);
     }, 4000);
 
     return () => {
       window.clearInterval(refreshInterval);
     };
-  }, [activeWorkspaceId, fileDirty, loadWorkspaceData, savingFile]);
+  }, [activeWorkspaceId, fileDirty, isCodeEditorFocused, loadWorkspaceData, savingFile]);
 
   useEffect(() => {
     fileContentCacheRef.current = fileContentCache;
@@ -676,7 +711,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
         if (data.generation > lastGeneration) {
           lastGeneration = data.generation;
           setPreviewRefreshCounter((c) => c + 1);
-          if (!fileDirtyRef.current) {
+          if (!fileDirtyRef.current && !isCodeEditorFocused()) {
             void loadWorkspaceData(activeWorkspaceId);
           }
         }
@@ -692,7 +727,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     return () => {
       source.close();
     };
-  }, [activeWorkspaceId, loadWorkspaceData]);
+  }, [activeWorkspaceId, isCodeEditorFocused, loadWorkspaceData]);
 
   useEffect(() => {
     selectedFilePathRef.current = selectedFilePath;
@@ -2478,7 +2513,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
             <ResizeHandle direction="horizontal" onResize={handleResizeSidebar} collapsed={sidebarCollapsed ? 'before' : undefined} onExpand={expandSidebar} />
 
             {/* Code editor */}
-            <div className="userspace-code-editor">
+            <div className="userspace-code-editor" ref={codeEditorRef}>
               {!canEditWorkspace && <div className="userspace-readonly-badge">Read-only</div>}
               <CodeMirror
                 value={fileContent}
@@ -2486,7 +2521,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                   setFileContent(value);
                   setFileDirty(true);
                 }}
-                extensions={[javascript({ typescript: true, jsx: true })]}
+                extensions={codeMirrorExtensions}
                 editable={canEditWorkspace}
                 readOnly={!canEditWorkspace}
                 placeholder="Create dashboard/report/module source files here"
@@ -2497,16 +2532,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                   if (stored === 'dark' || stored) return 'dark';
                   return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
                 })()}
-                basicSetup={{
-                  lineNumbers: true,
-                  foldGutter: true,
-                  bracketMatching: true,
-                  closeBrackets: true,
-                  autocompletion: true,
-                  highlightActiveLine: true,
-                  indentOnInput: true,
-                  tabSize: 2,
-                }}
+                basicSetup={USERSPACE_CODEMIRROR_BASIC_SETUP}
               />
             </div>
           </div>
