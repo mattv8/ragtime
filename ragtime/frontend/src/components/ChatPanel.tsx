@@ -1183,6 +1183,18 @@ export function ChatPanel({
   const effectiveToolIds = useWorkspaceToolSource
     ? (workspaceSelectedToolIds ?? [])
     : conversationToolIds;
+  const availableConversationToolIds = useMemo(
+    () => availableTools.map((tool) => tool.id),
+    [availableTools]
+  );
+  const resolvedConversationToolIds = useMemo(
+    () => (conversationToolIds.length > 0 ? conversationToolIds : availableConversationToolIds),
+    [availableConversationToolIds, conversationToolIds]
+  );
+  const resolvedEffectiveToolIds = useMemo(() => {
+    const availableIds = effectiveAvailableTools.map((tool) => tool.id);
+    return effectiveToolIds.length > 0 ? effectiveToolIds : availableIds;
+  }, [effectiveAvailableTools, effectiveToolIds]);
   const effectiveSavingTools = useWorkspaceToolSource ? workspaceSavingTools : savingTools;
 
   // Computed conversation ownership and permissions
@@ -1811,25 +1823,33 @@ export function ChatPanel({
 
   const handleToggleConversationTool = useCallback(async (toolId: string) => {
     if (!activeConversation || isConversationViewer) return;
-    const nextSelected = new Set(conversationToolIds);
+    const currentSelected = conversationToolIds.length > 0
+      ? new Set(conversationToolIds)
+      : new Set(availableConversationToolIds);
+    const nextSelected = new Set(currentSelected);
     if (nextSelected.has(toolId)) {
       nextSelected.delete(toolId);
     } else {
       nextSelected.add(toolId);
     }
 
+    const normalizedSelection = availableConversationToolIds.length > 0
+      && nextSelected.size === availableConversationToolIds.length
+      ? []
+      : Array.from(nextSelected);
+
     setSavingTools(true);
     try {
       await api.updateConversationTools(activeConversation.id, {
-        tool_config_ids: Array.from(nextSelected),
+        tool_config_ids: normalizedSelection,
       });
-      setConversationToolIds(Array.from(nextSelected));
+      setConversationToolIds(normalizedSelection);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update tool selection');
     } finally {
       setSavingTools(false);
     }
-  }, [activeConversation, conversationToolIds, isConversationViewer]);
+  }, [activeConversation, availableConversationToolIds, conversationToolIds, isConversationViewer]);
 
   const handleToggleInlineTool = useCallback(async (toolId: string) => {
     if (useWorkspaceToolSource && onToggleWorkspaceTool) {
@@ -2897,7 +2917,7 @@ export function ChatPanel({
                 {!embedded && activeConversation && !isConversationViewer && (
                   <ToolSelectorDropdown
                     availableTools={availableTools}
-                    selectedToolIds={new Set(conversationToolIds)}
+                    selectedToolIds={new Set(resolvedConversationToolIds)}
                     onToggleTool={handleToggleConversationTool}
                     disabled={false}
                     readOnly={false}
@@ -3207,7 +3227,7 @@ export function ChatPanel({
                     {showInlineToolSelector && (
                       <ToolSelectorDropdown
                         availableTools={effectiveAvailableTools}
-                        selectedToolIds={new Set(effectiveToolIds)}
+                        selectedToolIds={new Set(resolvedEffectiveToolIds)}
                         onToggleTool={handleToggleInlineTool}
                         disabled={effectiveSavingTools}
                         readOnly={false}
@@ -3232,7 +3252,7 @@ export function ChatPanel({
                       {showInlineToolSelector && (
                         <ToolSelectorDropdown
                           availableTools={effectiveAvailableTools}
-                          selectedToolIds={new Set(effectiveToolIds)}
+                          selectedToolIds={new Set(resolvedEffectiveToolIds)}
                           onToggleTool={handleToggleInlineTool}
                           disabled={effectiveSavingTools}
                           readOnly={false}
