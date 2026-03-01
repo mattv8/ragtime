@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 from __future__ import annotations
 
 import argparse
@@ -6,7 +7,6 @@ import hashlib
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-
 
 def _sorted_sql_files(migrations_dir: Path) -> list[Path]:
     if not migrations_dir.exists() or not migrations_dir.is_dir():

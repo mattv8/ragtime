@@ -21,13 +21,8 @@ from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (
-    AIMessage,
-    BaseMessage,
-    HumanMessage,
-    SystemMessage,
-    ToolMessage,
-)
+from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
+                                     SystemMessage, ToolMessage)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -36,62 +31,42 @@ from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
-from ragtime.core.file_constants import (
-    USERSPACE_MODULE_SOURCE_EXTENSIONS,
-    USERSPACE_STRICT_FRONTEND_EXTENSIONS,
-    USERSPACE_THEME_AUDIT_EXTENSIONS,
-    USERSPACE_TYPESCRIPT_EXTENSIONS,
-)
+from ragtime.core.file_constants import (USERSPACE_MODULE_SOURCE_EXTENSIONS,
+                                         USERSPACE_STRICT_FRONTEND_EXTENSIONS,
+                                         USERSPACE_THEME_AUDIT_EXTENSIONS,
+                                         USERSPACE_TYPESCRIPT_EXTENSIONS)
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit, get_output_limit
 from ragtime.core.ollama import get_model_context_length
-from ragtime.core.security import (
-    _SSH_ENV_VAR_RE,
-    sanitize_output,
-    validate_odoo_code,
-    validate_sql_query,
-    validate_ssh_command,
-)
+from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
+                                   validate_odoo_code, validate_sql_query,
+                                   validate_ssh_command)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (
-    SSHConfig,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    execute_ssh_command,
-    expand_env_vars_via_ssh,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
+                              execute_ssh_command, expand_env_vars_via_ssh,
+                              ssh_tunnel_config_from_dict)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (
-    CHAT_CHART_DESCRIPTION_SUFFIX,
-    USERSPACE_CHART_DESCRIPTION_SUFFIX,
-    create_chart_tool,
-)
-from ragtime.tools.datatable import (
-    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-    create_datatable_tool,
-)
+from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
+                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
+                                 create_chart_tool)
+from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+                                     create_datatable_tool)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (
-    _is_shallow_repository,
-    create_aggregate_git_history_tool,
-    create_per_index_git_history_tool,
-)
+from ragtime.tools.git_history import (_is_shallow_repository,
+                                       create_aggregate_git_history_tool,
+                                       create_per_index_git_history_tool)
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (
-    ArtifactType,
-    UpsertWorkspaceFileRequest,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-)
+from ragtime.userspace.models import (ArtifactType, UpsertWorkspaceFileRequest,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -105,6 +80,12 @@ MAX_TOOL_TIMEOUT_SECONDS = 300
 MAX_USERSPACE_SCREENSHOT_WIDTH = 1600
 MAX_USERSPACE_SCREENSHOT_HEIGHT = 1200
 MAX_USERSPACE_SCREENSHOT_PIXELS = 1_440_000
+_USERSPACE_LIVE_DATA_BINDING_VALIDATOR_JS_PATH = Path(__file__).with_name(
+    "userspace_live_data_binding_validator.js"
+)
+_USERSPACE_TYPESCRIPT_VALIDATOR_JS_PATH = Path(__file__).with_name(
+    "userspace_typescript_validator.js"
+)
 
 
 def escape_prompt_template_braces(text: str) -> str:
@@ -625,134 +606,16 @@ async def validate_live_data_binding(
         "missing_component_ids": [],
     }
 
-    node_script = r"""
-const fs = require('fs');
-const path = require('path');
-
-const input = fs.readFileSync(0, 'utf8');
-const filePath = process.argv[1] || 'dashboard/main.ts';
-
-let ts;
-try {
-  const tsModulePath = path.join('/ragtime/ragtime/frontend/node_modules/typescript');
-  ts = require(tsModulePath);
-} catch (err) {
-  console.log(JSON.stringify({
-    ok: false,
-    validator_available: false,
-    message: 'TypeScript compiler unavailable for AST analysis',
-    has_execute_calls: false,
-    found_component_ids: [],
-    has_local_imports: false,
-    has_context_components_access: false,
-  }));
-  process.exit(0);
-}
-
-const scriptKind = filePath.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
-const sourceFile = ts.createSourceFile(filePath, input, ts.ScriptTarget.ES2020, true, scriptKind);
-
-const foundComponentIds = [];
-const foundIdSet = new Set();
-let hasAnyExecuteCall = false;
-let hasLocalImports = false;
-let hasContextComponentsAccess = false;
-
-function visit(node) {
-  // Detect local workspace imports (static)
-  if (ts.isImportDeclaration(node) &&
-      node.moduleSpecifier &&
-      ts.isStringLiteral(node.moduleSpecifier)) {
-    const spec = node.moduleSpecifier.text;
-    if (spec.startsWith('./') || spec.startsWith('../')) {
-      hasLocalImports = true;
-    }
-  }
-
-  // Detect dynamic imports: import('./...')
-  if (ts.isCallExpression(node) &&
-      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-      node.arguments.length > 0 &&
-      ts.isStringLiteral(node.arguments[0])) {
-    const spec = node.arguments[0].text;
-    if (spec.startsWith('./') || spec.startsWith('../')) {
-      hasLocalImports = true;
-    }
-  }
-
-  // Detect context.components property access
-  if (ts.isPropertyAccessExpression(node) &&
-      node.name.text === 'components') {
-    const obj = node.expression;
-    if (ts.isIdentifier(obj) && obj.text === 'context') {
-      hasContextComponentsAccess = true;
-    }
-  }
-
-  // Detect context.components[X].execute() call expressions
-  if (ts.isCallExpression(node)) {
-    const expr = node.expression;
-    if (ts.isPropertyAccessExpression(expr) && expr.name.text === 'execute') {
-      const obj = expr.expression;
-
-      // Pattern: context.components["id"].execute()
-      if (ts.isElementAccessExpression(obj)) {
-        const container = obj.expression;
-        if (ts.isPropertyAccessExpression(container) &&
-            container.name.text === 'components') {
-          const root = container.expression;
-          if (ts.isIdentifier(root) && root.text === 'context') {
-            hasAnyExecuteCall = true;
-            hasContextComponentsAccess = true;
-            const arg = obj.argumentExpression;
-            if (ts.isStringLiteral(arg) && !foundIdSet.has(arg.text)) {
-              foundIdSet.add(arg.text);
-              foundComponentIds.push(arg.text);
-            }
-          }
+    if not _USERSPACE_LIVE_DATA_BINDING_VALIDATOR_JS_PATH.exists():
+        return {
+            **_default_fail,
+            "message": "Userspace validator script not found",
         }
-      }
-
-      // Pattern: context.components.propName.execute()
-      if (ts.isPropertyAccessExpression(obj)) {
-        const container = obj.expression;
-        if (ts.isPropertyAccessExpression(container) &&
-            container.name.text === 'components') {
-          const root = container.expression;
-          if (ts.isIdentifier(root) && root.text === 'context') {
-            hasAnyExecuteCall = true;
-            hasContextComponentsAccess = true;
-            const propName = obj.name.text;
-            if (!foundIdSet.has(propName)) {
-              foundIdSet.add(propName);
-              foundComponentIds.push(propName);
-            }
-          }
-        }
-      }
-    }
-  }
-
-  ts.forEachChild(node, visit);
-}
-
-visit(sourceFile);
-
-console.log(JSON.stringify({
-  ok: true,
-  validator_available: true,
-  has_execute_calls: hasAnyExecuteCall,
-  found_component_ids: foundComponentIds,
-  has_local_imports: hasLocalImports,
-  has_context_components_access: hasContextComponentsAccess,
-}));
-"""
 
     try:
         process = await asyncio.create_subprocess_exec(
             "node",
-            "-e",
-            node_script,
+            str(_USERSPACE_LIVE_DATA_BINDING_VALIDATOR_JS_PATH),
             file_path,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -807,129 +670,20 @@ async def validate_userspace_typescript_content(
     """Validate TypeScript content using frontend's TypeScript compiler diagnostics."""
     contract_violations = validate_userspace_runtime_contract(content, file_path)
 
-    node_script = r"""
-const fs = require('fs');
-const path = require('path');
-
-const input = fs.readFileSync(0, 'utf8');
-const filePath = process.argv[1] || 'dashboard/main.ts';
-
-let ts;
-try {
-  const tsModulePath = path.join('/ragtime/ragtime/frontend/node_modules/typescript');
-  ts = require(tsModulePath);
-} catch (err) {
-    console.log(JSON.stringify({
-        ok: false,
-        validator_available: false,
-        message: 'TypeScript validator unavailable in runtime',
-        errors: [],
-    }));
-  process.exit(0);
-}
-
-    const scriptKind = filePath.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
-    const sourceFile = ts.createSourceFile(filePath, input, ts.ScriptTarget.ES2020, true, scriptKind);
-
-const result = ts.transpileModule(input, {
-  fileName: filePath,
-  reportDiagnostics: true,
-  compilerOptions: {
-    module: ts.ModuleKind.ES2020,
-    target: ts.ScriptTarget.ES2020,
-    isolatedModules: true,
-    jsx: ts.JsxEmit.ReactJSX,
-  },
-});
-
-const diagnostics = (result.diagnostics || []).filter((d) => d.category === ts.DiagnosticCategory.Error);
-const errors = diagnostics.map((d) => {
-  const message = ts.flattenDiagnosticMessageText(d.messageText, '\n');
-  if (!d.file || d.start === undefined) return message;
-  const pos = d.file.getLineAndCharacterOfPosition(d.start);
-  return `${d.file.fileName}:${pos.line + 1}:${pos.character + 1} ${message}`;
-});
-
-function isExecuteCall(node) {
-    return ts.isCallExpression(node)
-        && ts.isPropertyAccessExpression(node.expression)
-        && node.expression.name.text === 'execute';
-}
-
-const asyncExecuteVars = new Set();
-function collectExecuteAssignments(node) {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-        if (isExecuteCall(node.initializer)) {
-            asyncExecuteVars.add(node.name.text);
+    if not _USERSPACE_TYPESCRIPT_VALIDATOR_JS_PATH.exists():
+        return {
+            "ok": False,
+            "validator_available": False,
+            "message": "Userspace TypeScript validator script not found",
+            "errors": contract_violations,
+            "contract_errors": contract_violations,
+            "contract_error_count": len(contract_violations),
         }
-    }
-    if (ts.isBinaryExpression(node)
-            && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
-            && ts.isIdentifier(node.left)
-            && isExecuteCall(node.right)) {
-        asyncExecuteVars.add(node.left.text);
-    }
-    ts.forEachChild(node, collectExecuteAssignments);
-}
-
-collectExecuteAssignments(sourceFile);
-
-const runtimeErrors = [];
-function addRuntimeError(node, message) {
-    const pos = sourceFile.getLineAndCharacterOfPosition(node.getStart());
-    runtimeErrors.push(`${filePath}:${pos.line + 1}:${pos.character + 1} ${message}`);
-}
-
-function inspectRuntimeMisuse(node) {
-    if (ts.isPropertyAccessExpression(node)
-            && ts.isIdentifier(node.expression)
-            && asyncExecuteVars.has(node.expression.text)) {
-        const prop = node.name.text;
-        if (!['then', 'catch', 'finally'].includes(prop)) {
-            addRuntimeError(
-                node,
-                `Potential async execute() misuse: ${node.expression.text}.${prop} is accessed synchronously after execute(). Await execute() or use .then(...) before reading properties.`
-            );
-        }
-    }
-
-    if (ts.isPropertyAccessExpression(node) && isExecuteCall(node.expression)) {
-        const prop = node.name.text;
-        if (!['then', 'catch', 'finally'].includes(prop)) {
-            addRuntimeError(
-                node,
-                `Potential async execute() misuse: execute().${prop} is accessed synchronously. Await execute() or use .then(...) before reading properties.`
-            );
-        }
-    }
-
-    ts.forEachChild(node, inspectRuntimeMisuse);
-}
-
-inspectRuntimeMisuse(sourceFile);
-
-const mergedErrors = [...errors];
-for (const runtimeError of runtimeErrors) {
-    if (!mergedErrors.includes(runtimeError)) {
-        mergedErrors.push(runtimeError);
-    }
-}
-
-console.log(JSON.stringify({
-    ok: mergedErrors.length === 0,
-  validator_available: true,
-    error_count: mergedErrors.length,
-    errors: mergedErrors,
-    runtime_errors: runtimeErrors,
-    runtime_error_count: runtimeErrors.length,
-}));
-"""
 
     try:
         process = await asyncio.create_subprocess_exec(
             "node",
-            "-e",
-            node_script,
+            str(_USERSPACE_TYPESCRIPT_VALIDATOR_JS_PATH),
             file_path,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
