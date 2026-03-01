@@ -129,8 +129,16 @@ class WorkerService:
     def _utc_now() -> datetime:
         return datetime.now(timezone.utc)
 
-    def _normalize_file_path(self, file_path: str) -> str:
-        return normalize_file_path(file_path)
+    def _normalize_file_path(
+        self,
+        file_path: str,
+        *,
+        enforce_sqlite_managed: bool = False,
+    ) -> str:
+        return normalize_file_path(
+            file_path,
+            enforce_sqlite_managed=enforce_sqlite_managed,
+        )
 
     def _resolve_workspace_root(self, workspace_id: str) -> Path:
         canonical_root = self._root / "workspaces" / workspace_id / "files"
@@ -797,7 +805,10 @@ class WorkerService:
             session = self._sessions.get(worker_session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Worker session not found")
-            rel_path = self._normalize_file_path(file_path)
+            rel_path = self._normalize_file_path(
+                file_path,
+                enforce_sqlite_managed=True,
+            )
             target = session.workspace_root / rel_path
             if not target.exists() or not target.is_file():
                 return self._runtime_file_response(session, rel_path, "", False)
@@ -815,7 +826,10 @@ class WorkerService:
             session = self._sessions.get(worker_session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Worker session not found")
-            rel_path = self._normalize_file_path(file_path)
+            rel_path = self._normalize_file_path(
+                file_path,
+                enforce_sqlite_managed=True,
+            )
             target = session.workspace_root / rel_path
             target.parent.mkdir(parents=True, exist_ok=True)
             await asyncio.to_thread(target.write_text, content, encoding="utf-8")
@@ -829,7 +843,10 @@ class WorkerService:
             session = self._sessions.get(worker_session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Worker session not found")
-            rel_path = self._normalize_file_path(file_path)
+            rel_path = self._normalize_file_path(
+                file_path,
+                enforce_sqlite_managed=True,
+            )
             target = session.workspace_root / rel_path
             if target.exists() and target.is_file():
                 target.unlink()

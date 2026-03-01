@@ -125,10 +125,12 @@ _MODULE_SOURCE_EXTENSIONS = (
     ".cts",
 )
 _RUNTIME_BOOTSTRAP_CONFIG_PATH = ".ragtime/runtime-bootstrap.json"
-_RUNTIME_BOOTSTRAP_TEMPLATE_VERSION = 3
+_RUNTIME_BOOTSTRAP_TEMPLATE_VERSION = 4
 _SQLITE_DEFAULT_DB_PATH = ".ragtime/db/app.sqlite3"
 _SQLITE_MIGRATIONS_DIR = ".ragtime/db/migrations"
 _SQLITE_MIGRATION_RUNNER_PATH = ".ragtime/scripts/sqlite_migrate.py"
+_SQLITE_MANAGED_DIR_PREFIX = ".ragtime/db/"
+_SQLITE_FILE_EXTENSIONS = frozenset({".sqlite", ".sqlite3", ".db", ".db3"})
 
 _HIDDEN_DIRS = frozenset({".git", "node_modules", "__pycache__", ".ragtime", "dist"})
 _AGENT_WRITABLE_RAGTIME_FILES = frozenset({"runtime-entrypoint.json"})
@@ -302,6 +304,31 @@ def _normalize_sqlite_persistence_mode(value: str | None) -> str:
     return mode if mode in {"include", "exclude"} else "exclude"
 
 
+def _is_sqlite_file_path(relative_path: str) -> bool:
+    normalized = (relative_path or "").strip().replace("\\", "/").lstrip("/")
+    if not normalized:
+        return False
+    return PurePosixPath(normalized).suffix.lower() in _SQLITE_FILE_EXTENSIONS
+
+
+def _is_managed_sqlite_file_path(relative_path: str) -> bool:
+    normalized = (relative_path or "").strip().replace("\\", "/").lstrip("/")
+    return normalized.startswith(_SQLITE_MANAGED_DIR_PREFIX)
+
+
+def _enforce_sqlite_file_path_policy(relative_path: str) -> None:
+    if _is_sqlite_file_path(relative_path) and not _is_managed_sqlite_file_path(
+        relative_path
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "SQLite persistence files must be managed under .ragtime/db/. "
+                "Use paths like .ragtime/db/app.sqlite3."
+            ),
+        )
+
+
 class UserSpaceService:
     def __init__(self) -> None:
         self._base_dir = Path(settings.index_data_path) / "_userspace"
@@ -395,7 +422,7 @@ class UserSpaceService:
                     "name": "sqlite_migrations",
                     "when_exists": _SQLITE_MIGRATION_RUNNER_PATH,
                     "run": (
-                        "python3 scripts/sqlite_migrate.py "
+                        "python3 .ragtime/scripts/sqlite_migrate.py "
                         f"--db {_SQLITE_DEFAULT_DB_PATH} "
                         f"--migrations {_SQLITE_MIGRATIONS_DIR}"
                     ),
@@ -693,6 +720,8 @@ if __name__ == "__main__":
     ) -> Path:
         if not relative_path or relative_path.startswith("/"):
             raise HTTPException(status_code=400, detail="Invalid file path")
+
+        _enforce_sqlite_file_path_policy(relative_path)
 
         files_dir = self._workspace_files_dir(workspace_id)
         target = (files_dir / relative_path).resolve()
