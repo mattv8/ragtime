@@ -21,8 +21,13 @@ from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
-                                     SystemMessage, ToolMessage)
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -31,42 +36,62 @@ from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
-from ragtime.core.file_constants import (USERSPACE_MODULE_SOURCE_EXTENSIONS,
-                                         USERSPACE_STRICT_FRONTEND_EXTENSIONS,
-                                         USERSPACE_THEME_AUDIT_EXTENSIONS,
-                                         USERSPACE_TYPESCRIPT_EXTENSIONS)
+from ragtime.core.file_constants import (
+    USERSPACE_MODULE_SOURCE_EXTENSIONS,
+    USERSPACE_STRICT_FRONTEND_EXTENSIONS,
+    USERSPACE_THEME_AUDIT_EXTENSIONS,
+    USERSPACE_TYPESCRIPT_EXTENSIONS,
+)
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit, get_output_limit
 from ragtime.core.ollama import get_model_context_length
-from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
-                                   validate_odoo_code, validate_sql_query,
-                                   validate_ssh_command)
+from ragtime.core.security import (
+    _SSH_ENV_VAR_RE,
+    sanitize_output,
+    validate_odoo_code,
+    validate_sql_query,
+    validate_ssh_command,
+)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
-                              execute_ssh_command, expand_env_vars_via_ssh,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.ssh import (
+    SSHConfig,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    expand_env_vars_via_ssh,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
-                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
-                                 create_chart_tool)
-from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-                                     create_datatable_tool)
+from ragtime.tools.chart import (
+    CHAT_CHART_DESCRIPTION_SUFFIX,
+    USERSPACE_CHART_DESCRIPTION_SUFFIX,
+    create_chart_tool,
+)
+from ragtime.tools.datatable import (
+    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+    create_datatable_tool,
+)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (_is_shallow_repository,
-                                       create_aggregate_git_history_tool,
-                                       create_per_index_git_history_tool)
+from ragtime.tools.git_history import (
+    _is_shallow_repository,
+    create_aggregate_git_history_tool,
+    create_per_index_git_history_tool,
+)
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (ArtifactType, UpsertWorkspaceFileRequest,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection)
+from ragtime.userspace.models import (
+    ArtifactType,
+    UpsertWorkspaceFileRequest,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -1023,8 +1048,8 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 ### Runtime contract (must follow)
 
 - User Space preview runs in a Node.js-managed devserver/runtime session (not browser `srcDoc` execution).
-- The workspace must have a runnable web entrypoint, resolved in this order: `.ragtime/runtime-entrypoint.json` (`command`, optional `cwd`, optional `framework`), `package.json` with `dev` script, Python app (`manage.py`, `main.py`, or `app.py`), or `index.html` fallback.
-- If a runnable web entrypoint is missing, preview fails with: `No runnable web entrypoint found. Add .ragtime/runtime-entrypoint.json with a command/cwd or provide package.json dev script, Python app.py/main.py, or index.html.`
+- The workspace must define launch behavior in `.ragtime/runtime-entrypoint.json` (`command`, optional `cwd`, optional `framework`).
+- If the runtime entrypoint is missing/invalid, preview fails with: `No runnable web entrypoint found. Add .ragtime/runtime-entrypoint.json with a command/cwd/framework.`
 
 #### Runtime entrypoint (always create/update)
 
@@ -1061,6 +1086,31 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Do not inject DataTables CDN scripts in generated User Space modules.
 - Prefer local workspace modules (`./` or `../`) for internal code organization.
 - If JSX is used, keep it out of `dashboard/main.ts`; maintain `dashboard/main.ts` as a valid TypeScript render entrypoint.
+
+#### SQLite persistence (devcontainer-friendly)
+
+- For workspace-local app data, prefer SQLite at `.ragtime/db/app.sqlite3` unless the user explicitly requests another engine.
+- Migration convention is `.ragtime/db/migrations/*.sql` in lexical order (`0001_init.sql`, `0002_add_table.sql`, ...).
+- Runtime bootstrap runs `.ragtime/scripts/sqlite_migrate.py --db .ragtime/db/app.sqlite3 --migrations .ragtime/db/migrations` when present.
+- `.ragtime/scripts/sqlite_migrate.py` tracks applied migrations in `_ragtime_migrations` with SHA-256 checksums.
+- Never edit a previously applied migration file; create a new migration instead.
+- When scaffolding backend code, wire database configuration to the same SQLite path so local preview/runtime stays deterministic.
+
+#### Terminal tool (`run_terminal_command`)
+
+- Use `run_terminal_command` for CLI operations: running migrations, installing packages, checking process status, debugging build/runtime errors, listing files, inspecting logs, or any shell task.
+- Commands execute via `sh -lc` in the workspace container with a configurable timeout (default 30s, max 120s).
+- The `cwd` parameter is relative to the workspace root (default `"."`). Paths outside the workspace are rejected.
+- Always provide a `reason` explaining why the command is needed.
+- Prefer short, focused commands over long-running background processes. The tool captures stdout/stderr and returns when the command completes (or times out).
+- For multi-step workflows (e.g., install then migrate), run each step as a separate tool call so you can inspect intermediate results.
+- If a command times out (`timed_out: true`), consider increasing `timeout_seconds` or breaking the task into smaller steps.
+- Output is truncated at 60 KB (`truncated: true`); pipe through `head`, `tail`, or `grep` to limit output for verbose commands.
+- Common patterns:
+  - Migrations: `run_terminal_command(command="python3 .ragtime/scripts/sqlite_migrate.py --db .ragtime/db/app.sqlite3 --migrations .ragtime/db/migrations", reason="Apply pending database migrations")`
+  - Install deps: `run_terminal_command(command="npm install", reason="Install package.json dependencies")`
+  - Debug: `run_terminal_command(command="cat .ragtime/db/app.sqlite3 | sqlite3 ':memory:' '.tables'", reason="List SQLite tables")`
+  - Process check: `run_terminal_command(command="ps aux | grep node", reason="Check running Node processes")`
 
 ### Data wiring rules
 
@@ -4871,68 +4921,64 @@ except Exception as e:
                 description="Brief description of why the screenshot is needed",
             )
 
+        class RunTerminalCommandInput(BaseModel):
+            command: str = Field(
+                description=(
+                    "Shell command to execute in the workspace runtime container. "
+                    "Runs via sh -lc so login shell, PATH, and installed tools are available. "
+                    "Chain commands with && or use pipes as needed."
+                ),
+            )
+            timeout_seconds: int = Field(
+                default=30,
+                ge=1,
+                le=120,
+                description="Maximum execution time in seconds before the command is killed.",
+            )
+            cwd: str = Field(
+                default=".",
+                description=(
+                    "Workspace-relative working directory. Defaults to workspace root. "
+                    "Must stay within the workspace boundary."
+                ),
+            )
+            reason: str = Field(
+                default="",
+                description="Brief description of why this command is being run",
+            )
+
         async def list_userspace_files(reason: str = "", **_: Any) -> str:
             del reason
             files = await userspace_service.list_workspace_files(workspace_id, user_id)
             return json.dumps([f.model_dump(mode="json") for f in files], indent=2)
 
-        def _compute_workspace_mode(
+        def _compute_authoritative_entrypoint(
             file_paths: set[str],
-        ) -> tuple[str, str, str | None]:
-            if "dashboard/main.ts" in file_paths:
-                return (
-                    "module_dashboard",
-                    "dashboard/main.ts is present and is the authoritative module entrypoint.",
-                    "dashboard/main.ts",
-                )
-
+        ) -> tuple[str | None, str]:
             if ".ragtime/runtime-entrypoint.json" in file_paths:
                 return (
-                    "custom_entrypoint",
-                    ".ragtime/runtime-entrypoint.json exists and can override runtime launch behavior.",
                     ".ragtime/runtime-entrypoint.json",
-                )
-
-            if "package.json" in file_paths:
-                return (
-                    "node_app",
-                    "package.json exists; runtime typically resolves launch via npm dev script.",
-                    "package.json",
-                )
-
-            for python_entry in ("manage.py", "main.py", "app.py"):
-                if python_entry in file_paths:
-                    return (
-                        "python_app",
-                        f"{python_entry} exists and can serve as a Python runtime entrypoint.",
-                        python_entry,
-                    )
-
-            if "index.html" in file_paths:
-                return (
-                    "static_html",
-                    "index.html exists without dashboard/main.ts.",
-                    "index.html",
+                    ".ragtime/runtime-entrypoint.json exists and defines runtime launch behavior.",
                 )
 
             return (
-                "unknown",
-                "No recognized web entrypoint files detected in workspace.",
                 None,
+                "Missing .ragtime/runtime-entrypoint.json runtime launch config.",
             )
 
         async def _get_workspace_structure() -> dict[str, Any]:
             files = await userspace_service.list_workspace_files(workspace_id, user_id)
             file_paths = {file.path for file in files}
-            workspace_mode, workspace_mode_reason, authoritative_entrypoint = (
-                _compute_workspace_mode(file_paths)
+            authoritative_entrypoint, entrypoint_reason = (
+                _compute_authoritative_entrypoint(file_paths)
             )
             return {
                 "files": files,
-                "workspace_mode": workspace_mode,
-                "workspace_mode_reason": workspace_mode_reason,
                 "authoritative_entrypoint": authoritative_entrypoint,
+                "entrypoint_reason": entrypoint_reason,
                 "has_dashboard_entry": "dashboard/main.ts" in file_paths,
+                "has_runtime_entrypoint": ".ragtime/runtime-entrypoint.json"
+                in file_paths,
                 "has_index_html": any(
                     PurePosixPath(path).name.lower() == "index.html"
                     for path in file_paths
@@ -4960,9 +5006,8 @@ except Exception as e:
             files = structure["files"]
             has_dashboard_entry = bool(structure["has_dashboard_entry"])
             has_index_html = bool(structure["has_index_html"])
-            workspace_mode = str(structure["workspace_mode"])
-            workspace_mode_reason = str(structure["workspace_mode_reason"])
             authoritative_entrypoint = structure["authoritative_entrypoint"]
+            entrypoint_reason = str(structure["entrypoint_reason"])
 
             dashboard_paths = sorted(
                 [file.path for file in files if file.path.startswith("dashboard/")]
@@ -5015,10 +5060,10 @@ except Exception as e:
                     "inspected_file_count": len(inspected),
                 },
                 "structure": {
-                    "workspace_mode": workspace_mode,
-                    "workspace_mode_reason": workspace_mode_reason,
                     "authoritative_entrypoint": authoritative_entrypoint,
+                    "entrypoint_reason": entrypoint_reason,
                     "has_dashboard_entry": has_dashboard_entry,
+                    "has_runtime_entrypoint": bool(structure["has_runtime_entrypoint"]),
                     "has_index_html": has_index_html,
                 },
                 "inspected_files": inspected,
@@ -5133,9 +5178,8 @@ except Exception as e:
                         }
 
             structure = await _get_workspace_structure()
-            if (
-                _is_index_html_path(normalized_path)
-                and structure["workspace_mode"] == "module_dashboard"
+            if _is_index_html_path(normalized_path) and bool(
+                structure["has_dashboard_entry"]
             ):
                 payload["warning"] = (
                     "This workspace has dashboard/main.ts. For dashboard behavior changes, edit dashboard/* files (especially dashboard/main.ts and imported modules) instead of index.html."
@@ -5373,10 +5417,7 @@ except Exception as e:
             normalized_path = lower_path.replace("\\", "/")
 
             structure = await _get_workspace_structure()
-            if (
-                _is_index_html_path(path)
-                and structure["workspace_mode"] == "module_dashboard"
-            ):
+            if _is_index_html_path(path) and bool(structure["has_dashboard_entry"]):
                 warnings.append(
                     "This workspace uses dashboard/main.ts as the module entrypoint. "
                     "Prefer dashboard/* files for feature changes. "
@@ -5903,7 +5944,7 @@ except Exception as e:
             if should_check_runnable_entrypoint:
                 runnable_entrypoint_error = (
                     "No runnable web entrypoint found. Add .ragtime/runtime-entrypoint.json "
-                    "with a command/cwd or provide package.json dev script, Python app.py/main.py, or index.html."
+                    "with a command/cwd/framework."
                 )
                 runtime_config_file = await get_file(".ragtime/runtime-entrypoint.json")
                 runtime_config_command_present = False
@@ -5914,7 +5955,7 @@ except Exception as e:
                     except json.JSONDecodeError as exc:
                         add_runtime_warning(
                             "Runtime preflight: .ragtime/runtime-entrypoint.json is invalid JSON "
-                            f"({exc.msg} at line {exc.lineno}). The runtime will ignore it and use fallback entrypoint detection."
+                            f"({exc.msg} at line {exc.lineno}). Runtime launch will fail until this file is fixed."
                         )
                     else:
                         if isinstance(runtime_config_payload, dict):
@@ -5954,75 +5995,7 @@ except Exception as e:
                                 "Runtime preflight: .ragtime/runtime-entrypoint.json should be a JSON object with command/cwd/framework keys."
                             )
 
-                has_package_json = await get_file("package.json") is not None
-                has_index_html = await get_file("index.html") is not None
-                package_json_has_dev_script = False
-                if has_package_json:
-                    package_file = await get_file("package.json")
-                    try:
-                        package_payload = json.loads(
-                            (getattr(package_file, "content", "") or "")
-                        )
-                    except json.JSONDecodeError as exc:
-                        add_runtime_warning(
-                            "Runtime preflight: package.json is invalid JSON "
-                            f"({exc.msg} at line {exc.lineno}). npm-based launch may fail."
-                        )
-                    else:
-                        scripts = (
-                            package_payload.get("scripts", {})
-                            if isinstance(package_payload, dict)
-                            else {}
-                        )
-                        if isinstance(scripts, dict):
-                            package_json_has_dev_script = bool(
-                                str(scripts.get("dev") or "").strip()
-                            )
-                        if not package_json_has_dev_script:
-                            add_runtime_warning(
-                                "Runtime preflight: package.json is present but scripts.dev is missing; npm run dev will fail unless .ragtime/runtime-entrypoint.json overrides launch."
-                            )
-
-                        # Check esbuild dev script for missing --format=esm
-                        if package_json_has_dev_script:
-                            dev_script_text = str(scripts.get("dev") or "")
-                            if (
-                                "esbuild" in dev_script_text
-                                and "--bundle" in dev_script_text
-                            ):
-                                if "--format=esm" not in dev_script_text:
-                                    add_runtime_error(
-                                        "Bootstrap mismatch: package.json dev script uses esbuild --bundle "
-                                        "without --format=esm. esbuild defaults to IIFE format which wraps "
-                                        "exports in a closure, making them inaccessible from inline scripts. "
-                                        "Add --format=esm to the esbuild command and load the bundle with "
-                                        '<script type="module"> and import {{ render }} from "./dist/main.js".'
-                                    )
-
-                npm_available = shutil.which("npm") is not None
-                python_available = shutil.which("python3") is not None
-                manage_py = await get_file("manage.py") is not None
-                main_py = await get_file("main.py") is not None
-                app_py = await get_file("app.py") is not None
-                has_python_entrypoint = manage_py or main_py or app_py
-
-                if has_package_json and not npm_available:
-                    add_runtime_warning(
-                        "Runtime preflight: npm is not available in this environment; Node devserver launch may fail."
-                    )
-                if has_python_entrypoint and not python_available:
-                    add_runtime_warning(
-                        "Runtime preflight: python3 is not available in this environment; Python/static fallback launch may fail."
-                    )
-
-                has_effective_runtime_candidate = (
-                    runtime_config_command_present
-                    or (has_package_json and npm_available)
-                    or (has_python_entrypoint and python_available)
-                    or (has_index_html and python_available)
-                )
-
-                if not has_effective_runtime_candidate:
+                if not runtime_config_command_present:
                     add_runtime_error(runnable_entrypoint_error)
 
             strict_frontend_candidate = is_userspace_strict_frontend_path(
@@ -6180,6 +6153,34 @@ except Exception as e:
                 ) from exc
             return json.dumps(response_payload, indent=2)
 
+        async def run_terminal_command(
+            command: str,
+            timeout_seconds: int = 30,
+            cwd: str = ".",
+            reason: str = "",
+            **_: Any,
+        ) -> str:
+            del reason
+            await userspace_service.enforce_workspace_role(
+                workspace_id, user_id, "editor"
+            )
+            command = (command or "").strip()
+            if not command:
+                raise ToolException("command is required and must not be empty.")
+            cwd_value = (cwd or ".").strip() or "."
+            try:
+                result = await userspace_runtime_service.exec_workspace_command(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    command=command,
+                    timeout_seconds=timeout_seconds,
+                    cwd=cwd_value if cwd_value != "." else None,
+                )
+            except HTTPException as exc:
+                detail_text = str(getattr(exc, "detail", exc)).strip() or str(exc)
+                raise ToolException(f"Terminal command failed: {detail_text}") from exc
+            return json.dumps(result, indent=2)
+
         return [
             StructuredTool.from_function(
                 coroutine=assay_userspace_code,
@@ -6269,6 +6270,19 @@ except Exception as e:
                     "(blank screen, crashes, broken layout). Saves PNG files under ./.data/_tmp/{workspace_id}/."
                 ),
                 args_schema=CaptureUserSpaceScreenshotInput,
+                handle_tool_error=True,
+            ),
+            StructuredTool.from_function(
+                coroutine=run_terminal_command,
+                name="run_terminal_command",
+                description=(
+                    "Execute a shell command in the workspace runtime container terminal. "
+                    "Use for running migrations, installing packages, checking process status, "
+                    "debugging build/runtime errors, or any CLI task. "
+                    "Commands run via sh -lc in the workspace root with a configurable timeout (max 120s). "
+                    "Returns exit code, stdout, and stderr."
+                ),
+                args_schema=RunTerminalCommandInput,
                 handle_tool_error=True,
             ),
         ]

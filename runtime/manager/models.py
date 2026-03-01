@@ -127,6 +127,31 @@ class RuntimeScreenshotResponse(BaseModel):
     probe: dict[str, Any] = Field(description="Captured browser probe metadata")
 
 
+class RuntimeExecRequest(BaseModel):
+    command: str = Field(description="Shell command to execute")
+    timeout_seconds: int = Field(
+        default=30,
+        ge=1,
+        le=120,
+        description="Maximum execution time in seconds",
+    )
+    cwd: str | None = Field(
+        default=None,
+        description="Optional workspace-relative working directory",
+    )
+
+
+class RuntimeExecResponse(BaseModel):
+    exit_code: int = Field(description="Process exit code")
+    stdout: str = Field(description="Standard output (truncated if large)")
+    stderr: str = Field(description="Standard error (truncated if large)")
+    timed_out: bool = Field(default=False, description="Whether command timed out")
+    truncated: bool = Field(
+        default=False,
+        description="Whether output was truncated due to size limits",
+    )
+
+
 class ManagerSessionSummary(BaseModel):
     provider_session_id: str = Field(description="Provider session ID")
     workspace_id: str = Field(description="Workspace ID")

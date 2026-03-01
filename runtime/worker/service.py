@@ -18,15 +18,21 @@ from typing import Any
 import httpx
 from fastapi import HTTPException
 
-from runtime.manager.models import (RuntimeFileReadResponse,
-                                    RuntimeScreenshotRequest,
-                                    RuntimeScreenshotResponse,
-                                    WorkerHealthResponse,
-                                    WorkerSessionResponse,
-                                    WorkerStartSessionRequest)
-from runtime.shared import (RUNTIME_BOOTSTRAP_CONFIG_PATH,
-                            RUNTIME_BOOTSTRAP_STAMP_PATH, RuntimeSessionState,
-                            normalize_file_path)
+from runtime.manager.models import (
+    RuntimeExecResponse,
+    RuntimeFileReadResponse,
+    RuntimeScreenshotRequest,
+    RuntimeScreenshotResponse,
+    WorkerHealthResponse,
+    WorkerSessionResponse,
+    WorkerStartSessionRequest,
+)
+from runtime.shared import (
+    RUNTIME_BOOTSTRAP_CONFIG_PATH,
+    RUNTIME_BOOTSTRAP_STAMP_PATH,
+    RuntimeSessionState,
+    normalize_file_path,
+)
 
 _PORT_PATTERNS = (
     re.compile(r"(?:^|\s)--port(?:=|\s+)(\d{2,5})(?:\s|$)"),
@@ -197,21 +203,6 @@ class WorkerService:
             "framework": framework,
         }
 
-    def _read_package_dev_script(self, workspace_root: Path) -> str:
-        package_json = workspace_root / "package.json"
-        if not package_json.exists() or not package_json.is_file():
-            return ""
-        try:
-            payload = json.loads(package_json.read_text(encoding="utf-8"))
-        except Exception:
-            return ""
-        if not isinstance(payload, dict):
-            return ""
-        scripts = payload.get("scripts")
-        if not isinstance(scripts, dict):
-            return ""
-        return str(scripts.get("dev") or "").strip()
-
     def _read_runtime_bootstrap_config(
         self, workspace_root: Path
     ) -> list[dict[str, str]]:
@@ -255,7 +246,49 @@ class WorkerService:
             return None
         if not payload:
             return None
-        return hashlib.sha256(payload).hexdigest()
+
+        try:
+            parsed = json.loads(payload.decode("utf-8"))
+        except Exception:
+            return hashlib.sha256(payload).hexdigest()
+        if not isinstance(parsed, dict):
+            return hashlib.sha256(payload).hexdigest()
+
+        watch_paths = parsed.get("watch_paths")
+        if not isinstance(watch_paths, list):
+            return hashlib.sha256(payload).hexdigest()
+
+        digest = hashlib.sha256(payload)
+        for watch_item in watch_paths:
+            relative = str(watch_item or "").strip().replace("\\", "/")
+            if not relative:
+                continue
+            resolved = self._resolve_bootstrap_relative_path(workspace_root, relative)
+            if resolved is None:
+                continue
+
+            digest.update(relative.encode("utf-8", errors="ignore"))
+            if not resolved.exists():
+                digest.update(b"::missing")
+                continue
+
+            if resolved.is_file():
+                digest.update(b"::file")
+                digest.update(resolved.read_bytes())
+                continue
+
+            if resolved.is_dir():
+                digest.update(b"::dir")
+                for child in sorted(
+                    path for path in resolved.rglob("*") if path.is_file()
+                ):
+                    rel_child = str(child.relative_to(workspace_root)).replace(
+                        "\\", "/"
+                    )
+                    digest.update(rel_child.encode("utf-8", errors="ignore"))
+                    digest.update(child.read_bytes())
+
+        return digest.hexdigest()
 
     def _resolve_bootstrap_relative_path(
         self,
@@ -354,81 +387,6 @@ class WorkerService:
         stamp_path.write_text(stamp_value, encoding="utf-8")
         return None
 
-    def _resolve_python_launch(
-        self,
-        workspace_root: Path,
-        port: int,
-    ) -> tuple[list[str] | None, str | None, str | None]:
-        if (workspace_root / "manage.py").exists():
-            return (
-                ["python3", "manage.py", "runserver", f"0.0.0.0:{port}"],
-                "django",
-                ".",
-            )
-
-        for filename in ("main.py", "app.py"):
-            target = workspace_root / filename
-            if not target.exists() or not target.is_file():
-                continue
-            try:
-                content = target.read_text(encoding="utf-8")
-            except Exception:
-                content = ""
-            if "FastAPI" in content:
-                return (
-                    [
-                        "python3",
-                        "-m",
-                        "uvicorn",
-                        f"{filename[:-3]}:app",
-                        "--host",
-                        "0.0.0.0",
-                        "--port",
-                        str(port),
-                    ],
-                    "fastapi",
-                    ".",
-                )
-            if "Flask" in content:
-                return (
-                    [
-                        "python3",
-                        "-m",
-                        "flask",
-                        "--app",
-                        filename,
-                        "run",
-                        "--host",
-                        "0.0.0.0",
-                        "--port",
-                        str(port),
-                    ],
-                    "flask",
-                    ".",
-                )
-
-        return (None, None, None)
-
-    def _index_requires_typescript_runtime(self, workspace_root: Path) -> bool:
-        index_html = workspace_root / "index.html"
-        if not index_html.exists() or not index_html.is_file():
-            return False
-        try:
-            content = index_html.read_text(encoding="utf-8")
-        except Exception:
-            return False
-        script_src_pattern = re.compile(
-            r"<script[^>]+src=[\"'][^\"']+\.(ts|tsx)(\?[^\"']*)?[\"']",
-            re.IGNORECASE,
-        )
-        module_import_pattern = re.compile(
-            r"import\s+[^;]*['\"][^'\"]+\.(ts|tsx)(\?[^'\"]*)?['\"]",
-            re.IGNORECASE,
-        )
-        return bool(
-            script_src_pattern.search(content) or module_import_pattern.search(content)
-        )
-
     def _extract_explicit_port(self, command: str) -> int | None:
         for pattern in _PORT_PATTERNS:
             match = pattern.search(command)
@@ -453,14 +411,6 @@ class WorkerService:
             f"Runtime entrypoint uses '{tool}' but it is not installed in this isolated runtime container. "
             f"{_WORKSPACE_BOOTSTRAP_GUIDANCE}"
         )
-
-    def _is_module_dashboard_workspace(self, workspace_root: Path) -> bool:
-        return (workspace_root / "dashboard" / "main.ts").exists()
-
-    def _command_uses_runtime_port(self, command: str) -> bool:
-        if self._extract_explicit_port(command) is not None:
-            return True
-        return bool(re.search(r"\$\{?PORT\}?", command))
 
     def _resolve_devserver_log_path(self, session_id: str) -> Path:
         log_dir = Path(
@@ -502,50 +452,6 @@ class WorkerService:
             or "cannot find module" in lowered
         )
 
-    _ESBUILD_SERVEDIR_PATTERN: re.Pattern[str] = re.compile(r"--servedir=(\S+)")
-    _ESBUILD_SERVE_PATTERN: re.Pattern[str] = re.compile(r"--serve=\S+")
-    _ESBUILD_OUTFILE_PATTERN: re.Pattern[str] = re.compile(r"--outfile=(\S+)")
-    _INDEX_HTML_SEARCH_DIRS: list[str] = ["public", "static", "src", "www"]
-
-    def _fix_esbuild_servedir(self, command: str, workspace_root: Path) -> str:
-        """If esbuild --servedir points to a dir without index.html, try to fix it.
-
-        When the servedir changes, also move --outfile inside the new servedir so
-        esbuild doesn't reject the command (output dir must be inside serve dir).
-        """
-        match = self._ESBUILD_SERVEDIR_PATTERN.search(command)
-        if not match:
-            return command
-        servedir = match.group(1)
-        servedir_path = workspace_root / servedir
-        if (servedir_path / "index.html").exists():
-            return command
-        for candidate in self._INDEX_HTML_SEARCH_DIRS:
-            candidate_path = workspace_root / candidate
-            if (candidate_path / "index.html").exists():
-                result = command.replace(
-                    f"--servedir={servedir}", f"--servedir={candidate}"
-                )
-                # Relocate --outfile inside new servedir so esbuild accepts it.
-                outfile_match = self._ESBUILD_OUTFILE_PATTERN.search(result)
-                if outfile_match:
-                    outfile = outfile_match.group(1)
-                    # Only relocate if outfile is not already under the new servedir
-                    if not outfile.startswith(f"{candidate}/"):
-                        new_outfile = f"{candidate}/{outfile}"
-                        result = result.replace(
-                            f"--outfile={outfile}", f"--outfile={new_outfile}"
-                        )
-                return result
-        return command
-
-    def _inject_esbuild_serve_flag(self, command: str, port: int) -> str:
-        """Ensure --serve=0.0.0.0:PORT is present, replacing any existing --serve flag."""
-        serve_flag = f"--serve=0.0.0.0:{port}"
-        if self._ESBUILD_SERVE_PATTERN.search(command):
-            return self._ESBUILD_SERVE_PATTERN.sub(serve_flag, command)
-        return f"{command} {serve_flag}"
-
     def _invalidate_bootstrap_stamp(self, session: WorkerSession) -> None:
         stamp_path = session.workspace_root / RUNTIME_BOOTSTRAP_STAMP_PATH
         try:
@@ -579,18 +485,8 @@ class WorkerService:
         workspace_root: Path,
         port: int,
     ) -> DevserverResolution:
-        package_json = workspace_root / "package.json"
-        module_dashboard = self._is_module_dashboard_workspace(workspace_root)
         config = self._read_runtime_entrypoint_config(workspace_root)
         config_command = config.get("command", "")
-        if (
-            config_command
-            and module_dashboard
-            and package_json.exists()
-            and package_json.is_file()
-            and not self._command_uses_runtime_port(config_command)
-        ):
-            config_command = ""
 
         if config_command:
             config_cwd = config.get("cwd") or "."
@@ -627,90 +523,10 @@ class WorkerService:
                 port=effective_port,
             )
 
-        if package_json.exists() and package_json.is_file():
-            npm_path = shutil.which("npm")
-            if npm_path:
-                dev_script_raw = self._read_package_dev_script(workspace_root)
-                dev_script = dev_script_raw.lower()
-                if "esbuild" in dev_script:
-                    # Build corrected esbuild command instead of blindly appending
-                    # args, so we can fix --servedir when index.html is missing.
-                    cmd_text = dev_script_raw
-                    cmd_text = self._fix_esbuild_servedir(cmd_text, workspace_root)
-                    cmd_text = self._inject_esbuild_serve_flag(cmd_text, port)
-                    if "--watch" in dev_script and "--watch=forever" not in dev_script:
-                        cmd_text = cmd_text.replace("--watch", "--watch=forever")
-                    # npm adds node_modules/.bin to PATH when running scripts;
-                    # replicate that here since we run the raw command directly.
-                    return DevserverResolution(
-                        command=[
-                            "sh",
-                            "-lc",
-                            f"export PATH=./node_modules/.bin:$PATH && {cmd_text}",
-                        ],
-                        framework="node",
-                        cwd=".",
-                        port=port,
-                    )
-                return DevserverResolution(
-                    command=[
-                        npm_path,
-                        "run",
-                        "dev",
-                        "--",
-                        "--port",
-                        str(port),
-                    ],
-                    framework="node",
-                    cwd=".",
-                    port=port,
-                )
-            if self._index_requires_typescript_runtime(workspace_root):
-                return DevserverResolution(
-                    error=(
-                        "This workspace references TypeScript modules in index.html "
-                        "but npm is unavailable in the isolated runtime container, so "
-                        "no transpilation can occur. Add a runtime entrypoint that builds/serves JS, "
-                        "or use JavaScript assets for static preview. "
-                        f"{_WORKSPACE_BOOTSTRAP_GUIDANCE}"
-                    ),
-                )
-
-        python_command, python_framework, python_cwd = self._resolve_python_launch(
-            workspace_root,
-            port,
-        )
-        if python_command:
-            return DevserverResolution(
-                command=python_command,
-                framework=python_framework,
-                cwd=python_cwd,
-                port=port,
-            )
-
-        index_html = workspace_root / "index.html"
-        if index_html.exists() and index_html.is_file():
-            return DevserverResolution(
-                command=[
-                    "python3",
-                    "-m",
-                    "http.server",
-                    str(port),
-                    "--bind",
-                    "0.0.0.0",
-                    "--directory",
-                    str(workspace_root),
-                ],
-                framework="static",
-                cwd=".",
-                port=port,
-            )
-
         return DevserverResolution(
             error=(
                 "No runnable web entrypoint found. Add .ragtime/runtime-entrypoint.json "
-                "with a command/cwd or provide package.json dev script, Python app.py/main.py, or index.html. "
-                "If package.json exists, ensure npm is installed in the runtime environment. "
+                "with a command/cwd/framework. Runtime no longer falls back to package.json, Python entrypoints, or index.html. "
                 f"{_WORKSPACE_BOOTSTRAP_GUIDANCE}"
             ),
         )
@@ -1019,6 +835,89 @@ class WorkerService:
                 target.unlink()
             session.updated_at = self._utc_now()
             return {"success": True, "path": rel_path}
+
+    _EXEC_MAX_OUTPUT_BYTES = 60_000
+
+    async def exec_command(
+        self,
+        worker_session_id: str,
+        command: str,
+        timeout_seconds: int = 30,
+        cwd: str | None = None,
+    ) -> RuntimeExecResponse:
+        """Execute a shell command in the workspace and return captured output."""
+        async with self._lock:
+            session = self._sessions.get(worker_session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Worker session not found")
+            if session.state not in {"running", "starting"}:
+                raise HTTPException(status_code=409, detail="Worker session not active")
+
+            workspace_root = session.workspace_root
+            if cwd:
+                resolved_cwd = (workspace_root / cwd).resolve()
+                if not str(resolved_cwd).startswith(str(workspace_root.resolve())):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="cwd must be within the workspace root",
+                    )
+                exec_cwd = resolved_cwd
+            else:
+                exec_cwd = workspace_root
+
+        timeout_seconds = max(1, min(timeout_seconds, 120))
+        timed_out = False
+        truncated = False
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "sh",
+                "-lc",
+                command,
+                cwd=str(exec_cwd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                process.communicate(),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            timed_out = True
+            try:
+                process.kill()  # type: ignore[union-attr]
+                await process.wait()  # type: ignore[union-attr]
+            except Exception:
+                pass
+            stdout_bytes = b""
+            stderr_bytes = f"Command timed out after {timeout_seconds}s".encode()
+        except Exception as exc:
+            return RuntimeExecResponse(
+                exit_code=-1,
+                stdout="",
+                stderr=f"Failed to execute command: {exc}",
+                timed_out=False,
+                truncated=False,
+            )
+
+        exit_code = process.returncode if process.returncode is not None else -1
+
+        stdout_text = stdout_bytes.decode("utf-8", errors="replace")
+        stderr_text = stderr_bytes.decode("utf-8", errors="replace")
+
+        max_out = self._EXEC_MAX_OUTPUT_BYTES
+        if len(stdout_text) > max_out or len(stderr_text) > max_out:
+            truncated = True
+            stdout_text = stdout_text[:max_out]
+            stderr_text = stderr_text[:max_out]
+
+        return RuntimeExecResponse(
+            exit_code=exit_code,
+            stdout=stdout_text,
+            stderr=stderr_text,
+            timed_out=timed_out,
+            truncated=truncated,
+        )
 
     async def capture_screenshot(
         self,

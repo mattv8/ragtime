@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, ExternalLink, File, History, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RotateCw, Save, Square, Terminal, Trash2, Users, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Database, ExternalLink, File, History, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RotateCw, Save, Square, Terminal, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { keymap } from '@codemirror/view';
@@ -998,6 +998,19 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       setError(err instanceof Error ? err.message : 'Failed to update tool selection');
     } finally {
       setSavingWorkspaceTools(false);
+    }
+  }, [activeWorkspace, canEditWorkspace]);
+
+  const handleToggleSqlitePersistence = useCallback(async () => {
+    if (!activeWorkspace || !canEditWorkspace) return;
+    const nextMode = activeWorkspace.sqlite_persistence_mode === 'include' ? 'exclude' : 'include';
+    try {
+      const updated = await api.updateUserSpaceWorkspace(activeWorkspace.id, {
+        sqlite_persistence_mode: nextMode,
+      });
+      setWorkspaces((current) => current.map((ws) => ws.id === updated.id ? updated : ws));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update SQLite persistence mode');
     }
   }, [activeWorkspace, canEditWorkspace]);
 
@@ -2421,6 +2434,16 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
               saving={savingWorkspaceTools}
               title="Workspace Tools"
             />
+            <button
+              className={`btn btn-sm btn-icon userspace-toolbar-action-btn ${activeWorkspace?.sqlite_persistence_mode === 'include' ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={handleToggleSqlitePersistence}
+              disabled={!activeWorkspaceId || !canEditWorkspace}
+              title={activeWorkspace?.sqlite_persistence_mode === 'include'
+                ? 'SQLite snapshots: included (click to exclude)'
+                : 'SQLite snapshots: excluded (click to include)'}
+            >
+              <Database size={14} />
+            </button>
             <button
               className="btn btn-secondary btn-sm btn-icon userspace-toolbar-action-btn"
               onClick={toggleFullscreen}

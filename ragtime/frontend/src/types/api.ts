@@ -1441,6 +1441,7 @@ export interface UpdateConversationToolsRequest {
 
 export type WorkspaceRole = 'owner' | 'editor' | 'viewer';
 export type UserSpaceArtifactType = 'module_ts';
+export type SqlitePersistenceMode = 'include' | 'exclude';
 
 export interface UserSpaceWorkspaceMember {
   user_id: string;
@@ -1451,6 +1452,7 @@ export interface UserSpaceWorkspace {
   id: string;
   name: string;
   description?: string | null;
+  sqlite_persistence_mode: SqlitePersistenceMode;
   owner_user_id: string;
   selected_tool_ids: string[];
   conversation_ids: string[];
@@ -1469,12 +1471,14 @@ export interface UserSpaceAvailableTool {
 export interface CreateUserSpaceWorkspaceRequest {
   name?: string;
   description?: string;
+  sqlite_persistence_mode?: SqlitePersistenceMode;
   selected_tool_ids?: string[];
 }
 
 export interface UpdateUserSpaceWorkspaceRequest {
   name?: string;
   description?: string;
+  sqlite_persistence_mode?: SqlitePersistenceMode;
   selected_tool_ids?: string[];
 }
 

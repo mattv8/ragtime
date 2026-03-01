@@ -10,17 +10,14 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
-from runtime.manager.models import (
-    ManagerSession,
-    RuntimeFileReadResponse,
-    RuntimePtyUrlResponse,
-    RuntimeScreenshotRequest,
-    RuntimeScreenshotResponse,
-    RuntimeSessionResponse,
-    StartSessionRequest,
-    WorkerSessionResponse,
-    WorkerStartSessionRequest,
-)
+from runtime.manager.models import (ManagerSession, RuntimeExecResponse,
+                                    RuntimeFileReadResponse,
+                                    RuntimePtyUrlResponse,
+                                    RuntimeScreenshotRequest,
+                                    RuntimeScreenshotResponse,
+                                    RuntimeSessionResponse,
+                                    StartSessionRequest, WorkerSessionResponse,
+                                    WorkerStartSessionRequest)
 from runtime.worker.service import get_worker_service
 
 
@@ -343,6 +340,21 @@ class SessionManager:
         return await self._worker_service.capture_screenshot(
             session.worker_session_id,
             payload,
+        )
+
+    async def exec_command(
+        self,
+        provider_session_id: str,
+        command: str,
+        timeout_seconds: int = 30,
+        cwd: str | None = None,
+    ) -> RuntimeExecResponse:
+        session = self._get_session_or_raise(provider_session_id)
+        return await self._worker_service.exec_command(
+            session.worker_session_id,
+            command,
+            timeout_seconds=timeout_seconds,
+            cwd=cwd,
         )
 
     async def pool_status(self) -> dict[str, Any]:

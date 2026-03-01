@@ -22,6 +22,8 @@ from fastapi.responses import Response
 
 from runtime.auth import WorkerAuth
 from runtime.manager.models import (
+    RuntimeExecRequest,
+    RuntimeExecResponse,
     RuntimeFileReadResponse,
     RuntimeScreenshotRequest,
     RuntimeScreenshotResponse,
@@ -146,6 +148,23 @@ async def capture_screenshot(
     if capture_method is None:
         raise HTTPException(status_code=503, detail="Runtime screenshot not available")
     return await capture_method(worker_session_id, payload)
+
+
+@router.post(
+    "/worker/sessions/{worker_session_id}/exec",
+    response_model=RuntimeExecResponse,
+)
+async def exec_command(
+    worker_session_id: str,
+    payload: RuntimeExecRequest,
+    _auth: None = WorkerAuth,
+) -> RuntimeExecResponse:
+    return await get_worker_service().exec_command(
+        worker_session_id,
+        payload.command,
+        timeout_seconds=payload.timeout_seconds,
+        cwd=payload.cwd,
+    )
 
 
 @router.get("/worker/sessions/{worker_session_id}/preview")

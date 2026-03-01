@@ -6,16 +6,15 @@ from typing import Any
 from fastapi import FastAPI
 
 from runtime.auth import ManagerAuth
-from runtime.manager.models import (
-    RuntimeFileReadResponse,
-    RuntimeFileWriteRequest,
-    RuntimeManagerHealthResponse,
-    RuntimePtyUrlResponse,
-    RuntimeScreenshotRequest,
-    RuntimeScreenshotResponse,
-    RuntimeSessionResponse,
-    StartSessionRequest,
-)
+from runtime.manager.models import (RuntimeExecRequest, RuntimeExecResponse,
+                                    RuntimeFileReadResponse,
+                                    RuntimeFileWriteRequest,
+                                    RuntimeManagerHealthResponse,
+                                    RuntimePtyUrlResponse,
+                                    RuntimeScreenshotRequest,
+                                    RuntimeScreenshotResponse,
+                                    RuntimeSessionResponse,
+                                    StartSessionRequest)
 from runtime.manager.service import SessionManager
 
 
@@ -135,6 +134,22 @@ def create_app() -> FastAPI:
         _auth: None = ManagerAuth,
     ) -> RuntimeScreenshotResponse:
         return await manager.capture_screenshot(provider_session_id, payload)
+
+    @application.post(
+        "/sessions/{provider_session_id}/exec",
+        response_model=RuntimeExecResponse,
+    )
+    async def exec_command(
+        provider_session_id: str,
+        payload: RuntimeExecRequest,
+        _auth: None = ManagerAuth,
+    ) -> RuntimeExecResponse:
+        return await manager.exec_command(
+            provider_session_id,
+            payload.command,
+            timeout_seconds=payload.timeout_seconds,
+            cwd=payload.cwd,
+        )
 
     return application
 

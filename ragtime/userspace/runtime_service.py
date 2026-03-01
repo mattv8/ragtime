@@ -14,22 +14,20 @@ from uuid import uuid4
 import httpx
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-from prisma import fields as prisma_fields
 from starlette.websockets import WebSocket
 
+from prisma import fields as prisma_fields
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
-from ragtime.userspace.models import (
-    RuntimeSessionState,
-    UserSpaceCapabilityTokenResponse,
-    UserSpaceCollabSnapshotResponse,
-    UserSpaceFileResponse,
-    UserSpaceRuntimeActionResponse,
-    UserSpaceRuntimeSession,
-    UserSpaceRuntimeSessionResponse,
-    UserSpaceRuntimeStatusResponse,
-)
+from ragtime.userspace.models import (RuntimeSessionState,
+                                      UserSpaceCapabilityTokenResponse,
+                                      UserSpaceCollabSnapshotResponse,
+                                      UserSpaceFileResponse,
+                                      UserSpaceRuntimeActionResponse,
+                                      UserSpaceRuntimeSession,
+                                      UserSpaceRuntimeSessionResponse,
+                                      UserSpaceRuntimeStatusResponse)
 from ragtime.userspace.service import userspace_service
 
 logger = get_logger(__name__)
@@ -580,6 +578,28 @@ class UserSpaceRuntimeService:
         return await self._runtime_manager_request(
             "POST",
             f"/sessions/{provider_session_id}/screenshot",
+            json_payload=payload,
+        )
+
+    async def _runtime_provider_exec_command(
+        self,
+        provider_session_id: str | None,
+        command: str,
+        timeout_seconds: int = 30,
+        cwd: str | None = None,
+    ) -> dict[str, Any]:
+        if not provider_session_id:
+            raise HTTPException(status_code=404, detail="Runtime session unavailable")
+        self._require_runtime_manager()
+        payload: dict[str, Any] = {
+            "command": command,
+            "timeout_seconds": timeout_seconds,
+        }
+        if cwd:
+            payload["cwd"] = cwd
+        return await self._runtime_manager_request(
+            "POST",
+            f"/sessions/{provider_session_id}/exec",
             json_payload=payload,
         )
 
@@ -1655,6 +1675,24 @@ class UserSpaceRuntimeService:
         return await self._runtime_provider_capture_screenshot(
             session.provider_session_id,
             payload,
+        )
+
+    async def exec_workspace_command(
+        self,
+        workspace_id: str,
+        user_id: str,
+        command: str,
+        timeout_seconds: int = 30,
+        cwd: str | None = None,
+    ) -> dict[str, Any]:
+        """Execute a shell command in the workspace runtime container."""
+        await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
+        session = await self.ensure_workspace_preview_session(workspace_id, user_id)
+        return await self._runtime_provider_exec_command(
+            session.provider_session_id,
+            command,
+            timeout_seconds=timeout_seconds,
+            cwd=cwd,
         )
 
     async def _store_collab_checkpoint(
