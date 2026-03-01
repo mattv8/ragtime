@@ -440,6 +440,35 @@ class UserSpaceService:
     def _seed_runtime_bootstrap_config(self, workspace_id: str) -> None:
         self._sync_runtime_bootstrap_config(workspace_id)
 
+    @staticmethod
+    def _default_runtime_entrypoint_config() -> dict[str, str]:
+        """Default runtime entrypoint for new workspaces (static HTML fallback).
+
+        Uses ``$PORT`` so the runtime can substitute the actual port at launch
+        time via the ``PORT`` environment variable.
+        """
+        return {
+            "command": "python3 -m http.server $PORT --bind 0.0.0.0 --directory .",
+            "cwd": ".",
+            "framework": "static",
+        }
+
+    def _seed_runtime_entrypoint_config(self, workspace_id: str) -> None:
+        """Create ``.ragtime/runtime-entrypoint.json`` for a new workspace.
+
+        Only writes the file when it does not already exist so that
+        user/agent-managed entrypoints are never overwritten.
+        """
+        files_dir = self._workspace_files_dir(workspace_id)
+        config_path = files_dir / ".ragtime" / "runtime-entrypoint.json"
+        if config_path.exists():
+            return
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            json.dumps(self._default_runtime_entrypoint_config(), indent=2) + "\n",
+            encoding="utf-8",
+        )
+
     def _workspace_git_dir(self, workspace_id: str) -> Path:
         return self._workspace_files_dir(workspace_id) / ".git"
 
@@ -529,11 +558,20 @@ class UserSpaceService:
         {".git", "node_modules", "__pycache__", ".ragtime", "dist"}
     )
 
+    _AGENT_WRITABLE_RAGTIME_FILES = frozenset({"runtime-entrypoint.json"})
+
     def _is_reserved_internal_path(self, relative_path: str) -> bool:
         normalized = relative_path.strip("/")
         if normalized.endswith(".artifact.json"):
             return True
         parts = Path(normalized).parts
+        # Allow agent access to specific .ragtime/ files (e.g. runtime-entrypoint.json)
+        if (
+            len(parts) == 2
+            and parts[0] == ".ragtime"
+            and parts[1] in self._AGENT_WRITABLE_RAGTIME_FILES
+        ):
+            return False
         return bool(self._HIDDEN_DIRS.intersection(parts))
 
     def is_reserved_internal_path(self, relative_path: str) -> bool:
@@ -1140,6 +1178,7 @@ class UserSpaceService:
 
         self._workspace_files_dir(workspace_id).mkdir(parents=True, exist_ok=True)
         self._seed_runtime_bootstrap_config(workspace_id)
+        self._seed_runtime_entrypoint_config(workspace_id)
         await self._ensure_workspace_git_repo(workspace_id)
 
         refreshed = await db.workspace.find_unique(

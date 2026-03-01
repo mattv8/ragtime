@@ -351,7 +351,7 @@ TOOL_USAGE_REMINDER = """[CRITICAL: Use the tool calling API. Do NOT write fake 
 
 """
 
-USERSPACE_TURN_REMINDER = """[USER SPACE TURN CHECKLIST: Before finalizing, run validate_userspace_code on EVERY changed .ts/.tsx file (including dashboard/main.ts) and fix all reported errors. Persist implementation changes via userspace file tools (not chat-only prose). Treat any tool result with rejected=true as a failed step (even if replacement counts are shown), and fix/retry before claiming success. Never use hardcoded/mock/sample/static data in dashboard modules; wire live data via context.components[componentId].execute() with required metadata/checks. After each completed change loop, call create_userspace_snapshot with a concise completion message.]
+USERSPACE_TURN_REMINDER = """[USER SPACE TURN CHECKLIST: Before finalizing, run validate_userspace_code on EVERY changed .ts/.tsx file (including dashboard/main.ts) and fix all reported errors. Persist implementation changes via userspace file tools (not chat-only prose). Treat any tool result with rejected=true as a failed step (even if replacement counts are shown), and fix/retry before claiming success. Never use hardcoded/mock/sample/static data in dashboard modules; wire live data via context.components[componentId].execute() with required metadata/checks. After validation passes with no errors, call create_userspace_snapshot with a concise completion message. Never skip validation or snapshot -- the finalization sequence is: validate -> fix errors -> validate again -> snapshot.]
 
 """
 
@@ -1025,11 +1025,33 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - User Space preview runs in a Node.js-managed devserver/runtime session (not browser `srcDoc` execution).
 - The workspace must have a runnable web entrypoint, resolved in this order: `.ragtime/runtime-entrypoint.json` (`command`, optional `cwd`, optional `framework`), `package.json` with `dev` script, Python app (`manage.py`, `main.py`, or `app.py`), or `index.html` fallback.
 - If a runnable web entrypoint is missing, preview fails with: `No runnable web entrypoint found. Add .ragtime/runtime-entrypoint.json with a command/cwd or provide package.json dev script, Python app.py/main.py, or index.html.`
+
+#### Runtime entrypoint (always create/update)
+
+- `.ragtime/runtime-entrypoint.json` is the **authoritative** launch configuration. Always create or update it when generating workspace code.
+- Format: `{{"command": "<launch command>", "cwd": ".", "framework": "<framework>"}}`
+- Use `$PORT` as a placeholder for the runtime-assigned port. The runtime sets `PORT=<actual_port>` as an environment variable before executing the command, so `$PORT` is expanded by the shell.
+- Framework values: `static`, `node`, `django`, `flask`, `fastapi`, `custom`.
+- Examples:
+  - Static HTML: `{{"command": "python3 -m http.server $PORT --bind 0.0.0.0 --directory .", "cwd": ".", "framework": "static"}}`
+  - Node/esbuild: `{{"command": "npx esbuild dashboard/main.ts --bundle --format=esm --outfile=dist/main.js --servedir=. --serve=0.0.0.0:$PORT --watch=forever", "cwd": ".", "framework": "node"}}`
+  - Django: `{{"command": "python3 manage.py runserver 0.0.0.0:$PORT", "cwd": ".", "framework": "django"}}`
+  - Flask: `{{"command": "python3 -m flask run --host 0.0.0.0 --port $PORT", "cwd": ".", "framework": "flask"}}`
+  - FastAPI: `{{"command": "python3 -m uvicorn main:app --host 0.0.0.0 --port $PORT", "cwd": ".", "framework": "fastapi"}}`
+- Never hard-code port numbers in the entrypoint command; always use `$PORT`.
+- Always bind to `0.0.0.0` (not `127.0.0.1` or `localhost`) so the runtime proxy can reach the devserver.
+- When `package.json` has a `dev` script, mirror its intent in `runtime-entrypoint.json` with proper `$PORT` and `--bind 0.0.0.0` handling rather than relying on `npm run dev` with port appending, which breaks for non-standard scripts.
+- Update `runtime-entrypoint.json` whenever the launch mechanism changes (e.g., switching from static to esbuild, adding a Python backend).
+
+#### Module dashboard mode
+
 - For module-style dashboard artifacts, keep `dashboard/main.ts` present as the thin composition entrypoint for dashboard modules.
 - In `module_dashboard` mode, runtime stabilization means fixing `dashboard/*` code first. If the runtime needs an HTML entry point (e.g., for esbuild `--servedir`), create `index.html` or `public/index.html` with minimal scaffolding that loads the bundled output.
-- In `module_dashboard` mode, prefer `package.json` `dev` script flows. Avoid ad-hoc Python servers or hardcoded port commands (for example `python3 app.py` binding fixed ports).
 - When using esbuild with `--bundle`, always add `--format=esm` to produce ES module output. In `index.html`, load the bundle with `<script type="module">` and use `import {{ render }} from './dist/main.js'` to call the entry render function. Never rely on `window.render` or other global-scope assumptions; esbuild IIFE format wraps exports in a closure where they are inaccessible from inline scripts.
 - If preview probe reports HTTP 200 and no hard runtime error, treat runtime as available and continue with dashboard code fixes instead of runtime scaffolding changes.
+
+#### Dependencies and tooling
+
 - npm dependencies are allowed when explicitly declared in `package.json`; do not assume globally preloaded libraries.
 - Node workspaces include managed Tailwind tooling bootstrap (`tailwindcss` + `@tailwindcss/cli`) when `package.json` is present, so you may use Tailwind utility classes when they improve implementation speed.
 - Tailwind is optional. Keep styling flexible and prompt-driven; use plain CSS tokens when that is a better fit for the request.
@@ -1079,7 +1101,8 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Then create/update files with full content via User Space file tools.
 - For implementation requests, never finish with only prose: ensure at least one artifact file write occurred in the current turn.
 - Before declaring "done" or finalizing, you MUST run `validate_userspace_code` on EVERY changed `.ts`/`.tsx` file (including `dashboard/main.ts`) and fix all reported errors first.
-- On every completed user-requested change loop, call `create_userspace_snapshot` immediately with a concise completion message.
+- After validation passes, call `create_userspace_snapshot` immediately with a concise completion message.
+- Never skip validation or snapshot. The correct finalization sequence is always: validate -> fix errors -> validate again (if fixes were needed) -> snapshot.
 
 ### Theme + CSS rules
 
@@ -4960,12 +4983,15 @@ except Exception as e:
 
             inspected: list[dict[str, Any]] = []
             for path in selected_paths:
-                file_data = await userspace_service.get_workspace_file(
-                    workspace_id,
-                    path,
-                    user_id,
-                    decode_errors="replace",
-                )
+                try:
+                    file_data = await userspace_service.get_workspace_file(
+                        workspace_id,
+                        path,
+                        user_id,
+                        decode_errors="replace",
+                    )
+                except HTTPException:
+                    continue
                 content = file_data.content
                 line_count = content.count("\n") + (1 if content else 0)
                 inspected.append(
@@ -5042,7 +5068,9 @@ except Exception as e:
                 raise
             payload = file_data.model_dump(mode="json")
 
-            if payload.get("content") and (start_line is not None or end_line is not None or search_query):
+            if payload.get("content") and (
+                start_line is not None or end_line is not None or search_query
+            ):
                 lines = payload["content"].splitlines(keepends=True)
                 total_lines = len(lines)
 
@@ -5064,8 +5092,13 @@ except Exception as e:
                                 match_indices.append(i)
 
                         if not match_indices:
-                            payload["content"] = f"No matches found for '{search_query}' in the specified range (lines {s_line}-{e_line})."
-                            payload["_meta"] = {"search_query": search_query, "matches_found": 0}
+                            payload["content"] = (
+                                f"No matches found for '{search_query}' in the specified range (lines {s_line}-{e_line})."
+                            )
+                            payload["_meta"] = {
+                                "search_query": search_query,
+                                "matches_found": 0,
+                            }
                         else:
                             output_lines = []
                             last_end = -1
@@ -5083,13 +5116,21 @@ except Exception as e:
                                 last_end = window_end
 
                             payload["content"] = "".join(output_lines)
-                            payload["_meta"] = {"search_query": search_query, "matches_found": len(match_indices), "total_lines": total_lines}
+                            payload["_meta"] = {
+                                "search_query": search_query,
+                                "matches_found": len(match_indices),
+                                "total_lines": total_lines,
+                            }
                     else:
                         output_lines = []
                         for i in range(s_line - 1, e_line):
                             output_lines.append(f"{i+1:5d} | {lines[i]}")
                         payload["content"] = "".join(output_lines)
-                        payload["_meta"] = {"start_line": s_line, "end_line": e_line, "total_lines": total_lines}
+                        payload["_meta"] = {
+                            "start_line": s_line,
+                            "end_line": e_line,
+                            "total_lines": total_lines,
+                        }
 
             structure = await _get_workspace_structure()
             if (
@@ -5109,11 +5150,21 @@ except Exception as e:
             normalized_path = (path or "").strip().replace("\\", "/").lstrip("/")
             if not normalized_path:
                 raise ToolException("Invalid path: path is required.")
-            await userspace_service.delete_workspace_file(
-                workspace_id,
-                normalized_path,
-                user_id,
-            )
+            try:
+                await userspace_service.delete_workspace_file(
+                    workspace_id,
+                    normalized_path,
+                    user_id,
+                )
+            except HTTPException as exc:
+                if getattr(exc, "status_code", None) == 404:
+                    raise ToolException(
+                        f"File not found: {normalized_path}. "
+                        "Check the path with list_userspace_files."
+                    ) from exc
+                raise ToolException(
+                    f"Cannot delete {normalized_path}: {getattr(exc, 'detail', exc)}"
+                ) from exc
             await userspace_runtime_service.bump_workspace_generation(
                 workspace_id, "file_delete"
             )
@@ -5140,9 +5191,19 @@ except Exception as e:
             if not normalized_path:
                 raise ToolException("Invalid path: path is required.")
 
-            file_data = await userspace_service.get_workspace_file(
-                workspace_id, normalized_path, user_id
-            )
+            try:
+                file_data = await userspace_service.get_workspace_file(
+                    workspace_id, normalized_path, user_id
+                )
+            except HTTPException as exc:
+                if getattr(exc, "status_code", None) == 404:
+                    raise ToolException(
+                        f"File not found: {normalized_path}. "
+                        "Use upsert_userspace_file to create it first, or check the path."
+                    ) from exc
+                raise ToolException(
+                    f"Cannot read {normalized_path}: {getattr(exc, 'detail', exc)}"
+                ) from exc
 
             parsed_replacements: list[PatchUserSpaceFileInput.ReplacementInput] = []
             for item in replacements or []:
@@ -5597,6 +5658,7 @@ except Exception as e:
                 if status_code == 400 and any(
                     marker in lower_detail_text
                     for marker in (
+                        "invalid file path",
                         "missing required live_data_connections",
                         "missing required live_data_checks",
                         "missing successful live_data_checks verification",
@@ -5605,13 +5667,23 @@ except Exception as e:
                         "live_data_checks must indicate successful connection and transformation",
                     )
                 ):
+                    error_text = detail_text
+                    action_required = (
+                        "Provide valid live_data_connections + live_data_checks metadata for selected workspace tools, "
+                        "or set live_data_requested=false for scaffolding writes without live wiring."
+                    )
+                    if "invalid file path" in lower_detail_text:
+                        error_text = (
+                            f"File not found: {path}. The requested path does not exist "
+                            "or is not accessible in this workspace."
+                        )
+                        action_required = (
+                            "Use list_userspace_files to choose an existing path, or provide a valid relative file path under the workspace files root."
+                        )
                     policy_response_payload: dict[str, Any] = {
                         "rejected": True,
-                        "error": detail_text,
-                        "action_required": (
-                            "Provide valid live_data_connections + live_data_checks metadata for selected workspace tools, "
-                            "or set live_data_requested=false for scaffolding writes without live wiring."
-                        ),
+                        "error": error_text,
+                        "action_required": action_required,
                     }
                     if warnings:
                         policy_response_payload["warnings"] = warnings

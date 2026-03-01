@@ -18,20 +18,15 @@ from typing import Any
 import httpx
 from fastapi import HTTPException
 
-from runtime.manager.models import (
-    RuntimeFileReadResponse,
-    RuntimeScreenshotRequest,
-    RuntimeScreenshotResponse,
-    WorkerHealthResponse,
-    WorkerSessionResponse,
-    WorkerStartSessionRequest,
-)
-from runtime.shared import (
-    RUNTIME_BOOTSTRAP_CONFIG_PATH,
-    RUNTIME_BOOTSTRAP_STAMP_PATH,
-    RuntimeSessionState,
-    normalize_file_path,
-)
+from runtime.manager.models import (RuntimeFileReadResponse,
+                                    RuntimeScreenshotRequest,
+                                    RuntimeScreenshotResponse,
+                                    WorkerHealthResponse,
+                                    WorkerSessionResponse,
+                                    WorkerStartSessionRequest)
+from runtime.shared import (RUNTIME_BOOTSTRAP_CONFIG_PATH,
+                            RUNTIME_BOOTSTRAP_STAMP_PATH, RuntimeSessionState,
+                            normalize_file_path)
 
 _PORT_PATTERNS = (
     re.compile(r"(?:^|\s)--port(?:=|\s+)(\d{2,5})(?:\s|$)"),
@@ -43,9 +38,6 @@ _PORT_REWRITE_PATTERNS = (
     (re.compile(r"(^|\s)--port\s+(\d{2,5})(?=\s|$)"), r"\1--port {port}"),
     (re.compile(r"(^|\s)-p\s+(\d{2,5})(?=\s|$)"), r"\1-p {port}"),
     (re.compile(r"(^|\s)PORT=(\d{2,5})(?=\s|$)"), r"\1PORT={port}"),
-)
-_PY_HTTP_SERVER_PORT_PATTERN = re.compile(
-    r"(^|\s)(python3?\s+-m\s+http\.server\s+)(\d{2,5})(?=\s|$)"
 )
 _COMMAND_TOKEN_PATTERNS = {
     "npx": re.compile(r"(?:^|\s)npx(?:\s|$)"),
@@ -563,16 +555,11 @@ class WorkerService:
             pass
 
     def _rewrite_command_port(self, command: str, port: int) -> str:
-        python_http_server_match = _PY_HTTP_SERVER_PORT_PATTERN.search(command)
-        if python_http_server_match:
-            prefix = python_http_server_match.group(1)
-            command_prefix = python_http_server_match.group(2)
-            replacement = f"{prefix}{command_prefix}{port}"
-            return (
-                f"{command[:python_http_server_match.start()]}"
-                f"{replacement}"
-                f"{command[python_http_server_match.end():]}"
-            )
+        # Explicit $PORT / ${PORT} placeholder substitution (entrypoint-first path)
+        if re.search(r"\$\{PORT\}|\$PORT(?![A-Za-z0-9_])", command):
+            rewritten = re.sub(r"\$\{PORT\}", str(port), command)
+            rewritten = re.sub(r"\$PORT(?![A-Za-z0-9_])", str(port), rewritten)
+            return rewritten
 
         rewritten = command
         for pattern, template in _PORT_REWRITE_PATTERNS:
