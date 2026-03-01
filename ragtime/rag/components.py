@@ -382,7 +382,7 @@ TOOL_USAGE_REMINDER = """[CRITICAL: Use the tool calling API. Do NOT write fake 
 
 """
 
-USERSPACE_TURN_REMINDER = """[USER SPACE TURN CHECKLIST: Before finalizing, run validate_userspace_code on EVERY changed .ts/.tsx file (including dashboard/main.ts) and fix all reported errors. Persist implementation changes via userspace file tools (not chat-only prose). Treat any tool result with rejected=true as a failed step and fix/retry. If a tool result has persisted_with_violations=true, the file WAS saved but has contract issues -- use patch_userspace_file to fix the specific violations listed in contract_violations (do NOT re-send the full file content). Never use hardcoded/mock/sample/static data in dashboard modules; wire live data via context.components[componentId].execute() with required metadata/checks. After validation passes with no errors, call create_userspace_snapshot with a concise completion message. Never skip validation or snapshot -- the finalization sequence is: validate -> fix errors -> validate again -> snapshot.]
+USERSPACE_TURN_REMINDER = """[USER SPACE TURN CHECKLIST: Before finalizing, run validate_userspace_code on EVERY changed .ts/.tsx file (including dashboard/main.ts) and fix all reported errors. Persist implementation changes via userspace file tools (not chat-only prose). Build first; do not generate docs/readmes/specs/plans/changelogs unless the user explicitly requested documentation. Treat any tool result with rejected=true as a failed step and fix/retry. If a tool result has persisted_with_violations=true, the file WAS saved but has contract issues -- use patch_userspace_file to fix the specific violations listed in contract_violations (do NOT re-send the full file content). Never use hardcoded/mock/sample/static data in dashboard modules; wire live data via context.components[componentId].execute() with required metadata/checks. After validation passes with no errors, call create_userspace_snapshot with a concise completion message. Never skip validation or snapshot -- the finalization sequence is: validate -> fix errors -> validate again -> snapshot.]
 
 """
 
@@ -819,6 +819,8 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - If `dashboard/main.ts` exists, treat it as the authoritative app entrypoint for feature work. Do not implement dashboard behavior changes in `index.html` unless the user explicitly asks to edit `index.html`.
 - In `module_dashboard` workspaces, prefer implementing behavior changes in `dashboard/*` files. `index.html` is allowed for runtime scaffolding (e.g., loading bundled scripts, including CDN resources like Chart.js) but should not contain application logic.
 - For any request to create/build/update a report, dashboard, or frontend, you MUST write/update workspace files via `upsert_userspace_file` before finalizing.
+- Default to implementation-first execution: go straight to building the requested artifact/files, not planning documents.
+- Do not create docs/readmes/specs/plans/changelogs unless the user explicitly asks for documentation output.
 - Do not end with chat-only guidance when the user asked for implementation; persist a runnable scaffold first, then describe blockers.
 - Do not keep all logic in `dashboard/main.ts` once complexity grows.
 - Split concerns into stable subpaths under `dashboard/` (for example: `dashboard/components/*`, `dashboard/data/*`, `dashboard/charts/*`, `dashboard/styles/*`).
@@ -944,22 +946,7 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Tailwind utilities are available for layout/spacing/composition, but keep semantic theming token-based (`var(--color-*)`, `var(--space-*)`, etc.) so dark/light mode remains consistent.
 - If module code injects CSS dynamically, keep the same token-based approach so dark/light mode stays consistent.
 - Do not introduce custom font stacks, raw hex palettes, or fixed theme-specific colors unless explicitly requested.
-- Available CSS variable tokens (always use `var(--token-name)` syntax):
-
-  | Category       | Tokens |
-  |----------------|--------|
-  | Backgrounds    | `--color-bg-primary`, `--color-bg-secondary`, `--color-bg-tertiary` |
-  | Surfaces       | `--color-surface`, `--color-surface-hover`, `--color-surface-active` |
-  | Text           | `--color-text-primary`, `--color-text-secondary`, `--color-text-muted`, `--color-text-inverse` |
-  | Brand/Accent   | `--color-primary`, `--color-primary-hover`, `--color-primary-light`, `--color-primary-border`, `--color-accent`, `--color-accent-hover`, `--color-accent-light` |
-  | Semantic       | `--color-success`, `--color-success-light`, `--color-success-border`, `--color-error`, `--color-error-light`, `--color-error-border`, `--color-warning`, `--color-warning-light`, `--color-warning-border`, `--color-info`, `--color-info-light`, `--color-info-border` |
-  | Borders        | `--color-border`, `--color-border-strong` |
-  | Input          | `--color-input-bg`, `--color-input-border`, `--color-input-focus` |
-  | Shadows        | `--shadow-sm`, `--shadow-md`, `--shadow-lg`, `--shadow-xl` |
-  | Spacing        | `--space-xs` (4px), `--space-sm` (8px), `--space-md` (16px), `--space-lg` (24px), `--space-xl` (32px), `--space-2xl` (48px) |
-  | Radius         | `--radius-sm` (4px), `--radius-md` (8px), `--radius-lg` (12px), `--radius-xl` (16px), `--radius-full` (pill) |
-  | Typography     | `--font-sans`, `--font-mono`, `--text-xs` .. `--text-2xl`, `--leading-tight` / `--leading-normal` / `--leading-relaxed` |
-  | Transitions    | `--transition-fast` (150ms), `--transition-normal` (200ms), `--transition-slow` (300ms) |
+- Use available app theme tokens and avoid redefining theme primitives in module-local CSS.
 """
 
 
