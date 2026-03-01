@@ -17,13 +17,11 @@ from langchain_core.messages import AIMessage, HumanMessage
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.logging import get_logger
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (
-    ChatTaskStatus,
-    FilesystemConnectionConfig,
-    SchemaIndexConfig,
-)
+from ragtime.indexer.models import (ChatTaskStatus, FilesystemConnectionConfig,
+                                    SchemaIndexConfig)
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
+from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
+                                            schema_indexer)
 from ragtime.indexer.service import indexer
 from ragtime.indexer.utils import safe_tool_name
 
@@ -774,6 +772,16 @@ class BackgroundTaskService:
                                     task_id, result.streaming_state.dict()
                                 )
                             last_update = datetime.utcnow()
+
+                        elif event_type == "reasoning":
+                            # Reasoning/thinking content from LLM
+                            reasoning_text = event.get("content", "")
+                            if reasoning_text:
+                                # Append to events as reasoning block
+                                if events and events[-1].get("type") == "reasoning":
+                                    events[-1]["content"] += reasoning_text
+                                else:
+                                    events.append({"type": "reasoning", "content": reasoning_text})
                     else:
                         # Text token
                         token = event

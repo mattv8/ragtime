@@ -21,13 +21,8 @@ from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (
-    AIMessage,
-    BaseMessage,
-    HumanMessage,
-    SystemMessage,
-    ToolMessage,
-)
+from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
+                                     SystemMessage, ToolMessage)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -36,62 +31,43 @@ from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
-from ragtime.core.file_constants import (
-    USERSPACE_MODULE_SOURCE_EXTENSIONS,
-    USERSPACE_STRICT_FRONTEND_EXTENSIONS,
-    USERSPACE_THEME_AUDIT_EXTENSIONS,
-    USERSPACE_TYPESCRIPT_EXTENSIONS,
-)
+from ragtime.core.file_constants import (USERSPACE_MODULE_SOURCE_EXTENSIONS,
+                                         USERSPACE_STRICT_FRONTEND_EXTENSIONS,
+                                         USERSPACE_THEME_AUDIT_EXTENSIONS,
+                                         USERSPACE_TYPESCRIPT_EXTENSIONS)
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import get_context_limit, get_output_limit
+from ragtime.core.model_limits import (get_context_limit, get_output_limit,
+                                       supports_reasoning)
 from ragtime.core.ollama import get_model_context_length
-from ragtime.core.security import (
-    _SSH_ENV_VAR_RE,
-    sanitize_output,
-    validate_odoo_code,
-    validate_sql_query,
-    validate_ssh_command,
-)
+from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
+                                   validate_odoo_code, validate_sql_query,
+                                   validate_ssh_command)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (
-    SSHConfig,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    execute_ssh_command,
-    expand_env_vars_via_ssh,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
+                              execute_ssh_command, expand_env_vars_via_ssh,
+                              ssh_tunnel_config_from_dict)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (
-    CHAT_CHART_DESCRIPTION_SUFFIX,
-    USERSPACE_CHART_DESCRIPTION_SUFFIX,
-    create_chart_tool,
-)
-from ragtime.tools.datatable import (
-    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-    create_datatable_tool,
-)
+from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
+                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
+                                 create_chart_tool)
+from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+                                     create_datatable_tool)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (
-    _is_shallow_repository,
-    create_aggregate_git_history_tool,
-    create_per_index_git_history_tool,
-)
+from ragtime.tools.git_history import (_is_shallow_repository,
+                                       create_aggregate_git_history_tool,
+                                       create_per_index_git_history_tool)
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (
-    ArtifactType,
-    UpsertWorkspaceFileRequest,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-)
+from ragtime.userspace.models import (ArtifactType, UpsertWorkspaceFileRequest,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -1510,18 +1486,25 @@ class RAGComponents:
         assert self._app_settings is not None
         provider_normalized = provider.lower().strip()
 
+        # Check if model supports reasoning/thinking
+        model_has_reasoning = await supports_reasoning(model)
+
         if provider_normalized == "ollama":
             try:
                 base_url = self._app_settings.get(
                     "llm_ollama_base_url",
                     self._app_settings.get("ollama_base_url", "http://localhost:11434"),
                 )
-                return ChatOllama(
-                    model=model,
-                    base_url=base_url,
-                    temperature=0,
-                    num_predict=max_tokens,
-                )
+                kwargs: dict[str, Any] = {
+                    "model": model,
+                    "base_url": base_url,
+                    "temperature": 0,
+                    "num_predict": max_tokens,
+                }
+                if model_has_reasoning:
+                    kwargs["reasoning"] = True
+                    logger.info(f"Enabling reasoning for Ollama model {model}")
+                return ChatOllama(**kwargs)
             except ImportError:
                 logger.warning("langchain-ollama not installed")
                 return None
@@ -1532,12 +1515,27 @@ class RAGComponents:
                 logger.warning("Anthropic selected but no API key configured")
                 return None
             try:
-                return ChatAnthropic(
-                    model=model,
-                    temperature=0,
-                    api_key=api_key,
-                    max_tokens=max_tokens,
-                )
+                kwargs = {
+                    "model": model,
+                    "api_key": api_key,
+                    "max_tokens": max_tokens,
+                }
+                if model_has_reasoning:
+                    # Extended thinking requires temperature=1 or unset;
+                    # budget_tokens must be less than max_tokens
+                    thinking_budget = min(16384, max(1024, max_tokens - 1))
+                    kwargs["thinking"] = {
+                        "type": "enabled",
+                        "budget_tokens": thinking_budget,
+                    }
+                    kwargs["temperature"] = 1
+                    logger.info(
+                        f"Enabling extended thinking for Anthropic model {model} "
+                        f"(budget: {thinking_budget} tokens)"
+                    )
+                else:
+                    kwargs["temperature"] = 0
+                return ChatAnthropic(**kwargs)
             except ImportError:
                 logger.warning("langchain-anthropic not installed")
                 return None
@@ -1547,13 +1545,18 @@ class RAGComponents:
             logger.warning("OpenAI selected but no API key configured")
             return None
 
-        return ChatOpenAI(
-            model=model,
-            temperature=0,
-            streaming=True,
-            api_key=api_key,
-            max_tokens=max_tokens,
-        )
+        kwargs = {
+            "model": model,
+            "temperature": 0,
+            "streaming": True,
+            "api_key": api_key,
+            "max_tokens": max_tokens,
+        }
+        if model_has_reasoning:
+            kwargs["model_kwargs"] = {"reasoning_effort": "medium"}
+            logger.info(f"Enabling reasoning for OpenAI model {model} (effort: medium)")
+
+        return ChatOpenAI(**kwargs)
 
     async def _get_embedding_model(self):
         """Get embedding model based on database settings."""
@@ -6684,20 +6687,39 @@ except Exception as e:
                     # Stream tokens from the chat model
                     elif kind == "on_chat_model_stream":
                         chunk = event.get("data", {}).get("chunk")
-                        if chunk and hasattr(chunk, "content") and chunk.content:
-                            content = chunk.content
-                            # Handle Anthropic-style content blocks (list of dicts with 'text' key)
-                            if isinstance(content, list):
-                                content = "".join(
-                                    (
-                                        block.get("text", "")
-                                        if isinstance(block, dict)
-                                        else str(block)
-                                    )
-                                    for block in content
-                                )
-                            if content:
-                                yield content
+                        if chunk:
+                            # Extract reasoning/thinking content from additional_kwargs
+                            # Ollama with reasoning=True puts thinking in additional_kwargs.reasoning_content
+                            if hasattr(chunk, "additional_kwargs") and chunk.additional_kwargs:
+                                reasoning_text = chunk.additional_kwargs.get("reasoning_content")
+                                if reasoning_text:
+                                    yield {"type": "reasoning", "content": reasoning_text}
+
+                            if hasattr(chunk, "content") and chunk.content:
+                                content = chunk.content
+                                # Handle Anthropic-style content blocks (list of dicts)
+                                if isinstance(content, list):
+                                    for block in content:
+                                        if isinstance(block, dict):
+                                            block_type = block.get("type", "")
+                                            if block_type == "thinking":
+                                                thinking_text = block.get("thinking", "")
+                                                if thinking_text:
+                                                    yield {"type": "reasoning", "content": thinking_text}
+                                            elif block_type == "text":
+                                                text = block.get("text", "")
+                                                if text:
+                                                    yield text
+                                            else:
+                                                text = block.get("text", "")
+                                                if text:
+                                                    yield text
+                                        else:
+                                            text = str(block)
+                                            if text:
+                                                yield text
+                                elif content:
+                                    yield content
 
                     # Detect when agent executor finishes - check for max iterations
                     elif kind == "on_chain_end":
@@ -6731,19 +6753,37 @@ except Exception as e:
 
                 # Use astream for true token-by-token streaming
                 async for chunk in request_llm.astream(messages):
+                    # Extract reasoning/thinking content from additional_kwargs
+                    # Ollama with reasoning=True puts thinking in additional_kwargs.reasoning_content
+                    if hasattr(chunk, "additional_kwargs") and chunk.additional_kwargs:
+                        reasoning_text = chunk.additional_kwargs.get("reasoning_content")
+                        if reasoning_text:
+                            yield {"type": "reasoning", "content": reasoning_text}
+
                     if hasattr(chunk, "content") and chunk.content:
                         content = chunk.content
-                        # Handle Anthropic-style content blocks (list of dicts with 'text' key)
+                        # Handle Anthropic-style content blocks (list of dicts)
                         if isinstance(content, list):
-                            content = "".join(
-                                (
-                                    block.get("text", "")
-                                    if isinstance(block, dict)
-                                    else str(block)
-                                )
-                                for block in content
-                            )
-                        if content:
+                            for block in content:
+                                if isinstance(block, dict):
+                                    block_type = block.get("type", "")
+                                    if block_type == "thinking":
+                                        thinking_text = block.get("thinking", "")
+                                        if thinking_text:
+                                            yield {"type": "reasoning", "content": thinking_text}
+                                    elif block_type == "text":
+                                        text = block.get("text", "")
+                                        if text:
+                                            yield text
+                                    else:
+                                        text = block.get("text", "")
+                                        if text:
+                                            yield text
+                                else:
+                                    text = str(block)
+                                    if text:
+                                        yield text
+                        elif content:
                             yield content
 
         except Exception as e:

@@ -1335,7 +1335,12 @@ export interface ToolCallEvent {
   connection?: ToolConnectionRef;
 }
 
-export type MessageEvent = ContentEvent | ToolCallEvent;
+export interface ReasoningEvent {
+  type: 'reasoning';
+  content: string;
+}
+
+export type MessageEvent = ContentEvent | ToolCallEvent | ReasoningEvent;
 
 // Multimodal content types
 export interface TextContent {
@@ -1371,7 +1376,7 @@ export interface ChatMessage {
 }
 
 // Streaming event types
-export type StreamEventType = 'content' | 'tool_start' | 'tool_end' | 'error';
+export type StreamEventType = 'content' | 'tool_start' | 'tool_end' | 'reasoning' | 'error';
 
 export interface ToolCallInfo {
   tool: string;
@@ -1384,6 +1389,7 @@ export interface StreamEvent {
   type: StreamEventType;
   content?: string;         // For 'content' events
   toolCall?: ToolCallInfo;  // For 'tool_start' and 'tool_end' events
+  reasoning?: string;       // For 'reasoning' events (thinking/reasoning content)
   error?: string;          // For 'error' events
 }
 

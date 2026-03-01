@@ -15,18 +15,10 @@ from ragtime import __version__
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.logging import get_logger
-from ragtime.models import (
-    AgentOptions,
-    ChatChoice,
-    ChatCompletionRequest,
-    ChatCompletionResponse,
-    HealthResponse,
-    IndexLoadingDetail,
-    MemoryStats,
-    Message,
-    ModelInfo,
-    ModelsResponse,
-)
+from ragtime.models import (AgentOptions, ChatChoice, ChatCompletionRequest,
+                            ChatCompletionResponse, HealthResponse,
+                            IndexLoadingDetail, MemoryStats, Message,
+                            ModelInfo, ModelsResponse)
 from ragtime.rag import rag
 
 logger = get_logger(__name__)
@@ -337,6 +329,18 @@ async def _stream_response_tokens(
 
             elif event_type == "max_iterations_reached":
                 yield make_chunk("\n\n> **Note:** Reached maximum tool iterations\n")
+
+            elif event_type == "reasoning":
+                # Reasoning/thinking content - emit as collapsible details block
+                reasoning_text = event.get("content", "")
+                if reasoning_text:
+                    block = (
+                        f'\n<details type="reasoning">\n'
+                        f"<summary>Thinking...</summary>\n\n"
+                        f"{reasoning_text}\n\n"
+                        f"</details>\n"
+                    )
+                    yield make_chunk(block)
 
         else:
             # Plain string content - stream directly

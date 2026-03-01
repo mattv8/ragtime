@@ -22,6 +22,8 @@ _model_limits_cache: dict[str, int] = {}
 _model_output_limits_cache: dict[str, int] = {}
 # Cache for function calling support
 _model_supports_function_calling: dict[str, bool] = {}
+# Cache for reasoning/thinking support
+_model_supports_reasoning: dict[str, bool] = {}
 _cache_lock = asyncio.Lock()
 _cache_loaded = False
 
@@ -72,7 +74,7 @@ MODEL_FAMILY_PATTERNS = {
 
 async def _fetch_litellm_data() -> tuple[dict[str, int], dict[str, int]]:
     """Fetch model limits from LiteLLM's dataset."""
-    global _model_supports_function_calling
+    global _model_supports_function_calling, _model_supports_reasoning
     limits: dict[str, int] = {}
     output_limits: dict[str, int] = {}
 
@@ -102,6 +104,11 @@ async def _fetch_litellm_data() -> tuple[dict[str, int], dict[str, int]]:
                     supports_fc = model_info.get("supports_function_calling", False)
                     if isinstance(supports_fc, bool):
                         _model_supports_function_calling[model_id] = supports_fc
+
+                    # Track reasoning/thinking support
+                    supports_r = model_info.get("supports_reasoning", False)
+                    if isinstance(supports_r, bool):
+                        _model_supports_reasoning[model_id] = supports_r
 
             logger.info(
                 f"Loaded {len(limits)} context limits and {len(output_limits)} output limits from LiteLLM"
@@ -206,6 +213,7 @@ def invalidate_cache() -> None:
     _model_limits_cache.clear()
     _model_output_limits_cache.clear()
     _model_supports_function_calling.clear()
+    _model_supports_reasoning.clear()
 
 
 async def supports_function_calling(model_id: str) -> bool:
@@ -243,4 +251,55 @@ async def supports_function_calling(model_id: str) -> bool:
         return True
 
     # Conservative default: assume no function calling support
+    return False
+
+
+async def supports_reasoning(model_id: str) -> bool:
+    """
+    Check if a model supports reasoning/thinking tokens.
+
+    Returns True if the model supports extended thinking, False otherwise.
+    Uses LiteLLM's dataset for authoritative data, with heuristic fallbacks.
+    """
+    await _ensure_cache_loaded()
+
+    # Try exact match
+    if model_id in _model_supports_reasoning:
+        return _model_supports_reasoning[model_id]
+
+    # Try partial match (e.g., "claude-sonnet-4-20250514" should match "claude-sonnet-4")
+    model_lower = model_id.lower()
+    for key, value in _model_supports_reasoning.items():
+        if model_lower.startswith(key.lower()) or key.lower() in model_lower:
+            return value
+
+    # Heuristic fallbacks if not in LiteLLM data
+
+    # OpenAI: o-series reasoning models (o1, o3, o4-mini, etc.)
+    if any(model_lower.startswith(p) for p in ["o1", "o3", "o4"]):
+        return True
+
+    # Anthropic: Claude 3.7+ and Claude 4+ support extended thinking
+    if "claude" in model_lower:
+        if any(x in model_lower for x in ["claude-3-7", "claude-3.7"]):
+            return True
+        if any(
+            x in model_lower
+            for x in [
+                "claude-4",
+                "claude-opus-4",
+                "claude-sonnet-4",
+                "claude-haiku-4",
+            ]
+        ):
+            return True
+
+    # Ollama: qwen3 models support thinking (qwen3, qwen3.5, etc.)
+    if any(model_lower.startswith(p) for p in ["qwen3", "qwq"]):
+        return True
+    # DeepSeek reasoning models
+    if "deepseek-r1" in model_lower:
+        return True
+
+    # Conservative default
     return False

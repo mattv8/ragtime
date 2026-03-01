@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo, isValidElement, type ReactNode, type CSSProperties } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus } from 'lucide-react';
+import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit } from 'lucide-react';
 import { api } from '@/api';
 import type { Conversation, ChatMessage, AvailableModel, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool } from '@/types';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
@@ -97,7 +97,8 @@ interface ActiveToolCall {
 // Local render event to keep streaming items in arrival order
 type StreamingRenderEvent =
   | { type: 'content'; content: string }
-  | { type: 'tool'; toolCall: ActiveToolCall };
+  | { type: 'tool'; toolCall: ActiveToolCall }
+  | { type: 'reasoning'; content: string };
 
 // Parse table metadata from SQL tool output
 // Format: <!--TABLEDATA:{"columns":[...],"rows":[...]}-->
@@ -937,12 +938,49 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
 // Consolidated streaming content - groups content events between tool calls
 // This avoids re-rendering markdown for every token and dramatically improves performance
 interface StreamingSegment {
-  type: 'content' | 'tool';
-  content?: string;  // For content segments - consolidated text
+  type: 'content' | 'tool' | 'reasoning';
+  content?: string;  // For content/reasoning segments - consolidated text
   toolCall?: ActiveToolCall;  // For tool segments
+  isComplete?: boolean;  // For reasoning segments - whether thinking has finished
 }
 
 // Memoized component for rendering streaming segments efficiently
+// Collapsible reasoning/thinking display
+const ReasoningDisplay = memo(function ReasoningDisplay({ content, isComplete }: { content: string; isComplete: boolean }) {
+  const [isExpanded, setIsExpanded] = useState(!isComplete);
+
+  // Auto-collapse when thinking completes
+  useEffect(() => {
+    if (isComplete) {
+      const timer = setTimeout(() => setIsExpanded(false), 400);
+      return () => clearTimeout(timer);
+    } else {
+      setIsExpanded(true);
+    }
+  }, [isComplete]);
+
+  return (
+    <div className={`reasoning-block ${isComplete ? 'reasoning-complete' : 'reasoning-active'}`}>
+      <button
+        className="reasoning-header"
+        onClick={() => setIsExpanded(!isExpanded)}
+        aria-expanded={isExpanded}
+      >
+        <BrainCircuit size={14} className="reasoning-icon" />
+        <span className="reasoning-label">{isComplete ? 'Thought process' : 'Thinking...'}</span>
+        <span className={`reasoning-chevron ${isExpanded ? 'expanded' : ''}`}>
+          <ChevronDown size={14} />
+        </span>
+      </button>
+      <div className={`reasoning-content ${isExpanded ? 'reasoning-content-expanded' : 'reasoning-content-collapsed'}`}>
+        <div className="reasoning-content-inner">
+          {content}
+        </div>
+      </div>
+    </div>
+  );
+});
+
 const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
   segment,
   showToolCalls
@@ -950,7 +988,9 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
   segment: StreamingSegment;
   showToolCalls: boolean;
 }) {
-  if (segment.type === 'tool' && segment.toolCall && showToolCalls) {
+  if (segment.type === 'reasoning' && segment.content) {
+    return <ReasoningDisplay content={segment.content} isComplete={!!segment.isComplete} />;
+  } else if (segment.type === 'tool' && segment.toolCall && showToolCalls) {
     return (
       <div className="chat-tool-calls">
         <ToolCallDisplay toolCall={segment.toolCall} defaultExpanded={false} />
@@ -1634,12 +1674,31 @@ export function ChatPanel({
 
     const segments: StreamingSegment[] = [];
     let currentContent = '';
+    let currentReasoning = '';
 
     for (const ev of streamingEvents) {
-      if (ev.type === 'content') {
+      if (ev.type === 'reasoning') {
+        // Flush any pending content first
+        if (currentContent) {
+          segments.push({ type: 'content', content: currentContent });
+          currentContent = '';
+        }
+        // Accumulate reasoning
+        currentReasoning += ev.content;
+      } else if (ev.type === 'content') {
+        // Flush any pending reasoning (it's now complete since content follows)
+        if (currentReasoning) {
+          segments.push({ type: 'reasoning', content: currentReasoning, isComplete: true });
+          currentReasoning = '';
+        }
         // Accumulate content
         currentContent += ev.content;
       } else if (ev.type === 'tool') {
+        // Flush pending reasoning
+        if (currentReasoning) {
+          segments.push({ type: 'reasoning', content: currentReasoning, isComplete: true });
+          currentReasoning = '';
+        }
         // Flush any accumulated content first
         if (currentContent) {
           segments.push({ type: 'content', content: currentContent });
@@ -1648,6 +1707,11 @@ export function ChatPanel({
         // Add tool segment
         segments.push({ type: 'tool', toolCall: ev.toolCall });
       }
+    }
+
+    // Flush remaining reasoning (still streaming, not yet complete)
+    if (currentReasoning) {
+      segments.push({ type: 'reasoning', content: currentReasoning, isComplete: false });
     }
 
     // Flush remaining content
@@ -2040,9 +2104,10 @@ export function ChatPanel({
 
                 // Convert to StreamingRenderEvent format
                 return events.map((ev: any) => {
-                    if (ev.type === 'content') return { type: 'content', content: ev.content || '' };
+                    if (ev.type === 'content') return { type: 'content' as const, content: ev.content || '' };
+                    if (ev.type === 'reasoning') return { type: 'reasoning' as const, content: ev.content || '' };
                     return {
-                        type: 'tool',
+                        type: 'tool' as const,
                         toolCall: {
                             tool: ev.tool || '',
                             input: ev.input,
@@ -3049,6 +3114,8 @@ export function ChatPanel({
                                         siblingEvents={msg.events}
                                       />
                                     </div>
+                                  ) : ev.type === 'reasoning' ? (
+                                    <ReasoningDisplay key={`event-${evIdx}`} content={ev.content} isComplete={true} />
                                   ) : ev.type === 'content' ? (
                                     <div key={`event-${evIdx}`} className="chat-message-text markdown-content">
                                       <MemoizedMarkdown content={ev.content} />
@@ -3135,7 +3202,11 @@ export function ChatPanel({
                           />
                         ))}
                         <div className="chat-message-streaming">
-                          {consolidatedSegments.some(seg => seg.type === 'tool' && seg.toolCall?.status === 'running') ? 'Running tool...' : 'Generating...'}
+                          {consolidatedSegments.some(seg => seg.type === 'tool' && seg.toolCall?.status === 'running')
+                            ? 'Running tool...'
+                            : consolidatedSegments.some(seg => seg.type === 'reasoning' && !seg.isComplete)
+                              ? 'Reasoning...'
+                              : 'Generating...'}
                         </div>
                       </div>
                     </div>

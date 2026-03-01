@@ -46,15 +46,16 @@ export function calculateConversationTokens(messages: ChatMessage[]): number {
 
 export type StreamingRenderEvent =
   | { type: 'content'; content: string }
-  | { type: 'tool'; toolCall: { input?: Record<string, unknown>; output?: string } };
+  | { type: 'tool'; toolCall: { input?: Record<string, unknown>; output?: string } }
+  | { type: 'reasoning'; content: string };
 
 export function calculateStreamingTokens(events: StreamingRenderEvent[], streamingContent: string): number {
   if (events.length > 0) {
     let tokens = 0;
     for (const event of events) {
-      if (event.type === 'content') {
+      if (event.type === 'content' || event.type === 'reasoning') {
         tokens += estimateTokens(event.content || '');
-      } else {
+      } else if (event.type === 'tool') {
         tokens += estimateTokensFromObject(event.toolCall.input);
         tokens += estimateTokens(event.toolCall.output || '');
       }

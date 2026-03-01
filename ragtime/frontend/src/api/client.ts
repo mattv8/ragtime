@@ -1417,6 +1417,13 @@ export const api = {
                 };
               }
             }
+            // Check for reasoning/thinking tokens
+            else if (delta?.reasoning) {
+              yield {
+                type: 'reasoning',
+                reasoning: delta.reasoning
+              };
+            }
             // Check for content tokens
             else if (delta?.content) {
               yield {
