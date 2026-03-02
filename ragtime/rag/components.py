@@ -21,8 +21,13 @@ from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
-                                     SystemMessage, ToolMessage)
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -31,43 +36,66 @@ from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
-from ragtime.core.file_constants import (USERSPACE_MODULE_SOURCE_EXTENSIONS,
-                                         USERSPACE_STRICT_FRONTEND_EXTENSIONS,
-                                         USERSPACE_THEME_AUDIT_EXTENSIONS,
-                                         USERSPACE_TYPESCRIPT_EXTENSIONS)
+from ragtime.core.file_constants import (
+    USERSPACE_MODULE_SOURCE_EXTENSIONS,
+    USERSPACE_STRICT_FRONTEND_EXTENSIONS,
+    USERSPACE_THEME_AUDIT_EXTENSIONS,
+    USERSPACE_TYPESCRIPT_EXTENSIONS,
+)
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (get_context_limit, get_output_limit,
-                                       supports_reasoning)
+from ragtime.core.model_limits import (
+    get_context_limit,
+    get_output_limit,
+    supports_reasoning,
+)
 from ragtime.core.ollama import get_model_context_length
-from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
-                                   validate_odoo_code, validate_sql_query,
-                                   validate_ssh_command)
+from ragtime.core.security import (
+    _SSH_ENV_VAR_RE,
+    sanitize_output,
+    validate_odoo_code,
+    validate_sql_query,
+    validate_ssh_command,
+)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
-                              execute_ssh_command, expand_env_vars_via_ssh,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.ssh import (
+    SSHConfig,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    expand_env_vars_via_ssh,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
-                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
-                                 create_chart_tool)
-from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-                                     create_datatable_tool)
+from ragtime.tools.chart import (
+    CHAT_CHART_DESCRIPTION_SUFFIX,
+    USERSPACE_CHART_DESCRIPTION_SUFFIX,
+    create_chart_tool,
+)
+from ragtime.tools.datatable import (
+    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+    create_datatable_tool,
+)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (_is_shallow_repository,
-                                       create_aggregate_git_history_tool,
-                                       create_per_index_git_history_tool)
+from ragtime.tools.git_history import (
+    _is_shallow_repository,
+    create_aggregate_git_history_tool,
+    create_per_index_git_history_tool,
+)
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (ArtifactType, UpsertWorkspaceFileRequest,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection)
+from ragtime.userspace.models import (
+    ArtifactType,
+    UpsertWorkspaceFileRequest,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -4465,6 +4493,20 @@ except Exception as e:
                         "For persisted live data wiring, LIMIT is optional and should only be used when intentional."
                     ),
                 )
+
+                @field_validator("request", mode="before")
+                @classmethod
+                def _coerce_request(cls, value: Any) -> Any:
+                    """Coerce stringified JSON dict to a real dict."""
+                    if isinstance(value, str):
+                        raw = value.strip()
+                        if raw.startswith("{"):
+                            try:
+                                return json.loads(raw)
+                            except json.JSONDecodeError:
+                                pass
+                    return value
+
                 component_name: str | None = Field(
                     default=None,
                     description="Optional friendly connection name.",
@@ -4512,6 +4554,28 @@ except Exception as e:
                 ),
             )
             content: str = Field(description="Full UTF-8 file content to write")
+
+            @field_validator("content", mode="before")
+            @classmethod
+            def _unescape_content_whitespace(cls, value: Any) -> Any:
+                """LLMs sometimes emit literal escape sequences (backslash-n)
+                instead of real newlines. Detect and fix that pattern so the
+                written file has proper whitespace."""
+                if not isinstance(value, str):
+                    return value
+                # Only unescape if the string looks like it contains
+                # literal escape sequences AND has suspiciously few real
+                # newlines relative to its length.
+                real_newlines = value.count("\n")
+                literal_backslash_n = value.count("\\n")
+                if literal_backslash_n > 3 and literal_backslash_n > real_newlines * 2:
+                    value = (
+                        value.replace("\\n", "\n")
+                        .replace("\\t", "\t")
+                        .replace("\\\\", "\\")
+                    )
+                return value
+
             artifact_type: ArtifactType | None = Field(
                 default="module_ts",
                 description=(
@@ -4549,6 +4613,22 @@ except Exception as e:
                 description="Brief description of why this file is being updated",
             )
 
+            @field_validator("live_data_connections", "live_data_checks", mode="before")
+            @classmethod
+            def _coerce_json_lists(cls, value: Any) -> Any:
+                """Coerce stringified JSON arrays to real lists."""
+                if isinstance(value, str):
+                    raw = value.strip()
+                    if not raw or raw.lower() == "null":
+                        return None
+                    try:
+                        parsed = json.loads(raw)
+                        if isinstance(parsed, list):
+                            return parsed
+                    except json.JSONDecodeError:
+                        pass
+                return value
+
         class PatchUserSpaceFileInput(BaseModel):
             class ReplacementInput(BaseModel):
                 old_text: str = Field(
@@ -4571,6 +4651,23 @@ except Exception as e:
                     default=True,
                     description=("When true, fail if old_text is not found."),
                 )
+
+                @field_validator("old_text", "new_text", mode="before")
+                @classmethod
+                def _unescape_whitespace(cls, value: Any) -> Any:
+                    """Un-escape literal backslash-n / backslash-t that LLMs
+                    sometimes emit instead of real whitespace characters."""
+                    if not isinstance(value, str):
+                        return value
+                    real_nl = value.count("\n")
+                    literal_nl = value.count("\\n")
+                    if literal_nl > 1 and literal_nl > real_nl * 2:
+                        value = (
+                            value.replace("\\n", "\n")
+                            .replace("\\t", "\t")
+                            .replace("\\\\", "\\")
+                        )
+                    return value
 
             path: str = Field(
                 default="dashboard/main.ts",
@@ -4597,13 +4694,37 @@ except Exception as e:
                     raw = value.strip()
                     if not raw:
                         return []
+
+                    # Try 1: parse as-is
                     try:
                         parsed = json.loads(raw)
-                    except Exception as exc:
-                        raise ValueError(
-                            "replacements must be a list (or a JSON string that decodes to a list)."
-                        ) from exc
-                    return parsed
+                        if isinstance(parsed, list):
+                            return parsed
+                    except json.JSONDecodeError:
+                        pass
+
+                    # Try 2: LLMs sometimes embed real newline/tab chars
+                    # inside JSON string values. Re-escape only un-escaped
+                    # control characters (don't double-escape existing \\n).
+                    import re as _re
+
+                    # Replace real control chars that aren't already preceded
+                    # by a backslash with their JSON escape sequence.
+                    sanitized = _re.sub(r"(?<!\\)\n", r"\\n", raw)
+                    sanitized = _re.sub(r"(?<!\\)\r", r"\\r", sanitized)
+                    sanitized = _re.sub(r"(?<!\\)\t", r"\\t", sanitized)
+                    try:
+                        parsed = json.loads(sanitized)
+                        if isinstance(parsed, list):
+                            return parsed
+                    except json.JSONDecodeError:
+                        pass
+
+                    # All attempts failed — return a sentinel list with one
+                    # item so Pydantic doesn't crash the tool.  The patch
+                    # handler will see the _parse_error flag and report a
+                    # friendly message back to the LLM.
+                    return [{"_parse_error": raw[:500]}]
                 if isinstance(value, tuple):
                     return list(value)
                 return value
@@ -4957,7 +5078,24 @@ except Exception as e:
                 payload["warning"] = (
                     "This workspace has dashboard/main.ts. For dashboard behavior changes, edit dashboard/* files (especially dashboard/main.ts and imported modules) instead of index.html."
                 )
-            return json.dumps(payload, indent=2)
+
+            # Build a human-readable response so the LLM sees real
+            # newlines (not JSON-escaped \\n) and reproduces them
+            # correctly when writing back via patch/upsert tools.
+            content = payload.pop("content", "")
+            meta = payload.pop("_meta", None)
+            warning = payload.pop("warning", None)
+
+            header_parts: list[str] = []
+            header_parts.append(f"path: {payload.get('path', normalized_path)}")
+            if meta:
+                for mk, mv in meta.items():
+                    header_parts.append(f"{mk}: {mv}")
+            if warning:
+                header_parts.append(f"warning: {warning}")
+
+            header = "\n".join(header_parts)
+            return f"{header}\n---\n{content}"
 
         async def delete_userspace_file(path: str, reason: str = "", **_: Any) -> str:
             del reason
@@ -5029,6 +5167,13 @@ except Exception as e:
                     if isinstance(item, BaseModel)
                     else item
                 )
+                # Handle parse-error sentinel from _coerce_replacements
+                if isinstance(payload, dict) and "_parse_error" in payload:
+                    raise ToolException(
+                        "Could not parse 'replacements'. Please provide replacements "
+                        "as a JSON array of objects with old_text/new_text fields, "
+                        "using real newline characters (not escaped \\n sequences)."
+                    )
                 parsed_replacements.append(
                     PatchUserSpaceFileInput.ReplacementInput.model_validate(payload)
                 )
@@ -6690,10 +6835,18 @@ except Exception as e:
                         if chunk:
                             # Extract reasoning/thinking content from additional_kwargs
                             # Ollama with reasoning=True puts thinking in additional_kwargs.reasoning_content
-                            if hasattr(chunk, "additional_kwargs") and chunk.additional_kwargs:
-                                reasoning_text = chunk.additional_kwargs.get("reasoning_content")
+                            if (
+                                hasattr(chunk, "additional_kwargs")
+                                and chunk.additional_kwargs
+                            ):
+                                reasoning_text = chunk.additional_kwargs.get(
+                                    "reasoning_content"
+                                )
                                 if reasoning_text:
-                                    yield {"type": "reasoning", "content": reasoning_text}
+                                    yield {
+                                        "type": "reasoning",
+                                        "content": reasoning_text,
+                                    }
 
                             if hasattr(chunk, "content") and chunk.content:
                                 content = chunk.content
@@ -6703,9 +6856,14 @@ except Exception as e:
                                         if isinstance(block, dict):
                                             block_type = block.get("type", "")
                                             if block_type == "thinking":
-                                                thinking_text = block.get("thinking", "")
+                                                thinking_text = block.get(
+                                                    "thinking", ""
+                                                )
                                                 if thinking_text:
-                                                    yield {"type": "reasoning", "content": thinking_text}
+                                                    yield {
+                                                        "type": "reasoning",
+                                                        "content": thinking_text,
+                                                    }
                                             elif block_type == "text":
                                                 text = block.get("text", "")
                                                 if text:
@@ -6756,7 +6914,9 @@ except Exception as e:
                     # Extract reasoning/thinking content from additional_kwargs
                     # Ollama with reasoning=True puts thinking in additional_kwargs.reasoning_content
                     if hasattr(chunk, "additional_kwargs") and chunk.additional_kwargs:
-                        reasoning_text = chunk.additional_kwargs.get("reasoning_content")
+                        reasoning_text = chunk.additional_kwargs.get(
+                            "reasoning_content"
+                        )
                         if reasoning_text:
                             yield {"type": "reasoning", "content": reasoning_text}
 
@@ -6770,7 +6930,10 @@ except Exception as e:
                                     if block_type == "thinking":
                                         thinking_text = block.get("thinking", "")
                                         if thinking_text:
-                                            yield {"type": "reasoning", "content": thinking_text}
+                                            yield {
+                                                "type": "reasoning",
+                                                "content": thinking_text,
+                                            }
                                     elif block_type == "text":
                                         text = block.get("text", "")
                                         if text:
