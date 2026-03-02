@@ -1307,6 +1307,22 @@
   --tool-call-font-code: var(--text-xs);
 }
 
+.chat-tool-calls:has(.tool-call-chart),
+.chat-tool-calls:has(.tool-call-datatable) {
+  width: 100%;
+}
+
+.chat-message-assistant:has(.tool-call-chart),
+.chat-message-assistant:has(.tool-call-datatable) {
+  width: 100%;
+  max-width: 100%;
+}
+
+.chat-message-assistant:has(.tool-call-chart) .chat-message-content,
+.chat-message-assistant:has(.tool-call-datatable) .chat-message-content {
+  width: 100%;
+}
+
 .tool-call {
   border: 1px solid var(--color-border);
   border-radius: var(--tool-call-radius-lg);
