@@ -2,6 +2,13 @@
   "python.defaultInterpreterPath": "./.venv/bin/python",
   "python.languageServer": "Pylance",
   "python.analysis.typeCheckingMode": "basic",
+  "python.analysis.exclude": [
+    "**/.venv/**",
+    "**/__pycache__/**",
+    "**/node_modules/**",
+    "**/.data/**",
+    "**/dist/**"
+  ],
   "python.analysis.diagnosticSeverityOverrides": {
     "reportMissingImports": "warning",
     "reportPrivateUsage": "none"
@@ -32,6 +39,16 @@
   "files.exclude": {
     "**/__pycache__": true,
     "**/.pytest_cache": true
+  },
+  "files.watcherExclude": {
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true,
+    "**/.venv/**": true,
+    "**/node_modules/**": true,
+    "**/.data/**": true,
+    "**/.data/_userspace/**": true,
+    "**/dist/**": true,
+    "**/__pycache__/**": true
   },
   "files.associations": {
     "*.py": "python",
