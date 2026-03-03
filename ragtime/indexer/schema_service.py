@@ -516,6 +516,18 @@ class SchemaIndexerService:
     # Type for optional progress callback: (total_discovered, introspected_count, current_table_name) -> Awaitable
     IntrospectionCallback = Callable[[int, int, str], Awaitable[None]]
 
+    @staticmethod
+    def _is_permission_error(exc: Exception | str) -> bool:
+        """Best-effort check for permission-related database errors."""
+        msg = str(exc).lower()
+        return (
+            "permission denied" in msg
+            or "access denied" in msg
+            or "not authorized" in msg
+            or "insufficient privilege" in msg
+            or "the select permission was denied" in msg
+        )
+
     async def introspect_schema(
         self,
         tool_type: str,
@@ -598,18 +610,33 @@ class SchemaIndexerService:
         """
 
         # Query tables and regular views from information_schema
+        # Use catalog joins (no ::regclass casts) to avoid schema permission
+        # errors for inaccessible schemas aborting the entire query.
         tables_query = """
         SELECT
             t.table_schema,
             t.table_name,
             t.table_type,
-            pg_catalog.obj_description(
-                (quote_ident(t.table_schema) || '.' || quote_ident(t.table_name))::regclass,
-                'pg_class'
-            ) as table_comment,
-            (SELECT reltuples::bigint FROM pg_class
-             WHERE oid = (quote_ident(t.table_schema) || '.' || quote_ident(t.table_name))::regclass
-            ) as row_estimate
+            pg_catalog.obj_description(c.oid, 'pg_class') as table_comment,
+            c.reltuples::bigint as row_estimate
+        FROM information_schema.tables t
+        LEFT JOIN pg_catalog.pg_namespace n
+            ON n.nspname = t.table_schema
+        LEFT JOIN pg_catalog.pg_class c
+            ON c.relnamespace = n.oid
+            AND c.relname = t.table_name
+            AND c.relkind IN ('r', 'p', 'v', 'f')
+        WHERE t.table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+        ORDER BY t.table_schema, t.table_name
+        """
+
+        tables_query_fallback = """
+        SELECT
+            t.table_schema,
+            t.table_name,
+            t.table_type,
+            NULL as table_comment,
+            NULL as row_estimate
         FROM information_schema.tables t
         WHERE t.table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
         ORDER BY t.table_schema, t.table_name
@@ -635,12 +662,42 @@ class SchemaIndexerService:
 
         try:
             # Discover all tables, views, and materialized views
-            table_rows = await self._execute_postgres_query(
-                tables_query, host, port, user, password, database, container
-            )
-            matview_rows = await self._execute_postgres_query(
-                matview_query, host, port, user, password, database, container
-            )
+            try:
+                table_rows = await self._execute_postgres_query(
+                    tables_query, host, port, user, password, database, container
+                )
+            except Exception as e:
+                if self._is_permission_error(e):
+                    logger.warning(
+                        "PostgreSQL table discovery hit permission restrictions; "
+                        "retrying with reduced metadata query: %s",
+                        e,
+                    )
+                    table_rows = await self._execute_postgres_query(
+                        tables_query_fallback,
+                        host,
+                        port,
+                        user,
+                        password,
+                        database,
+                        container,
+                    )
+                else:
+                    raise
+
+            try:
+                matview_rows = await self._execute_postgres_query(
+                    matview_query, host, port, user, password, database, container
+                )
+            except Exception as e:
+                if self._is_permission_error(e):
+                    logger.warning(
+                        "Skipping PostgreSQL materialized view discovery due to permission restrictions: %s",
+                        e,
+                    )
+                    matview_rows = []
+                else:
+                    raise
 
             # Combine and deduplicate (matviews won't overlap with info_schema)
             all_rows = table_rows + matview_rows
@@ -654,6 +711,8 @@ class SchemaIndexerService:
             # Report initial discovery count
             if on_progress and total_discovered > 0:
                 await on_progress(total_discovered, 0, "")
+
+            skipped_objects: List[str] = []
 
             for idx, row in enumerate(all_rows):
                 schema = row.get("table_schema", "public")
@@ -672,50 +731,102 @@ class SchemaIndexerService:
                 else:
                     table_type = "TABLE"
 
-                # Get columns for this table/view
-                columns = await self._get_postgres_columns(
-                    schema, table_name, host, port, user, password, database, container
-                )
-
-                # Get primary key (not applicable for views, but query is safe)
-                pk = await self._get_postgres_primary_key(
-                    schema, table_name, host, port, user, password, database, container
-                )
-
-                # Get foreign keys
-                fks = await self._get_postgres_foreign_keys(
-                    schema, table_name, host, port, user, password, database, container
-                )
-
-                # Get indexes (materialized views can have indexes)
-                indexes = await self._get_postgres_indexes(
-                    schema, table_name, host, port, user, password, database, container
-                )
-
-                # Get check constraints
-                check_constraints = await self._get_postgres_check_constraints(
-                    schema, table_name, host, port, user, password, database, container
-                )
-
-                tables.append(
-                    TableSchemaInfo(
-                        table_schema=schema,
-                        table_name=table_name,
-                        full_name=full_name,
-                        table_type=table_type,
-                        table_comment=table_comment or None,
-                        columns=columns,
-                        primary_key=pk,
-                        foreign_keys=fks,
-                        indexes=indexes,
-                        check_constraints=check_constraints,
-                        row_count_estimate=int(row_estimate) if row_estimate else None,
+                try:
+                    # Get columns for this table/view
+                    columns = await self._get_postgres_columns(
+                        schema,
+                        table_name,
+                        host,
+                        port,
+                        user,
+                        password,
+                        database,
+                        container,
                     )
-                )
+
+                    # Get primary key (not applicable for views, but query is safe)
+                    pk = await self._get_postgres_primary_key(
+                        schema,
+                        table_name,
+                        host,
+                        port,
+                        user,
+                        password,
+                        database,
+                        container,
+                    )
+
+                    # Get foreign keys
+                    fks = await self._get_postgres_foreign_keys(
+                        schema,
+                        table_name,
+                        host,
+                        port,
+                        user,
+                        password,
+                        database,
+                        container,
+                    )
+
+                    # Get indexes (materialized views can have indexes)
+                    indexes = await self._get_postgres_indexes(
+                        schema,
+                        table_name,
+                        host,
+                        port,
+                        user,
+                        password,
+                        database,
+                        container,
+                    )
+
+                    # Get check constraints
+                    check_constraints = await self._get_postgres_check_constraints(
+                        schema,
+                        table_name,
+                        host,
+                        port,
+                        user,
+                        password,
+                        database,
+                        container,
+                    )
+
+                    tables.append(
+                        TableSchemaInfo(
+                            table_schema=schema,
+                            table_name=table_name,
+                            full_name=full_name,
+                            table_type=table_type,
+                            table_comment=table_comment or None,
+                            columns=columns,
+                            primary_key=pk,
+                            foreign_keys=fks,
+                            indexes=indexes,
+                            check_constraints=check_constraints,
+                            row_count_estimate=(
+                                int(row_estimate) if row_estimate else None
+                            ),
+                        )
+                    )
+                except Exception as e:
+                    skipped_objects.append(full_name)
+                    logger.warning(
+                        "Skipping PostgreSQL object %s during schema introspection: %s",
+                        full_name,
+                        e,
+                    )
 
                 # Report progress after each table
                 if on_progress:
                     await on_progress(total_discovered, idx + 1, full_name)
+
+            if skipped_objects:
+                logger.warning(
+                    "PostgreSQL schema introspection skipped %d/%d objects due to per-object errors",
+                    len(skipped_objects),
+                    total_discovered,
+                )
 
             logger.info(
                 f"Introspected {len(tables)} tables/views/materialized views from PostgreSQL"
@@ -780,7 +891,7 @@ class SchemaIndexerService:
             raise RuntimeError(f"PostgreSQL query failed: {result.stderr}")
 
         # Parse tab-separated output
-        rows = []
+        rows: List[Dict[str, Any]] = []
         output = result.stdout.strip()
         if not output:
             return rows
@@ -1204,6 +1315,8 @@ class SchemaIndexerService:
                 table_rows = cursor.fetchall()
                 result_tables = []
 
+                skipped_objects: List[str] = []
+
                 for row in table_rows:
                     schema = row["table_schema"]
                     table_name = row["table_name"]
@@ -1215,152 +1328,169 @@ class SchemaIndexerService:
                         table_comment = table_comment.decode("utf-8", errors="replace")
                     full_name = f"{schema}.{table_name}"
 
-                    # Get columns with descriptions
-                    cursor.execute(
-                        f"""
-                        SELECT
-                            c.name AS column_name,
-                            t.name + CASE
-                                WHEN t.name IN ('varchar', 'nvarchar', 'char', 'nchar')
-                                    THEN '(' + CASE WHEN c.max_length = -1 THEN 'MAX' ELSE CAST(c.max_length AS VARCHAR) END + ')'
-                                WHEN t.name IN ('decimal', 'numeric')
-                                    THEN '(' + CAST(c.precision AS VARCHAR) + ',' + CAST(c.scale AS VARCHAR) + ')'
-                                ELSE ''
-                            END AS data_type,
-                            c.is_nullable,
-                            OBJECT_DEFINITION(c.default_object_id) AS column_default,
-                            ep.value AS column_description
-                        FROM sys.columns c
-                        INNER JOIN sys.types t ON c.user_type_id = t.user_type_id
-                        LEFT JOIN sys.extended_properties ep
-                            ON ep.major_id = c.object_id
-                            AND ep.minor_id = c.column_id
-                            AND ep.name = 'MS_Description'
-                        WHERE c.object_id = OBJECT_ID('{schema}.{table_name}')
-                        ORDER BY c.column_id
-                    """
-                    )
-                    columns = []
-                    for c in cursor.fetchall():
-                        col_desc = c.get("column_description")
-                        if isinstance(col_desc, bytes):
-                            col_desc = col_desc.decode("utf-8", errors="replace")
-                        columns.append(
+                    try:
+                        # Get columns with descriptions
+                        cursor.execute(
+                            f"""
+                            SELECT
+                                c.name AS column_name,
+                                t.name + CASE
+                                    WHEN t.name IN ('varchar', 'nvarchar', 'char', 'nchar')
+                                        THEN '(' + CASE WHEN c.max_length = -1 THEN 'MAX' ELSE CAST(c.max_length AS VARCHAR) END + ')'
+                                    WHEN t.name IN ('decimal', 'numeric')
+                                        THEN '(' + CAST(c.precision AS VARCHAR) + ',' + CAST(c.scale AS VARCHAR) + ')'
+                                    ELSE ''
+                                END AS data_type,
+                                c.is_nullable,
+                                OBJECT_DEFINITION(c.default_object_id) AS column_default,
+                                ep.value AS column_description
+                            FROM sys.columns c
+                            INNER JOIN sys.types t ON c.user_type_id = t.user_type_id
+                            LEFT JOIN sys.extended_properties ep
+                                ON ep.major_id = c.object_id
+                                AND ep.minor_id = c.column_id
+                                AND ep.name = 'MS_Description'
+                            WHERE c.object_id = OBJECT_ID('{schema}.{table_name}')
+                            ORDER BY c.column_id
+                        """
+                        )
+                        columns = []
+                        for c in cursor.fetchall():
+                            col_desc = c.get("column_description")
+                            if isinstance(col_desc, bytes):
+                                col_desc = col_desc.decode("utf-8", errors="replace")
+                            columns.append(
+                                {
+                                    "name": c["column_name"],
+                                    "type": c["data_type"],
+                                    "nullable": c["is_nullable"],
+                                    "default": c["column_default"],
+                                    "description": col_desc or None,
+                                }
+                            )
+
+                        # Get primary key
+                        cursor.execute(
+                            f"""
+                            SELECT col.name AS column_name
+                            FROM sys.indexes idx
+                            INNER JOIN sys.index_columns ic ON idx.object_id = ic.object_id AND idx.index_id = ic.index_id
+                            INNER JOIN sys.columns col ON ic.object_id = col.object_id AND ic.column_id = col.column_id
+                            WHERE idx.object_id = OBJECT_ID('{schema}.{table_name}')
+                                AND idx.is_primary_key = 1
+                            ORDER BY ic.key_ordinal
+                        """
+                        )
+                        pk = [r["column_name"] for r in cursor.fetchall()]
+
+                        # Get foreign keys
+                        cursor.execute(
+                            f"""
+                            SELECT
+                                fk.name AS constraint_name,
+                                COL_NAME(fkc.parent_object_id, fkc.parent_column_id) AS column_name,
+                                OBJECT_SCHEMA_NAME(fkc.referenced_object_id) + '.' + OBJECT_NAME(fkc.referenced_object_id) AS references_table,
+                                COL_NAME(fkc.referenced_object_id, fkc.referenced_column_id) AS references_column
+                            FROM sys.foreign_keys fk
+                            INNER JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
+                            WHERE fk.parent_object_id = OBJECT_ID('{schema}.{table_name}')
+                        """
+                        )
+
+                        fk_map: Dict[str, dict] = {}
+                        for r in cursor.fetchall():
+                            name = r["constraint_name"]
+                            if name not in fk_map:
+                                fk_map[name] = {
+                                    "name": name,
+                                    "columns": [],
+                                    "references_table": r["references_table"],
+                                    "references_columns": [],
+                                }
+                            fk_map[name]["columns"].append(r["column_name"])
+                            fk_map[name]["references_columns"].append(
+                                r["references_column"]
+                            )
+                        fks = list(fk_map.values())
+
+                        # Get indexes (non-primary key)
+                        cursor.execute(
+                            f"""
+                            SELECT
+                                idx.name AS index_name,
+                                idx.is_unique,
+                                STRING_AGG(col.name, ',') WITHIN GROUP (ORDER BY ic.key_ordinal) AS columns
+                            FROM sys.indexes idx
+                            INNER JOIN sys.index_columns ic ON idx.object_id = ic.object_id AND idx.index_id = ic.index_id
+                            INNER JOIN sys.columns col ON ic.object_id = col.object_id AND ic.column_id = col.column_id
+                            WHERE idx.object_id = OBJECT_ID('{schema}.{table_name}')
+                                AND idx.is_primary_key = 0
+                                AND idx.name IS NOT NULL
+                            GROUP BY idx.name, idx.is_unique
+                        """
+                        )
+                        indexes = [
                             {
-                                "name": c["column_name"],
-                                "type": c["data_type"],
-                                "nullable": c["is_nullable"],
-                                "default": c["column_default"],
-                                "description": col_desc or None,
+                                "name": r["index_name"],
+                                "unique": r["is_unique"],
+                                "columns": (
+                                    r["columns"].split(",") if r["columns"] else []
+                                ),
                             }
+                            for r in cursor.fetchall()
+                        ]
+
+                        # Get check constraints
+                        cursor.execute(
+                            f"""
+                            SELECT
+                                cc.name AS constraint_name,
+                                cc.definition AS constraint_definition
+                            FROM sys.check_constraints cc
+                            WHERE cc.parent_object_id = OBJECT_ID('{schema}.{table_name}')
+                              AND cc.is_disabled = 0
+                        """
                         )
-
-                    # Get primary key
-                    cursor.execute(
-                        f"""
-                        SELECT col.name AS column_name
-                        FROM sys.indexes idx
-                        INNER JOIN sys.index_columns ic ON idx.object_id = ic.object_id AND idx.index_id = ic.index_id
-                        INNER JOIN sys.columns col ON ic.object_id = col.object_id AND ic.column_id = col.column_id
-                        WHERE idx.object_id = OBJECT_ID('{schema}.{table_name}')
-                            AND idx.is_primary_key = 1
-                        ORDER BY ic.key_ordinal
-                    """
-                    )
-                    pk = [r["column_name"] for r in cursor.fetchall()]
-
-                    # Get foreign keys
-                    cursor.execute(
-                        f"""
-                        SELECT
-                            fk.name AS constraint_name,
-                            COL_NAME(fkc.parent_object_id, fkc.parent_column_id) AS column_name,
-                            OBJECT_SCHEMA_NAME(fkc.referenced_object_id) + '.' + OBJECT_NAME(fkc.referenced_object_id) AS references_table,
-                            COL_NAME(fkc.referenced_object_id, fkc.referenced_column_id) AS references_column
-                        FROM sys.foreign_keys fk
-                        INNER JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
-                        WHERE fk.parent_object_id = OBJECT_ID('{schema}.{table_name}')
-                    """
-                    )
-
-                    fk_map: Dict[str, dict] = {}
-                    for r in cursor.fetchall():
-                        name = r["constraint_name"]
-                        if name not in fk_map:
-                            fk_map[name] = {
-                                "name": name,
-                                "columns": [],
-                                "references_table": r["references_table"],
-                                "references_columns": [],
+                        check_constraints = [
+                            {
+                                "name": r["constraint_name"],
+                                "definition": r["constraint_definition"],
                             }
-                        fk_map[name]["columns"].append(r["column_name"])
-                        fk_map[name]["references_columns"].append(
-                            r["references_column"]
+                            for r in cursor.fetchall()
+                        ]
+
+                        result_tables.append(
+                            TableSchemaInfo(
+                                table_schema=schema,
+                                table_name=table_name,
+                                full_name=full_name,
+                                table_type=table_type,
+                                table_comment=(
+                                    str(table_comment) if table_comment else None
+                                ),
+                                columns=columns,
+                                primary_key=pk,
+                                foreign_keys=fks,
+                                indexes=indexes,
+                                check_constraints=check_constraints,
+                                row_count_estimate=(
+                                    int(row_estimate) if row_estimate else None
+                                ),
+                            )
                         )
-                    fks = list(fk_map.values())
-
-                    # Get indexes (non-primary key)
-                    cursor.execute(
-                        f"""
-                        SELECT
-                            idx.name AS index_name,
-                            idx.is_unique,
-                            STRING_AGG(col.name, ',') WITHIN GROUP (ORDER BY ic.key_ordinal) AS columns
-                        FROM sys.indexes idx
-                        INNER JOIN sys.index_columns ic ON idx.object_id = ic.object_id AND idx.index_id = ic.index_id
-                        INNER JOIN sys.columns col ON ic.object_id = col.object_id AND ic.column_id = col.column_id
-                        WHERE idx.object_id = OBJECT_ID('{schema}.{table_name}')
-                            AND idx.is_primary_key = 0
-                            AND idx.name IS NOT NULL
-                        GROUP BY idx.name, idx.is_unique
-                    """
-                    )
-                    indexes = [
-                        {
-                            "name": r["index_name"],
-                            "unique": r["is_unique"],
-                            "columns": r["columns"].split(",") if r["columns"] else [],
-                        }
-                        for r in cursor.fetchall()
-                    ]
-
-                    # Get check constraints
-                    cursor.execute(
-                        f"""
-                        SELECT
-                            cc.name AS constraint_name,
-                            cc.definition AS constraint_definition
-                        FROM sys.check_constraints cc
-                        WHERE cc.parent_object_id = OBJECT_ID('{schema}.{table_name}')
-                          AND cc.is_disabled = 0
-                    """
-                    )
-                    check_constraints = [
-                        {
-                            "name": r["constraint_name"],
-                            "definition": r["constraint_definition"],
-                        }
-                        for r in cursor.fetchall()
-                    ]
-
-                    result_tables.append(
-                        TableSchemaInfo(
-                            table_schema=schema,
-                            table_name=table_name,
-                            full_name=full_name,
-                            table_type=table_type,
-                            table_comment=(
-                                str(table_comment) if table_comment else None
-                            ),
-                            columns=columns,
-                            primary_key=pk,
-                            foreign_keys=fks,
-                            indexes=indexes,
-                            check_constraints=check_constraints,
-                            row_count_estimate=(
-                                int(row_estimate) if row_estimate else None
-                            ),
+                    except Exception as e:
+                        skipped_objects.append(full_name)
+                        logger.warning(
+                            "Skipping MSSQL object %s during schema introspection: %s",
+                            full_name,
+                            e,
                         )
+
+                if skipped_objects:
+                    logger.warning(
+                        "MSSQL schema introspection skipped %d/%d objects due to per-object errors",
+                        len(skipped_objects),
+                        len(table_rows),
                     )
 
                 conn.close()
@@ -1454,6 +1584,8 @@ class SchemaIndexerService:
                 table_rows = cursor.fetchall()
                 result_tables: List[TableSchemaInfo] = []
 
+                skipped_objects: List[str] = []
+
                 for row in table_rows:
                     schema = row["table_schema"]
                     table_name = row["table_name"]
@@ -1468,150 +1600,167 @@ class SchemaIndexerService:
                     # Normalize table type
                     table_type = "VIEW" if "VIEW" in table_type_raw.upper() else "TABLE"
 
-                    # Get columns
-                    cursor.execute(
-                        """
-                        SELECT
-                            COLUMN_NAME AS column_name,
-                            COLUMN_TYPE AS data_type,
-                            IS_NULLABLE AS is_nullable,
-                            COLUMN_DEFAULT AS column_default,
-                            COLUMN_KEY AS column_key,
-                            EXTRA AS extra,
-                            COLUMN_COMMENT AS column_comment
-                        FROM information_schema.COLUMNS
-                        WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
-                        ORDER BY ORDINAL_POSITION
-                        """,
-                        (schema, table_name),
-                    )
-                    columns = [
-                        {
-                            "name": c["column_name"],
-                            "type": c["data_type"],
-                            "nullable": c["is_nullable"] == "YES",
-                            "default": c["column_default"],
-                            "comment": c.get("column_comment") or None,
-                        }
-                        for c in cursor.fetchall()
-                    ]
-
-                    # Get primary key columns
-                    cursor.execute(
-                        """
-                        SELECT COLUMN_NAME
-                        FROM information_schema.KEY_COLUMN_USAGE
-                        WHERE TABLE_SCHEMA = %s
-                          AND TABLE_NAME = %s
-                          AND CONSTRAINT_NAME = 'PRIMARY'
-                        ORDER BY ORDINAL_POSITION
-                        """,
-                        (schema, table_name),
-                    )
-                    pk = [r["COLUMN_NAME"] for r in cursor.fetchall()]
-
-                    # Get foreign keys
-                    cursor.execute(
-                        """
-                        SELECT
-                            kcu.CONSTRAINT_NAME AS constraint_name,
-                            kcu.COLUMN_NAME AS column_name,
-                            kcu.REFERENCED_TABLE_SCHEMA AS ref_schema,
-                            kcu.REFERENCED_TABLE_NAME AS ref_table,
-                            kcu.REFERENCED_COLUMN_NAME AS ref_column
-                        FROM information_schema.KEY_COLUMN_USAGE kcu
-                        WHERE kcu.TABLE_SCHEMA = %s
-                          AND kcu.TABLE_NAME = %s
-                          AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
-                        ORDER BY kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION
-                        """,
-                        (schema, table_name),
-                    )
-
-                    fk_map: Dict[str, dict] = {}
-                    for r in cursor.fetchall():
-                        name = r["constraint_name"]
-                        ref_table = f"{r['ref_schema']}.{r['ref_table']}"
-                        if name not in fk_map:
-                            fk_map[name] = {
-                                "name": name,
-                                "columns": [],
-                                "references_table": ref_table,
-                                "references_columns": [],
-                            }
-                        fk_map[name]["columns"].append(r["column_name"])
-                        fk_map[name]["references_columns"].append(r["ref_column"])
-                    fks = list(fk_map.values())
-
-                    # Get indexes (non-primary key)
-                    cursor.execute(
-                        """
-                        SELECT
-                            INDEX_NAME AS index_name,
-                            NON_UNIQUE AS non_unique,
-                            GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS columns
-                        FROM information_schema.STATISTICS
-                        WHERE TABLE_SCHEMA = %s
-                          AND TABLE_NAME = %s
-                          AND INDEX_NAME != 'PRIMARY'
-                        GROUP BY INDEX_NAME, NON_UNIQUE
-                        """,
-                        (schema, table_name),
-                    )
-                    indexes = [
-                        {
-                            "name": r["index_name"],
-                            "unique": r["non_unique"] == 0,
-                            "columns": r["columns"].split(",") if r["columns"] else [],
-                        }
-                        for r in cursor.fetchall()
-                    ]
-
-                    # Get check constraints (MySQL 8.0+)
-                    check_constraints: list[dict] = []
                     try:
+                        # Get columns
                         cursor.execute(
                             """
                             SELECT
-                                tc.CONSTRAINT_NAME AS constraint_name,
-                                cc.CHECK_CLAUSE AS constraint_definition
-                            FROM information_schema.TABLE_CONSTRAINTS tc
-                            JOIN information_schema.CHECK_CONSTRAINTS cc
-                                ON tc.CONSTRAINT_SCHEMA = cc.CONSTRAINT_SCHEMA
-                                AND tc.CONSTRAINT_NAME = cc.CONSTRAINT_NAME
-                            WHERE tc.TABLE_SCHEMA = %s
-                              AND tc.TABLE_NAME = %s
-                              AND tc.CONSTRAINT_TYPE = 'CHECK'
+                                COLUMN_NAME AS column_name,
+                                COLUMN_TYPE AS data_type,
+                                IS_NULLABLE AS is_nullable,
+                                COLUMN_DEFAULT AS column_default,
+                                COLUMN_KEY AS column_key,
+                                EXTRA AS extra,
+                                COLUMN_COMMENT AS column_comment
+                            FROM information_schema.COLUMNS
+                            WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
+                            ORDER BY ORDINAL_POSITION
                             """,
                             (schema, table_name),
                         )
-                        check_constraints = [
+                        columns = [
                             {
-                                "name": r["constraint_name"],
-                                "definition": r["constraint_definition"],
+                                "name": c["column_name"],
+                                "type": c["data_type"],
+                                "nullable": c["is_nullable"] == "YES",
+                                "default": c["column_default"],
+                                "comment": c.get("column_comment") or None,
+                            }
+                            for c in cursor.fetchall()
+                        ]
+
+                        # Get primary key columns
+                        cursor.execute(
+                            """
+                            SELECT COLUMN_NAME
+                            FROM information_schema.KEY_COLUMN_USAGE
+                            WHERE TABLE_SCHEMA = %s
+                              AND TABLE_NAME = %s
+                              AND CONSTRAINT_NAME = 'PRIMARY'
+                            ORDER BY ORDINAL_POSITION
+                            """,
+                            (schema, table_name),
+                        )
+                        pk = [r["COLUMN_NAME"] for r in cursor.fetchall()]
+
+                        # Get foreign keys
+                        cursor.execute(
+                            """
+                            SELECT
+                                kcu.CONSTRAINT_NAME AS constraint_name,
+                                kcu.COLUMN_NAME AS column_name,
+                                kcu.REFERENCED_TABLE_SCHEMA AS ref_schema,
+                                kcu.REFERENCED_TABLE_NAME AS ref_table,
+                                kcu.REFERENCED_COLUMN_NAME AS ref_column
+                            FROM information_schema.KEY_COLUMN_USAGE kcu
+                            WHERE kcu.TABLE_SCHEMA = %s
+                              AND kcu.TABLE_NAME = %s
+                              AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
+                            ORDER BY kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION
+                            """,
+                            (schema, table_name),
+                        )
+
+                        fk_map: Dict[str, dict] = {}
+                        for r in cursor.fetchall():
+                            name = r["constraint_name"]
+                            ref_table = f"{r['ref_schema']}.{r['ref_table']}"
+                            if name not in fk_map:
+                                fk_map[name] = {
+                                    "name": name,
+                                    "columns": [],
+                                    "references_table": ref_table,
+                                    "references_columns": [],
+                                }
+                            fk_map[name]["columns"].append(r["column_name"])
+                            fk_map[name]["references_columns"].append(r["ref_column"])
+                        fks = list(fk_map.values())
+
+                        # Get indexes (non-primary key)
+                        cursor.execute(
+                            """
+                            SELECT
+                                INDEX_NAME AS index_name,
+                                NON_UNIQUE AS non_unique,
+                                GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS columns
+                            FROM information_schema.STATISTICS
+                            WHERE TABLE_SCHEMA = %s
+                              AND TABLE_NAME = %s
+                              AND INDEX_NAME != 'PRIMARY'
+                            GROUP BY INDEX_NAME, NON_UNIQUE
+                            """,
+                            (schema, table_name),
+                        )
+                        indexes = [
+                            {
+                                "name": r["index_name"],
+                                "unique": r["non_unique"] == 0,
+                                "columns": (
+                                    r["columns"].split(",") if r["columns"] else []
+                                ),
                             }
                             for r in cursor.fetchall()
                         ]
-                    except Exception:
-                        # CHECK_CONSTRAINTS not available on MySQL < 8.0.16
-                        pass
 
-                    result_tables.append(
-                        TableSchemaInfo(
-                            table_schema=schema,
-                            table_name=table_name,
-                            full_name=full_name,
-                            table_type=table_type,
-                            table_comment=table_comment,
-                            columns=columns,
-                            primary_key=pk,
-                            foreign_keys=fks,
-                            indexes=indexes,
-                            check_constraints=check_constraints,
-                            row_count_estimate=(
-                                int(row_estimate) if row_estimate else None
-                            ),
+                        # Get check constraints (MySQL 8.0+)
+                        check_constraints: list[dict] = []
+                        try:
+                            cursor.execute(
+                                """
+                                SELECT
+                                    tc.CONSTRAINT_NAME AS constraint_name,
+                                    cc.CHECK_CLAUSE AS constraint_definition
+                                FROM information_schema.TABLE_CONSTRAINTS tc
+                                JOIN information_schema.CHECK_CONSTRAINTS cc
+                                    ON tc.CONSTRAINT_SCHEMA = cc.CONSTRAINT_SCHEMA
+                                    AND tc.CONSTRAINT_NAME = cc.CONSTRAINT_NAME
+                                WHERE tc.TABLE_SCHEMA = %s
+                                  AND tc.TABLE_NAME = %s
+                                  AND tc.CONSTRAINT_TYPE = 'CHECK'
+                                """,
+                                (schema, table_name),
+                            )
+                            check_constraints = [
+                                {
+                                    "name": r["constraint_name"],
+                                    "definition": r["constraint_definition"],
+                                }
+                                for r in cursor.fetchall()
+                            ]
+                        except Exception:
+                            # CHECK_CONSTRAINTS not available on MySQL < 8.0.16
+                            pass
+
+                        result_tables.append(
+                            TableSchemaInfo(
+                                table_schema=schema,
+                                table_name=table_name,
+                                full_name=full_name,
+                                table_type=table_type,
+                                table_comment=table_comment,
+                                columns=columns,
+                                primary_key=pk,
+                                foreign_keys=fks,
+                                indexes=indexes,
+                                check_constraints=check_constraints,
+                                row_count_estimate=(
+                                    int(row_estimate) if row_estimate else None
+                                ),
+                            )
                         )
+                    except Exception as e:
+                        skipped_objects.append(full_name)
+                        logger.warning(
+                            "Skipping MySQL/MariaDB object %s during schema introspection: %s",
+                            full_name,
+                            e,
+                        )
+
+                if skipped_objects:
+                    logger.warning(
+                        "MySQL/MariaDB schema introspection skipped %d/%d objects due to per-object errors",
+                        len(skipped_objects),
+                        len(table_rows),
                     )
 
                 conn.close()
