@@ -1648,6 +1648,8 @@ export interface UserSpaceRuntimeStatusResponse {
   session_id?: string | null;
   devserver_running: boolean;
   devserver_port: number;
+  runtime_capabilities?: Record<string, unknown> | null;
+  runtime_has_cap_sys_admin?: boolean | null;
   preview_url?: string | null;
   last_error?: string | null;
 }

@@ -17,6 +17,25 @@ SQLITE_MANAGED_DIR_PREFIX = ".ragtime/db/"
 SQLITE_FILE_EXTENSIONS = frozenset({".sqlite", ".sqlite3", ".db", ".db3"})
 
 
+def has_cap_sys_admin() -> bool:
+    """Return True when the current process has effective CAP_SYS_ADMIN.
+
+    CAP_SYS_ADMIN is capability bit 21 in the ``CapEff`` bitmask from
+    ``/proc/self/status``.
+    """
+    try:
+        status = Path("/proc/self/status").read_text(encoding="utf-8")
+        for line in status.splitlines():
+            if not line.startswith("CapEff:"):
+                continue
+            cap_hex = line.split(":", 1)[1].strip()
+            cap_bits = int(cap_hex, 16)
+            return bool(cap_bits & (1 << 21))
+    except Exception:
+        return False
+    return False
+
+
 def normalize_file_path(
     file_path: str,
     *,

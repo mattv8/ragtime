@@ -26,6 +26,17 @@ def create_app() -> FastAPI:
         await manager.startup()
         yield
         await manager.shutdown()
+        # Also clean up local worker devserver processes (relevant when
+        # manager+worker routes are combined in the same app).
+        try:
+            from runtime.worker.service import get_worker_service
+
+            svc = get_worker_service()
+            async with svc._lock:
+                for sid in list(svc._devserver_processes.keys()):
+                    await svc._terminate_devserver_locked(sid)
+        except Exception:
+            pass
 
     application = FastAPI(
         title="Ragtime User Space Runtime Manager",

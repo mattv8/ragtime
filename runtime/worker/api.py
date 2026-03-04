@@ -8,49 +8,41 @@ import os
 import pty as pty_module
 import struct
 import termios
+from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import (
-    APIRouter,
-    FastAPI,
-    HTTPException,
-    Request,
-    WebSocket,
-    WebSocketDisconnect,
-)
+from fastapi import (APIRouter, FastAPI, HTTPException, Request, WebSocket,
+                     WebSocketDisconnect)
 from fastapi.responses import Response
 
 from runtime.auth import WorkerAuth
-from runtime.manager.models import (
-    RuntimeExecRequest,
-    RuntimeExecResponse,
-    RuntimeFileReadResponse,
-    RuntimeScreenshotRequest,
-    RuntimeScreenshotResponse,
-    WorkerHealthResponse,
-    WorkerSessionResponse,
-    WorkerStartSessionRequest,
-)
+from runtime.manager.models import (RuntimeExecRequest, RuntimeExecResponse,
+                                    RuntimeFileReadResponse,
+                                    RuntimeScreenshotRequest,
+                                    RuntimeScreenshotResponse,
+                                    WorkerHealthResponse,
+                                    WorkerSessionResponse,
+                                    WorkerStartSessionRequest)
+from runtime.worker.sandbox import (SandboxSpec, ensure_sandbox_ready,
+                                    make_sandbox_preexec, sandbox_env)
 from runtime.worker.service import get_worker_service
 
 router = APIRouter(tags=["Runtime Worker"])
 
-# Safe environment variables to forward into PTY sessions.
-_PTY_ENV_ALLOWLIST = {
-    "HOME",
-    "PATH",
-    "TERM",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "SHELL",
-    "USER",
-    "LOGNAME",
-    "HOSTNAME",
-    "PWD",
-    "RUNTIME_WORKSPACE_ROOT",
-    "INDEX_DATA_PATH",
-}
+
+def _write_sandbox_init_file(spec: SandboxSpec) -> None:
+    """Write bash init file into the sandbox rootfs.
+
+    Uses ``\\044`` (octal for ``$``) so PS1 renders a literal dollar sign
+    regardless of UID, and disables ``promptvars`` to prevent bash from
+    expanding ``$workspace`` as an empty variable.
+    """
+    init_file = spec.rootfs_path / "tmp" / ".sandbox_bashrc"
+    init_file.parent.mkdir(parents=True, exist_ok=True)
+    init_file.write_text(
+        "shopt -u promptvars\n" "PS1='sandbox\\044workspace/ '\n",
+        encoding="utf-8",
+    )
 
 
 @router.get("/worker/health", response_model=WorkerHealthResponse)
@@ -193,18 +185,44 @@ async def pty(worker_session_id: str, websocket: WebSocket):
         return
 
     await websocket.accept()
-    shell = os.environ.get("SHELL", "/bin/bash")
-    shell_command = [shell, "-i"]
-    if os.path.basename(shell).endswith("bash"):
-        shell_command = [shell, "--noprofile", "--norc", "-i"]
+    # PTY shell runs inside the workspace sandbox
+    shell = "/bin/bash"
     master_fd, slave_fd = pty_module.openpty()
-    # Only forward safe env vars into the PTY to avoid leaking secrets
-    # (e.g. RUNTIME_WORKER_AUTH_TOKEN, API keys)
-    environment = {k: v for k, v in os.environ.items() if k in _PTY_ENV_ALLOWLIST}
-    environment.setdefault("TERM", "xterm-256color")
-    user = os.environ.get("USER", "user")
-    environment["PS1"] = f"{user}$ "
+
+    # Build sandbox environment for the PTY session
+    sandbox_spec = session.sandbox_spec
+    ensure_sandbox_ready(sandbox_spec)
+
+    # Write bash init file inside the sandbox rootfs so that PS1 renders
+    # a literal "$" regardless of UID.  (\$ in PS1 shows # for root,
+    # so we use \044 octal escape + shopt -u promptvars to prevent
+    # subsequent $variable expansion.)
+    _write_sandbox_init_file(sandbox_spec)
+    shell_command = [shell, "--noprofile", "--init-file", "/tmp/.sandbox_bashrc", "-i"]
+
+    environment = sandbox_env(sandbox_spec)
+    environment["TERM"] = "xterm-256color"
+    # PS1 is set by the init file; PROMPT_COMMAND cleared to prevent
+    # any inherited prompt logic from overriding it.
     environment["PROMPT_COMMAND"] = ""
+
+    sandbox_preexec = make_sandbox_preexec(sandbox_spec, target_cwd=None)
+
+    def _pty_preexec() -> None:
+        # Enter the sandbox FIRST (unshare/chroot/chdir to target_cwd).
+        # Then create a new session and acquire the controlling terminal
+        # INSIDE the sandbox's user namespace so the kernel's terminal
+        # ownership checks are satisfied when bash later calls tcsetpgrp.
+        sandbox_preexec()
+        os.setsid()
+        try:
+            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+        except OSError:
+            pass
+        try:
+            os.tcsetpgrp(0, os.getpgrp())
+        except OSError:
+            pass
 
     try:
         process = await asyncio.create_subprocess_exec(
@@ -212,9 +230,10 @@ async def pty(worker_session_id: str, websocket: WebSocket):
             stdin=slave_fd,
             stdout=slave_fd,
             stderr=slave_fd,
-            cwd=str(session.workspace_root),
+            cwd=None,  # preexec_fn will chdir to /workspace
             env=environment,
-            start_new_session=True,
+            preexec_fn=_pty_preexec,
+            start_new_session=False,
         )
     finally:
         with contextlib.suppress(Exception):
@@ -242,6 +261,8 @@ async def pty(worker_session_id: str, websocket: WebSocket):
         while True:
             try:
                 chunk = await asyncio.to_thread(os.read, master_fd, 1024)
+            except asyncio.CancelledError:
+                break
             except OSError:
                 break
             if not chunk:
@@ -284,7 +305,7 @@ async def pty(worker_session_id: str, websocket: WebSocket):
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(process.wait(), timeout=2)
         stream_task.cancel()
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(asyncio.CancelledError, Exception):
             await stream_task
         with contextlib.suppress(Exception):
             os.close(master_fd)
@@ -294,8 +315,23 @@ def include_worker_routes(application: FastAPI) -> None:
     application.include_router(router)
 
 
+@contextlib.asynccontextmanager
+async def _worker_lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    yield
+    # On shutdown (including WatchFiles reload), terminate all devserver
+    # processes so orphaned children don't accumulate across reloads.
+    service = get_worker_service()
+    async with service._lock:
+        for sid in list(service._devserver_processes.keys()):
+            await service._terminate_devserver_locked(sid)
+
+
 def create_app() -> FastAPI:
-    application = FastAPI(title="Ragtime User Space Runtime Worker", version="0.1.0")
+    application = FastAPI(
+        title="Ragtime User Space Runtime Worker",
+        version="0.1.0",
+        lifespan=_worker_lifespan,
+    )
     include_worker_routes(application)
 
     @application.get("/health", response_model=WorkerHealthResponse)

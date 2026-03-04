@@ -228,6 +228,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const selectedFilePathRef = useRef(selectedFilePath);
   const fileContentCacheRef = useRef(fileContentCache);
   const loadWorkspaceDataRequestIdRef = useRef(0);
+  const loadRuntimeStatusRequestIdRef = useRef(0);
   const fileDirtyRef = useRef(false);
   const collabSocketRef = useRef<WebSocket | null>(null);
   const collabReconnectTimerRef = useRef<number | null>(null);
@@ -487,6 +488,8 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     }
     return session_state;
   }, [runtimeStatus]);
+
+  const runtimeCapSysAdminMissing = runtimeStatus?.runtime_has_cap_sys_admin === false;
 
   const showStartRuntimeButton = runtimeDisplayState === 'stopped' || runtimeDisplayState === 'error';
   const showRestartRuntimeButton = runtimeDisplayState === 'running';
@@ -1054,11 +1057,16 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       setRuntimeStatus(null);
       return;
     }
+    const requestId = ++loadRuntimeStatusRequestIdRef.current;
     try {
       const status = await api.getUserSpaceRuntimeDevserverStatus(activeWorkspaceId);
-      setRuntimeStatus(status);
+      if (requestId === loadRuntimeStatusRequestIdRef.current) {
+        setRuntimeStatus(status);
+      }
     } catch {
-      setRuntimeStatus(null);
+      if (requestId === loadRuntimeStatusRequestIdRef.current) {
+        setRuntimeStatus(null);
+      }
     }
   }, [activeWorkspaceId]);
 
@@ -2261,6 +2269,9 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                           aria-selected={ws.id === activeWorkspaceId}
                           className="userspace-workspace-select-btn"
                           onClick={() => {
+                            if (ws.id !== activeWorkspaceId) {
+                                setRuntimeStatus(null);
+                            }
                             setActiveWorkspaceId(ws.id);
                             setIsWorkspaceMenuOpen(false);
                             setDeleteConfirmWorkspaceId(null);
@@ -2644,6 +2655,21 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
             </div>
           ) : (
             <div className="userspace-preview-section" style={{ padding: 12 }}>
+              {runtimeCapSysAdminMissing && (
+                <div className="userspace-snapshot-item" style={{ marginBottom: 8, alignItems: 'flex-start' }}>
+                  <div
+                    className="userspace-snapshot-info"
+                    style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 4, overflow: 'visible' }}
+                  >
+                    <strong>Runtime isolation notice</strong>
+                    <span className="userspace-muted" style={{ whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
+                      Runtime is running without CAP_SYS_ADMIN. Console commands run with reduced isolation
+                      (chroot fallback). Enable CAP_SYS_ADMIN on the runtime service for full namespace +
+                      pivot_root isolation.
+                    </span>
+                  </div>
+                </div>
+              )}
               {runtimeStatus?.last_error && (
                 <div className="userspace-snapshot-item" style={{ marginBottom: 8 }}>
                   <div className="userspace-snapshot-info">

@@ -22,43 +22,31 @@ from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (
-    DB_TYPE_POSTGRES,
-    add_table_metadata_to_psql_output,
-    enforce_max_results,
-    format_query_result,
-    validate_sql_query,
-)
-from ragtime.core.ssh import (
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
+                                    add_table_metadata_to_psql_output,
+                                    enforce_max_results, format_query_result,
+                                    validate_sql_query)
+from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
+                              ssh_tunnel_config_from_dict)
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (
-    ArtifactType,
-    CreateWorkspaceRequest,
-    ExecuteComponentRequest,
-    ExecuteComponentResponse,
-    PaginatedWorkspacesResponse,
-    ShareAccessMode,
-    SqlitePersistenceMode,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-    UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot,
-    UserSpaceWorkspace,
-    UserSpaceWorkspaceShareLink,
-    UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceMember,
-    WorkspaceShareSlugAvailabilityResponse,
-)
+from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
+                                      ExecuteComponentRequest,
+                                      ExecuteComponentResponse,
+                                      PaginatedWorkspacesResponse,
+                                      ShareAccessMode, SqlitePersistenceMode,
+                                      UpdateWorkspaceMembersRequest,
+                                      UpdateWorkspaceRequest,
+                                      UpdateWorkspaceShareAccessRequest,
+                                      UpsertWorkspaceFileRequest,
+                                      UserSpaceFileInfo, UserSpaceFileResponse,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection,
+                                      UserSpaceSharedPreviewResponse,
+                                      UserSpaceSnapshot, UserSpaceWorkspace,
+                                      UserSpaceWorkspaceShareLink,
+                                      UserSpaceWorkspaceShareLinkStatus,
+                                      WorkspaceMember,
+                                      WorkspaceShareSlugAvailabilityResponse)
 
 logger = get_logger(__name__)
 
@@ -125,10 +113,7 @@ _MODULE_SOURCE_EXTENSIONS = (
     ".cts",
 )
 _RUNTIME_BOOTSTRAP_CONFIG_PATH = ".ragtime/runtime-bootstrap.json"
-_RUNTIME_BOOTSTRAP_TEMPLATE_VERSION = 4
-_SQLITE_DEFAULT_DB_PATH = ".ragtime/db/app.sqlite3"
-_SQLITE_MIGRATIONS_DIR = ".ragtime/db/migrations"
-_SQLITE_MIGRATION_RUNNER_PATH = ".ragtime/scripts/sqlite_migrate.py"
+_RUNTIME_BOOTSTRAP_TEMPLATE_VERSION = 5
 _SQLITE_MANAGED_DIR_PREFIX = ".ragtime/db/"
 _SQLITE_FILE_EXTENSIONS = frozenset({".sqlite", ".sqlite3", ".db", ".db3"})
 
@@ -391,9 +376,6 @@ class UserSpaceService:
                 "package.json",
                 "package-lock.json",
                 "requirements.txt",
-                _SQLITE_MIGRATIONS_DIR,
-                _SQLITE_DEFAULT_DB_PATH,
-                _SQLITE_MIGRATION_RUNNER_PATH,
             ],
             "commands": [
                 {
@@ -417,15 +399,6 @@ class UserSpaceService:
                     "name": "pip_requirements",
                     "when_exists": "requirements.txt",
                     "run": "python3 -m pip install -r requirements.txt",
-                },
-                {
-                    "name": "sqlite_migrations",
-                    "when_exists": _SQLITE_MIGRATION_RUNNER_PATH,
-                    "run": (
-                        "python3 .ragtime/scripts/sqlite_migrate.py "
-                        f"--db {_SQLITE_DEFAULT_DB_PATH} "
-                        f"--migrations {_SQLITE_MIGRATIONS_DIR}"
-                    ),
                 },
             ],
         }
@@ -488,135 +461,6 @@ class UserSpaceService:
 
     def _seed_runtime_bootstrap_config(self, workspace_id: str) -> None:
         self._sync_runtime_bootstrap_config(workspace_id)
-
-    @staticmethod
-    def _default_sqlite_migration_runner_content() -> str:
-        return '''#!/usr/bin/env python3
-from __future__ import annotations
-
-import argparse
-import hashlib
-import sqlite3
-from datetime import datetime, timezone
-from pathlib import Path
-
-
-def _sorted_sql_files(migrations_dir: Path) -> list[Path]:
-    if not migrations_dir.exists() or not migrations_dir.is_dir():
-        return []
-    return sorted(
-        p
-        for p in migrations_dir.iterdir()
-        if p.is_file() and p.suffix.lower() == ".sql"
-    )
-
-
-def _checksum(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _ensure_meta_table(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS _ragtime_migrations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            filename TEXT NOT NULL UNIQUE,
-            checksum TEXT NOT NULL,
-            applied_at TEXT NOT NULL
-        )
-        """
-    )
-
-
-def _load_applied(conn: sqlite3.Connection) -> dict[str, str]:
-    rows = conn.execute(
-        "SELECT filename, checksum FROM _ragtime_migrations ORDER BY filename"
-    ).fetchall()
-    return {str(filename): str(checksum) for filename, checksum in rows}
-
-
-def _apply_migration(
-    conn: sqlite3.Connection,
-    migration_path: Path,
-    checksum: str,
-) -> None:
-    sql = migration_path.read_text(encoding="utf-8")
-    conn.executescript(sql)
-    conn.execute(
-        "INSERT INTO _ragtime_migrations (filename, checksum, applied_at) VALUES (?, ?, ?)",
-        (
-            migration_path.name,
-            checksum,
-            datetime.now(timezone.utc).isoformat(),
-        ),
-    )
-
-
-def run(db_path: Path, migrations_dir: Path) -> int:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    migrations_dir.mkdir(parents=True, exist_ok=True)
-
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        _ensure_meta_table(conn)
-        applied = _load_applied(conn)
-
-        for migration in _sorted_sql_files(migrations_dir):
-            checksum = _checksum(migration)
-            existing_checksum = applied.get(migration.name)
-            if existing_checksum is not None:
-                if existing_checksum != checksum:
-                    raise RuntimeError(
-                        "Detected modified applied migration "
-                        f"'{migration.name}'. Create a new migration instead of editing history."
-                    )
-                continue
-
-            with conn:
-                _apply_migration(conn, migration, checksum)
-
-        return 0
-    finally:
-        conn.close()
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Apply deterministic SQLite migrations.")
-    parser.add_argument("--db", required=True, help="SQLite database file path")
-    parser.add_argument(
-        "--migrations",
-        required=True,
-        help="Directory containing lexically ordered .sql migration files",
-    )
-    args = parser.parse_args()
-    return run(Path(args.db), Path(args.migrations))
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-'''
-
-    def _seed_sqlite_migration_runner(self, workspace_id: str) -> None:
-        files_dir = self._workspace_files_dir(workspace_id)
-
-        migrations_dir = files_dir / _SQLITE_MIGRATIONS_DIR
-        migrations_dir.mkdir(parents=True, exist_ok=True)
-
-        keep_file = migrations_dir / ".gitkeep"
-        if not keep_file.exists():
-            keep_file.write_text("", encoding="utf-8")
-
-        script_path = files_dir / _SQLITE_MIGRATION_RUNNER_PATH
-        if script_path.exists():
-            return
-
-        script_path.parent.mkdir(parents=True, exist_ok=True)
-        script_path.write_text(
-            self._default_sqlite_migration_runner_content(),
-            encoding="utf-8",
-        )
 
     @staticmethod
     def _default_runtime_entrypoint_config() -> dict[str, str]:
@@ -1255,7 +1099,6 @@ if __name__ == "__main__":
         if required_role == "owner" and user_role != "owner":
             raise HTTPException(status_code=403, detail="Owner access required")
 
-        self._seed_sqlite_migration_runner(workspace_id)
         self._sync_runtime_bootstrap_config(workspace_id)
         return self._workspace_from_record(workspace)
 
@@ -1359,7 +1202,6 @@ if __name__ == "__main__":
             )
 
         self._workspace_files_dir(workspace_id).mkdir(parents=True, exist_ok=True)
-        self._seed_sqlite_migration_runner(workspace_id)
         self._seed_runtime_bootstrap_config(workspace_id)
         self._seed_runtime_entrypoint_config(workspace_id)
         await self._ensure_workspace_git_repo(workspace_id)

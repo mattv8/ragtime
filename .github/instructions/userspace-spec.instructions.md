@@ -4,7 +4,7 @@ applyTo: 'ragtime/userspace/**, runtime/**'
 
 # User Space Feature Implementation Instructions
 
-Last updated: 2026-03-01 (codebase-scanned; concise agent-focused)
+Last updated: 2026-03-03 (codebase-scanned; concise agent-focused)
 
 ## Scope
 
@@ -33,12 +33,13 @@ Last updated: 2026-03-01 (codebase-scanned; concise agent-focused)
 
 - Runtime bootstrap config is workspace-local: `.ragtime/runtime-bootstrap.json`.
 - Bootstrap execution stamp is `.ragtime/.runtime-bootstrap.done` (`runtime/shared.py`).
-- Default bootstrap template is managed in `ragtime/userspace/service.py` (`_default_runtime_bootstrap_config`, template versioning + auto-update logic).
-- Worker startup reads bootstrap config and reruns commands when config digest changes (`runtime/worker/service.py`).
+- Default bootstrap template is managed in `ragtime/userspace/service.py` (`_default_runtime_bootstrap_config`, template version 5). Auto-update logic includes `_is_legacy_default_bootstrap` detection for configs missing `managed_by`/`template_version`.
+- Worker startup reads bootstrap config and reruns commands when config digest changes (`runtime/worker/service.py`). Digest includes file content of `watch_paths`.
+- Bootstrap retry: if devserver exits with "command not found" patterns, the worker invalidates the stamp and retries on next start (`_should_retry_bootstrap_after_exit`).
 - Runtime launch is defined by `.ragtime/runtime-entrypoint.json` (command/cwd/framework) consumed by worker service.
 - `.ragtime/runtime-entrypoint.json` is authoritative. Runtime no longer falls back to `package.json`, Python entrypoint guesses, or `index.html` heuristics.
 - Keep launch commands `$PORT`-aware and bound to `0.0.0.0` for proxy reachability.
-- SQLite migration runner source is template-backed in `ragtime/userspace/templates/sqlite_migrate.py`; workspace seed path is `.ragtime/scripts/sqlite_migrate.py`.
+- SQLite migration runner and migration files are agent-managed (created via file tools and executed via terminal tool). They are NOT auto-seeded or auto-bootstrapped. The `sqlite_migrate.py` template has been removed; only `dashboard_entrypoint.js` remains in `templates/`.
 
 ## Live Data + SQLite Contract (Critical)
 
@@ -58,14 +59,23 @@ Last updated: 2026-03-01 (codebase-scanned; concise agent-focused)
 - Keep role enforcement strict on runtime/collab mutations: viewer is read-only; editor/owner can mutate.
 - Never forward ragtime session credentials to user devservers: preserve blocked header behavior in `_proxy_request_headers`.
 - Keep hop-by-hop header filtering in proxy request/response paths.
-- No application-layer HTML rewriting in preview proxy; only transport-level root-relative URL rewriting is allowed.
+- No DOM-parsing or content-injection in preview proxy. The only rewriting is regex-based root-relative URL prefixing (`src="/"`, `href="/"`, `action="/"`) via `_rewrite_root_relative_urls` in `runtime_routes.py`.
 - Keep path normalization/traversal protections (`normalize_file_path` and reserved-path checks) intact.
+
+## Sandbox + Process Conventions
+
+- Sandbox modes: `pivot_root` (requires `CAP_SYS_ADMIN`) or `chroot` fallback. Detected at startup via `detect_capabilities()` in `runtime/worker/sandbox.py`.
+- Per-workspace rootfs layout: `workspaces/{workspace_id}/rootfs/` with system dirs synced from host. Workspace files mirrored into `rootfs/workspace/`.
+- `_sync_system_dirs_for_chroot` uses incremental `copytree(dirs_exist_ok=True)` — never `rmtree` on `/workspace` (preserves running process cwd inodes).
+- All sandboxed shell commands (devserver, bootstrap) must include explicit `cd /workspace &&` prefix in the `sh -lc` string — `preexec_fn`'s `os.chdir()` can be lost after exec under certain event-loop contexts.
+- Worker PTY sessions use `pty_access_token` for terminal access authentication.
+- Screenshot capture is available via Playwright (`runtime/worker/screenshot.js`, invoked by `capture_screenshot` in service).
 
 ## Non-Obvious Product Constraints
 
-- Current runtime backend is manager/worker orchestration, not MicroVM leasing yet.
-- Devserver port is still effectively dynamic per session (fixed internal `5173` invariant is not fully enforced yet).
-- Collaboration is text-sync + version-conflict resync; CRDT/Yjs is not active.
+- Current runtime backend is manager/worker orchestration (provider name `microvm_pool_v1` is a label, not actual MicroVM leasing).
+- Devserver port is dynamic per session via `_pick_free_port()` in the worker. The control plane uses `5173` as a fallback default when the provider doesn't report a port (`launch_port or _RUNTIME_DEVSERVER_PORT`).
+- Collaboration is text-sync + version-conflict resync (`RuntimeVersionConflictError`); CRDT/Yjs is not active.
 
 ## Known Validation Gaps (Important for Agent Output Quality)
 
@@ -88,4 +98,4 @@ Last updated: 2026-03-01 (codebase-scanned; concise agent-focused)
 ## Sources Used for This Guide
 
 - Conventions search requested by user found `README.md` only (no `AGENTS.md`/`copilot-instructions.md` in repo).
-- Primary implementation references: `ragtime/main.py`, `ragtime/userspace/runtime_routes.py`, `ragtime/userspace/runtime_service.py`, `ragtime/userspace/service.py`, `runtime/main.py`, `runtime/shared.py`, `runtime/worker/service.py`.
+- Primary implementation references: `ragtime/main.py`, `ragtime/userspace/runtime_routes.py`, `ragtime/userspace/runtime_service.py`, `ragtime/userspace/service.py`, `runtime/main.py`, `runtime/shared.py`, `runtime/worker/service.py`, `runtime/worker/sandbox.py`, `runtime/worker/api.py`.

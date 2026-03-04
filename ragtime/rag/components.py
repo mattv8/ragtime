@@ -43,11 +43,7 @@ from ragtime.core.file_constants import (
     USERSPACE_TYPESCRIPT_EXTENSIONS,
 )
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (
-    get_context_limit,
-    get_output_limit,
-    supports_reasoning,
-)
+from ragtime.core.model_limits import get_context_limit, get_output_limit
 from ragtime.core.ollama import get_model_context_length
 from ragtime.core.security import (
     _SSH_ENV_VAR_RE,
@@ -950,7 +946,22 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Tailwind utilities are available for layout/spacing/composition, but keep semantic theming token-based (`var(--color-*)`, `var(--space-*)`, etc.) so dark/light mode remains consistent.
 - If module code injects CSS dynamically, keep the same token-based approach so dark/light mode stays consistent.
 - Do not introduce custom font stacks, raw hex palettes, or fixed theme-specific colors unless explicitly requested.
-- Use available app theme tokens and avoid redefining theme primitives in module-local CSS.
+- Available CSS variable tokens (always use `var(--token-name)` syntax):
+
+  | Category       | Tokens |
+  |----------------|--------|
+  | Backgrounds    | `--color-bg-primary`, `--color-bg-secondary`, `--color-bg-tertiary` |
+  | Surfaces       | `--color-surface`, `--color-surface-hover`, `--color-surface-active` |
+  | Text           | `--color-text-primary`, `--color-text-secondary`, `--color-text-muted`, `--color-text-inverse` |
+  | Brand/Accent   | `--color-primary`, `--color-primary-hover`, `--color-primary-light`, `--color-primary-border`, `--color-accent`, `--color-accent-hover`, `--color-accent-light` |
+  | Semantic       | `--color-success`, `--color-success-light`, `--color-success-border`, `--color-error`, `--color-error-light`, `--color-error-border`, `--color-warning`, `--color-warning-light`, `--color-warning-border`, `--color-info`, `--color-info-light`, `--color-info-border` |
+  | Borders        | `--color-border`, `--color-border-strong` |
+  | Input          | `--color-input-bg`, `--color-input-border`, `--color-input-focus` |
+  | Shadows        | `--shadow-sm`, `--shadow-md`, `--shadow-lg`, `--shadow-xl` |
+  | Spacing        | `--space-xs` (4px), `--space-sm` (8px), `--space-md` (16px), `--space-lg` (24px), `--space-xl` (32px), `--space-2xl` (48px) |
+  | Radius         | `--radius-sm` (4px), `--radius-md` (8px), `--radius-lg` (12px), `--radius-xl` (16px), `--radius-full` (pill) |
+  | Typography     | `--font-sans`, `--font-mono`, `--text-xs` .. `--text-2xl`, `--leading-tight` / `--leading-normal` / `--leading-relaxed` |
+  | Transitions    | `--transition-fast` (150ms), `--transition-normal` (200ms), `--transition-slow` (300ms) |
 """
 
 
@@ -1514,25 +1525,18 @@ class RAGComponents:
         assert self._app_settings is not None
         provider_normalized = provider.lower().strip()
 
-        # Check if model supports reasoning/thinking
-        model_has_reasoning = await supports_reasoning(model)
-
         if provider_normalized == "ollama":
             try:
                 base_url = self._app_settings.get(
                     "llm_ollama_base_url",
                     self._app_settings.get("ollama_base_url", "http://localhost:11434"),
                 )
-                kwargs: dict[str, Any] = {
-                    "model": model,
-                    "base_url": base_url,
-                    "temperature": 0,
-                    "num_predict": max_tokens,
-                }
-                if model_has_reasoning:
-                    kwargs["reasoning"] = True
-                    logger.info(f"Enabling reasoning for Ollama model {model}")
-                return ChatOllama(**kwargs)
+                return ChatOllama(
+                    model=model,
+                    base_url=base_url,
+                    temperature=0,
+                    num_predict=max_tokens,
+                )
             except ImportError:
                 logger.warning("langchain-ollama not installed")
                 return None
@@ -1543,27 +1547,12 @@ class RAGComponents:
                 logger.warning("Anthropic selected but no API key configured")
                 return None
             try:
-                kwargs = {
-                    "model": model,
-                    "api_key": api_key,
-                    "max_tokens": max_tokens,
-                }
-                if model_has_reasoning:
-                    # Extended thinking requires temperature=1 or unset;
-                    # budget_tokens must be less than max_tokens
-                    thinking_budget = min(16384, max(1024, max_tokens - 1))
-                    kwargs["thinking"] = {
-                        "type": "enabled",
-                        "budget_tokens": thinking_budget,
-                    }
-                    kwargs["temperature"] = 1
-                    logger.info(
-                        f"Enabling extended thinking for Anthropic model {model} "
-                        f"(budget: {thinking_budget} tokens)"
-                    )
-                else:
-                    kwargs["temperature"] = 0
-                return ChatAnthropic(**kwargs)
+                return ChatAnthropic(
+                    model=model,
+                    temperature=0,
+                    api_key=api_key,
+                    max_tokens=max_tokens,
+                )
             except ImportError:
                 logger.warning("langchain-anthropic not installed")
                 return None
@@ -1573,18 +1562,13 @@ class RAGComponents:
             logger.warning("OpenAI selected but no API key configured")
             return None
 
-        kwargs = {
-            "model": model,
-            "temperature": 0,
-            "streaming": True,
-            "api_key": api_key,
-            "max_tokens": max_tokens,
-        }
-        if model_has_reasoning:
-            kwargs["model_kwargs"] = {"reasoning_effort": "medium"}
-            logger.info(f"Enabling reasoning for OpenAI model {model} (effort: medium)")
-
-        return ChatOpenAI(**kwargs)
+        return ChatOpenAI(
+            model=model,
+            temperature=0,
+            streaming=True,
+            api_key=api_key,
+            max_tokens=max_tokens,
+        )
 
     async def _get_embedding_model(self):
         """Get embedding model based on database settings."""
@@ -4493,20 +4477,6 @@ except Exception as e:
                         "For persisted live data wiring, LIMIT is optional and should only be used when intentional."
                     ),
                 )
-
-                @field_validator("request", mode="before")
-                @classmethod
-                def _coerce_request(cls, value: Any) -> Any:
-                    """Coerce stringified JSON dict to a real dict."""
-                    if isinstance(value, str):
-                        raw = value.strip()
-                        if raw.startswith("{"):
-                            try:
-                                return json.loads(raw)
-                            except json.JSONDecodeError:
-                                pass
-                    return value
-
                 component_name: str | None = Field(
                     default=None,
                     description="Optional friendly connection name.",
@@ -4554,28 +4524,6 @@ except Exception as e:
                 ),
             )
             content: str = Field(description="Full UTF-8 file content to write")
-
-            @field_validator("content", mode="before")
-            @classmethod
-            def _unescape_content_whitespace(cls, value: Any) -> Any:
-                """LLMs sometimes emit literal escape sequences (backslash-n)
-                instead of real newlines. Detect and fix that pattern so the
-                written file has proper whitespace."""
-                if not isinstance(value, str):
-                    return value
-                # Only unescape if the string looks like it contains
-                # literal escape sequences AND has suspiciously few real
-                # newlines relative to its length.
-                real_newlines = value.count("\n")
-                literal_backslash_n = value.count("\\n")
-                if literal_backslash_n > 3 and literal_backslash_n > real_newlines * 2:
-                    value = (
-                        value.replace("\\n", "\n")
-                        .replace("\\t", "\t")
-                        .replace("\\\\", "\\")
-                    )
-                return value
-
             artifact_type: ArtifactType | None = Field(
                 default="module_ts",
                 description=(
@@ -4613,22 +4561,6 @@ except Exception as e:
                 description="Brief description of why this file is being updated",
             )
 
-            @field_validator("live_data_connections", "live_data_checks", mode="before")
-            @classmethod
-            def _coerce_json_lists(cls, value: Any) -> Any:
-                """Coerce stringified JSON arrays to real lists."""
-                if isinstance(value, str):
-                    raw = value.strip()
-                    if not raw or raw.lower() == "null":
-                        return None
-                    try:
-                        parsed = json.loads(raw)
-                        if isinstance(parsed, list):
-                            return parsed
-                    except json.JSONDecodeError:
-                        pass
-                return value
-
         class PatchUserSpaceFileInput(BaseModel):
             class ReplacementInput(BaseModel):
                 old_text: str = Field(
@@ -4651,23 +4583,6 @@ except Exception as e:
                     default=True,
                     description=("When true, fail if old_text is not found."),
                 )
-
-                @field_validator("old_text", "new_text", mode="before")
-                @classmethod
-                def _unescape_whitespace(cls, value: Any) -> Any:
-                    """Un-escape literal backslash-n / backslash-t that LLMs
-                    sometimes emit instead of real whitespace characters."""
-                    if not isinstance(value, str):
-                        return value
-                    real_nl = value.count("\n")
-                    literal_nl = value.count("\\n")
-                    if literal_nl > 1 and literal_nl > real_nl * 2:
-                        value = (
-                            value.replace("\\n", "\n")
-                            .replace("\\t", "\t")
-                            .replace("\\\\", "\\")
-                        )
-                    return value
 
             path: str = Field(
                 default="dashboard/main.ts",
@@ -4694,37 +4609,13 @@ except Exception as e:
                     raw = value.strip()
                     if not raw:
                         return []
-
-                    # Try 1: parse as-is
                     try:
                         parsed = json.loads(raw)
-                        if isinstance(parsed, list):
-                            return parsed
-                    except json.JSONDecodeError:
-                        pass
-
-                    # Try 2: LLMs sometimes embed real newline/tab chars
-                    # inside JSON string values. Re-escape only un-escaped
-                    # control characters (don't double-escape existing \\n).
-                    import re as _re
-
-                    # Replace real control chars that aren't already preceded
-                    # by a backslash with their JSON escape sequence.
-                    sanitized = _re.sub(r"(?<!\\)\n", r"\\n", raw)
-                    sanitized = _re.sub(r"(?<!\\)\r", r"\\r", sanitized)
-                    sanitized = _re.sub(r"(?<!\\)\t", r"\\t", sanitized)
-                    try:
-                        parsed = json.loads(sanitized)
-                        if isinstance(parsed, list):
-                            return parsed
-                    except json.JSONDecodeError:
-                        pass
-
-                    # All attempts failed — return a sentinel list with one
-                    # item so Pydantic doesn't crash the tool.  The patch
-                    # handler will see the _parse_error flag and report a
-                    # friendly message back to the LLM.
-                    return [{"_parse_error": raw[:500]}]
+                    except Exception as exc:
+                        raise ValueError(
+                            "replacements must be a list (or a JSON string that decodes to a list)."
+                        ) from exc
+                    return parsed
                 if isinstance(value, tuple):
                     return list(value)
                 return value
@@ -5078,24 +4969,7 @@ except Exception as e:
                 payload["warning"] = (
                     "This workspace has dashboard/main.ts. For dashboard behavior changes, edit dashboard/* files (especially dashboard/main.ts and imported modules) instead of index.html."
                 )
-
-            # Build a human-readable response so the LLM sees real
-            # newlines (not JSON-escaped \\n) and reproduces them
-            # correctly when writing back via patch/upsert tools.
-            content = payload.pop("content", "")
-            meta = payload.pop("_meta", None)
-            warning = payload.pop("warning", None)
-
-            header_parts: list[str] = []
-            header_parts.append(f"path: {payload.get('path', normalized_path)}")
-            if meta:
-                for mk, mv in meta.items():
-                    header_parts.append(f"{mk}: {mv}")
-            if warning:
-                header_parts.append(f"warning: {warning}")
-
-            header = "\n".join(header_parts)
-            return f"{header}\n---\n{content}"
+            return json.dumps(payload, indent=2)
 
         async def delete_userspace_file(path: str, reason: str = "", **_: Any) -> str:
             del reason
@@ -5167,13 +5041,6 @@ except Exception as e:
                     if isinstance(item, BaseModel)
                     else item
                 )
-                # Handle parse-error sentinel from _coerce_replacements
-                if isinstance(payload, dict) and "_parse_error" in payload:
-                    raise ToolException(
-                        "Could not parse 'replacements'. Please provide replacements "
-                        "as a JSON array of objects with old_text/new_text fields, "
-                        "using real newline characters (not escaped \\n sequences)."
-                    )
                 parsed_replacements.append(
                     PatchUserSpaceFileInput.ReplacementInput.model_validate(payload)
                 )
@@ -6832,52 +6699,20 @@ except Exception as e:
                     # Stream tokens from the chat model
                     elif kind == "on_chat_model_stream":
                         chunk = event.get("data", {}).get("chunk")
-                        if chunk:
-                            # Extract reasoning/thinking content from additional_kwargs
-                            # Ollama with reasoning=True puts thinking in additional_kwargs.reasoning_content
-                            if (
-                                hasattr(chunk, "additional_kwargs")
-                                and chunk.additional_kwargs
-                            ):
-                                reasoning_text = chunk.additional_kwargs.get(
-                                    "reasoning_content"
+                        if chunk and hasattr(chunk, "content") and chunk.content:
+                            content = chunk.content
+                            # Handle Anthropic-style content blocks (list of dicts with 'text' key)
+                            if isinstance(content, list):
+                                content = "".join(
+                                    (
+                                        block.get("text", "")
+                                        if isinstance(block, dict)
+                                        else str(block)
+                                    )
+                                    for block in content
                                 )
-                                if reasoning_text:
-                                    yield {
-                                        "type": "reasoning",
-                                        "content": reasoning_text,
-                                    }
-
-                            if hasattr(chunk, "content") and chunk.content:
-                                content = chunk.content
-                                # Handle Anthropic-style content blocks (list of dicts)
-                                if isinstance(content, list):
-                                    for block in content:
-                                        if isinstance(block, dict):
-                                            block_type = block.get("type", "")
-                                            if block_type == "thinking":
-                                                thinking_text = block.get(
-                                                    "thinking", ""
-                                                )
-                                                if thinking_text:
-                                                    yield {
-                                                        "type": "reasoning",
-                                                        "content": thinking_text,
-                                                    }
-                                            elif block_type == "text":
-                                                text = block.get("text", "")
-                                                if text:
-                                                    yield text
-                                            else:
-                                                text = block.get("text", "")
-                                                if text:
-                                                    yield text
-                                        else:
-                                            text = str(block)
-                                            if text:
-                                                yield text
-                                elif content:
-                                    yield content
+                            if content:
+                                yield content
 
                     # Detect when agent executor finishes - check for max iterations
                     elif kind == "on_chain_end":
@@ -6911,42 +6746,19 @@ except Exception as e:
 
                 # Use astream for true token-by-token streaming
                 async for chunk in request_llm.astream(messages):
-                    # Extract reasoning/thinking content from additional_kwargs
-                    # Ollama with reasoning=True puts thinking in additional_kwargs.reasoning_content
-                    if hasattr(chunk, "additional_kwargs") and chunk.additional_kwargs:
-                        reasoning_text = chunk.additional_kwargs.get(
-                            "reasoning_content"
-                        )
-                        if reasoning_text:
-                            yield {"type": "reasoning", "content": reasoning_text}
-
                     if hasattr(chunk, "content") and chunk.content:
                         content = chunk.content
-                        # Handle Anthropic-style content blocks (list of dicts)
+                        # Handle Anthropic-style content blocks (list of dicts with 'text' key)
                         if isinstance(content, list):
-                            for block in content:
-                                if isinstance(block, dict):
-                                    block_type = block.get("type", "")
-                                    if block_type == "thinking":
-                                        thinking_text = block.get("thinking", "")
-                                        if thinking_text:
-                                            yield {
-                                                "type": "reasoning",
-                                                "content": thinking_text,
-                                            }
-                                    elif block_type == "text":
-                                        text = block.get("text", "")
-                                        if text:
-                                            yield text
-                                    else:
-                                        text = block.get("text", "")
-                                        if text:
-                                            yield text
-                                else:
-                                    text = str(block)
-                                    if text:
-                                        yield text
-                        elif content:
+                            content = "".join(
+                                (
+                                    block.get("text", "")
+                                    if isinstance(block, dict)
+                                    else str(block)
+                                )
+                                for block in content
+                            )
+                        if content:
                             yield content
 
         except Exception as e:

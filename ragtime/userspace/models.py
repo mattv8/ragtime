@@ -225,6 +225,8 @@ class UserSpaceRuntimeStatusResponse(BaseModel):
     launch_framework: str | None = None
     launch_command: str | None = None
     launch_cwd: str | None = None
+    runtime_capabilities: dict[str, Any] | None = None
+    runtime_has_cap_sys_admin: bool | None = None
     preview_url: str | None = None
     last_error: str | None = None
 

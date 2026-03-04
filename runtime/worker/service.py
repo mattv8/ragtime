@@ -33,6 +33,15 @@ from runtime.shared import (
     RuntimeSessionState,
     normalize_file_path,
 )
+from runtime.worker.sandbox import (
+    SANDBOX_WORKSPACE_MOUNT,
+    SandboxSpec,
+    cleanup_sandbox,
+    ensure_sandbox_ready,
+    get_sandbox_spec,
+    sandbox_diagnostics,
+    spawn_sandboxed,
+)
 
 _PORT_PATTERNS = (
     re.compile(r"(?:^|\s)--port(?:=|\s+)(\d{2,5})(?:\s|$)"),
@@ -88,6 +97,8 @@ class WorkerSession:
     workspace_id: str
     provider_session_id: str
     workspace_root: Path
+    workspace_files_path: Path
+    sandbox_spec: SandboxSpec
     pty_access_token: str
     state: RuntimeSessionState
     devserver_running: bool
@@ -140,19 +151,42 @@ class WorkerService:
             enforce_sqlite_managed=enforce_sqlite_managed,
         )
 
-    def _resolve_workspace_root(self, workspace_id: str) -> Path:
-        canonical_root = self._root / "workspaces" / workspace_id / "files"
-        canonical_root.mkdir(parents=True, exist_ok=True)
-        return canonical_root
+    def _resolve_workspace_root(
+        self, workspace_id: str
+    ) -> tuple[Path, Path, SandboxSpec]:
+        """Resolve workspace paths and build a SandboxSpec.
 
-    def _resolve_launch_cwd(self, session: WorkerSession) -> Path:
+        Returns (workspace_root, workspace_files_path, sandbox_spec).
+        workspace_root = .../workspaces/<id>
+        workspace_files_path = .../workspaces/<id>/files
+        """
+        workspace_root = self._root / "workspaces" / workspace_id
+        workspace_root.mkdir(parents=True, exist_ok=True)
+        workspace_files = workspace_root / "files"
+        workspace_files.mkdir(parents=True, exist_ok=True)
+        spec = get_sandbox_spec(workspace_id, workspace_root, workspace_files)
+        ensure_sandbox_ready(spec)
+        return workspace_root, workspace_files, spec
+
+    def _resolve_launch_cwd(self, session: WorkerSession) -> str:
+        """Resolve the launch cwd as a sandbox-internal absolute path."""
         relative = (session.launch_cwd or ".").strip().replace("\\", "/")
         if relative in {"", "."}:
-            return session.workspace_root
+            return SANDBOX_WORKSPACE_MOUNT
         normalized = Path(relative)
         if normalized.is_absolute() or any(part == ".." for part in normalized.parts):
-            return session.workspace_root
-        return session.workspace_root / normalized
+            return SANDBOX_WORKSPACE_MOUNT
+        return f"{SANDBOX_WORKSPACE_MOUNT}/{normalized}"
+
+    def _resolve_host_launch_cwd(self, session: WorkerSession) -> Path:
+        """Resolve the launch cwd as a host-side path (for file reads, etc.)."""
+        relative = (session.launch_cwd or ".").strip().replace("\\", "/")
+        if relative in {"", "."}:
+            return session.workspace_files_path
+        normalized = Path(relative)
+        if normalized.is_absolute() or any(part == ".." for part in normalized.parts):
+            return session.workspace_files_path
+        return session.workspace_files_path / normalized
 
     def _session_response(self, session: WorkerSession) -> WorkerSessionResponse:
         return WorkerSessionResponse(
@@ -168,6 +202,7 @@ class WorkerService:
             ),
             launch_cwd=session.launch_cwd,
             launch_port=session.devserver_port,
+            runtime_capabilities=sandbox_diagnostics(),
             devserver_running=session.devserver_running,
             last_error=session.last_error,
             updated_at=session.updated_at,
@@ -300,22 +335,22 @@ class WorkerService:
 
     def _resolve_bootstrap_relative_path(
         self,
-        workspace_root: Path,
+        workspace_files: Path,
         relative_path: str,
     ) -> Path | None:
         normalized = (relative_path or "").strip().replace("\\", "/")
         if not normalized or normalized in {".", "./"}:
-            return workspace_root
+            return workspace_files
         candidate = Path(normalized)
         if candidate.is_absolute() or any(part == ".." for part in candidate.parts):
             return None
-        return workspace_root / candidate
+        return workspace_files / candidate
 
     async def _run_workspace_bootstrap_if_needed(
         self,
         session: WorkerSession,
     ) -> str | None:
-        workspace_root = session.workspace_root
+        workspace_root = session.workspace_files_path
         stamp_path = workspace_root / RUNTIME_BOOTSTRAP_STAMP_PATH
         config_digest = self._runtime_bootstrap_config_digest(workspace_root)
         existing_digest = ""
@@ -360,11 +395,16 @@ class WorkerService:
                 continue
 
             try:
-                process = await asyncio.create_subprocess_exec(
-                    "sh",
-                    "-lc",
-                    run,
-                    cwd=str(cwd_path),
+                # Resolve cwd relative to sandbox workspace mount
+                sandbox_cwd = SANDBOX_WORKSPACE_MOUNT
+                if cwd_value and cwd_value not in {".", "./"}:
+                    sandbox_cwd = f"{SANDBOX_WORKSPACE_MOUNT}/{cwd_value}"
+                # Embed an explicit ``cd`` so cwd is reliable even when
+                # preexec_fn's chdir is lost after exec.
+                process = await spawn_sandboxed(
+                    session.sandbox_spec,
+                    ["sh", "-lc", f"cd {sandbox_cwd} && {run}"],
+                    cwd=sandbox_cwd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
@@ -461,7 +501,7 @@ class WorkerService:
         )
 
     def _invalidate_bootstrap_stamp(self, session: WorkerSession) -> None:
-        stamp_path = session.workspace_root / RUNTIME_BOOTSTRAP_STAMP_PATH
+        stamp_path = session.workspace_files_path / RUNTIME_BOOTSTRAP_STAMP_PATH
         try:
             if stamp_path.exists() and stamp_path.is_file():
                 stamp_path.unlink()
@@ -520,11 +560,17 @@ class WorkerService:
                     cwd=config_cwd,
                     port=effective_port,
                 )
+            # Resolve the sandbox-internal cwd for the command.  We embed
+            # an explicit ``cd`` because ``os.chdir`` in preexec_fn can be
+            # lost after exec under certain uvicorn/event-loop contexts.
+            _sandbox_cwd = SANDBOX_WORKSPACE_MOUNT
+            if config_cwd and config_cwd not in {".", "./"}:
+                _sandbox_cwd = f"{SANDBOX_WORKSPACE_MOUNT}/{config_cwd}"
             return DevserverResolution(
                 command=[
                     "sh",
                     "-lc",
-                    f"export PATH=./node_modules/.bin:$PATH && PORT={effective_port} {final_command}",
+                    f"cd {_sandbox_cwd} && export PATH=./node_modules/.bin:$PATH && PORT={effective_port} {final_command}",
                 ],
                 framework=config_framework,
                 cwd=config_cwd,
@@ -641,7 +687,7 @@ class WorkerService:
             return
 
         port = session.devserver_port or self._pick_free_port()
-        resolution = self._resolve_devserver_command(session.workspace_root, port)
+        resolution = self._resolve_devserver_command(session.workspace_files_path, port)
         session.launch_framework = resolution.framework
         session.launch_cwd = resolution.cwd
 
@@ -667,9 +713,10 @@ class WorkerService:
         self._devserver_log_paths[session.id] = log_path
         self._devserver_log_handles[session.id] = log_handle
         try:
-            process = await asyncio.create_subprocess_exec(
-                *resolution.command,
-                cwd=str(self._resolve_launch_cwd(session)),
+            process = await spawn_sandboxed(
+                session.sandbox_spec,
+                resolution.command,
+                cwd=self._resolve_launch_cwd(session),
                 stdout=log_handle,
                 stderr=asyncio.subprocess.STDOUT,
                 start_new_session=True,
@@ -739,13 +786,16 @@ class WorkerService:
                 return self._session_response(session)
 
             session_id = f"wkr-{request.workspace_id[:8]}-{os.urandom(4).hex()}"
-            workspace_root = self._resolve_workspace_root(request.workspace_id)
-            workspace_root.mkdir(parents=True, exist_ok=True)
+            workspace_root, workspace_files, sandbox_spec = (
+                self._resolve_workspace_root(request.workspace_id)
+            )
             session = WorkerSession(
                 id=session_id,
                 workspace_id=request.workspace_id,
                 provider_session_id=request.provider_session_id,
                 workspace_root=workspace_root,
+                workspace_files_path=workspace_files,
+                sandbox_spec=sandbox_spec,
                 pty_access_token=request.pty_access_token,
                 state="running",
                 devserver_running=False,
@@ -776,6 +826,7 @@ class WorkerService:
             if not session:
                 raise HTTPException(status_code=404, detail="Worker session not found")
             await self._terminate_devserver_locked(session.id)
+            cleanup_sandbox(session.sandbox_spec)
             session.state = "stopped"
             session.devserver_running = False
             session.last_error = None
@@ -809,7 +860,7 @@ class WorkerService:
                 file_path,
                 enforce_sqlite_managed=True,
             )
-            target = session.workspace_root / rel_path
+            target = session.workspace_files_path / rel_path
             if not target.exists() or not target.is_file():
                 return self._runtime_file_response(session, rel_path, "", False)
             content = await asyncio.to_thread(target.read_text, encoding="utf-8")
@@ -830,7 +881,7 @@ class WorkerService:
                 file_path,
                 enforce_sqlite_managed=True,
             )
-            target = session.workspace_root / rel_path
+            target = session.workspace_files_path / rel_path
             target.parent.mkdir(parents=True, exist_ok=True)
             await asyncio.to_thread(target.write_text, content, encoding="utf-8")
             session.updated_at = self._utc_now()
@@ -847,7 +898,7 @@ class WorkerService:
                 file_path,
                 enforce_sqlite_managed=True,
             )
-            target = session.workspace_root / rel_path
+            target = session.workspace_files_path / rel_path
             if target.exists() and target.is_file():
                 target.unlink()
             session.updated_at = self._utc_now()
@@ -862,7 +913,7 @@ class WorkerService:
         timeout_seconds: int = 30,
         cwd: str | None = None,
     ) -> RuntimeExecResponse:
-        """Execute a shell command in the workspace and return captured output."""
+        """Execute a shell command in the workspace sandbox."""
         async with self._lock:
             session = self._sessions.get(worker_session_id)
             if not session:
@@ -870,28 +921,32 @@ class WorkerService:
             if session.state not in {"running", "starting"}:
                 raise HTTPException(status_code=409, detail="Worker session not active")
 
-            workspace_root = session.workspace_root
+            # Resolve cwd as a sandbox-internal path
             if cwd:
-                resolved_cwd = (workspace_root / cwd).resolve()
-                if not str(resolved_cwd).startswith(str(workspace_root.resolve())):
+                # Validate cwd doesn't escape workspace
+                normalized_cwd = Path(cwd.replace("\\", "/"))
+                if normalized_cwd.is_absolute() or any(
+                    part == ".." for part in normalized_cwd.parts
+                ):
                     raise HTTPException(
                         status_code=400,
                         detail="cwd must be within the workspace root",
                     )
-                exec_cwd = resolved_cwd
+                sandbox_cwd = f"{SANDBOX_WORKSPACE_MOUNT}/{normalized_cwd}"
             else:
-                exec_cwd = workspace_root
+                sandbox_cwd = SANDBOX_WORKSPACE_MOUNT
+
+            sandbox_spec = session.sandbox_spec
 
         timeout_seconds = max(1, min(timeout_seconds, 120))
         timed_out = False
         truncated = False
 
         try:
-            process = await asyncio.create_subprocess_exec(
-                "sh",
-                "-lc",
-                command,
-                cwd=str(exec_cwd),
+            process = await spawn_sandboxed(
+                sandbox_spec,
+                ["sh", "-lc", command],
+                cwd=sandbox_cwd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -1164,7 +1219,10 @@ class WorkerService:
                 status="ok",
                 service_mode="worker",
                 active_sessions=active_sessions,
-                metadata={"worker_name": self._worker_name},
+                metadata={
+                    "worker_name": self._worker_name,
+                    **sandbox_diagnostics(),
+                },
             )
 
 

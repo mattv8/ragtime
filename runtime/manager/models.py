@@ -21,6 +21,7 @@ class ManagerSession:
     launch_command: str | None
     launch_cwd: str | None
     launch_port: int | None
+    runtime_capabilities: dict[str, Any] | None
     state: RuntimeSessionState
     devserver_running: bool
     last_error: str | None
@@ -58,6 +59,10 @@ class _BaseSessionFields(BaseModel):
     launch_port: int | None = Field(
         default=None,
         description="Worker-local devserver port",
+    )
+    runtime_capabilities: dict[str, Any] | None = Field(
+        default=None,
+        description="Runtime worker capability metadata",
     )
     devserver_running: bool = Field(description="Whether devserver is running")
     last_error: str | None = Field(default=None, description="Last runtime error")

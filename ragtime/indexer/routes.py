@@ -31,6 +31,7 @@ from starlette.responses import StreamingResponse
 
 from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
+from ragtime.core.container_capabilities import get_container_capabilities
 from ragtime.core.embedding_models import (
     OPENAI_EMBEDDING_PRIORITY,
     get_embedding_models,
@@ -4211,34 +4212,9 @@ def _check_container_capabilities() -> ContainerCapabilitiesResponse:
     CAP_SYS_ADMIN (bit 21) is required for mount operations.
     In privileged mode, all capabilities are granted.
     """
-    privileged = False
-    has_sys_admin = False
-
-    try:
-        # Read the capabilities from /proc/self/status
-        with open("/proc/self/status", "r", encoding="utf-8") as f:
-            for line in f:
-                if line.startswith("CapEff:"):
-                    # CapEff is a hex bitmask of effective capabilities
-                    cap_hex = line.split(":")[1].strip()
-                    cap_int = int(cap_hex, 16)
-
-                    # CAP_SYS_ADMIN is bit 21 (value 2097152 = 0x200000)
-                    # In privileged mode, typically all bits are set
-                    cap_sys_admin_bit = 1 << 21
-
-                    has_sys_admin = bool(cap_int & cap_sys_admin_bit)
-
-                    # Check if privileged (typically all caps = 0x3fffffffff or similar)
-                    # A good heuristic: if many high-level caps are set, likely privileged
-                    # CAP_MKNOD (bit 27), CAP_SYS_RAWIO (bit 17), CAP_SYS_PTRACE (bit 19)
-                    high_privilege_bits = (1 << 27) | (1 << 17) | (1 << 19) | (1 << 21)
-                    if (cap_int & high_privilege_bits) == high_privilege_bits:
-                        privileged = True
-
-                    break
-    except Exception as e:
-        logger.debug(f"Failed to read capabilities from /proc/self/status: {e}")
+    caps = get_container_capabilities()
+    privileged = caps.privileged
+    has_sys_admin = caps.has_sys_admin
 
     can_mount = privileged or has_sys_admin
 

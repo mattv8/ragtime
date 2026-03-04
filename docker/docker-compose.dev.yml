@@ -101,6 +101,10 @@ services:
     volumes:
       - ../runtime:/runtime/runtime
       - ../.data:/data
+    # Uncomment below to enable full runtime sandbox isolation (pivot_root + mount namespace)
+    # privileged: true
+    # cap_add:
+    #   - SYS_ADMIN
     networks:
       - default
     healthcheck:

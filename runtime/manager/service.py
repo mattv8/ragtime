@@ -10,14 +10,18 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
-from runtime.manager.models import (ManagerSession, RuntimeExecResponse,
-                                    RuntimeFileReadResponse,
-                                    RuntimePtyUrlResponse,
-                                    RuntimeScreenshotRequest,
-                                    RuntimeScreenshotResponse,
-                                    RuntimeSessionResponse,
-                                    StartSessionRequest, WorkerSessionResponse,
-                                    WorkerStartSessionRequest)
+from runtime.manager.models import (
+    ManagerSession,
+    RuntimeExecResponse,
+    RuntimeFileReadResponse,
+    RuntimePtyUrlResponse,
+    RuntimeScreenshotRequest,
+    RuntimeScreenshotResponse,
+    RuntimeSessionResponse,
+    StartSessionRequest,
+    WorkerSessionResponse,
+    WorkerStartSessionRequest,
+)
 from runtime.worker.service import get_worker_service
 
 
@@ -78,6 +82,7 @@ class SessionManager:
             launch_command=session.launch_command,
             launch_cwd=session.launch_cwd,
             launch_port=session.launch_port,
+            runtime_capabilities=session.runtime_capabilities,
             devserver_running=session.devserver_running,
             last_error=session.last_error,
             updated_at=session.updated_at,
@@ -107,6 +112,7 @@ class SessionManager:
         session.launch_command = worker_data.launch_command
         session.launch_cwd = worker_data.launch_cwd
         session.launch_port = worker_data.launch_port
+        session.runtime_capabilities = worker_data.runtime_capabilities
         session.devserver_running = worker_data.devserver_running
         session.last_error = worker_data.last_error
 
@@ -130,6 +136,7 @@ class SessionManager:
             launch_command=worker_data.launch_command,
             launch_cwd=worker_data.launch_cwd,
             launch_port=worker_data.launch_port,
+            runtime_capabilities=worker_data.runtime_capabilities,
             state=worker_data.state,
             devserver_running=worker_data.devserver_running,
             last_error=worker_data.last_error,

@@ -14,9 +14,9 @@ from uuid import uuid4
 import httpx
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-from prisma import fields as prisma_fields
 from starlette.websockets import WebSocket
 
+from prisma import fields as prisma_fields
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
@@ -316,16 +316,24 @@ class UserSpaceRuntimeService:
 
     async def _probe_preview_base_url(self, base_url: str) -> bool:
         health_candidates = ["/", "/@vite/client"]
-        timeout = httpx.Timeout(connect=0.6, read=0.8, write=0.8, pool=0.6)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            for candidate in health_candidates:
-                try:
-                    response = await client.get(f"{base_url}{candidate}")
-                except Exception:
-                    continue
+        # Reduced timeouts to prevent UI locking during workspace switch
+        timeout = httpx.Timeout(connect=0.4, read=0.5, write=0.5, pool=0.4)
+
+        async def check_candidate(client: httpx.AsyncClient, candidate: str) -> bool:
+            try:
+                response = await client.get(f"{base_url}{candidate}")
                 if response.status_code < 500:
                     return True
-        return False
+            except Exception:
+                pass
+            return False
+
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            # Check all health candidates in parallel using asyncio.gather
+            results = await asyncio.gather(*(
+                check_candidate(client, c) for c in health_candidates
+            ))
+            return any(results)
 
     def _runtime_provider_name(self) -> str:
         return _RUNTIME_PROVIDER_MANAGER
@@ -961,6 +969,8 @@ class UserSpaceRuntimeService:
                 session_id=None,
                 devserver_running=False,
                 devserver_port=_RUNTIME_DEVSERVER_PORT,
+                runtime_capabilities=None,
+                runtime_has_cap_sys_admin=None,
                 preview_url=f"/indexes/userspace/workspaces/{workspace_id}/preview/",
             )
 
@@ -984,6 +994,8 @@ class UserSpaceRuntimeService:
                     session_id=session.id,
                     devserver_running=False,
                     devserver_port=_RUNTIME_DEVSERVER_PORT,
+                    runtime_capabilities=None,
+                    runtime_has_cap_sys_admin=None,
                     preview_url=f"/indexes/userspace/workspaces/{workspace_id}/preview/",
                 )
             logger.warning(
@@ -1042,6 +1054,15 @@ class UserSpaceRuntimeService:
             } and await self._probe_preview_base_url(base_url)
 
         devserver_port = launch_port or _RUNTIME_DEVSERVER_PORT
+        runtime_capabilities: dict[str, Any] | None = None
+        runtime_has_cap_sys_admin: bool | None = None
+        if provider_status:
+            raw_runtime_capabilities = provider_status.get("runtime_capabilities")
+            if isinstance(raw_runtime_capabilities, dict):
+                runtime_capabilities = raw_runtime_capabilities
+                cap_value = raw_runtime_capabilities.get("has_cap_sys_admin")
+                if isinstance(cap_value, bool):
+                    runtime_has_cap_sys_admin = cap_value
 
         return UserSpaceRuntimeStatusResponse(
             workspace_id=workspace_id,
@@ -1052,6 +1073,8 @@ class UserSpaceRuntimeService:
             launch_framework=launch_framework,
             launch_command=launch_command,
             launch_cwd=launch_cwd,
+            runtime_capabilities=runtime_capabilities,
+            runtime_has_cap_sys_admin=runtime_has_cap_sys_admin,
             preview_url=f"/indexes/userspace/workspaces/{workspace_id}/preview/",
             last_error=last_error,
         )

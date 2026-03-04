@@ -516,34 +516,57 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
     await userspace_runtime_service.register_collab_client(
         workspace_id, snapshot.file_path, websocket, user.id
     )
-    await websocket.send_text(
-        json.dumps(
-            {
-                "type": "snapshot",
-                "workspace_id": workspace_id,
-                "file_path": snapshot.file_path,
-                "version": snapshot.version,
-                "content": snapshot.content,
-                "read_only": snapshot.read_only,
-            }
+
+    async def _cleanup_collab() -> None:
+        users = await userspace_runtime_service.clear_collab_presence(
+            workspace_id,
+            snapshot.file_path,
+            user.id,
         )
-    )
-    current_presence = await userspace_runtime_service.get_collab_presence(
-        workspace_id,
-        snapshot.file_path,
-    )
-    await websocket.send_text(
-        json.dumps(
+        await userspace_runtime_service.unregister_collab_client(
+            workspace_id,
+            snapshot.file_path,
+            websocket,
+        )
+        await _broadcast_collab_message(
+            workspace_id,
+            snapshot.file_path,
             {
                 "type": "presence",
                 "workspace_id": workspace_id,
                 "file_path": snapshot.file_path,
-                "users": current_presence,
-            }
+                "users": users,
+            },
         )
-    )
 
     try:
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "snapshot",
+                    "workspace_id": workspace_id,
+                    "file_path": snapshot.file_path,
+                    "version": snapshot.version,
+                    "content": snapshot.content,
+                    "read_only": snapshot.read_only,
+                }
+            )
+        )
+        current_presence = await userspace_runtime_service.get_collab_presence(
+            workspace_id,
+            snapshot.file_path,
+        )
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "presence",
+                    "workspace_id": workspace_id,
+                    "file_path": snapshot.file_path,
+                    "users": current_presence,
+                }
+            )
+        )
+
         while True:
             data = await websocket.receive_text()
             payload = json.loads(data)
@@ -635,26 +658,11 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
             )
 
     except WebSocketDisconnect:
-        users = await userspace_runtime_service.clear_collab_presence(
-            workspace_id,
-            snapshot.file_path,
-            user.id,
-        )
-        await userspace_runtime_service.unregister_collab_client(
-            workspace_id,
-            snapshot.file_path,
-            websocket,
-        )
-        await _broadcast_collab_message(
-            workspace_id,
-            snapshot.file_path,
-            {
-                "type": "presence",
-                "workspace_id": workspace_id,
-                "file_path": snapshot.file_path,
-                "users": users,
-            },
-        )
+        await _cleanup_collab()
+    except Exception:
+        # Client disconnected during send (e.g. initial snapshot/presence).
+        # Treat identically to WebSocketDisconnect for cleanup purposes.
+        await _cleanup_collab()
 
 
 @router.post("/collab/workspaces/{workspace_id}/files/create")
