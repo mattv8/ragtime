@@ -14,6 +14,7 @@ from uuid import uuid4
 import httpx
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
+from prisma.errors import ForeignKeyViolationError
 from starlette.websockets import WebSocket
 
 from prisma import fields as prisma_fields
@@ -705,35 +706,42 @@ class UserSpaceRuntimeService:
             workspace_id,
             leased_by_user_id,
         )
-        row = await self._runtime_session_create_row(
-            model,
-            {
-                "id": str(uuid4()),
-                "workspaceId": workspace_id,
-                "leasedByUserId": leased_by_user_id,
-                "state": str(provider_data.get("state") or "running"),
-                "runtimeProvider": self._runtime_provider_name(),
-                "providerSessionId": str(
-                    provider_data.get("provider_session_id")
-                    or f"runtime-{workspace_id[:8]}-{uuid4().hex[:8]}"
-                ),
-                "previewInternalUrl": str(
-                    provider_data.get("preview_internal_url")
-                    or _RUNTIME_PREVIEW_DEFAULT_BASE
-                ),
-                "launchFramework": str(provider_data.get("launch_framework") or "")
-                or None,
-                "launchCommand": str(provider_data.get("launch_command") or "") or None,
-                "launchCwd": str(provider_data.get("launch_cwd") or "") or None,
-                "launchPort": self._optional_int(provider_data.get("launch_port")),
-                "createdAt": now,
-                "updatedAt": now,
-                "lastHeartbeatAt": now,
-                "idleExpiresAt": now + timedelta(hours=4),
-                "ttlExpiresAt": now + timedelta(hours=24),
-                "lastError": provider_data.get("last_error"),
-            },
-        )
+        try:
+            row = await self._runtime_session_create_row(
+                model,
+                {
+                    "id": str(uuid4()),
+                    "workspaceId": workspace_id,
+                    "leasedByUserId": leased_by_user_id,
+                    "state": str(provider_data.get("state") or "running"),
+                    "runtimeProvider": self._runtime_provider_name(),
+                    "providerSessionId": str(
+                        provider_data.get("provider_session_id")
+                        or f"runtime-{workspace_id[:8]}-{uuid4().hex[:8]}"
+                    ),
+                    "previewInternalUrl": str(
+                        provider_data.get("preview_internal_url")
+                        or _RUNTIME_PREVIEW_DEFAULT_BASE
+                    ),
+                    "launchFramework": str(provider_data.get("launch_framework") or "")
+                    or None,
+                    "launchCommand": str(provider_data.get("launch_command") or "") or None,
+                    "launchCwd": str(provider_data.get("launch_cwd") or "") or None,
+                    "launchPort": self._optional_int(provider_data.get("launch_port")),
+                    "createdAt": now,
+                    "updatedAt": now,
+                    "lastHeartbeatAt": now,
+                    "idleExpiresAt": now + timedelta(hours=4),
+                    "ttlExpiresAt": now + timedelta(hours=24),
+                    "lastError": provider_data.get("last_error"),
+                },
+            )
+        except ForeignKeyViolationError as exc:
+            logger.info(
+                "Runtime session create race: workspace %s no longer exists",
+                workspace_id,
+            )
+            raise HTTPException(status_code=404, detail="Workspace not found") from exc
         return self._to_runtime_session(row)
 
     async def ensure_workspace_preview_session(

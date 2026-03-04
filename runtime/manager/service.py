@@ -365,22 +365,35 @@ class SessionManager:
         )
 
     async def pool_status(self) -> dict[str, Any]:
-        async with self._lock:
-            active = [
-                s for s in self._sessions.values() if s.state in {"running", "starting"}
-            ]
+        try:
+            async with asyncio.timeout(2):
+                async with self._lock:
+                    active = [
+                        s
+                        for s in self._sessions.values()
+                        if s.state in {"running", "starting"}
+                    ]
+                    return {
+                        "workers_total": 1,
+                        "workers_leased": len(active),
+                        "active_sessions": len(active),
+                        "max_sessions": self._max_sessions,
+                        "sessions": [
+                            {
+                                "provider_session_id": s.provider_session_id,
+                                "workspace_id": s.workspace_id,
+                                "state": s.state,
+                                "devserver_running": s.devserver_running,
+                            }
+                            for s in active
+                        ],
+                    }
+        except TimeoutError:
+            # Lock held by reconcile loop; return minimal healthy response
             return {
                 "workers_total": 1,
-                "workers_leased": len(active),
-                "active_sessions": len(active),
+                "workers_leased": -1,
+                "active_sessions": -1,
                 "max_sessions": self._max_sessions,
-                "sessions": [
-                    {
-                        "provider_session_id": s.provider_session_id,
-                        "workspace_id": s.workspace_id,
-                        "state": s.state,
-                        "devserver_running": s.devserver_running,
-                    }
-                    for s in active
-                ],
+                "sessions": [],
             }

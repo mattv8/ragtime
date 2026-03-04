@@ -34,13 +34,29 @@ def _write_sandbox_init_file(spec: SandboxSpec) -> None:
     """Write bash init file into the sandbox rootfs.
 
     Uses ``\\044`` (octal for ``$``) so PS1 renders a literal dollar sign
-    regardless of UID, and disables ``promptvars`` to prevent bash from
-    expanding ``$workspace`` as an empty variable.
+    regardless of UID. The prompt is derived from ``$PWD`` each render so
+    directory changes in the interactive PTY are reflected immediately.
     """
     init_file = spec.rootfs_path / "tmp" / ".sandbox_bashrc"
     init_file.parent.mkdir(parents=True, exist_ok=True)
     init_file.write_text(
-        "shopt -u promptvars\n" "PS1='sandbox\\044workspace/ '\n",
+        r"""__sandbox_update_ps1() {
+  local current="${PWD:-/}"
+
+  if [[ "$current" == "/" ]]; then
+    PS1='\[\e[1;32m\]sandbox\[\e[0m\]:\[\e[1;34m\]/\[\e[0m\]$ '
+  elif [[ "$current" == "/workspace" ]]; then
+    PS1='\[\e[1;32m\]sandbox\[\e[0m\]:\[\e[1;34m\]$workspace\[\e[0m\]$ '
+  elif [[ "$current" == /workspace/* ]]; then
+    local display="${current#/workspace/}"
+    PS1='\[\e[1;32m\]sandbox\[\e[0m\]:\[\e[1;34m\]$workspace/'"$display"'\[\e[0m\]$ '
+  else
+    PS1='\[\e[1;32m\]sandbox\[\e[0m\]:\[\e[1;34m\]'"$current"'\[\e[0m\]$ '
+  fi
+}
+shopt -u promptvars
+PROMPT_COMMAND=__sandbox_update_ps1
+""",
         encoding="utf-8",
     )
 
@@ -175,6 +191,29 @@ async def preview(
     return Response(content=content, media_type=media_type, status_code=status_code)
 
 
+# ---------------------------------------------------------------------------
+# PTY session tracker – one PTY per worker session at a time
+# ---------------------------------------------------------------------------
+_pty_processes: dict[str, asyncio.subprocess.Process] = {}
+_pty_master_fds: dict[str, int] = {}
+_pty_lock = asyncio.Lock()
+
+
+async def _evict_pty(session_id: str) -> None:
+    """Terminate any existing PTY process for *session_id*."""
+    process = _pty_processes.pop(session_id, None)
+    master_fd = _pty_master_fds.pop(session_id, None)
+    if process is not None and process.returncode is None:
+        process.terminate()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(process.wait(), timeout=2)
+        if process.returncode is None:
+            process.kill()
+    if master_fd is not None:
+        with contextlib.suppress(Exception):
+            os.close(master_fd)
+
+
 @router.websocket("/worker/sessions/{worker_session_id}/pty")
 async def pty(worker_session_id: str, websocket: WebSocket):
     token = websocket.query_params.get("token", "")
@@ -185,6 +224,11 @@ async def pty(worker_session_id: str, websocket: WebSocket):
         return
 
     await websocket.accept()
+
+    # Evict any previous PTY for this session before spawning a new one
+    async with _pty_lock:
+        await _evict_pty(worker_session_id)
+
     # PTY shell runs inside the workspace sandbox
     shell = "/bin/bash"
     master_fd, slave_fd = pty_module.openpty()
@@ -194,9 +238,8 @@ async def pty(worker_session_id: str, websocket: WebSocket):
     ensure_sandbox_ready(sandbox_spec)
 
     # Write bash init file inside the sandbox rootfs so that PS1 renders
-    # a literal "$" regardless of UID.  (\$ in PS1 shows # for root,
-    # so we use \044 octal escape + shopt -u promptvars to prevent
-    # subsequent $variable expansion.)
+    # a literal "$" regardless of UID, and updates based on the current
+    # working directory after each command.
     _write_sandbox_init_file(sandbox_spec)
     shell_command = [shell, "--noprofile", "--init-file", "/tmp/.sandbox_bashrc", "-i"]
 
@@ -209,20 +252,24 @@ async def pty(worker_session_id: str, websocket: WebSocket):
     sandbox_preexec = make_sandbox_preexec(sandbox_spec, target_cwd=None)
 
     def _pty_preexec() -> None:
-        # Enter the sandbox FIRST (unshare/chroot/chdir to target_cwd).
-        # Then create a new session and acquire the controlling terminal
-        # INSIDE the sandbox's user namespace so the kernel's terminal
-        # ownership checks are satisfied when bash later calls tcsetpgrp.
-        sandbox_preexec()
+        # Create a new session and acquire the controlling terminal
+        # BEFORE entering the sandbox.  The PTY slave fd was opened in
+        # the original namespace, so TIOCSCTTY must run here — after
+        # unshare(CLONE_NEWUSER) the new user namespace no longer owns
+        # the device and the ioctl would silently fail.
         os.setsid()
         try:
             fcntl.ioctl(0, termios.TIOCSCTTY, 0)
         except OSError:
             pass
         try:
-            os.tcsetpgrp(0, os.getpgrp())
+            os.tcsetpgrp(0, os.getpid())
         except OSError:
             pass
+        # Now enter the sandbox (unshare/chroot/pivot_root/chdir).
+        # The controlling-terminal association is stored in the kernel's
+        # session struct and survives chroot/pivot_root.
+        sandbox_preexec()
 
     try:
         process = await asyncio.create_subprocess_exec(
@@ -238,6 +285,10 @@ async def pty(worker_session_id: str, websocket: WebSocket):
     finally:
         with contextlib.suppress(Exception):
             os.close(slave_fd)
+
+    # Register in PTY tracker so future connections can evict this one
+    _pty_processes[worker_session_id] = process
+    _pty_master_fds[worker_session_id] = master_fd
 
     await websocket.send_text(
         json.dumps(
@@ -257,7 +308,15 @@ async def pty(worker_session_id: str, websocket: WebSocket):
         except OSError:
             pass
 
+    # Harmless bash warnings emitted when the shell starts inside a
+    # user-namespace sandbox (tcgetpgrp returns -1 after unshare).
+    _STARTUP_NOISE = (
+        "bash: cannot set terminal process group",
+        "bash: no job control in this shell",
+    )
+
     async def _pump_stream() -> None:
+        startup_reads = 4  # only filter the first N reads
         while True:
             try:
                 chunk = await asyncio.to_thread(os.read, master_fd, 1024)
@@ -267,13 +326,20 @@ async def pty(worker_session_id: str, websocket: WebSocket):
                 break
             if not chunk:
                 break
+            text = chunk.decode("utf-8", errors="replace")
+            if startup_reads > 0:
+                startup_reads -= 1
+                lines = text.splitlines(keepends=True)
+                lines = [
+                    ln
+                    for ln in lines
+                    if not any(noise in ln for noise in _STARTUP_NOISE)
+                ]
+                text = "".join(lines)
+                if not text:
+                    continue
             await websocket.send_text(
-                json.dumps(
-                    {
-                        "type": "output",
-                        "data": chunk.decode("utf-8", errors="replace"),
-                    }
-                )
+                json.dumps({"type": "output", "data": text})
             )
 
     stream_task = asyncio.create_task(_pump_stream())
@@ -300,6 +366,12 @@ async def pty(worker_session_id: str, websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
+        # Unregister from PTY tracker only if this process is still the
+        # registered one (a newer connection may have already replaced it)
+        if _pty_processes.get(worker_session_id) is process:
+            _pty_processes.pop(worker_session_id, None)
+        if _pty_master_fds.get(worker_session_id) == master_fd:
+            _pty_master_fds.pop(worker_session_id, None)
         if process.returncode is None:
             process.terminate()
             with contextlib.suppress(Exception):
@@ -324,6 +396,10 @@ async def _worker_lifespan(_app: FastAPI) -> AsyncIterator[None]:
     async with service._lock:
         for sid in list(service._devserver_processes.keys()):
             await service._terminate_devserver_locked(sid)
+    # Also terminate any active PTY sessions
+    async with _pty_lock:
+        for sid in list(_pty_processes.keys()):
+            await _evict_pty(sid)
 
 
 def create_app() -> FastAPI:

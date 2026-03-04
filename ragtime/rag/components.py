@@ -21,13 +21,8 @@ from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (
-    AIMessage,
-    BaseMessage,
-    HumanMessage,
-    SystemMessage,
-    ToolMessage,
-)
+from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
+                                     SystemMessage, ToolMessage)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -36,62 +31,42 @@ from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
-from ragtime.core.file_constants import (
-    USERSPACE_MODULE_SOURCE_EXTENSIONS,
-    USERSPACE_STRICT_FRONTEND_EXTENSIONS,
-    USERSPACE_THEME_AUDIT_EXTENSIONS,
-    USERSPACE_TYPESCRIPT_EXTENSIONS,
-)
+from ragtime.core.file_constants import (USERSPACE_MODULE_SOURCE_EXTENSIONS,
+                                         USERSPACE_STRICT_FRONTEND_EXTENSIONS,
+                                         USERSPACE_THEME_AUDIT_EXTENSIONS,
+                                         USERSPACE_TYPESCRIPT_EXTENSIONS)
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit, get_output_limit
 from ragtime.core.ollama import get_model_context_length
-from ragtime.core.security import (
-    _SSH_ENV_VAR_RE,
-    sanitize_output,
-    validate_odoo_code,
-    validate_sql_query,
-    validate_ssh_command,
-)
+from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
+                                   validate_odoo_code, validate_sql_query,
+                                   validate_ssh_command)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (
-    SSHConfig,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    execute_ssh_command,
-    expand_env_vars_via_ssh,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
+                              execute_ssh_command, expand_env_vars_via_ssh,
+                              ssh_tunnel_config_from_dict)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (
-    CHAT_CHART_DESCRIPTION_SUFFIX,
-    USERSPACE_CHART_DESCRIPTION_SUFFIX,
-    create_chart_tool,
-)
-from ragtime.tools.datatable import (
-    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-    create_datatable_tool,
-)
+from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
+                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
+                                 create_chart_tool)
+from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+                                     create_datatable_tool)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (
-    _is_shallow_repository,
-    create_aggregate_git_history_tool,
-    create_per_index_git_history_tool,
-)
+from ragtime.tools.git_history import (_is_shallow_repository,
+                                       create_aggregate_git_history_tool,
+                                       create_per_index_git_history_tool)
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (
-    ArtifactType,
-    UpsertWorkspaceFileRequest,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-)
+from ragtime.userspace.models import (ArtifactType, UpsertWorkspaceFileRequest,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -4134,6 +4109,96 @@ except Exception as e:
 
         return str(content)
 
+    @staticmethod
+    def _extract_text_from_stream_content(content: Any) -> str:
+        """Extract plain text from streaming content payloads."""
+        if not content:
+            return ""
+
+        if isinstance(content, str):
+            return content
+
+        if isinstance(content, list):
+            text_parts: list[str] = []
+            for block in content:
+                if isinstance(block, dict):
+                    text_parts.append(str(block.get("text", "")))
+                else:
+                    text_parts.append(str(block))
+            return "".join(text_parts)
+
+        return str(content)
+
+    @classmethod
+    def _extract_text_from_chat_model_output(cls, output: Any) -> str:
+        """Extract text from LangChain chat model end payloads."""
+        if output is None:
+            return ""
+
+        if hasattr(output, "content"):
+            return cls._extract_text_from_stream_content(output.content)
+
+        if isinstance(output, dict):
+            content = output.get("content")
+            if content is not None:
+                return cls._extract_text_from_stream_content(content)
+
+            generations = output.get("generations")
+            if isinstance(generations, list) and generations:
+                first_generation = generations[0]
+                if isinstance(first_generation, list) and first_generation:
+                    first_generation = first_generation[0]
+
+                if isinstance(first_generation, dict):
+                    message = first_generation.get("message")
+                    if isinstance(message, dict):
+                        return cls._extract_text_from_stream_content(
+                            message.get("content")
+                        )
+                    if message is not None and hasattr(message, "content"):
+                        return cls._extract_text_from_stream_content(message.content)
+
+                    text = first_generation.get("text")
+                    if text is not None:
+                        return cls._extract_text_from_stream_content(text)
+
+                if hasattr(first_generation, "message"):
+                    message = first_generation.message
+                    if hasattr(message, "content"):
+                        return cls._extract_text_from_stream_content(message.content)
+
+        if hasattr(output, "generations"):
+            generations = output.generations
+            if isinstance(generations, list) and generations:
+                first_generation = generations[0]
+                if isinstance(first_generation, list) and first_generation:
+                    first_generation = first_generation[0]
+                if hasattr(first_generation, "message"):
+                    message = first_generation.message
+                    if hasattr(message, "content"):
+                        return cls._extract_text_from_stream_content(message.content)
+
+        return ""
+
+    @staticmethod
+    def _compute_missing_suffix(emitted: str, final_text: str) -> str:
+        """Return text present in final_text but not yet emitted."""
+        if not final_text:
+            return ""
+
+        if not emitted:
+            return final_text
+
+        if final_text.startswith(emitted):
+            return final_text[len(emitted) :]
+
+        max_overlap = min(len(emitted), len(final_text))
+        for overlap_size in range(max_overlap, 0, -1):
+            if emitted.endswith(final_text[:overlap_size]):
+                return final_text[overlap_size:]
+
+        return ""
+
     def _derive_config_tool_names(self, config: dict) -> set[str]:
         """Derive runtime tool names that are generated for a ToolConfig entry."""
         tool_type = config.get("tool_type")
@@ -4588,13 +4653,12 @@ except Exception as e:
                 default="dashboard/main.ts",
                 description="Relative path from workspace root to patch.",
             )
-            replacements: list[ReplacementInput] = Field(
+            replacements: list[Any] = Field(
                 default_factory=list,
-                min_length=1,
                 max_length=50,
                 description=(
-                    "Ordered replacement operations to apply. Provide as a JSON array "
-                    "of objects, not a quoted JSON string."
+                    "Ordered replacement operations to apply. Prefer a JSON array of objects; "
+                    "quoted JSON strings are tolerated and parsed best-effort."
                 ),
             )
             reason: str = Field(
@@ -4609,15 +4673,29 @@ except Exception as e:
                     raw = value.strip()
                     if not raw:
                         return []
+                    parsed: Any | None = None
                     try:
                         parsed = json.loads(raw)
-                    except Exception as exc:
-                        raise ValueError(
-                            "replacements must be a list (or a JSON string that decodes to a list)."
-                        ) from exc
-                    return parsed
+                    except Exception:
+                        parsed = None
+
+                    if isinstance(parsed, str):
+                        nested_raw = parsed.strip()
+                        if nested_raw:
+                            try:
+                                parsed = json.loads(nested_raw)
+                            except Exception:
+                                parsed = None
+
+                    if isinstance(parsed, dict):
+                        return [parsed]
+                    if isinstance(parsed, list):
+                        return parsed
+                    return []
                 if isinstance(value, tuple):
                     return list(value)
+                if isinstance(value, dict):
+                    return [value]
                 return value
 
         class CreateUserSpaceSnapshotInput(BaseModel):
@@ -5035,15 +5113,50 @@ except Exception as e:
                 ) from exc
 
             parsed_replacements: list[PatchUserSpaceFileInput.ReplacementInput] = []
-            for item in replacements or []:
+
+            raw_replacements: Any = replacements
+            if isinstance(raw_replacements, str):
+                decoded: Any | None = None
+                raw = raw_replacements.strip()
+                if raw:
+                    try:
+                        decoded = json.loads(raw)
+                    except Exception:
+                        decoded = None
+
+                    if isinstance(decoded, str):
+                        nested_raw = decoded.strip()
+                        if nested_raw:
+                            try:
+                                decoded = json.loads(nested_raw)
+                            except Exception:
+                                decoded = None
+
+                raw_replacements = decoded
+
+            if isinstance(raw_replacements, dict):
+                raw_replacements = [raw_replacements]
+            if raw_replacements is None:
+                raw_replacements = []
+            if not isinstance(raw_replacements, list):
+                raise ToolException(
+                    "Invalid replacements format. Provide a list of replacement objects or a JSON string that decodes to one."
+                )
+
+            for item in raw_replacements:
                 payload = (
                     item.model_dump(mode="python")
                     if isinstance(item, BaseModel)
                     else item
                 )
-                parsed_replacements.append(
-                    PatchUserSpaceFileInput.ReplacementInput.model_validate(payload)
-                )
+                try:
+                    parsed_replacements.append(
+                        PatchUserSpaceFileInput.ReplacementInput.model_validate(payload)
+                    )
+                except Exception as exc:
+                    raise ToolException(
+                        "Invalid replacement object. Each item must include old_text and new_text, with optional max_replacements and required."
+                    ) from exc
 
             if not parsed_replacements:
                 raise ToolException(
@@ -6643,6 +6756,7 @@ except Exception as e:
 
                 # Track tool runs to avoid duplicates from nested events
                 active_tool_runs: set[str] = set()
+                streamed_content_by_chat_run: dict[str, str] = {}
 
                 async for event in executor.astream_events(
                     {"input": agent_input, "chat_history": chat_history},
@@ -6700,19 +6814,30 @@ except Exception as e:
                     elif kind == "on_chat_model_stream":
                         chunk = event.get("data", {}).get("chunk")
                         if chunk and hasattr(chunk, "content") and chunk.content:
-                            content = chunk.content
-                            # Handle Anthropic-style content blocks (list of dicts with 'text' key)
-                            if isinstance(content, list):
-                                content = "".join(
-                                    (
-                                        block.get("text", "")
-                                        if isinstance(block, dict)
-                                        else str(block)
-                                    )
-                                    for block in content
-                                )
+                            content = self._extract_text_from_stream_content(
+                                chunk.content
+                            )
                             if content:
+                                if run_id:
+                                    streamed_content_by_chat_run[run_id] = (
+                                        streamed_content_by_chat_run.get(run_id, "")
+                                        + content
+                                    )
                                 yield content
+
+                    elif kind == "on_chat_model_end":
+                        output = event.get("data", {}).get("output")
+                        final_text = self._extract_text_from_chat_model_output(output)
+                        emitted_text = streamed_content_by_chat_run.get(run_id, "")
+                        missing_suffix = self._compute_missing_suffix(
+                            emitted_text, final_text
+                        )
+                        if missing_suffix:
+                            if run_id:
+                                streamed_content_by_chat_run[run_id] = (
+                                    emitted_text + missing_suffix
+                                )
+                            yield missing_suffix
 
                     # Detect when agent executor finishes - check for max iterations
                     elif kind == "on_chain_end":
@@ -6747,17 +6872,7 @@ except Exception as e:
                 # Use astream for true token-by-token streaming
                 async for chunk in request_llm.astream(messages):
                     if hasattr(chunk, "content") and chunk.content:
-                        content = chunk.content
-                        # Handle Anthropic-style content blocks (list of dicts with 'text' key)
-                        if isinstance(content, list):
-                            content = "".join(
-                                (
-                                    block.get("text", "")
-                                    if isinstance(block, dict)
-                                    else str(block)
-                                )
-                                for block in content
-                            )
+                        content = self._extract_text_from_stream_content(chunk.content)
                         if content:
                             yield content
 

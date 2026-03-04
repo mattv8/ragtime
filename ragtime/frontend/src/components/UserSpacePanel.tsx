@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, Database, ExternalLink, File, History, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RotateCw, Save, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Database, ExternalLink, File, History, Link2, Loader2, Maximize2, Minimize2, Pencil, Play, Plus, RotateCw, Save, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { keymap } from '@codemirror/view';
@@ -148,6 +148,54 @@ function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+function extractApiErrorDetail(payload: string): string | null {
+  const normalized = payload.trim();
+  if (!normalized) return null;
+
+  try {
+    const parsed = JSON.parse(normalized) as { detail?: unknown };
+    const detail = parsed?.detail;
+    if (typeof detail === 'string' && detail.trim()) {
+      return detail.trim();
+    }
+  } catch {
+    // Ignore parse errors and try regex fallback.
+  }
+
+  const detailMatch = normalized.match(/"detail"\s*:\s*"((?:\\.|[^"\\])*)"/);
+  if (detailMatch?.[1]) {
+    try {
+      return JSON.parse(`"${detailMatch[1]}"`).trim();
+    } catch {
+      return detailMatch[1].replace(/\\"/g, '"').trim();
+    }
+  }
+
+  return null;
+}
+
+function formatUserSpaceErrorMessage(rawError: string | null): string | null {
+  if (!rawError) return null;
+  const normalized = rawError.trim();
+  if (!normalized) return null;
+
+  const payloadMatch = normalized.match(/^(.*?):\s*(\{[\s\S]*\})\s*$/);
+  if (payloadMatch) {
+    const prefix = payloadMatch[1].trim();
+    const detail = extractApiErrorDetail(payloadMatch[2]);
+    if (detail) {
+      return `${prefix}: ${detail}`;
+    }
+  }
+
+  const directDetail = extractApiErrorDetail(normalized);
+  if (directDetail) {
+    return directDetail;
+  }
+
+  return normalized;
+}
+
 export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePanelProps) {
   const previewEntryPath = 'dashboard/main.ts';
   const [workspaces, setWorkspaces] = useState<UserSpaceWorkspace[]>([]);
@@ -155,6 +203,10 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [statusOverlayVisible, setStatusOverlayVisible] = useState(false);
+  const [statusOverlayFading, setStatusOverlayFading] = useState(false);
+  const [statusOverlayPinned, setStatusOverlayPinned] = useState(false);
+  const [statusOverlayInteracting, setStatusOverlayInteracting] = useState(false);
 
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   const [files, setFiles] = useState<UserSpaceFileInfo[]>([]);
@@ -179,6 +231,9 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const [terminalReadOnly, setTerminalReadOnly] = useState(false);
   const [terminalReconnectNonce, setTerminalReconnectNonce] = useState(0);
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
+  const [creatingWorkspaceStatus, setCreatingWorkspaceStatus] = useState<string | null>(null);
+  const [deletingWorkspaceId, setDeletingWorkspaceId] = useState<string | null>(null);
+  const [deletingWorkspaceStatus, setDeletingWorkspaceStatus] = useState<string | null>(null);
   const [sharingWorkspace, setSharingWorkspace] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
@@ -240,6 +295,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const terminalRef = useRef<XTerm | null>(null);
   const terminalFitRef = useRef<FitAddon | null>(null);
   const terminalResizeObserverRef = useRef<ResizeObserver | null>(null);
+  const statusOverlayDismissedSignatureRef = useRef<string | null>(null);
   const lastWorkspaceCookieName = useMemo(() => getLastWorkspaceCookieName(currentUser.id), [currentUser.id]);
   const userSpaceLayoutCookieName = useMemo(() => getUserSpaceLayoutCookieName(currentUser.id, activeWorkspaceId), [currentUser.id, activeWorkspaceId]);
 
@@ -446,8 +502,8 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     [availableTools]
   );
   const resolvedSelectedToolIds = useMemo(
-    () => (activeWorkspace?.selected_tool_ids?.length ? activeWorkspace.selected_tool_ids : availableToolIds),
-    [activeWorkspace?.selected_tool_ids, availableToolIds]
+    () => activeWorkspace?.selected_tool_ids ?? [],
+    [activeWorkspace?.selected_tool_ids]
   );
   const selectedToolIds = useMemo(
     () => new Set(resolvedSelectedToolIds),
@@ -516,14 +572,25 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       if (append) {
         setWorkspaces((prev) => [...prev, ...page.items]);
       } else {
-        setWorkspaces(page.items);
-        if (page.items.length === 0) {
+        let nextItems = page.items;
+
+        if (activeWorkspaceId && !nextItems.some((workspace) => workspace.id === activeWorkspaceId)) {
+          try {
+            const activeWorkspace = await api.getUserSpaceWorkspace(activeWorkspaceId);
+            nextItems = [activeWorkspace, ...nextItems.filter((workspace) => workspace.id !== activeWorkspace.id)];
+          } catch {
+            // Ignore fetch errors for active workspace backfill.
+          }
+        }
+
+        setWorkspaces(nextItems);
+        if (nextItems.length === 0) {
           setActiveWorkspaceId(null);
           clearCookieValue(lastWorkspaceCookieName);
         } else if (!activeWorkspaceId) {
           const lastWorkspaceId = getCookieValue(lastWorkspaceCookieName);
           const matchingWorkspace = lastWorkspaceId
-            ? page.items.find((workspace) => workspace.id === lastWorkspaceId)
+            ? nextItems.find((workspace) => workspace.id === lastWorkspaceId)
             : null;
 
           if (matchingWorkspace) {
@@ -538,10 +605,10 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
               ));
               setActiveWorkspaceId(workspace.id);
             } catch {
-              setActiveWorkspaceId(page.items[0].id);
+              setActiveWorkspaceId(nextItems[0].id);
             }
           } else {
-            setActiveWorkspaceId(page.items[0].id);
+            setActiveWorkspaceId(nextItems[0].id);
           }
         }
       }
@@ -913,25 +980,50 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   }, [selectedFilePath]);
 
   const handleCreateWorkspace = useCallback(async () => {
+    setError(null);
     setCreatingWorkspace(true);
+    setCreatingWorkspaceStatus('Creating workspace...');
+    setIsWorkspaceMenuOpen(false);
+    setRuntimeStatus(null);
+    setPreviewLiveDataConnections([]);
+    setActiveWorkspaceId(null);
+    setFiles([]);
+    setSnapshots([]);
+    setSelectedFilePath(previewEntryPath);
+    setFileContent('');
+    setFileDirty(false);
+
     try {
       const created = await api.createUserSpaceWorkspace({
-        selected_tool_ids: [],
+        selected_tool_ids: availableToolIds,
       });
+
+      setWorkspaces((current) => (
+        current.some((workspace) => workspace.id === created.id)
+          ? current
+          : [created, ...current]
+      ));
+      setActiveWorkspaceId(created.id);
+
+      setCreatingWorkspaceStatus('Bootstrapping workspace files...');
       await api.upsertUserSpaceFile(created.id, 'dashboard/main.ts', {
         content: 'export function render(container: HTMLElement) {\n  container.innerHTML = `<h2>Interactive Report</h2><p>Ask chat to build your report and wire live data connections.</p>`;\n}\n',
         artifact_type: 'module_ts',
       });
+
+      setCreatingWorkspaceStatus('Setting up workspace conversation...');
       await api.createConversation(undefined, created.id);
-      setActiveWorkspaceId(created.id);
+
+      setCreatingWorkspaceStatus('Loading workspace...');
       await loadWorkspaces();
       await loadWorkspaceData(created.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create workspace');
     } finally {
+      setCreatingWorkspaceStatus(null);
       setCreatingWorkspace(false);
     }
-  }, [loadWorkspaceData, loadWorkspaces]);
+  }, [availableToolIds, loadWorkspaceData, loadWorkspaces, previewEntryPath]);
 
   const handleSelectFile = useCallback(async (path: string) => {
     if (!activeWorkspaceId) return;
@@ -995,9 +1087,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const handleToggleWorkspaceTool = useCallback(async (toolId: string) => {
     if (!activeWorkspace || !canEditWorkspace) return;
 
-    const currentSelected = activeWorkspace.selected_tool_ids.length > 0
-      ? new Set(activeWorkspace.selected_tool_ids)
-      : new Set(availableToolIds);
+    const currentSelected = new Set(activeWorkspace.selected_tool_ids);
     const nextSelected = new Set(currentSelected);
     if (nextSelected.has(toolId)) {
       nextSelected.delete(toolId);
@@ -1005,9 +1095,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       nextSelected.add(toolId);
     }
 
-    const normalizedSelection = availableToolIds.length > 0 && nextSelected.size === availableToolIds.length
-      ? []
-      : Array.from(nextSelected);
+    const normalizedSelection = Array.from(nextSelected);
 
     setSavingWorkspaceTools(true);
     try {
@@ -1020,7 +1108,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
     } finally {
       setSavingWorkspaceTools(false);
     }
-  }, [activeWorkspace, availableToolIds, canEditWorkspace]);
+  }, [activeWorkspace, canEditWorkspace]);
 
   const handleToggleSqlitePersistence = useCallback(async () => {
     if (!activeWorkspace || !canEditWorkspace) return;
@@ -1272,15 +1360,24 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       return;
     }
 
+    // Only connect the terminal when the runtime is actually running
+    if (runtimeDisplayState !== 'running') {
+      return;
+    }
+
     let reconnectEnabled = true;
+    let reconnectAttempts = 0;
     const scheduleReconnect = () => {
       if (!reconnectEnabled || terminalReconnectTimerRef.current !== null) {
         return;
       }
+      // Exponential backoff: 1.5s, 3s, 6s, 12s, capped at 15s
+      const delay = Math.min(1500 * Math.pow(2, reconnectAttempts), 15000);
+      reconnectAttempts++;
       terminalReconnectTimerRef.current = window.setTimeout(() => {
         terminalReconnectTimerRef.current = null;
         setTerminalReconnectNonce((value) => value + 1);
-      }, 1500);
+      }, delay);
     };
 
     const terminalContainer = terminalContainerRef.current;
@@ -1348,12 +1445,16 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
 
     socket.onmessage = (event) => {
       try {
-        const payload = JSON.parse(event.data) as { type?: string; data?: string; read_only?: boolean };
+        const payload = JSON.parse(event.data) as { type?: string; data?: string; read_only?: boolean; message?: string };
         if (payload.type === 'status') {
           const isReadOnly = Boolean(payload.read_only);
           terminalReadOnlyRef.current = isReadOnly;
           setTerminalReadOnly(isReadOnly);
           terminal.options.disableStdin = isReadOnly;
+          const statusMessage = typeof payload.message === 'string' ? payload.message.trim() : '';
+          if (statusMessage) {
+            terminal.writeln(`\r\n[status] ${statusMessage}\r\n`);
+          }
           return;
         }
         if (payload.type === 'output') {
@@ -1394,7 +1495,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       terminalRef.current?.dispose();
       terminalRef.current = null;
     };
-  }, [activeRightTab, activeWorkspaceId, canEditWorkspace, terminalReconnectNonce]);
+  }, [activeRightTab, activeWorkspaceId, canEditWorkspace, runtimeDisplayState, terminalReconnectNonce]);
 
   useEffect(() => {
     const socket = collabSocketRef.current;
@@ -1658,24 +1759,59 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   }, []);
 
   const handleDeleteWorkspace = useCallback(async (workspaceId: string) => {
-    try {
-      await api.deleteUserSpaceWorkspace(workspaceId);
-      setDeleteConfirmWorkspaceId(null);
-      setIsWorkspaceMenuOpen(false);
-      if (activeWorkspaceId === workspaceId) {
-        setActiveWorkspaceId(null);
+    setError(null);
+    setDeletingWorkspaceId(workspaceId);
+    setDeletingWorkspaceStatus('Deleting workspace...');
+
+    const deletingActiveWorkspace = activeWorkspaceId === workspaceId;
+    const fallbackWorkspaceId = deletingActiveWorkspace
+      ? workspaces.find((workspace) => workspace.id !== workspaceId)?.id ?? null
+      : activeWorkspaceId;
+
+    setDeleteConfirmWorkspaceId(null);
+    setIsWorkspaceMenuOpen(false);
+    setWorkspaces((current) => current.filter((workspace) => workspace.id !== workspaceId));
+    setWorkspacesTotal((current) => Math.max(0, current - 1));
+
+    if (deletingActiveWorkspace) {
+      setRuntimeStatus(null);
+      setPreviewLiveDataConnections([]);
+      setActiveWorkspaceId(fallbackWorkspaceId);
+
+      if (!fallbackWorkspaceId) {
         clearCookieValue(lastWorkspaceCookieName);
         setFiles([]);
         setSnapshots([]);
         setFileContentCache({});
         setFileContent('');
         setSelectedFilePath('');
+        setFileDirty(false);
       }
+    }
+
+    try {
+      await api.deleteUserSpaceWorkspace(workspaceId);
+
+      setDeletingWorkspaceStatus('Refreshing workspace list...');
       await loadWorkspaces();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete workspace');
+      try {
+        await loadWorkspaces();
+      } catch {
+        // Best-effort refresh; continue with delete verification below.
+      }
+
+      try {
+        await api.getUserSpaceWorkspace(workspaceId);
+        setError(err instanceof Error ? err.message : 'Failed to delete workspace');
+      } catch {
+        setError(null);
+      }
+    } finally {
+      setDeletingWorkspaceStatus(null);
+      setDeletingWorkspaceId(null);
     }
-  }, [activeWorkspaceId, lastWorkspaceCookieName, loadWorkspaces]);
+  }, [activeWorkspaceId, lastWorkspaceCookieName, loadWorkspaces, workspaces]);
 
   const handleOpenMembersModal = useCallback(async () => {
     if (!activeWorkspace || !isOwner) return;
@@ -2228,6 +2364,81 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   const sqlitePersistenceModeTitle = sqliteLiveDataOnlyMode
     ? 'Live data only mode. Local SQLite files are not persisted with workspace snapshots. Click to enable SQLite local persistence mode.'
     : 'SQLite local persistence mode. Local SQLite files are persisted with workspace snapshots. Click to switch to live data only mode.';
+  const formattedError = useMemo(() => formatUserSpaceErrorMessage(error), [error]);
+  const hasStatusOverlayContent = Boolean(
+    loading || creatingWorkspace || deletingWorkspaceId || (formattedError && !creatingWorkspace && !deletingWorkspaceId)
+  );
+  const statusOverlaySignature = useMemo(() => JSON.stringify({
+    loading,
+    creatingWorkspace,
+    creatingWorkspaceStatus,
+    deletingWorkspaceId,
+    deletingWorkspaceStatus,
+    formattedError: formattedError && !creatingWorkspace && !deletingWorkspaceId ? formattedError : null,
+  }), [
+    loading,
+    creatingWorkspace,
+    creatingWorkspaceStatus,
+    deletingWorkspaceId,
+    deletingWorkspaceStatus,
+    formattedError,
+  ]);
+
+  useEffect(() => {
+    if (!hasStatusOverlayContent) {
+      setStatusOverlayVisible(false);
+      setStatusOverlayFading(false);
+      setStatusOverlayPinned(false);
+      setStatusOverlayInteracting(false);
+      statusOverlayDismissedSignatureRef.current = null;
+      return;
+    }
+
+    if (statusOverlayDismissedSignatureRef.current !== statusOverlaySignature) {
+      setStatusOverlayVisible(true);
+      setStatusOverlayFading(false);
+      statusOverlayDismissedSignatureRef.current = null;
+    }
+  }, [hasStatusOverlayContent, statusOverlaySignature]);
+
+  useEffect(() => {
+    if (!hasStatusOverlayContent || !statusOverlayVisible || statusOverlayPinned || statusOverlayInteracting) {
+      setStatusOverlayFading(false);
+      return;
+    }
+
+    setStatusOverlayFading(true);
+    const timer = window.setTimeout(() => {
+      if (statusOverlayPinned || statusOverlayInteracting || !hasStatusOverlayContent) {
+        return;
+      }
+      setStatusOverlayVisible(false);
+      setStatusOverlayFading(false);
+      statusOverlayDismissedSignatureRef.current = statusOverlaySignature;
+    }, 2000);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [
+    hasStatusOverlayContent,
+    statusOverlayVisible,
+    statusOverlayPinned,
+    statusOverlayInteracting,
+    statusOverlaySignature,
+  ]);
+
+  const handleStatusOverlayClick = useCallback(() => {
+    setStatusOverlayPinned((current) => {
+      const next = !current;
+      if (!next) {
+        setStatusOverlayVisible(true);
+      }
+      setStatusOverlayFading(false);
+      statusOverlayDismissedSignatureRef.current = null;
+      return next;
+    });
+  }, []);
 
   return (
     <div className={`userspace-layout${isFullscreen ? ' userspace-fullscreen' : ''}`}>
@@ -2258,6 +2469,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                   {workspaces.map((ws) => {
                     const canDeleteWorkspace = ws.owner_user_id === currentUser.id;
                     const isConfirmingDelete = deleteConfirmWorkspaceId === ws.id;
+                    const isDeletingWorkspace = deletingWorkspaceId === ws.id;
                     return (
                       <div
                         key={ws.id}
@@ -2268,6 +2480,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                           role="option"
                           aria-selected={ws.id === activeWorkspaceId}
                           className="userspace-workspace-select-btn"
+                          disabled={Boolean(deletingWorkspaceId)}
                           onClick={() => {
                             if (ws.id !== activeWorkspaceId) {
                                 setRuntimeStatus(null);
@@ -2287,17 +2500,19 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                                 <button
                                   type="button"
                                   className="chat-action-btn confirm-delete"
+                                  disabled={Boolean(deletingWorkspaceId)}
                                   onClick={(event) => {
                                     event.stopPropagation();
                                     void handleDeleteWorkspace(ws.id);
                                   }}
                                   title="Confirm delete workspace"
                                 >
-                                  <Check size={12} />
+                                  {isDeletingWorkspace ? <Loader2 size={12} className="userspace-icon-spin" /> : <Check size={12} />}
                                 </button>
                                 <button
                                   type="button"
                                   className="chat-action-btn cancel-delete"
+                                  disabled={Boolean(deletingWorkspaceId)}
                                   onClick={(event) => {
                                     event.stopPropagation();
                                     setDeleteConfirmWorkspaceId(null);
@@ -2311,13 +2526,14 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                               <button
                                 type="button"
                                 className="chat-action-btn"
+                                disabled={Boolean(deletingWorkspaceId)}
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   setDeleteConfirmWorkspaceId(ws.id);
                                 }}
                                 title="Delete workspace"
                               >
-                                <Trash2 size={12} />
+                                {isDeletingWorkspace ? <Loader2 size={12} className="userspace-icon-spin" /> : <Trash2 size={12} />}
                               </button>
                             )}
                           </div>
@@ -2340,8 +2556,13 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
               {loadingMore ? '...' : 'More'}
             </button>
           )}
-          <button className="btn btn-primary btn-sm" onClick={handleCreateWorkspace} disabled={creatingWorkspace} title="New workspace">
-            <Plus size={14} />
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={handleCreateWorkspace}
+            disabled={creatingWorkspace}
+            title={creatingWorkspace ? (creatingWorkspaceStatus || 'Bootstrapping workspace...') : 'New workspace'}
+          >
+            {creatingWorkspace ? <Loader2 size={14} className="userspace-icon-spin" /> : <Plus size={14} />}
           </button>
           {isOwner && (
             <>
@@ -2393,7 +2614,11 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                 }`}
                 title={runtimeStatus.last_error || 'Workspace runtime session state'}
               >
-                {runtimeDisplayState}
+                {runtimeDisplayState === 'starting'
+                  ? 'starting runtime…'
+                  : runtimeDisplayState === 'stopping'
+                    ? 'stopping runtime…'
+                    : runtimeDisplayState}
               </span>
             )}
           </div>
@@ -2423,17 +2648,17 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
             <div className="userspace-toolbar-runtime-controls">
               {showStartRuntimeButton && (
                 <button className="btn btn-secondary btn-sm btn-icon" onClick={handleStartRuntime} disabled={runtimeBusy} title="Start runtime">
-                  <Play size={14} />
+                  {runtimeBusy ? <Loader2 size={14} className="userspace-icon-spin" /> : <Play size={14} />}
                 </button>
               )}
               {showRestartRuntimeButton && (
                 <button className="btn btn-secondary btn-sm btn-icon" onClick={handleRestartRuntime} disabled={runtimeBusy} title="Restart runtime">
-                  <RotateCw size={14} />
+                  {runtimeBusy ? <Loader2 size={14} className="userspace-icon-spin" /> : <RotateCw size={14} />}
                 </button>
               )}
               {showStopRuntimeButton && (
                 <button className="btn btn-secondary btn-sm btn-icon" onClick={handleStopRuntime} disabled={runtimeBusy} title="Stop runtime">
-                  <Square size={14} />
+                  {runtimeBusy ? <Loader2 size={14} className="userspace-icon-spin" /> : <Square size={14} />}
                 </button>
               )}
             </div>
@@ -2499,9 +2724,47 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
         </div>
       </div>
 
-      {/* === Status messages === */}
-      {loading && <p className="userspace-status">Loading workspaces...</p>}
-      {error && <p className="userspace-error userspace-status">{error}</p>}
+      {/* === Floating status overlay (non-layout shifting) === */}
+      {hasStatusOverlayContent && statusOverlayVisible && (
+        <div
+          className={`userspace-status-overlay${statusOverlayFading ? ' is-fading' : ''}${statusOverlayPinned ? ' is-pinned' : ''}`}
+          role="status"
+          aria-live="polite"
+          tabIndex={0}
+          onMouseEnter={() => {
+            setStatusOverlayInteracting(true);
+            setStatusOverlayFading(false);
+          }}
+          onMouseLeave={() => setStatusOverlayInteracting(false)}
+          onFocusCapture={() => {
+            setStatusOverlayInteracting(true);
+            setStatusOverlayFading(false);
+          }}
+          onBlurCapture={(event) => {
+            if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              return;
+            }
+            setStatusOverlayInteracting(false);
+          }}
+          onClick={handleStatusOverlayClick}
+          title={statusOverlayPinned ? 'Pinned. Click to unpin and restore fade behavior.' : 'Click to pin this notification. Click again to unpin.'}
+        >
+          {loading && <p className="userspace-status userspace-status-overlay-item">Loading workspaces...</p>}
+          {creatingWorkspace && (
+            <p className="userspace-status userspace-status-overlay-item">
+              <Loader2 size={14} className="userspace-icon-spin" /> {creatingWorkspaceStatus || 'Bootstrapping workspace...'}
+            </p>
+          )}
+          {deletingWorkspaceId && (
+            <p className="userspace-status userspace-status-overlay-item">
+              <Loader2 size={14} className="userspace-icon-spin" /> {deletingWorkspaceStatus || 'Deleting workspace...'}
+            </p>
+          )}
+          {formattedError && !creatingWorkspace && !deletingWorkspaceId && (
+            <p className="userspace-error userspace-status userspace-status-overlay-item">{formattedError}</p>
+          )}
+        </div>
+      )}
 
       {/* === Rename inline editor === */}
       {editingName && activeWorkspace && (

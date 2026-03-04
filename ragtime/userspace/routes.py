@@ -2,28 +2,32 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 
 from ragtime.core.security import get_current_user, get_current_user_optional
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (CreateSnapshotRequest,
-                                      CreateWorkspaceRequest,
-                                      ExecuteComponentRequest,
-                                      ExecuteComponentResponse,
-                                      PaginatedWorkspacesResponse,
-                                      RestoreSnapshotResponse,
-                                      UpdateWorkspaceMembersRequest,
-                                      UpdateWorkspaceRequest,
-                                      UpdateWorkspaceShareAccessRequest,
-                                      UpdateWorkspaceShareSlugRequest,
-                                      UpsertWorkspaceFileRequest,
-                                      UserSpaceAvailableTool,
-                                      UserSpaceFileInfo, UserSpaceFileResponse,
-                                      UserSpaceSharedPreviewResponse,
-                                      UserSpaceSnapshot, UserSpaceWorkspace,
-                                      UserSpaceWorkspaceShareLink,
-                                      UserSpaceWorkspaceShareLinkStatus,
-                                      WorkspaceShareSlugAvailabilityResponse)
+from ragtime.userspace.models import (
+    CreateSnapshotRequest,
+    CreateWorkspaceRequest,
+    ExecuteComponentRequest,
+    ExecuteComponentResponse,
+    PaginatedWorkspacesResponse,
+    RestoreSnapshotResponse,
+    UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest,
+    UpdateWorkspaceShareSlugRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceAvailableTool,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot,
+    UserSpaceWorkspace,
+    UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceShareSlugAvailabilityResponse,
+)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -83,8 +87,8 @@ async def create_workspace(
     request: CreateWorkspaceRequest,
     user: Any = Depends(get_current_user),
 ):
-    request.selected_tool_ids = (
-        await _normalize_selected_tool_ids(request.selected_tool_ids) or []
+    request.selected_tool_ids = await _normalize_selected_tool_ids(
+        request.selected_tool_ids
     )
     return await userspace_service.create_workspace(request, user.id)
 
@@ -112,6 +116,11 @@ async def delete_workspace(
     user: Any = Depends(get_current_user),
 ):
     await userspace_service.enforce_workspace_role(workspace_id, user.id, "owner")
+    try:
+        await userspace_runtime_service.stop_runtime_session(workspace_id, user.id)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
     await repository.delete_workspace_conversations(workspace_id)
     await userspace_service.delete_workspace(workspace_id, user.id)
     return {"success": True}
@@ -149,7 +158,9 @@ async def upsert_workspace_file(
     result = await userspace_service.upsert_workspace_file(
         workspace_id, file_path, request, user.id
     )
-    await userspace_runtime_service.bump_workspace_generation(workspace_id, "file_upsert")
+    await userspace_runtime_service.bump_workspace_generation(
+        workspace_id, "file_upsert"
+    )
     return result
 
 
@@ -172,7 +183,9 @@ async def delete_workspace_file(
     user: Any = Depends(get_current_user),
 ):
     await userspace_service.delete_workspace_file(workspace_id, file_path, user.id)
-    await userspace_runtime_service.bump_workspace_generation(workspace_id, "file_delete")
+    await userspace_runtime_service.bump_workspace_generation(
+        workspace_id, "file_delete"
+    )
     return {"success": True}
 
 

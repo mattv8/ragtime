@@ -25,62 +25,41 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document as LangChainDocument
 
 from ragtime.config import settings
-from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
-from ragtime.core.embedding_models import (
-    get_embedding_model_context_limit,
-    get_embedding_models,
-)
-from ragtime.core.file_constants import (
-    BINARY_EXTENSIONS,
-    MINIFIED_PATTERNS,
-    PARSEABLE_DOCUMENT_EXTENSIONS,
-    UNPARSEABLE_BINARY_EXTENSIONS,
-    get_embedding_safety_margin,
-)
+from ragtime.core.app_settings import (get_app_settings,
+                                       invalidate_settings_cache)
+from ragtime.core.embedding_models import (get_embedding_model_context_limit,
+                                           get_embedding_models)
+from ragtime.core.file_constants import (BINARY_EXTENSIONS, MINIFIED_PATTERNS,
+                                         PARSEABLE_DOCUMENT_EXTENSIONS,
+                                         UNPARSEABLE_BINARY_EXTENSIONS,
+                                         get_embedding_safety_margin)
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
-from ragtime.indexer.chunking import (
-    chunk_documents_parallel,
-    is_context_length_error,
-    rechunk_documents_batch,
-    rechunk_oversized_content,
-    shutdown_process_pool,
-)
-from ragtime.indexer.document_parser import OCR_EXTENSIONS, extract_text_from_file_async
-from ragtime.indexer.file_utils import (
-    HARDCODED_EXCLUDES,
-    build_authenticated_git_url,
-    extract_archive,
-    find_source_dir,
-)
+from ragtime.indexer.chunking import (chunk_documents_parallel,
+                                      is_context_length_error,
+                                      rechunk_documents_batch,
+                                      rechunk_oversized_content,
+                                      shutdown_process_pool)
+from ragtime.indexer.document_parser import (OCR_EXTENSIONS,
+                                             extract_text_from_file_async)
+from ragtime.indexer.file_utils import (HARDCODED_EXCLUDES,
+                                        build_authenticated_git_url,
+                                        extract_archive, find_source_dir)
 from ragtime.indexer.llm_exclusions import get_smart_exclusion_suggestions
-from ragtime.indexer.memory_utils import (
-    estimate_index_memory,
-    estimate_memory_at_dimensions,
-    get_embedding_dimension,
-)
-from ragtime.indexer.models import (
-    AnalyzeIndexRequest,
-    AppSettings,
-    CommitHistoryInfo,
-    CommitHistorySample,
-    FileTypeStats,
-    IndexAnalysisResult,
-    IndexConfig,
-    IndexInfo,
-    IndexJob,
-    IndexStatus,
-    MemoryEstimate,
-    OcrMode,
-    VectorStoreType,
-)
+from ragtime.indexer.memory_utils import (estimate_index_memory,
+                                          estimate_memory_at_dimensions,
+                                          get_embedding_dimension)
+from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
+                                    CommitHistoryInfo, CommitHistorySample,
+                                    FileTypeStats, IndexAnalysisResult,
+                                    IndexConfig, IndexInfo, IndexJob,
+                                    IndexStatus, MemoryEstimate, OcrMode,
+                                    VectorStoreType)
 from ragtime.indexer.repository import repository
-from ragtime.indexer.vector_utils import (
-    EMBEDDING_SUB_BATCH_SIZE,
-    append_embedding_dimension_warning,
-    embed_documents_subbatched,
-    get_embeddings_model,
-)
+from ragtime.indexer.vector_utils import (EMBEDDING_SUB_BATCH_SIZE,
+                                          append_embedding_dimension_warning,
+                                          embed_documents_subbatched,
+                                          get_embeddings_model)
 from ragtime.tools.git_history import _is_shallow_repository
 
 logger = get_logger(__name__)
@@ -114,9 +93,8 @@ async def generate_index_description(
 
         if provider == "ollama":
             try:
-                from langchain_ollama import (
-                    ChatOllama,
-                )  # type: ignore[reportMissingImports]
+                from langchain_ollama import \
+                    ChatOllama  # type: ignore[reportMissingImports]
 
                 base_url = app_settings.get("ollama_base_url", "http://localhost:11434")
                 model = app_settings.get("llm_model", "llama3.2")
@@ -129,9 +107,8 @@ async def generate_index_description(
             api_key = app_settings.get("anthropic_api_key", "")
             if api_key:
                 try:
-                    from langchain_anthropic import (
-                        ChatAnthropic,
-                    )  # type: ignore[import-untyped]
+                    from langchain_anthropic import \
+                        ChatAnthropic  # type: ignore[import-untyped]
 
                     model = app_settings.get("llm_model", "claude-sonnet-4-20250514")
                     llm = ChatAnthropic(
@@ -2233,6 +2210,29 @@ class IndexerService:
         if not job.git_url:
             raise ValueError("Git URL is required for git source type")
 
+        def repo_git_args(*args: str) -> List[str]:
+            # Scope safe.directory trust to this repo for this command only.
+            # This handles cases where directory ownership changed after initial clone.
+            return [
+                "git",
+                "-c",
+                f"safe.directory={repo_dir.resolve()}",
+                *args,
+            ]
+
+        def format_dubious_ownership_error(
+            error_msg: str, operation: str
+        ) -> Optional[str]:
+            if "detected dubious ownership" not in error_msg:
+                return None
+            repo_path = repo_dir.resolve()
+            return (
+                f"Git {operation} failed: repository permissions changed for '{repo_path}'. "
+                "Fix by running this inside the ragtime container: "
+                f"`git config --global --add safe.directory {repo_path}` "
+                "or by restoring ownership so the runtime user owns that directory."
+            )
+
         logger.info(f"Fetching updates for {job.git_url} branch {job.git_branch}")
         job.error_message = "Fetching latest changes..."
         await repository.update_job(job)
@@ -2240,15 +2240,23 @@ class IndexerService:
         # Update remote URL with current token (in case token changed)
         # Run in thread to avoid blocking event loop
         fetch_url = build_authenticated_git_url(job.git_url, job.git_token)
-        await asyncio.to_thread(
+        remote_result = await asyncio.to_thread(
             subprocess.run,
-            ["git", "remote", "set-url", "origin", fetch_url],
+            repo_git_args("remote", "set-url", "origin", fetch_url),
             cwd=repo_dir,
             capture_output=True,
             text=True,
             timeout=10,
             check=False,
         )
+        if remote_result.returncode != 0:
+            remote_error = remote_result.stderr or remote_result.stdout
+            ownership_error = format_dubious_ownership_error(
+                remote_error, "remote update"
+            )
+            if ownership_error:
+                raise RuntimeError(ownership_error)
+            raise RuntimeError(f"Git remote update failed: {remote_error}")
 
         env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
         clone_timeout_minutes = self._compute_clone_timeout_minutes(job.config)
@@ -2261,7 +2269,7 @@ class IndexerService:
         try:
             depth_result = await asyncio.to_thread(
                 subprocess.run,
-                ["git", "rev-list", "--count", "HEAD"],
+                repo_git_args("rev-list", "--count", "HEAD"),
                 cwd=repo_dir,
                 capture_output=True,
                 text=True,
@@ -2284,25 +2292,26 @@ class IndexerService:
         branch = job.git_branch or "main"
         if history_depth == 0 and is_shallow:
             logger.info("Unshallowing repo for full history")
-            fetch_args = ["git", "fetch", "--unshallow", "--progress", "origin", branch]
+            fetch_args = repo_git_args(
+                "fetch", "--unshallow", "--progress", "origin", branch
+            )
         elif history_depth > current_depth and is_shallow:
             deepen_amount = history_depth - current_depth
             logger.info(
                 f"Deepening repo from {current_depth} to {history_depth} commits (+{deepen_amount})"
             )
-            fetch_args = [
-                "git",
+            fetch_args = repo_git_args(
                 "fetch",
                 f"--deepen={deepen_amount}",
                 "--progress",
                 "origin",
                 branch,
-            ]
+            )
         else:
             logger.info(
                 f"Fetching latest changes (depth: {current_depth} -> {history_depth})"
             )
-            fetch_args = ["git", "fetch", "--progress", "origin", branch]
+            fetch_args = repo_git_args("fetch", "--progress", "origin", branch)
 
         try:
             process = await asyncio.create_subprocess_exec(
@@ -2330,6 +2339,9 @@ class IndexerService:
 
         if process.returncode != 0:
             error_msg = stderr_output
+            ownership_error = format_dubious_ownership_error(error_msg, "fetch")
+            if ownership_error:
+                raise RuntimeError(ownership_error)
             if (
                 "could not read Username" in error_msg
                 or "Authentication failed" in error_msg
@@ -2343,7 +2355,7 @@ class IndexerService:
         # Reset to the fetched branch - run in thread to avoid blocking
         reset_result = await asyncio.to_thread(
             subprocess.run,
-            ["git", "reset", "--hard", f"origin/{branch}"],
+            repo_git_args("reset", "--hard", f"origin/{branch}"),
             cwd=repo_dir,
             capture_output=True,
             text=True,
@@ -2351,7 +2363,11 @@ class IndexerService:
             check=False,
         )
         if reset_result.returncode != 0:
-            raise RuntimeError(f"Git reset failed: {reset_result.stderr}")
+            reset_error = reset_result.stderr or reset_result.stdout
+            ownership_error = format_dubious_ownership_error(reset_error, "reset")
+            if ownership_error:
+                raise RuntimeError(ownership_error)
+            raise RuntimeError(f"Git reset failed: {reset_error}")
 
         logger.info("Fetch complete")
 

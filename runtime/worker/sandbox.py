@@ -97,9 +97,12 @@ _CHROOT_USR_INCLUDE_PATHS = (
     "local/bin",
     "local/sbin",
     "local/lib",
+    "share/nodejs",
     "share/zoneinfo",
     "share/terminfo",
 )
+_CHROOT_USR_SYNC_VERSION = "4"
+_CHROOT_USR_SYNC_STAMP = ".ragtime_usr_sync_version"
 
 # ---------------------------------------------------------------------------
 # Capability detection
@@ -227,8 +230,6 @@ def provision_rootfs(spec: SandboxSpec) -> None:
     # need a full copy.  Uses dirs_exist_ok=True (idempotent).
     workspace_src = spec.workspace_files_path
     if workspace_src.is_dir():
-        import shutil
-
         try:
             shutil.copytree(
                 str(workspace_src),
@@ -302,6 +303,31 @@ def _provision_etc(rootfs: Path) -> None:
             "passwd: files\ngroup: files\nhosts: files dns\n",
             encoding="utf-8",
         )
+
+    # /etc/ld.so.conf — tell the dynamic linker where to find shared libs
+    ld_so_conf = etc / "ld.so.conf"
+    if not ld_so_conf.exists():
+        ld_so_conf.write_text(
+            "/usr/local/lib\n"
+            "/usr/local/lib/x86_64-linux-gnu\n"
+            "/usr/lib/x86_64-linux-gnu\n"
+            "/lib/x86_64-linux-gnu\n",
+            encoding="utf-8",
+        )
+
+    # /etc/ssl — CA certificates so npm/curl/wget can verify TLS
+    host_ssl = Path("/etc/ssl")
+    sandbox_ssl = etc / "ssl"
+    if host_ssl.is_dir() and not sandbox_ssl.exists():
+        try:
+            shutil.copytree(
+                str(host_ssl),
+                str(sandbox_ssl),
+                symlinks=True,
+                ignore_dangling_symlinks=True,
+            )
+        except Exception:
+            pass  # Non-fatal — npm will still work with --strict-ssl=false
 
 
 def _provision_dev(rootfs: Path) -> None:
@@ -618,18 +644,38 @@ def _sync_system_dirs_for_chroot(spec: SandboxSpec) -> None:
     from entries such as ``/bin/X11``.
     """
     rootfs = spec.rootfs_path
+    usr_dst = rootfs / "usr"
+    usr_stamp = rootfs / _CHROOT_USR_SYNC_STAMP
+    usr_stamp_value = ""
+    if usr_stamp.exists() and usr_stamp.is_file():
+        try:
+            usr_stamp_value = usr_stamp.read_text(encoding="utf-8").strip()
+        except Exception:
+            usr_stamp_value = ""
+    usr_needs_sync = (
+        usr_stamp_value != _CHROOT_USR_SYNC_VERSION
+        or not usr_dst.exists()
+        or not any(usr_dst.iterdir())
+    )
 
     for d in _HOST_RO_BIND_DIRS:
         src = Path(d)
         if not src.is_dir():
             continue
         dst = rootfs / d.lstrip("/")
-        if dst.exists() and any(dst.iterdir()):
-            # Already populated (from a previous session)
-            continue
         try:
             if src == Path("/usr"):
-                _sync_usr_for_chroot(src, dst)
+                if usr_needs_sync:
+                    _sync_usr_for_chroot(src, dst)
+                    usr_stamp.parent.mkdir(parents=True, exist_ok=True)
+                    usr_stamp.write_text(
+                        _CHROOT_USR_SYNC_VERSION,
+                        encoding="utf-8",
+                    )
+                continue
+            if dst.exists() and any(dst.iterdir()):
+                # Already populated (from a previous session)
+                continue
             else:
                 shutil.copytree(
                     str(src),
@@ -693,17 +739,50 @@ def _sync_usr_for_chroot(src_usr: Path, dst_usr: Path) -> None:
     """Sync a minimal, runtime-focused subset of /usr for chroot fallback.
 
     Copying all of /usr in no-mount chroot mode can create very large rootfs
-    trees. This function keeps the payload bounded to binaries/libs and small
-    runtime metadata needed by common tools.
-    """
+    trees.  This function keeps the payload bounded to binaries/libs and
+    small runtime metadata needed by common tools (including Node/npm).
 
+    Symlink safety
+    --------------
+    * ``shutil.copytree(symlinks=True)`` preserves symlinks as-is (no
+      recursion into symlinked directories).
+    * ``ignore_dangling_symlinks=True`` silently skips source symlinks
+      whose targets do not exist on the host.
+    * ``dirs_exist_ok=True`` allows incremental updates without rmtree.
+    * Self-referential symlinks inside ``/usr/share/nodejs`` (e.g.
+      ``libnpmteam/node_modules -> ../npm/node_modules``) are preserved
+      and resolve correctly after chroot because the full subtree is
+      present.
+    * External relative symlinks (e.g. ``../../javascript/...``) will
+      dangle inside the sandbox — acceptable since those are optional
+      assets (prettify, man pages) and Node/npm do not depend on them.
+    * ``_link_or_copy`` is the copy function for regular files only
+      (not called for symlinks); it tries a hard-link first and falls
+      back to ``shutil.copy2``.
+    """
     dst_usr.mkdir(parents=True, exist_ok=True)
     for rel in _CHROOT_USR_INCLUDE_PATHS:
         src = src_usr / rel
         if not src.exists():
             continue
+        # Skip source paths that are themselves symlinks pointing outside
+        # the expected /usr subtree (prevents following unexpected mounts).
+        if src.is_symlink():
+            try:
+                resolved = src.resolve(strict=True)
+                if not str(resolved).startswith("/usr/"):
+                    logger.debug(
+                        "Skipping external symlink in /usr sync: %s -> %s",
+                        src,
+                        resolved,
+                    )
+                    continue
+            except OSError:
+                continue  # dangling symlink
         dst = dst_usr / rel
         if src.is_dir():
+            if dst.exists() and any(dst.iterdir()):
+                continue
             shutil.copytree(
                 str(src),
                 str(dst),
@@ -713,24 +792,27 @@ def _sync_usr_for_chroot(src_usr: Path, dst_usr: Path) -> None:
                 copy_function=_link_or_copy,
             )
         else:
+            if dst.exists():
+                continue
             dst.parent.mkdir(parents=True, exist_ok=True)
             _link_or_copy(str(src), str(dst))
 
 
 def _link_or_copy(src: str, dst: str) -> None:
-    """Try hard link, fall back to copy."""
+    """Try hard link for a regular file, fall back to copy.
+
+    Only called by ``shutil.copytree`` for regular files (not symlinks).
+    Hard-links share inode/pages with the host and save disk; when they
+    fail (cross-device, read-only source, etc.) we fall back to copy2.
+    """
     try:
         os.link(src, dst)
     except OSError:
-        import shutil
-
         shutil.copy2(src, dst)
 
 
 def _copy_file(src: str, dst: str) -> None:
     """Copy a file, replacing destination when present."""
-    import shutil
-
     shutil.copy2(src, dst)
 
 
@@ -800,8 +882,9 @@ def sandbox_env(
         "LOGNAME": "root",
         "HOSTNAME": "sandbox",
         "PWD": spec.sandbox_workspace,
-        "NODE_PATH": "/usr/local/lib/node_modules",
+        "NODE_PATH": "/usr/local/lib/node_modules:/usr/lib/nodejs:/usr/lib/x86_64-linux-gnu/nodejs:/usr/share/nodejs",
         "TMPDIR": "/tmp",
+        "LD_LIBRARY_PATH": "/usr/local/lib:/usr/lib:/lib",
     }
     if extra_env:
         env.update(extra_env)

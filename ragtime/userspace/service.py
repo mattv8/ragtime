@@ -194,7 +194,6 @@ def _normalize_string_list(values: Any) -> list[str]:
 
 def _requires_live_data_contract(
     relative_path: str,
-    artifact_type: ArtifactType | None,
     live_data_requested: bool,
     workspace_has_tools: bool = False,
 ) -> bool:
@@ -209,7 +208,7 @@ def _requires_live_data_contract(
     # not need their own live data wiring.
     is_dashboard_entry = normalized_path == "dashboard/main.ts"
     if is_dashboard_entry and workspace_has_tools:
-        return True
+        return live_data_requested
 
     # All other module sources: only when explicitly requested.
     return live_data_requested
@@ -1190,7 +1189,12 @@ class UserSpaceService:
             }
         )
 
-        for tool_id in request.selected_tool_ids:
+        requested_tool_ids = request.selected_tool_ids
+        if requested_tool_ids is None:
+            enabled_tools = await db.toolconfig.find_many(where={"enabled": True})
+            requested_tool_ids = [str(tool.id) for tool in enabled_tools if tool.id]
+
+        for tool_id in requested_tool_ids:
             tool = await db.toolconfig.find_unique(where={"id": tool_id})
             if not tool or not tool.enabled:
                 continue
@@ -1812,7 +1816,6 @@ class UserSpaceService:
         workspace_has_tools = bool(workspace.selected_tool_ids)
         if not skip_live_data_enforcement and _requires_live_data_contract(
             relative_path,
-            request.artifact_type,
             request.live_data_requested,
             workspace_has_tools=workspace_has_tools,
         ):
@@ -1875,7 +1878,6 @@ class UserSpaceService:
 
         if not skip_live_data_enforcement and _requires_live_data_contract(
             relative_path,
-            request.artifact_type,
             request.live_data_requested,
             workspace_has_tools=workspace_has_tools,
         ):

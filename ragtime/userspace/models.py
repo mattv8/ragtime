@@ -53,7 +53,13 @@ class CreateWorkspaceRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=1000)
     sqlite_persistence_mode: SqlitePersistenceMode = "exclude"
-    selected_tool_ids: list[str] = Field(default_factory=list)
+    selected_tool_ids: list[str] | None = Field(
+        default=None,
+        description=(
+            "Workspace-selected tool config IDs. When omitted, all enabled tools "
+            "are selected by default."
+        ),
+    )
 
 
 class UpdateWorkspaceRequest(BaseModel):

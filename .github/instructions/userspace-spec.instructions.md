@@ -71,6 +71,38 @@ Last updated: 2026-03-03 (codebase-scanned; concise agent-focused)
 - Worker PTY sessions use `pty_access_token` for terminal access authentication.
 - Screenshot capture is available via Playwright (`runtime/worker/screenshot.js`, invoked by `capture_screenshot` in service).
 
+### Symlink Safety in sandbox.py (Critical — Read Before Any Change)
+
+Modifying `_sync_usr_for_chroot`, `_sync_system_dirs_for_chroot`, `provision_rootfs`, or `_CHROOT_USR_INCLUDE_PATHS` can introduce symlink loops, infinite recursion during copy, or broken sandbox environments. Before making changes:
+
+1. **Audit the source directory for symlinks first.** Run inside the runtime container:
+   ```bash
+   # Count and classify symlinks in the source tree
+   docker exec runtime-dev sh -c 'find <SOURCE_DIR> -type l | wc -l'
+   # Identify self-referential symlinks (loops)
+   docker exec runtime-dev sh -c 'find <SOURCE_DIR> -type l -exec sh -c \
+     "t=\$(readlink -f \"{}\" 2>/dev/null); case \"\$t\" in <SOURCE_DIR>*) \
+     echo \"SELF: {} -> \$t\";; esac" \;'
+   # Identify external symlinks (will dangle after chroot)
+   docker exec runtime-dev sh -c 'find <SOURCE_DIR> -type l -exec sh -c \
+     "t=\$(readlink -f \"{}\" 2>/dev/null); case \"\$t\" in <SOURCE_DIR>*) ;; \
+     *) echo \"EXT: {} -> \$t\";; esac" \;'
+   ```
+2. **Never use `shutil.copytree` without `symlinks=True`** — omitting this flag causes copytree to follow symlinks as if they were real directories, which triggers infinite recursion on self-referencing links like `/usr/bin/X11 -> .`.
+3. **Always pass `ignore_dangling_symlinks=True`** — Debian packages frequently include relative symlinks to optional peer packages (e.g. `../../javascript/...`) that may not be installed.
+4. **Never `rmtree` a directory that may be a running process's cwd** — especially `/workspace` inside rootfs. Use `dirs_exist_ok=True` for incremental updates instead.
+5. **Guard top-level include paths against external symlink traversal** — if a path in `_CHROOT_USR_INCLUDE_PATHS` is itself a symlink resolving outside `/usr/`, skip it rather than following it into unexpected host filesystem areas.
+6. **Bump `_CHROOT_USR_SYNC_VERSION`** when changing `_CHROOT_USR_INCLUDE_PATHS` or `/usr` sync logic — this triggers a one-time resync for existing workspace rootfs trees via the stamp file (`.ragtime_usr_sync_version`).
+7. **Known safe symlink patterns in the current image:**
+   - `/usr/bin/X11 -> .` and `/bin/X11 -> .` (Debian self-ref convention) — safe with `symlinks=True`.
+   - 20+ intra-`/usr/share/nodejs` symlinks (e.g. `libnpmteam/node_modules -> ../npm/node_modules`) — resolve correctly after chroot because the full subtree is copied.
+   - 20+ external relative symlinks in `/usr/share/nodejs` to `/usr/share/javascript/*` and `/usr/share/man` — dangle harmlessly; not required by Node/npm.
+8. **Validate after any change** by deleting a test workspace rootfs and running a sandboxed command:
+   ```bash
+   docker exec runtime-dev sh -c 'rm -rf /data/_userspace/workspaces/<test_id>/rootfs'
+   # Then spawn a sandboxed process and verify exit=0
+   ```
+
 ## Non-Obvious Product Constraints
 
 - Current runtime backend is manager/worker orchestration (provider name `microvm_pool_v1` is a label, not actual MicroVM leasing).

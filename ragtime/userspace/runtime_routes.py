@@ -43,6 +43,11 @@ router = APIRouter(prefix="/indexes/userspace", tags=["User Space Runtime"])
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 
 
+async def _safe_close_websocket(websocket: WebSocket, code: int) -> None:
+    with contextlib.suppress(Exception):
+        await websocket.close(code=code)
+
+
 async def _broadcast_collab_message(
     workspace_id: str,
     file_path: str,
@@ -124,7 +129,7 @@ async def _proxy_websocket_request(
     try:
         websockets_module = importlib.import_module("websockets")
     except Exception:
-        await websocket.close(code=1011)
+        await _safe_close_websocket(websocket, code=1011)
         return
 
     await websocket.accept()
@@ -141,7 +146,11 @@ async def _proxy_websocket_request(
         )
 
     try:
-        async with websockets_module.connect(upstream_url, max_size=None) as upstream:
+        async with websockets_module.connect(
+            upstream_url,
+            max_size=None,
+            open_timeout=20,
+        ) as upstream:
 
             async def downstream_to_upstream() -> None:
                 while True:
@@ -183,8 +192,20 @@ async def _proxy_websocket_request(
                 task.result()
     except WebSocketDisconnect:
         return
+    except TimeoutError:
+        with contextlib.suppress(Exception):
+            await websocket.send_text(
+                json.dumps(
+                    {
+                        "type": "status",
+                        "read_only": read_only,
+                        "message": "Runtime terminal is still starting. Reconnecting...",
+                    }
+                )
+            )
+        await _safe_close_websocket(websocket, code=1011)
     except Exception:
-        await websocket.close(code=1011)
+        await _safe_close_websocket(websocket, code=1011)
 
 
 async def _proxy_http_request(
