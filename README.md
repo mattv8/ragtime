@@ -279,6 +279,10 @@ FAISS indexes are loaded into memory at startup; pgvector indexes stay in Postgr
          RUNTIME_RECONCILE_INTERVAL_SECONDS: ${RUNTIME_RECONCILE_INTERVAL_SECONDS:-15}
        volumes:
          - ./data:/data
+       # Uncomment below to enable full runtime sandbox isolation (pivot_root + mount namespace)
+       # privileged: true
+       # cap_add:
+       #   - SYS_ADMIN
        networks:
          - ragtime-network
        healthcheck:
