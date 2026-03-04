@@ -46,6 +46,21 @@ export default defineConfig({
         changeOrigin: true,
         ws: true,
         secure: false, // Allow self-signed certs
+        configure: (proxy) => {
+          // Suppress noisy WebSocket proxy errors (socket hang up, timeouts)
+          // that occur during normal runtime startup/shutdown cycles
+          proxy.on('error', (err, _req, res) => {
+            const msg = (err as NodeJS.ErrnoException).message || '';
+            if (msg.includes('socket hang up') || msg.includes('ECONNRESET') || msg.includes('ECONNREFUSED')) {
+              return; // Expected during runtime transitions
+            }
+            // For non-WebSocket responses, send a 502 if headers haven't been sent
+            if (res && 'writeHead' in res && !(res as any).headersSent) {
+              (res as any).writeHead(502, { 'Content-Type': 'text/plain' });
+              (res as any).end('Proxy error');
+            }
+          });
+        },
       },
     },
   },

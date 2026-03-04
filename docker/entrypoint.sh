@@ -20,6 +20,7 @@ API_PORT=${API_PORT:-8001}
 DEBUG_MODE=${DEBUG_MODE:-false}
 ENABLE_HTTPS=${ENABLE_HTTPS:-false}
 INDEX_DATA_PATH=${INDEX_DATA_PATH:-/data}
+UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN=${UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN:-5}
 
 if [ "$DEBUG_MODE" = "true" ]; then
     log "WARNING" "Running in DEBUG mode"
@@ -194,12 +195,29 @@ if [ "$DEBUG_MODE" = "true" ]; then
 
     # Build uvicorn command with optional SSL
     # Use custom logging config for consistent formatting
-    UVICORN_CMD="uvicorn ragtime.main:app --host 0.0.0.0 --port $PORT --reload --reload-dir /ragtime/ragtime --log-config /ragtime/ragtime/core/logging_config.json"
+    UVICORN_CMD=(
+        uvicorn ragtime.main:app
+        --host 0.0.0.0
+        --port "$PORT"
+        --reload
+        --timeout-graceful-shutdown "$UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN"
+        --reload-dir /ragtime/ragtime
+        --reload-exclude "ragtime/frontend/node_modules"
+        --reload-exclude "ragtime/frontend/node_modules/**"
+        --reload-exclude "ragtime/frontend/dist"
+        --reload-exclude "ragtime/frontend/dist/**"
+        --reload-exclude "ragtime/frontend/.vite"
+        --reload-exclude "ragtime/frontend/.vite/**"
+        --reload-exclude "ragtime/frontend/node_modules/.vite-temp"
+        --reload-exclude "ragtime/frontend/node_modules/.vite-temp/**"
+        --reload-exclude "ragtime/**/__pycache__/*"
+        --log-config /ragtime/ragtime/core/logging_config.json
+    )
     if [ "$ENABLE_HTTPS" = "true" ]; then
-        UVICORN_CMD="$UVICORN_CMD --ssl-keyfile=$SSL_KEY_FILE --ssl-certfile=$SSL_CERT_FILE"
+        UVICORN_CMD+=(--ssl-keyfile="$SSL_KEY_FILE" --ssl-certfile="$SSL_CERT_FILE")
     fi
 
-    $UVICORN_CMD &
+    "${UVICORN_CMD[@]}" &
 
     # Wait for backend to be ready (up to 30s) before starting frontend
     log "INFO" "Waiting for backend to be ready on port $PORT..."
