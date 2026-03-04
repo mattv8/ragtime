@@ -30,8 +30,10 @@ from runtime.manager.models import (
 from runtime.shared import (
     RUNTIME_BOOTSTRAP_CONFIG_PATH,
     RUNTIME_BOOTSTRAP_STAMP_PATH,
+    EntrypointStatus,
     RuntimeSessionState,
     normalize_file_path,
+    parse_entrypoint_config,
 )
 from runtime.worker.sandbox import (
     SANDBOX_WORKSPACE_MOUNT,
@@ -240,23 +242,19 @@ class WorkerService:
             return int(sock.getsockname()[1])
 
     def _read_runtime_entrypoint_config(self, workspace_root: Path) -> dict[str, str]:
-        config_path = workspace_root / self._runtime_config_file
-        if not config_path.exists() or not config_path.is_file():
+        """Read entrypoint config via the shared canonical parser.
+
+        Returns the same dict shape as the old ad-hoc reader for backward
+        compatibility with callers that expect ``{command, cwd, framework}``.
+        """
+        status = parse_entrypoint_config(workspace_root)
+        if status.state == "missing":
             return {}
-        try:
-            raw = json.loads(config_path.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-        if not isinstance(raw, dict):
-            return {}
-        command = str(raw.get("command") or "").strip()
-        cwd = str(raw.get("cwd") or "").strip().replace("\\", "/")
-        framework = str(raw.get("framework") or "").strip().lower()
-        return {
-            "command": command,
-            "cwd": cwd,
-            "framework": framework,
-        }
+        return dict(status.raw) if status.raw else {}
+
+    def _get_entrypoint_status(self, workspace_root: Path) -> EntrypointStatus:
+        """Return canonical entrypoint status for a workspace."""
+        return parse_entrypoint_config(workspace_root)
 
     def _read_runtime_bootstrap_config(
         self, workspace_root: Path

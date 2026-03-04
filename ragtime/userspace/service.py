@@ -21,6 +21,7 @@ from ragtime.config import settings
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
+from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
 from ragtime.core.logging import get_logger
 from ragtime.core.sql_utils import (
     DB_TYPE_POSTGRES,
@@ -501,6 +502,31 @@ class UserSpaceService:
             json.dumps(self._default_runtime_entrypoint_config(), indent=2) + "\n",
             encoding="utf-8",
         )
+
+    def get_workspace_entrypoint_status(self, workspace_id: str) -> EntrypointStatus:
+        """Return the canonical entrypoint status for *workspace_id*.
+
+        Uses the shared :func:`runtime.shared.parse_entrypoint_config`
+        parser so that the ragtime app and the runtime worker always agree
+        on what constitutes a valid/missing/invalid entrypoint.
+        """
+        return parse_entrypoint_config(self._workspace_files_dir(workspace_id))
+
+    def is_default_static_entrypoint(self, workspace_id: str) -> bool:
+        """Return True when the entrypoint is the seeded default static server.
+
+        The default seed (``python3 -m http.server ...``, framework ``static``)
+        is semantically valid JSON but not a real user/agent choice.  Prompt
+        nudges should treat this the same as a missing entrypoint so the agent
+        is encouraged to choose a proper framework.
+        """
+        status = self.get_workspace_entrypoint_status(workspace_id)
+        if status.state != "valid":
+            return False
+        default = self._default_runtime_entrypoint_config()
+        return status.command == default.get("command", "") and (
+            status.framework or ""
+        ) == default.get("framework", "")
 
     def _workspace_git_dir(self, workspace_id: str) -> Path:
         return self._workspace_files_dir(workspace_id) / ".git"

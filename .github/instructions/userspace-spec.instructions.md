@@ -41,6 +41,22 @@ Last updated: 2026-03-03 (codebase-scanned; concise agent-focused)
 - Keep launch commands `$PORT`-aware and bound to `0.0.0.0` for proxy reachability.
 - SQLite migration runner and migration files are agent-managed (created via file tools and executed via terminal tool). They are NOT auto-seeded or auto-bootstrapped. The `sqlite_migrate.py` template has been removed; only `dashboard_entrypoint.js` remains in `templates/`.
 
+## Entrypoint Status + Framework Lock-In
+
+- Canonical entrypoint parsing lives in `runtime/shared.py` (`parse_entrypoint_config`, `EntrypointStatus`).
+- Both the runtime worker (`runtime/worker/service.py`) and the ragtime prompt builder (`ragtime/rag/components.py`) use this shared parser, so the definition of valid/invalid/missing is always consistent.
+- `EntrypointStatus.state` is one of: `missing` (file absent), `invalid` (present but no command or malformed), `valid` (has a usable command).
+- `EntrypointStatus.framework_known` indicates whether the framework value is in the recognised set (`KNOWN_FRAMEWORKS` in `runtime/shared.py`).
+- `UserSpaceService.is_default_static_entrypoint()` detects the auto-seeded default (`python3 -m http.server`, framework `static`). The prompt layer treats this as equivalent to missing so the agent is nudged to choose a real framework.
+
+### Dynamic System Prompt Behaviour
+
+- When entrypoint is **missing or default-static**: system prompt includes `_USERSPACE_ENTRYPOINT_MISSING_NUDGE` (lightweight suggestion to choose a framework based on the user's request) plus the full `USERSPACE_ENTRYPOINT_SETUP_PROMPT` (runtime contract, examples, module dashboard mode, dependencies).
+- When entrypoint is **invalid**: system prompt includes a fix-required notice with the specific error plus the full setup prompt.
+- When entrypoint is **valid with a real framework**: system prompt includes only a compact `_USERSPACE_ENTRYPOINT_LOCKED_TEMPLATE` (framework name, command, cwd) and omits all setup guidance.
+- This is built by `build_userspace_entrypoint_nudge()` in `ragtime/rag/components.py` and appended per-request in `_build_request_runtime_context`.
+- The base userspace prompt (`USERSPACE_MODE_PROMPT_ADDITION`) always includes persistence rules, data wiring, file workflow, theme/CSS, terminal, and resilient data loading regardless of entrypoint state.
+
 ## Live Data + SQLite Contract (Critical)
 
 - Persistent dashboard data must be live-wired from selected tools via `context.components[componentId].execute()`.

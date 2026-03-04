@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
+from ragtime.core.entrypoint_status import FRAMEWORK_REQUIRED_PACKAGES, EntrypointStatus
 from ragtime.core.file_constants import (
     USERSPACE_MODULE_SOURCE_EXTENSIONS,
     USERSPACE_STRICT_FRONTEND_EXTENSIONS,
@@ -498,22 +499,8 @@ Default to hiding unless the user benefits from seeing technical details.
 """
 
 
-# Maps entrypoint framework names to (manifest_file, package_names) so the
-# validator can warn the agent when framework dependencies are absent.
-_FRAMEWORK_REQUIRED_PACKAGES: dict[str, tuple[str, list[str]]] = {
-    # Python frameworks -> requirements.txt
-    "flask": ("requirements.txt", ["flask"]),
-    "django": ("requirements.txt", ["django"]),
-    "fastapi": ("requirements.txt", ["fastapi", "uvicorn"]),
-    "streamlit": ("requirements.txt", ["streamlit"]),
-    "dash": ("requirements.txt", ["dash"]),
-    "gradio": ("requirements.txt", ["gradio"]),
-    # Node frameworks -> package.json
-    "express": ("package.json", ["express"]),
-    "next": ("package.json", ["next"]),
-    "nuxt": ("package.json", ["nuxt"]),
-    "vite": ("package.json", ["vite"]),
-}
+# Alias for backward compat — canonical registry lives in entrypoint_status.
+_FRAMEWORK_REQUIRED_PACKAGES = FRAMEWORK_REQUIRED_PACKAGES
 
 # Source file extensions eligible for hardcoded data pattern scanning.
 _HARDCODED_DATA_SOURCE_EXTENSIONS: tuple[str, ...] = (
@@ -956,48 +943,6 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Do not treat each file as an independent rendered page; compose routes, breadcrumbs, and shell navigation inside the single app rooted at `dashboard/main.ts`.
 - When adding files, preserve a clear module boundary and reusable naming conventions.
 
-### Runtime contract (must follow)
-
-- User Space preview runs in a Node.js-managed devserver/runtime session (not browser `srcDoc` execution).
-- The workspace must define launch behavior in `.ragtime/runtime-entrypoint.json` (`command`, optional `cwd`, optional `framework`).
-- If the runtime entrypoint is missing/invalid, preview fails with: `No runnable web entrypoint found. Add .ragtime/runtime-entrypoint.json with a command/cwd/framework.`
-
-#### Runtime entrypoint (always create/update)
-
-- `.ragtime/runtime-entrypoint.json` is the **authoritative** launch configuration. Always create or update it when generating workspace code.
-- Format: `{{"command": "<launch command>", "cwd": ".", "framework": "<framework>"}}`
-- Use `$PORT` as a placeholder for the runtime-assigned port. The runtime sets `PORT=<actual_port>` as an environment variable before executing the command, so `$PORT` is expanded by the shell.
-- Framework values: `static`, `node`, `django`, `flask`, `fastapi`, `custom`.
-- Examples:
-  - Static HTML: `{{"command": "python3 -m http.server $PORT --bind 0.0.0.0 --directory .", "cwd": ".", "framework": "static"}}`
-  - Node/esbuild: `{{"command": "npx esbuild dashboard/main.ts --bundle --format=esm --outfile=dist/main.js --servedir=. --serve=0.0.0.0:$PORT --watch=forever", "cwd": ".", "framework": "node"}}`
-  - Django: `{{"command": "python3 manage.py runserver 0.0.0.0:$PORT", "cwd": ".", "framework": "django"}}`
-  - Flask: `{{"command": "python3 -m flask run --host 0.0.0.0 --port $PORT", "cwd": ".", "framework": "flask"}}`
-  - FastAPI: `{{"command": "python3 -m uvicorn main:app --host 0.0.0.0 --port $PORT", "cwd": ".", "framework": "fastapi"}}`
-- Never hard-code port numbers in the entrypoint command; always use `$PORT`.
-- Always bind to `0.0.0.0` (not `127.0.0.1` or `localhost`) so the runtime proxy can reach the devserver.
-- When `package.json` has a `dev` script, mirror its intent in `runtime-entrypoint.json` with proper `$PORT` and `--bind 0.0.0.0` handling rather than relying on `npm run dev` with port appending, which breaks for non-standard scripts.
-- Update `runtime-entrypoint.json` whenever the launch mechanism changes (e.g., switching from static to esbuild, adding a Python backend).
-
-#### Module dashboard mode
-
-- For module-style dashboard artifacts, keep `dashboard/main.ts` present as the thin composition entrypoint for dashboard modules.
-- In `module_dashboard` mode, runtime stabilization means fixing `dashboard/*` code first. If the runtime needs an HTML entry point (e.g., for esbuild `--servedir`), create `index.html` or `public/index.html` with minimal scaffolding that loads the bundled output.
-- When using esbuild with `--bundle`, always add `--format=esm` to produce ES module output. In `index.html`, load the bundle with `<script type="module">` and use `import {{ render }} from './dist/main.js'` to call the entry render function. Never rely on `window.render` or other global-scope assumptions; esbuild IIFE format wraps exports in a closure where they are inaccessible from inline scripts.
-- If preview probe reports HTTP 200 and no hard runtime error, treat runtime as available and continue with dashboard code fixes instead of runtime scaffolding changes.
-
-#### Dependencies and tooling
-
-- npm dependencies are allowed when explicitly declared in `package.json`; do not assume globally preloaded libraries.
-- Node workspaces include managed Tailwind tooling bootstrap (`tailwindcss` + `@tailwindcss/cli`) when `package.json` is present, so you may use Tailwind utility classes when they improve implementation speed.
-- Tailwind is optional. Keep styling flexible and prompt-driven; use plain CSS tokens when that is a better fit for the request.
-- Do not import from `tailwindcss` directly inside `dashboard/*.ts` module files. Wire Tailwind through workspace CSS/build entrypoints (`index.html`, bundler CSS entry, or generated stylesheet) and keep module logic focused on app behavior.
-- Do not inject CDN scripts for runtime dependencies in generated modules.
-- The runtime automatically applies theme-matched text, tick, grid, legend, and title colors to every Chart.js instance. Do NOT set `color`, `ticks.color`, `grid.color`, `labels.color`, or `title.color` in chart options; the runtime handles them. Only set data-specific colors (dataset `backgroundColor`, `borderColor`, etc.).
-- Do not inject DataTables CDN scripts in generated User Space modules.
-- Prefer local workspace modules (`./` or `../`) for internal code organization.
-- If JSX is used, keep it out of `dashboard/main.ts`; maintain `dashboard/main.ts` as a valid TypeScript render entrypoint.
-
 #### SQLite persistence (devcontainer-friendly)
 
 - Use SQLite at `.ragtime/db/app.sqlite3` for out-of-scope local persistence (for example: UI state, cache, drafts, local operational data).
@@ -1092,6 +1037,123 @@ You are operating in User Space mode for a persistent workspace artifact workflo
   | Typography     | `--font-sans`, `--font-mono`, `--text-xs` .. `--text-2xl`, `--leading-tight` / `--leading-normal` / `--leading-relaxed` |
   | Transitions    | `--transition-fast` (150ms), `--transition-normal` (200ms), `--transition-slow` (300ms) |
 """
+
+# ---------------------------------------------------------------------------
+# Entrypoint setup guidance – only injected when the workspace entrypoint
+# needs to be created or fixed.  Hidden once a valid, non-default entrypoint
+# is present so the system prompt stays compact.
+# ---------------------------------------------------------------------------
+
+USERSPACE_ENTRYPOINT_SETUP_PROMPT = """
+
+### Runtime contract (must follow)
+
+- User Space preview runs in a Node.js-managed devserver/runtime session (not browser `srcDoc` execution).
+- The workspace must define launch behavior in `.ragtime/runtime-entrypoint.json` (`command`, optional `cwd`, optional `framework`).
+- If the runtime entrypoint is missing/invalid, preview fails with: `No runnable web entrypoint found. Add .ragtime/runtime-entrypoint.json with a command/cwd/framework.`
+
+#### Runtime entrypoint (always create/update)
+
+- `.ragtime/runtime-entrypoint.json` is the **authoritative** launch configuration. Always create or update it when generating workspace code.
+- Format: `{"command": "<launch command>", "cwd": ".", "framework": "<framework>"}`
+- Use `$PORT` as a placeholder for the runtime-assigned port. The runtime sets `PORT=<actual_port>` as an environment variable before executing the command, so `$PORT` is expanded by the shell.
+- Framework values: `static`, `node`, `django`, `flask`, `fastapi`, `custom`.
+- Examples:
+  - Static HTML: `{"command": "python3 -m http.server $PORT --bind 0.0.0.0 --directory .", "cwd": ".", "framework": "static"}`
+  - Node/esbuild: `{"command": "npx esbuild dashboard/main.ts --bundle --format=esm --outfile=dist/main.js --servedir=. --serve=0.0.0.0:$PORT --watch=forever", "cwd": ".", "framework": "node"}`
+  - Django: `{"command": "python3 manage.py runserver 0.0.0.0:$PORT", "cwd": ".", "framework": "django"}`
+  - Flask: `{"command": "python3 -m flask run --host 0.0.0.0 --port $PORT", "cwd": ".", "framework": "flask"}`
+  - FastAPI: `{"command": "python3 -m uvicorn main:app --host 0.0.0.0 --port $PORT", "cwd": ".", "framework": "fastapi"}`
+- Never hard-code port numbers in the entrypoint command; always use `$PORT`.
+- Always bind to `0.0.0.0` (not `127.0.0.1` or `localhost`) so the runtime proxy can reach the devserver.
+- When `package.json` has a `dev` script, mirror its intent in `runtime-entrypoint.json` with proper `$PORT` and `--bind 0.0.0.0` handling rather than relying on `npm run dev` with port appending, which breaks for non-standard scripts.
+- Update `runtime-entrypoint.json` whenever the launch mechanism changes (e.g., switching from static to esbuild, adding a Python backend).
+
+#### Module dashboard mode
+
+- For module-style dashboard artifacts, keep `dashboard/main.ts` present as the thin composition entrypoint for dashboard modules.
+- In `module_dashboard` mode, runtime stabilization means fixing `dashboard/*` code first. If the runtime needs an HTML entry point (e.g., for esbuild `--servedir`), create `index.html` or `public/index.html` with minimal scaffolding that loads the bundled output.
+- When using esbuild with `--bundle`, always add `--format=esm` to produce ES module output. In `index.html`, load the bundle with `<script type="module">` and use `import { render } from './dist/main.js'` to call the entry render function. Never rely on `window.render` or other global-scope assumptions; esbuild IIFE format wraps exports in a closure where they are inaccessible from inline scripts.
+- If preview probe reports HTTP 200 and no hard runtime error, treat runtime as available and continue with dashboard code fixes instead of runtime scaffolding changes.
+
+#### Dependencies and tooling
+
+- npm dependencies are allowed when explicitly declared in `package.json`; do not assume globally preloaded libraries.
+- Node workspaces include managed Tailwind tooling bootstrap (`tailwindcss` + `@tailwindcss/cli`) when `package.json` is present, so you may use Tailwind utility classes when they improve implementation speed.
+- Tailwind is optional. Keep styling flexible and prompt-driven; use plain CSS tokens when that is a better fit for the request.
+- Do not import from `tailwindcss` directly inside `dashboard/*.ts` module files. Wire Tailwind through workspace CSS/build entrypoints (`index.html`, bundler CSS entry, or generated stylesheet) and keep module logic focused on app behavior.
+- Do not inject CDN scripts for runtime dependencies in generated modules.
+- The runtime automatically applies theme-matched text, tick, grid, legend, and title colors to every Chart.js instance. Do NOT set `color`, `ticks.color`, `grid.color`, `labels.color`, or `title.color` in chart options; the runtime handles them. Only set data-specific colors (dataset `backgroundColor`, `borderColor`, etc.).
+- Do not inject DataTables CDN scripts in generated User Space modules.
+- Prefer local workspace modules (`./` or `../`) for internal code organization.
+- If JSX is used, keep it out of `dashboard/main.ts`; maintain `dashboard/main.ts` as a valid TypeScript render entrypoint.
+"""
+
+# Compact reference for locked-in framework (valid entrypoint present).
+_USERSPACE_ENTRYPOINT_LOCKED_TEMPLATE = """
+
+### Runtime entrypoint (locked)
+
+- Workspace framework: **{framework}** (locked via `.ragtime/runtime-entrypoint.json`).
+- Command: `{command}`
+- cwd: `{cwd}`
+- Update `.ragtime/runtime-entrypoint.json` only if the launch mechanism fundamentally changes. Do not re-explain setup steps already completed.
+- Always use `$PORT` for port binding and `0.0.0.0` for host binding.
+"""
+
+# Nudge for missing/default entrypoint – lightweight suggestion style.
+_USERSPACE_ENTRYPOINT_MISSING_NUDGE = """
+
+### Runtime entrypoint (action required)
+
+- No effective runtime entrypoint is configured for this workspace.
+- Before building workspace files, choose a framework that best fits the user's request and create `.ragtime/runtime-entrypoint.json`.
+- Consider what the user is asking for:
+  - Interactive frontend/dashboard -> `node` (esbuild) or `static`
+  - Python API/backend -> `flask`, `fastapi`, or `django`
+  - Data app -> `streamlit`, `dash`, or `gradio`
+  - Simple static page -> `static`
+- Format: `{"command": "<launch command>", "cwd": ".", "framework": "<framework>"}`
+- Use `$PORT` for port binding and `0.0.0.0` for host binding.
+- Once created, commit to that framework for subsequent turns.
+"""
+
+
+def build_userspace_entrypoint_nudge(
+    status: EntrypointStatus,
+    *,
+    is_default_static: bool = False,
+) -> str:
+    """Build a dynamic system prompt fragment based on entrypoint status.
+
+    Returns either:
+    - Full setup guidance (``USERSPACE_ENTRYPOINT_SETUP_PROMPT``) when the
+      entrypoint is invalid and the agent needs repair instructions.
+    - A lightweight "choose a framework" nudge when the entrypoint is missing
+      or is the seeded default static server.
+    - A compact "locked" reference when the entrypoint is valid with a real
+      framework choice.
+    """
+    if status.state == "missing" or is_default_static:
+        return _USERSPACE_ENTRYPOINT_MISSING_NUDGE + USERSPACE_ENTRYPOINT_SETUP_PROMPT
+
+    if status.state == "invalid":
+        # Agent needs the full setup reference to fix the entrypoint.
+        error_context = ""
+        if status.error:
+            error_context = f"\n- Current issue: {status.error}"
+        return (
+            f"\n\n### Runtime entrypoint (fix required){error_context}\n"
+            + USERSPACE_ENTRYPOINT_SETUP_PROMPT
+        )
+
+    # Valid entrypoint with a real framework choice -> compact prompt.
+    framework_label = status.framework or "custom"
+    return _USERSPACE_ENTRYPOINT_LOCKED_TEMPLATE.format(
+        framework=framework_label,
+        command=status.command,
+        cwd=status.cwd,
+    )
 
 
 def build_index_system_prompt(index_metadata: List[dict]) -> str:
@@ -4970,12 +5032,34 @@ except Exception as e:
             return json.dumps([f.model_dump(mode="json") for f in files], indent=2)
 
         def _compute_authoritative_entrypoint(
-            file_paths: set[str],
+            file_paths: set[str],  # noqa: ARG001 – kept for call-site compat
         ) -> tuple[str | None, str]:
-            if ".ragtime/runtime-entrypoint.json" in file_paths:
+            ep_status = userspace_service.get_workspace_entrypoint_status(workspace_id)
+            if ep_status.state == "valid":
+                is_default = userspace_service.is_default_static_entrypoint(
+                    workspace_id
+                )
+                if is_default:
+                    return (
+                        ".ragtime/runtime-entrypoint.json",
+                        (
+                            ".ragtime/runtime-entrypoint.json exists but uses the default "
+                            "static server seed. Choose a framework that fits the user's "
+                            "request and update the entrypoint."
+                        ),
+                    )
+                framework_label = ep_status.framework or "custom"
                 return (
                     ".ragtime/runtime-entrypoint.json",
-                    ".ragtime/runtime-entrypoint.json exists and defines runtime launch behavior.",
+                    (
+                        f".ragtime/runtime-entrypoint.json is configured with "
+                        f"framework={framework_label}. Runtime launch is locked in."
+                    ),
+                )
+            if ep_status.state == "invalid":
+                return (
+                    ".ragtime/runtime-entrypoint.json",
+                    f".ragtime/runtime-entrypoint.json is invalid: {ep_status.error}",
                 )
 
             return (
@@ -6588,6 +6672,15 @@ except Exception as e:
             prompt_is_ui = False
             prompt_additions += UI_VISUALIZATION_USERSPACE_PROMPT
             prompt_additions += USERSPACE_MODE_PROMPT_ADDITION
+
+            # Dynamic entrypoint nudge: derive framework status from the
+            # .ragtime metadata folder and inject only the relevant prompt
+            # fragment (setup guidance vs locked-in compact reference).
+            ep_status = userspace_service.get_workspace_entrypoint_status(workspace_id)
+            is_default = userspace_service.is_default_static_entrypoint(workspace_id)
+            prompt_additions += build_userspace_entrypoint_nudge(
+                ep_status, is_default_static=is_default
+            )
         else:
             has_workspace_payload = workspace_context is not None
             has_inline_viz_tools = any(
