@@ -838,7 +838,7 @@ async def _shared_proxy_http(
     ) or request.cookies.get(cookie_name)
 
     try:
-        preview = await userspace_service.get_shared_preview_by_slug(
+        workspace_id = await userspace_service.resolve_shared_workspace_id_by_slug(
             owner_username,
             share_slug,
             current_user=current_user,
@@ -865,7 +865,7 @@ async def _shared_proxy_http(
         raise
 
     upstream_url = await userspace_runtime_service.build_shared_preview_upstream_url(
-        preview.workspace_id,
+        workspace_id,
         path,
         query=request.url.query or None,
     )
@@ -984,7 +984,7 @@ async def userspace_share_websocket_proxy(
     ) or websocket.cookies.get(cookie_name)
 
     try:
-        preview = await userspace_service.get_shared_preview_by_slug(
+        workspace_id = await userspace_service.resolve_shared_workspace_id_by_slug(
             owner_username,
             share_slug,
             current_user=current_user,
@@ -995,7 +995,7 @@ async def userspace_share_websocket_proxy(
         return
 
     upstream_url = await userspace_runtime_service.build_shared_preview_upstream_url(
-        preview.workspace_id,
+        workspace_id,
         path,
         query=websocket.url.query or None,
     )

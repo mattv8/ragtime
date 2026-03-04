@@ -64,6 +64,18 @@ _WORKSPACE_BOOTSTRAP_GUIDANCE = (
     ".ragtime/runtime-entrypoint.json to use executables available in this runtime image."
 )
 
+# Maps runtime-entrypoint framework names to pip packages that should be
+# auto-installed before the devserver starts.  pip is invoked with
+# ``--quiet`` and will no-op if the package is already present.
+_FRAMEWORK_PIP_PACKAGES: dict[str, list[str]] = {
+    "flask": ["flask"],
+    "django": ["django"],
+    "fastapi": ["fastapi", "uvicorn"],
+    "streamlit": ["streamlit"],
+    "dash": ["dash"],
+    "gradio": ["gradio"],
+}
+
 _RUNTIME_DEVSERVER_LOG_DIR = "/tmp/ragtime-runtime-devserver"
 _RUNTIME_DEVSERVER_LOG_TAIL_CHARS = 400
 MAX_USERSPACE_SCREENSHOT_WIDTH = 1600
@@ -435,6 +447,58 @@ class WorkerService:
         stamp_path.write_text(stamp_value, encoding="utf-8")
         return None
 
+    async def _ensure_entrypoint_dependencies(
+        self,
+        session: WorkerSession,
+    ) -> str | None:
+        """Auto-install pip packages required by the runtime entrypoint framework.
+
+        Reads the ``framework`` field from ``.ragtime/runtime-entrypoint.json``
+        and pip-installs missing packages listed in :data:`_FRAMEWORK_PIP_PACKAGES`.
+        Returns an error string if installation fails, else ``None``.
+        """
+        config = self._read_runtime_entrypoint_config(session.workspace_files_path)
+        framework = (config.get("framework") or "").strip().lower()
+        packages = _FRAMEWORK_PIP_PACKAGES.get(framework)
+        if not packages:
+            return None
+
+        pkg_list = " ".join(packages)
+        try:
+            process = await spawn_sandboxed(
+                session.sandbox_spec,
+                [
+                    "sh",
+                    "-lc",
+                    f"cd {SANDBOX_WORKSPACE_MOUNT} && python3 -m pip install --quiet {pkg_list}",
+                ],
+                cwd=SANDBOX_WORKSPACE_MOUNT,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                process.communicate(),
+                timeout=self._runtime_bootstrap_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            return (
+                f"Auto-install of {framework} dependencies timed out after "
+                f"{self._runtime_bootstrap_timeout_seconds}s."
+            )
+        except Exception as exc:
+            return f"Auto-install of {framework} dependencies failed to launch: {exc}"
+
+        returncode = process.returncode or 0
+        if returncode != 0:
+            stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+            stdout_text = stdout_bytes.decode("utf-8", errors="replace").strip()
+            output = stderr_text or stdout_text or "unknown error"
+            return (
+                f"Auto-install of {framework} dependencies failed with code {returncode}: "
+                f"{output[:300]}"
+            )
+        return None
+
     def _extract_explicit_port(self, command: str) -> int | None:
         for pattern in _PORT_PATTERNS:
             match = pattern.search(command)
@@ -498,6 +562,8 @@ class WorkerService:
             "command not found" in lowered
             or "not found" in lowered
             or "cannot find module" in lowered
+            or "no module named" in lowered
+            or "modulenotfounderror" in lowered
         )
 
     def _invalidate_bootstrap_stamp(self, session: WorkerSession) -> None:
@@ -683,6 +749,16 @@ class WorkerService:
         if bootstrap_error:
             session.devserver_running = False
             session.last_error = bootstrap_error
+            session.updated_at = self._utc_now()
+            return
+
+        # Auto-install framework pip dependencies (e.g. flask, django)
+        # before starting the devserver.  This covers the common case where
+        # the agent creates a framework app but omits requirements.txt.
+        deps_error = await self._ensure_entrypoint_dependencies(session)
+        if deps_error:
+            session.devserver_running = False
+            session.last_error = deps_error
             session.updated_at = self._utc_now()
             return
 

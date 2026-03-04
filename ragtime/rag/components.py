@@ -21,8 +21,13 @@ from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
-                                     SystemMessage, ToolMessage)
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -31,42 +36,62 @@ from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
-from ragtime.core.file_constants import (USERSPACE_MODULE_SOURCE_EXTENSIONS,
-                                         USERSPACE_STRICT_FRONTEND_EXTENSIONS,
-                                         USERSPACE_THEME_AUDIT_EXTENSIONS,
-                                         USERSPACE_TYPESCRIPT_EXTENSIONS)
+from ragtime.core.file_constants import (
+    USERSPACE_MODULE_SOURCE_EXTENSIONS,
+    USERSPACE_STRICT_FRONTEND_EXTENSIONS,
+    USERSPACE_THEME_AUDIT_EXTENSIONS,
+    USERSPACE_TYPESCRIPT_EXTENSIONS,
+)
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit, get_output_limit
 from ragtime.core.ollama import get_model_context_length
-from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
-                                   validate_odoo_code, validate_sql_query,
-                                   validate_ssh_command)
+from ragtime.core.security import (
+    _SSH_ENV_VAR_RE,
+    sanitize_output,
+    validate_odoo_code,
+    validate_sql_query,
+    validate_ssh_command,
+)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
-                              execute_ssh_command, expand_env_vars_via_ssh,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.ssh import (
+    SSHConfig,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    expand_env_vars_via_ssh,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
-                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
-                                 create_chart_tool)
-from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-                                     create_datatable_tool)
+from ragtime.tools.chart import (
+    CHAT_CHART_DESCRIPTION_SUFFIX,
+    USERSPACE_CHART_DESCRIPTION_SUFFIX,
+    create_chart_tool,
+)
+from ragtime.tools.datatable import (
+    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+    create_datatable_tool,
+)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (_is_shallow_repository,
-                                       create_aggregate_git_history_tool,
-                                       create_per_index_git_history_tool)
+from ragtime.tools.git_history import (
+    _is_shallow_repository,
+    create_aggregate_git_history_tool,
+    create_per_index_git_history_tool,
+)
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (ArtifactType, UpsertWorkspaceFileRequest,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection)
+from ragtime.userspace.models import (
+    ArtifactType,
+    UpsertWorkspaceFileRequest,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -357,7 +382,7 @@ TOOL_USAGE_REMINDER = """[CRITICAL: Use the tool calling API. Do NOT write fake 
 
 """
 
-USERSPACE_TURN_REMINDER = """[USER SPACE TURN CHECKLIST: Before finalizing, run validate_userspace_code on EVERY changed .ts/.tsx file (including dashboard/main.ts) and fix all reported errors. Persist implementation changes via userspace file tools (not chat-only prose). Build first; do not generate docs/readmes/specs/plans/changelogs unless the user explicitly requested documentation. Treat any tool result with rejected=true as a failed step and fix/retry. If a tool result has persisted_with_violations=true, the file WAS saved but has contract issues -- use patch_userspace_file to fix the specific violations listed in contract_violations (do NOT re-send the full file content). Never use hardcoded/mock/sample/static data in dashboard modules; wire live data via context.components[componentId].execute() with required metadata/checks. After validation passes with no errors, call create_userspace_snapshot with a concise completion message. Never skip validation or snapshot -- the finalization sequence is: validate -> fix errors -> validate again -> snapshot.]
+USERSPACE_TURN_REMINDER = """[USER SPACE TURN CHECKLIST: Before finalizing, run validate_userspace_code on EVERY changed source file (including .ts/.tsx, .py, .js, .html, and the entrypoint) and fix all reported errors. Persist implementation changes via userspace file tools (not chat-only prose). Build first; do not generate docs/readmes/specs/plans/changelogs unless the user explicitly requested documentation. Treat any tool result with rejected=true as a failed step and fix/retry. If a tool result has persisted_with_violations=true, the file WAS saved but has contract issues -- use patch_userspace_file to fix the specific violations listed in contract_violations (do NOT re-send the full file content). Never use hardcoded/mock/sample/static data in entrypoint files (dashboard/main.ts, app.py, etc.) when the workspace has selected tools; wire live data instead. After validation passes with no errors, call create_userspace_snapshot with a concise completion message. Never skip validation or snapshot -- the finalization sequence is: validate -> fix errors -> validate again -> snapshot.]
 
 """
 
@@ -405,7 +430,8 @@ UI_VISUALIZATION_CHAT_PROMPT = """
 
 USERSPACE_SHARED_LIVE_DATA_GUARDRAILS = """
 
-- **NEVER embed hardcoded, mock, sample, or static data arrays in module source.** The system performs AST analysis on TypeScript source and rejects writes that lack structural `context.components[componentId].execute()` binding.
+- **NEVER embed hardcoded, mock, sample, or static data arrays in entrypoint source files** (including `dashboard/main.ts`, `app.py`, `main.py`, `server.js`, or whatever the runtime entrypoint declares). The system detects hardcoded data patterns in all source file types and flags violations when the workspace has selected tools.
+- For TypeScript dashboard modules, the system additionally performs AST analysis to verify structural `context.components[componentId].execute()` binding.
 - Chat query tools may enforce `LIMIT` for safe exploration, but persisted `live_data_connections.request` payloads do not require `LIMIT` unless intentionally desired.
 - When workspace tools are available, treat live tool responses as the dashboard source of truth. Do not route dashboard datasets through local SQLite as a substitute for live wiring.
 - Use SQLite only for out-of-scope local persistence (for example: UI preferences, drafts, local cache, or non-live operational state).
@@ -470,6 +496,133 @@ Tool output visibility is set to "auto". You control whether tool details (queri
 
 Default to hiding unless the user benefits from seeing technical details.
 """
+
+
+# Maps entrypoint framework names to (manifest_file, package_names) so the
+# validator can warn the agent when framework dependencies are absent.
+_FRAMEWORK_REQUIRED_PACKAGES: dict[str, tuple[str, list[str]]] = {
+    # Python frameworks -> requirements.txt
+    "flask": ("requirements.txt", ["flask"]),
+    "django": ("requirements.txt", ["django"]),
+    "fastapi": ("requirements.txt", ["fastapi", "uvicorn"]),
+    "streamlit": ("requirements.txt", ["streamlit"]),
+    "dash": ("requirements.txt", ["dash"]),
+    "gradio": ("requirements.txt", ["gradio"]),
+    # Node frameworks -> package.json
+    "express": ("package.json", ["express"]),
+    "next": ("package.json", ["next"]),
+    "nuxt": ("package.json", ["nuxt"]),
+    "vite": ("package.json", ["vite"]),
+}
+
+# Source file extensions eligible for hardcoded data pattern scanning.
+_HARDCODED_DATA_SOURCE_EXTENSIONS: tuple[str, ...] = (
+    ".py",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".html",
+)
+
+
+def _resolve_entrypoint_source_file(runtime_config: dict[str, Any]) -> str | None:
+    """Best-effort extraction of the main source file from a runtime-entrypoint config.
+
+    Parses the ``command`` field to identify the primary application source file
+    for common framework patterns.  Returns ``None`` when the command cannot be
+    parsed or no recognisable source file is found.
+    """
+    if not runtime_config:
+        return None
+    command = str(runtime_config.get("command") or "").strip()
+    if not command:
+        return None
+
+    # Strip leading env-var assignments (e.g. FLASK_APP=app.py ...)
+    env_source_file: str | None = None
+    tokens: list[str] = []
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None
+
+    clean_tokens: list[str] = []
+    for token in tokens:
+        if "=" in token and not token.startswith("-"):
+            # Check for FLASK_APP=app.py pattern
+            key, _, value = token.partition("=")
+            if key.upper() == "FLASK_APP" and value:
+                env_source_file = value
+            continue
+        clean_tokens.append(token)
+
+    if not clean_tokens:
+        return env_source_file
+
+    # Skip the interpreter (python3, node, npx, etc.)
+    binary = clean_tokens[0].rsplit("/", 1)[-1]  # basename
+    rest = clean_tokens[1:]
+
+    if binary in ("python3", "python"):
+        if rest and rest[0] == "-m":
+            # python3 -m flask run ... -> use FLASK_APP env or None
+            # python3 -m uvicorn main:app ... -> main.py
+            if len(rest) >= 2:
+                module = rest[1]
+                if module == "uvicorn" and len(rest) >= 3:
+                    # uvicorn main:app -> main.py
+                    app_ref = rest[2].split(":")[0]  # "main:app" -> "main"
+                    if app_ref and not app_ref.startswith("-"):
+                        return f"{app_ref}.py"
+                elif module == "flask":
+                    return env_source_file  # rely on FLASK_APP
+                elif module == "gunicorn" and len(rest) >= 3:
+                    app_ref = rest[2].split(":")[0]
+                    if app_ref and not app_ref.startswith("-"):
+                        return f"{app_ref}.py"
+            return env_source_file
+        else:
+            # python3 app.py ... or python3 manage.py runserver ...
+            for arg in rest:
+                if arg.endswith(".py") and not arg.startswith("-"):
+                    return arg
+        return env_source_file
+
+    if binary in ("node", "nodejs"):
+        # node server.js ...
+        for arg in rest:
+            if not arg.startswith("-") and "." in arg:
+                return arg
+        return None
+
+    if binary in ("gunicorn", "uvicorn"):
+        # gunicorn app:application --bind ... -> app.py
+        # uvicorn main:app --host ... -> main.py
+        for arg in rest:
+            if not arg.startswith("-") and ":" in arg:
+                app_ref = arg.split(":")[0]
+                if app_ref:
+                    return f"{app_ref}.py"
+        return env_source_file
+
+    if binary == "npx":
+        # npx esbuild dashboard/main.ts --bundle ...
+        if rest and rest[0] == "esbuild" and len(rest) >= 2:
+            candidate = rest[1]
+            if not candidate.startswith("-") and "." in candidate:
+                return candidate
+        return None
+
+    # Fallback: look for a recognisable source file in the remaining tokens
+    for arg in rest:
+        if arg.startswith("-"):
+            continue
+        lower = arg.lower()
+        if any(lower.endswith(ext) for ext in _HARDCODED_DATA_SOURCE_EXTENSIONS):
+            return arg
+
+    return env_source_file
 
 
 _HEX_COLOR_PATTERN = re.compile(
@@ -876,7 +1029,8 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Use real tool outputs as the source of truth for rendered data.
 - In tool-enabled workspaces, do not replace live dashboard data connections with SQLite snapshots or seeded local tables.
 - Persistent User Space dashboards must be live-wired via `context.components[componentId].execute()`.
-- When the workspace has selected tools, only `dashboard/main.ts` (the entry module) requires `live_data_connections`, `live_data_checks`, and verified `execute()` call sites.
+- When the workspace has selected tools, hardcoded/mock/sample data in any entrypoint file (including Python server entrypoints like `app.py`) is flagged as a live data contract violation. Use live tool connections to fetch data instead of embedding it in source.
+- For TypeScript dashboard mode, only `dashboard/main.ts` (the entry module) requires `live_data_connections`, `live_data_checks`, and verified `execute()` call sites.
 - Helper components under `dashboard/` (e.g., `dashboard/components/*`, `dashboard/charts/*`) do NOT need live_data_connections. They receive data as parameters from the entry module.
 - Each `live_data_connections` entry must include at least `component_kind=tool_config`, `component_id`, and `request`.
 - Include `live_data_checks` for each connection with `connection_check_passed=true` and `transformation_check_passed=true`.
@@ -910,7 +1064,7 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - For focused, minimal edits, prefer `patch_userspace_file` with explicit old/new snippets instead of re-rendering entire files.
 - Then create/update files with full content via User Space file tools.
 - For implementation requests, never finish with only prose: ensure at least one artifact file write occurred in the current turn.
-- Before declaring "done" or finalizing, you MUST run `validate_userspace_code` on EVERY changed `.ts`/`.tsx` file (including `dashboard/main.ts`) and fix all reported errors first.
+- Before declaring "done" or finalizing, you MUST run `validate_userspace_code` on EVERY changed source file (`.ts`/`.tsx`, `.py`, `.js`, `.html`, and the entrypoint) and fix all reported errors first.
 - After validation passes, call `create_userspace_snapshot` immediately with a concise completion message.
 - Never skip validation or snapshot. The correct finalization sequence is always: validate -> fix errors -> validate again (if fixes were needed) -> snapshot.
 
@@ -5220,15 +5374,54 @@ except Exception as e:
 
             normalized_lower_path = normalized_path.lower()
             patch_is_dashboard_entry = normalized_lower_path == "dashboard/main.ts"
-            if patch_is_dashboard_entry:
-                mock_patterns = find_hardcoded_data_patterns(updated_content)
-                if mock_patterns:
-                    raise ToolException(
-                        "LIVE DATA POLICY VIOLATION -- Hardcoded data patterns detected: "
-                        + ", ".join(mock_patterns)
-                        + ". Replace static/mock data with live runtime data via "
-                        "context.components[componentId].execute()."
+
+            # Detect hardcoded data in entrypoint files.
+            # Dashboard entry: hard reject.  Other entrypoints: soft warning.
+            patch_mock_patterns = find_hardcoded_data_patterns(updated_content)
+            patch_hardcoded_warning: str | None = None
+            if patch_mock_patterns and patch_is_dashboard_entry:
+                raise ToolException(
+                    "LIVE DATA POLICY VIOLATION -- Hardcoded data patterns detected: "
+                    + ", ".join(patch_mock_patterns)
+                    + ". Replace static/mock data with live runtime data via "
+                    "context.components[componentId].execute()."
+                )
+            elif patch_mock_patterns and normalized_lower_path.endswith(
+                _HARDCODED_DATA_SOURCE_EXTENSIONS
+            ):
+                # Check if this file is the runtime entrypoint and workspace has tools
+                try:
+                    patch_ws = await userspace_service.get_workspace(
+                        workspace_id, user_id
                     )
+                    if bool(patch_ws.selected_tool_ids):
+                        patch_resolved_ep: str | None = None
+                        try:
+                            patch_ep_file = await userspace_service.get_workspace_file(
+                                workspace_id,
+                                ".ragtime/runtime-entrypoint.json",
+                                user_id,
+                            )
+                            patch_cfg = json.loads(patch_ep_file.content or "{}")
+                            if isinstance(patch_cfg, dict):
+                                patch_resolved_ep = _resolve_entrypoint_source_file(
+                                    patch_cfg
+                                )
+                        except Exception:
+                            pass
+                        is_entrypoint = (
+                            patch_resolved_ep is not None
+                            and normalized_lower_path == patch_resolved_ep.lower()
+                        )
+                        if is_entrypoint:
+                            patch_hardcoded_warning = (
+                                "Hardcoded data patterns detected: "
+                                + ", ".join(patch_mock_patterns)
+                                + ". When workspace has selected tools, entrypoint data "
+                                "should be fetched from live sources, not embedded in source code."
+                            )
+                except Exception:
+                    pass
 
             request_payload = UpsertWorkspaceFileRequest(
                 content=updated_content,
@@ -5285,6 +5478,14 @@ except Exception as e:
                 "applied": applied,
                 "skipped": skipped,
             }
+            if patch_hardcoded_warning:
+                response_payload["persisted_with_violations"] = True
+                response_payload["contract_violations"] = [patch_hardcoded_warning]
+                response_payload["action_required"] = (
+                    "File was persisted but has hardcoded data violations. "
+                    "Use patch_userspace_file to replace mock/static data with live data sources, "
+                    "then run validate_userspace_code."
+                )
             if typecheck is not None:
                 response_payload["typescript_validation"] = typecheck
             await userspace_runtime_service.bump_workspace_generation(
@@ -5395,8 +5596,8 @@ except Exception as e:
             )
 
             # Detect hardcoded mock/sample data naming patterns.
-            # Hardcoded data is always a hard policy violation in the
-            # dashboard entry module.
+            # Dashboard entry: hard policy violation (reject).
+            # Other entrypoint files: soft contract violation (persist with warning).
             if is_dashboard_entry:
                 mock_patterns = find_hardcoded_data_patterns(content)
                 if mock_patterns:
@@ -5406,6 +5607,32 @@ except Exception as e:
                         + ". All dashboard data must be fetched at runtime via "
                         "context.components[componentId].execute()."
                     )
+            elif workspace_has_tools and normalized_path.endswith(
+                _HARDCODED_DATA_SOURCE_EXTENSIONS
+            ):
+                # Check if target is the runtime entrypoint
+                resolved_ep: str | None = None
+                try:
+                    ep_file = await userspace_service.get_workspace_file(
+                        workspace_id, ".ragtime/runtime-entrypoint.json", user_id
+                    )
+                    ep_cfg = json.loads(ep_file.content or "{}")
+                    if isinstance(ep_cfg, dict):
+                        resolved_ep = _resolve_entrypoint_source_file(ep_cfg)
+                except Exception:
+                    pass
+                is_runtime_entrypoint = (
+                    resolved_ep is not None and normalized_path == resolved_ep.lower()
+                )
+                if is_runtime_entrypoint:
+                    ep_mock_patterns = find_hardcoded_data_patterns(content)
+                    if ep_mock_patterns:
+                        contract_violations.append(
+                            "Hardcoded data patterns detected in entrypoint file: "
+                            + ", ".join(ep_mock_patterns)
+                            + ". When workspace has selected tools, entrypoint data "
+                            "should be fetched from live sources, not embedded in source code."
+                        )
 
             # No-tools conflict: warn when dashboard entry targets a
             # workspace without any selected tools for live data.
@@ -5896,6 +6123,44 @@ except Exception as e:
                 if not runtime_config_command_present:
                     add_runtime_error(runnable_entrypoint_error)
 
+                # Check framework dependencies are declared in the
+                # appropriate manifest (requirements.txt / package.json).
+                if runtime_config_command_present:
+                    entrypoint_framework = ""
+                    if isinstance(runtime_config_payload, dict):  # type: ignore[possibly-undefined]
+                        entrypoint_framework = (
+                            str(runtime_config_payload.get("framework") or "")
+                            .strip()
+                            .lower()
+                        )
+                    dep_spec = _FRAMEWORK_REQUIRED_PACKAGES.get(entrypoint_framework)
+                    if dep_spec is not None:
+                        manifest_name, required_pkgs = dep_spec
+                        manifest_file = await get_file(manifest_name)
+                        manifest_text = (
+                            (manifest_file.content if manifest_file else None) or ""
+                        ).lower()
+                        missing = [
+                            pkg
+                            for pkg in required_pkgs
+                            if pkg.lower() not in manifest_text
+                        ]
+                        if missing:
+                            missing_list = ", ".join(missing)
+                            if manifest_file is None:
+                                add_runtime_error(
+                                    f"Runtime preflight: entrypoint framework '{entrypoint_framework}' "
+                                    f"requires [{missing_list}] but {manifest_name} does not exist. "
+                                    f"Create {manifest_name} listing these dependencies so the "
+                                    "runtime bootstrap can install them."
+                                )
+                            else:
+                                add_runtime_error(
+                                    f"Runtime preflight: entrypoint framework '{entrypoint_framework}' "
+                                    f"requires [{missing_list}] but they are not listed in {manifest_name}. "
+                                    f"Add them to {manifest_name} so the runtime bootstrap can install them."
+                                )
+
             strict_frontend_candidate = is_userspace_strict_frontend_path(
                 normalized_start_path
             )
@@ -5972,6 +6237,39 @@ except Exception as e:
                         f"Runtime strict validation warning treated as error: {warning}"
                     )
 
+            # ── Hardcoded data scan across all workspace source files ──
+            # Only runs when the workspace has selected tools.  Scans every
+            # source file (py/ts/js/html) for mock/sample/static data patterns
+            # and reports per-file violations as warnings.
+            hardcoded_data_violations: dict[str, list[str]] = {}
+            try:
+                ws = await userspace_service.get_workspace(workspace_id, user_id)
+                ws_has_tools = bool(ws.selected_tool_ids)
+            except Exception:
+                ws_has_tools = False
+
+            if ws_has_tools:
+                all_files = await userspace_service.list_workspace_files(
+                    workspace_id, user_id
+                )
+                for ws_file in all_files:
+                    fpath = (ws_file.path or "").strip()
+                    if not fpath.lower().endswith(_HARDCODED_DATA_SOURCE_EXTENSIONS):
+                        continue
+                    # Skip .ragtime/ internal files
+                    if fpath.startswith(".ragtime/"):
+                        continue
+                    # Read file content (use cache if available)
+                    file_obj = await get_file(fpath)
+                    if file_obj is None:
+                        continue
+                    file_content = getattr(file_obj, "content", None) or ""
+                    if not file_content:
+                        continue
+                    patterns_found = find_hardcoded_data_patterns(file_content)
+                    if patterns_found:
+                        hardcoded_data_violations[fpath] = patterns_found
+
             overall_ok = (
                 bool(file_results)
                 and all(
@@ -6007,6 +6305,11 @@ except Exception as e:
                 "validated_files": sorted(file_results.keys()),
                 "file_results": file_results,
             }
+            if hardcoded_data_violations:
+                result["hardcoded_data_violations"] = hardcoded_data_violations
+                result["hardcoded_data_violation_count"] = sum(
+                    len(v) for v in hardcoded_data_violations.values()
+                )
             response_payload = {
                 "path": normalized_start_path,
                 "artifact_type": root_artifact_type,

@@ -22,31 +22,43 @@ from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
-                                    add_table_metadata_to_psql_output,
-                                    enforce_max_results, format_query_result,
-                                    validate_sql_query)
-from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.sql_utils import (
+    DB_TYPE_POSTGRES,
+    add_table_metadata_to_psql_output,
+    enforce_max_results,
+    format_query_result,
+    validate_sql_query,
+)
+from ragtime.core.ssh import (
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
-                                      ExecuteComponentRequest,
-                                      ExecuteComponentResponse,
-                                      PaginatedWorkspacesResponse,
-                                      ShareAccessMode, SqlitePersistenceMode,
-                                      UpdateWorkspaceMembersRequest,
-                                      UpdateWorkspaceRequest,
-                                      UpdateWorkspaceShareAccessRequest,
-                                      UpsertWorkspaceFileRequest,
-                                      UserSpaceFileInfo, UserSpaceFileResponse,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection,
-                                      UserSpaceSharedPreviewResponse,
-                                      UserSpaceSnapshot, UserSpaceWorkspace,
-                                      UserSpaceWorkspaceShareLink,
-                                      UserSpaceWorkspaceShareLinkStatus,
-                                      WorkspaceMember,
-                                      WorkspaceShareSlugAvailabilityResponse)
+from ragtime.userspace.models import (
+    ArtifactType,
+    CreateWorkspaceRequest,
+    ExecuteComponentRequest,
+    ExecuteComponentResponse,
+    PaginatedWorkspacesResponse,
+    ShareAccessMode,
+    SqlitePersistenceMode,
+    UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+    UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot,
+    UserSpaceWorkspace,
+    UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceMember,
+    WorkspaceShareSlugAvailabilityResponse,
+)
 
 logger = get_logger(__name__)
 
@@ -1564,6 +1576,19 @@ class UserSpaceService:
             password=password,
         )
 
+    async def resolve_shared_workspace_id(
+        self,
+        share_token: str,
+        current_user: Any | None = None,
+        password: str | None = None,
+    ) -> str:
+        workspace_id = await self._resolve_workspace_id_from_share_token(share_token)
+        workspace_record = await self._get_workspace_record(workspace_id)
+        if not workspace_record:
+            raise HTTPException(status_code=404, detail="Shared workspace not found")
+        await self._enforce_share_access(workspace_record, current_user, password)
+        return workspace_id
+
     async def get_shared_preview_by_slug(
         self,
         owner_username: str,
@@ -1580,6 +1605,23 @@ class UserSpaceService:
             current_user=current_user,
             password=password,
         )
+
+    async def resolve_shared_workspace_id_by_slug(
+        self,
+        owner_username: str,
+        share_slug: str,
+        current_user: Any | None = None,
+        password: str | None = None,
+    ) -> str:
+        workspace_id = await self._resolve_workspace_id_from_share_slug(
+            owner_username,
+            share_slug,
+        )
+        workspace_record = await self._get_workspace_record(workspace_id)
+        if not workspace_record:
+            raise HTTPException(status_code=404, detail="Shared workspace not found")
+        await self._enforce_share_access(workspace_record, current_user, password)
+        return workspace_id
 
     async def _build_shared_preview_response(
         self,

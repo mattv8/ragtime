@@ -267,6 +267,13 @@ _ROOT_REL_ATTR_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Match common JS root-relative request patterns in inline scripts:
+# fetch('/...'), new WebSocket('/...'), new EventSource('/...').
+_ROOT_REL_JS_URL_RE = re.compile(
+    rb"""((?:fetch\s*\(|new\s+WebSocket\s*\(|new\s+EventSource\s*\()\s*(?P<q>["']))(/(?!/))""",
+    re.IGNORECASE,
+)
+
 
 def _rewrite_root_relative_urls(html: bytes, proxy_base_path: str) -> bytes:
     """Rewrite root-relative URLs (``/path``) in HTML so they route through the
@@ -277,7 +284,8 @@ def _rewrite_root_relative_urls(html: bytes, proxy_base_path: str) -> bytes:
     def _replace(m: re.Match[bytes]) -> bytes:
         return m.group(1) + base + m.group(3)
 
-    return _ROOT_REL_ATTR_RE.sub(_replace, html)
+    rewritten = _ROOT_REL_ATTR_RE.sub(_replace, html)
+    return _ROOT_REL_JS_URL_RE.sub(_replace, rewritten)
 
 
 async def _websocket_user(websocket: WebSocket) -> Any | None:
@@ -797,14 +805,14 @@ async def shared_preview_proxy(
     ),
     user: Any | None = Depends(get_current_user_optional),
 ):
-    preview = await userspace_service.get_shared_preview_by_slug(
+    workspace_id = await userspace_service.resolve_shared_workspace_id_by_slug(
         owner_username,
         share_slug,
         current_user=user,
         password=share_password,
     )
     upstream_url = await userspace_runtime_service.build_shared_preview_upstream_url(
-        preview.workspace_id,
+        workspace_id,
         path,
         query=request.url.query or None,
     )
@@ -823,13 +831,13 @@ async def shared_token_preview_proxy(
     ),
     user: Any | None = Depends(get_current_user_optional),
 ):
-    preview = await userspace_service.get_shared_preview(
+    workspace_id = await userspace_service.resolve_shared_workspace_id(
         share_token,
         current_user=user,
         password=share_password,
     )
     upstream_url = await userspace_runtime_service.build_shared_preview_upstream_url(
-        preview.workspace_id,
+        workspace_id,
         path,
         query=request.url.query or None,
     )
@@ -876,7 +884,7 @@ async def shared_preview_proxy_websocket(
     share_password = websocket.headers.get("x-userspace-share-password")
 
     try:
-        preview = await userspace_service.get_shared_preview_by_slug(
+        workspace_id = await userspace_service.resolve_shared_workspace_id_by_slug(
             owner_username,
             share_slug,
             current_user=user,
@@ -887,7 +895,7 @@ async def shared_preview_proxy_websocket(
         return
 
     upstream_url = await userspace_runtime_service.build_shared_preview_upstream_url(
-        preview.workspace_id,
+        workspace_id,
         path,
         query=websocket.url.query or None,
     )
@@ -905,7 +913,7 @@ async def shared_token_preview_proxy_websocket(
     share_password = websocket.headers.get("x-userspace-share-password")
 
     try:
-        preview = await userspace_service.get_shared_preview(
+        workspace_id = await userspace_service.resolve_shared_workspace_id(
             share_token,
             current_user=user,
             password=share_password,
@@ -915,7 +923,7 @@ async def shared_token_preview_proxy_websocket(
         return
 
     upstream_url = await userspace_runtime_service.build_shared_preview_upstream_url(
-        preview.workspace_id,
+        workspace_id,
         path,
         query=websocket.url.query or None,
     )
