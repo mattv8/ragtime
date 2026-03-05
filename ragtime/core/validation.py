@@ -12,7 +12,7 @@ import httpx
 from fastapi import HTTPException
 
 from ragtime.core.logging import get_logger
-from ragtime.core.ollama import is_reachable, list_models
+from ragtime.core.ollama import NUM_GPU, is_reachable, list_models
 
 logger = get_logger(__name__)
 
@@ -122,7 +122,11 @@ async def _validate_ollama_embeddings(settings: dict, model: str) -> ValidationR
             try:
                 embed_response = await client.post(
                     f"{base_url}/api/embeddings",
-                    json={"model": model, "prompt": "test"},
+                    json={
+                        "model": model,
+                        "prompt": "test",
+                        "options": {"num_gpu": NUM_GPU},
+                    },
                     timeout=30.0,
                 )
                 if embed_response.status_code != 200:

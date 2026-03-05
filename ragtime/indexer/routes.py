@@ -49,7 +49,7 @@ from ragtime.core.model_limits import (
     update_model_function_calling,
     update_model_limit,
 )
-from ragtime.core.ollama import get_model_details, is_reachable
+from ragtime.core.ollama import get_model_details, is_embedding_capable, is_reachable
 from ragtime.core.ollama import list_models
 from ragtime.core.ollama import list_models as ollama_list_models
 from ragtime.core.security import get_current_user, require_admin
@@ -5895,17 +5895,26 @@ def _assign_model_groups(models: List[AvailableModel]) -> List[AvailableModel]:
     for model in models:
         grouped[(model.provider, model.group)].append(model)
 
-    for _, group_models in grouped.items():
+    for (provider, _group), group_models in grouped.items():
         if not group_models:
             continue
 
-        # Sort: version (higher first), then created date, then ID length
-        group_models.sort(
-            key=lambda m: (-_extract_version(m.name), -(m.created or 0), len(m.id))
-        )
-
-        # Mark the first one as latest
-        group_models[0].is_latest = True
+        if provider == "ollama":
+            # For Ollama, use the ':latest' tag as the authoritative marker
+            for m in group_models:
+                if m.id.endswith(":latest"):
+                    m.is_latest = True
+        else:
+            # Sort: version (higher first), then created date, then ID length
+            group_models.sort(
+                key=lambda m: (
+                    -_extract_version(m.name),
+                    -(m.created or 0),
+                    len(m.id),
+                )
+            )
+            # Mark the first one as latest
+            group_models[0].is_latest = True
 
     return models
 
@@ -6084,8 +6093,9 @@ async def _fetch_ollama_llm_models(base_url: str) -> LLMModelsResponse:
 
         models = [LLMModel(id=m.name, name=m.name) for m in ollama_models]
 
-        # Fetch details for each model to get context window
+        # Fetch details for each model to get context window and filter embeddings
         # We allow this to be "best effort" - if details fail, we just don't update limit
+        embedding_model_ids: set[str] = set()
         try:
             # Create a client for reuse
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -6100,10 +6110,12 @@ async def _fetch_ollama_llm_models(base_url: str) -> LLMModelsResponse:
 
                 for idx, details in enumerate(results):
                     if isinstance(details, dict) and details:
+                        # Filter out embedding-only models (nomic-embed-text, etc.)
+                        if is_embedding_capable(details, models[idx].id):
+                            embedding_model_ids.add(models[idx].id)
+                            continue
+
                         # Extract context length
-                        # Ollama usually returns 'model_info' with parameters
-                        # Or 'parameters' string which is hard to parse
-                        # But /api/show usually has 'model_info' -> 'llama.context_length' or 'context_length'
                         model_info = details.get("model_info", {})
 
                         # Try common keys for context length
@@ -6123,6 +6135,13 @@ async def _fetch_ollama_llm_models(base_url: str) -> LLMModelsResponse:
                                 pass
         except Exception as e:
             logger.warning(f"Failed to fetch Ollama model details: {e}")
+
+        # Remove embedding-only models from the list
+        if embedding_model_ids:
+            models = [m for m in models if m.id not in embedding_model_ids]
+            logger.debug(
+                f"Filtered out {len(embedding_model_ids)} embedding-only Ollama model(s): {embedding_model_ids}"
+            )
 
         return LLMModelsResponse(
             success=True,
@@ -6201,32 +6220,30 @@ async def get_available_chat_models():
         except Exception as e:
             logger.warning(f"Failed to fetch Anthropic models: {e}")
 
-    # Fetch Ollama models if LLM provider is Ollama and URL is configured
-    if app_settings.llm_provider == "ollama":
-        ollama_url = getattr(
-            app_settings,
-            "llm_ollama_base_url",
-            app_settings.ollama_base_url,
-        )
-        if ollama_url:
-            try:
-                result = await _fetch_ollama_llm_models(ollama_url)
-                if result.success:
-                    for m in result.models:
-                        all_models.append(
-                            AvailableModel(
-                                id=m.id,
-                                name=m.name,
-                                provider="ollama",
-                                context_limit=await get_context_limit(m.id),
-                                max_output_tokens=m.max_output_tokens,
-                                created=m.created,
-                            )
+    # Fetch Ollama models whenever an Ollama URL is configured (regardless of active provider)
+    # Prefer LLM-specific URL; fall back to embedding Ollama URL (the only one persisted in DB)
+    ollama_url = getattr(app_settings, "llm_ollama_base_url", "") or ""
+    if not ollama_url or ollama_url == "http://localhost:11434":
+        ollama_url = getattr(app_settings, "ollama_base_url", "") or ""
+    if ollama_url:
+        try:
+            result = await _fetch_ollama_llm_models(ollama_url)
+            if result.success:
+                for m in result.models:
+                    all_models.append(
+                        AvailableModel(
+                            id=m.id,
+                            name=m.name,
+                            provider="ollama",
+                            context_limit=await get_context_limit(m.id),
+                            max_output_tokens=m.max_output_tokens,
+                            created=m.created,
                         )
-                    if not default_model and result.default_model:
-                        default_model = result.default_model
-            except Exception as e:
-                logger.warning(f"Failed to fetch Ollama models: {e}")
+                    )
+                if not default_model and result.default_model:
+                    default_model = result.default_model
+        except Exception as e:
+            logger.warning(f"Failed to fetch Ollama models: {e}")
 
     # Use current settings model as default if available
     current_model = app_settings.llm_model
@@ -6300,30 +6317,28 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
         except Exception as e:
             logger.warning(f"Failed to fetch Anthropic models: {e}")
 
-    # Fetch Ollama models if LLM provider is Ollama and URL is configured
-    if app_settings.llm_provider == "ollama":
-        ollama_url = getattr(
-            app_settings,
-            "llm_ollama_base_url",
-            app_settings.ollama_base_url,
-        )
-        if ollama_url:
-            try:
-                result = await _fetch_ollama_llm_models(ollama_url)
-                if result.success:
-                    for m in result.models:
-                        all_models.append(
-                            AvailableModel(
-                                id=m.id,
-                                name=m.name,
-                                provider="ollama",
-                                context_limit=await get_context_limit(m.id),
-                                max_output_tokens=m.max_output_tokens,
-                                created=m.created,
-                            )
+    # Fetch Ollama models whenever an Ollama URL is configured (regardless of active provider)
+    # Prefer LLM-specific URL; fall back to embedding Ollama URL (the only one persisted in DB)
+    ollama_url = getattr(app_settings, "llm_ollama_base_url", "") or ""
+    if not ollama_url or ollama_url == "http://localhost:11434":
+        ollama_url = getattr(app_settings, "ollama_base_url", "") or ""
+    if ollama_url:
+        try:
+            result = await _fetch_ollama_llm_models(ollama_url)
+            if result.success:
+                for m in result.models:
+                    all_models.append(
+                        AvailableModel(
+                            id=m.id,
+                            name=m.name,
+                            provider="ollama",
+                            context_limit=await get_context_limit(m.id),
+                            max_output_tokens=m.max_output_tokens,
+                            created=m.created,
                         )
-            except Exception as e:
-                logger.warning(f"Failed to fetch Ollama models: {e}")
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to fetch Ollama models: {e}")
 
     # Get currently allowed models from settings
     allowed_models = app_settings.allowed_chat_models or []

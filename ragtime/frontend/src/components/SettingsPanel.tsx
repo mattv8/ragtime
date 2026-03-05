@@ -1233,7 +1233,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
             {/* Model Selection - for OpenAI and Anthropic only (Ollama has its own section above) */}
             {formData.llm_provider !== 'ollama' && (
               <div className="form-group" style={{ flex: 1 }}>
-                <label>Model</label>
+                <label>OpenAPI Model</label>
                 {llmModelsLoaded && llmModels.length > 0 ? (
                   <ModelSelector
                     models={llmModels}
@@ -1264,16 +1264,16 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
 
             {/* Chat Model Filter */}
             <div className="form-group" style={{ flex: 1 }}>
-              <label>Chat Model Filter</label>
+              <label>Chat Models</label>
               <button
                 type="button"
                 className="btn btn-secondary"
                 onClick={openModelFilterModal}
               >
-                Configure Allowed Models
+                Configure Chat Models
               </button>
               <p className="field-help">
-                Limit which models appear in the Chat view dropdown.
+                Limit which models appear in the Chat view dropdown. Includes all configured providers (OpenAI, Anthropic, Ollama).
               </p>
             </div>
           </div>
@@ -2616,7 +2616,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                 <p className="muted">Loading available models...</p>
               ) : allAvailableModels.length === 0 ? (
                 <p className="muted">
-                  No models available. Please configure API keys and save settings first.
+                  No models available. Please configure API keys or Ollama connection and save settings first.
                 </p>
               ) : (
                 <>
@@ -2650,42 +2650,85 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                   </div>
                   <div className="model-filter-list">
                     {(() => {
-                      // Filter models first
+                      // Filter models by name, id, and provider
+                      const filterLower = modelFilterText.toLowerCase();
                       const filtered = allAvailableModels.filter((model) =>
                         modelFilterText === '' ||
-                        model.name.toLowerCase().includes(modelFilterText.toLowerCase()) ||
-                        model.provider.toLowerCase().includes(modelFilterText.toLowerCase())
+                        model.name.toLowerCase().includes(filterLower) ||
+                        model.id.toLowerCase().includes(filterLower) ||
+                        model.provider.toLowerCase().includes(filterLower)
                       );
 
-                      // Group them
-                      const groups: Record<string, typeof filtered> = {};
-                      filtered.forEach(m => {
-                        const g = m.group || 'Other';
-                        if (!groups[g]) groups[g] = [];
-                        groups[g].push(m);
+                      // Detect duplicate model names across providers for disambiguation
+                      const nameCounts: Record<string, number> = {};
+                      allAvailableModels.forEach(m => {
+                        nameCounts[m.name] = (nameCounts[m.name] || 0) + 1;
                       });
 
-                      return Object.keys(groups).map(groupName => (
-                         <div key={groupName} className="model-group">
-                           <div className="model-group-header">{groupName}</div>
-                           {groups[groupName].map((model) => (
-                              <label key={model.id} className="model-filter-item" style={{
-                                paddingLeft: '1rem',
-                                backgroundColor: model.is_latest ? 'rgba(0,0,0,0.03)' : undefined,
-                                fontWeight: model.is_latest ? 500 : undefined
-                                }}>
-                                <input
-                                  type="checkbox"
-                                  checked={selectedModels.has(model.id)}
-                                  onChange={() => toggleModel(model.id)}
-                                />
-                                <span className="model-filter-name">
-                                  {model.name}
-                                  {model.is_latest && <span style={{ marginLeft: '6px', fontSize: '0.7em', padding: '1px 4px', borderRadius: '4px', background: '#e0e0e0', color: '#555' }}>LATEST</span>}
-                                </span>
-                              </label>
-                           ))}
-                         </div>
+                      // Group by provider first, then by model group within provider
+                      // Collect unique providers in order of appearance
+                      const providerOrder: string[] = [];
+                      const providerGroups: Record<string, Record<string, typeof filtered>> = {};
+                      filtered.forEach(m => {
+                        if (!providerGroups[m.provider]) {
+                          providerGroups[m.provider] = {};
+                          providerOrder.push(m.provider);
+                        }
+                        const g = m.group || 'Other';
+                        if (!providerGroups[m.provider][g]) providerGroups[m.provider][g] = [];
+                        providerGroups[m.provider][g].push(m);
+                      });
+
+                      const providerLabels: Record<string, string> = {
+                        openai: 'OpenAI',
+                        anthropic: 'Anthropic',
+                        ollama: 'Ollama',
+                      };
+
+                      return providerOrder.map(provider => (
+                        <div key={provider}>
+                          <div className="model-group-header" style={{
+                            position: 'sticky',
+                            top: 0,
+                            zIndex: 1,
+                            padding: '6px 8px',
+                            fontWeight: 600,
+                            fontSize: '0.85em',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.05em',
+                            borderBottom: '1px solid var(--border-color, #3c3c3c)',
+                            background: 'var(--bg-primary, #1e1e1e)',
+                          }}>
+                            {providerLabels[provider] || provider}
+                          </div>
+                          {Object.keys(providerGroups[provider]).map(groupName => (
+                            <div key={groupName} className="model-group">
+                              <div className="model-group-header" style={{ paddingLeft: '0.5rem', fontSize: '0.8em' }}>{groupName}</div>
+                              {providerGroups[provider][groupName].map((model) => (
+                                <label key={`${model.provider}:${model.id}`} className="model-filter-item" style={{
+                                  paddingLeft: '1rem',
+                                  backgroundColor: model.is_latest ? 'rgba(0,0,0,0.03)' : undefined,
+                                  fontWeight: model.is_latest ? 500 : undefined
+                                  }}>
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedModels.has(model.id)}
+                                    onChange={() => toggleModel(model.id)}
+                                  />
+                                  <span className="model-filter-name">
+                                    {model.id !== model.name ? model.id : model.name}
+                                    {(nameCounts[model.name] || 0) > 1 && (
+                                      <span style={{ marginLeft: '6px', fontSize: '0.7em', padding: '1px 4px', borderRadius: '4px', background: 'var(--bg-secondary, #2d2d2d)', color: 'var(--text-muted, #888)' }}>
+                                        {providerLabels[model.provider] || model.provider}
+                                      </span>
+                                    )}
+                                    {model.is_latest && <span style={{ marginLeft: '6px', fontSize: '0.7em', padding: '1px 4px', borderRadius: '4px', background: '#e0e0e0', color: '#555' }}>LATEST</span>}
+                                  </span>
+                                </label>
+                              ))}
+                            </div>
+                          ))}
+                        </div>
                       ));
                     })()}
                   </div>

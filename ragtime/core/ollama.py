@@ -1,11 +1,12 @@
 """
-Centralized Ollama API client for model discovery and metadata.
+Centralized Ollama API client for model discovery, metadata, and warmup.
 
 Provides functions to:
 - List all available models from an Ollama server
 - Check model capabilities via /api/show (embedding, vision, tools, etc.)
 - Filter for embedding-capable or vision-capable models
 - Get model dimensions via /api/show
+- Warm up LLM and embedding models onto GPU
 
 This module consolidates all Ollama API interactions to ensure consistent
 behavior across the codebase.
@@ -19,6 +20,20 @@ import httpx
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Default Ollama runtime parameters — single source of truth
+# ---------------------------------------------------------------------------
+# num_gpu=-1: offload ALL model layers to GPU (if available).
+# Without this, Ollama may default to CPU-only on some systems.
+NUM_GPU: int = -1
+
+# keep_alive=-1: keep the model loaded in memory indefinitely so it isn't
+# evicted between requests or during long indexing jobs.
+KEEP_ALIVE: int = -1
+
+# Default Ollama base URL
+DEFAULT_BASE_URL: str = "http://localhost:11434"
 
 # Ollama capability types from /api/show response
 OllamaCapability = Literal["embedding", "vision", "completion", "tools", "thinking"]
@@ -427,3 +442,142 @@ async def validate_ollama_connection(base_url: str) -> tuple[bool, str]:
         return False, f"Connection to {base_url} timed out."
     except Exception as e:
         return False, f"Connection failed: {str(e)}"
+
+
+# ---------------------------------------------------------------------------
+# Model Warmup — preload models onto GPU so first request is fast
+# ---------------------------------------------------------------------------
+
+
+async def _warn_if_cpu_loaded(
+    client: httpx.AsyncClient, model: str, base_url: str
+) -> Optional[bool]:
+    """Return GPU residency status and warn when model is still CPU-resident.
+
+    Returns:
+        True when model has non-zero VRAM usage.
+        False when model is loaded but reports ``size_vram == 0``.
+        None when status could not be determined.
+    """
+    try:
+        ps_resp = await client.get(f"{base_url.rstrip('/')}/api/ps")
+        if ps_resp.status_code != 200:
+            return None
+        data = ps_resp.json()
+        for loaded_model in data.get("models", []):
+            if loaded_model.get("name") != model:
+                continue
+            size_vram = loaded_model.get("size_vram")
+            if isinstance(size_vram, int) and size_vram == 0:
+                logger.warning(
+                    "Ollama model '%s' is loaded but reports size_vram=0. "
+                    "This indicates CPU residency; verify GPU availability on the Ollama host.",
+                    model,
+                )
+                return False
+            if isinstance(size_vram, int) and size_vram > 0:
+                return True
+            return None
+    except Exception:
+        # Non-fatal diagnostics only.
+        return None
+    return None
+
+
+async def _unload_model(client: httpx.AsyncClient, model: str, base_url: str) -> None:
+    """Unload a model first so next warmup can apply new runtime options."""
+    try:
+        await client.post(
+            f"{base_url.rstrip('/')}/api/chat",
+            json={"model": model, "messages": [], "keep_alive": 0, "stream": False},
+        )
+    except Exception:
+        # Best-effort; warmup continues even if unload fails.
+        return
+
+
+async def warmup_model(model: str, base_url: str) -> bool:
+    """Preload an Ollama LLM onto GPU memory via /api/generate.
+
+    Sends an empty-prompt generate request with ``num_gpu=-1`` and
+    ``keep_alive=-1`` so the model is loaded onto GPU and kept resident.
+
+    Args:
+        model: Ollama model name (e.g. ``qwen3.5:latest``).
+        base_url: Ollama server base URL.
+
+    Returns:
+        ``True`` if the model was loaded successfully, ``False`` otherwise.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            # If model was previously pinned on CPU, unload before warmup so
+            # runtime options (num_gpu) are applied on fresh load.
+            await _unload_model(client, model, base_url)
+            resp = await client.post(
+                f"{base_url.rstrip('/')}/api/generate",
+                json={
+                    "model": model,
+                    "prompt": "",
+                    "keep_alive": KEEP_ALIVE,
+                    "stream": False,
+                    "options": {"num_gpu": NUM_GPU},
+                },
+            )
+            if resp.status_code == 200:
+                gpu_resident = await _warn_if_cpu_loaded(client, model, base_url)
+                if gpu_resident is True:
+                    logger.info(f"Ollama model '{model}' is loaded and ready (GPU)")
+                else:
+                    logger.info(f"Ollama model '{model}' is loaded and ready")
+                return True
+            logger.warning(
+                f"Ollama warmup for '{model}' returned status {resp.status_code}"
+            )
+    except Exception as e:
+        logger.warning(f"Could not warm up Ollama model '{model}': {e}")
+    return False
+
+
+async def warmup_embedding_model(model: str, base_url: str) -> bool:
+    """Preload an Ollama embedding model onto GPU memory via /api/embed.
+
+    Embedding-only models (e.g. ``nomic-embed-text``) do not support
+    ``/api/generate``, so we use ``/api/embed`` with a minimal input.
+
+    Args:
+        model: Ollama embedding model name.
+        base_url: Ollama server base URL.
+
+    Returns:
+        ``True`` if the model was loaded successfully, ``False`` otherwise.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            # Ensure fresh reload so GPU options are not ignored due to an
+            # already-resident CPU instance.
+            await _unload_model(client, model, base_url)
+            resp = await client.post(
+                f"{base_url.rstrip('/')}/api/embed",
+                json={
+                    "model": model,
+                    "input": "warmup",
+                    "keep_alive": KEEP_ALIVE,
+                    "options": {"num_gpu": NUM_GPU},
+                },
+            )
+            if resp.status_code == 200:
+                gpu_resident = await _warn_if_cpu_loaded(client, model, base_url)
+                if gpu_resident is True:
+                    logger.info(
+                        f"Ollama embedding model '{model}' is loaded and ready (GPU)"
+                    )
+                else:
+                    logger.info(f"Ollama embedding model '{model}' is loaded and ready")
+                return True
+            logger.warning(
+                f"Ollama embedding warmup for '{model}' returned status {resp.status_code}"
+            )
+    except Exception as e:
+        logger.warning(f"Could not warm up Ollama embedding model '{model}': {e}")
+    return False

@@ -269,13 +269,11 @@ async def get_embeddings_model(
     if provider == "ollama":
         from langchain_ollama import OllamaEmbeddings
 
+        from ragtime.core.ollama import KEEP_ALIVE, NUM_GPU
+
         base_url = _get_setting(settings, "ollama_base_url", "http://localhost:11434")
-        # num_gpu=-1: offload all model layers to GPU (if available).
-        # Without this, Ollama may default to CPU-only on some systems.
-        # keep_alive=-1: keep the model loaded indefinitely so it isn't
-        # evicted between embedding batches during long indexing jobs.
         return OllamaEmbeddings(
-            model=model, base_url=base_url, num_gpu=-1, keep_alive=-1
+            model=model, base_url=base_url, num_gpu=NUM_GPU, keep_alive=KEEP_ALIVE
         )
 
     if provider == "openai":

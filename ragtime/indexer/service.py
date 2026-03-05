@@ -96,9 +96,33 @@ async def generate_index_description(
                 from langchain_ollama import \
                     ChatOllama  # type: ignore[reportMissingImports]
 
+                from ragtime.core.ollama import (KEEP_ALIVE, NUM_GPU,
+                                                 get_model_details,
+                                                 has_capability)
+
                 base_url = app_settings.get("ollama_base_url", "http://localhost:11434")
                 model = app_settings.get("llm_model", "llama3.2")
-                llm = ChatOllama(model=model, base_url=base_url, temperature=0.3)
+
+                # Detect thinking capability
+                reasoning = None
+                try:
+                    details = await get_model_details(model, base_url)
+                    if details and has_capability(details, "thinking"):
+                        reasoning = True
+                        logger.debug(
+                            f"Ollama model '{model}' supports thinking; enabling reasoning mode"
+                        )
+                except Exception:
+                    pass
+
+                llm = ChatOllama(
+                    model=model,
+                    base_url=base_url,
+                    temperature=0.3,
+                    num_gpu=NUM_GPU,
+                    keep_alive=KEEP_ALIVE,
+                    reasoning=reasoning,
+                )
                 logger.debug(f"Using Ollama for description generation: {model}")
             except ImportError:
                 logger.warning("langchain-ollama not installed")
@@ -3208,5 +3232,7 @@ class IndexerService:
         logger.info(f"Index {job.name} created successfully!")
 
 
+# Global indexer instance - uses configured path
+indexer = IndexerService(index_base_path=settings.index_data_path)
 # Global indexer instance - uses configured path
 indexer = IndexerService(index_base_path=settings.index_data_path)

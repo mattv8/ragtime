@@ -21,13 +21,8 @@ from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (
-    AIMessage,
-    BaseMessage,
-    HumanMessage,
-    SystemMessage,
-    ToolMessage,
-)
+from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
+                                     SystemMessage, ToolMessage)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -36,63 +31,46 @@ from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
-from ragtime.core.entrypoint_status import FRAMEWORK_REQUIRED_PACKAGES, EntrypointStatus
-from ragtime.core.file_constants import (
-    USERSPACE_MODULE_SOURCE_EXTENSIONS,
-    USERSPACE_STRICT_FRONTEND_EXTENSIONS,
-    USERSPACE_THEME_AUDIT_EXTENSIONS,
-    USERSPACE_TYPESCRIPT_EXTENSIONS,
-)
+from ragtime.core.entrypoint_status import (FRAMEWORK_REQUIRED_PACKAGES,
+                                            EntrypointStatus)
+from ragtime.core.file_constants import (USERSPACE_MODULE_SOURCE_EXTENSIONS,
+                                         USERSPACE_STRICT_FRONTEND_EXTENSIONS,
+                                         USERSPACE_THEME_AUDIT_EXTENSIONS,
+                                         USERSPACE_TYPESCRIPT_EXTENSIONS)
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit, get_output_limit
-from ragtime.core.ollama import get_model_context_length
-from ragtime.core.security import (
-    _SSH_ENV_VAR_RE,
-    sanitize_output,
-    validate_odoo_code,
-    validate_sql_query,
-    validate_ssh_command,
-)
+from ragtime.core.ollama import (KEEP_ALIVE, NUM_GPU, get_model_context_length,
+                                 get_model_details, has_capability,
+                                 warmup_embedding_model, warmup_model)
+from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
+                                   validate_odoo_code, validate_sql_query,
+                                   validate_ssh_command)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (
-    SSHConfig,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    execute_ssh_command,
-    expand_env_vars_via_ssh,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
+                              execute_ssh_command, expand_env_vars_via_ssh,
+                              ssh_tunnel_config_from_dict)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (
-    CHAT_CHART_DESCRIPTION_SUFFIX,
-    USERSPACE_CHART_DESCRIPTION_SUFFIX,
-    create_chart_tool,
-)
-from ragtime.tools.datatable import (
-    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-    create_datatable_tool,
-)
+from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
+                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
+                                 create_chart_tool)
+from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+                                     create_datatable_tool)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (
-    _is_shallow_repository,
-    create_aggregate_git_history_tool,
-    create_per_index_git_history_tool,
-)
+from ragtime.tools.git_history import (_is_shallow_repository,
+                                       create_aggregate_git_history_tool,
+                                       create_per_index_git_history_tool)
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (
-    ArtifactType,
-    UpsertWorkspaceFileRequest,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-)
+from ragtime.userspace.models import (ArtifactType, UpsertWorkspaceFileRequest,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -1510,6 +1488,15 @@ class RAGComponents:
         # Load embedding model (needed for FAISS loading)
         self._embedding_model = await self._get_embedding_model()
 
+        # Warm up the Ollama embedding model so it's loaded into GPU memory
+        embedding_provider = self._app_settings.get("embedding_provider", "ollama").lower()
+        if embedding_provider == "ollama":
+            embedding_model = self._app_settings.get("embedding_model", "nomic-embed-text")
+            embedding_base_url = self._app_settings.get(
+                "ollama_base_url", "http://localhost:11434"
+            )
+            await warmup_embedding_model(embedding_model, embedding_base_url)
+
         # Create the agent with tools (without FAISS retrievers for now)
         # This allows non-indexed queries to work immediately
         await self._create_agent()
@@ -1666,6 +1653,11 @@ class RAGComponents:
 
         if provider == "ollama":
             logger.info(f"Using Ollama LLM: {model}")
+            base_url = self._app_settings.get(
+                "llm_ollama_base_url",
+                self._app_settings.get("ollama_base_url", "http://localhost:11434"),
+            )
+            await warmup_model(model, base_url)
         elif provider == "anthropic":
             logger.info(f"Using Anthropic LLM: {model}")
         elif hasattr(self.llm, "model_name"):
@@ -1722,11 +1714,24 @@ class RAGComponents:
                     "llm_ollama_base_url",
                     self._app_settings.get("ollama_base_url", "http://localhost:11434"),
                 )
+                # Detect thinking capability so we can surface reasoning
+                # tokens to the UI instead of silently dropping them.
+                reasoning = None
+                try:
+                    details = await get_model_details(model, base_url)
+                    if has_capability(details, "thinking"):
+                        reasoning = True
+                        logger.info(f"Ollama model '{model}' supports thinking; enabling reasoning mode")
+                except Exception:
+                    pass  # Non-critical; default (None) lets model decide
                 return ChatOllama(
                     model=model,
                     base_url=base_url,
                     temperature=0,
                     num_predict=max_tokens,
+                    num_gpu=NUM_GPU,
+                    keep_alive=KEEP_ALIVE,
+                    reasoning=reasoning,
                 )
             except ImportError:
                 logger.warning("langchain-ollama not installed")
@@ -1773,7 +1778,7 @@ class RAGComponents:
             )
             logger.info(f"Using Ollama embeddings: {model} at {base_url}")
             return OllamaEmbeddings(
-                model=model, base_url=base_url, num_gpu=-1, keep_alive=-1
+                model=model, base_url=base_url, num_gpu=NUM_GPU, keep_alive=KEEP_ALIVE
             )
         elif provider == "openai":
             api_key = self._app_settings.get("openai_api_key", "")
@@ -4345,6 +4350,43 @@ except Exception as e:
 
         return str(content)
 
+    @staticmethod
+    def _extract_reasoning_from_stream_chunk(chunk: Any) -> str:
+        """Extract reasoning/thinking text from a streamed model chunk.
+
+        Ollama thinking models stream tokens in `message.thinking` at the API
+        level. Depending on provider adapters, this may appear as
+        `additional_kwargs.thinking` or `additional_kwargs.reasoning_content`.
+        """
+        if not chunk:
+            return ""
+
+        additional_kwargs = getattr(chunk, "additional_kwargs", {}) or {}
+        if isinstance(additional_kwargs, dict):
+            reasoning_text = str(
+                additional_kwargs.get("reasoning_content")
+                or additional_kwargs.get("thinking")
+                or ""
+            )
+            if reasoning_text:
+                return reasoning_text
+
+        content = getattr(chunk, "content", None)
+        if isinstance(content, list):
+            reasoning_parts: list[str] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                block_type = str(block.get("type", "")).lower()
+                if block_type in {"thinking", "reasoning", "reasoning_content"}:
+                    text = block.get("text") or block.get("thinking") or ""
+                    if text:
+                        reasoning_parts.append(str(text))
+            if reasoning_parts:
+                return "".join(reasoning_parts)
+
+        return ""
+
     @classmethod
     def _extract_text_from_chat_model_output(cls, output: Any) -> str:
         """Extract text from LangChain chat model end payloads."""
@@ -4393,6 +4435,68 @@ except Exception as e:
                     message = first_generation.message
                     if hasattr(message, "content"):
                         return cls._extract_text_from_stream_content(message.content)
+
+        return ""
+
+    @classmethod
+    def _extract_reasoning_from_chat_model_output(cls, output: Any) -> str:
+        """Extract final reasoning/thinking text from chat model end payloads."""
+        if output is None:
+            return ""
+
+        if hasattr(output, "additional_kwargs"):
+            additional_kwargs = getattr(output, "additional_kwargs", {}) or {}
+            if isinstance(additional_kwargs, dict):
+                reasoning_text = str(
+                    additional_kwargs.get("reasoning_content")
+                    or additional_kwargs.get("thinking")
+                    or ""
+                )
+                if reasoning_text:
+                    return reasoning_text
+
+        if isinstance(output, dict):
+            message = output.get("message")
+            if isinstance(message, dict):
+                thinking = message.get("thinking")
+                if thinking:
+                    return str(thinking)
+
+            generations = output.get("generations")
+            if isinstance(generations, list) and generations:
+                first_generation = generations[0]
+                if isinstance(first_generation, list) and first_generation:
+                    first_generation = first_generation[0]
+
+                if isinstance(first_generation, dict):
+                    message = first_generation.get("message")
+                    if isinstance(message, dict):
+                        thinking = message.get("thinking")
+                        if thinking:
+                            return str(thinking)
+                    elif message is not None and hasattr(message, "additional_kwargs"):
+                        message_kwargs = getattr(message, "additional_kwargs", {}) or {}
+                        if isinstance(message_kwargs, dict):
+                            reasoning_text = str(
+                                message_kwargs.get("reasoning_content")
+                                or message_kwargs.get("thinking")
+                                or ""
+                            )
+                            if reasoning_text:
+                                return reasoning_text
+
+                if hasattr(first_generation, "message"):
+                    message = first_generation.message
+                    if hasattr(message, "additional_kwargs"):
+                        message_kwargs = getattr(message, "additional_kwargs", {}) or {}
+                        if isinstance(message_kwargs, dict):
+                            reasoning_text = str(
+                                message_kwargs.get("reasoning_content")
+                                or message_kwargs.get("thinking")
+                                or ""
+                            )
+                            if reasoning_text:
+                                return reasoning_text
 
         return ""
 
@@ -7209,20 +7313,33 @@ except Exception as e:
                     # Stream tokens from the chat model
                     elif kind == "on_chat_model_stream":
                         chunk = event.get("data", {}).get("chunk")
-                        if chunk and hasattr(chunk, "content") and chunk.content:
-                            content = self._extract_text_from_stream_content(
-                                chunk.content
+                        if chunk:
+                            # Check for provider-specific reasoning/thinking tokens.
+                            reasoning_text = self._extract_reasoning_from_stream_chunk(
+                                chunk
                             )
-                            if content:
-                                if run_id:
-                                    streamed_content_by_chat_run[run_id] = (
-                                        streamed_content_by_chat_run.get(run_id, "")
-                                        + content
-                                    )
-                                yield content
+                            if reasoning_text:
+                                yield {"type": "reasoning", "content": reasoning_text}
+
+                            if hasattr(chunk, "content") and chunk.content:
+                                content = self._extract_text_from_stream_content(
+                                    chunk.content
+                                )
+                                if content:
+                                    if run_id:
+                                        streamed_content_by_chat_run[run_id] = (
+                                            streamed_content_by_chat_run.get(run_id, "")
+                                            + content
+                                        )
+                                    yield content
 
                     elif kind == "on_chat_model_end":
                         output = event.get("data", {}).get("output")
+                        final_reasoning = self._extract_reasoning_from_chat_model_output(
+                            output
+                        )
+                        if final_reasoning:
+                            yield {"type": "reasoning", "content": final_reasoning}
                         final_text = self._extract_text_from_chat_model_output(output)
                         emitted_text = streamed_content_by_chat_run.get(run_id, "")
                         missing_suffix = self._compute_missing_suffix(
@@ -7267,6 +7384,11 @@ except Exception as e:
 
                 # Use astream for true token-by-token streaming
                 async for chunk in request_llm.astream(messages):
+                    # Check for provider-specific reasoning/thinking tokens.
+                    reasoning_text = self._extract_reasoning_from_stream_chunk(chunk)
+                    if reasoning_text:
+                        yield {"type": "reasoning", "content": reasoning_text}
+
                     if hasattr(chunk, "content") and chunk.content:
                         content = self._extract_text_from_stream_content(chunk.content)
                         if content:
