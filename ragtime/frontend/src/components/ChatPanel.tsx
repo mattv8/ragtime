@@ -942,12 +942,174 @@ interface StreamingSegment {
   content?: string;  // For content/reasoning segments - consolidated text
   toolCall?: ActiveToolCall;  // For tool segments
   isComplete?: boolean;  // For reasoning segments - whether thinking has finished
+  embeddedToolCalls?: ActiveToolCall[];  // For reasoning segments - tool executions nested inside thinking
 }
 
 // Memoized component for rendering streaming segments efficiently
 // Collapsible reasoning/thinking display
-const ReasoningDisplay = memo(function ReasoningDisplay({ content, isComplete }: { content: string; isComplete: boolean }) {
+
+// Parse <tool_call> blocks out of reasoning text into interleaved segments
+interface ReasoningSegment {
+  type: 'text' | 'tool_call';
+  text?: string;
+  toolName?: string;
+  params?: Record<string, string>;
+}
+
+function parseReasoningToolCalls(content: string): ReasoningSegment[] {
+  const segments: ReasoningSegment[] = [];
+  const regex = /<tool_call>([\s\S]*?)<\/tool_call>/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(content)) !== null) {
+    // Text before this tool call
+    if (match.index > lastIndex) {
+      const text = content.slice(lastIndex, match.index).trim();
+      if (text) segments.push({ type: 'text', text });
+    }
+
+    const block = match[1].trim();
+    // Parse XML-style: <function=name><parameter=key>value</parameter></function>
+    const funcMatch = block.match(/<function=(\w+)>/);
+    if (funcMatch) {
+      const params: Record<string, string> = {};
+      const paramRegex = /<parameter=(\w+)>\s*([\s\S]*?)\s*<\/parameter>/g;
+      let pm: RegExpExecArray | null;
+      while ((pm = paramRegex.exec(block)) !== null) {
+        params[pm[1]] = pm[2].trim();
+      }
+      segments.push({ type: 'tool_call', toolName: funcMatch[1], params });
+    } else {
+      // Try JSON-style
+      try {
+        const data = JSON.parse(block) as Record<string, unknown>;
+        if (data && typeof data.name === 'string') {
+          const args = (data.arguments ?? data.args ?? {}) as Record<string, string>;
+          segments.push({ type: 'tool_call', toolName: data.name as string, params: args });
+        }
+      } catch {
+        // Unparseable — render as text
+        segments.push({ type: 'text', text: match[0] });
+      }
+    }
+    lastIndex = regex.lastIndex;
+  }
+
+  // Remaining text after last tool call
+  if (lastIndex < content.length) {
+    const text = content.slice(lastIndex).trim();
+    if (text) segments.push({ type: 'text', text });
+  }
+
+  return segments;
+}
+
+// Inline expandable tool call within reasoning
+const ReasoningToolCallCard = memo(function ReasoningToolCallCard({
+  toolName,
+  params,
+  executedTool,
+}: {
+  toolName: string;
+  params: Record<string, string>;
+  executedTool?: ActiveToolCall;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const hasOutput = executedTool?.output != null;
+  const isRunning = executedTool?.status === 'running';
+  const paramEntries = Object.entries(params);
+
+  // Use executed tool input if available, otherwise fall back to parsed params
+  const inputDisplay = useMemo(() => {
+    if (executedTool?.input) {
+      const queryFields = ['query', 'sql', 'code', 'command', 'python_code'];
+      for (const field of queryFields) {
+        if (executedTool.input[field] && typeof executedTool.input[field] === 'string') {
+          return executedTool.input[field] as string;
+        }
+      }
+      return JSON.stringify(executedTool.input, null, 2);
+    }
+    if (paramEntries.length === 1) return paramEntries[0][1];
+    if (paramEntries.length > 1) return paramEntries.map(([k, v]) => `${k}: ${v}`).join('\n');
+    return '';
+  }, [executedTool?.input, paramEntries]);
+
+  return (
+    <div className={`reasoning-tool-call ${isRunning ? 'reasoning-tool-call-running' : hasOutput ? 'reasoning-tool-call-complete' : ''}`}>
+      <button
+        className="reasoning-tool-call-header"
+        onClick={() => setExpanded(!expanded)}
+      >
+        {isRunning ? (
+          <Loader2 size={12} className="spinning reasoning-tool-call-status" />
+        ) : hasOutput ? (
+          <ChevronRight size={12} className={`reasoning-tool-call-chevron ${expanded ? 'expanded' : ''}`} />
+        ) : null}
+        <span className="reasoning-tool-call-name">{toolName}</span>
+      </button>
+      {expanded && hasOutput && (
+        <div className="reasoning-tool-call-details">
+          {inputDisplay && (
+            <div className="reasoning-tool-call-section">
+              <div className="reasoning-tool-call-section-label">Query:</div>
+              <pre className="reasoning-tool-call-code">{inputDisplay}</pre>
+            </div>
+          )}
+          <div className="reasoning-tool-call-section">
+            <div className="reasoning-tool-call-section-label">Result:</div>
+            <pre className="reasoning-tool-call-code">{executedTool!.output}</pre>
+          </div>
+        </div>
+      )}
+      {!expanded && !hasOutput && paramEntries.length > 0 && (
+        <div className="reasoning-tool-call-params">
+          {paramEntries.map(([k, v]) => (
+            <div key={k} className="reasoning-tool-call-param">
+              <span className="reasoning-tool-call-param-key">{k}:</span>{' '}
+              <span className="reasoning-tool-call-param-value">{v}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+});
+
+const ReasoningDisplay = memo(function ReasoningDisplay({
+  content,
+  isComplete,
+  toolCalls,
+}: {
+  content: string;
+  isComplete: boolean;
+  toolCalls?: ActiveToolCall[];
+}) {
   const [isExpanded, setIsExpanded] = useState(!isComplete);
+
+  // Parse tool calls from reasoning text
+  const segments = useMemo(() => parseReasoningToolCalls(content), [content]);
+  const hasToolCalls = segments.some(s => s.type === 'tool_call');
+
+  // Match parsed tool calls to executed tool calls by name (order-based)
+  const matchedTools = useMemo(() => {
+    if (!toolCalls?.length) return new Map<number, ActiveToolCall>();
+    const map = new Map<number, ActiveToolCall>();
+    const available = [...toolCalls];
+    let segIdx = 0;
+    for (const seg of segments) {
+      if (seg.type === 'tool_call') {
+        const matchIdx = available.findIndex(tc => tc.tool === seg.toolName);
+        if (matchIdx !== -1) {
+          map.set(segIdx, available[matchIdx]);
+          available.splice(matchIdx, 1);
+        }
+      }
+      segIdx++;
+    }
+    return map;
+  }, [segments, toolCalls]);
 
   // Auto-collapse when thinking completes
   useEffect(() => {
@@ -974,7 +1136,19 @@ const ReasoningDisplay = memo(function ReasoningDisplay({ content, isComplete }:
       </button>
       <div className={`reasoning-content ${isExpanded ? 'reasoning-content-expanded' : 'reasoning-content-collapsed'}`}>
         <div className="reasoning-content-inner">
-          {content}
+          {hasToolCalls ? segments.map((seg, i) => {
+            if (seg.type === 'text') {
+              return <span key={i}>{seg.text}</span>;
+            }
+            return (
+              <ReasoningToolCallCard
+                key={i}
+                toolName={seg.toolName!}
+                params={seg.params || {}}
+                executedTool={matchedTools.get(i)}
+              />
+            );
+          }) : content}
         </div>
       </div>
     </div>
@@ -989,7 +1163,7 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
   showToolCalls: boolean;
 }) {
   if (segment.type === 'reasoning' && segment.content) {
-    return <ReasoningDisplay content={segment.content} isComplete={!!segment.isComplete} />;
+    return <ReasoningDisplay content={segment.content} isComplete={!!segment.isComplete} toolCalls={segment.embeddedToolCalls} />;
   } else if (segment.type === 'tool' && segment.toolCall && showToolCalls) {
     return (
       <div className="chat-tool-calls">
@@ -1694,18 +1868,23 @@ export function ChatPanel({
         // Accumulate content
         currentContent += ev.content;
       } else if (ev.type === 'tool') {
-        // Flush pending reasoning
         if (currentReasoning) {
-          segments.push({ type: 'reasoning', content: currentReasoning, isComplete: true });
+          // Tool arrived while reasoning is pending — flush reasoning and embed tool in it
+          segments.push({ type: 'reasoning', content: currentReasoning, isComplete: true, embeddedToolCalls: [ev.toolCall] });
           currentReasoning = '';
+        } else if (segments.length > 0 && segments[segments.length - 1].type === 'reasoning') {
+          // Tool arrived right after reasoning segment — embed in the last reasoning
+          const last = segments[segments.length - 1];
+          if (!last.embeddedToolCalls) last.embeddedToolCalls = [];
+          last.embeddedToolCalls.push(ev.toolCall);
+        } else {
+          // No reasoning context — render as standalone tool
+          if (currentContent) {
+            segments.push({ type: 'content', content: currentContent });
+            currentContent = '';
+          }
+          segments.push({ type: 'tool', toolCall: ev.toolCall });
         }
-        // Flush any accumulated content first
-        if (currentContent) {
-          segments.push({ type: 'content', content: currentContent });
-          currentContent = '';
-        }
-        // Add tool segment
-        segments.push({ type: 'tool', toolCall: ev.toolCall });
       }
     }
 
@@ -3098,30 +3277,51 @@ export function ChatPanel({
                             {/* Render chronological events if available */}
                             {msg.role === 'assistant' && msg.events && msg.events.length > 0 ? (
                               <>
-                                {msg.events.map((ev, evIdx) => (
-                                  ev.type === 'tool' && showToolCalls ? (
-                                    <div key={`event-${evIdx}`} className="chat-tool-calls">
-                                      <ToolCallDisplay
-                                        toolCall={{
-                                          tool: ev.tool,
-                                          input: ev.input,
-                                          output: ev.output,
-                                          connection: ev.connection,
-                                          status: 'complete'
-                                        }}
-                                        defaultExpanded={false}
-                                        conversationId={activeConversation.id}
-                                        siblingEvents={msg.events}
-                                      />
-                                    </div>
-                                  ) : ev.type === 'reasoning' ? (
-                                    <ReasoningDisplay key={`event-${evIdx}`} content={ev.content} isComplete={true} />
-                                  ) : ev.type === 'content' ? (
-                                    <div key={`event-${evIdx}`} className="chat-message-text markdown-content">
-                                      <MemoizedMarkdown content={ev.content} />
-                                    </div>
-                                  ) : null
-                                ))}
+                                {(() => {
+                                  // Group tool events that follow reasoning into embedded tool calls
+                                  const grouped: Array<{ ev: typeof msg.events[0]; evIdx: number; embeddedTools?: ActiveToolCall[] }> = [];
+                                  for (let evIdx = 0; evIdx < msg.events.length; evIdx++) {
+                                    const ev = msg.events[evIdx];
+                                    if (ev.type === 'tool' && grouped.length > 0 && grouped[grouped.length - 1].ev.type === 'reasoning') {
+                                      // Embed tool into preceding reasoning
+                                      const last = grouped[grouped.length - 1];
+                                      if (!last.embeddedTools) last.embeddedTools = [];
+                                      last.embeddedTools.push({
+                                        tool: ev.tool,
+                                        input: ev.input,
+                                        output: ev.output,
+                                        connection: ev.connection,
+                                        status: 'complete' as const,
+                                      });
+                                    } else {
+                                      grouped.push({ ev, evIdx });
+                                    }
+                                  }
+                                  return grouped.map(({ ev, evIdx, embeddedTools }) => (
+                                    ev.type === 'tool' && showToolCalls ? (
+                                      <div key={`event-${evIdx}`} className="chat-tool-calls">
+                                        <ToolCallDisplay
+                                          toolCall={{
+                                            tool: ev.tool,
+                                            input: ev.input,
+                                            output: ev.output,
+                                            connection: ev.connection,
+                                            status: 'complete'
+                                          }}
+                                          defaultExpanded={false}
+                                          conversationId={activeConversation.id}
+                                          siblingEvents={msg.events}
+                                        />
+                                      </div>
+                                    ) : ev.type === 'reasoning' ? (
+                                      <ReasoningDisplay key={`event-${evIdx}`} content={ev.content} isComplete={true} toolCalls={embeddedTools} />
+                                    ) : ev.type === 'content' ? (
+                                      <div key={`event-${evIdx}`} className="chat-message-text markdown-content">
+                                        <MemoizedMarkdown content={ev.content} />
+                                      </div>
+                                    ) : null
+                                  ));
+                                })()}
                               </>
                             ) : (
                               <>

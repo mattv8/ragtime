@@ -19,11 +19,13 @@ import httpx
 from fastapi import HTTPException
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
+from langchain.agents.output_parsers.tools import ToolsAgentOutputParser
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
 from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
                                      SystemMessage, ToolMessage)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -1489,9 +1491,13 @@ class RAGComponents:
         self._embedding_model = await self._get_embedding_model()
 
         # Warm up the Ollama embedding model so it's loaded into GPU memory
-        embedding_provider = self._app_settings.get("embedding_provider", "ollama").lower()
+        embedding_provider = self._app_settings.get(
+            "embedding_provider", "ollama"
+        ).lower()
         if embedding_provider == "ollama":
-            embedding_model = self._app_settings.get("embedding_model", "nomic-embed-text")
+            embedding_model = self._app_settings.get(
+                "embedding_model", "nomic-embed-text"
+            )
             embedding_base_url = self._app_settings.get(
                 "ollama_base_url", "http://localhost:11434"
             )
@@ -1721,7 +1727,9 @@ class RAGComponents:
                     details = await get_model_details(model, base_url)
                     if has_capability(details, "thinking"):
                         reasoning = True
-                        logger.info(f"Ollama model '{model}' supports thinking; enabling reasoning mode")
+                        logger.info(
+                            f"Ollama model '{model}' supports thinking; enabling reasoning mode"
+                        )
                 except Exception:
                     pass  # Non-critical; default (None) lets model decide
                 return ChatOllama(
@@ -2496,9 +2504,9 @@ class RAGComponents:
         )
 
         if tools:
-            # Use create_tool_calling_agent which works with both OpenAI and Anthropic
-            # Pass custom message_formatter for scratchpad window compression
-            agent = create_tool_calling_agent(
+            # Use thinking-aware agent for Ollama models with reasoning,
+            # standard create_tool_calling_agent for everything else.
+            agent = self._create_thinking_aware_agent(
                 self.llm,
                 tools,
                 prompt,
@@ -2531,7 +2539,7 @@ class RAGComponents:
 
         if ui_tools:
             # Pass same message_formatter for consistent behavior
-            agent_ui = create_tool_calling_agent(
+            agent_ui = self._create_thinking_aware_agent(
                 self.llm,
                 ui_tools,
                 prompt_ui,
@@ -4909,6 +4917,14 @@ except Exception as e:
                 ),
             )
             content: str = Field(description="Full UTF-8 file content to write")
+
+            @field_validator("content", mode="before")
+            @classmethod
+            def _coerce_content_to_str(cls, v: Any) -> str:
+                if isinstance(v, str):
+                    return v
+                # LLM sometimes passes a dict/list instead of a string
+                return json.dumps(v, indent=2)
             artifact_type: ArtifactType | None = Field(
                 default="module_ts",
                 description=(
@@ -6899,7 +6915,7 @@ except Exception as e:
             ]
         )
 
-        agent = create_tool_calling_agent(
+        agent = self._create_thinking_aware_agent(
             runtime_llm,
             tools,
             prompt,
@@ -6921,6 +6937,152 @@ except Exception as e:
             max_iterations=max(1, max_iterations),
             return_intermediate_steps=settings.debug_mode,
         )
+
+    # ------------------------------------------------------------------
+    # Thinking-model tool-call support
+    # ------------------------------------------------------------------
+
+    def _is_thinking_ollama(self, llm: Any) -> bool:
+        """Return True when *llm* is a ChatOllama instance with thinking/reasoning enabled."""
+        return isinstance(llm, ChatOllama) and getattr(llm, "reasoning", None) is True
+
+    @staticmethod
+    def _parse_tool_calls_from_thinking(thinking_text: str) -> list[dict]:
+        """Parse pseudo tool-call blocks that Ollama thinking models emit
+        inside ``<think>`` / reasoning text instead of the structured
+        ``tool_calls`` channel.
+
+        Supported formats
+        -----------------
+        XML-style (qwen family)::
+
+            <tool_call>
+            <function=tool_name>
+            <parameter=key>value</parameter>
+            </function>
+            </tool_call>
+
+        JSON-style::
+
+            <tool_call>
+            {"name": "tool_name", "arguments": {"key": "value"}}
+            </tool_call>
+
+        Returns a list of dicts compatible with ``AIMessage.tool_calls``.
+        """
+        tool_calls: list[dict] = []
+        blocks = re.findall(r"<tool_call>(.*?)</tool_call>", thinking_text, re.DOTALL)
+        for idx, block in enumerate(blocks):
+            block = block.strip()
+
+            # --- JSON format ---
+            try:
+                data = json.loads(block)
+                if isinstance(data, dict) and "name" in data:
+                    tool_calls.append(
+                        {
+                            "name": data["name"],
+                            "args": data.get("arguments", data.get("args", {})),
+                            "id": f"think_tc_{idx}_{os.urandom(4).hex()}",
+                            "type": "tool_call",
+                        }
+                    )
+                    continue
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+            # --- XML format (<function=name> ... </function>) ---
+            func_match = re.search(r"<function=(\w+)>", block)
+            if func_match:
+                func_name = func_match.group(1)
+                params: dict[str, str] = {}
+                for pm in re.finditer(
+                    r"<parameter=(\w+)>\s*(.*?)\s*</parameter>", block, re.DOTALL
+                ):
+                    params[pm.group(1)] = pm.group(2).strip()
+                tool_calls.append(
+                    {
+                        "name": func_name,
+                        "args": params,
+                        "id": f"think_tc_{idx}_{os.urandom(4).hex()}",
+                        "type": "tool_call",
+                    }
+                )
+        return tool_calls
+
+    @staticmethod
+    def _promote_thinking_tool_calls(message: AIMessage) -> AIMessage:
+        """Post-process an AIMessage: if structured ``tool_calls`` is empty
+        but the reasoning/thinking text contains pseudo tool-call blocks,
+        parse them and promote to real ``tool_calls`` so the agent executor
+        can dispatch them.
+        """
+        if message.tool_calls:
+            return message  # Model already emitted structured calls
+
+        # Gather thinking text from all known locations
+        thinking = (
+            message.additional_kwargs.get("reasoning_content", "")
+            or message.additional_kwargs.get("thinking", "")
+            or ""
+        )
+        # Also check structured content blocks (Anthropic style)
+        if not thinking and isinstance(message.content, list):
+            for block in message.content:
+                if isinstance(block, dict) and block.get("type") in (
+                    "thinking",
+                    "reasoning",
+                ):
+                    thinking += block.get("text", "") + "\n"
+
+        if not thinking:
+            return message
+
+        parsed = RAGComponents._parse_tool_calls_from_thinking(thinking)
+        if not parsed:
+            return message
+
+        logger.debug(
+            "Extracted %d tool call(s) from thinking text: %s",
+            len(parsed),
+            [tc["name"] for tc in parsed],
+        )
+        message.tool_calls = parsed
+        return message
+
+    def _create_thinking_aware_agent(
+        self,
+        llm: Any,
+        tools: list[Any],
+        prompt: ChatPromptTemplate,
+        message_formatter: Any = None,
+    ) -> Any:
+        """Build a tool-calling agent chain.
+
+        For Ollama thinking models, inserts a post-LLM step that extracts
+        pseudo tool calls from reasoning text and promotes them to structured
+        ``tool_calls`` on the AIMessage, allowing the standard output parser
+        to dispatch them.
+
+        For all other LLMs, delegates to ``create_tool_calling_agent``
+        unchanged.
+        """
+        formatter = message_formatter or format_to_tool_messages
+
+        # Always build a custom chain that promotes tool calls found in
+        # thinking/reasoning text.  This covers every provider — Ollama,
+        # Anthropic (extended thinking), and OpenAI (reasoning models).
+        llm_with_tools = llm.bind_tools(tools)
+        agent = (
+            RunnablePassthrough.assign(
+                agent_scratchpad=lambda x: formatter(x["intermediate_steps"])
+            )
+            | prompt
+            | llm_with_tools
+            | RunnableLambda(self._promote_thinking_tool_calls)
+            | ToolsAgentOutputParser()
+        )
+        return agent
 
     def _parse_provider_scoped_model(
         self,
@@ -7335,8 +7497,8 @@ except Exception as e:
 
                     elif kind == "on_chat_model_end":
                         output = event.get("data", {}).get("output")
-                        final_reasoning = self._extract_reasoning_from_chat_model_output(
-                            output
+                        final_reasoning = (
+                            self._extract_reasoning_from_chat_model_output(output)
                         )
                         if final_reasoning:
                             yield {"type": "reasoning", "content": final_reasoning}
