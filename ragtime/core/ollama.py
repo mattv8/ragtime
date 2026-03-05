@@ -28,9 +28,10 @@ logger = get_logger(__name__)
 # Without this, Ollama may default to CPU-only on some systems.
 NUM_GPU: int = -1
 
-# keep_alive=-1: keep the model loaded in memory indefinitely so it isn't
-# evicted between requests or during long indexing jobs.
-KEEP_ALIVE: int = -1
+# keep_alive=900: keep the model loaded in memory for 15 minutes after last
+# use.  This avoids expensive reloads between closely-spaced requests while
+# still allowing GPU memory to be reclaimed during idle periods.
+KEEP_ALIVE: int = 900
 
 # Default Ollama base URL
 DEFAULT_BASE_URL: str = "http://localhost:11434"
