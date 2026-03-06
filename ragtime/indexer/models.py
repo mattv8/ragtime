@@ -3,6 +3,7 @@ Indexer data models and schemas.
 """
 
 
+
 import hashlib
 import json
 from datetime import datetime
@@ -11,10 +12,8 @@ from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from ragtime.core.embedding_models import (
-    get_embedding_models,
-    get_model_dimensions_sync,
-)
+from ragtime.core.embedding_models import (get_embedding_models,
+                                           get_model_dimensions_sync)
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -1955,6 +1954,7 @@ class ProviderPromptDebugRecord(BaseModel):
     tool_scope_prompt: str = ""
     prompt_additions: str = ""
     turn_reminders: str = ""
+    message_index: Optional[int] = None
     created_at: datetime
 
 

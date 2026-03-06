@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS "provider_prompt_debug_records" (
     "tool_scope_prompt" TEXT NOT NULL DEFAULT '',
     "prompt_additions" TEXT NOT NULL DEFAULT '',
     "turn_reminders" TEXT NOT NULL DEFAULT '',
+    "message_index" INTEGER,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "provider_prompt_debug_records_pkey" PRIMARY KEY ("id")
 );

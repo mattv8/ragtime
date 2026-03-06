@@ -17,13 +17,11 @@ from langchain_core.messages import AIMessage, HumanMessage
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.logging import get_logger
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (
-    ChatTaskStatus,
-    FilesystemConnectionConfig,
-    SchemaIndexConfig,
-)
+from ragtime.indexer.models import (ChatTaskStatus, FilesystemConnectionConfig,
+                                    SchemaIndexConfig)
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
+from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
+                                            schema_indexer)
 from ragtime.indexer.service import indexer
 from ragtime.indexer.utils import safe_tool_name
 
@@ -683,6 +681,7 @@ class BackgroundTaskService:
                     conversation_id=conversation_id,
                     user_id=conv.user_id,
                     chat_task_id=task_id,
+                    message_index=len(conv.messages),
                 ):
                     if self._shutdown:
                         await repository.cancel_chat_task(task_id)

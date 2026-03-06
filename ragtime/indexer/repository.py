@@ -24,33 +24,18 @@ from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (
-    CONNECTION_CONFIG_PASSWORD_FIELDS,
-    decrypt_json_passwords,
-    decrypt_secret,
-    encrypt_json_passwords,
-    encrypt_secret,
-)
+from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
+                                     decrypt_json_passwords, decrypt_secret,
+                                     encrypt_json_passwords, encrypt_secret)
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
-from ragtime.indexer.models import (
-    SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
-    AppSettings,
-    ChatMessage,
-    ChatTask,
-    ChatTaskStatus,
-    ChatTaskStreamingState,
-    Conversation,
-    IndexConfig,
-    IndexJob,
-    IndexStatus,
-    ProviderPromptDebugRecord,
-    ToolCallRecord,
-    ToolConfig,
-    ToolOutputMode,
-    ToolType,
-    VectorStoreType,
-)
+from ragtime.indexer.models import (SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
+                                    AppSettings, ChatMessage, ChatTask,
+                                    ChatTaskStatus, ChatTaskStreamingState,
+                                    Conversation, IndexConfig, IndexJob,
+                                    IndexStatus, ProviderPromptDebugRecord,
+                                    ToolCallRecord, ToolConfig, ToolOutputMode,
+                                    ToolType, VectorStoreType)
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 
@@ -1937,6 +1922,7 @@ class IndexerRepository:
         turn_reminders: str = "",
         user_id: Optional[str] = None,
         chat_task_id: Optional[str] = None,
+        message_index: Optional[int] = None,
     ) -> Optional[ProviderPromptDebugRecord]:
         """Persist a DEBUG-only provider prompt record for a single API call."""
         db = await self._get_db()
@@ -1967,6 +1953,7 @@ class IndexerRepository:
                         "toolScopePrompt": _sanitize_for_postgres(tool_scope_prompt),
                         "promptAdditions": _sanitize_for_postgres(prompt_additions),
                         "turnReminders": _sanitize_for_postgres(turn_reminders),
+                        "messageIndex": message_index,
                     },
                 )
             )
@@ -1981,6 +1968,7 @@ class IndexerRepository:
         *,
         limit: int = 100,
         before: Optional[datetime] = None,
+        message_index: Optional[int] = None,
     ) -> List[ProviderPromptDebugRecord]:
         """List provider prompt debug records for a conversation, newest first."""
         db = await self._get_db()
@@ -1988,6 +1976,8 @@ class IndexerRepository:
         where: dict[str, Any] = {"conversationId": conversation_id}
         if before is not None:
             where["createdAt"] = {"lt": before}
+        if message_index is not None:
+            where["messageIndex"] = message_index
 
         prisma_records = await db.providerpromptdebugrecord.find_many(
             where=cast(Any, where),
@@ -2049,6 +2039,7 @@ class IndexerRepository:
             tool_scope_prompt=prisma_record.toolScopePrompt,
             prompt_additions=prisma_record.promptAdditions,
             turn_reminders=prisma_record.turnReminders,
+            message_index=getattr(prisma_record, "messageIndex", None),
             created_at=prisma_record.createdAt,
         )
 

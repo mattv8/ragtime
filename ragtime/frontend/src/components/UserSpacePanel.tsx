@@ -288,6 +288,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const fileDirtyRef = useRef(false);
   const collabSocketRef = useRef<WebSocket | null>(null);
   const collabReconnectTimerRef = useRef<number | null>(null);
+  const collabReconnectAttemptsRef = useRef(0);
   const collabSuppressNextSendRef = useRef(false);
   const terminalSocketRef = useRef<WebSocket | null>(null);
   const terminalReconnectTimerRef = useRef<number | null>(null);
@@ -1230,6 +1231,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     return () => window.clearInterval(timer);
   }, [activeWorkspaceId, refreshRuntimeStatus, runtimeDisplayState]);
 
+  // Reset reconnect attempts when workspace or file changes (not on reconnect nonce)
+  useEffect(() => {
+    collabReconnectAttemptsRef.current = 0;
+  }, [activeWorkspaceId, selectedFilePath]);
+
   useEffect(() => {
     if (collabReconnectTimerRef.current !== null) {
       window.clearTimeout(collabReconnectTimerRef.current);
@@ -1246,14 +1252,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     if (!activeWorkspaceId || !selectedFilePath) return;
 
     let reconnectEnabled = true;
+    const MAX_COLLAB_RECONNECT_ATTEMPTS = 8;
     const scheduleReconnect = () => {
       if (!reconnectEnabled || collabReconnectTimerRef.current !== null) {
         return;
       }
+      if (collabReconnectAttemptsRef.current >= MAX_COLLAB_RECONNECT_ATTEMPTS) {
+        return;
+      }
+      // Exponential backoff: 1.5s, 3s, 6s, 12s, capped at 15s
+      const delay = Math.min(1500 * Math.pow(2, collabReconnectAttemptsRef.current), 15000);
+      collabReconnectAttemptsRef.current++;
       collabReconnectTimerRef.current = window.setTimeout(() => {
         collabReconnectTimerRef.current = null;
         setCollabReconnectNonce((value) => value + 1);
-      }, 1500);
+      }, delay);
     };
 
     const socketUrl = api.getUserSpaceCollabWebSocketUrl(activeWorkspaceId, selectedFilePath);
@@ -1262,6 +1275,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
     socket.onopen = () => {
       setCollabConnected(true);
+      collabReconnectAttemptsRef.current = 0;
       if (collabReconnectTimerRef.current !== null) {
         window.clearTimeout(collabReconnectTimerRef.current);
         collabReconnectTimerRef.current = null;

@@ -1555,6 +1555,7 @@ export function ChatPanel({
         activeConversation.id,
         workspaceId,
         200,
+        promptDebugMessageIndex,
       );
       setPromptDebugRecords(records);
     } catch (err) {
@@ -1564,7 +1565,7 @@ export function ChatPanel({
     } finally {
       setPromptDebugLoading(false);
     }
-  }, [activeConversation, showPromptDebugButton, workspaceId]);
+  }, [activeConversation, showPromptDebugButton, workspaceId, promptDebugMessageIndex]);
 
   const closePromptDebugModal = useCallback(() => {
     setShowPromptDebugModal(false);
@@ -1613,26 +1614,8 @@ export function ChatPanel({
   }, []);
 
   const chronologicalPromptDebugRecords = useMemo(() => {
-    const sorted = [...promptDebugRecords].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
-    if (promptDebugMessageIndex === null || !activeConversation) return sorted;
-    // Find the user message that triggered this assistant reply
-    const userMsg = activeConversation.messages[promptDebugMessageIndex - 1];
-    if (!userMsg || userMsg.role !== 'user') return sorted;
-    const userText = typeof userMsg.content === 'string'
-      ? userMsg.content
-      : userMsg.content
-          .filter((p): p is { type: 'text'; text: string } => typeof p === 'object' && p !== null && 'type' in p && p.type === 'text')
-          .map(p => p.text)
-          .join('\n');
-    if (!userText) return sorted;
-    // Match debug records whose rendered_user_input contains this user's message text
-    return sorted.filter(r => {
-      if (typeof r.rendered_user_input === 'string') {
-        return r.rendered_user_input.includes(userText);
-      }
-      return JSON.stringify(r.rendered_user_input).includes(userText);
-    });
-  }, [promptDebugRecords, promptDebugMessageIndex, activeConversation]);
+    return [...promptDebugRecords].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+  }, [promptDebugRecords]);
 
   useEffect(() => {
     if (!showPromptDebugModal) return;

@@ -1289,12 +1289,14 @@ export const api = {
     conversationId: string,
     workspaceId?: string,
     limit: number = 100,
+    messageIndex?: number | null,
   ): Promise<ProviderPromptDebugRecord[]> {
+    let url = `${API_BASE}/conversations/${conversationId}/provider-debug-prompts?limit=${Math.max(1, Math.min(limit, 200))}`;
+    if (messageIndex != null) {
+      url += `&message_index=${messageIndex}`;
+    }
     const response = await apiFetch(
-      withWorkspaceQuery(
-        `${API_BASE}/conversations/${conversationId}/provider-debug-prompts?limit=${Math.max(1, Math.min(limit, 200))}`,
-        workspaceId,
-      )
+      withWorkspaceQuery(url, workspaceId)
     );
     const payload = await handleResponse<ProviderPromptDebugListResponse>(response);
     return payload.records || [];

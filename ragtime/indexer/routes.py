@@ -6485,6 +6485,7 @@ async def list_conversation_provider_debug_prompts(
     conversation_id: str,
     limit: int = 100,
     before: Optional[datetime] = None,
+    message_index: Optional[int] = None,
     workspace_id: Optional[str] = None,
     user: User = Depends(require_admin),
 ):
@@ -6506,6 +6507,7 @@ async def list_conversation_provider_debug_prompts(
         conversation_id,
         limit=limit,
         before=before,
+        message_index=message_index,
     )
     return ProviderPromptDebugListResponse(records=records)
 
@@ -6737,6 +6739,7 @@ async def send_message(
             conversation_model=conv.model,
             conversation_id=conversation_id,
             user_id=user.id,
+            message_index=len(conv.messages),
         )
     except Exception as e:
         logger.exception("Error processing message")
@@ -6843,6 +6846,7 @@ async def send_message_stream(
                 conversation_model=conv.model,
                 conversation_id=conversation_id,
                 user_id=user.id,
+                message_index=len(conv.messages),
             ):
                 # Handle structured tool events
                 if isinstance(event, dict):

@@ -1873,6 +1873,7 @@ export interface ProviderPromptDebugRecord {
   tool_scope_prompt: string;
   prompt_additions: string;
   turn_reminders: string;
+  message_index?: number | null;
   created_at: string;
 }
 

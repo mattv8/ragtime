@@ -911,6 +911,7 @@ model ProviderPromptDebugRecord {
   toolScopePrompt           String @default("") @map("tool_scope_prompt")
   promptAdditions           String @default("") @map("prompt_additions")
   turnReminders             String @default("") @map("turn_reminders")
+  messageIndex              Int?   @map("message_index")
 
   createdAt     DateTime @default(now()) @map("created_at")
 
