@@ -4944,8 +4944,10 @@ except Exception as e:
                 )
 
             path: str = Field(
+                default="",
                 description=(
-                    "Required relative path from the workspace files root to create/update."
+                    "Relative path from the workspace files root to create/update "
+                    "(for example: dashboard/main.ts)."
                 ),
             )
             content: str = Field(description="Full UTF-8 file content to write")
@@ -5948,7 +5950,7 @@ except Exception as e:
 
         async def upsert_userspace_file(
             content: str,
-            path: str,
+            path: str = "",
             artifact_type: ArtifactType | None = "module_ts",
             live_data_requested: bool = False,
             live_data_connections: list[Any] | None = None,
@@ -5960,6 +5962,13 @@ except Exception as e:
             await userspace_service.enforce_workspace_role(
                 workspace_id, user_id, "editor"
             )
+
+            path = (path or "").strip()
+            if not path:
+                raise ToolException(
+                    "path is required. Provide a relative workspace file path "
+                    "(for example: dashboard/main.ts)."
+                )
 
             warnings: list[str] = []
             allowed_violations: list[str] = []
