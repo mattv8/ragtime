@@ -670,6 +670,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         // Token optimization settings
         max_tool_output_chars: formData.max_tool_output_chars,
         scratchpad_window_size: formData.scratchpad_window_size,
+        context_token_budget: formData.context_token_budget,
       };
       // Include LLM Ollama connection fields when using Ollama provider
       if (formData.llm_provider === 'ollama') {
@@ -703,7 +704,6 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         // Advanced settings
         search_use_mmr: formData.search_use_mmr,
         search_mmr_lambda: formData.search_mmr_lambda,
-        context_token_budget: formData.context_token_budget,
         chunking_use_tokens: formData.chunking_use_tokens,
         ivfflat_lists: formData.ivfflat_lists,
       };
@@ -1300,141 +1300,172 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
             </div>
           )}
 
-          <div className="form-row">
-            <div className="form-group" style={{ flex: 2 }}>
-              <label>Max Output Tokens</label>
-              {(() => {
-                // Get max output tokens for the selected model
-                // Try llmModels first (OpenAI/Anthropic), then allAvailableModels (includes Ollama)
-                const selectedLlmModel = llmModels.find(m => m.id === formData.llm_model);
-                const selectedAvailableModel = allAvailableModels.find(m => m.id === formData.llm_model);
-                const modelMax = selectedLlmModel?.max_output_tokens
-                  || selectedAvailableModel?.max_output_tokens
-                  || 100000;
-                const sliderMax = modelMax;
-                const sliderMin = 500;
-                const hasModelInfo = !!(selectedLlmModel?.max_output_tokens || selectedAvailableModel?.max_output_tokens);
+          {/* Advanced Context & Token Settings */}
+          <details style={{ marginBottom: '16px' }} id="setting-llm_advanced">
+            <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Settings</summary>
 
-                return (
-                  <>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                      <input
-                        type="range"
-                        min="0"
-                        max="100"
-                        step="1"
-                        style={{ flex: 1 }}
-                        value={(() => {
-                          const val = formData.llm_max_tokens || 4096;
-                          if (val >= sliderMax) return 100;
-                          const scale = Math.log(sliderMax / sliderMin);
-                          return Math.max(0, Math.min(100, (Math.log(val / sliderMin) / scale) * 100));
-                        })()}
-                        onChange={(e) => {
-                          const slider = parseInt(e.target.value, 10);
-                          let val;
-                          if (slider === 100) {
-                            val = sliderMax;
-                          } else {
+            <div className="form-row">
+              <div className="form-group" style={{ flex: 2 }}>
+                <label>Max Output Tokens</label>
+                {(() => {
+                  const selectedLlmModel = llmModels.find(m => m.id === formData.llm_model);
+                  const selectedAvailableModel = allAvailableModels.find(m => m.id === formData.llm_model);
+                  const modelMax = selectedLlmModel?.max_output_tokens
+                    || selectedAvailableModel?.max_output_tokens
+                    || 100000;
+                  const sliderMax = modelMax;
+                  const sliderMin = 500;
+                  const hasModelInfo = !!(selectedLlmModel?.max_output_tokens || selectedAvailableModel?.max_output_tokens);
+
+                  return (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          step="1"
+                          style={{ flex: 1 }}
+                          value={(() => {
+                            const val = formData.llm_max_tokens || 4096;
+                            if (val >= sliderMax) return 100;
                             const scale = Math.log(sliderMax / sliderMin);
-                            val = Math.round(sliderMin * Math.exp((slider / 100) * scale));
-                          }
-                          setFormData({ ...formData, llm_max_tokens: val });
-                        }}
-                      />
-                      <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
-                        {formData.llm_max_tokens && formData.llm_max_tokens >= sliderMax ? 'LLM Max' : (formData.llm_max_tokens || 4096).toLocaleString()}
-                      </span>
-                    </div>
-                    <p className="field-help">
-                      Limit the length of the model's response.{hasModelInfo ? ` (Model max: ${modelMax.toLocaleString()})` : ''}
-                    </p>
-                  </>
-                );
-              })()}
-            </div>
-
-            <div className="form-group" style={{ flex: 1 }}>
-              <label>Max Tool Iterations</label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <input
-                  type="range"
-                  min="1"
-                  max="100"
-                  step="1"
-                  style={{ flex: 1 }}
-                  value={formData.max_iterations ?? 30}
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      max_iterations: parseInt(e.target.value, 10),
-                    })
-                  }
-                />
-                <span style={{ minWidth: '30px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
-                  {formData.max_iterations ?? 30}
-                </span>
+                            return Math.max(0, Math.min(100, (Math.log(val / sliderMin) / scale) * 100));
+                          })()}
+                          onChange={(e) => {
+                            const slider = parseInt(e.target.value, 10);
+                            let val;
+                            if (slider === 100) {
+                              val = sliderMax;
+                            } else {
+                              const scale = Math.log(sliderMax / sliderMin);
+                              val = Math.round(sliderMin * Math.exp((slider / 100) * scale));
+                            }
+                            setFormData({ ...formData, llm_max_tokens: val });
+                          }}
+                        />
+                        <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                          {formData.llm_max_tokens && formData.llm_max_tokens >= sliderMax ? 'LLM Max' : (formData.llm_max_tokens || 4096).toLocaleString()}
+                        </span>
+                      </div>
+                      <p className="field-help">
+                        Limit the length of the model's response.{hasModelInfo ? ` (Model max: ${modelMax.toLocaleString()})` : ''}
+                      </p>
+                    </>
+                  );
+                })()}
               </div>
-              <p className="field-help">
-                Maximum number of agent tool-calling steps.
-              </p>
-            </div>
-          </div>
 
-          {/* Token Optimization Settings */}
-          <div className="form-row" style={{ marginTop: '1rem' }}>
-            <div className="form-group" style={{ flex: 1 }}>
-              <label>Max Tool Output (chars)</label>
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>Max Tool Iterations</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <input
+                    type="range"
+                    min="1"
+                    max="100"
+                    step="1"
+                    style={{ flex: 1 }}
+                    value={formData.max_iterations ?? 30}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        max_iterations: parseInt(e.target.value, 10),
+                      })
+                    }
+                  />
+                  <span style={{ minWidth: '30px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                    {formData.max_iterations ?? 30}
+                  </span>
+                </div>
+                <p className="field-help">
+                  Maximum number of agent tool-calling steps.
+                </p>
+              </div>
+            </div>
+
+            <div className="form-row">
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>Max Tool Output (chars)</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <input
+                    type="range"
+                    min="0"
+                    max="50000"
+                    step="1000"
+                    style={{ flex: 1 }}
+                    value={formData.max_tool_output_chars ?? 5000}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        max_tool_output_chars: parseInt(e.target.value, 10),
+                      })
+                    }
+                  />
+                  <span style={{ minWidth: '60px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                    {(formData.max_tool_output_chars ?? 5000) === 0 ? 'Off' : `${((formData.max_tool_output_chars ?? 5000) / 1000).toFixed(0)}K`}
+                  </span>
+                </div>
+                <p className="field-help">
+                  Cap on each tool response before truncation (0 = no limit).
+                  Lower values curb token growth during multi-step tool loops.
+                </p>
+              </div>
+
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>Context Window (steps)</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <input
+                    type="range"
+                    min="0"
+                    max="30"
+                    step="1"
+                    style={{ flex: 1 }}
+                    value={formData.scratchpad_window_size ?? 6}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        scratchpad_window_size: parseInt(e.target.value, 10),
+                      })
+                    }
+                  />
+                  <span style={{ minWidth: '40px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                    {(formData.scratchpad_window_size ?? 6) === 0 ? 'All' : formData.scratchpad_window_size ?? 6}
+                  </span>
+                </div>
+                <p className="field-help">
+                  Number of recent tool steps kept in full detail; older steps are compressed (0 = keep all).
+                  Smaller windows reduce input tokens in long conversations.
+                </p>
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label>Context Token Budget</label>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <input
                   type="range"
                   min="0"
-                  max="50000"
-                  step="1000"
+                  max="32000"
+                  step="500"
                   style={{ flex: 1 }}
-                  value={formData.max_tool_output_chars ?? 5000}
+                  value={formData.context_token_budget ?? settings?.context_token_budget ?? 4000}
                   onChange={(e) =>
                     setFormData({
                       ...formData,
-                      max_tool_output_chars: parseInt(e.target.value, 10),
+                      context_token_budget: parseInt(e.target.value, 10),
                     })
                   }
                 />
                 <span style={{ minWidth: '60px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
-                  {(formData.max_tool_output_chars ?? 5000) === 0 ? 'Off' : `${((formData.max_tool_output_chars ?? 5000) / 1000).toFixed(0)}K`}
+                  {(formData.context_token_budget ?? settings?.context_token_budget ?? 4000) === 0 ? 'Off' : `${((formData.context_token_budget ?? settings?.context_token_budget ?? 4000) / 1000).toFixed(1)}K`}
                 </span>
               </div>
               <p className="field-help">
-                Truncate tool outputs to save tokens (0 = no limit). Reduces O(N^2) token growth in long tool loops.
+                Cap on retrieved context tokens fed to the LLM per request (0 = unlimited).
+                Lower values reduce input token usage; higher values give the model more knowledge to draw from.
               </p>
             </div>
-
-            <div className="form-group" style={{ flex: 1 }}>
-              <label>Context Window (steps)</label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <input
-                  type="range"
-                  min="0"
-                  max="30"
-                  step="1"
-                  style={{ flex: 1 }}
-                  value={formData.scratchpad_window_size ?? 6}
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      scratchpad_window_size: parseInt(e.target.value, 10),
-                    })
-                  }
-                />
-                <span style={{ minWidth: '40px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
-                  {(formData.scratchpad_window_size ?? 6) === 0 ? 'All' : formData.scratchpad_window_size ?? 6}
-                </span>
-              </div>
-              <p className="field-help">
-                Keep last N tool calls in full detail; older steps summarized (0 = keep all).
-              </p>
-            </div>
-          </div>
+          </details>
 
           <div className="form-group" style={{ marginTop: '1rem' }}>
             <button
@@ -1958,6 +1989,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           {/* Advanced Search Settings */}
           <details style={{ marginBottom: '16px' }} id="setting-search_advanced">
             <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Settings</summary>
+
             <div className="form-group">
               <label>Results per Search (k)</label>
               <input
@@ -1973,110 +2005,88 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                 }
               />
               <p className="field-help">
-                Number of matching document chunks retrieved per vector search query (k).
-                Lower values (3-5) are faster and cheaper but may miss relevant context.
-                Higher values (10-20) provide more context but increase token usage and response time.
-                Very high values (50+) may introduce noise from less relevant matches.
+                Document chunks retrieved per query (k).
+                Lower (3-5) is faster; higher (10-20) gives more context but costs more tokens.
               </p>
             </div>
 
-            <div className="form-group">
-              <label className="checkbox-label">
-                <input
-                  type="checkbox"
-                  checked={formData.search_use_mmr ?? settings?.search_use_mmr ?? true}
-                  onChange={(e) =>
-                    setFormData({ ...formData, search_use_mmr: e.target.checked })
-                  }
-                  style={{ marginRight: '0.5rem' }}
-                />
-                <span>Use MMR (Max Marginal Relevance)</span>
-              </label>
-              <p className="field-help">
-                Reduces near-duplicate results by balancing relevance with diversity.
-                Recommended for most use cases to get varied, high-quality context.
-              </p>
-            </div>
-
-            {(formData.search_use_mmr ?? settings?.search_use_mmr ?? true) && (
-              <div className="form-group">
-                <label>MMR Diversity/Relevance (lambda: {formData.search_mmr_lambda ?? settings?.search_mmr_lambda ?? 0.5})</label>
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.1}
-                  value={formData.search_mmr_lambda ?? settings?.search_mmr_lambda ?? 0.5}
-                  onChange={(e) =>
-                    setFormData({ ...formData, search_mmr_lambda: parseFloat(e.target.value) })
-                  }
-                  style={{ width: '100%' }}
-                />
+            <div className="form-row">
+              <div className="form-group" style={{ flex: 1 }}>
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={formData.search_use_mmr ?? settings?.search_use_mmr ?? true}
+                    onChange={(e) =>
+                      setFormData({ ...formData, search_use_mmr: e.target.checked })
+                    }
+                    style={{ marginRight: '0.5rem' }}
+                  />
+                  <span>Use MMR (Max Marginal Relevance)</span>
+                </label>
                 <p className="field-help">
-                  <strong>0 = Max diversity</strong> (most varied results) |
-                  <strong> 1 = Max relevance</strong> (closest matches).
-                  Default 0.5 provides a good balance.
+                  Reduces near-duplicate results by balancing relevance with diversity.
                 </p>
+
+                {(formData.search_use_mmr ?? settings?.search_use_mmr ?? true) && (
+                  <div style={{ marginTop: '0.5rem' }}>
+                    <label>MMR Diversity/Relevance (lambda: {formData.search_mmr_lambda ?? settings?.search_mmr_lambda ?? 0.5})</label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.1}
+                      value={formData.search_mmr_lambda ?? settings?.search_mmr_lambda ?? 0.5}
+                      onChange={(e) =>
+                        setFormData({ ...formData, search_mmr_lambda: parseFloat(e.target.value) })
+                      }
+                      style={{ width: '100%' }}
+                    />
+                    <p className="field-help">
+                      <strong>0 = Max diversity</strong> |
+                      <strong> 1 = Max relevance</strong>.
+                      Default 0.5 provides a good balance.
+                    </p>
+                  </div>
+                )}
               </div>
-            )}
 
-            <div className="form-group">
-              <label>Context Token Budget</label>
-              <input
-                type="number"
-                min={0}
-                max={32000}
-                value={formData.context_token_budget ?? settings?.context_token_budget ?? 4000}
-                onChange={(e) =>
-                  setFormData({
-                    ...formData,
-                    context_token_budget: Math.max(0, Math.min(32000, parseInt(e.target.value, 10) || 0)),
-                  })
-                }
-              />
-              <p className="field-help">
-                Maximum tokens for retrieved context sent to the LLM. Set to 0 for unlimited.
-                Prevents context overflow for models with smaller context windows.
-              </p>
-            </div>
+              <div className="form-group" style={{ flex: 1 }}>
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={formData.chunking_use_tokens ?? settings?.chunking_use_tokens ?? true}
+                    onChange={(e) =>
+                      setFormData({ ...formData, chunking_use_tokens: e.target.checked })
+                    }
+                    style={{ marginRight: '0.5rem' }}
+                  />
+                  <span>Token-based chunking</span>
+                </label>
+                <p className="field-help">
+                  Use token-based chunking instead of character-based for more accurate
+                  chunk sizes aligned with model tokenization.
+                </p>
 
-            <div className="form-group">
-              <label className="checkbox-label">
-                <input
-                  type="checkbox"
-                  checked={formData.chunking_use_tokens ?? settings?.chunking_use_tokens ?? true}
-                  onChange={(e) =>
-                    setFormData({ ...formData, chunking_use_tokens: e.target.checked })
-                  }
-                  style={{ marginRight: '0.5rem' }}
-                />
-                <span>Token-based chunking</span>
-              </label>
-              <p className="field-help">
-                Use token-based chunking instead of character-based for more accurate
-                chunk sizes aligned with model tokenization.
-              </p>
-            </div>
-
-            <div className="form-group">
-              <label>IVFFlat Lists (pgvector)</label>
-              <input
-                type="number"
-                min={10}
-                max={1000}
-                value={formData.ivfflat_lists ?? settings?.ivfflat_lists ?? 100}
-                onChange={(e) =>
-                  setFormData({
-                    ...formData,
-                    ivfflat_lists: Math.max(10, Math.min(1000, parseInt(e.target.value, 10) || 100)),
-                  })
-                }
-              />
-              <p className="field-help">
-                Index parameter for pgvector (filesystem indexes only).
-                Higher values: slower build but faster queries for large datasets.
-                Recommended: sqrt(number of embeddings). Default: 100.
-              </p>
+                <div style={{ marginTop: '0.5rem' }}>
+                  <label>IVFFlat Lists (pgvector)</label>
+                  <input
+                    type="number"
+                    min={10}
+                    max={1000}
+                    value={formData.ivfflat_lists ?? settings?.ivfflat_lists ?? 100}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        ivfflat_lists: Math.max(10, Math.min(1000, parseInt(e.target.value, 10) || 100)),
+                      })
+                    }
+                  />
+                  <p className="field-help">
+                    pgvector index parameter. Higher = faster queries for large datasets.
+                    Recommended: sqrt(num embeddings). Default: 100.
+                  </p>
+                </div>
+              </div>
             </div>
           </details>
 

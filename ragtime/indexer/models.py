@@ -2,7 +2,6 @@
 Indexer data models and schemas.
 """
 
-
 import hashlib
 import json
 from datetime import datetime
@@ -15,6 +14,7 @@ from ragtime.core.embedding_models import (
     get_embedding_models,
     get_model_dimensions_sync,
 )
+
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -881,9 +881,9 @@ class UpdateSettingsRequest(BaseModel):
     )
     context_token_budget: Optional[int] = Field(
         default=None,
-        ge=500,
+        ge=0,
         le=32000,
-        description="Max tokens for retrieved context sent to LLM.",
+        description="Max tokens for retrieved context sent to LLM. 0=unlimited.",
     )
     chunking_use_tokens: Optional[bool] = Field(
         default=None,
