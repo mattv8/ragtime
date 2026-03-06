@@ -4925,6 +4925,19 @@ except Exception as e:
                     return v
                 # LLM sometimes passes a dict/list instead of a string
                 return json.dumps(v, indent=2)
+
+            @field_validator("live_data_connections", "live_data_checks", mode="before")
+            @classmethod
+            def _coerce_json_str_to_list(cls, v: Any) -> Any:
+                if isinstance(v, str):
+                    try:
+                        parsed = json.loads(v)
+                        if isinstance(parsed, list):
+                            return parsed
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                return v
+
             artifact_type: ArtifactType | None = Field(
                 default="module_ts",
                 description=(
