@@ -1,6 +1,6 @@
 import { LdapGroupSelect } from './LdapGroupSelect';
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Lock, LockOpen, Info } from 'lucide-react';
+import { Lock, LockOpen, Info, Search } from 'lucide-react';
 import { api } from '@/api';
 import type { AppSettings, UpdateSettingsRequest, OllamaModel, OllamaVisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus } from '@/types';
 import { MCPRoutesPanel } from './MCPRoutesPanel';
@@ -40,6 +40,17 @@ function formatDnForDisplay(dn: string, baseDn: string): string {
   return names.join(' / ');
 }
 
+function normalizeSettingsSearchText(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function settingsTextMatchesQuery(text: string | null | undefined, query: string): boolean {
+  if (!query) {
+    return true;
+  }
+  return normalizeSettingsSearchText(text || '').includes(query);
+}
+
 interface SettingsPanelProps {
   onServerNameChange?: (name: string) => void;
   /** Setting ID to highlight and scroll to (e.g., 'sequential_index_loading') */
@@ -55,6 +66,8 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [settingsFilterText, setSettingsFilterText] = useState('');
+  const [settingsFilterHasMatches, setSettingsFilterHasMatches] = useState(true);
 
   // Section-specific saving states
   const [embeddingSaving, setEmbeddingSaving] = useState(false);
@@ -140,6 +153,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
 
   // Form state
   const [formData, setFormData] = useState<UpdateSettingsRequest>({});
+  const settingsFormRef = useRef<HTMLFormElement | null>(null);
 
   // Track if we've already auto-tested Ollama
   const hasAutoTestedOllama = useRef(false);
@@ -901,6 +915,100 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     return `${protocol}//${host}${path}`;
   };
 
+  useEffect(() => {
+    const form = settingsFormRef.current;
+    if (!form) {
+      return;
+    }
+
+    const query = normalizeSettingsSearchText(settingsFilterText);
+    const infoCards = form.parentElement?.querySelectorAll<HTMLElement>('[data-settings-filter-card="true"]') || [];
+
+    if (!query) {
+      infoCards.forEach((card) => {
+        card.style.display = '';
+      });
+
+      const fieldsets = form.querySelectorAll<HTMLElement>('fieldset');
+      fieldsets.forEach((fieldset) => {
+        fieldset.style.display = '';
+        fieldset.querySelectorAll<HTMLElement>('.form-group, .form-actions, details, .fieldset-help').forEach((element) => {
+          element.style.display = '';
+        });
+
+        fieldset.querySelectorAll<HTMLDetailsElement>('details[data-filter-opened="true"]').forEach((details) => {
+          details.open = false;
+          details.removeAttribute('data-filter-opened');
+        });
+      });
+
+      setSettingsFilterHasMatches(true);
+      return;
+    }
+
+    let hasAnyMatches = false;
+
+    infoCards.forEach((card) => {
+      const cardText = card.textContent || '';
+      const isMatch = settingsTextMatchesQuery(cardText, query);
+      card.style.display = isMatch ? '' : 'none';
+      if (isMatch) {
+        hasAnyMatches = true;
+      }
+    });
+
+    const fieldsets = form.querySelectorAll<HTMLElement>('fieldset');
+    fieldsets.forEach((fieldset) => {
+      const legendText = fieldset.querySelector('legend')?.textContent || '';
+      const helpText = fieldset.querySelector('.fieldset-help')?.textContent || '';
+      const fieldsetTextMatch = settingsTextMatchesQuery(`${legendText} ${helpText}`, query);
+
+      let visibleFormGroupCount = 0;
+      const formGroups = Array.from(fieldset.querySelectorAll<HTMLElement>('.form-group'));
+      formGroups.forEach((group) => {
+        const labelText = group.querySelector('label')?.textContent || '';
+        const groupText = group.textContent || '';
+        const isMatch = fieldsetTextMatch || settingsTextMatchesQuery(`${labelText} ${groupText}`, query);
+        group.style.display = isMatch ? '' : 'none';
+        if (isMatch) {
+          visibleFormGroupCount += 1;
+        }
+      });
+
+      const detailsElements = Array.from(fieldset.querySelectorAll<HTMLDetailsElement>('details'));
+      detailsElements.forEach((details) => {
+        const summaryText = details.querySelector('summary')?.textContent || '';
+        const detailText = details.textContent || '';
+        const hasVisibleChild = Array.from(details.querySelectorAll<HTMLElement>('.form-group')).some((group) => group.style.display !== 'none');
+        const detailsMatch = fieldsetTextMatch || hasVisibleChild || settingsTextMatchesQuery(`${summaryText} ${detailText}`, query);
+        details.style.display = detailsMatch ? '' : 'none';
+        if (detailsMatch && hasVisibleChild && !details.open) {
+          details.open = true;
+          details.setAttribute('data-filter-opened', 'true');
+        }
+      });
+
+      const fieldsetHelp = fieldset.querySelector<HTMLElement>('.fieldset-help');
+      if (fieldsetHelp) {
+        const helpMatch = fieldsetTextMatch || settingsTextMatchesQuery(fieldsetHelp.textContent, query);
+        fieldsetHelp.style.display = helpMatch ? '' : 'none';
+      }
+
+      const formActions = Array.from(fieldset.querySelectorAll<HTMLElement>('.form-actions'));
+      formActions.forEach((actions) => {
+        actions.style.display = visibleFormGroupCount > 0 || fieldsetTextMatch ? '' : 'none';
+      });
+
+      const showFieldset = fieldsetTextMatch || visibleFormGroupCount > 0;
+      fieldset.style.display = showFieldset ? '' : 'none';
+      if (showFieldset) {
+        hasAnyMatches = true;
+      }
+    });
+
+    setSettingsFilterHasMatches(hasAnyMatches);
+  }, [settingsFilterText, loading]);
+
   if (loading) {
     return (
       <div className="card">
@@ -928,10 +1036,35 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     <div className="card">
       <h2>Settings</h2>
 
+      <div className="settings-filter-search" role="search" aria-label="Filter settings">
+        <Search size={16} className="settings-filter-search-icon" aria-hidden="true" />
+        <input
+          type="text"
+          placeholder="Filter settings by keyword..."
+          value={settingsFilterText}
+          onChange={(e) => setSettingsFilterText(e.target.value)}
+          aria-label="Filter settings by keyword"
+        />
+        {settingsFilterText.trim() && (
+          <button
+            type="button"
+            className="btn btn-sm btn-secondary"
+            onClick={() => setSettingsFilterText('')}
+          >
+            Clear
+          </button>
+        )}
+      </div>
+
+      {!settingsFilterHasMatches && settingsFilterText.trim() && (
+        <p className="muted settings-filter-empty">No settings match "{settingsFilterText.trim()}".</p>
+      )}
+
       {/* API Endpoint Info */}
       <div
         className={`api-info-box ${highlightSetting === 'api_key_info' ? 'highlight-setting' : ''}`}
         id="setting-api_key_info"
+        data-settings-filter-card="true"
       >
         <strong>OpenAI-Compatible API</strong>
         <p>
@@ -957,7 +1090,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       </div>
 
       {/* MCP Routes Summary */}
-      <div className="api-info-box">
+      <div className="api-info-box" data-settings-filter-card="true">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <strong>MCP (Model Context Protocol)</strong>
           <button
@@ -1014,7 +1147,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       {error && <div className="error-banner">{error}</div>}
       {success && <div className="success-banner">{success}</div>}
 
-      <form onSubmit={handleSubmit}>
+      <form ref={settingsFormRef} onSubmit={handleSubmit}>
         {/* Server Branding */}
         <fieldset>
           <legend>Server Branding</legend>
