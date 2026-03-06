@@ -21,45 +21,34 @@ from ragtime.config import settings
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
-from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
+from ragtime.core.entrypoint_status import (EntrypointStatus,
+                                            parse_entrypoint_config)
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (
-    DB_TYPE_POSTGRES,
-    add_table_metadata_to_psql_output,
-    enforce_max_results,
-    format_query_result,
-    validate_sql_query,
-)
-from ragtime.core.ssh import (
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
+                                    add_table_metadata_to_psql_output,
+                                    enforce_max_results, format_query_result,
+                                    validate_sql_query)
+from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
+                              ssh_tunnel_config_from_dict)
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (
-    ArtifactType,
-    CreateWorkspaceRequest,
-    ExecuteComponentRequest,
-    ExecuteComponentResponse,
-    PaginatedWorkspacesResponse,
-    ShareAccessMode,
-    SqlitePersistenceMode,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-    UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot,
-    UserSpaceWorkspace,
-    UserSpaceWorkspaceShareLink,
-    UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceMember,
-    WorkspaceShareSlugAvailabilityResponse,
-)
+from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
+                                      ExecuteComponentRequest,
+                                      ExecuteComponentResponse,
+                                      PaginatedWorkspacesResponse,
+                                      ShareAccessMode, SqlitePersistenceMode,
+                                      UpdateWorkspaceMembersRequest,
+                                      UpdateWorkspaceRequest,
+                                      UpdateWorkspaceShareAccessRequest,
+                                      UpsertWorkspaceFileRequest,
+                                      UserSpaceFileInfo, UserSpaceFileResponse,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection,
+                                      UserSpaceSharedPreviewResponse,
+                                      UserSpaceSnapshot, UserSpaceWorkspace,
+                                      UserSpaceWorkspaceShareLink,
+                                      UserSpaceWorkspaceShareLinkStatus,
+                                      WorkspaceMember,
+                                      WorkspaceShareSlugAvailabilityResponse)
 
 logger = get_logger(__name__)
 
@@ -127,6 +116,60 @@ _MODULE_SOURCE_EXTENSIONS = (
 )
 _RUNTIME_BOOTSTRAP_CONFIG_PATH = ".ragtime/runtime-bootstrap.json"
 _RUNTIME_BOOTSTRAP_TEMPLATE_VERSION = 5
+_RUNTIME_BRIDGE_PATH = ".ragtime/bridge.js"
+_RUNTIME_BRIDGE_VERSION = 3
+_RUNTIME_BRIDGE_VERSION_TAG = f"@ragtime/bridge v{_RUNTIME_BRIDGE_VERSION}"
+_RUNTIME_BRIDGE_CONTENT = (
+    f"// {_RUNTIME_BRIDGE_VERSION_TAG} — platform-managed, do not edit\n"
+    "(function () {\n"
+    "  var B = 'userspace-exec-v1';\n"
+    "  var E = 'ragtime-execute';\n"
+    "  var R = 'ragtime-execute-result';\n"
+    "  var T = 60000;\n"
+    "\n"
+    "  function makeExecute(componentId) {\n"
+    "    return function execute(request) {\n"
+    "      var callId = '__exec_' + Math.random().toString(36).slice(2) + '_' + Date.now();\n"
+    "      return new Promise(function (resolve) {\n"
+    "        var timer = setTimeout(function () {\n"
+    "          window.removeEventListener('message', handler);\n"
+    "          resolve({ rows: [], columns: [], row_count: 0, error: 'Execute timed out after 60s' });\n"
+    "        }, T);\n"
+    "        function handler(event) {\n"
+    "          if (event.source !== window.parent) return;\n"
+    "          if (\n"
+    "            event.data &&\n"
+    "            event.data.bridge === B &&\n"
+    "            event.data.type === R &&\n"
+    "            event.data.callId === callId\n"
+    "          ) {\n"
+    "            window.removeEventListener('message', handler);\n"
+    "            clearTimeout(timer);\n"
+    "            resolve(event.data.result || { rows: [], columns: [], row_count: 0, error: 'Empty response' });\n"
+    "          }\n"
+    "        }\n"
+    "        window.addEventListener('message', handler);\n"
+    "        window.parent.postMessage(\n"
+    "          { bridge: B, type: E, callId: callId, component_id: componentId, request: request || {} },\n"
+    "          '*'\n"
+    "        );\n"
+    "      });\n"
+    "    };\n"
+    "  }\n"
+    "\n"
+    "  var componentsProxy = new Proxy({}, {\n"
+    "    get: function (_, prop) {\n"
+    "      if (typeof prop !== 'string') return undefined;\n"
+    "      return Object.freeze({ component_id: prop, execute: makeExecute(prop) });\n"
+    "    },\n"
+    "    has: function () { return true; },\n"
+    "  });\n"
+    "\n"
+    "  window.__ragtime_context = Object.freeze({\n"
+    "    components: Object.freeze(componentsProxy),\n"
+    "  });\n"
+    "})();\n"
+)
 _SQLITE_MANAGED_DIR_PREFIX = ".ragtime/db/"
 _SQLITE_FILE_EXTENSIONS = frozenset({".sqlite", ".sqlite3", ".db", ".db3"})
 
@@ -478,6 +521,27 @@ class UserSpaceService:
 
     def _seed_runtime_bootstrap_config(self, workspace_id: str) -> None:
         self._sync_runtime_bootstrap_config(workspace_id)
+        self._sync_runtime_bridge_script(workspace_id)
+
+    def _sync_runtime_bridge_script(self, workspace_id: str) -> None:
+        """Write or update the platform-managed ``.ragtime/bridge.js`` file.
+
+        The bridge provides ``window.__ragtime_context`` with a
+        ``components[id].execute()`` data bridge using ``postMessage``
+        to the parent preview host.
+        """
+        files_dir = self._workspace_files_dir(workspace_id)
+        bridge_path = files_dir / _RUNTIME_BRIDGE_PATH
+
+        if bridge_path.exists():
+            try:
+                existing = bridge_path.read_text(encoding="utf-8")
+            except Exception:
+                existing = ""
+            if _RUNTIME_BRIDGE_VERSION_TAG in existing:
+                return
+        bridge_path.parent.mkdir(parents=True, exist_ok=True)
+        bridge_path.write_text(_RUNTIME_BRIDGE_CONTENT, encoding="utf-8")
 
     @staticmethod
     def _default_runtime_entrypoint_config() -> dict[str, str]:
@@ -1168,6 +1232,7 @@ class UserSpaceService:
             raise HTTPException(status_code=403, detail="Owner access required")
 
         self._sync_runtime_bootstrap_config(workspace_id)
+        self._sync_runtime_bridge_script(workspace_id)
         return self._workspace_from_record(workspace)
 
     async def _get_workspace_record(self, workspace_id: str) -> Any:

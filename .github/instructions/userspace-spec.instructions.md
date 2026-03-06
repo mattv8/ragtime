@@ -70,12 +70,24 @@ Last updated: 2026-03-03 (codebase-scanned; concise agent-focused)
 - SQLite is for out-of-scope local persistence (cache/preferences/local app state), not as a substitute source of truth for live dashboards.
 - Workspace SQLite snapshot mode default is `exclude` (live-data-first default). `include` is opt-in behavior.
 
+## Live Data Bridge Architecture
+
+- Bridge file `.ragtime/bridge.js` is platform-managed (seeded per workspace by `_sync_runtime_bridge_script` in `ragtime/userspace/service.py`). Version tracked via `_RUNTIME_BRIDGE_VERSION`.
+- Bridge provides `window.__ragtime_context` with a Proxy-based `components[componentId].execute(params)` that sends postMessage (`USERSPACE_EXEC_BRIDGE` channel) to the parent frame.
+- Parent-side handler in `UserSpaceArtifactPreview.tsx` listens for `ragtime-execute` messages, calls `api.executeWorkspaceComponent()`, and sends results back via `ragtime-execute-result` / `ragtime-execute-error`.
+- Proxy auto-injects `<script src=".ragtime/bridge.js"></script>` into HTML responses so workspaces never need to manually include it.
+- LLM prompt instructs passing `window.__ragtime_context` as the context argument to `render(container, context)`.
+- Legacy globals (`window.__RAGTIME_COMPONENTS__`, `window.__RAGTIME_BRIDGE__`) are removed (hard cutover at v3).
+
 ## Security + Proxy Rules (Do Not Violate)
 
 - Keep role enforcement strict on runtime/collab mutations: viewer is read-only; editor/owner can mutate.
 - Never forward ragtime session credentials to user devservers: preserve blocked header behavior in `_proxy_request_headers`.
 - Keep hop-by-hop header filtering in proxy request/response paths.
-- No DOM-parsing or content-injection in preview proxy. The only rewriting is regex-based root-relative URL prefixing (`src="/"`, `href="/"`, `action="/"`) via `_rewrite_root_relative_urls` in `runtime_routes.py`.
+- Preview proxy performs two regex-based HTML rewrites (no DOM parsing):
+  1. Root-relative URL prefixing (`src="/"`, `href="/"`, `action="/"`) via `_rewrite_root_relative_urls`.
+  2. Live data bridge injection — `_inject_bridge_script` inserts `<script src=".ragtime/bridge.js"></script>` before `</head>` or before the first `<script` tag (skipped if already present).
+  Both are in `runtime_routes.py` and applied only to `text/html` responses.
 - Keep path normalization/traversal protections (`normalize_file_path` and reserved-path checks) intact.
 
 ## Sandbox + Process Conventions
@@ -129,7 +141,7 @@ Modifying `_sync_usr_for_chroot`, `_sync_system_dirs_for_chroot`, `provision_roo
 
 - `validate_userspace_code` can pass while preview is still blank if workspace bootstrap expects `window.render` but bundle format hides it (IIFE export mismatch).
 - Component `execute()` timeouts can still blank dashboards if generated code lacks try/catch fallback rendering.
-- Prefer prompt/tooling fixes for these issues; do not patch proxy layer to compensate.
+- Prefer prompt/tooling fixes for these issues; do not patch proxy layer beyond the existing bridge injection.
 - `validate_userspace_code` + contract metadata alone are not sufficient for live-data persistence; execution-proof checks can still reject writes until component queries have been executed successfully.
 
 ## Fast Workflow for User Space Changes

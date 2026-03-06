@@ -9,32 +9,21 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
-from fastapi import (
-    APIRouter,
-    Depends,
-    Header,
-    HTTPException,
-    Request,
-    WebSocket,
-    WebSocketDisconnect,
-)
+from fastapi import (APIRouter, Depends, Header, HTTPException, Request,
+                     WebSocket, WebSocketDisconnect)
 from fastapi.responses import Response, StreamingResponse
 
 from ragtime.config.settings import settings
 from ragtime.core.auth import validate_session
 from ragtime.core.database import get_db
 from ragtime.core.security import get_current_user, get_current_user_optional
-from ragtime.userspace.models import (
-    UserSpaceCapabilityTokenResponse,
-    UserSpaceFileResponse,
-    UserSpaceRuntimeActionResponse,
-    UserSpaceRuntimeSessionResponse,
-    UserSpaceRuntimeStatusResponse,
-)
-from ragtime.userspace.runtime_service import (
-    RuntimeVersionConflictError,
-    userspace_runtime_service,
-)
+from ragtime.userspace.models import (UserSpaceCapabilityTokenResponse,
+                                      UserSpaceFileResponse,
+                                      UserSpaceRuntimeActionResponse,
+                                      UserSpaceRuntimeSessionResponse,
+                                      UserSpaceRuntimeStatusResponse)
+from ragtime.userspace.runtime_service import (RuntimeVersionConflictError,
+                                               userspace_runtime_service)
 from ragtime.userspace.service import userspace_service
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space Runtime"])
@@ -249,6 +238,7 @@ async def _proxy_http_request(
 
     if proxy_base_path and "text/html" in media_type:
         content = _rewrite_root_relative_urls(content, proxy_base_path)
+        content = _inject_bridge_script(content, proxy_base_path)
         # Content length changed after rewriting; drop stale header so
         # Starlette re-calculates it from the actual body.
         resp_headers.pop("content-length", None)
@@ -273,6 +263,31 @@ _ROOT_REL_JS_URL_RE = re.compile(
     rb"""((?:fetch\s*\(|new\s+WebSocket\s*\(|new\s+EventSource\s*\()\s*(?P<q>["']))(/(?!/))""",
     re.IGNORECASE,
 )
+
+
+_BRIDGE_SCRIPT_TAG = b'<script src=".ragtime/bridge.js"></script>'
+_BRIDGE_DETECT_RE = re.compile(rb'bridge\.js', re.IGNORECASE)
+_HEAD_CLOSE_RE = re.compile(rb'(</head\s*>)', re.IGNORECASE)
+_FIRST_SCRIPT_RE = re.compile(rb'(<script[\s>])', re.IGNORECASE)
+
+
+def _inject_bridge_script(html: bytes, proxy_base_path: str) -> bytes:
+    """Inject the platform data-bridge script into HTML responses.
+
+    Inserts ``<script src=".ragtime/bridge.js">`` before ``</head>`` or
+    the first ``<script`` tag so ``window.__ragtime_context`` is available
+    to workspace code.  Skips injection if bridge.js is already referenced.
+    """
+    if _BRIDGE_DETECT_RE.search(html):
+        return html
+    tag = _BRIDGE_SCRIPT_TAG + b'\n'
+    m = _HEAD_CLOSE_RE.search(html)
+    if m:
+        return html[: m.start()] + tag + html[m.start() :]
+    m = _FIRST_SCRIPT_RE.search(html)
+    if m:
+        return html[: m.start()] + tag + html[m.start() :]
+    return html
 
 
 def _rewrite_root_relative_urls(html: bytes, proxy_base_path: str) -> bytes:

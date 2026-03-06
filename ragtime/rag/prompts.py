@@ -348,6 +348,16 @@ USERSPACE_ENTRYPOINT_SETUP_PROMPT = """
 - For module-style dashboard artifacts, keep `dashboard/main.ts` present as the thin composition entrypoint for dashboard modules.
 - In `module_dashboard` mode, runtime stabilization means fixing `dashboard/*` code first. If the runtime needs an HTML entry point (e.g., for esbuild `--servedir`), create `index.html` or `public/index.html` with minimal scaffolding that loads the bundled output.
 - When using esbuild with `--bundle`, always add `--format=esm` to produce ES module output. In `index.html`, load the bundle with `<script type="module">` and use `import { render } from './dist/main.js'` to call the entry render function. Never rely on `window.render` or other global-scope assumptions; esbuild IIFE format wraps exports in a closure where they are inaccessible from inline scripts.
+- The platform automatically injects a live data bridge (`window.__ragtime_context`) into every preview page. You do NOT need to add a `<script src=".ragtime/bridge.js">` tag — it is injected by the platform proxy.
+- In `index.html`, pass `window.__ragtime_context` as the context argument when calling the module's render function:
+  ```html
+  <script type="module">
+    import { render } from './dist/main.js';
+    render(document.getElementById('root'), window.__ragtime_context);
+  </script>
+  ```
+- Inside the module, use `context.components[componentId].execute(request)` for live data queries. Never construct the context object manually — always receive it from the caller via `window.__ragtime_context`.
+- Do NOT reference `window.__RAGTIME_COMPONENTS__` or other legacy globals. The only supported bridge is `window.__ragtime_context`.
 - If preview probe reports HTTP 200 and no hard runtime error, treat runtime as available and continue with dashboard code fixes instead of runtime scaffolding changes.
 
 #### Dependencies and tooling
