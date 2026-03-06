@@ -7206,7 +7206,26 @@ except Exception as e:
             else "gpt-4-turbo"
         )
         try:
-            context_limit = max(1, int(await get_context_limit(effective_model_id)))
+            provider = str(
+                (self._app_settings or {}).get("llm_provider", "openai")
+            ).lower()
+            if provider == "ollama":
+                # Use Ollama API as single source of truth for context window
+                base_url = (self._app_settings or {}).get(
+                    "llm_ollama_base_url",
+                    (self._app_settings or {}).get(
+                        "ollama_base_url", "http://localhost:11434"
+                    ),
+                )
+                detected = await get_model_context_length(
+                    effective_model_id, base_url
+                )
+                context_limit = max(1, detected or 8192)
+            else:
+                # OpenAI/Anthropic: use LiteLLM dataset
+                context_limit = max(
+                    1, int(await get_context_limit(effective_model_id))
+                )
         except Exception:
             context_limit = 8192
 

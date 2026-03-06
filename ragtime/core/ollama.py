@@ -237,6 +237,7 @@ def extract_context_length(model_info: dict) -> Optional[int]:
     Extract context length from Ollama model_info.
 
     The length is stored as '<architecture>.context_length' in model_info.
+    Works for all architectures (llama, qwen35, gemma, phi, etc.).
 
     Args:
         model_info: The model_info dict from /api/show response
@@ -250,12 +251,62 @@ def extract_context_length(model_info: dict) -> Optional[int]:
     return None
 
 
+def extract_num_ctx_override(details: dict) -> Optional[int]:
+    """
+    Extract num_ctx override from the parameters field of /api/show.
+
+    Users can set num_ctx in their Modelfile/model config to override
+    the training context length (e.g. to save VRAM).
+
+    Args:
+        details: Full response from /api/show
+
+    Returns:
+        num_ctx value if explicitly set, None otherwise
+    """
+    params = details.get("parameters", "")
+    if not params:
+        return None
+    for line in params.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0].strip() == "num_ctx":
+            try:
+                return int(parts[-1])
+            except (ValueError, TypeError):
+                pass
+    return None
+
+
+def extract_effective_context_length(details: dict) -> Optional[int]:
+    """
+    Extract the effective context length from a full /api/show response.
+
+    Prefers a user-set num_ctx override (from the parameters field) over
+    the training context length from model_info.  This respects users who
+    intentionally limit context to save VRAM.
+
+    Args:
+        details: Full response from /api/show
+
+    Returns:
+        Effective context length, or None if not determinable
+    """
+    num_ctx = extract_num_ctx_override(details)
+    if num_ctx is not None:
+        return num_ctx
+    model_info = details.get("model_info", {})
+    return extract_context_length(model_info)
+
+
 async def get_model_context_length(
     model_name: str,
     base_url: str,
 ) -> Optional[int]:
     """
-    Get the context length for an Ollama model.
+    Get the effective context length for an Ollama model.
+
+    Queries /api/show and returns the effective context length, preferring
+    a user-set num_ctx override over the training context length.
 
     Args:
         model_name: The Ollama model name
@@ -268,8 +319,7 @@ async def get_model_context_length(
     if not details:
         return None
 
-    model_info = details.get("model_info", {})
-    return extract_context_length(model_info)
+    return extract_effective_context_length(details)
 
 
 def extract_model_family(details: dict) -> Optional[str]:
