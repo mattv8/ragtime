@@ -82,9 +82,8 @@ function getLastWorkspaceCookieName(userId: string): string {
   return `${LAST_WORKSPACE_COOKIE_PREFIX}${encodeURIComponent(userId)}`;
 }
 
-function getUserSpaceLayoutCookieName(userId: string, workspaceId: string | null): string {
-  const scope = workspaceId ? encodeURIComponent(workspaceId) : 'global';
-  return `${USERSPACE_LAYOUT_COOKIE_PREFIX}${encodeURIComponent(userId)}_${scope}`;
+function getUserSpaceLayoutCookieName(userId: string): string {
+  return `${USERSPACE_LAYOUT_COOKIE_PREFIX}${encodeURIComponent(userId)}`;
 }
 
 function getCookieValue(name: string): string | null {
@@ -299,7 +298,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const terminalResizeObserverRef = useRef<ResizeObserver | null>(null);
   const statusOverlayDismissedSignatureRef = useRef<string | null>(null);
   const lastWorkspaceCookieName = useMemo(() => getLastWorkspaceCookieName(currentUser.id), [currentUser.id]);
-  const userSpaceLayoutCookieName = useMemo(() => getUserSpaceLayoutCookieName(currentUser.id, activeWorkspaceId), [currentUser.id, activeWorkspaceId]);
+  const userSpaceLayoutCookieName = useMemo(() => getUserSpaceLayoutCookieName(currentUser.id), [currentUser.id]);
 
   // Resize state
   const [sidebarWidth, setSidebarWidth] = useState(180);
@@ -1498,11 +1497,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     };
 
     socket.onclose = () => {
+      if (reconnectEnabled) {
+        terminal.writeln('\r\n[status] Terminal disconnected. Reconnecting...');
+      }
       scheduleReconnect();
     };
 
     socket.onerror = () => {
-      scheduleReconnect();
+      // onclose always fires after onerror; reconnect is handled there
     };
 
     return () => {

@@ -236,10 +236,8 @@ interface StoredChatLayout {
 
 const CHAT_LAYOUT_COOKIE_PREFIX = 'chat_layout_';
 
-function getChatLayoutCookieName(userId: string, workspaceId?: string, embedded?: boolean): string {
-  const scope = workspaceId ? encodeURIComponent(workspaceId) : 'global';
-  const mode = embedded ? 'embedded' : 'default';
-  return `${CHAT_LAYOUT_COOKIE_PREFIX}${encodeURIComponent(userId)}_${mode}_${scope}`;
+function getChatLayoutCookieName(userId: string): string {
+  return `${CHAT_LAYOUT_COOKIE_PREFIX}${encodeURIComponent(userId)}`;
 }
 
 function getCookieValue(name: string): string | null {
@@ -1411,7 +1409,7 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const MIN_INPUT_AREA_HEIGHT = 96;
   const INPUT_AREA_COLLAPSE_THRESHOLD = 80;
-  const chatLayoutCookieName = getChatLayoutCookieName(currentUser.id, workspaceId, embedded);
+  const chatLayoutCookieName = getChatLayoutCookieName(currentUser.id);
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);

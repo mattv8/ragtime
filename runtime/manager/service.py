@@ -43,6 +43,10 @@ class SessionManager:
             "RUNTIME_RECONCILE_INTERVAL_SECONDS",
             15,
         )
+        self._worker_call_timeout = self._get_positive_int_env(
+            "RUNTIME_WORKER_CALL_TIMEOUT_SECONDS",
+            10,
+        )
         self._reconcile_task: asyncio.Task[None] | None = None
 
     @staticmethod
@@ -157,7 +161,10 @@ class SessionManager:
         )
 
     async def _sync_session_from_worker(self, session: ManagerSession) -> None:
-        worker_data = await self._worker_service.get_session(session.worker_session_id)
+        worker_data = await asyncio.wait_for(
+            self._worker_service.get_session(session.worker_session_id),
+            timeout=self._worker_call_timeout,
+        )
         self._apply_worker_state(session, worker_data)
         now = self._utc_now()
         session.updated_at = now
@@ -170,7 +177,10 @@ class SessionManager:
                 and session.lease_expires_at <= now
             ):
                 with suppress(Exception):
-                    await self._worker_service.stop_session(session.worker_session_id)
+                    await asyncio.wait_for(
+                        self._worker_service.stop_session(session.worker_session_id),
+                        timeout=self._worker_call_timeout,
+                    )
                 session.state = "stopped"
                 session.devserver_running = False
                 session.last_error = "Lease expired"
@@ -229,8 +239,9 @@ class SessionManager:
                         provider_session_id=provider_session_id,
                         pty_access_token=pty_access_token,
                     )
-                    worker_session = await self._worker_service.start_session(
-                        worker_request
+                    worker_session = await asyncio.wait_for(
+                        self._worker_service.start_session(worker_request),
+                        timeout=self._worker_call_timeout,
                     )
                     session = self._create_session(
                         provider_session_id,
@@ -264,10 +275,16 @@ class SessionManager:
             session = self._sessions.get(provider_session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Runtime session not found")
-            worker_data = await self._worker_service.stop_session(
-                session.worker_session_id
-            )
-            self._apply_worker_state(session, worker_data)
+            try:
+                worker_data = await asyncio.wait_for(
+                    self._worker_service.stop_session(session.worker_session_id),
+                    timeout=self._worker_call_timeout,
+                )
+                self._apply_worker_state(session, worker_data)
+            except TimeoutError:
+                session.state = "stopped"
+                session.devserver_running = False
+                session.last_error = "Worker stop timed out"
             session.updated_at = self._utc_now()
             self._workspace_index.pop(session.workspace_id, None)
             self._sessions.pop(provider_session_id, None)
@@ -281,8 +298,9 @@ class SessionManager:
             session = self._sessions.get(provider_session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Runtime session not found")
-            worker_data = await self._worker_service.restart_session(
-                session.worker_session_id
+            worker_data = await asyncio.wait_for(
+                self._worker_service.restart_session(session.worker_session_id),
+                timeout=self._worker_call_timeout,
             )
             self._apply_worker_state(session, worker_data)
             now = self._utc_now()
