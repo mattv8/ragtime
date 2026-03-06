@@ -9,7 +9,7 @@ from typing import Optional
 import psutil
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ragtime import __version__
 from ragtime.config import settings
@@ -146,14 +146,32 @@ async def chat_completions(request: ChatCompletionRequest):
     chat_history = []
     for msg in request.messages[:-1]:  # Exclude the current message
         if msg.role == "user":
-            # Convert multimodal content to LangChain format
-            if isinstance(msg.content, str):
-                chat_history.append(HumanMessage(content=msg.content))
-            else:
-                # For multimodal, pass as-is - LangChain will handle it
-                chat_history.append(HumanMessage(content=msg.content))
+            chat_history.append(HumanMessage(content=msg.content))
         elif msg.role == "assistant":
-            chat_history.append(AIMessage(content=msg.get_text_content()))
+            if msg.tool_calls:
+                # Reconstruct native AIMessage with tool_calls
+                chat_history.append(
+                    AIMessage(
+                        content=msg.get_text_content(),
+                        tool_calls=[
+                            {
+                                "name": tc.function.name,
+                                "args": json.loads(tc.function.arguments or "{}"),
+                                "id": tc.id,
+                            }
+                            for tc in msg.tool_calls
+                        ],
+                    )
+                )
+            else:
+                chat_history.append(AIMessage(content=msg.get_text_content()))
+        elif msg.role == "tool":
+            chat_history.append(
+                ToolMessage(
+                    content=msg.get_text_content(),
+                    tool_call_id=msg.tool_call_id or "",
+                )
+            )
 
     # Handle streaming response - use true LLM streaming
     if request.stream:

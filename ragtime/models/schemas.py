@@ -31,23 +31,52 @@ class ImageContent(BaseModel):
 ContentPart = Union[TextContent, ImageContent, Dict[str, Any]]
 
 
+class ToolCallFunction(BaseModel):
+    """Function definition inside an OpenAI-style tool call."""
+
+    name: str
+    arguments: str = Field(
+        default="{}",
+        description="JSON-encoded function arguments",
+    )
+
+
+class MessageToolCall(BaseModel):
+    """A single tool call attached to an assistant message (OpenAI format)."""
+
+    id: str
+    type: str = "function"
+    function: ToolCallFunction
+
+
 class Message(BaseModel):
     """A single message in the conversation."""
 
-    role: str = Field(description="Role: 'user', 'assistant', or 'system'")
-    content: Union[str, List[ContentPart]] = Field(
-        description="Message content - either string or multimodal content array"
+    role: str = Field(description="Role: 'user', 'assistant', 'system', or 'tool'")
+    content: Union[str, List[ContentPart], None] = Field(
+        default="",
+        description="Message content - string, multimodal content array, or null",
+    )
+    tool_calls: Optional[List[MessageToolCall]] = Field(
+        default=None,
+        description="Tool calls made by the assistant (OpenAI format)",
+    )
+    tool_call_id: Optional[str] = Field(
+        default=None,
+        description="ID of the tool call this message is responding to (role=tool)",
     )
 
     @field_validator("role")
     @classmethod
     def validate_role(cls, v: str) -> str:
-        if v not in ("user", "assistant", "system"):
-            raise ValueError("Role must be 'user', 'assistant', or 'system'")
+        if v not in ("user", "assistant", "system", "tool"):
+            raise ValueError("Role must be 'user', 'assistant', 'system', or 'tool'")
         return v
 
     def get_text_content(self) -> str:
         """Extract text content from message, handling both string and multimodal formats."""
+        if self.content is None:
+            return ""
         if isinstance(self.content, str):
             return self.content
         # Extract text from multimodal content array
@@ -200,4 +229,5 @@ class HealthResponse(BaseModel):
     memory: Optional[MemoryStats] = None
     index_details: Optional[List[IndexLoadingDetail]] = None
     sequential_loading: Optional[bool] = None
+    loading_index: Optional[str] = None  # Currently loading index name
     loading_index: Optional[str] = None  # Currently loading index name

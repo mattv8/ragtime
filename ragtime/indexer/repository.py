@@ -699,6 +699,9 @@ class IndexerRepository:
             max_query_results=settings.maxQueryResults,
             query_timeout=settings.queryTimeout,
             enable_write_ops=settings.enableWriteOps,
+            # Token optimization
+            max_tool_output_chars=getattr(settings, "maxToolOutputChars", 5000),
+            scratchpad_window_size=getattr(settings, "scratchpadWindowSize", 6),
             # Search configuration
             search_results_k=getattr(settings, "searchResultsK", 5),
             aggregate_search=getattr(settings, "aggregateSearch", True),

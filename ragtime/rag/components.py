@@ -243,7 +243,10 @@ def compress_intermediate_step(
     else:
         obs_summary = obs_str
 
-    return f"[{tool_name}] Input: {input_summary} -> Output: {obs_summary}"
+    return (
+        f"<tool_use name=\"{tool_name}\">{input_summary}</tool_use>"
+        f"<tool_result>{obs_summary}</tool_result>"
+    )
 
 
 def format_scratchpad_with_window(

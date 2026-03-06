@@ -12,7 +12,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.logging import get_logger
@@ -109,38 +109,86 @@ def strip_images_from_content(
     return stripped if stripped else content
 
 
-def summarize_tool_event_for_history(event: dict[str, Any]) -> str:
-    """Create compact natural-language context from a stored tool event."""
-    tool_name = event.get("tool", "unknown")
-    tool_input = event.get("input", {})
-    tool_output = event.get("output", "")
-    connection = event.get("connection") or {}
+def _truncate_tool_output(output: str, max_chars: int = 5000) -> str:
+    """Truncate tool output for inclusion in chat history."""
+    if not output:
+        return "(no output)"
+    if len(output) > max_chars:
+        return output[:max_chars] + "... (truncated)"
+    return output
 
-    input_str = ""
-    if isinstance(tool_input, dict):
-        for field in ["query", "sql", "code", "command", "python_code"]:
-            if field in tool_input:
-                input_str = str(tool_input[field])
-                break
-        if not input_str:
-            input_str = str(tool_input)
-    else:
-        input_str = str(tool_input)
 
-    connection_suffix = ""
-    if isinstance(connection, dict) and connection.get("tool_config_id"):
-        connection_name = connection.get("tool_config_name") or tool_name
-        connection_suffix = (
-            f" (connection: {connection_name}, "
-            f"id={connection.get('tool_config_id')}, "
-            f"type={connection.get('tool_type') or 'unknown'})"
-        )
+def rebuild_tool_messages_from_events(
+    events: list[dict[str, Any]],
+    msg_idx: int,
+    max_tool_output_chars: int = 5000,
+) -> list[Any]:
+    """Convert stored chronological events into native LangChain message objects.
 
-    return (
-        f"\n(I used {tool_name}{connection_suffix} with: "
-        f"{input_str[:200]}{'...' if len(input_str) > 200 else ''} - "
-        f"Result: {str(tool_output)[:500]}{'...' if len(str(tool_output)) > 500 else ''})\n"
-    )
+    Produces ``AIMessage(tool_calls=[...])`` + ``ToolMessage(...)`` pairs for tool
+    events, and regular ``AIMessage(content=...)`` for content blocks.  This format
+    is what LangChain's agent executor expects and prevents the LLM from echoing
+    tool-call metadata as conversational text.
+
+    Args:
+        events: Chronological event dicts from a stored assistant message.
+        msg_idx: Index of the parent message in the conversation (used to
+            generate deterministic ``tool_call_id`` values).
+        max_tool_output_chars: Maximum characters per tool output before truncation.
+
+    Returns:
+        List of ``BaseMessage`` objects ready for the ``chat_history`` placeholder.
+    """
+    messages: list[Any] = []
+    pending_content = ""
+    tool_seq = 0
+
+    for ev in events:
+        ev_type = ev.get("type")
+
+        if ev_type == "content":
+            pending_content += ev.get("content", "")
+
+        elif ev_type == "tool":
+            # Flush accumulated text before this tool call
+            if pending_content.strip():
+                messages.append(AIMessage(content=pending_content))
+                pending_content = ""
+
+            tool_call_id = f"call_{msg_idx}_{tool_seq}"
+            tool_seq += 1
+            tool_name = ev.get("tool", "unknown")
+            tool_args = ev.get("input") or {}
+            tool_output = _truncate_tool_output(str(ev.get("output", "")), max_tool_output_chars)
+
+            messages.append(
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": tool_name,
+                            "args": tool_args,
+                            "id": tool_call_id,
+                        }
+                    ],
+                )
+            )
+            messages.append(
+                ToolMessage(
+                    content=tool_output,
+                    tool_call_id=tool_call_id,
+                )
+            )
+
+        elif ev_type == "reasoning":
+            # Reasoning blocks are internal; skip in history
+            continue
+
+    # Flush any trailing content
+    if pending_content.strip():
+        messages.append(AIMessage(content=pending_content))
+
+    return messages
 
 
 class BackgroundTaskService:
@@ -613,8 +661,14 @@ class BackgroundTaskService:
 
                 # Build chat history (exclude the user message we're about to process)
                 # Include tool call information so the LLM has full context
+                from ragtime.core.app_settings import SettingsCache
+                app_settings = await SettingsCache.get_instance().get_settings()
+                max_tool_output_chars = int(app_settings.get("max_tool_output_chars", 5000))
+
                 chat_history = []
-                for msg in conv.messages[:-1]:  # Exclude last (current user) message
+                for msg_idx, msg in enumerate(
+                    conv.messages[:-1]
+                ):  # Exclude last (current user) message
                     if msg.role == "user":
                         # Parse content in case it's a JSON-encoded multimodal array
                         parsed_content = parse_message_content(msg.content)
@@ -622,25 +676,13 @@ class BackgroundTaskService:
                         parsed_content = strip_images_from_content(parsed_content)
                         chat_history.append(HumanMessage(content=parsed_content))
                     elif msg.role == "assistant":
-                        # Build content that includes tool call context
-                        content_parts = []
-
-                        # If message has events (interleaved content and tools), reconstruct
                         if msg.events:
-                            for event in msg.events:
-                                if event.get("type") == "content":
-                                    content_parts.append(event.get("content", ""))
-                                elif event.get("type") == "tool":
-                                    content_parts.append(
-                                        summarize_tool_event_for_history(event)
-                                    )
-                            full_content = "".join(content_parts)
-                        else:
-                            # Fallback to just content if no events
-                            full_content = msg.content
-
-                        if full_content.strip():
-                            chat_history.append(AIMessage(content=full_content))
+                            # Reconstruct native AIMessage(tool_calls) + ToolMessage pairs
+                            chat_history.extend(
+                                rebuild_tool_messages_from_events(msg.events, msg_idx, max_tool_output_chars)
+                            )
+                        elif msg.content and msg.content.strip():
+                            chat_history.append(AIMessage(content=msg.content))
 
                 # Process the message with streaming
                 from ragtime.rag import rag
