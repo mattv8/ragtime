@@ -599,7 +599,6 @@ _IMPORT_SPECIFIER_PATTERN = re.compile(
     r"^\s*import(?:\s+type)?(?:[\s\w{},*]+from\s*)?[\"']([^\"']+)[\"']",
     re.MULTILINE,
 )
-_JSX_TAG_PATTERN = re.compile(r"<\s*[A-Za-z][A-Za-z0-9_:\-]*(?:\s|>|/)")
 
 # Patterns that indicate hardcoded mock/sample data in module source.
 # Each tuple: (compiled regex, human-readable description)
@@ -674,8 +673,8 @@ def is_userspace_strict_frontend_path(path: str) -> bool:
 
 def validate_userspace_runtime_contract(content: str, file_path: str) -> list[str]:
     """Validate constraints required by the User Space runtime/tooling path."""
+    del file_path
     violations: list[str] = []
-    normalized_path = (file_path or "").strip()
 
     # User Space module tooling expects workspace-local import paths.
     imports = _IMPORT_SPECIFIER_PATTERN.findall(content or "")
@@ -689,11 +688,9 @@ def validate_userspace_runtime_contract(content: str, file_path: str) -> list[st
             f"{sample}. Use local workspace modules only."
         )
 
-    # JSX in .ts files creates parse errors in TypeScript validator path.
-    if normalized_path.endswith(".ts") and _JSX_TAG_PATTERN.search(content or ""):
-        violations.append(
-            "JSX-like syntax detected in a .ts file. Move JSX to .tsx modules and keep dashboard/main.ts as a thin composition entrypoint."
-        )
+    # Avoid regex-only JSX heuristics here: template literals can contain
+    # HTML-like text in valid .ts code and should not be flagged as JSX.
+    # Syntax-level JSX issues are reported by the TypeScript validator.
 
     return violations
 
@@ -5538,6 +5535,32 @@ except Exception as e:
             applied: list[dict[str, Any]] = []
             skipped: list[dict[str, Any]] = []
 
+            def _newline_style(text: str) -> str:
+                has_crlf = "\r\n" in text
+                has_lf = "\n" in text
+                if has_crlf and has_lf:
+                    # Mixed style means both CRLF and LF-only segments exist.
+                    return "mixed"
+                if has_crlf:
+                    return "crlf"
+                if has_lf:
+                    return "lf"
+                return "none"
+
+            def _first_non_empty_line(text: str) -> str:
+                for line in text.splitlines():
+                    stripped = line.strip()
+                    if stripped:
+                        return stripped
+                return ""
+
+            def _last_non_empty_line(text: str) -> str:
+                for line in reversed(text.splitlines()):
+                    stripped = line.strip()
+                    if stripped:
+                        return stripped
+                return ""
+
             for index, replacement in enumerate(parsed_replacements, start=1):
                 old_text = replacement.old_text
                 new_text = replacement.new_text
@@ -5552,8 +5575,58 @@ except Exception as e:
                 found_count = updated_content.count(old_text)
                 if found_count == 0:
                     if required:
-                        raise ToolException(
-                            f"Replacement #{index} failed: old_text not found in {normalized_path}."
+                        old_prefix = _first_non_empty_line(old_text)[:160]
+                        old_suffix = _last_non_empty_line(old_text)[:160]
+                        normalized_old = old_text.replace("\r\n", "\n")
+                        normalized_file = updated_content.replace("\r\n", "\n")
+                        newline_normalized_match = (
+                            normalized_file.count(normalized_old) > 0
+                            if normalized_old
+                            else False
+                        )
+
+                        prefix_matches = (
+                            updated_content.count(old_prefix) if old_prefix else 0
+                        )
+                        suffix_matches = (
+                            updated_content.count(old_suffix) if old_suffix else 0
+                        )
+
+                        file_excerpt = updated_content[:1200]
+                        return json.dumps(
+                            {
+                                "rejected": True,
+                                "status": "rejected_not_persisted",
+                                "updated": False,
+                                "persisted": False,
+                                "path": normalized_path,
+                                "message": (
+                                    f"Replacement #{index} failed: old_text not found."
+                                ),
+                                "action_required": (
+                                    "Read the file again with read_userspace_file and patch using exact current text. "
+                                    "Avoid using terminal output from a different file view as the patch source."
+                                ),
+                                "diagnostics": {
+                                    "replacement_index": index,
+                                    "old_text_chars": len(old_text),
+                                    "new_text_chars": len(new_text),
+                                    "file_chars": len(updated_content),
+                                    "old_text_newline_style": _newline_style(old_text),
+                                    "file_newline_style": _newline_style(
+                                        updated_content
+                                    ),
+                                    "newline_normalized_match": newline_normalized_match,
+                                    "old_text_prefix": old_prefix,
+                                    "old_text_suffix": old_suffix,
+                                    "prefix_occurrences_in_file": prefix_matches,
+                                    "suffix_occurrences_in_file": suffix_matches,
+                                    "file_excerpt_start": file_excerpt,
+                                },
+                                "attempted_replacements": applied,
+                                "skipped": skipped,
+                            },
+                            indent=2,
                         )
                     skipped.append(
                         {
@@ -6656,7 +6729,8 @@ except Exception as e:
                 description=(
                     "Apply targeted sed-style in-place replacements to an existing User Space file. "
                     "Use for surgical edits to avoid re-rendering full file content. "
-                    "Supports ordered exact old/new replacements with per-op required flags."
+                    "Supports ordered exact old/new replacements with per-op required flags. "
+                    "For reliable matches, source old_text from read_userspace_file output (not shell-derived views)."
                 ),
                 args_schema=PatchUserSpaceFileInput,
                 handle_tool_error=True,
@@ -7230,15 +7304,11 @@ except Exception as e:
                         "ollama_base_url", "http://localhost:11434"
                     ),
                 )
-                detected = await get_model_context_length(
-                    effective_model_id, base_url
-                )
+                detected = await get_model_context_length(effective_model_id, base_url)
                 context_limit = max(1, detected or 8192)
             else:
                 # OpenAI/Anthropic: use LiteLLM dataset
-                context_limit = max(
-                    1, int(await get_context_limit(effective_model_id))
-                )
+                context_limit = max(1, int(await get_context_limit(effective_model_id)))
         except Exception:
             context_limit = 8192
 
@@ -7451,6 +7521,7 @@ except Exception as e:
                 # Track tool runs to avoid duplicates from nested events
                 active_tool_runs: set[str] = set()
                 streamed_content_by_chat_run: dict[str, str] = {}
+                streamed_reasoning_by_chat_run: dict[str, str] = {}
 
                 async for event in executor.astream_events(
                     {"input": agent_input, "chat_history": chat_history},
@@ -7513,6 +7584,11 @@ except Exception as e:
                                 chunk
                             )
                             if reasoning_text:
+                                if run_id:
+                                    streamed_reasoning_by_chat_run[run_id] = (
+                                        streamed_reasoning_by_chat_run.get(run_id, "")
+                                        + reasoning_text
+                                    )
                                 yield {"type": "reasoning", "content": reasoning_text}
 
                             if hasattr(chunk, "content") and chunk.content:
@@ -7529,11 +7605,23 @@ except Exception as e:
 
                     elif kind == "on_chat_model_end":
                         output = event.get("data", {}).get("output")
+                        # Only emit final reasoning if it wasn't already
+                        # streamed token-by-token (avoids duplicate events).
                         final_reasoning = (
                             self._extract_reasoning_from_chat_model_output(output)
                         )
+                        emitted_reasoning = streamed_reasoning_by_chat_run.pop(
+                            run_id, ""
+                        )
                         if final_reasoning:
-                            yield {"type": "reasoning", "content": final_reasoning}
+                            reasoning_suffix = self._compute_missing_suffix(
+                                emitted_reasoning, final_reasoning
+                            )
+                            if reasoning_suffix:
+                                yield {
+                                    "type": "reasoning",
+                                    "content": reasoning_suffix,
+                                }
                         final_text = self._extract_text_from_chat_model_output(output)
                         emitted_text = streamed_content_by_chat_run.get(run_id, "")
                         missing_suffix = self._compute_missing_suffix(

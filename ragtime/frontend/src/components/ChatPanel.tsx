@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo, isValidElement, type ReactNode, type CSSProperties } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit } from 'lucide-react';
+import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock } from 'lucide-react';
 import { api } from '@/api';
 import type { Conversation, ChatMessage, AvailableModel, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool } from '@/types';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
@@ -935,6 +935,9 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
   );
 })
 
+// Reasoning visibility preference stored in localStorage
+type ReasoningVisibility = 'compact' | 'expanded' | 'hidden';
+
 // Consolidated streaming content - groups content events between tool calls
 // This avoids re-rendering markdown for every token and dramatically improves performance
 interface StreamingSegment {
@@ -942,67 +945,17 @@ interface StreamingSegment {
   content?: string;  // For content/reasoning segments - consolidated text
   toolCall?: ActiveToolCall;  // For tool segments
   isComplete?: boolean;  // For reasoning segments - whether thinking has finished
-  embeddedToolCalls?: ActiveToolCall[];  // For reasoning segments - tool executions nested inside thinking
+  embeddedToolCalls?: ActiveToolCall[];  // For reasoning segments - nested tool executions
+  reasoningParts?: ReasoningPart[];  // For reasoning segments - ordered text/tool parts
 }
 
 // Memoized component for rendering streaming segments efficiently
 // Collapsible reasoning/thinking display
 
-// Parse <tool_call> blocks out of reasoning text into interleaved segments
-interface ReasoningSegment {
-  type: 'text' | 'tool_call';
+interface ReasoningPart {
+  type: 'text' | 'tool';
   text?: string;
-  toolName?: string;
-  params?: Record<string, string>;
-}
-
-function parseReasoningToolCalls(content: string): ReasoningSegment[] {
-  const segments: ReasoningSegment[] = [];
-  const regex = /<tool_call>([\s\S]*?)<\/tool_call>/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = regex.exec(content)) !== null) {
-    // Text before this tool call
-    if (match.index > lastIndex) {
-      const text = content.slice(lastIndex, match.index).trim();
-      if (text) segments.push({ type: 'text', text });
-    }
-
-    const block = match[1].trim();
-    // Parse XML-style: <function=name><parameter=key>value</parameter></function>
-    const funcMatch = block.match(/<function=(\w+)>/);
-    if (funcMatch) {
-      const params: Record<string, string> = {};
-      const paramRegex = /<parameter=(\w+)>\s*([\s\S]*?)\s*<\/parameter>/g;
-      let pm: RegExpExecArray | null;
-      while ((pm = paramRegex.exec(block)) !== null) {
-        params[pm[1]] = pm[2].trim();
-      }
-      segments.push({ type: 'tool_call', toolName: funcMatch[1], params });
-    } else {
-      // Try JSON-style
-      try {
-        const data = JSON.parse(block) as Record<string, unknown>;
-        if (data && typeof data.name === 'string') {
-          const args = (data.arguments ?? data.args ?? {}) as Record<string, string>;
-          segments.push({ type: 'tool_call', toolName: data.name as string, params: args });
-        }
-      } catch {
-        // Unparseable — render as text
-        segments.push({ type: 'text', text: match[0] });
-      }
-    }
-    lastIndex = regex.lastIndex;
-  }
-
-  // Remaining text after last tool call
-  if (lastIndex < content.length) {
-    const text = content.slice(lastIndex).trim();
-    if (text) segments.push({ type: 'text', text });
-  }
-
-  return segments;
+  toolCall?: ActiveToolCall;
 }
 
 // Inline expandable tool call within reasoning
@@ -1080,76 +1033,193 @@ const ReasoningToolCallCard = memo(function ReasoningToolCallCard({
 const ReasoningDisplay = memo(function ReasoningDisplay({
   content,
   isComplete,
+  parts,
   toolCalls,
+  visibility = 'compact',
 }: {
   content: string;
   isComplete: boolean;
+  parts?: ReasoningPart[];
   toolCalls?: ActiveToolCall[];
+  visibility?: ReasoningVisibility;
 }) {
-  const [isExpanded, setIsExpanded] = useState(!isComplete);
+  const [isExpanded, setIsExpanded] = useState(() => {
+    if (visibility === 'expanded') return true;
+    if (visibility === 'hidden') return false;
+    return !isComplete; // compact: open while streaming, closed after
+  });
+  // Track whether the user has manually toggled, so we don't override their choice while streaming
+  const userToggledRef = useRef(false);
+  const [copied, setCopied] = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const startTimeRef = useRef<number>(Date.now());
+  const [elapsed, setElapsed] = useState(0);
 
-  // Parse tool calls from reasoning text
-  const segments = useMemo(() => parseReasoningToolCalls(content), [content]);
-  const hasToolCalls = segments.some(s => s.type === 'tool_call');
+  const handleToggle = useCallback(() => {
+    userToggledRef.current = true;
+    setIsExpanded(prev => !prev);
+  }, []);
 
-  // Match parsed tool calls to executed tool calls by name (order-based)
-  const matchedTools = useMemo(() => {
-    if (!toolCalls?.length) return new Map<number, ActiveToolCall>();
-    const map = new Map<number, ActiveToolCall>();
-    const available = [...toolCalls];
-    let segIdx = 0;
-    for (const seg of segments) {
-      if (seg.type === 'tool_call') {
-        const matchIdx = available.findIndex(tc => tc.tool === seg.toolName);
-        if (matchIdx !== -1) {
-          map.set(segIdx, available[matchIdx]);
-          available.splice(matchIdx, 1);
-        }
+  // Strip <tool_call> XML blocks from reasoning text — these are the model's
+  // planned tool calls that get promoted to real tool events. We show the real
+  // executed tool cards (from parts/embeddedToolCalls) instead of the raw XML.
+  const cleanToolCallXml = useCallback((text: string) => {
+    // Strip complete <tool_call>...</tool_call> blocks
+    let cleaned = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '');
+    // During streaming, truncate at any unclosed <tool_call> tag
+    if (!isComplete) {
+      const openIdx = cleaned.lastIndexOf('<tool_call>');
+      if (openIdx !== -1 && cleaned.indexOf('</tool_call>', openIdx) === -1) {
+        cleaned = cleaned.substring(0, openIdx);
       }
-      segIdx++;
+      // Also catch partially-typed opening tags (e.g. "<tool_c")
+      const partial = cleaned.match(/<tool_c[^>]*$/);
+      if (partial && partial.index !== undefined) {
+        cleaned = cleaned.substring(0, partial.index);
+      }
     }
-    return map;
-  }, [segments, toolCalls]);
-
-  // Auto-collapse when thinking completes
-  useEffect(() => {
-    if (isComplete) {
-      const timer = setTimeout(() => setIsExpanded(false), 400);
-      return () => clearTimeout(timer);
-    } else {
-      setIsExpanded(true);
-    }
+    return cleaned.replace(/\n{3,}/g, '\n\n').trimEnd();
   }, [isComplete]);
+
+  // Prefer structured reasoning parts from streaming events (ordered text + tools).
+  // Clean tool-call XML from each text part.
+  const renderedParts = useMemo(() => {
+    const raw = (parts && parts.length > 0) ? parts : [{ type: 'text' as const, text: content }];
+    return raw.map(part => {
+      if (part.type !== 'text' || !part.text) return part;
+      const cleaned = cleanToolCallXml(part.text);
+      if (!cleaned) return null;
+      return { ...part, text: cleaned };
+    }).filter(Boolean) as ReasoningPart[];
+  }, [parts, content, cleanToolCallXml]);
+
+  const cleanedContent = useMemo(() => cleanToolCallXml(content), [content, cleanToolCallXml]);
+  const hasToolCalls = renderedParts.some((part) => part.type === 'tool' && !!part.toolCall);
+
+  // Elapsed timer while streaming
+  useEffect(() => {
+    if (isComplete) return;
+    const interval = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - startTimeRef.current) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isComplete]);
+
+  // Auto-scroll reasoning content while streaming
+  useEffect(() => {
+    if (!isComplete && isExpanded && contentRef.current) {
+      contentRef.current.scrollTop = contentRef.current.scrollHeight;
+    }
+  }, [content, isComplete, isExpanded]);
+
+  // Auto-collapse when thinking completes (compact mode) — but never override a manual toggle
+  useEffect(() => {
+    if (isComplete && visibility === 'compact' && !userToggledRef.current) {
+      const timer = setTimeout(() => setIsExpanded(false), 600);
+      return () => clearTimeout(timer);
+    }
+    // Reset manual toggle flag when completion state changes (new stream)
+    if (!isComplete) {
+      userToggledRef.current = false;
+    }
+  }, [isComplete, visibility]);
+
+  // Respect visibility changes
+  useEffect(() => {
+    if (visibility === 'expanded') setIsExpanded(true);
+    else if (visibility === 'hidden') setIsExpanded(false);
+  }, [visibility]);
+
+  // Metadata for header
+  const charCount = cleanedContent.length;
+  const toolCount = renderedParts.filter((part) => part.type === 'tool' && !!part.toolCall).length || (toolCalls?.length ?? 0);
+
+  // Summary: first meaningful line for compact header
+  const summaryLine = useMemo(() => {
+    const lines = cleanedContent.split('\n').map(l => l.trim()).filter(l => l.length > 10);
+    const first = lines[0] || '';
+    return first.length > 120 ? first.slice(0, 117) + '...' : first;
+  }, [cleanedContent]);
+
+  const formatElapsed = (s: number) => {
+    if (s < 60) return `${s}s`;
+    return `${Math.floor(s / 60)}m ${s % 60}s`;
+  };
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy reasoning:', err);
+    }
+  }, [content]);
+
+  // Keep this after all hooks so hook order remains stable across renders.
+  if (visibility === 'hidden' && isComplete) return null;
 
   return (
     <div className={`reasoning-block ${isComplete ? 'reasoning-complete' : 'reasoning-active'}`}>
       <button
         className="reasoning-header"
-        onClick={() => setIsExpanded(!isExpanded)}
+        onClick={handleToggle}
         aria-expanded={isExpanded}
       >
         <BrainCircuit size={14} className="reasoning-icon" />
-        <span className="reasoning-label">{isComplete ? 'Thought process' : 'Thinking...'}</span>
+        <span className="reasoning-label">
+          {isComplete ? 'Thought process' : 'Thinking...'}
+        </span>
+        <span className="reasoning-meta">
+          {!isComplete && elapsed > 0 && (
+            <span className="reasoning-meta-item" title="Elapsed time">
+              <Clock size={10} /> {formatElapsed(elapsed)}
+            </span>
+          )}
+          {toolCount > 0 && (
+            <span className="reasoning-meta-item" title={`${toolCount} tool call${toolCount !== 1 ? 's' : ''}`}>
+              {toolCount} tool{toolCount !== 1 ? 's' : ''}
+            </span>
+          )}
+          {isComplete && charCount > 0 && (
+            <span className="reasoning-meta-item" title={`${charCount.toLocaleString()} characters`}>
+              {charCount > 1000 ? `${(charCount / 1000).toFixed(1)}k` : charCount} chars
+            </span>
+          )}
+        </span>
         <span className={`reasoning-chevron ${isExpanded ? 'expanded' : ''}`}>
           <ChevronDown size={14} />
         </span>
       </button>
+      {/* Compact summary when collapsed and complete */}
+      {!isExpanded && isComplete && summaryLine && (
+        <div className="reasoning-summary">{summaryLine}</div>
+      )}
       <div className={`reasoning-content ${isExpanded ? 'reasoning-content-expanded' : 'reasoning-content-collapsed'}`}>
-        <div className="reasoning-content-inner">
-          {hasToolCalls ? segments.map((seg, i) => {
-            if (seg.type === 'text') {
-              return <span key={i}>{seg.text}</span>;
+        <div className="reasoning-content-inner" ref={contentRef}>
+          {hasToolCalls ? renderedParts.map((part, i) => {
+            if (part.type === 'text') {
+              return <span key={i}>{part.text}</span>;
             }
+            if (!part.toolCall) return null;
             return (
               <ReasoningToolCallCard
                 key={i}
-                toolName={seg.toolName!}
-                params={seg.params || {}}
-                executedTool={matchedTools.get(i)}
+                toolName={part.toolCall.tool}
+                params={{}}
+                executedTool={part.toolCall}
               />
             );
-          }) : content}
+          }) : cleanedContent}
         </div>
+        {isExpanded && isComplete && (
+          <div className="reasoning-actions">
+            <button className="reasoning-copy-btn" onClick={handleCopy} title="Copy reasoning">
+              {copied ? <Check size={12} /> : <Copy size={12} />}
+              <span>{copied ? 'Copied' : 'Copy'}</span>
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1157,13 +1227,23 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
 
 const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
   segment,
-  showToolCalls
+  showToolCalls,
+  reasoningVisibility,
 }: {
   segment: StreamingSegment;
   showToolCalls: boolean;
+  reasoningVisibility: ReasoningVisibility;
 }) {
   if (segment.type === 'reasoning' && segment.content) {
-    return <ReasoningDisplay content={segment.content} isComplete={!!segment.isComplete} toolCalls={segment.embeddedToolCalls} />;
+    return (
+      <ReasoningDisplay
+        content={segment.content}
+        isComplete={!!segment.isComplete}
+        parts={segment.reasoningParts}
+        toolCalls={segment.embeddedToolCalls}
+        visibility={reasoningVisibility}
+      />
+    );
   } else if (segment.type === 'tool' && segment.toolCall && showToolCalls) {
     return (
       <div className="chat-tool-calls">
@@ -1355,6 +1435,10 @@ export function ChatPanel({
   const [showToolCalls, setShowToolCalls] = useState(() => {
     const saved = localStorage.getItem('chat-show-tool-calls');
     return saved !== null ? saved === 'true' : true;
+  });
+  const [reasoningVisibility, setReasoningVisibility] = useState<ReasoningVisibility>(() => {
+    const saved = localStorage.getItem('chat-reasoning-visibility');
+    return (saved === 'compact' || saved === 'expanded' || saved === 'hidden') ? saved : 'compact';
   });
   const [lastSentMessage, setLastSentMessage] = useState<string>('');
   const [isConnectionError, setIsConnectionError] = useState(false);
@@ -1842,61 +1926,72 @@ export function ChatPanel({
   }, []);
 
   // Memoized consolidated segments for streaming - groups adjacent content events
-  // This dramatically reduces re-renders by avoiding markdown parsing per-token
+  // Merges ALL reasoning events into a single segment per turn for unified display
   const consolidatedSegments = useMemo((): StreamingSegment[] => {
     if (!streamingEvents.length) return [];
 
     const segments: StreamingSegment[] = [];
     let currentContent = '';
     let currentReasoning = '';
+    let currentReasoningParts: ReasoningPart[] = [];
+    let reasoningToolCalls: ActiveToolCall[] = [];
+
+    // Flush accumulated reasoning into a NEW reasoning segment (adjacent reasoning merges, non-adjacent stays separate)
+    const flushReasoning = (isComplete: boolean) => {
+      if (!currentReasoning) return;
+      const seg: StreamingSegment = {
+        type: 'reasoning',
+        content: currentReasoning,
+        isComplete,
+        embeddedToolCalls: reasoningToolCalls.length > 0 ? [...reasoningToolCalls] : [],
+        reasoningParts: currentReasoningParts.length > 0 ? [...currentReasoningParts] : [{ type: 'text', text: currentReasoning }],
+      };
+      segments.push(seg);
+      currentReasoning = '';
+      currentReasoningParts = [];
+      reasoningToolCalls = [];
+    };
+
+    const flushContent = () => {
+      if (!currentContent) return;
+      segments.push({ type: 'content', content: currentContent });
+      currentContent = '';
+    };
 
     for (const ev of streamingEvents) {
       if (ev.type === 'reasoning') {
-        // Flush any pending content first
-        if (currentContent) {
-          segments.push({ type: 'content', content: currentContent });
-          currentContent = '';
-        }
-        // Accumulate reasoning
+        // Flush any pending content first — content breaks reasoning adjacency
+        flushContent();
+        // Accumulate reasoning (adjacent reasoning events merge)
         currentReasoning += ev.content;
-      } else if (ev.type === 'content') {
-        // Flush any pending reasoning (it's now complete since content follows)
-        if (currentReasoning) {
-          segments.push({ type: 'reasoning', content: currentReasoning, isComplete: true });
-          currentReasoning = '';
+        const lastPart = currentReasoningParts[currentReasoningParts.length - 1];
+        if (lastPart && lastPart.type === 'text') {
+          lastPart.text = (lastPart.text || '') + ev.content;
+        } else {
+          currentReasoningParts.push({ type: 'text', text: ev.content });
         }
+      } else if (ev.type === 'content') {
+        // Flush any pending reasoning — it's now complete since content follows
+        flushReasoning(true);
         // Accumulate content
         currentContent += ev.content;
       } else if (ev.type === 'tool') {
         if (currentReasoning) {
-          // Tool arrived while reasoning is pending — flush reasoning and embed tool in it
-          segments.push({ type: 'reasoning', content: currentReasoning, isComplete: true, embeddedToolCalls: [ev.toolCall] });
-          currentReasoning = '';
-        } else if (segments.length > 0 && segments[segments.length - 1].type === 'reasoning') {
-          // Tool arrived right after reasoning segment — embed in the last reasoning
-          const last = segments[segments.length - 1];
-          if (!last.embeddedToolCalls) last.embeddedToolCalls = [];
-          last.embeddedToolCalls.push(ev.toolCall);
+          // Tool arrived while reasoning is actively pending — embed in reasoning
+          reasoningToolCalls.push(ev.toolCall);
+          currentReasoningParts.push({ type: 'tool', toolCall: ev.toolCall });
         } else {
-          // No reasoning context — render as standalone tool
-          if (currentContent) {
-            segments.push({ type: 'content', content: currentContent });
-            currentContent = '';
-          }
+          // Reasoning is not pending — render as standalone tool
+          flushContent();
           segments.push({ type: 'tool', toolCall: ev.toolCall });
         }
       }
     }
 
     // Flush remaining reasoning (still streaming, not yet complete)
-    if (currentReasoning) {
-      segments.push({ type: 'reasoning', content: currentReasoning, isComplete: false });
-    }
-
+    flushReasoning(false);
     // Flush remaining content
-    if (currentContent) {
-      segments.push({ type: 'content', content: currentContent });
-    }
+    flushContent();
 
     return segments;
   }, [streamingEvents]);
@@ -1905,6 +2000,11 @@ export function ChatPanel({
   useEffect(() => {
     localStorage.setItem('chat-show-tool-calls', showToolCalls.toString());
   }, [showToolCalls]);
+
+  // Save reasoning visibility preference to localStorage
+  useEffect(() => {
+    localStorage.setItem('chat-reasoning-visibility', reasoningVisibility);
+  }, [reasoningVisibility]);
 
   // Load conversations and available models on mount
   useEffect(() => {
@@ -1920,7 +2020,7 @@ export function ChatPanel({
       top: chatMessagesRef.current.scrollHeight,
       behavior: 'smooth',
     });
-  }, [activeConversation?.messages, streamingContent]);
+  }, [activeConversation?.messages, streamingContent, consolidatedSegments]);
 
   const handleScroll = useCallback(() => {
     if (!chatMessagesRef.current) return;
@@ -2285,6 +2385,7 @@ export function ChatPanel({
                 return events.map((ev: any) => {
                     if (ev.type === 'content') return { type: 'content' as const, content: ev.content || '' };
                     if (ev.type === 'reasoning') return { type: 'reasoning' as const, content: ev.content || '' };
+                  const hasOutput = ev && typeof ev === 'object' && Object.prototype.hasOwnProperty.call(ev, 'output');
                     return {
                         type: 'tool' as const,
                         toolCall: {
@@ -2292,7 +2393,7 @@ export function ChatPanel({
                             input: ev.input,
                             output: ev.output,
                           connection: ev.connection,
-                            status: ev.output ? 'complete' : 'running'
+                      status: hasOutput ? 'complete' : 'running'
                         }
                     };
                 });
@@ -3171,6 +3272,19 @@ export function ChatPanel({
                     onToggleToolCalls={setShowToolCalls}
                   />
                 )}
+                <button
+                  className={`btn btn-secondary btn-sm btn-icon reasoning-visibility-toggle reasoning-visibility-${reasoningVisibility}`}
+                  onClick={() => {
+                    const next: ReasoningVisibility =
+                      reasoningVisibility === 'compact' ? 'expanded'
+                      : reasoningVisibility === 'expanded' ? 'hidden'
+                      : 'compact';
+                    setReasoningVisibility(next);
+                  }}
+                  title={`Thinking: ${reasoningVisibility} (click to cycle)`}
+                >
+                  <BrainCircuit size={14} />
+                </button>
                 <ModelSelector
                   models={availableModels}
                   selectedModelId={parseStoredConversationModel(activeConversation.model).modelId}
@@ -3278,49 +3392,86 @@ export function ChatPanel({
                             {msg.role === 'assistant' && msg.events && msg.events.length > 0 ? (
                               <>
                                 {(() => {
-                                  // Group tool events that follow reasoning into embedded tool calls
-                                  const grouped: Array<{ ev: typeof msg.events[0]; evIdx: number; embeddedTools?: ActiveToolCall[] }> = [];
+                                  // Render events chronologically, merging only ADJACENT reasoning events
+                                  const result: React.ReactNode[] = [];
+                                  let pendingReasoning = '';
+                                  let pendingReasoningParts: ReasoningPart[] = [];
+                                  let pendingReasoningTools: ActiveToolCall[] = [];
+                                  let reasoningBlockCount = 0;
+
+                                  const flushReasoning = () => {
+                                    if (!pendingReasoning) return;
+                                    reasoningBlockCount++;
+                                    result.push(
+                                      <ReasoningDisplay
+                                        key={`reasoning-${reasoningBlockCount}`}
+                                        content={pendingReasoning}
+                                        isComplete={true}
+                                        parts={pendingReasoningParts.length > 0 ? pendingReasoningParts : undefined}
+                                        toolCalls={pendingReasoningTools.length > 0 ? pendingReasoningTools : undefined}
+                                        visibility={reasoningVisibility}
+                                      />
+                                    );
+                                    pendingReasoning = '';
+                                    pendingReasoningParts = [];
+                                    pendingReasoningTools = [];
+                                  };
+
                                   for (let evIdx = 0; evIdx < msg.events.length; evIdx++) {
                                     const ev = msg.events[evIdx];
-                                    if (ev.type === 'tool' && grouped.length > 0 && grouped[grouped.length - 1].ev.type === 'reasoning') {
-                                      // Embed tool into preceding reasoning
-                                      const last = grouped[grouped.length - 1];
-                                      if (!last.embeddedTools) last.embeddedTools = [];
-                                      last.embeddedTools.push({
+                                    if (ev.type === 'reasoning') {
+                                      // Accumulate adjacent reasoning
+                                      pendingReasoning += (pendingReasoning ? '\n\n' : '') + ev.content;
+                                      const lastPart = pendingReasoningParts[pendingReasoningParts.length - 1];
+                                      if (lastPart && lastPart.type === 'text') {
+                                        lastPart.text = (lastPart.text || '') + (lastPart.text ? '\n\n' : '') + ev.content;
+                                      } else {
+                                        pendingReasoningParts.push({ type: 'text', text: ev.content });
+                                      }
+                                    } else if (ev.type === 'tool' && pendingReasoning) {
+                                      // Tool immediately following reasoning — embed in current reasoning block
+                                      const tc: ActiveToolCall = {
                                         tool: ev.tool,
                                         input: ev.input,
                                         output: ev.output,
                                         connection: ev.connection,
                                         status: 'complete' as const,
-                                      });
+                                      };
+                                      pendingReasoningTools.push(tc);
+                                      pendingReasoningParts.push({ type: 'tool', toolCall: tc });
                                     } else {
-                                      grouped.push({ ev, evIdx });
+                                      // Content or standalone tool breaks reasoning adjacency
+                                      flushReasoning();
+                                      if (ev.type === 'tool' && showToolCalls) {
+                                        result.push(
+                                          <div key={`event-${evIdx}`} className="chat-tool-calls">
+                                            <ToolCallDisplay
+                                              toolCall={{
+                                                tool: ev.tool,
+                                                input: ev.input,
+                                                output: ev.output,
+                                                connection: ev.connection,
+                                                status: 'complete'
+                                              }}
+                                              defaultExpanded={false}
+                                              conversationId={activeConversation.id}
+                                              siblingEvents={msg.events}
+                                            />
+                                          </div>
+                                        );
+                                      } else if (ev.type === 'content') {
+                                        result.push(
+                                          <div key={`event-${evIdx}`} className="chat-message-text markdown-content">
+                                            <MemoizedMarkdown content={ev.content} />
+                                          </div>
+                                        );
+                                      }
                                     }
                                   }
-                                  return grouped.map(({ ev, evIdx, embeddedTools }) => (
-                                    ev.type === 'tool' && showToolCalls ? (
-                                      <div key={`event-${evIdx}`} className="chat-tool-calls">
-                                        <ToolCallDisplay
-                                          toolCall={{
-                                            tool: ev.tool,
-                                            input: ev.input,
-                                            output: ev.output,
-                                            connection: ev.connection,
-                                            status: 'complete'
-                                          }}
-                                          defaultExpanded={false}
-                                          conversationId={activeConversation.id}
-                                          siblingEvents={msg.events}
-                                        />
-                                      </div>
-                                    ) : ev.type === 'reasoning' ? (
-                                      <ReasoningDisplay key={`event-${evIdx}`} content={ev.content} isComplete={true} toolCalls={embeddedTools} />
-                                    ) : ev.type === 'content' ? (
-                                      <div key={`event-${evIdx}`} className="chat-message-text markdown-content">
-                                        <MemoizedMarkdown content={ev.content} />
-                                      </div>
-                                    ) : null
-                                  ));
+                                  // Flush any trailing reasoning
+                                  flushReasoning();
+
+                                  return result;
                                 })()}
                               </>
                             ) : (
@@ -3399,6 +3550,7 @@ export function ChatPanel({
                             key={`segment-${idx}-${segment.type}`}
                             segment={segment}
                             showToolCalls={showToolCalls}
+                            reasoningVisibility={reasoningVisibility}
                           />
                         ))}
                         <div className="chat-message-streaming">
