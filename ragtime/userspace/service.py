@@ -21,45 +21,34 @@ from ragtime.config import settings
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
-from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
+from ragtime.core.entrypoint_status import (EntrypointStatus,
+                                            parse_entrypoint_config)
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (
-    DB_TYPE_POSTGRES,
-    add_table_metadata_to_psql_output,
-    enforce_max_results,
-    format_query_result,
-    validate_sql_query,
-)
-from ragtime.core.ssh import (
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
+                                    add_table_metadata_to_psql_output,
+                                    enforce_max_results, format_query_result,
+                                    validate_sql_query)
+from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
+                              ssh_tunnel_config_from_dict)
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (
-    ArtifactType,
-    CreateWorkspaceRequest,
-    ExecuteComponentRequest,
-    ExecuteComponentResponse,
-    PaginatedWorkspacesResponse,
-    ShareAccessMode,
-    SqlitePersistenceMode,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-    UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot,
-    UserSpaceWorkspace,
-    UserSpaceWorkspaceShareLink,
-    UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceMember,
-    WorkspaceShareSlugAvailabilityResponse,
-)
+from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
+                                      ExecuteComponentRequest,
+                                      ExecuteComponentResponse,
+                                      PaginatedWorkspacesResponse,
+                                      ShareAccessMode, SqlitePersistenceMode,
+                                      UpdateWorkspaceMembersRequest,
+                                      UpdateWorkspaceRequest,
+                                      UpdateWorkspaceShareAccessRequest,
+                                      UpsertWorkspaceFileRequest,
+                                      UserSpaceFileInfo, UserSpaceFileResponse,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection,
+                                      UserSpaceSharedPreviewResponse,
+                                      UserSpaceSnapshot, UserSpaceWorkspace,
+                                      UserSpaceWorkspaceShareLink,
+                                      UserSpaceWorkspaceShareLinkStatus,
+                                      WorkspaceMember,
+                                      WorkspaceShareSlugAvailabilityResponse)
 
 logger = get_logger(__name__)
 
@@ -2057,6 +2046,53 @@ class UserSpaceService:
 
         await self._touch_workspace(workspace_id)
 
+    async def move_workspace_file(
+        self,
+        workspace_id: str,
+        old_relative_path: str,
+        new_relative_path: str,
+        user_id: str,
+    ) -> dict[str, str]:
+        await self._enforce_workspace_access(
+            workspace_id, user_id, required_role="editor"
+        )
+        await self._ensure_workspace_git_repo(workspace_id)
+
+        normalized_old = (old_relative_path or "").strip().replace("\\", "/").lstrip(
+            "/"
+        )
+        normalized_new = (new_relative_path or "").strip().replace("\\", "/").lstrip(
+            "/"
+        )
+        if not normalized_old or not normalized_new:
+            raise HTTPException(status_code=400, detail="Invalid file path")
+        if normalized_old == normalized_new:
+            raise HTTPException(
+                status_code=400,
+                detail="Source and destination paths must be different",
+            )
+        if self._is_reserved_internal_path(normalized_old) or self._is_reserved_internal_path(
+            normalized_new
+        ):
+            raise HTTPException(status_code=400, detail="Invalid file path")
+
+        source_path = self._resolve_workspace_file_path(workspace_id, normalized_old)
+        target_path = self._resolve_workspace_file_path(workspace_id, normalized_new)
+
+        try:
+            await asyncio.to_thread(
+                self._move_workspace_file_sync,
+                source_path,
+                target_path,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="File not found") from exc
+        except FileExistsError as exc:
+            raise HTTPException(status_code=409, detail="Target file already exists") from exc
+
+        await self._touch_workspace(workspace_id)
+        return {"old_path": normalized_old, "new_path": normalized_new}
+
     async def create_snapshot(
         self,
         workspace_id: str,
@@ -2875,6 +2911,23 @@ class UserSpaceService:
         sidecar = file_path.with_suffix(file_path.suffix + ".artifact.json")
         if sidecar.exists() and sidecar.is_file():
             sidecar.unlink()
+
+    def _move_workspace_file_sync(self, source_path: Path, target_path: Path) -> None:
+        if not source_path.exists() or not source_path.is_file():
+            raise FileNotFoundError(str(source_path))
+        if target_path.exists():
+            raise FileExistsError(str(target_path))
+
+        source_sidecar = source_path.with_suffix(source_path.suffix + ".artifact.json")
+        target_sidecar = target_path.with_suffix(target_path.suffix + ".artifact.json")
+        if source_sidecar.exists() and target_sidecar.exists():
+            raise FileExistsError(str(target_sidecar))
+
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.rename(target_path)
+        if source_sidecar.exists() and source_sidecar.is_file():
+            target_sidecar.parent.mkdir(parents=True, exist_ok=True)
+            source_sidecar.rename(target_sidecar)
 
     @staticmethod
     def _extract_local_module_specifiers(source: str) -> list[str]:

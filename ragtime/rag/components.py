@@ -4882,6 +4882,18 @@ except Exception as e:
                 description="Brief description of why this file is being deleted",
             )
 
+        class MoveUserSpaceFileInput(BaseModel):
+            old_path: str = Field(
+                description="Existing relative path from the workspace files root.",
+            )
+            new_path: str = Field(
+                description="Destination relative path from the workspace files root.",
+            )
+            reason: str = Field(
+                default="",
+                description="Brief description of why this file is being moved",
+            )
+
         class UpsertUserSpaceFileInput(BaseModel):
             class LiveDataConnectionInput(BaseModel):
                 component_kind: str = Field(
@@ -5543,6 +5555,66 @@ except Exception as e:
                 {
                     "deleted": True,
                     "path": normalized_path,
+                },
+                indent=2,
+            )
+
+        async def move_userspace_file(
+            old_path: str,
+            new_path: str,
+            reason: str = "",
+            **_: Any,
+        ) -> str:
+            del reason
+            await userspace_service.enforce_workspace_role(
+                workspace_id, user_id, "editor"
+            )
+            normalized_old_path = (
+                (old_path or "").strip().replace("\\", "/").lstrip("/")
+            )
+            normalized_new_path = (
+                (new_path or "").strip().replace("\\", "/").lstrip("/")
+            )
+            if not normalized_old_path or not normalized_new_path:
+                raise ToolException("Invalid path: old_path and new_path are required.")
+            try:
+                result = await userspace_service.move_workspace_file(
+                    workspace_id,
+                    normalized_old_path,
+                    normalized_new_path,
+                    user_id,
+                )
+            except HTTPException as exc:
+                status_code = getattr(exc, "status_code", None)
+                if status_code == 404:
+                    raise ToolException(
+                        f"File not found: {normalized_old_path}. "
+                        "Check the source path with list_userspace_files."
+                    ) from exc
+                if status_code == 409:
+                    raise ToolException(
+                        f"Target already exists: {normalized_new_path}. "
+                        "Move to a different path or delete/rename the destination first."
+                    ) from exc
+                raise ToolException(
+                    "Cannot move file from "
+                    f"{normalized_old_path} to {normalized_new_path}: "
+                    f"{getattr(exc, 'detail', exc)}"
+                ) from exc
+
+            await userspace_runtime_service.bump_workspace_generation(
+                workspace_id,
+                "file_move",
+                payload={
+                    "old_path": normalized_old_path,
+                    "new_path": normalized_new_path,
+                },
+            )
+            return json.dumps(
+                {
+                    "moved": True,
+                    "old_path": result["old_path"],
+                    "new_path": result["new_path"],
                 },
                 indent=2,
             )
@@ -6833,6 +6905,16 @@ except Exception as e:
                     "Use to remove stale/conflicting files that block runtime builds."
                 ),
                 args_schema=DeleteUserSpaceFileInput,
+                handle_tool_error=True,
+            ),
+            StructuredTool.from_function(
+                coroutine=move_userspace_file,
+                name="move_userspace_file",
+                description=(
+                    "Move or rename a file in the active User Space workspace using relative paths. "
+                    "Use this to reorganize files without rewriting content."
+                ),
+                args_schema=MoveUserSpaceFileInput,
                 handle_tool_error=True,
             ),
             StructuredTool.from_function(
