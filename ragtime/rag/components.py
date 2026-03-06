@@ -22,13 +22,8 @@ from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain.agents.output_parsers.tools import ToolsAgentOutputParser
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (
-    AIMessage,
-    BaseMessage,
-    HumanMessage,
-    SystemMessage,
-    ToolMessage,
-)
+from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
+                                     SystemMessage, ToolMessage)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_core.tools import StructuredTool, ToolException
@@ -38,71 +33,46 @@ from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
-from ragtime.core.entrypoint_status import FRAMEWORK_REQUIRED_PACKAGES, EntrypointStatus
-from ragtime.core.file_constants import (
-    USERSPACE_MODULE_SOURCE_EXTENSIONS,
-    USERSPACE_STRICT_FRONTEND_EXTENSIONS,
-    USERSPACE_THEME_AUDIT_EXTENSIONS,
-    USERSPACE_TYPESCRIPT_EXTENSIONS,
-)
+from ragtime.core.entrypoint_status import (FRAMEWORK_REQUIRED_PACKAGES,
+                                            EntrypointStatus)
+from ragtime.core.file_constants import (USERSPACE_MODULE_SOURCE_EXTENSIONS,
+                                         USERSPACE_STRICT_FRONTEND_EXTENSIONS,
+                                         USERSPACE_THEME_AUDIT_EXTENSIONS,
+                                         USERSPACE_TYPESCRIPT_EXTENSIONS)
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit, get_output_limit
-from ragtime.core.ollama import (
-    KEEP_ALIVE,
-    NUM_GPU,
-    get_model_context_length,
-    get_model_details,
-    has_capability,
-    warmup_embedding_model,
-    warmup_model,
-)
-from ragtime.core.security import (
-    _SSH_ENV_VAR_RE,
-    sanitize_output,
-    validate_odoo_code,
-    validate_sql_query,
-    validate_ssh_command,
-)
+from ragtime.core.ollama import (KEEP_ALIVE, NUM_GPU, get_model_context_length,
+                                 get_model_details, has_capability,
+                                 warmup_embedding_model, warmup_model)
+from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
+                                   validate_odoo_code, validate_sql_query,
+                                   validate_ssh_command)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (
-    SSHConfig,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    execute_ssh_command,
-    expand_env_vars_via_ssh,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
+                              execute_ssh_command, expand_env_vars_via_ssh,
+                              ssh_tunnel_config_from_dict)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (
-    CHAT_CHART_DESCRIPTION_SUFFIX,
-    USERSPACE_CHART_DESCRIPTION_SUFFIX,
-    create_chart_tool,
-)
-from ragtime.tools.datatable import (
-    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-    create_datatable_tool,
-)
+from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
+                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
+                                 create_chart_tool)
+from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+                                     create_datatable_tool)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (
-    _is_shallow_repository,
-    create_aggregate_git_history_tool,
-    create_per_index_git_history_tool,
-)
+from ragtime.tools.git_history import (_is_shallow_repository,
+                                       create_aggregate_git_history_tool,
+                                       create_per_index_git_history_tool)
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (
-    ArtifactType,
-    UpsertWorkspaceFileRequest,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-)
+from ragtime.userspace.models import (ArtifactType, UpsertWorkspaceFileRequest,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -389,11 +359,29 @@ Choose the right tool based on what information you need:
 
 # Reminder prepended to user message - adjacent placement is more effective than distant system prompt
 # Contains the critical anti-hallucination instructions that need to be fresh in context
-TOOL_USAGE_REMINDER = """[CRITICAL: Use the tool calling API. Do NOT write fake tool invocations or results as text. If you catch yourself writing "(I used X..." or "Result:", STOP - you are hallucinating. Make actual tool calls and wait for real responses.]
+TOOL_USAGE_REMINDER = """[CRITICAL TOOL CALLING RULES
+- Use LangChain-style tool calls via the tool calling API
+    (assistant tool_call -> tool response -> assistant follow-up).
+- Do NOT write fake tool invocations or fake tool results as plain text.
+]
 
 """
 
-USERSPACE_TURN_REMINDER = """[USER SPACE TURN CHECKLIST: Before finalizing, run validate_userspace_code on EVERY changed source file (including .ts/.tsx, .py, .js, .html, and the entrypoint) and fix all reported errors. Persist implementation changes via userspace file tools (not chat-only prose). Build first; do not generate docs/readmes/specs/plans/changelogs unless the user explicitly requested documentation. Treat any tool result with rejected=true as a failed step and fix/retry. If a tool result has persisted_with_violations=true, the file WAS saved but has contract issues -- use patch_userspace_file to fix the specific violations listed in contract_violations (do NOT re-send the full file content). Never use hardcoded/mock/sample/static data in entrypoint files (dashboard/main.ts, app.py, etc.) when the workspace has selected tools; wire live data instead. After validation passes with no errors, call create_userspace_snapshot with a concise completion message. Never skip validation or snapshot -- the finalization sequence is: validate -> fix errors -> validate again -> snapshot.]
+USERSPACE_TURN_REMINDER = """[USER SPACE TURN CHECKLIST
+- Before finalizing, run validate_userspace_code on EVERY changed source file
+    (including .ts/.tsx, .py, .js, .html, and the entrypoint), then fix all reported errors.
+- Persist implementation changes via userspace file tools (not chat-only prose).
+- Build first; do not generate docs/readmes/specs/plans/changelogs unless the user explicitly requested documentation.
+- Treat any tool result with rejected=true as a failed step and fix/retry.
+- If a tool result has persisted_with_violations=true, the file WAS saved but has contract issues:
+    use patch_userspace_file to fix the specific violations listed in contract_violations
+    (do NOT re-send the full file content).
+- Never use hardcoded/mock/sample/static data in entrypoint files (dashboard/main.ts, app.py, etc.)
+    when the workspace has selected tools; wire live data instead.
+- After validation passes with no errors, call create_userspace_snapshot with a concise completion message.
+- Never skip validation or snapshot.
+- Finalization sequence: validate -> fix errors -> validate again -> snapshot.
+]
 
 """
 
@@ -4601,7 +4589,12 @@ except Exception as e:
         tools: list[Any],
         mode: str = "chat",
     ) -> str:
-        """Build a request-scoped prompt section listing active tool connections."""
+        """Build a request-scoped prompt section listing active tool connections.
+
+        Only includes tools that have connection metadata (i.e. tools backed by
+        a ToolConfig entry).  Userspace file tools and other built-in tools are
+        already described in the system prompt and do not need to be repeated.
+        """
         if not tools:
             return ""
 
@@ -4612,13 +4605,15 @@ except Exception as e:
                 continue
 
             connection_meta = self._get_tool_connection_metadata(tool_name)
-            if connection_meta:
-                line = (
-                    f"- `{tool_name}` -> {connection_meta.get('tool_config_name') or tool_name} "
-                    f"(id={connection_meta.get('tool_config_id')}, type={connection_meta.get('tool_type')})"
-                )
-            else:
-                line = f"- `{tool_name}`"
+            if not connection_meta:
+                # Skip tools without connection metadata — they are already
+                # described in the system prompt and repeating them wastes tokens.
+                continue
+
+            line = (
+                f"- `{tool_name}` -> {connection_meta.get('tool_config_name') or tool_name} "
+                f"(id={connection_meta.get('tool_config_id')}, type={connection_meta.get('tool_type')})"
+            )
             lines.append(line)
 
         if not lines:
@@ -7045,6 +7040,7 @@ except Exception as e:
         add_chat_visualization_prompt: bool,
     ) -> dict[str, Any]:
         """Build request-scoped runtime tools, mode, and prompt additions once."""
+        t0 = time.monotonic()
         runtime_tools = list(getattr(executor, "tools", []) if executor else [])
         if blocked_tool_names:
             runtime_tools = [
@@ -7088,17 +7084,41 @@ except Exception as e:
 
             mode = "userspace"
             prompt_is_ui = False
-            prompt_additions += UI_VISUALIZATION_USERSPACE_PROMPT
-            prompt_additions += USERSPACE_MODE_PROMPT_ADDITION
 
-            # Dynamic entrypoint nudge: derive framework status from the
-            # .ragtime metadata folder and inject only the relevant prompt
-            # fragment (setup guidance vs locked-in compact reference).
+            # Build prompt additions with fragment-level caching.
+            # Static Userspace guidance is identical across requests.
+            static_cache_key = ("userspace_static_prompt",)
+            static_fragment = self._request_prompt_cache.get(static_cache_key)
+            if static_fragment is None:
+                static_fragment = (
+                    UI_VISUALIZATION_USERSPACE_PROMPT + USERSPACE_MODE_PROMPT_ADDITION
+                )
+                self._request_prompt_cache[static_cache_key] = static_fragment
+            prompt_additions += static_fragment
+
+            # Dynamic entrypoint nudge: fetch status once and reuse for
+            # both is_default check and nudge generation.
             ep_status = userspace_service.get_workspace_entrypoint_status(workspace_id)
-            is_default = userspace_service.is_default_static_entrypoint(workspace_id)
-            prompt_additions += build_userspace_entrypoint_nudge(
-                ep_status, is_default_static=is_default
+            is_default = userspace_service.is_default_static_entrypoint(
+                workspace_id, status=ep_status
             )
+
+            # Cache nudge fragment by entrypoint state signature.
+            nudge_cache_key = (
+                "userspace_nudge",
+                ep_status.state,
+                is_default,
+                ep_status.framework or "",
+                ep_status.command or "",
+                ep_status.cwd or ".",
+            )
+            nudge_fragment = self._request_prompt_cache.get(nudge_cache_key)
+            if nudge_fragment is None:
+                nudge_fragment = build_userspace_entrypoint_nudge(
+                    ep_status, is_default_static=is_default
+                )
+                self._request_prompt_cache[nudge_cache_key] = nudge_fragment
+            prompt_additions += nudge_fragment
         else:
             has_workspace_payload = workspace_context is not None
             has_inline_viz_tools = any(
@@ -7112,6 +7132,16 @@ except Exception as e:
                 )
                 if add_chat_visualization_prompt:
                     prompt_additions += UI_VISUALIZATION_CHAT_PROMPT
+
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        prompt_bytes = len(prompt_additions.encode("utf-8", errors="replace"))
+        logger.debug(
+            "_build_request_runtime_context: mode=%s tools=%d prompt=%d bytes elapsed=%.1fms",
+            mode,
+            len(runtime_tools),
+            prompt_bytes,
+            elapsed_ms,
+        )
 
         return {
             "mode": mode,
@@ -7579,6 +7609,7 @@ except Exception as e:
             executor = self.agent_executor
             request_llm = await self._get_request_scoped_llm(conversation_model)
             _, request_model_id = self._parse_provider_scoped_model(conversation_model)
+            t_ctx = time.monotonic()
             request_context = await self._build_request_runtime_context(
                 is_ui=False,
                 executor=executor,
@@ -7614,6 +7645,15 @@ except Exception as e:
                     scoped_prompt,
                     llm=request_llm,
                 )
+
+            ctx_ms = (time.monotonic() - t_ctx) * 1000
+            prompt_chars = len(system_prompt)
+            logger.debug(
+                "process_query: mode=%s prompt_assembly=%.1fms prompt_chars=%d",
+                request_context["mode"],
+                ctx_ms,
+                prompt_chars,
+            )
 
             if executor:
                 # Use agent with tools
@@ -7684,6 +7724,7 @@ except Exception as e:
         executor = self.agent_executor_ui if is_ui else self.agent_executor
         request_llm = await self._get_request_scoped_llm(conversation_model)
         _, request_model_id = self._parse_provider_scoped_model(conversation_model)
+        t_ctx = time.monotonic()
         request_context = await self._build_request_runtime_context(
             is_ui=is_ui,
             executor=executor,
@@ -7714,6 +7755,15 @@ except Exception as e:
                 scoped_prompt,
                 llm=request_llm,
             )
+
+        ctx_ms = (time.monotonic() - t_ctx) * 1000
+        prompt_chars = len(system_prompt)
+        logger.debug(
+            "process_query_stream: mode=%s prompt_assembly=%.1fms prompt_chars=%d",
+            request_context["mode"],
+            ctx_ms,
+            prompt_chars,
+        )
 
         try:
             if executor:

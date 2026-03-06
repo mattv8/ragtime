@@ -21,34 +21,45 @@ from ragtime.config import settings
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
-from ragtime.core.entrypoint_status import (EntrypointStatus,
-                                            parse_entrypoint_config)
+from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
-                                    add_table_metadata_to_psql_output,
-                                    enforce_max_results, format_query_result,
-                                    validate_sql_query)
-from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.sql_utils import (
+    DB_TYPE_POSTGRES,
+    add_table_metadata_to_psql_output,
+    enforce_max_results,
+    format_query_result,
+    validate_sql_query,
+)
+from ragtime.core.ssh import (
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
-                                      ExecuteComponentRequest,
-                                      ExecuteComponentResponse,
-                                      PaginatedWorkspacesResponse,
-                                      ShareAccessMode, SqlitePersistenceMode,
-                                      UpdateWorkspaceMembersRequest,
-                                      UpdateWorkspaceRequest,
-                                      UpdateWorkspaceShareAccessRequest,
-                                      UpsertWorkspaceFileRequest,
-                                      UserSpaceFileInfo, UserSpaceFileResponse,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection,
-                                      UserSpaceSharedPreviewResponse,
-                                      UserSpaceSnapshot, UserSpaceWorkspace,
-                                      UserSpaceWorkspaceShareLink,
-                                      UserSpaceWorkspaceShareLinkStatus,
-                                      WorkspaceMember,
-                                      WorkspaceShareSlugAvailabilityResponse)
+from ragtime.userspace.models import (
+    ArtifactType,
+    CreateWorkspaceRequest,
+    ExecuteComponentRequest,
+    ExecuteComponentResponse,
+    PaginatedWorkspacesResponse,
+    ShareAccessMode,
+    SqlitePersistenceMode,
+    UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+    UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot,
+    UserSpaceWorkspace,
+    UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceMember,
+    WorkspaceShareSlugAvailabilityResponse,
+)
 
 logger = get_logger(__name__)
 
@@ -315,12 +326,17 @@ def _enforce_sqlite_file_path_policy(relative_path: str) -> None:
         )
 
 
+_ENTRYPOINT_STATUS_CACHE_TTL_SECONDS = 300  # 5-minute TTL for entrypoint status
+
+
 class UserSpaceService:
     def __init__(self) -> None:
         self._base_dir = Path(settings.index_data_path) / "_userspace"
         self._workspaces_dir = self._base_dir / "workspaces"
         self._workspaces_dir.mkdir(parents=True, exist_ok=True)
         self._execution_proofs: dict[str, dict[str, _ExecutionProofRecord]] = {}
+        # TTL-cached entrypoint status per workspace: {workspace_id: (EntrypointStatus, timestamp)}
+        self._entrypoint_status_cache: dict[str, tuple[EntrypointStatus, float]] = {}
 
     def record_execution_proof(
         self,
@@ -498,24 +514,50 @@ class UserSpaceService:
         Uses the shared :func:`runtime.shared.parse_entrypoint_config`
         parser so that the ragtime app and the runtime worker always agree
         on what constitutes a valid/missing/invalid entrypoint.
-        """
-        return parse_entrypoint_config(self._workspace_files_dir(workspace_id))
 
-    def is_default_static_entrypoint(self, workspace_id: str) -> bool:
+        Results are cached per workspace with a short TTL to avoid
+        redundant filesystem reads within the same request flow.
+        """
+        cached = self._entrypoint_status_cache.get(workspace_id)
+        now = _utc_now().timestamp()
+        if cached is not None:
+            status, ts = cached
+            if (now - ts) < _ENTRYPOINT_STATUS_CACHE_TTL_SECONDS:
+                return status
+        status = parse_entrypoint_config(self._workspace_files_dir(workspace_id))
+        self._entrypoint_status_cache[workspace_id] = (status, now)
+        return status
+
+    def is_default_static_entrypoint(
+        self,
+        workspace_id: str,
+        status: EntrypointStatus | None = None,
+    ) -> bool:
         """Return True when the entrypoint is the seeded default static server.
 
         The default seed (``python3 -m http.server ...``, framework ``static``)
         is semantically valid JSON but not a real user/agent choice.  Prompt
         nudges should treat this the same as a missing entrypoint so the agent
         is encouraged to choose a proper framework.
+
+        Accepts an optional pre-fetched *status* to avoid redundant reads
+        when the caller already has the value.
         """
-        status = self.get_workspace_entrypoint_status(workspace_id)
+        if status is None:
+            status = self.get_workspace_entrypoint_status(workspace_id)
         if status.state != "valid":
             return False
         default = self._default_runtime_entrypoint_config()
         return status.command == default.get("command", "") and (
             status.framework or ""
         ) == default.get("framework", "")
+
+    def invalidate_entrypoint_cache(self, workspace_id: str) -> None:
+        """Drop cached entrypoint status for *workspace_id*.
+
+        Call after any write that may change ``.ragtime/runtime-entrypoint.json``.
+        """
+        self._entrypoint_status_cache.pop(workspace_id, None)
 
     def _workspace_git_dir(self, workspace_id: str) -> Path:
         return self._workspace_files_dir(workspace_id) / ".git"
@@ -1980,6 +2022,11 @@ class UserSpaceService:
         )
         await self._touch_workspace(workspace_id)
 
+        # Invalidate entrypoint status cache when the entrypoint config is written
+        normalized = (relative_path or "").strip("/")
+        if normalized == ".ragtime/runtime-entrypoint.json":
+            self.invalidate_entrypoint_cache(workspace_id)
+
         return UserSpaceFileResponse(
             path=relative_path,
             content=request.content,
@@ -2046,6 +2093,11 @@ class UserSpaceService:
 
         await self._touch_workspace(workspace_id)
 
+        # Invalidate entrypoint status cache when the entrypoint config is deleted
+        normalized = (relative_path or "").strip("/")
+        if normalized == ".ragtime/runtime-entrypoint.json":
+            self.invalidate_entrypoint_cache(workspace_id)
+
     async def move_workspace_file(
         self,
         workspace_id: str,
@@ -2058,11 +2110,11 @@ class UserSpaceService:
         )
         await self._ensure_workspace_git_repo(workspace_id)
 
-        normalized_old = (old_relative_path or "").strip().replace("\\", "/").lstrip(
-            "/"
+        normalized_old = (
+            (old_relative_path or "").strip().replace("\\", "/").lstrip("/")
         )
-        normalized_new = (new_relative_path or "").strip().replace("\\", "/").lstrip(
-            "/"
+        normalized_new = (
+            (new_relative_path or "").strip().replace("\\", "/").lstrip("/")
         )
         if not normalized_old or not normalized_new:
             raise HTTPException(status_code=400, detail="Invalid file path")
@@ -2071,9 +2123,9 @@ class UserSpaceService:
                 status_code=400,
                 detail="Source and destination paths must be different",
             )
-        if self._is_reserved_internal_path(normalized_old) or self._is_reserved_internal_path(
-            normalized_new
-        ):
+        if self._is_reserved_internal_path(
+            normalized_old
+        ) or self._is_reserved_internal_path(normalized_new):
             raise HTTPException(status_code=400, detail="Invalid file path")
 
         source_path = self._resolve_workspace_file_path(workspace_id, normalized_old)
@@ -2088,7 +2140,9 @@ class UserSpaceService:
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="File not found") from exc
         except FileExistsError as exc:
-            raise HTTPException(status_code=409, detail="Target file already exists") from exc
+            raise HTTPException(
+                status_code=409, detail="Target file already exists"
+            ) from exc
 
         await self._touch_workspace(workspace_id)
         return {"old_path": normalized_old, "new_path": normalized_new}
