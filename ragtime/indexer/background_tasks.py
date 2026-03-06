@@ -17,11 +17,13 @@ from langchain_core.messages import AIMessage, HumanMessage
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.logging import get_logger
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (ChatTaskStatus, FilesystemConnectionConfig,
-                                    SchemaIndexConfig)
+from ragtime.indexer.models import (
+    ChatTaskStatus,
+    FilesystemConnectionConfig,
+    SchemaIndexConfig,
+)
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
-                                            schema_indexer)
+from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
 from ragtime.indexer.service import indexer
 from ragtime.indexer.utils import safe_tool_name
 
@@ -678,6 +680,9 @@ class BackgroundTaskService:
                     blocked_tool_names=blocked_tool_names,
                     workspace_context=workspace_context,
                     conversation_model=conv.model,
+                    conversation_id=conversation_id,
+                    user_id=conv.user_id,
+                    chat_task_id=task_id,
                 ):
                     if self._shutdown:
                         await repository.cancel_chat_task(task_id)
@@ -781,7 +786,9 @@ class BackgroundTaskService:
                                 if events and events[-1].get("type") == "reasoning":
                                     events[-1]["content"] += reasoning_text
                                 else:
-                                    events.append({"type": "reasoning", "content": reasoning_text})
+                                    events.append(
+                                        {"type": "reasoning", "content": reasoning_text}
+                                    )
                     else:
                         # Text token
                         token = event

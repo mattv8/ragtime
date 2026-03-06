@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo, isValidElement, type ReactNode, type CSSProperties } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock } from 'lucide-react';
+import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock } from 'lucide-react';
 import { api } from '@/api';
-import type { Conversation, ChatMessage, AvailableModel, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool } from '@/types';
+import type { Conversation, ChatMessage, AvailableModel, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ToolCallRecord } from '@/types';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
@@ -1380,6 +1380,7 @@ const ChatTitle = memo(({ title }: { title: string }) => {
 
 interface ChatPanelProps {
   currentUser: User;
+  debugMode?: boolean;
   workspaceId?: string;
   workspaceAvailableTools?: UserSpaceAvailableTool[];
   workspaceSelectedToolIds?: string[];
@@ -1395,6 +1396,7 @@ interface ChatPanelProps {
 
 export function ChatPanel({
   currentUser,
+  debugMode = false,
   workspaceId,
   workspaceAvailableTools,
   workspaceSelectedToolIds,
@@ -1466,6 +1468,12 @@ export function ChatPanel({
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [savingMembers, setSavingMembers] = useState(false);
   const [savingTools, setSavingTools] = useState(false);
+  const [showPromptDebugModal, setShowPromptDebugModal] = useState(false);
+  const [promptDebugRecords, setPromptDebugRecords] = useState<ProviderPromptDebugRecord[]>([]);
+  const [promptDebugLoading, setPromptDebugLoading] = useState(false);
+  const [promptDebugError, setPromptDebugError] = useState<string | null>(null);
+  const [copiedPromptMessageKey, setCopiedPromptMessageKey] = useState<string | null>(null);
+  const [promptDebugMessageIndex, setPromptDebugMessageIndex] = useState<number | null>(null);
 
   const useWorkspaceToolSource = Boolean(
     embedded
@@ -1510,6 +1518,7 @@ export function ChatPanel({
 
   const isConversationOwner = myConversationRole === 'owner' || (activeConversation?.user_id === currentUser?.id && conversationMembers.length === 0);
   const isConversationViewer = myConversationRole === 'viewer';
+  const showPromptDebugButton = Boolean(debugMode && isAdmin && activeConversation);
 
   const toggleFullscreen = useCallback(() => {
     const next = !isFullscreen;
@@ -1537,14 +1546,124 @@ export function ChatPanel({
     return { provider, modelId };
   }, []);
 
+  const loadPromptDebugRecords = useCallback(async () => {
+    if (!activeConversation || !showPromptDebugButton) return;
+    setPromptDebugLoading(true);
+    setPromptDebugError(null);
+    try {
+      const records = await api.getConversationProviderDebugPrompts(
+        activeConversation.id,
+        workspaceId,
+        200,
+      );
+      setPromptDebugRecords(records);
+    } catch (err) {
+      setPromptDebugError(
+        err instanceof Error ? err.message : 'Failed to load prompt debug records.'
+      );
+    } finally {
+      setPromptDebugLoading(false);
+    }
+  }, [activeConversation, showPromptDebugButton, workspaceId]);
+
+  const closePromptDebugModal = useCallback(() => {
+    setShowPromptDebugModal(false);
+    setPromptDebugMessageIndex(null);
+  }, []);
+
+  const openPromptDebugForAssistantMessage = useCallback((messageIndex: number) => {
+    if (!activeConversation) return;
+    const msg = activeConversation.messages[messageIndex];
+    if (!msg) return;
+    setPromptDebugMessageIndex(messageIndex);
+    setShowPromptDebugModal(true);
+  }, [activeConversation]);
+
+  const copyPromptText = useCallback(async (messageKey: string, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedPromptMessageKey(messageKey);
+      window.setTimeout(() => {
+        setCopiedPromptMessageKey((current) => (current === messageKey ? null : current));
+      }, 1500);
+    } catch {
+      setPromptDebugError('Failed to copy prompt text to clipboard.');
+    }
+  }, []);
+
+  const formatPromptMessageContent = useCallback((content: unknown): string => {
+    if (typeof content === 'string') return content;
+
+    if (Array.isArray(content)) {
+      return content.map((part) => {
+        if (!part || typeof part !== 'object') return String(part ?? '');
+        const typedPart = part as Record<string, unknown>;
+        const partType = typedPart.type;
+        if (partType === 'text') return String(typedPart.text ?? '');
+        if (partType === 'image_url') return '[image]';
+        if (partType === 'file') return `[file: ${String(typedPart.filename ?? typedPart.file_path ?? 'attachment')}]`;
+        return JSON.stringify(typedPart, null, 2);
+      }).join('\n');
+    }
+
+    if (content && typeof content === 'object') {
+      return JSON.stringify(content, null, 2);
+    }
+    return String(content ?? '');
+  }, []);
+
+  const chronologicalPromptDebugRecords = useMemo(() => {
+    const sorted = [...promptDebugRecords].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+    if (promptDebugMessageIndex === null || !activeConversation) return sorted;
+    // Find the user message that triggered this assistant reply
+    const userMsg = activeConversation.messages[promptDebugMessageIndex - 1];
+    if (!userMsg || userMsg.role !== 'user') return sorted;
+    const userText = typeof userMsg.content === 'string'
+      ? userMsg.content
+      : userMsg.content
+          .filter((p): p is { type: 'text'; text: string } => typeof p === 'object' && p !== null && 'type' in p && p.type === 'text')
+          .map(p => p.text)
+          .join('\n');
+    if (!userText) return sorted;
+    // Match debug records whose rendered_user_input contains this user's message text
+    return sorted.filter(r => {
+      if (typeof r.rendered_user_input === 'string') {
+        return r.rendered_user_input.includes(userText);
+      }
+      return JSON.stringify(r.rendered_user_input).includes(userText);
+    });
+  }, [promptDebugRecords, promptDebugMessageIndex, activeConversation]);
+
+  useEffect(() => {
+    if (!showPromptDebugModal) return;
+    void loadPromptDebugRecords();
+  }, [showPromptDebugModal, loadPromptDebugRecords]);
+
   // Image modal state
   const [modalImageUrl, setModalImageUrl] = useState<string | null>(null);
+
+  // Keep latest conversation available to long-lived async callbacks.
+  const activeConversationRef = useRef<Conversation | null>(null);
+  const streamingEventsRef = useRef<StreamingRenderEvent[]>([]);
+  const streamingContentRef = useRef('');
 
   useEffect(() => {
     return () => {
       onFullscreenChange?.(false);
     };
   }, [onFullscreenChange]);
+
+  useEffect(() => {
+    activeConversationRef.current = activeConversation;
+  }, [activeConversation]);
+
+  useEffect(() => {
+    streamingEventsRef.current = streamingEvents;
+  }, [streamingEvents]);
+
+  useEffect(() => {
+    streamingContentRef.current = streamingContent;
+  }, [streamingContent]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
@@ -1924,6 +2043,66 @@ export function ChatPanel({
   const toggleGroup = useCallback((key: string) => {
     setCollapsedGroups(prev => ({ ...prev, [key]: !prev[key] }));
   }, []);
+
+  // Preserve partial assistant output locally when server state lags behind stream completion/cancel.
+  const buildFallbackAssistantFromStreaming = useCallback((): ChatMessage | null => {
+    const sourceEvents = streamingEventsRef.current;
+    const sourceContent = streamingContentRef.current;
+
+    if (sourceEvents.length === 0 && !sourceContent.trim()) return null;
+
+    const events: MessageEvent[] = [];
+    const toolCalls: ToolCallRecord[] = [];
+    let textContent = '';
+
+    for (const ev of sourceEvents) {
+      if (ev.type === 'content') {
+        textContent += ev.content;
+        events.push({ type: 'content', content: ev.content });
+      } else if (ev.type === 'reasoning') {
+        events.push({ type: 'reasoning', content: ev.content });
+      } else if (ev.type === 'tool') {
+        const tc: ToolCallRecord = {
+          tool: ev.toolCall.tool,
+          input: ev.toolCall.input,
+          output: ev.toolCall.output,
+          connection: ev.toolCall.connection,
+        };
+        toolCalls.push(tc);
+        events.push({
+          type: 'tool',
+          tool: tc.tool,
+          input: tc.input,
+          output: tc.output,
+          connection: tc.connection,
+        });
+      }
+    }
+
+    const content = textContent || sourceContent;
+    if (!content.trim() && events.length === 0) return null;
+
+    return {
+      role: 'assistant',
+      content,
+      timestamp: new Date().toISOString(),
+      events: events.length > 0 ? events : undefined,
+      tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+    };
+  }, []);
+
+  const applyFallbackAssistantIfNeeded = useCallback((conversation: Conversation): Conversation => {
+    const fallback = buildFallbackAssistantFromStreaming();
+    if (!fallback) return conversation;
+
+    const lastMessage = conversation.messages[conversation.messages.length - 1];
+    if (lastMessage?.role === 'assistant') return conversation;
+
+    return {
+      ...conversation,
+      messages: [...conversation.messages, fallback],
+    };
+  }, [buildFallbackAssistantFromStreaming]);
 
   // Memoized consolidated segments for streaming - groups adjacent content events
   // Merges ALL reasoning events into a single segment per turn for unified display
@@ -2411,19 +2590,26 @@ export function ChatPanel({
         if (processingTaskRef.current === taskId) {
             processingTaskRef.current = null;
             setIsPollingTask(false);
-            setIsStreaming(false);
             setActiveTask(null);
 
-            // Refresh conversation on completion
-            if (activeConversation) {
-                try {
-                    const updated = await api.getConversation(activeConversation.id, workspaceId);
-                    setActiveConversation(updated);
-                    setConversations(prev => prev.map(c => c.id === updated.id ? updated : c));
-                    setStreamingContent('');
-                    setStreamingEvents([]);
-                } catch (e) { console.error(e); }
+            // Refresh conversation on completion before clearing streaming state.
+            // This avoids a UI gap where the in-progress output disappears before
+            // the persisted assistant message is rendered.
+            const currentConversation = activeConversationRef.current;
+            if (currentConversation) {
+              try {
+                const updated = await api.getConversation(currentConversation.id, workspaceId);
+                const resolved = applyFallbackAssistantIfNeeded(updated);
+                setActiveConversation(resolved);
+                setConversations(prev => prev.map(c => c.id === resolved.id ? resolved : c));
+              } catch (e) {
+                console.error(e);
+              }
             }
+
+            setIsStreaming(false);
+            setStreamingContent('');
+            setStreamingEvents([]);
 
             // Notify parent that the task finished (e.g. refresh workspace preview)
             if (onTaskComplete) {
@@ -2431,7 +2617,7 @@ export function ChatPanel({
             }
         }
     }
-  }, [activeConversation, stopTaskStreaming, onTaskComplete, workspaceId]);
+  }, [applyFallbackAssistantIfNeeded, onTaskComplete, workspaceId]);
 
   const startTaskAndStream = useCallback(async (conversationId: string, message: string) => {
     // 1. Optimistic update (User message)
@@ -2668,13 +2854,23 @@ export function ChatPanel({
     // Don't modify isStreaming yet to avoid UI flash/loss of content during refresh
 
     // Refresh conversation to get current state (including partial messages)
-    if (activeConversation) {
+    const currentConversation = activeConversationRef.current;
+    if (currentConversation) {
       try {
-        const updated = await api.getConversation(activeConversation.id, workspaceId);
-        setActiveConversation(updated);
-        setConversations(prev => prev.map(c => c.id === updated.id ? updated : c));
+        const updated = await api.getConversation(currentConversation.id, workspaceId);
+        const resolved = applyFallbackAssistantIfNeeded(updated);
+        setActiveConversation(resolved);
+        setConversations(prev => prev.map(c => c.id === resolved.id ? resolved : c));
       } catch (err) {
         console.error('Failed to update conversation after stop:', err);
+
+        // If refresh fails, still preserve what the user saw in the stream.
+        const localConversation = activeConversationRef.current;
+        if (localConversation) {
+          const fallbackConversation = applyFallbackAssistantIfNeeded(localConversation);
+          setActiveConversation(fallbackConversation);
+          setConversations(prev => prev.map(c => c.id === fallbackConversation.id ? fallbackConversation : c));
+        }
       }
     }
 
@@ -3521,6 +3717,16 @@ export function ChatPanel({
                               <span className="chat-message-time">
                                 {formatRelativeTime(msg.timestamp)}
                               </span>
+                              {msg.role === 'assistant' && showPromptDebugButton && (
+                                <button
+                                  className="chat-message-edit-btn"
+                                  onClick={() => openPromptDebugForAssistantMessage(idx)}
+                                  title="Open prompt debug for this assistant reply"
+                                  aria-label="Open prompt debug for this assistant reply"
+                                >
+                                  <Bug size={12} />
+                                </button>
+                              )}
                               {msg.role === 'user' && !isStreaming && !readOnly && (
                                 <button
                                   className="chat-message-edit-btn"
@@ -3727,6 +3933,176 @@ export function ChatPanel({
           formatUserLabel={formatUserLabel}
           saving={savingMembers}
         />
+      )}
+
+      {showPromptDebugModal && (
+        <div
+          className="modal-overlay"
+          onClick={closePromptDebugModal}
+          role="presentation"
+        >
+          <div
+            className="modal modal-large"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="prompt-debug-modal-title"
+          >
+            <div className="modal-header">
+              <h3 id="prompt-debug-modal-title">Provider Prompt Debug</h3>
+              <button className="modal-close" onClick={closePromptDebugModal} aria-label="Close prompt debug modal">
+                &times;
+              </button>
+            </div>
+            <div className="modal-body" style={{ maxHeight: '70vh', overflowY: 'auto' }}>
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: '0.9rem', opacity: 0.8 }}>
+                  Captured provider input calls for this conversation.
+                </div>
+              </div>
+
+              {promptDebugError && (
+                <div className="chat-error" style={{ marginBottom: 12 }}>{promptDebugError}</div>
+              )}
+
+              {!promptDebugLoading && chronologicalPromptDebugRecords.length === 0 && !promptDebugError && (
+                <div style={{ fontSize: '0.95rem', opacity: 0.8 }}>
+                  No prompt-debug records yet for this conversation.
+                </div>
+              )}
+
+              {chronologicalPromptDebugRecords.map((record, recordIdx) => {
+                const createdAt = new Date(record.created_at).toLocaleString();
+                const renderedMessages = Array.isArray(record.rendered_provider_messages)
+                  ? record.rendered_provider_messages
+                  : [];
+                return (
+                  <div key={record.id} style={{ marginBottom: 24 }}>
+                    {recordIdx > 0 && (
+                      <hr style={{ border: 'none', borderTop: '2px solid var(--color-border)', margin: '20px 0' }} />
+                    )}
+
+                    {/* Record metadata */}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14, alignItems: 'center' }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.03em', color: '#2451a6', background: '#dbe7f7', padding: '4px 10px', borderRadius: 6 }}>
+                        {record.provider}
+                      </span>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                        {record.model}
+                      </span>
+                      <span style={{ fontSize: 12, color: 'var(--color-text-muted)', background: 'var(--color-surface-hover)', padding: '3px 8px', borderRadius: 4 }}>
+                        {record.mode}
+                      </span>
+                      <span style={{ fontSize: 12, color: 'var(--color-text-muted)', background: 'var(--color-surface-hover)', padding: '3px 8px', borderRadius: 4 }}>
+                        {record.request_kind}
+                      </span>
+                      <span style={{ fontSize: 12, color: 'var(--color-text-muted)', marginLeft: 'auto' }}>
+                        {createdAt}
+                      </span>
+                    </div>
+
+                    {/* Provider messages — exact payload sent to LLM, in order */}
+                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: 'var(--color-text-muted)' }}>
+                      Messages sent to provider ({renderedMessages.length})
+                    </div>
+                    {renderedMessages.map((message, messageIdx) => {
+                      const messageRole = String((message as Record<string, unknown>)?.role ?? 'unknown').toLowerCase();
+                      const messageLabel = messageRole.toUpperCase();
+                      const messageContent = formatPromptMessageContent((message as Record<string, unknown>)?.content);
+                      const lineCount = messageContent ? messageContent.split('\n').length : 0;
+                      const messageKey = `${record.id}-${messageIdx}`;
+                      const copied = copiedPromptMessageKey === messageKey;
+
+                      const badgeBg = messageRole === 'system'
+                        ? '#ece5f7'
+                        : messageRole === 'user'
+                          ? '#dbe7f7'
+                          : messageRole === 'assistant'
+                            ? '#e2f1e9'
+                            : 'var(--color-surface-hover)';
+                      const badgeColor = messageRole === 'system'
+                        ? '#6b3fa0'
+                        : messageRole === 'user'
+                          ? '#2451a6'
+                          : messageRole === 'assistant'
+                            ? '#1d6a41'
+                            : 'var(--color-text-muted)';
+                      const borderColor = messageRole === 'system'
+                        ? '#dccff0'
+                        : messageRole === 'user'
+                          ? '#c8d6ec'
+                          : messageRole === 'assistant'
+                            ? '#c4ddd0'
+                            : 'var(--color-border)';
+                      const headerBg = messageRole === 'system'
+                        ? '#f5f0fa'
+                        : messageRole === 'user'
+                          ? '#eef2f8'
+                          : messageRole === 'assistant'
+                            ? '#edf7f1'
+                            : 'var(--color-surface-hover)';
+
+                      /* System messages are collapsible (they tend to be long) */
+                      if (messageRole === 'system') {
+                        return (
+                          <details key={messageKey} open style={{ marginBottom: 10, border: `1px solid ${borderColor}`, borderRadius: 8, overflow: 'hidden' }}>
+                            <summary style={{ listStyle: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: headerBg }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.03em', color: badgeColor, background: badgeBg, padding: '4px 8px', borderRadius: 6 }}>
+                                  {messageLabel}
+                                </span>
+                                <span style={{ fontWeight: 600 }}>Message {messageIdx + 1}</span>
+                                <span style={{ opacity: 0.7, fontSize: 13 }}>({lineCount} lines)</span>
+                              </div>
+                              <button
+                                className="btn btn-secondary btn-sm"
+                                onClick={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  void copyPromptText(messageKey, messageContent);
+                                }}
+                                title="Copy message"
+                                aria-label="Copy system message"
+                              >
+                                {copied ? <Check size={12} /> : <Copy size={12} />}
+                                <span style={{ marginLeft: 6 }}>{copied ? 'Copied' : 'Copy'}</span>
+                              </button>
+                            </summary>
+                            <pre style={{ whiteSpace: 'pre-wrap', margin: 0, padding: 12, fontSize: 13 }}>{messageContent || '(empty)'}</pre>
+                          </details>
+                        );
+                      }
+
+                      /* User/assistant/other messages shown inline */
+                      return (
+                        <div key={messageKey} style={{ marginBottom: 10, border: `1px solid ${borderColor}`, borderRadius: 8, overflow: 'hidden' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '10px 12px', background: headerBg }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                              <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.03em', color: badgeColor, background: badgeBg, padding: '4px 8px', borderRadius: 6 }}>
+                                {messageLabel}
+                              </span>
+                              <span style={{ fontWeight: 600 }}>Message {messageIdx + 1}</span>
+                            </div>
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              onClick={() => void copyPromptText(messageKey, messageContent)}
+                              title="Copy message"
+                              aria-label="Copy message"
+                            >
+                              {copied ? <Check size={12} /> : <Copy size={12} />}
+                              <span style={{ marginLeft: 6 }}>{copied ? 'Copied' : 'Copy'}</span>
+                            </button>
+                          </div>
+                          <pre style={{ whiteSpace: 'pre-wrap', margin: 0, padding: 12, fontSize: 13 }}>{messageContent || '(empty)'}</pre>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Image Modal */}

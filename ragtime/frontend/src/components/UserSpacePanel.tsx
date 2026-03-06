@@ -20,6 +20,7 @@ import { UserSpaceArtifactPreview } from './UserSpaceArtifactPreview';
 
 interface UserSpacePanelProps {
   currentUser: User;
+  debugMode?: boolean;
   onFullscreenChange?: (fullscreen: boolean) => void;
 }
 
@@ -196,7 +197,7 @@ function formatUserSpaceErrorMessage(rawError: string | null): string | null {
   return normalized;
 }
 
-export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePanelProps) {
+export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenChange }: UserSpacePanelProps) {
   const previewEntryPath = 'dashboard/main.ts';
   const [workspaces, setWorkspaces] = useState<UserSpaceWorkspace[]>([]);
   const [workspacesTotal, setWorkspacesTotal] = useState(0);
@@ -2888,6 +2889,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
               <ChatPanel
                 key={activeWorkspaceId}
                 currentUser={currentUser}
+                debugMode={debugMode}
                 workspaceId={activeWorkspaceId}
                 workspaceAvailableTools={availableTools}
                 workspaceSelectedToolIds={resolvedSelectedToolIds}

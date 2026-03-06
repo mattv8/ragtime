@@ -83,6 +83,7 @@ from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
                                     PdmIndexJobResponse,
                                     PostgresDiscoverRequest,
                                     PostgresDiscoverResponse,
+                                    ProviderPromptDebugListResponse,
                                     RepoVisibilityResponse,
                                     RetryVisualizationRequest,
                                     RetryVisualizationResponse,
@@ -1649,7 +1650,8 @@ async def update_tool_config(
             # For FAISS filesystem indexes, rename using the backend
             if is_faiss and old_index_name and new_index_name:
                 if old_index_name != new_index_name:
-                    from ragtime.indexer.vector_backends import get_faiss_backend
+                    from ragtime.indexer.vector_backends import \
+                        get_faiss_backend
 
                     faiss_backend = get_faiss_backend()
                     success = await faiss_backend.rename_index(
@@ -6475,6 +6477,39 @@ async def get_conversation(
     return _to_conversation_response(conv)
 
 
+@router.get(
+    "/conversations/{conversation_id}/provider-debug-prompts",
+    response_model=ProviderPromptDebugListResponse,
+)
+async def list_conversation_provider_debug_prompts(
+    conversation_id: str,
+    limit: int = 100,
+    before: Optional[datetime] = None,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(require_admin),
+):
+    """List provider prompt debug records for a conversation (admin + DEBUG_MODE only)."""
+    if not DEBUG_MODE:
+        raise HTTPException(status_code=404, detail="Debug prompt capture is disabled")
+
+    await _assert_workspace_access(workspace_id, user, "viewer")
+    has_access = await repository.check_conversation_access(
+        conversation_id,
+        user.id,
+        is_admin=True,
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    records = await repository.list_provider_prompt_debug_records_for_conversation(
+        conversation_id,
+        limit=limit,
+        before=before,
+    )
+    return ProviderPromptDebugListResponse(records=records)
+
+
 @router.delete("/conversations/{conversation_id}")
 async def delete_conversation(
     conversation_id: str,
@@ -6700,6 +6735,8 @@ async def send_message(
             blocked_tool_names=blocked_tool_names,
             workspace_context=workspace_context,
             conversation_model=conv.model,
+            conversation_id=conversation_id,
+            user_id=user.id,
         )
     except Exception as e:
         logger.exception("Error processing message")
@@ -6804,6 +6841,8 @@ async def send_message_stream(
                 blocked_tool_names=blocked_tool_names,
                 workspace_context=workspace_context,
                 conversation_model=conv.model,
+                conversation_id=conversation_id,
+                user_id=user.id,
             ):
                 # Handle structured tool events
                 if isinstance(event, dict):

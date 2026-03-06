@@ -599,11 +599,19 @@ export function App() {
 
       {activeView === 'userspace' ? (
         <div className="userspace-page-container">
-          <UserSpacePanel currentUser={currentUser} onFullscreenChange={setUserspaceFullscreen} />
+          <UserSpacePanel
+            currentUser={currentUser}
+            debugMode={Boolean(authStatus?.debug_mode)}
+            onFullscreenChange={setUserspaceFullscreen}
+          />
         </div>
       ) : isChatView ? (
         <div className="chat-page-container">
-          <ChatPanel currentUser={currentUser} onFullscreenChange={setChatFullscreen} />
+          <ChatPanel
+            currentUser={currentUser}
+            debugMode={Boolean(authStatus?.debug_mode)}
+            onFullscreenChange={setChatFullscreen}
+          />
         </div>
       ) : activeView === 'settings' ? (
         <SettingsPanel

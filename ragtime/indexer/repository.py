@@ -24,17 +24,33 @@ from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
-                                     decrypt_json_passwords, decrypt_secret,
-                                     encrypt_json_passwords, encrypt_secret)
+from ragtime.core.encryption import (
+    CONNECTION_CONFIG_PASSWORD_FIELDS,
+    decrypt_json_passwords,
+    decrypt_secret,
+    encrypt_json_passwords,
+    encrypt_secret,
+)
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
-from ragtime.indexer.models import (SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
-                                    AppSettings, ChatMessage, ChatTask,
-                                    ChatTaskStatus, ChatTaskStreamingState,
-                                    Conversation, IndexConfig, IndexJob,
-                                    IndexStatus, ToolCallRecord, ToolConfig,
-                                    ToolOutputMode, ToolType, VectorStoreType)
+from ragtime.indexer.models import (
+    SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
+    AppSettings,
+    ChatMessage,
+    ChatTask,
+    ChatTaskStatus,
+    ChatTaskStreamingState,
+    Conversation,
+    IndexConfig,
+    IndexJob,
+    IndexStatus,
+    ProviderPromptDebugRecord,
+    ToolCallRecord,
+    ToolConfig,
+    ToolOutputMode,
+    ToolType,
+    VectorStoreType,
+)
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 
@@ -1904,6 +1920,85 @@ class IndexerRepository:
             logger.warning(f"Failed to cleanup stale tasks: {e}")
             return 0
 
+    async def create_provider_prompt_debug_record(
+        self,
+        *,
+        conversation_id: str,
+        provider: str,
+        model: str,
+        mode: str,
+        request_kind: str,
+        rendered_system_prompt: str,
+        rendered_user_input: str,
+        rendered_provider_messages: List[dict[str, Any]],
+        rendered_chat_history: List[dict[str, Any]],
+        tool_scope_prompt: str = "",
+        prompt_additions: str = "",
+        turn_reminders: str = "",
+        user_id: Optional[str] = None,
+        chat_task_id: Optional[str] = None,
+    ) -> Optional[ProviderPromptDebugRecord]:
+        """Persist a DEBUG-only provider prompt record for a single API call."""
+        db = await self._get_db()
+
+        try:
+            prisma_record = await db.providerpromptdebugrecord.create(
+                data=cast(
+                    Any,
+                    {
+                        "id": str(uuid.uuid4()),
+                        "conversation": {"connect": {"id": conversation_id}},
+                        "chatTask": (
+                            {"connect": {"id": chat_task_id}} if chat_task_id else None
+                        ),
+                        "user": ({"connect": {"id": user_id}} if user_id else None),
+                        "provider": provider,
+                        "model": model,
+                        "mode": mode,
+                        "requestKind": request_kind,
+                        "renderedSystemPrompt": _sanitize_for_postgres(
+                            rendered_system_prompt
+                        ),
+                        "renderedUserInput": _sanitize_for_postgres(
+                            rendered_user_input
+                        ),
+                        "renderedProviderMessages": Json(rendered_provider_messages),
+                        "renderedChatHistory": Json(rendered_chat_history),
+                        "toolScopePrompt": _sanitize_for_postgres(tool_scope_prompt),
+                        "promptAdditions": _sanitize_for_postgres(prompt_additions),
+                        "turnReminders": _sanitize_for_postgres(turn_reminders),
+                    },
+                )
+            )
+            return self._prisma_provider_prompt_debug_to_model(prisma_record)
+        except Exception as e:
+            logger.warning("Failed to persist provider prompt debug record: %s", e)
+            return None
+
+    async def list_provider_prompt_debug_records_for_conversation(
+        self,
+        conversation_id: str,
+        *,
+        limit: int = 100,
+        before: Optional[datetime] = None,
+    ) -> List[ProviderPromptDebugRecord]:
+        """List provider prompt debug records for a conversation, newest first."""
+        db = await self._get_db()
+
+        where: dict[str, Any] = {"conversationId": conversation_id}
+        if before is not None:
+            where["createdAt"] = {"lt": before}
+
+        prisma_records = await db.providerpromptdebugrecord.find_many(
+            where=cast(Any, where),
+            order={"createdAt": "desc"},
+            take=max(1, min(limit, 200)),
+        )
+        return [
+            self._prisma_provider_prompt_debug_to_model(record)
+            for record in prisma_records
+        ]
+
     def _prisma_task_to_model(self, prisma_task: Any) -> ChatTask:
         """Convert Prisma ChatTask to Pydantic model."""
         streaming_state = None
@@ -1930,6 +2025,31 @@ class IndexerRepository:
             started_at=prisma_task.startedAt,
             completed_at=prisma_task.completedAt,
             last_update_at=prisma_task.lastUpdateAt,
+        )
+
+    def _prisma_provider_prompt_debug_to_model(
+        self, prisma_record: Any
+    ) -> ProviderPromptDebugRecord:
+        """Convert Prisma ProviderPromptDebugRecord to Pydantic model."""
+        rendered_provider_messages = list(prisma_record.renderedProviderMessages or [])
+        rendered_chat_history = list(prisma_record.renderedChatHistory or [])
+        return ProviderPromptDebugRecord(
+            id=prisma_record.id,
+            conversation_id=prisma_record.conversationId,
+            chat_task_id=getattr(prisma_record, "chatTaskId", None),
+            user_id=getattr(prisma_record, "userId", None),
+            provider=prisma_record.provider,
+            model=prisma_record.model,
+            mode=prisma_record.mode,
+            request_kind=prisma_record.requestKind,
+            rendered_system_prompt=prisma_record.renderedSystemPrompt,
+            rendered_user_input=prisma_record.renderedUserInput,
+            rendered_provider_messages=rendered_provider_messages,
+            rendered_chat_history=rendered_chat_history,
+            tool_scope_prompt=prisma_record.toolScopePrompt,
+            prompt_additions=prisma_record.promptAdditions,
+            turn_reminders=prisma_record.turnReminders,
+            created_at=prisma_record.createdAt,
         )
 
     async def cleanup_orphaned_embeddings(self) -> dict[str, int]:

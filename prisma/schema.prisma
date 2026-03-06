@@ -675,6 +675,7 @@ model User {
   ownedWorkspaces Workspace[] @relation("WorkspaceOwner")
   workspaceMemberships WorkspaceMember[]
   conversationMembers ConversationMember[]
+  providerPromptDebugRecords ProviderPromptDebugRecord[]
   runtimeLeases UserSpaceRuntimeSession[] @relation("RuntimeLeaseUser")
   runtimeAuditEvents UserSpaceRuntimeAuditEvent[] @relation("RuntimeAuditUser")
 
@@ -780,6 +781,7 @@ model Conversation {
 
   // Relation to background tasks
   tasks     ChatTask[]
+  providerPromptDebugRecords ProviderPromptDebugRecord[]
 
   // Relation to conversation members and tool selections
   members         ConversationMember[]
@@ -886,8 +888,41 @@ model ChatTask {
 
   // Relation to conversation
   conversation   Conversation   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  providerPromptDebugRecords ProviderPromptDebugRecord[]
 
   @@map("chat_tasks")
+}
+
+/// DEBUG-only capture of rendered provider prompt input payloads per API call
+model ProviderPromptDebugRecord {
+  id            String   @id @default(uuid())
+  conversationId String  @map("conversation_id")
+  chatTaskId    String?  @map("chat_task_id")
+  userId        String?  @map("user_id")
+  provider      String
+  model         String
+  mode          String
+  requestKind   String   @map("request_kind")
+
+  renderedSystemPrompt      String @map("rendered_system_prompt")
+  renderedUserInput         String @map("rendered_user_input")
+  renderedProviderMessages  Json   @map("rendered_provider_messages")
+  renderedChatHistory       Json   @map("rendered_chat_history")
+  toolScopePrompt           String @default("") @map("tool_scope_prompt")
+  promptAdditions           String @default("") @map("prompt_additions")
+  turnReminders             String @default("") @map("turn_reminders")
+
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  conversation  Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  chatTask      ChatTask?    @relation(fields: [chatTaskId], references: [id], onDelete: SetNull)
+  user          User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([conversationId, createdAt])
+  @@index([chatTaskId, createdAt])
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@map("provider_prompt_debug_records")
 }
 
 /// Conversation member ACL entries

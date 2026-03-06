@@ -1857,6 +1857,29 @@ export interface ChatTask {
   last_update_at: string;
 }
 
+export interface ProviderPromptDebugRecord {
+  id: string;
+  conversation_id: string;
+  chat_task_id?: string | null;
+  user_id?: string | null;
+  provider: 'openai' | 'anthropic' | 'ollama' | string;
+  model: string;
+  mode: 'chat' | 'userspace' | string;
+  request_kind: 'agent_executor' | 'direct_llm' | string;
+  rendered_system_prompt: string;
+  rendered_user_input: string;
+  rendered_provider_messages: Record<string, unknown>[];
+  rendered_chat_history: Record<string, unknown>[];
+  tool_scope_prompt: string;
+  prompt_additions: string;
+  turn_reminders: string;
+  created_at: string;
+}
+
+export interface ProviderPromptDebugListResponse {
+  records: ProviderPromptDebugRecord[];
+}
+
 // Model context limits (approximate token counts)
 export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
   'gpt-4-turbo': 128000,

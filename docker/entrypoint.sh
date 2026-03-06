@@ -202,6 +202,8 @@ if [ "$DEBUG_MODE" = "true" ]; then
         --reload
         --timeout-graceful-shutdown "$UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN"
         --reload-dir /ragtime/ragtime
+        --reload-exclude "ragtime/frontend"
+        --reload-exclude "ragtime/frontend/**"
         --reload-exclude "ragtime/frontend/node_modules"
         --reload-exclude "ragtime/frontend/node_modules/**"
         --reload-exclude "ragtime/frontend/dist"

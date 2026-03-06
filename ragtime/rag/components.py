@@ -4211,9 +4211,7 @@ except Exception as e:
         Returns:
             Content with reminder prepended
         """
-        reminder_text = TOOL_USAGE_REMINDER
-        if mode == "userspace":
-            reminder_text += USERSPACE_TURN_REMINDER
+        reminder_text = self._build_turn_reminder_text(mode)
 
         if isinstance(content, str):
             return f"{reminder_text}{content}"
@@ -4225,6 +4223,108 @@ except Exception as e:
 
         # Fallback
         return f"{reminder_text}{content}"
+
+    @staticmethod
+    def _build_turn_reminder_text(mode: str) -> str:
+        """Build per-turn reminder text prepended to user input."""
+        reminder_text = TOOL_USAGE_REMINDER
+        if mode == "userspace":
+            reminder_text += USERSPACE_TURN_REMINDER
+        return reminder_text
+
+    @staticmethod
+    def _serialize_prompt_content(content: Any) -> Any:
+        """Serialize LangChain content to JSON-safe values for prompt debug storage."""
+        if content is None:
+            return ""
+        if isinstance(content, (str, int, float, bool)):
+            return content
+        if isinstance(content, list):
+            serialized: list[Any] = []
+            for item in content:
+                if isinstance(item, dict):
+                    serialized.append(item)
+                elif hasattr(item, "model_dump"):
+                    serialized.append(item.model_dump(mode="python"))
+                else:
+                    serialized.append(str(item))
+            return serialized
+        if isinstance(content, dict):
+            return content
+        return str(content)
+
+    @classmethod
+    def _serialize_base_message(cls, message: BaseMessage) -> dict[str, Any]:
+        """Serialize BaseMessage for persisted prompt-debug payloads."""
+        role = "assistant"
+        if isinstance(message, HumanMessage):
+            role = "user"
+        elif isinstance(message, SystemMessage):
+            role = "system"
+        elif isinstance(message, ToolMessage):
+            role = "tool"
+
+        return {
+            "role": role,
+            "type": message.__class__.__name__,
+            "content": cls._serialize_prompt_content(getattr(message, "content", "")),
+        }
+
+    async def _persist_provider_prompt_debug_record(
+        self,
+        *,
+        conversation_id: Optional[str],
+        user_id: Optional[str],
+        chat_task_id: Optional[str],
+        provider: str,
+        model: str,
+        mode: str,
+        request_kind: str,
+        system_prompt: str,
+        rendered_user_input: Any,
+        chat_history: List[BaseMessage],
+        provider_messages: List[dict[str, Any]],
+        tool_scope_prompt: str,
+        prompt_additions: str,
+        turn_reminders: str,
+    ) -> None:
+        """Persist a provider input debug row when DEBUG_MODE is enabled."""
+        if not settings.debug_mode or not conversation_id:
+            return
+
+        rendered_user_input_serialized = self._serialize_prompt_content(
+            rendered_user_input
+        )
+        if isinstance(rendered_user_input_serialized, str):
+            rendered_user_input_text = rendered_user_input_serialized
+        else:
+            rendered_user_input_text = json.dumps(
+                rendered_user_input_serialized,
+                ensure_ascii=True,
+                default=str,
+            )
+
+        try:
+            await repository.create_provider_prompt_debug_record(
+                conversation_id=conversation_id,
+                chat_task_id=chat_task_id,
+                user_id=user_id,
+                provider=provider,
+                model=model,
+                mode=mode,
+                request_kind=request_kind,
+                rendered_system_prompt=system_prompt,
+                rendered_user_input=rendered_user_input_text,
+                rendered_provider_messages=provider_messages,
+                rendered_chat_history=[
+                    self._serialize_base_message(message) for message in chat_history
+                ],
+                tool_scope_prompt=tool_scope_prompt,
+                prompt_additions=prompt_additions,
+                turn_reminders=turn_reminders,
+            )
+        except Exception:
+            logger.exception("Failed to persist provider prompt debug record")
 
     def _convert_message_to_langchain(self, message: Any) -> Any:
         """
@@ -7237,20 +7337,26 @@ except Exception as e:
         tools: list[Any],
         system_prompt: str,
         llm: Optional[Any] = None,
+        turn_system_content: Optional[str] = None,
     ) -> Optional[AgentExecutor]:
         """Build a lightweight executor for request-scoped tool filtering."""
         runtime_llm = llm or self.llm
         if runtime_llm is None or not tools:
             return None
 
-        prompt = ChatPromptTemplate.from_messages(
+        messages: list[Any] = [
+            ("system", escape_prompt_template_braces(system_prompt)),
+            MessagesPlaceholder(variable_name="chat_history", optional=True),
+        ]
+        if turn_system_content:
+            messages.append(("ai", escape_prompt_template_braces(turn_system_content)))
+        messages.extend(
             [
-                ("system", escape_prompt_template_braces(system_prompt)),
-                MessagesPlaceholder(variable_name="chat_history", optional=True),
                 ("human", "{input}"),
                 MessagesPlaceholder(variable_name="agent_scratchpad"),
             ]
         )
+        prompt = ChatPromptTemplate.from_messages(messages)
 
         agent = self._create_thinking_aware_agent(
             runtime_llm,
@@ -7597,6 +7703,9 @@ except Exception as e:
         blocked_tool_names: Optional[set[str]] = None,
         workspace_context: Optional[dict[str, str]] = None,
         conversation_model: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        chat_task_id: Optional[str] = None,
     ) -> str:
         """
         Process a user query through the RAG pipeline (non-streaming).
@@ -7626,33 +7735,45 @@ except Exception as e:
                 workspace_context=workspace_context,
                 add_chat_visualization_prompt=True,
             )
-            # Prepend per-turn reminder (adjacent to current message for effectiveness)
-            augmented_content = self._prepend_reminder_to_content(
-                langchain_content,
-                mode=request_context["mode"],
-            )
             system_prompt = self._build_request_system_prompt(
                 is_ui=request_context["prompt_is_ui"],
                 allowed_tool_config_ids=request_context["allowed_tool_config_ids"],
                 runtime_tools=request_context["runtime_tools"],
             )
-            system_prompt += await self._build_context_headroom_prompt(
-                chat_history=chat_history,
-                user_content=augmented_content,
-                model_id=request_model_id,
-            )
             system_prompt += request_context["prompt_additions"]
             runtime_tools = request_context["runtime_tools"]
+            tool_scope_prompt = ""
+
+            # Build per-turn system content (reminders + context headroom)
+            turn_system_content = self._build_turn_reminder_text(
+                request_context["mode"]
+            )
+            turn_system_content += await self._build_context_headroom_prompt(
+                chat_history=chat_history,
+                user_content=langchain_content,
+                model_id=request_model_id,
+            )
 
             if runtime_tools:
-                scoped_prompt = system_prompt + self._build_request_tool_scope_prompt(
+                tool_scope_prompt = self._build_request_tool_scope_prompt(
                     runtime_tools,
                     mode=request_context["mode"],
                 )
+                scoped_prompt = system_prompt + tool_scope_prompt
                 executor = self._build_runtime_executor(
                     runtime_tools,
                     scoped_prompt,
                     llm=request_llm,
+                    turn_system_content=turn_system_content,
+                )
+            elif executor:
+                # Default executor exists but needs turn system content injected
+                scoped_prompt = system_prompt
+                executor = self._build_runtime_executor(
+                    executor.tools,
+                    scoped_prompt,
+                    llm=request_llm,
+                    turn_system_content=turn_system_content,
                 )
 
             ctx_ms = (time.monotonic() - t_ctx) * 1000
@@ -7665,9 +7786,57 @@ except Exception as e:
             )
 
             if executor:
+                provider_messages: list[dict[str, Any]] = [
+                    {
+                        "role": "system",
+                        "content": self._serialize_prompt_content(
+                            system_prompt + tool_scope_prompt
+                        ),
+                    },
+                ]
+                provider_messages.extend(
+                    self._serialize_base_message(message) for message in chat_history
+                )
+                provider_messages.append(
+                    {
+                        "role": "assistant",
+                        "content": turn_system_content,
+                    }
+                )
+                provider_messages.append(
+                    {
+                        "role": "user",
+                        "content": self._serialize_prompt_content(langchain_content),
+                    }
+                )
+                provider_name = (
+                    request_model_id
+                    and self._parse_provider_scoped_model(conversation_model)[0]
+                ) or str(
+                    (self._app_settings or {}).get("llm_provider", "openai")
+                ).lower()
+                effective_model = request_model_id or str(
+                    (self._app_settings or {}).get("llm_model", "")
+                )
+                await self._persist_provider_prompt_debug_record(
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    chat_task_id=chat_task_id,
+                    provider=provider_name,
+                    model=effective_model,
+                    mode=request_context["mode"],
+                    request_kind="agent_executor",
+                    system_prompt=system_prompt,
+                    rendered_user_input=langchain_content,
+                    chat_history=chat_history,
+                    provider_messages=provider_messages,
+                    tool_scope_prompt=tool_scope_prompt,
+                    prompt_additions=request_context["prompt_additions"],
+                    turn_reminders=turn_system_content,
+                )
                 # Use agent with tools
                 result = await executor.ainvoke(
-                    {"input": augmented_content, "chat_history": chat_history}
+                    {"input": langchain_content, "chat_history": chat_history}
                 )
                 output = result.get("output", "I couldn't generate a response.")
                 # Handle Anthropic-style content blocks (list of dicts with 'text' key)
@@ -7686,7 +7855,35 @@ except Exception as e:
 
                 messages: List[BaseMessage] = [SystemMessage(content=system_prompt)]
                 messages.extend(chat_history)
-                messages.append(HumanMessage(content=augmented_content))
+                messages.append(AIMessage(content=turn_system_content))
+                messages.append(HumanMessage(content=langchain_content))
+                provider_name = (
+                    self._parse_provider_scoped_model(conversation_model)[0]
+                    or str(
+                        (self._app_settings or {}).get("llm_provider", "openai")
+                    ).lower()
+                )
+                effective_model = request_model_id or str(
+                    (self._app_settings or {}).get("llm_model", "")
+                )
+                await self._persist_provider_prompt_debug_record(
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    chat_task_id=chat_task_id,
+                    provider=provider_name,
+                    model=effective_model,
+                    mode=request_context["mode"],
+                    request_kind="direct_llm",
+                    system_prompt=system_prompt,
+                    rendered_user_input=langchain_content,
+                    chat_history=chat_history,
+                    provider_messages=[
+                        self._serialize_base_message(message) for message in messages
+                    ],
+                    tool_scope_prompt="",
+                    prompt_additions=request_context["prompt_additions"],
+                    turn_reminders=turn_system_content,
+                )
                 response = await request_llm.ainvoke(messages)
                 content = response.content
                 return content if isinstance(content, str) else str(content)
@@ -7703,6 +7900,9 @@ except Exception as e:
         blocked_tool_names: Optional[set[str]] = None,
         workspace_context: Optional[dict[str, str]] = None,
         conversation_model: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        chat_task_id: Optional[str] = None,
     ):
         """
         Process a user query with true token-by-token streaming.
@@ -7746,23 +7946,38 @@ except Exception as e:
             allowed_tool_config_ids=request_context["allowed_tool_config_ids"],
             runtime_tools=request_context["runtime_tools"],
         )
-        system_prompt += await self._build_context_headroom_prompt(
+        system_prompt += request_context["prompt_additions"]
+        runtime_tools = request_context["runtime_tools"]
+        tool_scope_prompt = ""
+
+        # Build per-turn system content (reminders + context headroom)
+        turn_system_content = self._build_turn_reminder_text(request_context["mode"])
+        turn_system_content += await self._build_context_headroom_prompt(
             chat_history=chat_history,
             user_content=langchain_content,
             model_id=request_model_id,
         )
-        system_prompt += request_context["prompt_additions"]
-        runtime_tools = request_context["runtime_tools"]
 
         if runtime_tools:
-            scoped_prompt = system_prompt + self._build_request_tool_scope_prompt(
+            tool_scope_prompt = self._build_request_tool_scope_prompt(
                 runtime_tools,
                 mode=request_context["mode"],
             )
+            scoped_prompt = system_prompt + tool_scope_prompt
             executor = self._build_runtime_executor(
                 runtime_tools,
                 scoped_prompt,
                 llm=request_llm,
+                turn_system_content=turn_system_content,
+            )
+        elif executor:
+            # Default executor exists but needs turn system content injected
+            scoped_prompt = system_prompt
+            executor = self._build_runtime_executor(
+                executor.tools,
+                scoped_prompt,
+                llm=request_llm,
+                turn_system_content=turn_system_content,
             )
 
         ctx_ms = (time.monotonic() - t_ctx) * 1000
@@ -7782,10 +7997,54 @@ except Exception as e:
                 # quickly exhausts rate limits. Images are replaced with [image attached].
                 stripped_content = self._strip_images_from_content(langchain_content)
 
-                # Prepend tool usage reminder (adjacent to current message for effectiveness)
-                agent_input = self._prepend_reminder_to_content(
-                    stripped_content,
+                agent_input = stripped_content
+                provider_name = (
+                    self._parse_provider_scoped_model(conversation_model)[0]
+                    or str(
+                        (self._app_settings or {}).get("llm_provider", "openai")
+                    ).lower()
+                )
+                effective_model = request_model_id or str(
+                    (self._app_settings or {}).get("llm_model", "")
+                )
+                stream_provider_messages: list[dict[str, Any]] = [
+                    {
+                        "role": "system",
+                        "content": self._serialize_prompt_content(
+                            system_prompt + tool_scope_prompt
+                        ),
+                    },
+                ]
+                stream_provider_messages.extend(
+                    self._serialize_base_message(message) for message in chat_history
+                )
+                stream_provider_messages.append(
+                    {
+                        "role": "assistant",
+                        "content": turn_system_content,
+                    }
+                )
+                stream_provider_messages.append(
+                    {
+                        "role": "user",
+                        "content": self._serialize_prompt_content(agent_input),
+                    }
+                )
+                await self._persist_provider_prompt_debug_record(
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    chat_task_id=chat_task_id,
+                    provider=provider_name,
+                    model=effective_model,
                     mode=request_context["mode"],
+                    request_kind="agent_executor",
+                    system_prompt=system_prompt,
+                    rendered_user_input=agent_input,
+                    chat_history=chat_history,
+                    provider_messages=stream_provider_messages,
+                    tool_scope_prompt=tool_scope_prompt,
+                    prompt_additions=request_context["prompt_additions"],
+                    turn_reminders=turn_system_content,
                 )
 
                 # Track tool runs to avoid duplicates from nested events
@@ -7931,8 +8190,36 @@ except Exception as e:
 
                 messages: List[BaseMessage] = [SystemMessage(content=system_prompt)]
                 messages.extend(chat_history)
-                # Use langchain_content (can be string or multimodal list)
+                messages.append(AIMessage(content=turn_system_content))
                 messages.append(HumanMessage(content=langchain_content))
+
+                provider_name = (
+                    self._parse_provider_scoped_model(conversation_model)[0]
+                    or str(
+                        (self._app_settings or {}).get("llm_provider", "openai")
+                    ).lower()
+                )
+                effective_model = request_model_id or str(
+                    (self._app_settings or {}).get("llm_model", "")
+                )
+                await self._persist_provider_prompt_debug_record(
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    chat_task_id=chat_task_id,
+                    provider=provider_name,
+                    model=effective_model,
+                    mode=request_context["mode"],
+                    request_kind="direct_llm",
+                    system_prompt=system_prompt,
+                    rendered_user_input=langchain_content,
+                    chat_history=chat_history,
+                    provider_messages=[
+                        self._serialize_base_message(message) for message in messages
+                    ],
+                    tool_scope_prompt="",
+                    prompt_additions=request_context["prompt_additions"],
+                    turn_reminders=turn_system_content,
+                )
 
                 # Use astream for true token-by-token streaming
                 async for chunk in request_llm.astream(messages):

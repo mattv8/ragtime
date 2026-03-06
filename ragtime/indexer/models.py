@@ -2,6 +2,7 @@
 Indexer data models and schemas.
 """
 
+
 import hashlib
 import json
 from datetime import datetime
@@ -14,7 +15,6 @@ from ragtime.core.embedding_models import (
     get_embedding_models,
     get_model_dimensions_sync,
 )
-
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -1933,6 +1933,35 @@ class ChatTaskResponse(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     last_update_at: datetime
+
+
+class ProviderPromptDebugRecord(BaseModel):
+    """DEBUG-mode provider request prompt capture for a single API call."""
+
+    id: str
+    conversation_id: str
+    chat_task_id: Optional[str] = None
+    user_id: Optional[str] = None
+    provider: str
+    model: str
+    mode: str = Field(description="Prompt mode: chat or userspace")
+    request_kind: str = Field(
+        description="Provider request path: agent_executor or direct_llm"
+    )
+    rendered_system_prompt: str
+    rendered_user_input: str
+    rendered_provider_messages: List[dict] = Field(default_factory=list)
+    rendered_chat_history: List[dict] = Field(default_factory=list)
+    tool_scope_prompt: str = ""
+    prompt_additions: str = ""
+    turn_reminders: str = ""
+    created_at: datetime
+
+
+class ProviderPromptDebugListResponse(BaseModel):
+    """Conversation-scoped provider prompt debug records."""
+
+    records: List[ProviderPromptDebugRecord] = Field(default_factory=list)
 
 
 # =============================================================================

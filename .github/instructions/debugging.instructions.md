@@ -25,6 +25,25 @@ docker exec -i ragtime-db-dev bash -c \
 
 Useful tables: `users`, `sessions`, `ldap_config`, `conversations`, `chat_tasks`, `index_jobs`, `index_metadata`, `index_configs`, `tool_configs`, `app_settings`.
 
+Prompt debug table (DEBUG mode only): `provider_prompt_debug_records`.
+
+```bash
+# Latest prompt-debug rows for one conversation
+docker exec -i ragtime-db-dev bash -c \
+  'PGPASSWORD="${POSTGRES_PASSWORD}" psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
+   -c "select provider,model,mode,request_kind,created_at from provider_prompt_debug_records where conversation_id = '\''<conversation_id>'\'' order by created_at desc limit 20;"'
+
+# Prompt-debug rows for a specific background task
+docker exec -i ragtime-db-dev bash -c \
+  'PGPASSWORD="${POSTGRES_PASSWORD}" psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
+   -c "select provider,model,request_kind,created_at from provider_prompt_debug_records where chat_task_id = '\''<task_id>'\'' order by created_at asc;"'
+
+# Compare userspace vs chat prompt payloads (prompt additions + reminders)
+docker exec -i ragtime-db-dev bash -c \
+  'PGPASSWORD="${POSTGRES_PASSWORD}" psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
+   -c "select mode,left(turn_reminders,120) as reminders,left(prompt_additions,120) as additions,created_at from provider_prompt_debug_records where conversation_id = '\''<conversation_id>'\'' order by created_at desc limit 20;"'
+```
+
 ## Auth + Session Troubleshooting
 
 ```bash
