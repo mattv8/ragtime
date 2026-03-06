@@ -22,8 +22,13 @@ from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain.agents.output_parsers.tools import ToolsAgentOutputParser
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
-                                     SystemMessage, ToolMessage)
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_core.tools import StructuredTool, ToolException
@@ -33,46 +38,71 @@ from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
-from ragtime.core.entrypoint_status import (FRAMEWORK_REQUIRED_PACKAGES,
-                                            EntrypointStatus)
-from ragtime.core.file_constants import (USERSPACE_MODULE_SOURCE_EXTENSIONS,
-                                         USERSPACE_STRICT_FRONTEND_EXTENSIONS,
-                                         USERSPACE_THEME_AUDIT_EXTENSIONS,
-                                         USERSPACE_TYPESCRIPT_EXTENSIONS)
+from ragtime.core.entrypoint_status import FRAMEWORK_REQUIRED_PACKAGES, EntrypointStatus
+from ragtime.core.file_constants import (
+    USERSPACE_MODULE_SOURCE_EXTENSIONS,
+    USERSPACE_STRICT_FRONTEND_EXTENSIONS,
+    USERSPACE_THEME_AUDIT_EXTENSIONS,
+    USERSPACE_TYPESCRIPT_EXTENSIONS,
+)
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit, get_output_limit
-from ragtime.core.ollama import (KEEP_ALIVE, NUM_GPU, get_model_context_length,
-                                 get_model_details, has_capability,
-                                 warmup_embedding_model, warmup_model)
-from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
-                                   validate_odoo_code, validate_sql_query,
-                                   validate_ssh_command)
+from ragtime.core.ollama import (
+    KEEP_ALIVE,
+    NUM_GPU,
+    get_model_context_length,
+    get_model_details,
+    has_capability,
+    warmup_embedding_model,
+    warmup_model,
+)
+from ragtime.core.security import (
+    _SSH_ENV_VAR_RE,
+    sanitize_output,
+    validate_odoo_code,
+    validate_sql_query,
+    validate_ssh_command,
+)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
-                              execute_ssh_command, expand_env_vars_via_ssh,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.ssh import (
+    SSHConfig,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    expand_env_vars_via_ssh,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
-                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
-                                 create_chart_tool)
-from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-                                     create_datatable_tool)
+from ragtime.tools.chart import (
+    CHAT_CHART_DESCRIPTION_SUFFIX,
+    USERSPACE_CHART_DESCRIPTION_SUFFIX,
+    create_chart_tool,
+)
+from ragtime.tools.datatable import (
+    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+    create_datatable_tool,
+)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (_is_shallow_repository,
-                                       create_aggregate_git_history_tool,
-                                       create_per_index_git_history_tool)
+from ragtime.tools.git_history import (
+    _is_shallow_repository,
+    create_aggregate_git_history_tool,
+    create_per_index_git_history_tool,
+)
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (ArtifactType, UpsertWorkspaceFileRequest,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection)
+from ragtime.userspace.models import (
+    ArtifactType,
+    UpsertWorkspaceFileRequest,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -2512,10 +2542,10 @@ class RAGComponents:
             self.agent_executor = AgentExecutor(
                 agent=agent,
                 tools=tools,
-                verbose=settings.debug_mode,
+                verbose=False,
                 handle_parsing_errors=True,
                 max_iterations=max_iterations,
-                return_intermediate_steps=settings.debug_mode,
+                return_intermediate_steps=False,
             )
         else:
             self.agent_executor = None
@@ -2545,10 +2575,10 @@ class RAGComponents:
             self.agent_executor_ui = AgentExecutor(
                 agent=agent_ui,
                 tools=ui_tools,
-                verbose=settings.debug_mode,
+                verbose=False,
                 handle_parsing_errors=True,
                 max_iterations=max_iterations,
-                return_intermediate_steps=settings.debug_mode,
+                return_intermediate_steps=False,
             )
             logger.info("Created UI agent with chart and datatable tools")
         else:
@@ -4907,10 +4937,8 @@ except Exception as e:
                 )
 
             path: str = Field(
-                default="dashboard/main.ts",
                 description=(
-                    "Relative path from the workspace files root to create/update. "
-                    "Default entry file: dashboard/main.ts"
+                    "Required relative path from the workspace files root to create/update."
                 ),
             )
             content: str = Field(description="Full UTF-8 file content to write")
@@ -5222,6 +5250,69 @@ except Exception as e:
                 return False
             return PurePosixPath(normalized).name.lower() == "index.html"
 
+        async def _build_live_data_contract_context(
+            path: str,
+            workspace: Any | None = None,
+        ) -> dict[str, Any]:
+            normalized_path = (path or "").strip().replace("\\", "/").lstrip("/")
+            is_dashboard_entry = normalized_path.lower() == "dashboard/main.ts"
+
+            ws = workspace
+            if ws is None:
+                ws = await userspace_service.get_workspace(workspace_id, user_id)
+
+            selected_tool_ids = list(getattr(ws, "selected_tool_ids", []) or [])
+            requires_contract = bool(selected_tool_ids) and is_dashboard_entry
+
+            entry_file_state: dict[str, Any] = {
+                "path": "dashboard/main.ts",
+                "exists": False,
+                "live_data_connections_count": 0,
+                "live_data_checks_count": 0,
+                "live_data_connection_component_ids": [],
+                "live_data_check_component_ids": [],
+            }
+
+            try:
+                entry_file = await userspace_service.get_workspace_file(
+                    workspace_id,
+                    "dashboard/main.ts",
+                    user_id,
+                )
+            except HTTPException as exc:
+                if getattr(exc, "status_code", None) != 404:
+                    raise
+            else:
+                entry_connections = list(entry_file.live_data_connections or [])
+                entry_checks = list(entry_file.live_data_checks or [])
+                entry_file_state = {
+                    "path": "dashboard/main.ts",
+                    "exists": True,
+                    "live_data_connections_count": len(entry_connections),
+                    "live_data_checks_count": len(entry_checks),
+                    "live_data_connection_component_ids": [
+                        conn.component_id for conn in entry_connections
+                    ],
+                    "live_data_check_component_ids": [
+                        check.component_id for check in entry_checks
+                    ],
+                }
+
+            return {
+                "path": normalized_path,
+                "is_dashboard_entry": is_dashboard_entry,
+                "workspace_has_selected_tools": bool(selected_tool_ids),
+                "selected_tool_ids": selected_tool_ids,
+                "requires_live_data_contract_for_path": requires_contract,
+                "requirements_when_effective": [
+                    "Provide live_data_connections with component_kind=tool_config, component_id, and request.",
+                    "Provide live_data_checks with connection_check_passed=true and transformation_check_passed=true for each declared component_id.",
+                    "Use only selected_tool_ids as component_id values.",
+                    "Source code must structurally call context.components[componentId].execute() for live data wiring.",
+                ],
+                "entry_file_state": entry_file_state,
+            }
+
         async def assay_userspace_code(
             max_files: int = 12,
             max_chars_per_file: int = 1600,
@@ -5239,6 +5330,10 @@ except Exception as e:
             has_index_html = bool(structure["has_index_html"])
             authoritative_entrypoint = structure["authoritative_entrypoint"]
             entrypoint_reason = str(structure["entrypoint_reason"])
+            contract_context_path = "dashboard/main.ts"
+            live_data_contract_context = await _build_live_data_contract_context(
+                contract_context_path
+            )
 
             dashboard_paths = sorted(
                 [file.path for file in files if file.path.startswith("dashboard/")]
@@ -5297,6 +5392,7 @@ except Exception as e:
                     "has_runtime_entrypoint": bool(structure["has_runtime_entrypoint"]),
                     "has_index_html": has_index_html,
                 },
+                "live_data_contract": live_data_contract_context,
                 "inspected_files": inspected,
                 "next_step": (
                     "Read target files in full before overwrite, then update files and validate TypeScript."
@@ -5784,8 +5880,8 @@ except Exception as e:
             return json.dumps(response_payload, indent=2)
 
         async def upsert_userspace_file(
-            path: str,
             content: str,
+            path: str,
             artifact_type: ArtifactType | None = "module_ts",
             live_data_requested: bool = False,
             live_data_connections: list[Any] | None = None,
@@ -5842,6 +5938,10 @@ except Exception as e:
                     )
 
             workspace = await userspace_service.get_workspace(workspace_id, user_id)
+            live_data_contract_context = await _build_live_data_contract_context(
+                path,
+                workspace=workspace,
+            )
             allowed_component_ids = set(workspace.selected_tool_ids)
             if parsed_live_data_connections:
                 for connection in parsed_live_data_connections:
@@ -6066,6 +6166,7 @@ except Exception as e:
                     "path": path,
                     "persisted": False,
                     "policy_violations": hard_errors,
+                    "live_data_contract": live_data_contract_context,
                     "action_required": (
                         "Fix the hard policy violations listed above, then retry "
                         "upsert_userspace_file."
@@ -6114,6 +6215,7 @@ except Exception as e:
                             f"File not found: {path}. The requested path does not exist "
                             "or is not accessible in this workspace."
                         ),
+                        "live_data_contract": live_data_contract_context,
                         "action_required": (
                             "Use list_userspace_files to choose an existing path, or provide "
                             "a valid relative file path under the workspace files root."
@@ -6134,6 +6236,7 @@ except Exception as e:
                     policy_response_payload = {
                         "rejected": True,
                         "error": detail_text,
+                        "live_data_contract": live_data_contract_context,
                         "action_required": (
                             "Use only component_ids from tools selected for this workspace."
                         ),
@@ -6149,6 +6252,7 @@ except Exception as e:
                     entrypoint_response_payload: dict[str, Any] = {
                         "rejected": True,
                         "error": detail_text,
+                        "live_data_contract": live_data_contract_context,
                         "action_required": (
                             "Upsert dashboard/main.ts so it imports/composes the module, "
                             "then retry upsert_userspace_file for the non-entry dashboard file."
@@ -6163,6 +6267,7 @@ except Exception as e:
 
             success_response_payload: dict[str, Any] = {
                 "file": result.model_dump(mode="json"),
+                "live_data_contract": live_data_contract_context,
             }
             if contract_violations:
                 success_response_payload["persisted_with_violations"] = True
@@ -6214,6 +6319,9 @@ except Exception as e:
             )
             normalized_start_path = (
                 (path or "dashboard/main.ts").strip().replace("\\", "/").lstrip("/")
+            )
+            live_data_contract_context = await _build_live_data_contract_context(
+                normalized_start_path
             )
 
             file_cache: dict[str, Any] = {}
@@ -6481,11 +6589,29 @@ except Exception as e:
                     )
                     runtime_probe["upstream_url"] = upstream_url
 
+                    probe_headers: dict[str, str] = {}
+                    worker_token = str(
+                        getattr(settings, "userspace_runtime_worker_auth_token", "")
+                    ).strip()
+                    manager_token = str(
+                        getattr(settings, "userspace_runtime_manager_auth_token", "")
+                    ).strip()
+
+                    if "/worker/" in upstream_url and worker_token:
+                        probe_headers["Authorization"] = f"Bearer {worker_token}"
+                    elif manager_token:
+                        probe_headers["Authorization"] = f"Bearer {manager_token}"
+                    elif worker_token:
+                        probe_headers["Authorization"] = f"Bearer {worker_token}"
+
                     timeout = httpx.Timeout(connect=2.0, read=12.0, write=8.0, pool=4.0)
                     async with httpx.AsyncClient(
                         timeout=timeout, follow_redirects=False
                     ) as client:
-                        response = await client.get(upstream_url)
+                        response = await client.get(
+                            upstream_url,
+                            headers=probe_headers or None,
+                        )
 
                     runtime_probe["preview_status_code"] = response.status_code
                     if response.status_code >= 400:
@@ -6603,6 +6729,7 @@ except Exception as e:
             response_payload = {
                 "path": normalized_start_path,
                 "artifact_type": root_artifact_type,
+                "live_data_contract": live_data_contract_context,
                 "validation": result,
             }
             return json.dumps(response_payload, indent=2)
@@ -6717,6 +6844,7 @@ except Exception as e:
                     "Dashboard module writes in workspaces with selected tools automatically "
                     "require live_data_connections, live_data_checks, AND structurally verified "
                     "context.components[componentId].execute() calls in the source code (AST-checked). "
+                    "Responses always include live_data_contract guidance with selected_tool_ids and required wiring context. "
                     "Policy violations raise tool errors that must be resolved before retrying. "
                     "Output may include CSS/theme warnings that must be fixed in follow-up edits."
                 ),
@@ -6749,6 +6877,7 @@ except Exception as e:
                 name="validate_userspace_code",
                 description=(
                     "Validate a workspace code file and return TypeScript/runtime diagnostics with file/line details. "
+                    "Always includes live_data_contract guidance (selected_tool_ids, entrypoint metadata, and required live-data wiring rules). "
                     "Use after edits and before creating snapshots."
                 ),
                 args_schema=ValidateUserSpaceCodeInput,
@@ -7019,10 +7148,10 @@ except Exception as e:
         return AgentExecutor(
             agent=agent,
             tools=tools,
-            verbose=settings.debug_mode,
+            verbose=False,
             handle_parsing_errors=True,
             max_iterations=max(1, max_iterations),
-            return_intermediate_steps=settings.debug_mode,
+            return_intermediate_steps=False,
         )
 
     # ------------------------------------------------------------------

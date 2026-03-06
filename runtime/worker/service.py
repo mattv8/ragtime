@@ -121,6 +121,10 @@ class WorkerSession:
     launch_framework: str | None
     launch_cwd: str | None
     last_error: str | None
+    runtime_operation_id: str | None
+    runtime_operation_phase: str | None
+    runtime_operation_started_at: datetime | None
+    runtime_operation_updated_at: datetime | None
     updated_at: datetime
 
 
@@ -149,10 +153,24 @@ class WorkerService:
             os.getenv("RUNTIME_BOOTSTRAP_TIMEOUT_SECONDS", "180")
         )
         self._runtime_config_file = ".ragtime/runtime-entrypoint.json"
+        self._startup_tasks: dict[str, asyncio.Task[None]] = {}
+        self._workspace_startup_locks: dict[str, asyncio.Lock] = {}
+        self._startup_semaphore = asyncio.Semaphore(
+            self._get_positive_int_env("RUNTIME_STARTUP_CONCURRENCY", 2)
+        )
 
     @staticmethod
     def _utc_now() -> datetime:
         return datetime.now(timezone.utc)
+
+    @staticmethod
+    def _get_positive_int_env(name: str, default_value: int) -> int:
+        raw_value = os.getenv(name, str(default_value)).strip()
+        try:
+            parsed = int(raw_value)
+            return parsed if parsed > 0 else default_value
+        except Exception:
+            return default_value
 
     def _normalize_file_path(
         self,
@@ -219,8 +237,30 @@ class WorkerService:
             runtime_capabilities=sandbox_diagnostics(),
             devserver_running=session.devserver_running,
             last_error=session.last_error,
+            runtime_operation_id=session.runtime_operation_id,
+            runtime_operation_phase=session.runtime_operation_phase,
+            runtime_operation_started_at=session.runtime_operation_started_at,
+            runtime_operation_updated_at=session.runtime_operation_updated_at,
             updated_at=session.updated_at,
         )
+
+    def _workspace_startup_lock(self, workspace_id: str) -> asyncio.Lock:
+        lock = self._workspace_startup_locks.get(workspace_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._workspace_startup_locks[workspace_id] = lock
+        return lock
+
+    def _begin_operation(self, session: WorkerSession, phase: str) -> None:
+        now = self._utc_now()
+        session.runtime_operation_id = os.urandom(12).hex()
+        session.runtime_operation_phase = phase
+        session.runtime_operation_started_at = now
+        session.runtime_operation_updated_at = now
+
+    def _set_operation_phase(self, session: WorkerSession, phase: str) -> None:
+        session.runtime_operation_phase = phase
+        session.runtime_operation_updated_at = self._utc_now()
 
     def _runtime_file_response(
         self,
@@ -705,7 +745,16 @@ class WorkerService:
             session.devserver_running = False
             return
         if process.returncode is None:
-            session.devserver_running = True
+            if session.runtime_operation_phase in {
+                "queued",
+                "bootstrapping",
+                "deps_install",
+                "launching",
+                "probing",
+            }:
+                session.devserver_running = False
+            else:
+                session.devserver_running = True
             return
 
         self._devserver_processes.pop(session.id, None)
@@ -736,112 +785,208 @@ class WorkerService:
                 session.last_error = (
                     f"{session.last_error} Retrying workspace bootstrap on next start."
                 )
+            session.runtime_operation_phase = "failed"
+            session.runtime_operation_updated_at = self._utc_now()
         session.updated_at = self._utc_now()
 
-    async def _start_devserver_locked(self, session: WorkerSession) -> None:
-        await self._sync_devserver_state_locked(session)
-        if session.devserver_running:
-            return
-
-        bootstrap_error = await self._run_workspace_bootstrap_if_needed(session)
-        if bootstrap_error:
+    async def _mark_operation_failed(
+        self,
+        session_id: str,
+        operation_id: str,
+        error: str,
+    ) -> None:
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if not session or session.runtime_operation_id != operation_id:
+                return
+            session.state = "error"
             session.devserver_running = False
-            session.last_error = bootstrap_error
+            session.last_error = error
+            self._set_operation_phase(session, "failed")
             session.updated_at = self._utc_now()
-            return
 
-        # Auto-install framework pip dependencies (e.g. flask, django)
-        # before starting the devserver.  This covers the common case where
-        # the agent creates a framework app but omits requirements.txt.
-        deps_error = await self._ensure_entrypoint_dependencies(session)
-        if deps_error:
-            session.devserver_running = False
-            session.last_error = deps_error
-            session.updated_at = self._utc_now()
-            return
+    async def _run_startup_pipeline(
+        self,
+        session_id: str,
+        operation_id: str,
+    ) -> None:
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if not session or session.runtime_operation_id != operation_id:
+                return
+            workspace_id = session.workspace_id
 
-        port = session.devserver_port or self._pick_free_port()
-        resolution = self._resolve_devserver_command(session.workspace_files_path, port)
-        session.launch_framework = resolution.framework
-        session.launch_cwd = resolution.cwd
+        workspace_lock = self._workspace_startup_lock(workspace_id)
+        async with workspace_lock:
+            async with self._startup_semaphore:
+                async with self._lock:
+                    session = self._sessions.get(session_id)
+                    if not session or session.runtime_operation_id != operation_id:
+                        return
+                    self._set_operation_phase(session, "bootstrapping")
+                    session.updated_at = self._utc_now()
 
-        if not resolution.command:
-            session.devserver_port = resolution.port
-            session.devserver_command = None
-            session.devserver_running = False
-            session.last_error = resolution.error
-            session.updated_at = self._utc_now()
-            return
+                bootstrap_error = await self._run_workspace_bootstrap_if_needed(session)
+                if bootstrap_error:
+                    await self._mark_operation_failed(
+                        session_id,
+                        operation_id,
+                        bootstrap_error,
+                    )
+                    return
 
-        session.devserver_port = resolution.port or port
+                async with self._lock:
+                    session = self._sessions.get(session_id)
+                    if not session or session.runtime_operation_id != operation_id:
+                        return
+                    self._set_operation_phase(session, "deps_install")
+                    session.updated_at = self._utc_now()
 
-        await self._terminate_devserver_locked(session.id)
-        log_path = self._resolve_devserver_log_path(session.id)
-        try:
-            log_handle = open(log_path, "wb", buffering=0)
-        except Exception as exc:
-            session.devserver_running = False
-            session.last_error = f"Failed to initialize devserver log file: {exc}"
-            session.updated_at = self._utc_now()
-            return
-        self._devserver_log_paths[session.id] = log_path
-        self._devserver_log_handles[session.id] = log_handle
-        try:
-            process = await spawn_sandboxed(
-                session.sandbox_spec,
-                resolution.command,
-                cwd=self._resolve_launch_cwd(session),
-                stdout=log_handle,
-                stderr=asyncio.subprocess.STDOUT,
-                start_new_session=True,
-            )
-        except FileNotFoundError:
-            try:
-                log_handle.close()
-            except Exception:
-                pass
-            self._devserver_log_handles.pop(session.id, None)
-            session.devserver_running = False
-            session.last_error = (
-                "Dev server command not found: "
-                f"{resolution.command[0]}. Install the required runtime dependency or "
-                "set .ragtime/runtime-entrypoint.json command to an available executable. "
-                f"{_WORKSPACE_BOOTSTRAP_GUIDANCE}"
-            )
-            session.updated_at = self._utc_now()
-            return
-        except Exception as exc:
-            try:
-                log_handle.close()
-            except Exception:
-                pass
-            self._devserver_log_handles.pop(session.id, None)
-            session.devserver_running = False
-            session.last_error = f"Failed to launch dev server: {exc}"
-            session.updated_at = self._utc_now()
-            return
-        self._devserver_processes[session.id] = process
-        session.devserver_command = resolution.command
+                deps_error = await self._ensure_entrypoint_dependencies(session)
+                if deps_error:
+                    await self._mark_operation_failed(
+                        session_id,
+                        operation_id,
+                        deps_error,
+                    )
+                    return
 
-        ready = await self._wait_devserver_ready(session.devserver_port)
-        if not ready:
-            await self._sync_devserver_state_locked(session)
-            await self._terminate_devserver_locked(session.id)
-            session.devserver_running = False
-            if not session.last_error:
-                session.last_error = (
-                    "Dev server failed to become ready on "
-                    f"port {session.devserver_port} within "
-                    f"{self._devserver_start_timeout_seconds}s. "
-                    "Ensure the runtime-entrypoint command serves HTTP on PORT."
-                )
-            session.updated_at = self._utc_now()
-            return
+                async with self._lock:
+                    session = self._sessions.get(session_id)
+                    if not session or session.runtime_operation_id != operation_id:
+                        return
+                    self._set_operation_phase(session, "launching")
+                    session.updated_at = self._utc_now()
+                    port = session.devserver_port or self._pick_free_port()
+                    resolution = self._resolve_devserver_command(
+                        session.workspace_files_path, port
+                    )
+                    session.launch_framework = resolution.framework
+                    session.launch_cwd = resolution.cwd
+                    if not resolution.command:
+                        session.devserver_port = resolution.port
+                        session.devserver_command = None
+                        error = resolution.error or "Invalid runtime entrypoint"
+                        session.state = "error"
+                        session.devserver_running = False
+                        session.last_error = error
+                        self._set_operation_phase(session, "failed")
+                        session.updated_at = self._utc_now()
+                        return
 
-        session.devserver_running = True
+                    session.devserver_port = resolution.port or port
+                    await self._terminate_devserver_locked(session.id)
+                    log_path = self._resolve_devserver_log_path(session.id)
+                    try:
+                        log_handle = open(log_path, "wb", buffering=0)
+                    except Exception as exc:
+                        session.state = "error"
+                        session.devserver_running = False
+                        session.last_error = (
+                            f"Failed to initialize devserver log file: {exc}"
+                        )
+                        self._set_operation_phase(session, "failed")
+                        session.updated_at = self._utc_now()
+                        return
+
+                    self._devserver_log_paths[session.id] = log_path
+                    self._devserver_log_handles[session.id] = log_handle
+                    try:
+                        process = await spawn_sandboxed(
+                            session.sandbox_spec,
+                            resolution.command,
+                            cwd=self._resolve_launch_cwd(session),
+                            stdout=log_handle,
+                            stderr=asyncio.subprocess.STDOUT,
+                            start_new_session=True,
+                        )
+                    except FileNotFoundError:
+                        try:
+                            log_handle.close()
+                        except Exception:
+                            pass
+                        self._devserver_log_handles.pop(session.id, None)
+                        session.state = "error"
+                        session.devserver_running = False
+                        session.last_error = (
+                            "Dev server command not found: "
+                            f"{resolution.command[0]}. Install the required runtime dependency or "
+                            "set .ragtime/runtime-entrypoint.json command to an available executable. "
+                            f"{_WORKSPACE_BOOTSTRAP_GUIDANCE}"
+                        )
+                        self._set_operation_phase(session, "failed")
+                        session.updated_at = self._utc_now()
+                        return
+                    except Exception as exc:
+                        try:
+                            log_handle.close()
+                        except Exception:
+                            pass
+                        self._devserver_log_handles.pop(session.id, None)
+                        session.state = "error"
+                        session.devserver_running = False
+                        session.last_error = f"Failed to launch dev server: {exc}"
+                        self._set_operation_phase(session, "failed")
+                        session.updated_at = self._utc_now()
+                        return
+
+                    self._devserver_processes[session.id] = process
+                    session.devserver_command = resolution.command
+                    self._set_operation_phase(session, "probing")
+                    session.updated_at = self._utc_now()
+                    target_port = session.devserver_port
+
+                ready = await self._wait_devserver_ready(target_port or 0)
+                if not ready:
+                    async with self._lock:
+                        session = self._sessions.get(session_id)
+                        if not session or session.runtime_operation_id != operation_id:
+                            return
+                        await self._sync_devserver_state_locked(session)
+                        await self._terminate_devserver_locked(session.id)
+                        session.state = "error"
+                        session.devserver_running = False
+                        if not session.last_error:
+                            session.last_error = (
+                                "Dev server failed to become ready on "
+                                f"port {session.devserver_port} within "
+                                f"{self._devserver_start_timeout_seconds}s. "
+                                "Ensure the runtime-entrypoint command serves HTTP on PORT."
+                            )
+                        self._set_operation_phase(session, "failed")
+                        session.updated_at = self._utc_now()
+                    return
+
+                async with self._lock:
+                    session = self._sessions.get(session_id)
+                    if not session or session.runtime_operation_id != operation_id:
+                        return
+                    session.state = "running"
+                    session.devserver_running = True
+                    session.last_error = None
+                    self._bootstrap_retry_flags.pop(session.id, None)
+                    self._set_operation_phase(session, "ready")
+                    session.updated_at = self._utc_now()
+
+    def _schedule_startup_locked(self, session: WorkerSession) -> None:
+        existing = self._startup_tasks.get(session.id)
+        if existing and not existing.done():
+            existing.cancel()
+        self._begin_operation(session, "queued")
+        session.state = "starting"
+        session.devserver_running = False
         session.last_error = None
-        self._bootstrap_retry_flags.pop(session.id, None)
         session.updated_at = self._utc_now()
+        op_id = session.runtime_operation_id or ""
+        task = asyncio.create_task(self._run_startup_pipeline(session.id, op_id))
+        self._startup_tasks[session.id] = task
+
+        def _cleanup(done_task: asyncio.Task[None]) -> None:
+            current = self._startup_tasks.get(session.id)
+            if current is done_task:
+                self._startup_tasks.pop(session.id, None)
+
+        task.add_done_callback(_cleanup)
 
     async def start_session(
         self,
@@ -853,9 +998,8 @@ class WorkerService:
             )
             if existing_session_id and existing_session_id in self._sessions:
                 session = self._sessions[existing_session_id]
-                session.state = "running"
                 session.pty_access_token = request.pty_access_token
-                await self._start_devserver_locked(session)
+                self._schedule_startup_locked(session)
                 session.updated_at = self._utc_now()
                 return self._session_response(session)
 
@@ -878,11 +1022,15 @@ class WorkerService:
                 launch_framework=None,
                 launch_cwd=None,
                 last_error=None,
+                runtime_operation_id=None,
+                runtime_operation_phase=None,
+                runtime_operation_started_at=None,
+                runtime_operation_updated_at=None,
                 updated_at=self._utc_now(),
             )
             self._sessions[session_id] = session
             self._provider_to_session[request.provider_session_id] = session_id
-            await self._start_devserver_locked(session)
+            self._schedule_startup_locked(session)
             return self._session_response(session)
 
     async def get_session(self, worker_session_id: str) -> WorkerSessionResponse:
@@ -899,11 +1047,15 @@ class WorkerService:
             session = self._sessions.get(worker_session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Worker session not found")
+            startup_task = self._startup_tasks.pop(session.id, None)
+            if startup_task and not startup_task.done():
+                startup_task.cancel()
             await self._terminate_devserver_locked(session.id)
             cleanup_sandbox(session.sandbox_spec)
             session.state = "stopped"
             session.devserver_running = False
             session.last_error = None
+            self._set_operation_phase(session, "stopped")
             session.updated_at = self._utc_now()
             return self._session_response(session)
 
@@ -912,12 +1064,9 @@ class WorkerService:
             session = self._sessions.get(worker_session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Worker session not found")
-            await self._terminate_devserver_locked(session.id)
             # Pick a fresh port to avoid TIME_WAIT "address already in use"
             session.devserver_port = self._pick_free_port()
-            session.last_error = None
-            session.state = "running"
-            await self._start_devserver_locked(session)
+            self._schedule_startup_locked(session)
             session.updated_at = self._utc_now()
             return self._session_response(session)
 
@@ -1079,11 +1228,12 @@ class WorkerService:
 
             await self._sync_devserver_state_locked(session)
             if not session.devserver_running:
-                await self._start_devserver_locked(session)
+                self._schedule_startup_locked(session)
             if not session.devserver_running or not session.devserver_port:
                 raise HTTPException(
-                    status_code=502,
-                    detail=session.last_error or "Dev server is not running",
+                    status_code=503,
+                    detail=session.last_error
+                    or "Dev server is starting. Retry screenshot when runtime operation is ready.",
                 )
 
             requested_width = max(320, int(payload.width))
@@ -1240,9 +1390,20 @@ class WorkerService:
                 raise HTTPException(status_code=409, detail="Worker session not active")
             await self._sync_devserver_state_locked(session)
             if not session.devserver_running:
-                await self._start_devserver_locked(session)
+                self._schedule_startup_locked(session)
 
             if not session.devserver_running or not session.devserver_port:
+                if session.runtime_operation_phase in {
+                    "queued",
+                    "bootstrapping",
+                    "deps_install",
+                    "launching",
+                    "probing",
+                }:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Dev server is starting. Retry preview shortly.",
+                    )
                 error_message = session.last_error or "Dev server is not running"
                 raise HTTPException(status_code=502, detail=error_message)
 
@@ -1279,6 +1440,15 @@ class WorkerService:
             if token != session.pty_access_token:
                 raise HTTPException(status_code=403, detail="Invalid PTY token")
             return session
+
+    async def shutdown(self) -> None:
+        async with self._lock:
+            for sid in list(self._startup_tasks.keys()):
+                task = self._startup_tasks.pop(sid, None)
+                if task and not task.done():
+                    task.cancel()
+            for sid in list(self._devserver_processes.keys()):
+                await self._terminate_devserver_locked(sid)
 
     async def health(self) -> WorkerHealthResponse:
         async with self._lock:

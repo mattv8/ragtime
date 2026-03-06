@@ -85,6 +85,10 @@ class SessionManager:
             runtime_capabilities=session.runtime_capabilities,
             devserver_running=session.devserver_running,
             last_error=session.last_error,
+            runtime_operation_id=session.runtime_operation_id,
+            runtime_operation_phase=session.runtime_operation_phase,
+            runtime_operation_started_at=session.runtime_operation_started_at,
+            runtime_operation_updated_at=session.runtime_operation_updated_at,
             updated_at=session.updated_at,
         )
 
@@ -115,6 +119,10 @@ class SessionManager:
         session.runtime_capabilities = worker_data.runtime_capabilities
         session.devserver_running = worker_data.devserver_running
         session.last_error = worker_data.last_error
+        session.runtime_operation_id = worker_data.runtime_operation_id
+        session.runtime_operation_phase = worker_data.runtime_operation_phase
+        session.runtime_operation_started_at = worker_data.runtime_operation_started_at
+        session.runtime_operation_updated_at = worker_data.runtime_operation_updated_at
 
     def _create_session(
         self,
@@ -140,6 +148,10 @@ class SessionManager:
             state=worker_data.state,
             devserver_running=worker_data.devserver_running,
             last_error=worker_data.last_error,
+            runtime_operation_id=worker_data.runtime_operation_id,
+            runtime_operation_phase=worker_data.runtime_operation_phase,
+            runtime_operation_started_at=worker_data.runtime_operation_started_at,
+            runtime_operation_updated_at=worker_data.runtime_operation_updated_at,
             updated_at=now,
             lease_expires_at=now + timedelta(seconds=self._lease_ttl_seconds),
         )
@@ -365,29 +377,31 @@ class SessionManager:
         )
 
     async def pool_status(self) -> dict[str, Any]:
+        async def _collect() -> dict[str, Any]:
+            async with self._lock:
+                active = [
+                    s
+                    for s in self._sessions.values()
+                    if s.state in {"running", "starting"}
+                ]
+                return {
+                    "workers_total": 1,
+                    "workers_leased": len(active),
+                    "active_sessions": len(active),
+                    "max_sessions": self._max_sessions,
+                    "sessions": [
+                        {
+                            "provider_session_id": s.provider_session_id,
+                            "workspace_id": s.workspace_id,
+                            "state": s.state,
+                            "devserver_running": s.devserver_running,
+                        }
+                        for s in active
+                    ],
+                }
+
         try:
-            async with asyncio.timeout(2):
-                async with self._lock:
-                    active = [
-                        s
-                        for s in self._sessions.values()
-                        if s.state in {"running", "starting"}
-                    ]
-                    return {
-                        "workers_total": 1,
-                        "workers_leased": len(active),
-                        "active_sessions": len(active),
-                        "max_sessions": self._max_sessions,
-                        "sessions": [
-                            {
-                                "provider_session_id": s.provider_session_id,
-                                "workspace_id": s.workspace_id,
-                                "state": s.state,
-                                "devserver_running": s.devserver_running,
-                            }
-                            for s in active
-                        ],
-                    }
+            return await asyncio.wait_for(_collect(), timeout=2)
         except TimeoutError:
             # Lock held by reconcile loop; return minimal healthy response
             return {

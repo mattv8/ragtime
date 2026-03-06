@@ -25,6 +25,10 @@ class ManagerSession:
     state: RuntimeSessionState
     devserver_running: bool
     last_error: str | None
+    runtime_operation_id: str | None
+    runtime_operation_phase: str | None
+    runtime_operation_started_at: datetime | None
+    runtime_operation_updated_at: datetime | None
     updated_at: datetime
     lease_expires_at: datetime
 
@@ -66,6 +70,22 @@ class _BaseSessionFields(BaseModel):
     )
     devserver_running: bool = Field(description="Whether devserver is running")
     last_error: str | None = Field(default=None, description="Last runtime error")
+    runtime_operation_id: str | None = Field(
+        default=None,
+        description="Current async runtime operation id",
+    )
+    runtime_operation_phase: str | None = Field(
+        default=None,
+        description="Current async runtime operation phase",
+    )
+    runtime_operation_started_at: datetime | None = Field(
+        default=None,
+        description="Timestamp when current runtime operation started",
+    )
+    runtime_operation_updated_at: datetime | None = Field(
+        default=None,
+        description="Timestamp when current runtime operation phase was last updated",
+    )
     updated_at: datetime = Field(description="Session update time")
 
 

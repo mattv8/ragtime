@@ -1620,6 +1620,15 @@ export interface UserSpaceSharedPreviewResponse {
 }
 
 export type UserSpaceRuntimeSessionState = 'starting' | 'running' | 'stopping' | 'stopped' | 'error';
+export type UserSpaceRuntimeOperationPhase =
+  | 'queued'
+  | 'bootstrapping'
+  | 'deps_install'
+  | 'launching'
+  | 'probing'
+  | 'ready'
+  | 'failed'
+  | 'stopped';
 
 export interface UserSpaceRuntimeSession {
   id: string;
@@ -1652,6 +1661,10 @@ export interface UserSpaceRuntimeStatusResponse {
   runtime_has_cap_sys_admin?: boolean | null;
   preview_url?: string | null;
   last_error?: string | null;
+  runtime_operation_id?: string | null;
+  runtime_operation_phase?: UserSpaceRuntimeOperationPhase | null;
+  runtime_operation_started_at?: string | null;
+  runtime_operation_updated_at?: string | null;
 }
 
 export interface UserSpaceRuntimeActionResponse {
@@ -1659,6 +1672,10 @@ export interface UserSpaceRuntimeActionResponse {
   session_id: string;
   state: UserSpaceRuntimeSessionState;
   success: boolean;
+  runtime_operation_id?: string | null;
+  runtime_operation_phase?: UserSpaceRuntimeOperationPhase | null;
+  runtime_operation_started_at?: string | null;
+  runtime_operation_updated_at?: string | null;
 }
 
 export interface UserSpaceCapabilityTokenResponse {

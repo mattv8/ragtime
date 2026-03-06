@@ -546,6 +546,12 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
   }, [runtimeStatus]);
 
   const runtimeCapSysAdminMissing = runtimeStatus?.runtime_has_cap_sys_admin === false;
+  const runtimeOperationLabel = useMemo(() => {
+    const phase = runtimeStatus?.runtime_operation_phase;
+    if (!phase) return null;
+    if (phase === 'deps_install') return 'installing deps';
+    return phase.replace(/_/g, ' ');
+  }, [runtimeStatus?.runtime_operation_phase]);
 
   const showStartRuntimeButton = runtimeDisplayState === 'stopped' || runtimeDisplayState === 'error';
   const showRestartRuntimeButton = runtimeDisplayState === 'running';
@@ -788,9 +794,17 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
 
     source.onmessage = (event) => {
       try {
-        const data = JSON.parse(event.data) as { generation: number };
+        const data = JSON.parse(event.data) as { generation: number; event_type?: string };
         if (data.generation > lastGeneration) {
           lastGeneration = data.generation;
+          if (data.event_type === 'runtime_phase') {
+            void api.getUserSpaceRuntimeDevserverStatus(activeWorkspaceId)
+              .then((status) => setRuntimeStatus(status))
+              .catch(() => {
+                // Ignore transient runtime status errors during startup transitions.
+              });
+            return;
+          }
           setPreviewRefreshCounter((c) => c + 1);
           if (!fileDirtyRef.current && !isCodeEditorFocused()) {
             void loadWorkspaceData(activeWorkspaceId);
@@ -1360,8 +1374,8 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
       return;
     }
 
-    // Only connect the terminal when the runtime is actually running
-    if (runtimeDisplayState !== 'running') {
+    // Allow terminal retries while runtime is starting to avoid a hard UI stall.
+    if (runtimeDisplayState !== 'running' && runtimeDisplayState !== 'starting') {
       return;
     }
 
@@ -2615,7 +2629,7 @@ export function UserSpacePanel({ currentUser, onFullscreenChange }: UserSpacePan
                 title={runtimeStatus.last_error || 'Workspace runtime session state'}
               >
                 {runtimeDisplayState === 'starting'
-                  ? 'starting runtime…'
+                  ? `starting runtime${runtimeOperationLabel ? ` (${runtimeOperationLabel})` : ''}...`
                   : runtimeDisplayState === 'stopping'
                     ? 'stopping runtime…'
                     : runtimeDisplayState}

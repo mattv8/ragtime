@@ -14,21 +14,24 @@ from uuid import uuid4
 import httpx
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-from prisma import fields as prisma_fields
 from prisma.errors import ForeignKeyViolationError
 from starlette.websockets import WebSocket
 
+from prisma import fields as prisma_fields
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
-from ragtime.userspace.models import (RuntimeSessionState,
-                                      UserSpaceCapabilityTokenResponse,
-                                      UserSpaceCollabSnapshotResponse,
-                                      UserSpaceFileResponse,
-                                      UserSpaceRuntimeActionResponse,
-                                      UserSpaceRuntimeSession,
-                                      UserSpaceRuntimeSessionResponse,
-                                      UserSpaceRuntimeStatusResponse)
+from ragtime.userspace.models import (
+    RuntimeOperationPhase,
+    RuntimeSessionState,
+    UserSpaceCapabilityTokenResponse,
+    UserSpaceCollabSnapshotResponse,
+    UserSpaceFileResponse,
+    UserSpaceRuntimeActionResponse,
+    UserSpaceRuntimeSession,
+    UserSpaceRuntimeSessionResponse,
+    UserSpaceRuntimeStatusResponse,
+)
 from ragtime.userspace.service import userspace_service
 
 logger = get_logger(__name__)
@@ -73,6 +76,14 @@ class UserSpaceRuntimeService:
         self._workspace_generation: dict[str, int] = {}
         self._collab_presence: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
         self._workspace_events: dict[str, asyncio.Condition] = {}
+        self._workspace_event_payload: dict[str, dict[str, Any]] = {}
+        self._runtime_watch_workspaces: set[str] = set()
+        self._runtime_watch_signatures: dict[str, tuple[Any, ...]] = {}
+        self._runtime_watch_task: asyncio.Task[None] | None = None
+        self._runtime_watch_task_lock = asyncio.Lock()
+        self._runtime_watch_interval_seconds = float(
+            getattr(settings, "userspace_runtime_watch_interval_seconds", 1.0)
+        )
 
     @staticmethod
     def _utc_now() -> datetime:
@@ -331,9 +342,9 @@ class UserSpaceRuntimeService:
 
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             # Check all health candidates in parallel using asyncio.gather
-            results = await asyncio.gather(*(
-                check_candidate(client, c) for c in health_candidates
-            ))
+            results = await asyncio.gather(
+                *(check_candidate(client, c) for c in health_candidates)
+            )
             return any(results)
 
     def _runtime_provider_name(self) -> str:
@@ -725,7 +736,8 @@ class UserSpaceRuntimeService:
                     ),
                     "launchFramework": str(provider_data.get("launch_framework") or "")
                     or None,
-                    "launchCommand": str(provider_data.get("launch_command") or "") or None,
+                    "launchCommand": str(provider_data.get("launch_command") or "")
+                    or None,
                     "launchCwd": str(provider_data.get("launch_cwd") or "") or None,
                     "launchPort": self._optional_int(provider_data.get("launch_port")),
                     "createdAt": now,
@@ -906,11 +918,29 @@ class UserSpaceRuntimeService:
             session_id=session.id,
             payload={"provider_session_id": session.provider_session_id},
         )
+
+        provider_status = await self._runtime_provider_get_status(
+            session.provider_session_id
+        )
+        operation_id = None
+        operation_phase = None
+        operation_started_at = None
+        operation_updated_at = None
+        if provider_status:
+            operation_id = provider_status.get("runtime_operation_id")
+            operation_phase = provider_status.get("runtime_operation_phase")
+            operation_started_at = provider_status.get("runtime_operation_started_at")
+            operation_updated_at = provider_status.get("runtime_operation_updated_at")
+
         return UserSpaceRuntimeActionResponse(
             workspace_id=workspace_id,
             session_id=session.id,
             state=session.state,
             success=True,
+            runtime_operation_id=operation_id,
+            runtime_operation_phase=operation_phase,
+            runtime_operation_started_at=operation_started_at,
+            runtime_operation_updated_at=operation_updated_at,
         )
 
     async def stop_runtime_session(
@@ -1064,6 +1094,20 @@ class UserSpaceRuntimeService:
         devserver_port = launch_port or _RUNTIME_DEVSERVER_PORT
         runtime_capabilities: dict[str, Any] | None = None
         runtime_has_cap_sys_admin: bool | None = None
+        runtime_operation_id: str | None = None
+        runtime_operation_phase: RuntimeOperationPhase | None = None
+        runtime_operation_started_at: Any | None = None
+        runtime_operation_updated_at: Any | None = None
+        allowed_runtime_phases = {
+            "queued",
+            "bootstrapping",
+            "deps_install",
+            "launching",
+            "probing",
+            "ready",
+            "failed",
+            "stopped",
+        }
         if provider_status:
             raw_runtime_capabilities = provider_status.get("runtime_capabilities")
             if isinstance(raw_runtime_capabilities, dict):
@@ -1071,6 +1115,23 @@ class UserSpaceRuntimeService:
                 cap_value = raw_runtime_capabilities.get("has_cap_sys_admin")
                 if isinstance(cap_value, bool):
                     runtime_has_cap_sys_admin = cap_value
+            runtime_operation_id = (
+                str(provider_status.get("runtime_operation_id") or "").strip() or None
+            )
+            phase_value = (
+                str(provider_status.get("runtime_operation_phase") or "").strip()
+                or None
+            )
+            if phase_value in allowed_runtime_phases:
+                runtime_operation_phase = cast(RuntimeOperationPhase, phase_value)
+            else:
+                runtime_operation_phase = None
+            runtime_operation_started_at = provider_status.get(
+                "runtime_operation_started_at"
+            )
+            runtime_operation_updated_at = provider_status.get(
+                "runtime_operation_updated_at"
+            )
 
         return UserSpaceRuntimeStatusResponse(
             workspace_id=workspace_id,
@@ -1085,6 +1146,10 @@ class UserSpaceRuntimeService:
             runtime_has_cap_sys_admin=runtime_has_cap_sys_admin,
             preview_url=f"/indexes/userspace/workspaces/{workspace_id}/preview/",
             last_error=last_error,
+            runtime_operation_id=runtime_operation_id,
+            runtime_operation_phase=runtime_operation_phase,
+            runtime_operation_started_at=runtime_operation_started_at,
+            runtime_operation_updated_at=runtime_operation_updated_at,
         )
 
     async def restart_devserver(
@@ -1118,13 +1183,40 @@ class UserSpaceRuntimeService:
                     active_session.id,
                     delta,
                 )
+                operation_id = provider_restart.get("runtime_operation_id")
+                operation_phase = provider_restart.get("runtime_operation_phase")
+                operation_started_at = provider_restart.get(
+                    "runtime_operation_started_at"
+                )
+                operation_updated_at = provider_restart.get(
+                    "runtime_operation_updated_at"
+                )
+            else:
+                operation_id = None
+                operation_phase = None
+                operation_started_at = None
+                operation_updated_at = None
+        else:
+            operation_id = start.runtime_operation_id
+            operation_phase = start.runtime_operation_phase
+            operation_started_at = start.runtime_operation_started_at
+            operation_updated_at = start.runtime_operation_updated_at
         await self._audit(
             workspace_id,
             "devserver_restart",
             user_id=user_id,
             session_id=start.session_id,
         )
-        return start
+        return UserSpaceRuntimeActionResponse(
+            workspace_id=start.workspace_id,
+            session_id=start.session_id,
+            state=start.state,
+            success=True,
+            runtime_operation_id=operation_id,
+            runtime_operation_phase=operation_phase,
+            runtime_operation_started_at=operation_started_at,
+            runtime_operation_updated_at=operation_updated_at,
+        )
 
     async def issue_capability_token(
         self,
@@ -1493,7 +1585,7 @@ class UserSpaceRuntimeService:
         await self._store_collab_checkpoint(
             workspace_id, normalized_path, content, version
         )
-        await self.bump_workspace_generation(workspace_id, "collab_update")
+        await self.bump_workspace_generation(workspace_id)
         await self._audit(
             workspace_id,
             "collab_update",
@@ -1768,7 +1860,7 @@ class UserSpaceRuntimeService:
             for key in keys_to_drop:
                 self._collab_docs.pop(key, None)
                 self._collab_presence.pop(key, None)
-        await self.bump_workspace_generation(workspace_id, "invalidate")
+        await self.bump_workspace_generation(workspace_id)
 
         db = await get_db()
         model = self._runtime_session_model(db)
@@ -1790,8 +1882,159 @@ class UserSpaceRuntimeService:
                 },
             )
 
+    async def track_workspace_runtime_events(self, workspace_id: str) -> None:
+        self._runtime_watch_workspaces.add(workspace_id)
+        await self._ensure_runtime_watch_task()
+
+    async def _ensure_runtime_watch_task(self) -> None:
+        task = self._runtime_watch_task
+        if task is not None and not task.done():
+            return
+        async with self._runtime_watch_task_lock:
+            task = self._runtime_watch_task
+            if task is not None and not task.done():
+                return
+            self._runtime_watch_task = asyncio.create_task(
+                self._runtime_watch_loop(),
+                name="userspace-runtime-watch-loop",
+            )
+
+    async def _runtime_watch_loop(self) -> None:
+        while True:
+            await asyncio.sleep(max(0.25, self._runtime_watch_interval_seconds))
+            workspace_ids = list(self._runtime_watch_workspaces)
+            if not workspace_ids:
+                continue
+            for workspace_id in workspace_ids:
+                try:
+                    await self._emit_runtime_phase_change_if_needed(workspace_id)
+                except Exception:
+                    logger.debug(
+                        "Runtime watch loop poll failed for workspace %s",
+                        workspace_id,
+                        exc_info=True,
+                    )
+
+    async def _runtime_phase_signature(
+        self,
+        workspace_id: str,
+    ) -> tuple[tuple[Any, ...], dict[str, Any]]:
+        active = await self._get_active_session_row(workspace_id)
+        if not active:
+            payload = {
+                "runtime": {
+                    "workspace_id": workspace_id,
+                    "session_id": None,
+                    "session_state": "stopped",
+                    "devserver_running": False,
+                    "runtime_operation_id": None,
+                    "runtime_operation_phase": "stopped",
+                    "last_error": None,
+                }
+            }
+            return (
+                (
+                    "stopped",
+                    False,
+                    None,
+                    "stopped",
+                    None,
+                    None,
+                ),
+                payload,
+            )
+
+        session = self._to_runtime_session(active)
+        provider_status: dict[str, Any] | None = None
+        last_error: str | None = session.last_error
+        try:
+            provider_status = await self._runtime_provider_get_status(
+                session.provider_session_id
+            )
+        except HTTPException as exc:
+            last_error = str(exc.detail)
+
+        state = session.state
+        devserver_running = False
+        operation_id: str | None = None
+        operation_phase: RuntimeOperationPhase | None = None
+
+        if provider_status:
+            raw_state = str(provider_status.get("state") or "").strip()
+            if raw_state in {"starting", "running", "stopping", "stopped", "error"}:
+                state = cast(RuntimeSessionState, raw_state)
+            if "devserver_running" in provider_status:
+                devserver_running = bool(provider_status.get("devserver_running"))
+            operation_id = (
+                str(provider_status.get("runtime_operation_id") or "").strip() or None
+            )
+            raw_phase = (
+                str(provider_status.get("runtime_operation_phase") or "").strip()
+                or None
+            )
+            if raw_phase in {
+                "queued",
+                "bootstrapping",
+                "deps_install",
+                "launching",
+                "probing",
+                "ready",
+                "failed",
+                "stopped",
+            }:
+                operation_phase = cast(RuntimeOperationPhase, raw_phase)
+            last_error = self._resolve_provider_last_error(
+                provider_status,
+                fallback=last_error,
+            )
+
+        if not provider_status:
+            devserver_running = state == "running"
+
+        payload = {
+            "runtime": {
+                "workspace_id": workspace_id,
+                "session_id": session.id,
+                "session_state": state,
+                "devserver_running": devserver_running,
+                "runtime_operation_id": operation_id,
+                "runtime_operation_phase": operation_phase,
+                "last_error": last_error,
+            }
+        }
+        signature = (
+            state,
+            devserver_running,
+            session.id,
+            operation_phase,
+            operation_id,
+            last_error,
+        )
+        return signature, payload
+
+    async def _emit_runtime_phase_change_if_needed(self, workspace_id: str) -> None:
+        signature, payload = await self._runtime_phase_signature(workspace_id)
+        previous = self._runtime_watch_signatures.get(workspace_id)
+        if previous == signature:
+            return
+        self._runtime_watch_signatures[workspace_id] = signature
+        await self.bump_workspace_generation(
+            workspace_id,
+            event_type="runtime_phase",
+            payload=payload,
+        )
+
     async def get_workspace_generation(self, workspace_id: str) -> int:
         return self._workspace_generation.get(workspace_id, 0)
+
+    def get_workspace_event_payload(self, workspace_id: str) -> dict[str, Any]:
+        generation = self._workspace_generation.get(workspace_id, 0)
+        cached = self._workspace_event_payload.get(workspace_id)
+        if not cached:
+            return {"generation": generation}
+        payload = dict(cached)
+        payload["generation"] = generation
+        return payload
 
     def _get_workspace_condition(self, workspace_id: str) -> asyncio.Condition:
         cond = self._workspace_events.get(workspace_id)
@@ -1803,11 +2046,16 @@ class UserSpaceRuntimeService:
     async def bump_workspace_generation(
         self,
         workspace_id: str,
-        event_type: str = "update",  # noqa: ARG002
+        event_type: str = "update",
+        payload: dict[str, Any] | None = None,
     ) -> int:
         """Increment generation counter and wake SSE subscribers."""
         gen = self._workspace_generation.get(workspace_id, 0) + 1
         self._workspace_generation[workspace_id] = gen
+        event_payload: dict[str, Any] = {"generation": gen, "event_type": event_type}
+        if payload:
+            event_payload.update(payload)
+        self._workspace_event_payload[workspace_id] = event_payload
         cond = self._get_workspace_condition(workspace_id)
         async with cond:
             cond.notify_all()

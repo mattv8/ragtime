@@ -1872,7 +1872,8 @@ export const api = {
 
   /**
    * Subscribe to workspace change events via SSE.
-   * Returns an EventSource that emits 'message' events with JSON payload { generation: number }.
+    * Returns an EventSource that emits 'message' events with JSON payload
+    * at minimum { generation: number } and optionally { event_type, runtime }.
    */
   subscribeWorkspaceEvents(workspaceId: string, afterGeneration: number = 0): EventSource {
     const url = `${API_BASE}/userspace/runtime/workspaces/${encodeURIComponent(workspaceId)}/events?after=${afterGeneration}`;

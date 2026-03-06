@@ -11,20 +11,33 @@ import termios
 from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import (APIRouter, FastAPI, HTTPException, Request, WebSocket,
-                     WebSocketDisconnect)
+from fastapi import (
+    APIRouter,
+    FastAPI,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import Response
 
 from runtime.auth import WorkerAuth
-from runtime.manager.models import (RuntimeExecRequest, RuntimeExecResponse,
-                                    RuntimeFileReadResponse,
-                                    RuntimeScreenshotRequest,
-                                    RuntimeScreenshotResponse,
-                                    WorkerHealthResponse,
-                                    WorkerSessionResponse,
-                                    WorkerStartSessionRequest)
-from runtime.worker.sandbox import (SandboxSpec, ensure_sandbox_ready,
-                                    make_sandbox_preexec, sandbox_env)
+from runtime.manager.models import (
+    RuntimeExecRequest,
+    RuntimeExecResponse,
+    RuntimeFileReadResponse,
+    RuntimeScreenshotRequest,
+    RuntimeScreenshotResponse,
+    WorkerHealthResponse,
+    WorkerSessionResponse,
+    WorkerStartSessionRequest,
+)
+from runtime.worker.sandbox import (
+    SandboxSpec,
+    ensure_sandbox_ready,
+    make_sandbox_preexec,
+    sandbox_env,
+)
 from runtime.worker.service import get_worker_service
 
 router = APIRouter(tags=["Runtime Worker"])
@@ -338,9 +351,7 @@ async def pty(worker_session_id: str, websocket: WebSocket):
                 text = "".join(lines)
                 if not text:
                     continue
-            await websocket.send_text(
-                json.dumps({"type": "output", "data": text})
-            )
+            await websocket.send_text(json.dumps({"type": "output", "data": text}))
 
     stream_task = asyncio.create_task(_pump_stream())
     try:
@@ -393,9 +404,7 @@ async def _worker_lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # On shutdown (including WatchFiles reload), terminate all devserver
     # processes so orphaned children don't accumulate across reloads.
     service = get_worker_service()
-    async with service._lock:
-        for sid in list(service._devserver_processes.keys()):
-            await service._terminate_devserver_locked(sid)
+    await service.shutdown()
     # Also terminate any active PTY sessions
     async with _pty_lock:
         for sid in list(_pty_processes.keys()):

@@ -345,10 +345,12 @@ async def stop_runtime_session(
 async def workspace_events_sse(
     workspace_id: str,
     request: Request,
-    after: int = 0,
-    user: Any = Depends(get_current_user),  # noqa: ARG001 – auth required
+    _after: int = 0,
+    _user: Any = Depends(get_current_user),
 ):
     """SSE stream that emits a message whenever the workspace generation advances."""
+
+    await userspace_runtime_service.track_workspace_runtime_events(workspace_id)
 
     async def _stream():
         # Always emit the current generation so the client knows the
@@ -356,7 +358,10 @@ async def workspace_events_sse(
         generation = await userspace_runtime_service.get_workspace_generation(
             workspace_id
         )
-        yield f"data: {json.dumps({'generation': generation})}\n\n"
+        initial_payload = userspace_runtime_service.get_workspace_event_payload(
+            workspace_id
+        )
+        yield f"data: {json.dumps(initial_payload)}\n\n"
 
         while True:
             if await request.is_disconnected():
@@ -368,7 +373,10 @@ async def workspace_events_sse(
                 break
             if new_gen > generation:
                 generation = new_gen
-                yield f"data: {json.dumps({'generation': generation})}\n\n"
+                payload = userspace_runtime_service.get_workspace_event_payload(
+                    workspace_id
+                )
+                yield f"data: {json.dumps(payload)}\n\n"
             else:
                 # Keepalive – SSE comment to prevent proxy/browser timeouts
                 yield ": keepalive\n\n"

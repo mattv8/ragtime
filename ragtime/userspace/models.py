@@ -22,6 +22,16 @@ RuntimeSessionState = Literal[
     "stopped",
     "error",
 ]
+RuntimeOperationPhase = Literal[
+    "queued",
+    "bootstrapping",
+    "deps_install",
+    "launching",
+    "probing",
+    "ready",
+    "failed",
+    "stopped",
+]
 
 
 class WorkspaceMember(BaseModel):
@@ -235,6 +245,10 @@ class UserSpaceRuntimeStatusResponse(BaseModel):
     runtime_has_cap_sys_admin: bool | None = None
     preview_url: str | None = None
     last_error: str | None = None
+    runtime_operation_id: str | None = None
+    runtime_operation_phase: RuntimeOperationPhase | None = None
+    runtime_operation_started_at: datetime | None = None
+    runtime_operation_updated_at: datetime | None = None
 
 
 class UserSpaceRuntimeActionResponse(BaseModel):
@@ -242,6 +256,10 @@ class UserSpaceRuntimeActionResponse(BaseModel):
     session_id: str
     state: RuntimeSessionState
     success: bool = True
+    runtime_operation_id: str | None = None
+    runtime_operation_phase: RuntimeOperationPhase | None = None
+    runtime_operation_started_at: datetime | None = None
+    runtime_operation_updated_at: datetime | None = None
 
 
 class UserSpaceCapabilityTokenResponse(BaseModel):
