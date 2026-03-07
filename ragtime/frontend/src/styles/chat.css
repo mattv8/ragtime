@@ -41,7 +41,11 @@
   overflow: visible;
 }
 
-.chat-panel-embedded .chat-header,
+.chat-panel-embedded .chat-header {
+  position: relative;
+  z-index: 3;
+}
+
 .chat-panel-embedded .chat-input-area {
   position: relative;
   z-index: 2;
@@ -297,6 +301,8 @@
   border-bottom: 1px solid var(--color-border);
   background: var(--color-surface-hover);
   gap: var(--space-md);
+  position: relative;
+  z-index: 20;
 }
 
 .chat-header-info {
