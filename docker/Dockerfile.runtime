@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tini \
     && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g playwright \
+RUN npm install -g playwright esbuild \
     && playwright install --with-deps chromium \
     && npm cache clean --force
 

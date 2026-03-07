@@ -101,7 +101,7 @@ _CHROOT_USR_INCLUDE_PATHS = (
     "share/zoneinfo",
     "share/terminfo",
 )
-_CHROOT_USR_SYNC_VERSION = "4"
+_CHROOT_USR_SYNC_VERSION = "5"
 _CHROOT_USR_SYNC_STAMP = ".ragtime_usr_sync_version"
 
 # ---------------------------------------------------------------------------
@@ -666,7 +666,7 @@ def _sync_system_dirs_for_chroot(spec: SandboxSpec) -> None:
         try:
             if src == Path("/usr"):
                 if usr_needs_sync:
-                    _sync_usr_for_chroot(src, dst)
+                    _sync_usr_for_chroot(src, dst, force=True)
                     usr_stamp.parent.mkdir(parents=True, exist_ok=True)
                     usr_stamp.write_text(
                         _CHROOT_USR_SYNC_VERSION,
@@ -735,12 +735,22 @@ def _sync_system_dirs_for_chroot(spec: SandboxSpec) -> None:
             logger.warning("Failed to mirror workspace into rootfs: %s", exc)
 
 
-def _sync_usr_for_chroot(src_usr: Path, dst_usr: Path) -> None:
+def _sync_usr_for_chroot(
+    src_usr: Path, dst_usr: Path, *, force: bool = False
+) -> None:
     """Sync a minimal, runtime-focused subset of /usr for chroot fallback.
 
     Copying all of /usr in no-mount chroot mode can create very large rootfs
     trees.  This function keeps the payload bounded to binaries/libs and
     small runtime metadata needed by common tools (including Node/npm).
+
+    Parameters
+    ----------
+    force:
+        When *True* (typically triggered by a ``_CHROOT_USR_SYNC_VERSION``
+        bump), already-populated destination directories are re-synced
+        via ``copytree(dirs_exist_ok=True)`` so that newly installed
+        binaries (e.g. esbuild) appear in existing rootfs trees.
 
     Symlink safety
     --------------
@@ -781,7 +791,7 @@ def _sync_usr_for_chroot(src_usr: Path, dst_usr: Path) -> None:
                 continue  # dangling symlink
         dst = dst_usr / rel
         if src.is_dir():
-            if dst.exists() and any(dst.iterdir()):
+            if not force and dst.exists() and any(dst.iterdir()):
                 continue
             shutil.copytree(
                 str(src),
@@ -792,7 +802,7 @@ def _sync_usr_for_chroot(src_usr: Path, dst_usr: Path) -> None:
                 copy_function=_link_or_copy,
             )
         else:
-            if dst.exists():
+            if not force and dst.exists():
                 continue
             dst.parent.mkdir(parents=True, exist_ok=True)
             _link_or_copy(str(src), str(dst))
