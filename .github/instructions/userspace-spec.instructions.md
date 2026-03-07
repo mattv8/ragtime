@@ -18,7 +18,7 @@ Last updated: 2026-03-03 (codebase-scanned; concise agent-focused)
 - Data plane runs in runtime manager/worker code (`runtime/manager/**`, `runtime/worker/**`).
 - `runtime/main.py` chooses service mode via `RUNTIME_SERVICE_MODE`; manager mode also mounts worker routes.
 - Workspace runtime files live under `${INDEX_DATA_PATH}/_userspace/workspaces/{workspace_id}/files`.
-- Preview is runtime-only (legacy frontend `srcDoc` fallback is gone).
+- Preview is runtime-only.
 
 ## Share Routing Split (Critical)
 
@@ -77,7 +77,6 @@ Last updated: 2026-03-03 (codebase-scanned; concise agent-focused)
 - Parent-side handler in `UserSpaceArtifactPreview.tsx` listens for `ragtime-execute` messages, calls `api.executeWorkspaceComponent()`, and sends results back via `ragtime-execute-result` / `ragtime-execute-error`.
 - Proxy auto-injects `<script src=".ragtime/bridge.js"></script>` into HTML responses so workspaces never need to manually include it.
 - LLM prompt instructs passing `window.__ragtime_context` as the context argument to `render(container, context)`.
-- Legacy globals (`window.__RAGTIME_COMPONENTS__`, `window.__RAGTIME_BRIDGE__`) are removed (hard cutover at v3).
 
 ## Security + Proxy Rules (Do Not Violate)
 

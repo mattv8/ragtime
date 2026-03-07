@@ -5,7 +5,7 @@ import { api } from '@/api/client';
 import {
   USERSPACE_EXEC_BRIDGE,
   USERSPACE_EXEC_MESSAGE_TYPES,
-} from '@/utils/userspacePreview';
+} from '@/utils/userspacePreview/constants';
 
 interface UserSpaceArtifactPreviewProps {
   entryPath: string;
