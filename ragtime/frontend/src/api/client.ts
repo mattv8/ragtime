@@ -1287,9 +1287,9 @@ export const api = {
    */
   async getConversationProviderDebugPrompts(
     conversationId: string,
+    messageIndex: number,
     workspaceId?: string,
     limit: number = 100,
-    messageIndex: number,
   ): Promise<ProviderPromptDebugRecord[]> {
     const url = `${API_BASE}/conversations/${conversationId}/provider-debug-prompts?limit=${Math.max(1, Math.min(limit, 200))}&message_index=${messageIndex}`;
     const response = await apiFetch(

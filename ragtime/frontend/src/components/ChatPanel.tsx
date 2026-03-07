@@ -1556,9 +1556,9 @@ export function ChatPanel({
     try {
       const records = await api.getConversationProviderDebugPrompts(
         activeConversation.id,
+        messageIndex,
         workspaceId,
         200,
-        messageIndex,
       );
       setPromptDebugRecords(records);
     } catch (err) {
