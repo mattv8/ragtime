@@ -6408,6 +6408,15 @@ except Exception as e:
                             "Runtime strict validation failed: preview upstream returned "
                             f"HTTP {response.status_code}.{detail_suffix}"
                         )
+                    elif response.status_code == 200:
+                        body_text = (response.text or "")[:2000]
+                        if "<title>Directory listing for" in body_text:
+                            runtime_probe["directory_listing_detected"] = True
+                            add_runtime_error(
+                                "Runtime validation failed: preview is returning a directory "
+                                "listing instead of rendering the app. Update the runtime "
+                                "entrypoint to a framework that builds and serves the code."
+                            )
 
                 try:
                     await asyncio.wait_for(_run_runtime_probe(), timeout=30)
