@@ -1544,8 +1544,13 @@ export function ChatPanel({
     return { provider, modelId };
   }, []);
 
-  const loadPromptDebugRecords = useCallback(async () => {
+  const loadPromptDebugRecords = useCallback(async (messageIndex: number | null) => {
     if (!activeConversation || !showPromptDebugButton) return;
+    if (messageIndex === null) {
+      setPromptDebugRecords([]);
+      setPromptDebugError('No assistant message was selected for prompt debug.');
+      return;
+    }
     setPromptDebugLoading(true);
     setPromptDebugError(null);
     try {
@@ -1553,7 +1558,7 @@ export function ChatPanel({
         activeConversation.id,
         workspaceId,
         200,
-        promptDebugMessageIndex,
+        messageIndex,
       );
       setPromptDebugRecords(records);
     } catch (err) {
@@ -1563,7 +1568,7 @@ export function ChatPanel({
     } finally {
       setPromptDebugLoading(false);
     }
-  }, [activeConversation, showPromptDebugButton, workspaceId, promptDebugMessageIndex]);
+  }, [activeConversation, showPromptDebugButton, workspaceId]);
 
   const closePromptDebugModal = useCallback(() => {
     setShowPromptDebugModal(false);
@@ -1573,7 +1578,7 @@ export function ChatPanel({
   const openPromptDebugForAssistantMessage = useCallback((messageIndex: number) => {
     if (!activeConversation) return;
     const msg = activeConversation.messages[messageIndex];
-    if (!msg) return;
+    if (!msg || msg.role !== 'assistant') return;
     setPromptDebugMessageIndex(messageIndex);
     setShowPromptDebugModal(true);
   }, [activeConversation]);
@@ -1616,9 +1621,9 @@ export function ChatPanel({
   }, [promptDebugRecords]);
 
   useEffect(() => {
-    if (!showPromptDebugModal) return;
-    void loadPromptDebugRecords();
-  }, [showPromptDebugModal, loadPromptDebugRecords]);
+    if (!showPromptDebugModal || promptDebugMessageIndex === null) return;
+    void loadPromptDebugRecords(promptDebugMessageIndex);
+  }, [showPromptDebugModal, promptDebugMessageIndex, loadPromptDebugRecords]);
 
   // Image modal state
   const [modalImageUrl, setModalImageUrl] = useState<string | null>(null);
@@ -3971,6 +3976,9 @@ export function ChatPanel({
                       <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
                         {record.model}
                       </span>
+                      <span style={{ fontSize: 12, color: '#2451a6', background: '#dbe7f7', padding: '3px 8px', borderRadius: 4 }}>
+                        {record.prompt_token_count ?? 0} tokens
+                      </span>
                       <span style={{ fontSize: 12, color: 'var(--color-text-muted)', background: 'var(--color-surface-hover)', padding: '3px 8px', borderRadius: 4 }}>
                         {record.mode}
                       </span>
@@ -3994,13 +4002,6 @@ export function ChatPanel({
                       const messageKey = `${record.id}-${messageIdx}`;
                       const copied = copiedPromptMessageKey === messageKey;
 
-                      const badgeBg = messageRole === 'system'
-                        ? '#ece5f7'
-                        : messageRole === 'user'
-                          ? '#dbe7f7'
-                          : messageRole === 'assistant'
-                            ? '#e2f1e9'
-                            : 'var(--color-surface-hover)';
                       const badgeColor = messageRole === 'system'
                         ? '#6b3fa0'
                         : messageRole === 'user'
@@ -4023,33 +4024,44 @@ export function ChatPanel({
                             ? '#edf7f1'
                             : 'var(--color-surface-hover)';
 
-                      /* System messages are collapsible (they tend to be long) */
-                      if (messageRole === 'system') {
+                      /* System and tool messages are collapsible to reduce noise. */
+                      if (messageRole === 'system' || messageRole === 'tool') {
                         return (
-                          <details key={messageKey} open style={{ marginBottom: 10, border: `1px solid ${borderColor}`, borderRadius: 8, overflow: 'hidden' }}>
-                            <summary style={{ listStyle: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: headerBg }}>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                                <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.03em', color: badgeColor, background: badgeBg, padding: '4px 8px', borderRadius: 6 }}>
+                          <details key={messageKey} open={messageRole === 'system'} style={{ marginBottom: 10, border: `1px solid ${borderColor}`, borderRadius: 8, overflow: 'hidden' }}>
+                            <summary style={{ listStyle: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 8px', background: headerBg }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.04em', color: badgeColor }}>
                                   {messageLabel}
                                 </span>
-                                <span style={{ fontWeight: 600 }}>Message {messageIdx + 1}</span>
-                                <span style={{ opacity: 0.7, fontSize: 13 }}>({lineCount} lines)</span>
+                                <span style={{ fontWeight: 600, fontSize: 12 }}>Message {messageIdx + 1}</span>
+                                <span style={{ opacity: 0.7, fontSize: 12 }}>({lineCount} lines)</span>
                               </div>
                               <button
-                                className="btn btn-secondary btn-sm"
+                                style={{
+                                  border: '1px solid var(--color-border)',
+                                  background: 'transparent',
+                                  borderRadius: 6,
+                                  padding: '2px 6px',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 4,
+                                  fontSize: 12,
+                                  lineHeight: 1.1,
+                                  cursor: 'pointer',
+                                }}
                                 onClick={(event) => {
                                   event.preventDefault();
                                   event.stopPropagation();
                                   void copyPromptText(messageKey, messageContent);
                                 }}
                                 title="Copy message"
-                                aria-label="Copy system message"
+                                aria-label="Copy message"
                               >
                                 {copied ? <Check size={12} /> : <Copy size={12} />}
-                                <span style={{ marginLeft: 6 }}>{copied ? 'Copied' : 'Copy'}</span>
+                                <span>{copied ? 'Copied' : 'Copy'}</span>
                               </button>
                             </summary>
-                            <pre style={{ whiteSpace: 'pre-wrap', margin: 0, padding: 12, fontSize: 13 }}>{messageContent || '(empty)'}</pre>
+                            <pre style={{ whiteSpace: 'pre-wrap', margin: 0, padding: 12, fontSize: 13 }}>{messageContent}</pre>
                           </details>
                         );
                       }
@@ -4057,21 +4069,32 @@ export function ChatPanel({
                       /* User/assistant/other messages shown inline */
                       return (
                         <div key={messageKey} style={{ marginBottom: 10, border: `1px solid ${borderColor}`, borderRadius: 8, overflow: 'hidden' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '10px 12px', background: headerBg }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                              <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.03em', color: badgeColor, background: badgeBg, padding: '4px 8px', borderRadius: 6 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, padding: '4px 8px', background: headerBg }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.04em', color: badgeColor }}>
                                 {messageLabel}
                               </span>
-                              <span style={{ fontWeight: 600 }}>Message {messageIdx + 1}</span>
+                              <span style={{ fontWeight: 600, fontSize: 12 }}>Message {messageIdx + 1}</span>
                             </div>
                             <button
-                              className="btn btn-secondary btn-sm"
+                              style={{
+                                border: '1px solid var(--color-border)',
+                                background: 'transparent',
+                                borderRadius: 6,
+                                padding: '2px 6px',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 4,
+                                fontSize: 12,
+                                lineHeight: 1.1,
+                                cursor: 'pointer',
+                              }}
                               onClick={() => void copyPromptText(messageKey, messageContent)}
                               title="Copy message"
                               aria-label="Copy message"
                             >
                               {copied ? <Check size={12} /> : <Copy size={12} />}
-                              <span style={{ marginLeft: 6 }}>{copied ? 'Copied' : 'Copy'}</span>
+                              <span>{copied ? 'Copied' : 'Copy'}</span>
                             </button>
                           </div>
                           <pre style={{ whiteSpace: 'pre-wrap', margin: 0, padding: 12, fontSize: 13 }}>{messageContent || '(empty)'}</pre>

@@ -798,7 +798,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         const data = JSON.parse(event.data) as { generation: number; event_type?: string };
         if (data.generation > lastGeneration) {
           lastGeneration = data.generation;
-          if (data.event_type === 'runtime_phase') {
+          const eventType = data.event_type ?? 'update';
+          if (eventType === 'runtime_phase') {
             void api.getUserSpaceRuntimeDevserverStatus(activeWorkspaceId)
               .then((status) => setRuntimeStatus(status))
               .catch(() => {
@@ -806,8 +807,17 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
               });
             return;
           }
-          setPreviewRefreshCounter((c) => c + 1);
-          if (!fileDirtyRef.current && !isCodeEditorFocused()) {
+
+          // Avoid remounting preview on high-frequency collab doc updates.
+          // Runtime HMR handles content refresh; remount only for structural events.
+          const shouldRefreshPreview = eventType === 'file_upsert' || eventType === 'file_delete' || eventType === 'snapshot';
+          if (shouldRefreshPreview) {
+            setPreviewRefreshCounter((c) => c + 1);
+          }
+
+          // Skip full workspace reloads for collab update events to reduce UI churn.
+          const shouldReloadWorkspace = eventType !== 'update';
+          if (shouldReloadWorkspace && !fileDirtyRef.current && !isCodeEditorFocused()) {
             void loadWorkspaceData(activeWorkspaceId);
           }
         }
@@ -1343,16 +1353,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       }
     };
 
-    socket.onclose = () => {
+    socket.onclose = (closeEvent) => {
       setCollabConnected(false);
       setCollabPresenceCount(0);
+
+      // Do not retry for intentional/auth/path failures.
+      if ([1000, 1001, 4401, 4403, 4404].includes(closeEvent.code)) {
+        return;
+      }
       scheduleReconnect();
     };
 
     socket.onerror = () => {
       setCollabConnected(false);
       setCollabPresenceCount(0);
-      scheduleReconnect();
+      // onclose usually follows and controls reconnect behavior.
     };
 
     return () => {
@@ -2941,7 +2956,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                     ? api.getUserSpaceRuntimePreviewUrl(activeWorkspaceId)
                     : undefined
                 }
-                runtimeAvailable={runtimeStatus?.devserver_running}
+                runtimeAvailable={runtimeStatus?.devserver_running ?? false}
                 runtimeError={runtimeStatus?.last_error ?? undefined}
                 previewInstanceKey={`${activeWorkspaceId ?? ''}:${previewRefreshCounter}`}
                 workspaceId={activeWorkspaceId ?? undefined}
