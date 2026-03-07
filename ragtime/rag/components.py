@@ -48,6 +48,7 @@ from ragtime.core.file_constants import (
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit, get_output_limit
 from ragtime.core.ollama import (
+    DEFAULT_WARMUP_TIMEOUT_SECONDS,
     KEEP_ALIVE,
     NUM_GPU,
     get_model_context_length,
@@ -813,10 +814,67 @@ class RAGComponents:
         )  # name -> {status, size_mb, chunk_count, load_time, error}
         self._loading_index: Optional[str] = None  # Currently loading index name
         self._faiss_loading_task: Optional[asyncio.Task] = None  # prevent GC
+        self._ollama_warmup_task: Optional[asyncio.Task] = None  # prevent GC
         # Token optimization settings
         self._scratchpad_window_size: int = 6  # Default, updated from settings
         # Request-scoped prompt fragments cache
         self._request_prompt_cache: dict[tuple[Any, ...], str] = {}
+
+    def _schedule_ollama_warmup(self) -> None:
+        """Start best-effort Ollama warmup without blocking API startup."""
+        if self._ollama_warmup_task and not self._ollama_warmup_task.done():
+            return
+        self._ollama_warmup_task = asyncio.create_task(self._warmup_ollama_models())
+
+    async def _warmup_ollama_models(self) -> None:
+        """Warm LLM/embedding Ollama models with bounded timeout and no raises."""
+        if not self._app_settings:
+            return
+
+        llm_provider = self._app_settings.get("llm_provider", "openai").lower()
+        embedding_provider = self._app_settings.get(
+            "embedding_provider", "ollama"
+        ).lower()
+
+        tasks: list[Any] = []
+
+        if llm_provider == "ollama":
+            llm_model = self._app_settings.get("llm_model", "qwen3.5:latest")
+            llm_base_url = self._app_settings.get(
+                "llm_ollama_base_url",
+                self._app_settings.get("ollama_base_url", "http://localhost:11434"),
+            )
+            tasks.append(
+                warmup_model(
+                    llm_model,
+                    llm_base_url,
+                    timeout_seconds=DEFAULT_WARMUP_TIMEOUT_SECONDS,
+                )
+            )
+
+        if embedding_provider == "ollama":
+            embedding_model = self._app_settings.get(
+                "embedding_model", "nomic-embed-text"
+            )
+            embedding_base_url = self._app_settings.get(
+                "ollama_base_url", "http://localhost:11434"
+            )
+            tasks.append(
+                warmup_embedding_model(
+                    embedding_model,
+                    embedding_base_url,
+                    timeout_seconds=DEFAULT_WARMUP_TIMEOUT_SECONDS,
+                )
+            )
+
+        if not tasks:
+            return
+
+        try:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        except Exception as e:
+            # Defensive safety: warmup is an optimization only.
+            logger.debug(f"Ollama warmup background task failed: {e}")
 
     @property
     def is_ready(self) -> bool:
@@ -987,19 +1045,6 @@ class RAGComponents:
         # Load embedding model (needed for FAISS loading)
         self._embedding_model = await self._get_embedding_model()
 
-        # Warm up the Ollama embedding model so it's loaded into GPU memory
-        embedding_provider = self._app_settings.get(
-            "embedding_provider", "ollama"
-        ).lower()
-        if embedding_provider == "ollama":
-            embedding_model = self._app_settings.get(
-                "embedding_model", "nomic-embed-text"
-            )
-            embedding_base_url = self._app_settings.get(
-                "ollama_base_url", "http://localhost:11434"
-            )
-            await warmup_embedding_model(embedding_model, embedding_base_url)
-
         # Create the agent with tools (without FAISS retrievers for now)
         # This allows non-indexed queries to work immediately
         await self._create_agent()
@@ -1010,6 +1055,9 @@ class RAGComponents:
         logger.info(
             f"RAG core initialized in {core_time:.1f}s - API ready (indexes loading in background)"
         )
+
+        # Warmup is a best-effort optimization and should never block startup.
+        self._schedule_ollama_warmup()
 
         # Start background FAISS loading — hold strong reference to prevent GC
         self._faiss_loading_task = asyncio.create_task(
@@ -1156,11 +1204,6 @@ class RAGComponents:
 
         if provider == "ollama":
             logger.info(f"Using Ollama LLM: {model}")
-            base_url = self._app_settings.get(
-                "llm_ollama_base_url",
-                self._app_settings.get("ollama_base_url", "http://localhost:11434"),
-            )
-            await warmup_model(model, base_url)
         elif provider == "anthropic":
             logger.info(f"Using Anthropic LLM: {model}")
         elif hasattr(self.llm, "model_name"):

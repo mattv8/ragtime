@@ -33,6 +33,9 @@ NUM_GPU: int = -1
 # still allowing GPU memory to be reclaimed during idle periods.
 KEEP_ALIVE: int = 900
 
+# Warmup requests are best-effort startup optimizations and should fail fast.
+DEFAULT_WARMUP_TIMEOUT_SECONDS: float = 8.0
+
 # Default Ollama base URL
 DEFAULT_BASE_URL: str = "http://localhost:11434"
 
@@ -547,7 +550,11 @@ async def _unload_model(client: httpx.AsyncClient, model: str, base_url: str) ->
         return
 
 
-async def warmup_model(model: str, base_url: str) -> bool:
+async def warmup_model(
+    model: str,
+    base_url: str,
+    timeout_seconds: float = DEFAULT_WARMUP_TIMEOUT_SECONDS,
+) -> bool:
     """Preload an Ollama LLM onto GPU memory via /api/generate.
 
     Sends an empty-prompt generate request with ``num_gpu=-1`` and
@@ -561,7 +568,11 @@ async def warmup_model(model: str, base_url: str) -> bool:
         ``True`` if the model was loaded successfully, ``False`` otherwise.
     """
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        timeout = httpx.Timeout(
+            timeout=max(1.0, timeout_seconds),
+            connect=min(max(1.0, timeout_seconds), 5.0),
+        )
+        async with httpx.AsyncClient(timeout=timeout) as client:
             # If model was previously pinned on CPU, unload before warmup so
             # runtime options (num_gpu) are applied on fresh load.
             await _unload_model(client, model, base_url)
@@ -590,7 +601,11 @@ async def warmup_model(model: str, base_url: str) -> bool:
     return False
 
 
-async def warmup_embedding_model(model: str, base_url: str) -> bool:
+async def warmup_embedding_model(
+    model: str,
+    base_url: str,
+    timeout_seconds: float = DEFAULT_WARMUP_TIMEOUT_SECONDS,
+) -> bool:
     """Preload an Ollama embedding model onto GPU memory via /api/embed.
 
     Embedding-only models (e.g. ``nomic-embed-text``) do not support
@@ -604,7 +619,11 @@ async def warmup_embedding_model(model: str, base_url: str) -> bool:
         ``True`` if the model was loaded successfully, ``False`` otherwise.
     """
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        timeout = httpx.Timeout(
+            timeout=max(1.0, timeout_seconds),
+            connect=min(max(1.0, timeout_seconds), 5.0),
+        )
+        async with httpx.AsyncClient(timeout=timeout) as client:
             # Ensure fresh reload so GPU options are not ignored due to an
             # already-resident CPU instance.
             await _unload_model(client, model, base_url)
