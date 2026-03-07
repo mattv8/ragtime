@@ -892,6 +892,12 @@ export interface ToolTestResponse {
   details?: Record<string, unknown>;
 }
 
+export interface DatabaseDiscoverOption {
+  name: string;
+  accessible: boolean;
+  access_error?: string;
+}
+
 // PostgreSQL Database Discovery
 export interface PostgresDiscoverRequest {
   host: string;
@@ -912,6 +918,7 @@ export interface PostgresDiscoverRequest {
 export interface PostgresDiscoverResponse {
   success: boolean;
   databases: string[];
+  database_options?: DatabaseDiscoverOption[];
   error?: string;
 }
 
@@ -935,6 +942,7 @@ export interface MssqlDiscoverRequest {
 export interface MssqlDiscoverResponse {
   success: boolean;
   databases: string[];
+  database_options?: DatabaseDiscoverOption[];
   error?: string;
 }
 
@@ -960,6 +968,7 @@ export interface MysqlDiscoverRequest {
 export interface MysqlDiscoverResponse {
   success: boolean;
   databases: string[];
+  database_options?: DatabaseDiscoverOption[];
   error?: string;
 }
 

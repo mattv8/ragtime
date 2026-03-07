@@ -2,6 +2,7 @@
 Indexer data models and schemas.
 """
 
+
 import hashlib
 import json
 from datetime import datetime
@@ -1562,12 +1563,35 @@ class PostgresDiscoverRequest(BaseModel):
     )
 
 
+class DatabaseDiscoverOption(BaseModel):
+    """Discovered database entry with access status."""
+
+    name: str = Field(description="Database name")
+    accessible: bool = Field(
+        default=True,
+        description=(
+            "Whether the provided credentials can open/query this database"
+        ),
+    )
+    access_error: Optional[str] = Field(
+        default=None,
+        description="Optional reason when the database is discovered but not accessible",
+    )
+
+
 class PostgresDiscoverResponse(BaseModel):
     """Response from PostgreSQL database discovery."""
 
     success: bool = Field(description="Whether discovery succeeded")
     databases: List[str] = Field(
         default_factory=list, description="List of discovered database names"
+    )
+    database_options: List[DatabaseDiscoverOption] = Field(
+        default_factory=list,
+        description=(
+            "Discovered databases with per-database access metadata. "
+            "`databases` remains the list of accessible names for backwards compatibility."
+        ),
     )
     error: Optional[str] = Field(
         default=None, description="Error message if discovery failed"
@@ -1608,6 +1632,13 @@ class MssqlDiscoverResponse(BaseModel):
     success: bool = Field(description="Whether discovery succeeded")
     databases: List[str] = Field(
         default_factory=list, description="List of discovered database names"
+    )
+    database_options: List[DatabaseDiscoverOption] = Field(
+        default_factory=list,
+        description=(
+            "Discovered databases with per-database access metadata. "
+            "`databases` remains the list of accessible names for backwards compatibility."
+        ),
     )
     error: Optional[str] = Field(
         default=None, description="Error message if discovery failed"
@@ -1663,6 +1694,13 @@ class MysqlDiscoverResponse(BaseModel):
     success: bool = Field(description="Whether discovery succeeded")
     databases: List[str] = Field(
         default_factory=list, description="List of discovered database names"
+    )
+    database_options: List[DatabaseDiscoverOption] = Field(
+        default_factory=list,
+        description=(
+            "Discovered databases with per-database access metadata. "
+            "`databases` remains the list of accessible names for backwards compatibility."
+        ),
     )
     error: Optional[str] = Field(
         default=None, description="Error message if discovery failed"

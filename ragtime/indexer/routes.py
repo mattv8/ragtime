@@ -23,123 +23,85 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional
 
 import httpx
-from fastapi import (
-    APIRouter,
-    Body,
-    Depends,
-    File,
-    Form,
-    HTTPException,
-    Query,
-    UploadFile,
-)
+from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException,
+                     Query, UploadFile)
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from prisma import Prisma
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
+from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.container_capabilities import get_container_capabilities
-from ragtime.core.embedding_models import (
-    OPENAI_EMBEDDING_PRIORITY,
-    get_embedding_models,
-)
+from ragtime.core.embedding_models import (OPENAI_EMBEDDING_PRIORITY,
+                                           get_embedding_models)
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (
-    MODEL_FAMILY_PATTERNS,
-    get_context_limit,
-    get_output_limit,
-    supports_function_calling,
-    update_model_function_calling,
-    update_model_limit,
-)
-from ragtime.core.ollama import (
-    extract_effective_context_length,
-    get_model_details,
-    is_embedding_capable,
-    is_reachable,
-)
+from ragtime.core.model_limits import (MODEL_FAMILY_PATTERNS,
+                                       get_context_limit, get_output_limit,
+                                       supports_function_calling,
+                                       update_model_function_calling,
+                                       update_model_limit)
+from ragtime.core.ollama import (extract_effective_context_length,
+                                 get_model_details, is_embedding_capable,
+                                 is_reachable)
 from ragtime.core.ollama import list_models
 from ragtime.core.ollama import list_models as ollama_list_models
 from ragtime.core.security import get_current_user, require_admin
-from ragtime.core.sql_utils import (
-    MssqlConnectionError,
-    MysqlConnectionError,
-    mssql_connect,
-    mysql_connect,
-)
-from ragtime.core.ssh import (
-    SSHConfig,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    execute_ssh_command,
-    ssh_tunnel_config_from_dict,
-    test_ssh_connection,
-)
+from ragtime.core.sql_utils import (MssqlConnectionError, MysqlConnectionError,
+                                    mssql_connect, mysql_connect,
+                                    normalize_mssql_error_message)
+from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
+                              execute_ssh_command, ssh_tunnel_config_from_dict,
+                              test_ssh_connection)
 from ragtime.core.tokenization import count_tokens
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.core.vision_models import list_vision_models
 from ragtime.indexer.background_tasks import background_task_service
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (
-    AnalyzeIndexRequest,
-    AppSettings,
-    ChatMessage,
-    ChatTaskResponse,
-    ChatTaskStatus,
-    CheckRepoVisibilityRequest,
-    ConfigurationWarning,
-    Conversation,
-    ConversationResponse,
-    CreateConversationRequest,
-    CreateIndexRequest,
-    CreateToolConfigRequest,
-    EmbeddingStatus,
-    FetchBranchesRequest,
-    FetchBranchesResponse,
-    FilesystemAnalysisJobResponse,
-    FilesystemConnectionConfig,
-    FilesystemIndexJobResponse,
-    IndexAnalysisResult,
-    IndexConfig,
-    IndexInfo,
-    IndexJobResponse,
-    IndexStatus,
-    MssqlDiscoverRequest,
-    MssqlDiscoverResponse,
-    MysqlDiscoverRequest,
-    MysqlDiscoverResponse,
-    OcrMode,
-    PdmDiscoverRequest,
-    PdmDiscoverResponse,
-    PdmIndexJobResponse,
-    PostgresDiscoverRequest,
-    PostgresDiscoverResponse,
-    ProviderPromptDebugListResponse,
-    ProviderPromptDebugRecord,
-    RepoVisibilityResponse,
-    RetryVisualizationRequest,
-    RetryVisualizationResponse,
-    SchemaIndexJobResponse,
-    SendMessageRequest,
-    ToolConfig,
-    ToolTestRequest,
-    ToolType,
-    TriggerFilesystemIndexRequest,
-    TriggerPdmIndexRequest,
-    TriggerSchemaIndexRequest,
-    UpdateSettingsRequest,
-    UpdateToolConfigRequest,
-    VectorStoreType,
-)
+from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
+                                    ChatMessage, ChatTaskResponse,
+                                    ChatTaskStatus, CheckRepoVisibilityRequest,
+                                    ConfigurationWarning, Conversation,
+                                    ConversationResponse,
+                                    CreateConversationRequest,
+                                    CreateIndexRequest,
+                                    CreateToolConfigRequest,
+                                    DatabaseDiscoverOption, EmbeddingStatus,
+                                    FetchBranchesRequest,
+                                    FetchBranchesResponse,
+                                    FilesystemAnalysisJobResponse,
+                                    FilesystemConnectionConfig,
+                                    FilesystemIndexJobResponse,
+                                    IndexAnalysisResult, IndexConfig,
+                                    IndexInfo, IndexJobResponse, IndexStatus,
+                                    MssqlDiscoverRequest,
+                                    MssqlDiscoverResponse,
+                                    MysqlDiscoverRequest,
+                                    MysqlDiscoverResponse, OcrMode,
+                                    PdmDiscoverRequest, PdmDiscoverResponse,
+                                    PdmIndexJobResponse,
+                                    PostgresDiscoverRequest,
+                                    PostgresDiscoverResponse,
+                                    ProviderPromptDebugListResponse,
+                                    ProviderPromptDebugRecord,
+                                    RepoVisibilityResponse,
+                                    RetryVisualizationRequest,
+                                    RetryVisualizationResponse,
+                                    SchemaIndexJobResponse, SendMessageRequest,
+                                    ToolConfig, ToolTestRequest, ToolType,
+                                    TriggerFilesystemIndexRequest,
+                                    TriggerPdmIndexRequest,
+                                    TriggerSchemaIndexRequest,
+                                    UpdateSettingsRequest,
+                                    UpdateToolConfigRequest, VectorStoreType)
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
+from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
+                                            schema_indexer)
 from ragtime.indexer.service import indexer
 from ragtime.indexer.title_generation import schedule_title_generation
 from ragtime.indexer.utils import safe_tool_name
@@ -1670,7 +1632,8 @@ async def update_tool_config(
 
                 # Check for name conflicts with existing indexes
                 if is_faiss and new_index_name != old_index_name:
-                    from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
+                    from ragtime.indexer.vector_backends import \
+                        FAISS_INDEX_BASE_PATH
 
                     new_path = FAISS_INDEX_BASE_PATH / new_index_name
                     if new_path.exists():
@@ -1691,7 +1654,8 @@ async def update_tool_config(
             # For FAISS filesystem indexes, rename using the backend
             if is_faiss and old_index_name and new_index_name:
                 if old_index_name != new_index_name:
-                    from ragtime.indexer.vector_backends import get_faiss_backend
+                    from ragtime.indexer.vector_backends import \
+                        get_faiss_backend
 
                     faiss_backend = get_faiss_backend()
                     success = await faiss_backend.rename_index(
@@ -2079,8 +2043,16 @@ async def discover_postgres_databases(
             "postgres",  # Connect to system database
             "-t",  # Tuples only (no headers/footers)
             "-A",  # Unaligned output
+            "-F",
+            "\t",  # Tab-separated output for reliable parsing
             "-c",
-            "SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname;",
+            (
+                "SELECT datname, datallowconn, "
+                "has_database_privilege(current_user, datname, 'CONNECT') "
+                "FROM pg_database "
+                "WHERE datistemplate = false "
+                "ORDER BY datname;"
+            ),
         ]
         env = {"PGPASSWORD": request.password}
 
@@ -2093,30 +2065,82 @@ async def discover_postgres_databases(
         _stdout, stderr = await process.communicate()
 
         if process.returncode == 0:
-            # Parse database names from output
+            # Parse database rows and compute per-db access.
             output = _stdout.decode("utf-8", errors="replace").strip()
-            databases = [db.strip() for db in output.split("\n") if db.strip()]
-            return PostgresDiscoverResponse(success=True, databases=databases)
+            database_options: list[DatabaseDiscoverOption] = []
+            for line in output.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split("\t")
+                if not parts:
+                    continue
+
+                name = parts[0].strip()
+                if not name:
+                    continue
+
+                allow_conn = True
+                has_connect = True
+                if len(parts) > 1:
+                    allow_conn = parts[1].strip().lower() in {"t", "true", "1"}
+                if len(parts) > 2:
+                    has_connect = parts[2].strip().lower() in {"t", "true", "1"}
+
+                accessible = allow_conn and has_connect
+                if not allow_conn:
+                    access_error = "Database is configured to disallow new connections"
+                elif not has_connect:
+                    access_error = "User lacks CONNECT privilege on this database"
+                else:
+                    access_error = None
+
+                database_options.append(
+                    DatabaseDiscoverOption(
+                        name=name,
+                        accessible=accessible,
+                        access_error=access_error,
+                    )
+                )
+
+            databases = [db.name for db in database_options if db.accessible]
+            return PostgresDiscoverResponse(
+                success=True,
+                databases=databases,
+                database_options=database_options,
+            )
         else:
             error = stderr.decode("utf-8", errors="replace").strip()
             return PostgresDiscoverResponse(
-                success=False, databases=[], error=f"Connection failed: {error}"
+                success=False,
+                databases=[],
+                database_options=[],
+                error=f"Connection failed: {error}",
             )
 
     except asyncio.TimeoutError:
         return PostgresDiscoverResponse(
-            success=False, databases=[], error="Connection timed out after 15 seconds"
+            success=False,
+            databases=[],
+            database_options=[],
+            error="Connection timed out after 15 seconds",
         )
     except FileNotFoundError:
         return PostgresDiscoverResponse(
-            success=False, databases=[], error="psql command not found"
+            success=False,
+            databases=[],
+            database_options=[],
+            error="psql command not found",
         )
     except Exception as e:
         error_msg = str(e)
         if "Authentication" in error_msg:
             error_msg = f"SSH tunnel authentication failed: {error_msg}"
         return PostgresDiscoverResponse(
-            success=False, databases=[], error=f"Discovery failed: {error_msg}"
+            success=False,
+            databases=[],
+            database_options=[],
+            error=f"Discovery failed: {error_msg}",
         )
     finally:
         if tunnel:
@@ -2138,7 +2162,7 @@ async def discover_mssql_databases(
 
     def discover_databases(
         connect_host: str, connect_port: int
-    ) -> tuple[bool, list[str], str | None]:
+    ) -> tuple[bool, list[DatabaseDiscoverOption], str | None]:
         try:
             with mssql_connect(
                 host=connect_host,
@@ -2151,31 +2175,56 @@ async def discover_mssql_databases(
             ) as conn:
                 cursor = conn.cursor()
 
-                # Query system databases
+                # Discover databases and whether this login can access each one.
                 cursor.execute(
                     """
-                    SELECT name FROM sys.databases
+                    SELECT
+                        name,
+                        CASE WHEN HAS_DBACCESS(name) = 1 THEN 1 ELSE 0 END AS has_access
+                    FROM sys.databases
                     WHERE database_id > 4  -- Exclude system databases
                     ORDER BY name
                     """
                 )
                 rows = cursor.fetchall() or []
-                databases: list[str] = []
+                database_options: list[DatabaseDiscoverOption] = []
                 for row in rows:
                     if isinstance(row, dict):
                         name = row.get("name")
+                        has_access = row.get("has_access")
                     elif row and len(row) > 0:
                         name = row[0]
+                        has_access = row[1] if len(row) > 1 else 1
                     else:
                         name = None
+                        has_access = 0
                     if name:
-                        databases.append(str(name))
-                return True, databases, None
+                        accessible = int(has_access or 0) == 1
+                        database_options.append(
+                            DatabaseDiscoverOption(
+                                name=str(name),
+                                accessible=accessible,
+                                access_error=(
+                                    "Login does not have access to this database"
+                                    if not accessible
+                                    else None
+                                ),
+                            )
+                        )
+                return True, database_options, None
 
         except MssqlConnectionError as e:
-            return False, [], str(e)
+            return (
+                False,
+                [],
+                normalize_mssql_error_message(str(e), database="master"),
+            )
         except Exception as e:
-            return False, [], f"Connection error: {str(e)}"
+            return (
+                False,
+                [],
+                normalize_mssql_error_message(str(e), database="master"),
+            )
 
     try:
         # Determine host and port (may be overridden by SSH tunnel)
@@ -2206,20 +2255,32 @@ async def discover_mssql_databases(
                 f"SSH tunnel established for MSSQL discovery: localhost:{connect_port}"
             )
 
-        success, databases, error = await asyncio.to_thread(
+        success, database_options, error = await asyncio.to_thread(
             discover_databases, connect_host, connect_port
         )
-        return MssqlDiscoverResponse(success=success, databases=databases, error=error)
+        accessible_databases = [d.name for d in database_options if d.accessible]
+        return MssqlDiscoverResponse(
+            success=success,
+            databases=accessible_databases,
+            database_options=database_options,
+            error=error,
+        )
     except asyncio.TimeoutError:
         return MssqlDiscoverResponse(
-            success=False, databases=[], error="Connection timed out"
+            success=False,
+            databases=[],
+            database_options=[],
+            error="Connection timed out",
         )
     except Exception as e:
         error_msg = str(e)
         if "Authentication" in error_msg:
             error_msg = f"SSH tunnel authentication failed: {error_msg}"
         return MssqlDiscoverResponse(
-            success=False, databases=[], error=f"Discovery failed: {error_msg}"
+            success=False,
+            databases=[],
+            database_options=[],
+            error=f"Discovery failed: {error_msg}",
         )
     finally:
         if tunnel:
@@ -2241,8 +2302,20 @@ async def discover_mysql_databases(
 
     def discover_databases(
         connect_host: str, connect_port: int
-    ) -> tuple[bool, list[str], str | None]:
+    ) -> tuple[bool, list[DatabaseDiscoverOption], str | None]:
         try:
+            direct_user = request.user or ""
+            direct_password = request.password or ""
+
+            def mysql_access_error(err: Exception | str) -> str:
+                msg = str(err).strip()
+                lower = msg.lower()
+                if "access denied" in lower:
+                    return "Login does not have access to this database"
+                if "unknown database" in lower:
+                    return "Database not found"
+                return msg or "Connection failed"
+
             # Handle Docker container mode
             if request.container:
                 container = request.container
@@ -2255,8 +2328,6 @@ async def discover_mysql_databases(
                     exec_prefix = f"docker exec {container}"
 
                 # Get credentials from container environment
-                import subprocess
-
                 def get_env_var(var_name: str) -> str | None:
                     try:
                         result = subprocess.run(
@@ -2305,15 +2376,44 @@ async def discover_mysql_databases(
                     for db in result.stdout.strip().split("\n")
                     if db.strip() and db.strip().lower() not in system_dbs
                 ]
-                return True, databases, None
+                container_database_options: list[DatabaseDiscoverOption] = []
+                for db in databases:
+                    quoted_db = shlex.quote(db)
+                    check_cmd = (
+                        f'{exec_prefix} mysql -u{user} -p"{password}" '
+                        f'-D {quoted_db} -N -e "SELECT 1"'
+                    )
+                    check_result = subprocess.run(
+                        check_cmd,
+                        shell=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                        check=False,
+                    )
+                    if check_result.returncode == 0:
+                        container_database_options.append(
+                            DatabaseDiscoverOption(name=db, accessible=True)
+                        )
+                    else:
+                        err_text = (check_result.stderr or check_result.stdout or "").strip()
+                        container_database_options.append(
+                            DatabaseDiscoverOption(
+                                name=db,
+                                accessible=False,
+                                access_error=mysql_access_error(err_text),
+                            )
+                        )
+
+                return True, container_database_options, None
 
             # Direct connection mode (or through SSH tunnel)
             try:
                 with mysql_connect(
                     host=connect_host,
                     port=connect_port,
-                    user=request.user,
-                    password=request.password,
+                    user=direct_user,
+                    password=direct_password,
                     database="information_schema",  # Connect to information_schema to list databases
                     connect_timeout=15,
                 ) as conn:
@@ -2351,7 +2451,32 @@ async def discover_mysql_databases(
 
                         if name:
                             db_list.append(str(name))
-                    return True, db_list, None
+
+                    direct_database_options: list[DatabaseDiscoverOption] = []
+                    for db_name in db_list:
+                        try:
+                            with mysql_connect(
+                                host=connect_host,
+                                port=connect_port,
+                                user=direct_user,
+                                password=direct_password,
+                                database=db_name,
+                                connect_timeout=10,
+                            ):
+                                pass
+                            direct_database_options.append(
+                                DatabaseDiscoverOption(name=db_name, accessible=True)
+                            )
+                        except Exception as check_error:
+                            direct_database_options.append(
+                                DatabaseDiscoverOption(
+                                    name=db_name,
+                                    accessible=False,
+                                    access_error=mysql_access_error(check_error),
+                                )
+                            )
+
+                    return True, direct_database_options, None
             except Exception as e:
                 # Fallback: if global discovery fails, try connecting to the specific database if provided
                 if request.database:
@@ -2359,13 +2484,22 @@ async def discover_mysql_databases(
                         with mysql_connect(
                             host=connect_host,
                             port=connect_port,
-                            user=request.user,
-                            password=request.password,
+                            user=direct_user,
+                            password=direct_password,
                             database=request.database,
                             connect_timeout=10,
                         ):
                             pass
-                        return True, [request.database], None
+                        return (
+                            True,
+                            [
+                                DatabaseDiscoverOption(
+                                    name=request.database,
+                                    accessible=True,
+                                )
+                            ],
+                            None,
+                        )
                     except Exception as fallback_error:
                         # Prefer the fallback error message if it is more descriptive
                         if str(fallback_error):
@@ -2443,20 +2577,32 @@ async def discover_mysql_databases(
                 f"SSH tunnel established for MySQL discovery: localhost:{connect_port}"
             )
 
-        success, databases, error = await asyncio.to_thread(
+        success, database_options, error = await asyncio.to_thread(
             discover_databases, connect_host, connect_port
         )
-        return MysqlDiscoverResponse(success=success, databases=databases, error=error)
+        databases = [db.name for db in database_options if db.accessible]
+        return MysqlDiscoverResponse(
+            success=success,
+            databases=databases,
+            database_options=database_options,
+            error=error,
+        )
     except asyncio.TimeoutError:
         return MysqlDiscoverResponse(
-            success=False, databases=[], error="Connection timed out"
+            success=False,
+            databases=[],
+            database_options=[],
+            error="Connection timed out",
         )
     except Exception as e:
         error_msg = str(e)
         if "Authentication" in error_msg:
             error_msg = f"SSH tunnel authentication failed: {error_msg}"
         return MysqlDiscoverResponse(
-            success=False, databases=[], error=f"Discovery failed: {error_msg}"
+            success=False,
+            databases=[],
+            database_options=[],
+            error=f"Discovery failed: {error_msg}",
         )
     finally:
         if tunnel:

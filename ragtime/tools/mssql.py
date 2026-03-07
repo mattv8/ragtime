@@ -15,7 +15,9 @@ from pydantic import BaseModel, Field
 
 from ragtime.core.logging import get_logger
 from ragtime.core.sql_utils import (DB_TYPE_MSSQL, enforce_max_results,
-                                    format_query_result, validate_sql_query)
+                                    format_query_result,
+                                    normalize_mssql_error_message,
+                                    validate_sql_query)
 from ragtime.core.ssh import SSHTunnel, ssh_tunnel_config_from_dict
 
 logger = get_logger(__name__)
@@ -208,14 +210,12 @@ async def execute_mssql_query_async(
         except pymssql.OperationalError as e:
             error_str = str(e)
             logger.error(f"MSSQL connection error: {error_str}")
-            # Clean up sensitive info from error messages
-            if "Login failed" in error_str:
-                return "Error: Login failed - check username and password"
-            if "Cannot open database" in error_str:
-                return f"Error: Cannot open database '{database}' - check database name and permissions"
+            normalized_error = normalize_mssql_error_message(
+                error_str, database=database
+            )
             if tunnel:
                 return f"Error: Cannot connect to SQL Server through SSH tunnel"
-            return f"Error: Connection failed - {error_str}"
+            return f"Error: {normalized_error}"
 
         except pymssql.ProgrammingError as e:
             logger.error(f"MSSQL query error: {e}")
@@ -437,13 +437,12 @@ async def test_mssql_connection(
 
         except pymssql.OperationalError as e:
             error_str = str(e)
-            if "Login failed" in error_str:
-                return False, "Login failed - check username and password", None
-            if "Cannot open database" in error_str:
-                return False, f"Cannot open database '{database}'", None
+            normalized_error = normalize_mssql_error_message(
+                error_str, database=database
+            )
             if tunnel:
                 return False, "Cannot connect to SQL Server through SSH tunnel", None
-            return False, f"Connection failed: {error_str}", None
+            return False, normalized_error, None
 
         except Exception as e:
             return False, f"Connection test failed: {str(e)}", None

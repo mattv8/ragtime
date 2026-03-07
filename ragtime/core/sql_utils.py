@@ -601,6 +601,39 @@ class MssqlConnectionError(Exception):
     """Exception raised for MSSQL connection errors."""
 
 
+def normalize_mssql_error_message(
+    error: str,
+    database: str | None = None,
+) -> str:
+    """Return a clearer, user-facing MSSQL connection error message."""
+    msg = (error or "").strip()
+    lower = msg.lower()
+
+    # DB-Lib from pymssql can bundle multiple errors; 18456 is the most useful signal.
+    has_login_failed = "login failed" in lower or "18456" in lower
+    if has_login_failed:
+        if database:
+            return (
+                "Login failed for SQL Server user. Credentials may be valid, "
+                f"but this user does not have access to database '{database}'. "
+                "Use Discover to select an accessible database, or grant DB access."
+            )
+        return "Login failed for SQL Server user. Check username/password and database access."
+
+    if "cannot open database" in lower and database:
+        return (
+            f"Cannot open database '{database}'. Check database name and user permissions."
+        )
+
+    if "adaptive server connection failed" in lower:
+        return (
+            "Connection to SQL Server failed after handshake. "
+            "Check host/port reachability, TLS/network policy, and SQL Server availability."
+        )
+
+    return f"Connection error: {msg}"
+
+
 class MssqlConnection:
     """
     Context manager for MSSQL database connections.
@@ -668,15 +701,9 @@ class MssqlConnection:
             return self._conn
         except Exception as e:
             error_str = str(e)
-            if "Login failed" in error_str:
-                raise MssqlConnectionError(
-                    "Login failed - check username and password"
-                ) from e
-            if "Cannot open database" in error_str:
-                raise MssqlConnectionError(
-                    f"Cannot open database '{self.database}' - check database name"
-                ) from e
-            raise MssqlConnectionError(f"Connection error: {error_str}") from e
+            raise MssqlConnectionError(
+                normalize_mssql_error_message(error_str, database=self.database)
+            ) from e
 
     def close(self) -> None:
         """Close the connection if open."""

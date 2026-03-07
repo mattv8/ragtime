@@ -5,6 +5,7 @@ import type {
   ToolConfig,
   ToolType,
   CreateToolConfigRequest,
+  DatabaseDiscoverOption,
   PostgresConnectionConfig,
   MysqlConnectionConfig,
   MssqlConnectionConfig,
@@ -1808,17 +1809,17 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   const [connectingNetwork, setConnectingNetwork] = useState(false);
 
   // PostgreSQL database discovery state
-  const [discoveredDatabases, setDiscoveredDatabases] = useState<string[]>([]);
+  const [discoveredDatabases, setDiscoveredDatabases] = useState<DatabaseDiscoverOption[]>([]);
   const [discoveringDatabases, setDiscoveringDatabases] = useState(false);
   const [databaseDiscoveryError, setDatabaseDiscoveryError] = useState<string | null>(null);
 
   // MSSQL database discovery state
-  const [mssqlDiscoveredDatabases, setMssqlDiscoveredDatabases] = useState<string[]>([]);
+  const [mssqlDiscoveredDatabases, setMssqlDiscoveredDatabases] = useState<DatabaseDiscoverOption[]>([]);
   const [mssqlDiscoveringDatabases, setMssqlDiscoveringDatabases] = useState(false);
   const [mssqlDatabaseDiscoveryError, setMssqlDatabaseDiscoveryError] = useState<string | null>(null);
 
   // MySQL/MariaDB database discovery state
-  const [mysqlDiscoveredDatabases, setMysqlDiscoveredDatabases] = useState<string[]>([]);
+  const [mysqlDiscoveredDatabases, setMysqlDiscoveredDatabases] = useState<DatabaseDiscoverOption[]>([]);
   const [mysqlDiscoveringDatabases, setMysqlDiscoveringDatabases] = useState(false);
   const [mysqlDatabaseDiscoveryError, setMysqlDatabaseDiscoveryError] = useState<string | null>(null);
 
@@ -2023,6 +2024,16 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   const [sshTunnelGeneratingKey, setSshTunnelGeneratingKey] = useState(false);
   const [sshTunnelKeyCopied, setSshTunnelKeyCopied] = useState(false);
 
+  const toDatabaseOptions = (result: {
+    databases: string[];
+    database_options?: DatabaseDiscoverOption[];
+  }): DatabaseDiscoverOption[] => {
+    if (result.database_options && result.database_options.length > 0) {
+      return result.database_options;
+    }
+    return result.databases.map((name) => ({ name, accessible: true }));
+  };
+
   const getConnectionConfig = (): ConnectionConfig => {
     switch (toolType) {
       case 'postgres':
@@ -2133,10 +2144,12 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
       });
 
       if (result.success) {
-        setDiscoveredDatabases(result.databases);
+        const options = toDatabaseOptions(result);
+        setDiscoveredDatabases(options);
         // Auto-select first database if none selected
-        if (result.databases.length > 0 && !postgresConfig.database) {
-          setPostgresConfig({ ...postgresConfig, database: result.databases[0] });
+        const firstAccessible = options.find((db) => db.accessible)?.name;
+        if (firstAccessible && !postgresConfig.database) {
+          setPostgresConfig({ ...postgresConfig, database: firstAccessible });
         }
       } else {
         setDatabaseDiscoveryError(result.error || 'Discovery failed');
@@ -2177,10 +2190,12 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
       });
 
       if (result.success) {
-        setMssqlDiscoveredDatabases(result.databases);
+        const options = toDatabaseOptions(result);
+        setMssqlDiscoveredDatabases(options);
         // Auto-select first database if none selected
-        if (result.databases.length > 0 && !mssqlConfig.database) {
-          setMssqlConfig({ ...mssqlConfig, database: result.databases[0] });
+        const firstAccessible = options.find((db) => db.accessible)?.name;
+        if (firstAccessible && !mssqlConfig.database) {
+          setMssqlConfig({ ...mssqlConfig, database: firstAccessible });
         }
       } else {
         setMssqlDatabaseDiscoveryError(result.error || 'Discovery failed');
@@ -2237,10 +2252,12 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
       );
 
       if (result.success) {
-        setMysqlDiscoveredDatabases(result.databases);
+        const options = toDatabaseOptions(result);
+        setMysqlDiscoveredDatabases(options);
         // Auto-select first database if none selected
-        if (result.databases.length > 0 && !mysqlConfig.database) {
-          setMysqlConfig({ ...mysqlConfig, database: result.databases[0] });
+        const firstAccessible = options.find((db) => db.accessible)?.name;
+        if (firstAccessible && !mysqlConfig.database) {
+          setMysqlConfig({ ...mysqlConfig, database: firstAccessible });
         }
       } else {
         setMysqlDatabaseDiscoveryError(result.error || 'Discovery failed');
@@ -2876,8 +2893,10 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                     style={{ flex: 1 }}
                   >
                     <option value="">Select database...</option>
-                    {discoveredDatabases.map(db => (
-                      <option key={db} value={db}>{db}</option>
+                    {discoveredDatabases.map((db) => (
+                      <option key={db.name} value={db.name} disabled={!db.accessible}>
+                        {db.accessible ? db.name : `${db.name} (no access)`}
+                      </option>
                     ))}
                   </select>
                 ) : (
@@ -2903,7 +2922,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 {databaseDiscoveryError ? (
                   <span style={{ color: '#dc3545' }}>{databaseDiscoveryError}</span>
                 ) : discoveredDatabases.length > 0 ? (
-                  `Found ${discoveredDatabases.length} database(s). Select one or type manually.`
+                  `Found ${discoveredDatabases.length} database(s), ${discoveredDatabases.filter((db) => db.accessible).length} accessible.`
                 ) : (
                   'Enter credentials, then click Discover to find available databases.'
                 )}
@@ -3084,8 +3103,10 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                   style={{ flex: 1 }}
                 >
                   <option value="">Select database...</option>
-                  {mssqlDiscoveredDatabases.map(db => (
-                    <option key={db} value={db}>{db}</option>
+                  {mssqlDiscoveredDatabases.map((db) => (
+                    <option key={db.name} value={db.name} disabled={!db.accessible}>
+                      {db.accessible ? db.name : `${db.name} (no access)`}
+                    </option>
                   ))}
                 </select>
               ) : (
@@ -3111,7 +3132,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
               {mssqlDatabaseDiscoveryError ? (
                 <span style={{ color: '#dc3545' }}>{mssqlDatabaseDiscoveryError}</span>
               ) : mssqlDiscoveredDatabases.length > 0 ? (
-                `Found ${mssqlDiscoveredDatabases.length} database(s). Select one or type manually.`
+                `Found ${mssqlDiscoveredDatabases.length} database(s), ${mssqlDiscoveredDatabases.filter((db) => db.accessible).length} accessible. Inaccessible entries are disabled.`
               ) : (
                 'Enter credentials, then click Discover to find available databases.'
               )}
@@ -3285,8 +3306,10 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                     style={{ flex: 1 }}
                   >
                     <option value="">Select database...</option>
-                    {mysqlDiscoveredDatabases.map(db => (
-                      <option key={db} value={db}>{db}</option>
+                    {mysqlDiscoveredDatabases.map((db) => (
+                      <option key={db.name} value={db.name} disabled={!db.accessible}>
+                        {db.accessible ? db.name : `${db.name} (no access)`}
+                      </option>
                     ))}
                   </select>
                 ) : (
@@ -3312,7 +3335,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 {mysqlDatabaseDiscoveryError ? (
                   <span style={{ color: '#dc3545' }}>{mysqlDatabaseDiscoveryError}</span>
                 ) : mysqlDiscoveredDatabases.length > 0 ? (
-                  `Found ${mysqlDiscoveredDatabases.length} database(s). Select one or type manually.`
+                  `Found ${mysqlDiscoveredDatabases.length} database(s), ${mysqlDiscoveredDatabases.filter((db) => db.accessible).length} accessible.`
                 ) : (
                   'Enter credentials, then click Discover to find available databases.'
                 )}
@@ -3358,8 +3381,10 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                     style={{ flex: 1 }}
                   >
                     <option value="">Select database...</option>
-                    {mysqlDiscoveredDatabases.map(db => (
-                      <option key={db} value={db}>{db}</option>
+                    {mysqlDiscoveredDatabases.map((db) => (
+                      <option key={db.name} value={db.name} disabled={!db.accessible}>
+                        {db.accessible ? db.name : `${db.name} (no access)`}
+                      </option>
                     ))}
                   </select>
                 ) : (
@@ -3385,7 +3410,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 {mysqlDatabaseDiscoveryError ? (
                   <span style={{ color: '#dc3545' }}>{mysqlDatabaseDiscoveryError}</span>
                 ) : mysqlDiscoveredDatabases.length > 0 ? (
-                  `Found ${mysqlDiscoveredDatabases.length} database(s). Select one or type manually.`
+                  `Found ${mysqlDiscoveredDatabases.length} database(s), ${mysqlDiscoveredDatabases.filter((db) => db.accessible).length} accessible.`
                 ) : (
                   'Select a container, then click Discover to find available databases.'
                 )}
@@ -3458,7 +3483,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
       });
 
       if (result.success) {
-        setPdmDiscoveredDatabases(result.databases);
+        const options = toDatabaseOptions(result);
+        setPdmDiscoveredDatabases(options.filter((db) => db.accessible).map((db) => db.name));
       } else {
         setPdmDatabaseDiscoveryError(result.error || 'Failed to discover databases');
       }
