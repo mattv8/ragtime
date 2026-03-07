@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useRef, useEffect } from 'react';
 import { ChevronLeft, ChevronRight, ChevronUp, ChevronDown } from 'lucide-react';
 
 interface ResizeHandleProps {
@@ -21,8 +21,27 @@ interface ResizeHandleProps {
 
 export function ResizeHandle({ direction, onResize, className, collapsed, onExpand, onResizeEnd }: ResizeHandleProps) {
   const startPos = useRef(0);
+  const isDragging = useRef(false);
   const onResizeRef = useRef(onResize);
   onResizeRef.current = onResize;
+
+  useEffect(() => {
+    return () => {
+      if (isDragging.current) {
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        isDragging.current = false;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (collapsed && isDragging.current) {
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      isDragging.current = false;
+    }
+  }, [collapsed]);
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
@@ -32,6 +51,7 @@ export function ResizeHandle({ direction, onResize, className, collapsed, onExpa
       startPos.current = direction === 'horizontal' ? e.clientX : e.clientY;
       document.body.style.cursor = direction === 'horizontal' ? 'col-resize' : 'row-resize';
       document.body.style.userSelect = 'none';
+      isDragging.current = true;
     },
     [direction, collapsed],
   );
@@ -54,6 +74,7 @@ export function ResizeHandle({ direction, onResize, className, collapsed, onExpa
       e.currentTarget.releasePointerCapture(e.pointerId);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      isDragging.current = false;
       onResizeEnd?.();
     },
     [onResizeEnd],
@@ -65,6 +86,7 @@ export function ResizeHandle({ direction, onResize, className, collapsed, onExpa
       e.currentTarget.releasePointerCapture(e.pointerId);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      isDragging.current = false;
       onResizeEnd?.();
     },
     [onResizeEnd],
