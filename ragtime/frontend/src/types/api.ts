@@ -1881,24 +1881,3 @@ export interface ProviderPromptDebugRecord {
 export interface ProviderPromptDebugListResponse {
   records: ProviderPromptDebugRecord[];
 }
-
-// Model context limits (approximate token counts)
-export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
-  'gpt-4-turbo': 128000,
-  'gpt-4': 8192,
-  'gpt-4-32k': 32768,
-  'gpt-3.5-turbo': 16385,
-  'gpt-3.5-turbo-16k': 16385,
-  'claude-3-opus-20240229': 200000,
-  'claude-3-sonnet-20240229': 200000,
-  'claude-3-haiku-20240307': 200000,
-  'claude-3-5-sonnet-20241022': 200000,
-  // Ollama models (typical defaults)
-  'llama2': 4096,
-  'llama3': 8192,
-  'llama3.1': 128000,
-  'mistral': 8192,
-  'mixtral': 32768,
-  'codellama': 16384,
-  'qwen2.5': 32768,
-};

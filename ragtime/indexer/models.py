@@ -2,8 +2,6 @@
 Indexer data models and schemas.
 """
 
-
-
 import hashlib
 import json
 from datetime import datetime
