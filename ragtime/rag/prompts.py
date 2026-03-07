@@ -211,7 +211,21 @@ Default to hiding unless the user benefits from seeing technical details.
 # USER SPACE MODE PROMPTS
 # =============================================================================
 
-USERSPACE_MODE_PROMPT_ADDITION = f"""
+_USERSPACE_SQLITE_PERSISTENCE_BLOCK = """
+
+#### SQLite persistence (devcontainer-friendly)
+
+- Use SQLite at `.ragtime/db/app.sqlite3` for out-of-scope local persistence (for example: UI state, cache, drafts, local operational data).
+- Do not treat local SQLite as the source of truth for persistent dashboard datasets when workspace live tools are available.
+- Migration convention is `.ragtime/db/migrations/*.sql` in lexical order (`0001_init.sql`, `0002_add_table.sql`, ...).
+- Runtime bootstrap runs `.ragtime/scripts/sqlite_migrate.py --db .ragtime/db/app.sqlite3 --migrations .ragtime/db/migrations` when present.
+- `.ragtime/scripts/sqlite_migrate.py` tracks applied migrations in `_ragtime_migrations` with SHA-256 checksums.
+- Never edit a previously applied migration file; create a new migration instead.
+- When scaffolding backend code, wire database configuration to the same SQLite path so local preview/runtime stays deterministic.
+"""
+
+
+_USERSPACE_MODE_PROMPT_TEMPLATE = """
 
 ## USER SPACE MODE
 
@@ -233,16 +247,7 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Keep `dashboard/main.ts` as a thin composition entrypoint that wires imports, layout, and bootstrapping.
 - Do not treat each file as an independent rendered page; compose routes, breadcrumbs, and shell navigation inside the single app rooted at `dashboard/main.ts`.
 - When adding files, preserve a clear module boundary and reusable naming conventions.
-
-#### SQLite persistence (devcontainer-friendly)
-
-- Use SQLite at `.ragtime/db/app.sqlite3` for out-of-scope local persistence (for example: UI state, cache, drafts, local operational data).
-- Do not treat local SQLite as the source of truth for persistent dashboard datasets when workspace live tools are available.
-- Migration convention is `.ragtime/db/migrations/*.sql` in lexical order (`0001_init.sql`, `0002_add_table.sql`, ...).
-- Runtime bootstrap runs `.ragtime/scripts/sqlite_migrate.py --db .ragtime/db/app.sqlite3 --migrations .ragtime/db/migrations` when present.
-- `.ragtime/scripts/sqlite_migrate.py` tracks applied migrations in `_ragtime_migrations` with SHA-256 checksums.
-- Never edit a previously applied migration file; create a new migration instead.
-- When scaffolding backend code, wire database configuration to the same SQLite path so local preview/runtime stays deterministic.
+{sqlite_persistence_block}
 
 #### Terminal tool (`run_terminal_command`)
 
@@ -270,7 +275,7 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Data connections are internal components, abstracted from end users.
 - These components map to admin-configured tools from Settings.
 - Persist the connection request (query/command payload + component reference), then read/fetch through `context.components` at render/runtime.
-{USERSPACE_SHARED_LIVE_DATA_GUARDRAILS.strip()}
+{userspace_shared_live_data_guardrails}
 - When creating chart/datatable payloads for reusable artifacts, include `data_connection` as a component reference:
     - `component_kind`: `tool_config`
     - `component_id`: admin-configured tool config ID
@@ -308,6 +313,25 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Do not introduce custom font stacks, raw hex palettes, or fixed theme-specific colors unless explicitly requested.
 - Use only the token names available in the runtime theme stylesheet; do not invent new token names.
 """
+
+
+def build_userspace_mode_prompt_addition(*, include_sqlite_persistence: bool) -> str:
+    """Build userspace prompt additions with optional SQLite guidance.
+
+    Args:
+        include_sqlite_persistence: Whether to include the SQLite persistence block.
+    """
+    return _USERSPACE_MODE_PROMPT_TEMPLATE.format(
+        sqlite_persistence_block=(
+            _USERSPACE_SQLITE_PERSISTENCE_BLOCK if include_sqlite_persistence else ""
+        ),
+        userspace_shared_live_data_guardrails=USERSPACE_SHARED_LIVE_DATA_GUARDRAILS.strip(),
+    )
+
+
+USERSPACE_MODE_PROMPT_ADDITION = build_userspace_mode_prompt_addition(
+    include_sqlite_persistence=True
+)
 
 
 # =============================================================================
