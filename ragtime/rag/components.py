@@ -7653,6 +7653,9 @@ except Exception as e:
                 active_tool_runs: set[str] = set()
                 streamed_content_by_chat_run: dict[str, str] = {}
                 streamed_reasoning_by_chat_run: dict[str, str] = {}
+                # Track tool call argument generation progress (line count)
+                _generating_tool_lines: dict[str, int] = {}
+                _generating_tool_names: dict[str, str] = {}
 
                 async for event in executor.astream_events(
                     {"input": agent_input, "chat_history": chat_history},
@@ -7731,6 +7734,44 @@ except Exception as e:
                     elif kind == "on_chat_model_stream":
                         chunk = event.get("data", {}).get("chunk")
                         if chunk:
+                            # Detect tool-call argument streaming (LLM generating
+                            # tool input). Count newlines to report line progress.
+                            tool_call_chunks = getattr(chunk, "tool_call_chunks", None)
+                            if tool_call_chunks:
+                                for tc_chunk in tool_call_chunks:
+                                    tc_id = (
+                                        tc_chunk.get("id") or tc_chunk.get("index")
+                                        if isinstance(tc_chunk, dict)
+                                        else getattr(tc_chunk, "id", None)
+                                        or getattr(tc_chunk, "index", None)
+                                    )
+                                    tc_name = (
+                                        tc_chunk.get("name")
+                                        if isinstance(tc_chunk, dict)
+                                        else getattr(tc_chunk, "name", None)
+                                    )
+                                    tc_args = (
+                                        tc_chunk.get("args", "")
+                                        if isinstance(tc_chunk, dict)
+                                        else getattr(tc_chunk, "args", "")
+                                    ) or ""
+                                    tc_key = str(tc_id) if tc_id is not None else run_id
+                                    if tc_name:
+                                        _generating_tool_names[tc_key] = tc_name
+                                    if tc_args and tc_key:
+                                        prev = _generating_tool_lines.get(tc_key, 0)
+                                        new_lines = tc_args.count("\n")
+                                        if new_lines:
+                                            total = prev + new_lines
+                                            _generating_tool_lines[tc_key] = total
+                                            yield {
+                                                "type": "tool_generating",
+                                                "tool": _generating_tool_names.get(
+                                                    tc_key, ""
+                                                ),
+                                                "lines": total,
+                                            }
+
                             # Check for provider-specific reasoning/thinking tokens.
                             reasoning_text = self._extract_reasoning_from_stream_chunk(
                                 chunk

@@ -17,11 +17,13 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.logging import get_logger
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (ChatTaskStatus, FilesystemConnectionConfig,
-                                    SchemaIndexConfig)
+from ragtime.indexer.models import (
+    ChatTaskStatus,
+    FilesystemConnectionConfig,
+    SchemaIndexConfig,
+)
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
-                                            schema_indexer)
+from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
 from ragtime.indexer.service import indexer
 from ragtime.indexer.utils import safe_tool_name
 
@@ -159,7 +161,9 @@ def rebuild_tool_messages_from_events(
             tool_seq += 1
             tool_name = ev.get("tool", "unknown")
             tool_args = ev.get("input") or {}
-            tool_output = _truncate_tool_output(str(ev.get("output", "")), max_tool_output_chars)
+            tool_output = _truncate_tool_output(
+                str(ev.get("output", "")), max_tool_output_chars
+            )
 
             messages.append(
                 AIMessage(
@@ -662,8 +666,11 @@ class BackgroundTaskService:
                 # Build chat history (exclude the user message we're about to process)
                 # Include tool call information so the LLM has full context
                 from ragtime.core.app_settings import SettingsCache
+
                 app_settings = await SettingsCache.get_instance().get_settings()
-                max_tool_output_chars = int(app_settings.get("max_tool_output_chars", 5000))
+                max_tool_output_chars = int(
+                    app_settings.get("max_tool_output_chars", 5000)
+                )
 
                 chat_history = []
                 for msg_idx, msg in enumerate(
@@ -679,7 +686,9 @@ class BackgroundTaskService:
                         if msg.events:
                             # Reconstruct native AIMessage(tool_calls) + ToolMessage pairs
                             chat_history.extend(
-                                rebuild_tool_messages_from_events(msg.events, msg_idx, max_tool_output_chars)
+                                rebuild_tool_messages_from_events(
+                                    msg.events, msg_idx, max_tool_output_chars
+                                )
                             )
                         elif msg.content and msg.content.strip():
                             chat_history.append(AIMessage(content=msg.content))
@@ -734,19 +743,44 @@ class BackgroundTaskService:
 
                         if event_type == "tool_start":
                             run_id = event.get("run_id", "")
-                            # Add tool call to events immediately (without output)
-                            # This allows the frontend to show the hourglass/running state
-                            tool_event = {
-                                "type": "tool",
-                                "tool": event.get("tool"),
-                                "input": event.get("input"),
-                                "connection": event.get("connection"),
-                                # No "output" key = running state
-                            }
-                            events.append(tool_event)
-                            # Track this tool's index by run_id
-                            if run_id:
-                                running_tool_indices[run_id] = len(events) - 1
+                            tool_name = event.get("tool")
+                            # Check if a ghost generating event already exists
+                            # for this tool (created by tool_generating before
+                            # on_tool_start fires).
+                            ghost_idx = None
+                            for gi in range(len(events) - 1, -1, -1):
+                                gev = events[gi]
+                                if (
+                                    gev.get("type") == "tool"
+                                    and gev.get("tool") == tool_name
+                                    and "output" not in gev
+                                    and "input" not in gev
+                                ):
+                                    ghost_idx = gi
+                                    break
+
+                            if ghost_idx is not None:
+                                # Upgrade the ghost event with full tool_start data
+                                events[ghost_idx]["input"] = event.get("input")
+                                events[ghost_idx]["connection"] = event.get(
+                                    "connection"
+                                )
+                                if run_id:
+                                    running_tool_indices[run_id] = ghost_idx
+                            else:
+                                # Add tool call to events immediately (without output)
+                                # This allows the frontend to show the hourglass/running state
+                                tool_event = {
+                                    "type": "tool",
+                                    "tool": tool_name,
+                                    "input": event.get("input"),
+                                    "connection": event.get("connection"),
+                                    # No "output" key = running state
+                                }
+                                events.append(tool_event)
+                                # Track this tool's index by run_id
+                                if run_id:
+                                    running_tool_indices[run_id] = len(events) - 1
 
                             # Force immediate update so the UI shows the running tool
                             result = await repository.update_chat_task_streaming_state(
@@ -818,6 +852,53 @@ class BackgroundTaskService:
                                     task_id, result.streaming_state.dict()
                                 )
                             last_update = datetime.utcnow()
+
+                        elif event_type == "tool_generating":
+                            # LLM is streaming tool call arguments - update
+                            # the latest running tool event with line progress.
+                            gen_tool = event.get("tool", "")
+                            gen_lines = event.get("lines", 0)
+                            if gen_tool and gen_lines:
+                                # Find the last running tool event matching this name
+                                for i in range(len(events) - 1, -1, -1):
+                                    ev = events[i]
+                                    if (
+                                        ev.get("type") == "tool"
+                                        and ev.get("tool") == gen_tool
+                                        and "output" not in ev
+                                    ):
+                                        ev["generating_lines"] = gen_lines
+                                        break
+                                else:
+                                    # No matching running tool - emit a ghost
+                                    # tool event so the frontend shows progress
+                                    events.append(
+                                        {
+                                            "type": "tool",
+                                            "tool": gen_tool,
+                                            "generating_lines": gen_lines,
+                                        }
+                                    )
+
+                            # Throttle updates to avoid flooding the SSE bus
+                            now = datetime.utcnow()
+                            if (now - last_update).total_seconds() > 0.6:
+                                result = (
+                                    await repository.update_chat_task_streaming_state(
+                                        task_id,
+                                        full_response,
+                                        events,
+                                        tool_calls,
+                                        hit_max_iterations,
+                                        current_version,
+                                    )
+                                )
+                                if result and result.streaming_state:
+                                    current_version = result.streaming_state.version
+                                    await task_event_bus.publish(
+                                        task_id, result.streaming_state.dict()
+                                    )
+                                last_update = now
 
                         elif event_type == "reasoning":
                             # Reasoning/thinking content from LLM

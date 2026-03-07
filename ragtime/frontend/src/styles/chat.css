@@ -1668,6 +1668,14 @@
   flex: 1;
 }
 
+.tool-call-progress {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  margin-left: var(--space-xxs);
+}
+
 .tool-call-toggle {
   display: inline-flex;
   align-items: center;

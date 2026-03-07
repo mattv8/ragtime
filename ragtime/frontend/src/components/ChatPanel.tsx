@@ -92,6 +92,7 @@ interface ActiveToolCall {
     tool_type?: string;
   };
   status: 'running' | 'complete';
+  generating_lines?: number;
 }
 
 // Local render event to keep streaming items in arrival order
@@ -861,6 +862,9 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
         >
           {statusIcon && <span className="tool-call-icon">{statusIcon}</span>}
           <span className="tool-call-name">{toolCall.tool}</span>
+          {toolCall.status === 'running' && toolCall.generating_lines ? (
+            <span className="tool-call-progress">{toolCall.generating_lines} lines</span>
+          ) : null}
           <span className="tool-call-toggle" aria-hidden="true">
             {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           </span>
@@ -999,6 +1003,9 @@ const ReasoningToolCallCard = memo(function ReasoningToolCallCard({
           <ChevronRight size={12} className={`reasoning-tool-call-chevron ${expanded ? 'expanded' : ''}`} />
         ) : null}
         <span className="reasoning-tool-call-name">{toolName}</span>
+        {isRunning && executedTool?.generating_lines ? (
+          <span className="tool-call-progress">{executedTool.generating_lines} lines</span>
+        ) : null}
       </button>
       {expanded && hasOutput && (
         <div className="reasoning-tool-call-details">
@@ -2558,7 +2565,8 @@ export function ChatPanel({
                             input: ev.input,
                             output: ev.output,
                           connection: ev.connection,
-                      status: hasOutput ? 'complete' : 'running'
+                      status: hasOutput ? 'complete' : 'running',
+                      generating_lines: ev.generating_lines,
                         }
                     };
                 });
@@ -3746,11 +3754,29 @@ export function ChatPanel({
                           />
                         ))}
                         <div className="chat-message-streaming">
-                          {consolidatedSegments.some(seg => seg.type === 'tool' && seg.toolCall?.status === 'running')
-                            ? 'Running tool...'
-                            : consolidatedSegments.some(seg => seg.type === 'reasoning' && !seg.isComplete)
-                              ? 'Reasoning...'
-                              : 'Generating...'}
+                          {(() => {
+                            const runningTool = consolidatedSegments.find(
+                              seg => seg.type === 'tool' && seg.toolCall?.status === 'running'
+                            );
+                            if (runningTool && runningTool.type === 'tool') {
+                              const lines = runningTool.toolCall?.generating_lines;
+                              return lines
+                                ? `Running tool... (${lines} lines)`
+                                : 'Running tool...';
+                            }
+                            // Check for a tool that's being generated (has generating_lines but
+                            // hasn't started executing yet - no input means still generating args)
+                            const generatingTool = consolidatedSegments.find(
+                              seg => seg.type === 'tool' && !seg.toolCall?.input && seg.toolCall?.generating_lines
+                            );
+                            if (generatingTool && generatingTool.type === 'tool') {
+                              return `Generating... (${generatingTool.toolCall?.generating_lines} lines)`;
+                            }
+                            if (consolidatedSegments.some(seg => seg.type === 'reasoning' && !seg.isComplete)) {
+                              return 'Reasoning...';
+                            }
+                            return 'Generating...';
+                          })()}
                         </div>
                       </div>
                     </div>
