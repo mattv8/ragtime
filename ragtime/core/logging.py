@@ -134,6 +134,7 @@ class UvicornAccessFilter(logging.Filter):
     # Endpoints that generate frequent polling requests
     QUIET_PATHS = {
         "/health",
+        "/sessions/",  # Runtime session polling
         "/events",  # SSE event streams
         "/task",  # Task status polling
         "/interrupted-task",  # Interrupted task polling
