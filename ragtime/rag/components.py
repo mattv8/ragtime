@@ -22,8 +22,13 @@ from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain.agents.output_parsers.tools import ToolsAgentOutputParser
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
-                                     SystemMessage, ToolMessage)
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_core.tools import StructuredTool, ToolException
@@ -34,56 +39,84 @@ from pydantic import BaseModel, Field, field_validator
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.entrypoint_status import FRAMEWORK_REQUIRED_PACKAGES
-from ragtime.core.file_constants import (USERSPACE_MODULE_SOURCE_EXTENSIONS,
-                                         USERSPACE_STRICT_FRONTEND_EXTENSIONS,
-                                         USERSPACE_THEME_AUDIT_EXTENSIONS,
-                                         USERSPACE_TYPESCRIPT_EXTENSIONS)
+from ragtime.core.file_constants import (
+    USERSPACE_MODULE_SOURCE_EXTENSIONS,
+    USERSPACE_STRICT_FRONTEND_EXTENSIONS,
+    USERSPACE_THEME_AUDIT_EXTENSIONS,
+    USERSPACE_TYPESCRIPT_EXTENSIONS,
+)
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit, get_output_limit
-from ragtime.core.ollama import (KEEP_ALIVE, NUM_GPU, get_model_context_length,
-                                 get_model_details, has_capability,
-                                 warmup_embedding_model, warmup_model)
-from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
-                                   validate_odoo_code, validate_sql_query,
-                                   validate_ssh_command)
+from ragtime.core.ollama import (
+    KEEP_ALIVE,
+    NUM_GPU,
+    get_model_context_length,
+    get_model_details,
+    has_capability,
+    warmup_embedding_model,
+    warmup_model,
+)
+from ragtime.core.security import (
+    _SSH_ENV_VAR_RE,
+    sanitize_output,
+    validate_odoo_code,
+    validate_sql_query,
+    validate_ssh_command,
+)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
-                              execute_ssh_command, expand_env_vars_via_ssh,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.ssh import (
+    SSHConfig,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    expand_env_vars_via_ssh,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
-from ragtime.rag.prompts import (BASE_CHAT_SYSTEM_PROMPT,
-                                 BASE_USERSPACE_SYSTEM_PROMPT,
-                                 TOOL_OUTPUT_VISIBILITY_PROMPT,
-                                 TOOL_USAGE_REMINDER,
-                                 UI_VISUALIZATION_CHAT_PROMPT,
-                                 UI_VISUALIZATION_COMMON_PROMPT,
-                                 UI_VISUALIZATION_USERSPACE_PROMPT,
-                                 USERSPACE_TURN_REMINDER,
-                                 build_index_system_prompt,
-                                 build_tool_system_prompt,
-                                 build_userspace_entrypoint_nudge,
-                                 build_userspace_mode_prompt_addition)
+from ragtime.rag.prompts import (
+    BASE_CHAT_SYSTEM_PROMPT,
+    BASE_USERSPACE_SYSTEM_PROMPT,
+    TOOL_OUTPUT_VISIBILITY_PROMPT,
+    TOOL_USAGE_REMINDER,
+    UI_VISUALIZATION_CHAT_PROMPT,
+    UI_VISUALIZATION_COMMON_PROMPT,
+    UI_VISUALIZATION_USERSPACE_PROMPT,
+    USERSPACE_TURN_REMINDER,
+    build_index_system_prompt,
+    build_tool_system_prompt,
+    build_userspace_entrypoint_nudge,
+    build_userspace_mode_prompt_addition,
+)
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
-                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
-                                 create_chart_tool)
-from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-                                     create_datatable_tool)
+from ragtime.tools.chart import (
+    CHAT_CHART_DESCRIPTION_SUFFIX,
+    USERSPACE_CHART_DESCRIPTION_SUFFIX,
+    create_chart_tool,
+)
+from ragtime.tools.datatable import (
+    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+    create_datatable_tool,
+)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (_is_shallow_repository,
-                                       create_aggregate_git_history_tool,
-                                       create_per_index_git_history_tool)
+from ragtime.tools.git_history import (
+    _is_shallow_repository,
+    create_aggregate_git_history_tool,
+    create_per_index_git_history_tool,
+)
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (ArtifactType, UpsertWorkspaceFileRequest,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection)
+from ragtime.userspace.models import (
+    ArtifactType,
+    UpsertWorkspaceFileRequest,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -6276,7 +6309,8 @@ except Exception as e:
 
             if should_probe_runtime:
                 runtime_probe["attempted"] = True
-                try:
+
+                async def _run_runtime_probe() -> None:
                     status = await userspace_runtime_service.get_devserver_status(
                         workspace_id,
                         user_id,
@@ -6312,9 +6346,11 @@ except Exception as e:
                     elif worker_token:
                         probe_headers["Authorization"] = f"Bearer {worker_token}"
 
-                    timeout = httpx.Timeout(connect=2.0, read=12.0, write=8.0, pool=4.0)
+                    probe_timeout = httpx.Timeout(
+                        connect=2.0, read=12.0, write=8.0, pool=4.0
+                    )
                     async with httpx.AsyncClient(
-                        timeout=timeout, follow_redirects=False
+                        timeout=probe_timeout, follow_redirects=False
                     ) as client:
                         response = await client.get(
                             upstream_url,
@@ -6329,6 +6365,13 @@ except Exception as e:
                             "Runtime strict validation failed: preview upstream returned "
                             f"HTTP {response.status_code}.{detail_suffix}"
                         )
+
+                try:
+                    await asyncio.wait_for(_run_runtime_probe(), timeout=30)
+                except TimeoutError:
+                    add_runtime_error(
+                        "Runtime strict validation failed: runtime probe timed out after 30s."
+                    )
                 except HTTPException as exc:
                     detail_text = str(getattr(exc, "detail", exc)).strip() or str(exc)
                     add_runtime_error(
@@ -6589,6 +6632,7 @@ except Exception as e:
                     "Use this automatically at each completed user-requested change loop."
                 ),
                 args_schema=CreateUserSpaceSnapshotInput,
+                handle_tool_error=True,
             ),
             StructuredTool.from_function(
                 coroutine=validate_userspace_code,
@@ -6599,6 +6643,7 @@ except Exception as e:
                     "Use after edits and before creating snapshots."
                 ),
                 args_schema=ValidateUserSpaceCodeInput,
+                handle_tool_error=True,
             ),
             StructuredTool.from_function(
                 coroutine=capture_userspace_screenshot,
@@ -7659,6 +7704,27 @@ except Exception as e:
                             "output": tool_output,
                             "connection": connection_meta,
                             "run_id": run_id,  # Include run_id for matching with tool_start
+                        }
+
+                    # Handle tool errors so the UI never shows a permanently "running" tool card
+                    elif kind == "on_tool_error":
+                        if run_id not in active_tool_runs:
+                            continue
+                        active_tool_runs.discard(run_id)
+
+                        tool_name = event.get("name", "unknown")
+                        error_data = event.get("data", {})
+                        error_output = (
+                            str(error_data.get("error", error_data)).strip()
+                            or "Tool execution failed"
+                        )
+                        connection_meta = self._get_tool_connection_metadata(tool_name)
+                        yield {
+                            "type": "tool_end",
+                            "tool": tool_name,
+                            "output": f"Error: {error_output}",
+                            "connection": connection_meta,
+                            "run_id": run_id,
                         }
 
                     # Stream tokens from the chat model
