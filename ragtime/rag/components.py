@@ -4828,7 +4828,9 @@ except Exception as e:
 
         async def list_userspace_files(reason: str = "", **_: Any) -> str:
             del reason
-            files = await userspace_service.list_workspace_files(workspace_id, user_id)
+            files = await userspace_service.list_workspace_files(
+                workspace_id, user_id, include_dirs=True
+            )
             return json.dumps([f.model_dump(mode="json") for f in files], indent=2)
 
         def _compute_authoritative_entrypoint(
@@ -4868,7 +4870,9 @@ except Exception as e:
             )
 
         async def _get_workspace_structure() -> dict[str, Any]:
-            files = await userspace_service.list_workspace_files(workspace_id, user_id)
+            files = await userspace_service.list_workspace_files(
+                workspace_id, user_id, include_dirs=True
+            )
             file_paths = {file.path for file in files}
             authoritative_entrypoint, entrypoint_reason = (
                 _compute_authoritative_entrypoint(file_paths)

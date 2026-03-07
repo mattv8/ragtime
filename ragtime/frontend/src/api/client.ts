@@ -1699,8 +1699,12 @@ export const api = {
     return handleResponse<UserSpaceWorkspace>(response);
   },
 
-  async listUserSpaceFiles(workspaceId: string): Promise<UserSpaceFileInfo[]> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/files`);
+  async listUserSpaceFiles(
+    workspaceId: string,
+    options?: { includeDirs?: boolean }
+  ): Promise<UserSpaceFileInfo[]> {
+    const query = options?.includeDirs ? '?include_dirs=true' : '';
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/files${query}`);
     return handleResponse<UserSpaceFileInfo[]>(response);
   },
 

@@ -1921,7 +1921,7 @@ class UserSpaceService:
         return self._workspace_from_record(refreshed)
 
     async def list_workspace_files(
-        self, workspace_id: str, user_id: str
+        self, workspace_id: str, user_id: str, include_dirs: bool = False
     ) -> list[UserSpaceFileInfo]:
         await self._enforce_workspace_access(workspace_id, user_id)
         await self._ensure_workspace_git_repo(workspace_id)
@@ -1929,7 +1929,9 @@ class UserSpaceService:
         if not files_dir.exists():
             return []
 
-        return await asyncio.to_thread(self._list_workspace_files_sync, files_dir)
+        return await asyncio.to_thread(
+            self._list_workspace_files_sync, files_dir, include_dirs
+        )
 
     async def upsert_workspace_file(
         self,
@@ -2947,20 +2949,27 @@ class UserSpaceService:
 
         return rows, columns
 
-    def _list_workspace_files_sync(self, files_dir: Path) -> list[UserSpaceFileInfo]:
+    def _list_workspace_files_sync(
+        self, files_dir: Path, include_dirs: bool = False
+    ) -> list[UserSpaceFileInfo]:
         files: list[UserSpaceFileInfo] = []
-        for file_path in files_dir.rglob("*"):
-            if not file_path.is_file():
+        for path in files_dir.rglob("*"):
+            is_file = path.is_file()
+            is_dir = path.is_dir()
+            if not is_file and not (include_dirs and is_dir):
                 continue
-            relative = str(file_path.relative_to(files_dir))
+
+            relative = str(path.relative_to(files_dir))
             if self._is_reserved_internal_path(relative):
                 continue
-            stat = file_path.stat()
+
+            stat = path.stat()
             files.append(
                 UserSpaceFileInfo(
                     path=relative,
-                    size_bytes=stat.st_size,
+                    size_bytes=stat.st_size if is_file else 0,
                     updated_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
+                    entry_type="directory" if is_dir else "file",
                 )
             )
         files.sort(key=lambda item: item.path)

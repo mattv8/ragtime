@@ -18,6 +18,10 @@ function normalizePath(path: string): string {
   return path.trim().replace(/^\/+|\/+$/g, '').replace(/\/+/g, '/');
 }
 
+function isDirectoryEntry(entry: UserSpaceFileInfo): boolean {
+  return entry.entry_type === 'directory';
+}
+
 function toNode(node: MutableTreeNode): UserSpaceTreeNode {
   const children = Array.from(node.childrenMap.values()).map(toNode);
   children.sort((left, right) => {
@@ -56,8 +60,13 @@ export function getAncestorFolderPaths(filePath: string): string[] {
 export function listFolderPaths(files: UserSpaceFileInfo[]): Set<string> {
   const folderPaths = new Set<string>();
   for (const file of files) {
-    const firstSegment = normalizePath(file.path).split('/')[0];
+    const normalizedPath = normalizePath(file.path);
+    const firstSegment = normalizedPath.split('/')[0];
     if (firstSegment && HIDDEN_ROOT_DIRS.has(firstSegment)) continue;
+
+    if (isDirectoryEntry(file) && normalizedPath) {
+      folderPaths.add(normalizedPath);
+    }
 
     for (const folderPath of getAncestorFolderPaths(file.path)) {
       folderPaths.add(folderPath);
@@ -75,6 +84,8 @@ export function buildUserSpaceTree(files: UserSpaceFileInfo[]): UserSpaceTreeNod
       continue;
     }
 
+    const isDirectory = isDirectoryEntry(file);
+
     const segments = normalizedPath.split('/').filter(Boolean);
 
     // Skip files inside hidden root directories
@@ -86,10 +97,14 @@ export function buildUserSpaceTree(files: UserSpaceFileInfo[]): UserSpaceTreeNod
     for (let index = 0; index < segments.length; index += 1) {
       const name = segments[index];
       const path = segments.slice(0, index + 1).join('/');
-      const isFile = index === segments.length - 1;
+      const isFinalSegment = index === segments.length - 1;
+      const isFileNode = isFinalSegment && !isDirectory;
       const existingNode = currentMap.get(name);
 
       if (existingNode) {
+        if (!isFileNode && existingNode.type === 'file') {
+          existingNode.type = 'folder';
+        }
         currentMap = existingNode.childrenMap;
         continue;
       }
@@ -97,7 +112,7 @@ export function buildUserSpaceTree(files: UserSpaceFileInfo[]): UserSpaceTreeNod
       const nextNode: MutableTreeNode = {
         name,
         path,
-        type: isFile ? 'file' : 'folder',
+        type: isFileNode ? 'file' : 'folder',
         children: [],
         childrenMap: new Map<string, MutableTreeNode>(),
       };

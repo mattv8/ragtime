@@ -1496,6 +1496,7 @@ export interface UserSpaceFileInfo {
   path: string;
   size_bytes: number;
   updated_at: string;
+  entry_type?: 'file' | 'directory';
 }
 
 export interface UserSpaceLiveDataConnection {

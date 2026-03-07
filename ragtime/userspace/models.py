@@ -87,6 +87,7 @@ class UserSpaceFileInfo(BaseModel):
     path: str
     size_bytes: int
     updated_at: datetime
+    entry_type: Literal["file", "directory"] = "file"
 
 
 class UpsertWorkspaceFileRequest(BaseModel):

@@ -209,6 +209,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [statusOverlayInteracting, setStatusOverlayInteracting] = useState(false);
 
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
+  const [fileBrowserEntries, setFileBrowserEntries] = useState<UserSpaceFileInfo[]>([]);
   const [files, setFiles] = useState<UserSpaceFileInfo[]>([]);
   const [snapshots, setSnapshots] = useState<UserSpaceSnapshot[]>([]);
   const [availableTools, setAvailableTools] = useState<UserSpaceAvailableTool[]>([]);
@@ -510,8 +511,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     () => new Set(resolvedSelectedToolIds),
     [resolvedSelectedToolIds]
   );
-  const fileTree = useMemo(() => buildUserSpaceTree(files), [files]);
-  const folderPaths = useMemo(() => listFolderPaths(files), [files]);
+  const fileTree = useMemo(() => buildUserSpaceTree(fileBrowserEntries), [fileBrowserEntries]);
+  const folderPaths = useMemo(() => listFolderPaths(fileBrowserEntries), [fileBrowserEntries]);
 
   const activeWorkspaceRole = useMemo(() => {
     if (!activeWorkspace) return 'viewer';
@@ -638,15 +639,18 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     const requestId = ++loadWorkspaceDataRequestIdRef.current;
 
     try {
-      const [nextFiles, nextSnapshots] = await Promise.all([
-        api.listUserSpaceFiles(workspaceId),
+      const [nextEntries, nextSnapshots] = await Promise.all([
+        api.listUserSpaceFiles(workspaceId, { includeDirs: true }),
         api.listUserSpaceSnapshots(workspaceId),
       ]);
+
+      const nextFiles = nextEntries.filter((entry) => entry.entry_type !== 'directory');
 
       if (requestId !== loadWorkspaceDataRequestIdRef.current) {
         return;
       }
 
+      setFileBrowserEntries(nextEntries);
       setFiles(nextFiles);
       setSnapshots(nextSnapshots);
 
@@ -1012,6 +1016,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     setRuntimeStatus(null);
     setPreviewLiveDataConnections([]);
     setActiveWorkspaceId(null);
+    setFileBrowserEntries([]);
     setFiles([]);
     setSnapshots([]);
     setSelectedFilePath(previewEntryPath);
@@ -1826,6 +1831,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
       if (!fallbackWorkspaceId) {
         clearCookieValue(lastWorkspaceCookieName);
+        setFileBrowserEntries([]);
         setFiles([]);
         setSnapshots([]);
         setFileContentCache({});
