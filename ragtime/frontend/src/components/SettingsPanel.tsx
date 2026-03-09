@@ -1,8 +1,8 @@
 import { LdapGroupSelect } from './LdapGroupSelect';
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Lock, LockOpen, Info, Search } from 'lucide-react';
+import { Lock, LockOpen, Info, Search, Clipboard, ExternalLink } from 'lucide-react';
 import { api } from '@/api';
-import type { AppSettings, UpdateSettingsRequest, OllamaModel, OllamaVisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus } from '@/types';
+import type { AppSettings, UpdateSettingsRequest, OllamaModel, OllamaVisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus, CopilotAuthStatusResponse } from '@/types';
 import { MCPRoutesPanel } from './MCPRoutesPanel';
 import { OllamaConnectionForm } from './OllamaConnectionForm';
 import { ModelSelector } from './ModelSelector';
@@ -113,6 +113,18 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   const [llmModelsError, setLlmModelsError] = useState<string | null>(null);
   const [llmModels, setLlmModels] = useState<LLMModel[]>([]);
   const [llmModelsLoaded, setLlmModelsLoaded] = useState(false);
+
+  // GitHub Copilot auth state
+  const [copilotAuthStatus, setCopilotAuthStatus] = useState<CopilotAuthStatusResponse | null>(null);
+  const [copilotConnecting, setCopilotConnecting] = useState(false);
+  const [copilotDeviceCode, setCopilotDeviceCode] = useState<string>('');
+  const [copilotVerificationUri, setCopilotVerificationUri] = useState<string>('');
+  const [copilotRequestId, setCopilotRequestId] = useState<string | null>(null);
+  const [copilotCodeCopied, setCopilotCodeCopied] = useState(false);
+  const [copilotWizardVisible, setCopilotWizardVisible] = useState(false);
+  const [copilotWizardStep, setCopilotWizardStep] = useState<1 | 2 | 3>(1);
+  const copilotPollTimerRef = useRef<number | null>(null);
+  const copilotPollGenerationRef = useRef(0);
 
   // OpenAI embedding model fetching state
   const [embeddingModelsFetching, setEmbeddingModelsFetching] = useState(false);
@@ -232,10 +244,10 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
 
   // Fetch LLM models from provider API
   const fetchLlmModels = useCallback(async (
-    provider: 'openai' | 'anthropic',
-    apiKey: string
+    provider: 'openai' | 'anthropic' | 'github_copilot',
+    apiKey?: string
   ) => {
-    if (!apiKey || apiKey.length < 10) {
+    if ((provider === 'openai' || provider === 'anthropic') && (!apiKey || apiKey.length < 10)) {
       setLlmModelsError('Please enter a valid API key first');
       return;
     }
@@ -254,16 +266,19 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       if (response.success) {
         setLlmModels(response.models);
         setLlmModelsLoaded(true);
-        // Auto-select the default model if none is currently set or the current one isn't in the list
+        // Auto-select a default model without capturing formData in callback deps.
         if (response.default_model) {
-          const currentModel = formData.llm_model;
-          const modelExists = response.models.some((m) => m.id === currentModel);
-          if (!currentModel || !modelExists) {
-            setFormData((prev) => ({
-              ...prev,
-              llm_model: response.default_model,
-            }));
-          }
+          setFormData((prev) => {
+            const currentModel = prev.llm_model;
+            const modelExists = response.models.some((m) => m.id === currentModel);
+            if (!currentModel || !modelExists) {
+              return {
+                ...prev,
+                llm_model: response.default_model,
+              };
+            }
+            return prev;
+          });
         }
       } else {
         setLlmModelsError(response.message);
@@ -273,7 +288,172 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     } finally {
       setLlmModelsFetching(false);
     }
-  }, [formData.llm_model]);
+  }, []);
+
+  const refreshCopilotStatus = useCallback(async () => {
+    try {
+      const status = await api.getCopilotAuthStatus();
+      setCopilotAuthStatus(status);
+      setFormData((prev) => ({
+        ...prev,
+        github_copilot_base_url: status.base_url,
+        github_copilot_enterprise_url: status.enterprise_url ?? null,
+      }));
+      return status;
+    } catch {
+      setCopilotAuthStatus(null);
+      return null;
+    }
+  }, []);
+
+  const clearCopilotPollTimer = useCallback(() => {
+    copilotPollGenerationRef.current += 1;
+    if (copilotPollTimerRef.current !== null) {
+      window.clearTimeout(copilotPollTimerRef.current);
+      copilotPollTimerRef.current = null;
+    }
+  }, []);
+
+  const pollCopilotDeviceFlow = useCallback(async (requestId: string, delaySeconds: number, generation: number) => {
+    clearCopilotPollTimer();
+    copilotPollGenerationRef.current = generation;
+    copilotPollTimerRef.current = window.setTimeout(async () => {
+      if (copilotPollGenerationRef.current !== generation) {
+        return;
+      }
+
+      try {
+        const response = await api.pollCopilotDeviceFlow({ request_id: requestId });
+        if (response.status === 'pending') {
+          await pollCopilotDeviceFlow(requestId, response.retry_after_seconds || 5, generation);
+          return;
+        }
+
+        if (response.status === 'connected') {
+          setCopilotConnecting(false);
+          setCopilotRequestId(null);
+          setCopilotDeviceCode('');
+          setCopilotVerificationUri('');
+          setCopilotCodeCopied(false);
+          setCopilotWizardVisible(false);
+          setCopilotWizardStep(1);
+          await refreshCopilotStatus();
+          setSuccess('GitHub Copilot connected successfully');
+          setTimeout(() => setSuccess(null), 3000);
+          if ((formData.llm_provider || 'openai') === 'github_copilot') {
+            await fetchLlmModels('github_copilot');
+          }
+          return;
+        }
+
+        setCopilotConnecting(false);
+        setCopilotRequestId(null);
+        setCopilotWizardVisible(false);
+        setCopilotWizardStep(1);
+        setLlmModelsError(response.message || 'GitHub Copilot authorization failed');
+      } catch (err) {
+        setCopilotConnecting(false);
+        setCopilotRequestId(null);
+        setCopilotWizardVisible(false);
+        setCopilotWizardStep(1);
+        const status = typeof err === 'object' && err !== null && 'status' in err
+          ? (err as { status?: number }).status
+          : undefined;
+        if (status === 404) {
+          setLlmModelsError('GitHub Copilot authorization session expired or server reloaded. Click Connect again.');
+        } else {
+          setLlmModelsError(err instanceof Error ? err.message : 'GitHub Copilot authorization failed');
+        }
+      }
+    }, Math.max(delaySeconds, 1) * 1000);
+  }, [clearCopilotPollTimer, fetchLlmModels, formData.llm_provider, refreshCopilotStatus]);
+
+  const startCopilotDeviceFlow = useCallback(async () => {
+    setLlmModelsError(null);
+    setCopilotConnecting(true);
+    clearCopilotPollTimer();
+    setCopilotCodeCopied(false);
+    setCopilotWizardVisible(false);
+    setCopilotWizardStep(1);
+
+    try {
+      const response = await api.startCopilotDeviceFlow({ deployment_type: 'github.com' });
+      if (!response.verification_uri) {
+        throw new Error('GitHub did not return an authorization URL');
+      }
+      setCopilotRequestId(response.request_id);
+      setCopilotDeviceCode(response.user_code);
+      setCopilotVerificationUri(response.verification_uri);
+      setCopilotWizardVisible(true);
+      setCopilotWizardStep(1);
+      const pollGeneration = copilotPollGenerationRef.current + 1;
+      copilotPollGenerationRef.current = pollGeneration;
+      await pollCopilotDeviceFlow(response.request_id, response.interval || 5, pollGeneration);
+    } catch (err) {
+      setCopilotConnecting(false);
+      setCopilotRequestId(null);
+      setCopilotWizardVisible(false);
+      setCopilotWizardStep(1);
+      setLlmModelsError(err instanceof Error ? err.message : 'Failed to start GitHub Copilot authorization');
+    }
+  }, [clearCopilotPollTimer, pollCopilotDeviceFlow]);
+
+  const clearCopilotAuth = useCallback(async () => {
+    clearCopilotPollTimer();
+    setCopilotConnecting(false);
+    setCopilotRequestId(null);
+    setCopilotDeviceCode('');
+    setCopilotVerificationUri('');
+    setCopilotCodeCopied(false);
+    setCopilotWizardVisible(false);
+    setCopilotWizardStep(1);
+    try {
+      await api.clearCopilotAuth();
+      await refreshCopilotStatus();
+      setLlmModels([]);
+      setLlmModelsLoaded(false);
+      setSuccess('GitHub Copilot connection removed');
+      setTimeout(() => setSuccess(null), 3000);
+    } catch (err) {
+      setLlmModelsError(err instanceof Error ? err.message : 'Failed to clear GitHub Copilot auth');
+    }
+  }, [clearCopilotPollTimer, refreshCopilotStatus]);
+
+  const copyCopilotDeviceCode = useCallback(async () => {
+    if (!copilotDeviceCode) {
+      return;
+    }
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(copilotDeviceCode);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = copilotDeviceCode;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'absolute';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      setSuccess('Device code copied');
+      setCopilotCodeCopied(true);
+      setTimeout(() => setCopilotCodeCopied(false), 2000);
+      setTimeout(() => setSuccess(null), 2000);
+    } catch {
+      setLlmModelsError('Unable to copy device code. Please copy it manually.');
+    }
+  }, [copilotDeviceCode]);
+
+  const openCopilotAuthorizationPage = useCallback(() => {
+    if (!copilotVerificationUri) {
+      return;
+    }
+    window.open(copilotVerificationUri, '_blank');
+    setCopilotWizardStep(3);
+  }, [copilotVerificationUri]);
 
   // Fetch embedding models from OpenAI API
   const fetchEmbeddingModels = useCallback(async (apiKey: string) => {
@@ -403,6 +583,8 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         llm_ollama_base_url: data.llm_ollama_base_url,
         openai_api_key: data.openai_api_key,
         anthropic_api_key: data.anthropic_api_key,
+        github_copilot_base_url: data.github_copilot_base_url,
+        github_copilot_enterprise_url: data.github_copilot_enterprise_url,
         max_iterations: data.max_iterations,
         // Token optimization settings
         max_tool_output_chars: data.max_tool_output_chars,
@@ -443,7 +625,14 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       setLlmModels([]);
       setLlmModelsError(null);
       setLlmModelsLoaded(false);
+      clearCopilotPollTimer();
+      setCopilotConnecting(false);
+      setCopilotRequestId(null);
+      setCopilotDeviceCode('');
+      setCopilotVerificationUri('');
       setError(null);
+
+      const copilotStatus = await refreshCopilotStatus();
 
       // Auto-test Ollama if using ollama embedding provider
       if (data.embedding_provider === 'ollama' && !hasAutoTestedOllama.current) {
@@ -463,6 +652,10 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           data.llm_ollama_host || 'localhost',
           data.llm_ollama_port || 11434
         );
+      }
+
+      if (data.llm_provider === 'github_copilot' && copilotStatus?.connected) {
+        fetchLlmModels('github_copilot');
       }
 
       // Load MCP routes (for summary display)
@@ -529,11 +722,17 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     } finally {
       setLoading(false);
     }
-  }, [testOllamaConnection]);
+  }, [clearCopilotPollTimer, fetchLlmModels, refreshCopilotStatus, testLlmOllamaConnection, testOllamaConnection]);
 
   useEffect(() => {
     loadSettings();
   }, [loadSettings]);
+
+  useEffect(() => {
+    return () => {
+      clearCopilotPollTimer();
+    };
+  }, [clearCopilotPollTimer]);
 
   const handleTestOllamaConnection = async () => {
     await testOllamaConnection(
@@ -679,6 +878,8 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         llm_max_tokens: formData.llm_max_tokens,
         openai_api_key: formData.openai_api_key,
         anthropic_api_key: formData.anthropic_api_key,
+        github_copilot_base_url: formData.github_copilot_base_url,
+        github_copilot_enterprise_url: formData.github_copilot_enterprise_url,
         allowed_chat_models: formData.allowed_chat_models,
         max_iterations: formData.max_iterations,
         // Token optimization settings
@@ -1020,6 +1221,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
 
   const openAiConfigured = Boolean((formData.openai_api_key ?? settings?.openai_api_key)?.trim());
   const claudeConfigured = Boolean((formData.anthropic_api_key ?? settings?.anthropic_api_key)?.trim());
+  const copilotConfigured = Boolean(copilotAuthStatus?.connected ?? settings?.has_github_copilot_auth);
   const ollamaConfigured = Boolean(
     (formData.llm_ollama_protocol ?? settings?.llm_ollama_protocol) &&
     (formData.llm_ollama_host ?? settings?.llm_ollama_host)?.trim() &&
@@ -1204,6 +1406,13 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                 />
                 <span className="llm-provider-status-label">Ollama</span>
               </span>
+              <span className="llm-provider-status-item" title={copilotConfigured ? 'GitHub Copilot configured' : 'GitHub Copilot not configured'}>
+                <span
+                  className={`llm-provider-status-dot ${copilotConfigured ? 'configured' : ''}`}
+                  aria-label={copilotConfigured ? 'GitHub Copilot configured' : 'GitHub Copilot not configured'}
+                />
+                <span className="llm-provider-status-label">Copilot</span>
+              </span>
             </span>
           </legend>
           <p className="fieldset-help">
@@ -1215,7 +1424,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
             <select
               value={formData.llm_provider || 'openai'}
               onChange={(e) => {
-                const newProvider = e.target.value as 'openai' | 'anthropic' | 'ollama';
+                const newProvider = e.target.value as 'openai' | 'anthropic' | 'ollama' | 'github_copilot';
                 setFormData({
                   ...formData,
                   llm_provider: newProvider,
@@ -1236,11 +1445,16 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                   setLlmOllamaError(null);
                   setLlmOllamaModels([]);
                 }
+
+                if (newProvider === 'github_copilot' && (copilotAuthStatus?.connected || settings?.has_github_copilot_auth)) {
+                  fetchLlmModels('github_copilot');
+                }
               }}
             >
               <option value="openai">OpenAI</option>
               <option value="anthropic">Anthropic (Claude)</option>
               <option value="ollama">Ollama</option>
+              <option value="github_copilot">GitHub Copilot</option>
             </select>
           </div>
 
@@ -1360,6 +1574,138 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                 </p>
               )}
             </div>
+          ) : formData.llm_provider === 'github_copilot' ? (
+            <div className="form-group">
+              <label>GitHub Copilot Connection</label>
+              <div className="input-with-button input-with-actions" style={{ gap: '0.5rem', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className={`btn btn-test ${copilotConfigured ? 'btn-connected' : ''}`}
+                  onClick={startCopilotDeviceFlow}
+                  disabled={copilotConnecting}
+                >
+                  {copilotConnecting ? 'Preparing...' : copilotConfigured ? 'Reauthorize' : 'Authorize'}
+                </button>
+                <button
+                  type="button"
+                  className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'github_copilot' ? 'btn-connected' : ''}`}
+                  onClick={() => fetchLlmModels('github_copilot')}
+                  disabled={llmModelsFetching || !copilotConfigured}
+                >
+                  {llmModelsFetching ? 'Fetching...' : llmModelsLoaded && formData.llm_provider === 'github_copilot' ? 'Loaded' : 'Fetch Models'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={clearCopilotAuth}
+                  disabled={copilotConnecting || !copilotConfigured}
+                >
+                  Disconnect
+                </button>
+              </div>
+              {copilotWizardVisible && copilotRequestId && copilotDeviceCode && copilotVerificationUri && (
+                <div
+                  className="field-help"
+                  style={{
+                    marginTop: '0.75rem',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '8px',
+                    padding: '0.75rem',
+                    background: 'var(--bg-secondary)',
+                  }}
+                >
+                  <div style={{ fontWeight: 700, marginBottom: '0.5rem' }}>GitHub Copilot Authorization</div>
+                  <div className="muted" style={{ marginBottom: '0.75rem' }}>Step {copilotWizardStep} of 3</div>
+
+                  {copilotWizardStep === 1 && (
+                    <div>
+                      <div><strong>Step 1: Copy your device code</strong></div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.45rem', flexWrap: 'wrap' }}>
+                        <code style={{ fontSize: '1.1rem', fontWeight: 700, letterSpacing: '0.08em', padding: '0.35rem 0.55rem' }}>
+                          {copilotDeviceCode}
+                        </code>
+                        <button
+                          type="button"
+                          onClick={copyCopilotDeviceCode}
+                          aria-label="Copy device code"
+                          title="Copy device code"
+                          className="btn btn-sm btn-secondary"
+                          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '0.35rem' }}
+                        >
+                          <Clipboard size={16} />
+                        </button>
+                        {copilotCodeCopied && <span className="muted">Copied</span>}
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          onClick={() => setCopilotWizardStep(2)}
+                          disabled={!copilotCodeCopied}
+                          style={{ marginLeft: '0.25rem' }}
+                        >
+                          Continue
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {copilotWizardStep === 2 && (
+                    <div>
+                      <div><strong>Step 2: Open the authorization page</strong></div>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-secondary"
+                        onClick={openCopilotAuthorizationPage}
+                        style={{
+                          marginTop: '0.45rem',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '0.4rem',
+                          fontSize: '1.05rem',
+                          fontWeight: 700,
+                        }}
+                      >
+                        Open GitHub Authorization
+                        <ExternalLink size={16} />
+                      </button>
+                      <div className="muted" style={{ marginTop: '0.45rem' }}>{copilotVerificationUri}</div>
+                      <div style={{ marginTop: '0.65rem' }}>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-secondary"
+                          onClick={() => setCopilotWizardStep(1)}
+                        >
+                          Back
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {copilotWizardStep === 3 && (
+                    <div>
+                      <div><strong>Step 3: Complete authorization in GitHub</strong></div>
+                      <div className="muted" style={{ marginTop: '0.45rem' }}>
+                        After you approve access in GitHub, Ragtime will connect automatically.
+                      </div>
+                      <div style={{ marginTop: '0.65rem' }}>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-secondary"
+                          onClick={openCopilotAuthorizationPage}
+                        >
+                          Reopen Authorization Page
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              {llmModelsError && formData.llm_provider === 'github_copilot' && (
+                <p className="field-error">{llmModelsError}</p>
+              )}
+              <p className="field-help">
+                Uses your active GitHub Copilot subscription via OAuth device login. Models available depend on your Copilot plan and enabled model access.
+              </p>
+            </div>
           ) : null}
 
           <div className="form-row">
@@ -1376,6 +1722,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                     }
                     placeholder="Select a model..."
                     variant="full"
+                    triggerClassName="settings-control-height"
                   />
                 ) : (
                   <input
@@ -1400,19 +1747,19 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
               <label>Chat Models</label>
               <button
                 type="button"
-                className="btn btn-secondary"
+                className="btn btn-secondary settings-control-height"
                 onClick={openModelFilterModal}
               >
                 Configure Chat Models
               </button>
               <p className="field-help">
-                Limit which models appear in the Chat view dropdown. Includes all configured providers (OpenAI, Anthropic, Ollama).
+                Limit which models appear in the Chat view dropdown. Includes all configured providers (OpenAI, Anthropic, Ollama, GitHub Copilot).
               </p>
             </div>
           </div>
 
           {/* Show OpenAI key field for embeddings if using Anthropic or Ollama for LLM */}
-          {(formData.llm_provider === 'anthropic' || formData.llm_provider === 'ollama') && formData.embedding_provider === 'openai' && (
+          {(formData.llm_provider === 'anthropic' || formData.llm_provider === 'ollama' || formData.llm_provider === 'github_copilot') && formData.embedding_provider === 'openai' && (
             <div className="form-group">
               <label>OpenAI API Key (for embeddings)</label>
               <input
@@ -2826,6 +3173,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                         openai: 'OpenAI',
                         anthropic: 'Anthropic',
                         ollama: 'Ollama',
+                        github_copilot: 'GitHub Copilot',
                       };
 
                       return providerOrder.map(provider => (

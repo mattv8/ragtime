@@ -25,41 +25,62 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document as LangChainDocument
 
 from ragtime.config import settings
-from ragtime.core.app_settings import (get_app_settings,
-                                       invalidate_settings_cache)
-from ragtime.core.embedding_models import (get_embedding_model_context_limit,
-                                           get_embedding_models)
-from ragtime.core.file_constants import (BINARY_EXTENSIONS, MINIFIED_PATTERNS,
-                                         PARSEABLE_DOCUMENT_EXTENSIONS,
-                                         UNPARSEABLE_BINARY_EXTENSIONS,
-                                         get_embedding_safety_margin)
+from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
+from ragtime.core.embedding_models import (
+    get_embedding_model_context_limit,
+    get_embedding_models,
+)
+from ragtime.core.file_constants import (
+    BINARY_EXTENSIONS,
+    MINIFIED_PATTERNS,
+    PARSEABLE_DOCUMENT_EXTENSIONS,
+    UNPARSEABLE_BINARY_EXTENSIONS,
+    get_embedding_safety_margin,
+)
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
-from ragtime.indexer.chunking import (chunk_documents_parallel,
-                                      is_context_length_error,
-                                      rechunk_documents_batch,
-                                      rechunk_oversized_content,
-                                      shutdown_process_pool)
-from ragtime.indexer.document_parser import (OCR_EXTENSIONS,
-                                             extract_text_from_file_async)
-from ragtime.indexer.file_utils import (HARDCODED_EXCLUDES,
-                                        build_authenticated_git_url,
-                                        extract_archive, find_source_dir)
+from ragtime.indexer.chunking import (
+    chunk_documents_parallel,
+    is_context_length_error,
+    rechunk_documents_batch,
+    rechunk_oversized_content,
+    shutdown_process_pool,
+)
+from ragtime.indexer.document_parser import OCR_EXTENSIONS, extract_text_from_file_async
+from ragtime.indexer.file_utils import (
+    HARDCODED_EXCLUDES,
+    build_authenticated_git_url,
+    extract_archive,
+    find_source_dir,
+)
 from ragtime.indexer.llm_exclusions import get_smart_exclusion_suggestions
-from ragtime.indexer.memory_utils import (estimate_index_memory,
-                                          estimate_memory_at_dimensions,
-                                          get_embedding_dimension)
-from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
-                                    CommitHistoryInfo, CommitHistorySample,
-                                    FileTypeStats, IndexAnalysisResult,
-                                    IndexConfig, IndexInfo, IndexJob,
-                                    IndexStatus, MemoryEstimate, OcrMode,
-                                    VectorStoreType)
+from ragtime.indexer.memory_utils import (
+    estimate_index_memory,
+    estimate_memory_at_dimensions,
+    get_embedding_dimension,
+)
+from ragtime.indexer.models import (
+    AnalyzeIndexRequest,
+    AppSettings,
+    CommitHistoryInfo,
+    CommitHistorySample,
+    FileTypeStats,
+    IndexAnalysisResult,
+    IndexConfig,
+    IndexInfo,
+    IndexJob,
+    IndexStatus,
+    MemoryEstimate,
+    OcrMode,
+    VectorStoreType,
+)
 from ragtime.indexer.repository import repository
-from ragtime.indexer.vector_utils import (EMBEDDING_SUB_BATCH_SIZE,
-                                          append_embedding_dimension_warning,
-                                          embed_documents_subbatched,
-                                          get_embeddings_model)
+from ragtime.indexer.vector_utils import (
+    EMBEDDING_SUB_BATCH_SIZE,
+    append_embedding_dimension_warning,
+    embed_documents_subbatched,
+    get_embeddings_model,
+)
 from ragtime.tools.git_history import _is_shallow_repository
 
 logger = get_logger(__name__)
@@ -80,7 +101,7 @@ async def generate_index_description(
     Samples file paths and content to create a concise description
     that helps the AI understand what knowledge is available.
 
-    Uses the LLM provider configured in app settings (OpenAI, Anthropic, or Ollama).
+    Uses the LLM provider configured in app settings (OpenAI, Anthropic, Ollama, or GitHub Copilot).
     """
     try:
         from ragtime.core.app_settings import get_app_settings
@@ -93,12 +114,16 @@ async def generate_index_description(
 
         if provider == "ollama":
             try:
-                from langchain_ollama import \
-                    ChatOllama  # type: ignore[reportMissingImports]
+                from langchain_ollama import (
+                    ChatOllama,
+                )  # type: ignore[reportMissingImports]
 
-                from ragtime.core.ollama import (KEEP_ALIVE, NUM_GPU,
-                                                 get_model_details,
-                                                 has_capability)
+                from ragtime.core.ollama import (
+                    KEEP_ALIVE,
+                    NUM_GPU,
+                    get_model_details,
+                    has_capability,
+                )
 
                 base_url = app_settings.get("ollama_base_url", "http://localhost:11434")
                 model = app_settings.get("llm_model", "llama3.2")
@@ -131,8 +156,9 @@ async def generate_index_description(
             api_key = app_settings.get("anthropic_api_key", "")
             if api_key:
                 try:
-                    from langchain_anthropic import \
-                        ChatAnthropic  # type: ignore[import-untyped]
+                    from langchain_anthropic import (
+                        ChatAnthropic,
+                    )  # type: ignore[import-untyped]
 
                     model = app_settings.get("llm_model", "claude-sonnet-4-20250514")
                     llm = ChatAnthropic(
@@ -162,6 +188,35 @@ async def generate_index_description(
                 logger.debug("Using OpenAI for description generation: gpt-4o-mini")
             else:
                 logger.debug("OpenAI selected but no API key configured")
+
+        elif provider == "github_copilot":
+            token = app_settings.get(
+                "github_copilot_access_token", ""
+            ) or app_settings.get("github_copilot_refresh_token", "")
+            if token:
+                from langchain_openai import ChatOpenAI
+
+                base_url = (
+                    app_settings.get("github_copilot_base_url")
+                    or "https://api.githubcopilot.com"
+                )
+                model = app_settings.get("llm_model", "gpt-4o")
+                llm = ChatOpenAI(
+                    model=model,
+                    temperature=0.3,
+                    api_key=token,
+                    base_url=str(base_url).rstrip("/"),
+                    default_headers={
+                        "Openai-Intent": "conversation-edits",
+                        "x-initiator": "agent",
+                        "User-Agent": "ragtime",
+                    },
+                )
+                logger.debug(
+                    f"Using GitHub Copilot for description generation: {model}"
+                )
+            else:
+                logger.debug("GitHub Copilot selected but no OAuth token configured")
 
         if llm is None:
             logger.debug(

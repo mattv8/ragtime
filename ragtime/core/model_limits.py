@@ -69,6 +69,13 @@ MODEL_FAMILY_PATTERNS = {
         (r"claude-2", "Claude 2"),
     ],
     "ollama": [(r"^([a-z0-9]+)", None)],
+    "github_copilot": [
+        (r"^gpt-5", "GPT-5"),
+        (r"^gpt-4", "GPT-4"),
+        (r"claude", "Claude"),
+        (r"gemini", "Gemini"),
+        (r"o\d", "O-Series"),
+    ],
 }
 
 

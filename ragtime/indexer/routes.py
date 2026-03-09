@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import socket
@@ -18,7 +19,7 @@ import tempfile
 import time
 import zipfile
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional
 
@@ -119,6 +120,17 @@ if TYPE_CHECKING:
     from prisma.models import User
 
 logger = get_logger(__name__)
+
+# GitHub Copilot OAuth device flow
+GITHUB_COPILOT_CLIENT_ID = os.getenv("GITHUB_COPILOT_CLIENT_ID", "Ov23livu7XnA0KWQypFt")
+COPILOT_DEFAULT_BASE_URL = "https://api.githubcopilot.com"
+OAUTH_POLLING_SAFETY_MARGIN_SECONDS = 3
+COPILOT_EDITOR_VERSION = "Ragtime/1.0"
+COPILOT_PLUGIN_VERSION = "Ragtime/1.0"
+COPILOT_INTEGRATION_ID = "vscode-chat"
+
+# In-memory pending OAuth device requests (request_id -> request state)
+_copilot_device_requests: dict[str, dict[str, Any]] = {}
 
 router = APIRouter(prefix="/indexes", tags=["Indexer"])
 
@@ -2396,7 +2408,9 @@ async def discover_mysql_databases(
                             DatabaseDiscoverOption(name=db, accessible=True)
                         )
                     else:
-                        err_text = (check_result.stderr or check_result.stdout or "").strip()
+                        err_text = (
+                            check_result.stderr or check_result.stdout or ""
+                        ).strip()
                         container_database_options.append(
                             DatabaseDiscoverOption(
                                 name=db,
@@ -5914,8 +5928,10 @@ async def _fetch_openai_embedding_models(api_key: str) -> EmbeddingModelsRespons
 class LLMModelsRequest(BaseModel):
     """Request to fetch available models from an LLM provider."""
 
-    provider: str = Field(..., description="LLM provider: 'openai' or 'anthropic'")
-    api_key: str = Field(..., description="API key for the provider")
+    provider: str = Field(
+        ..., description="LLM provider: 'openai', 'anthropic', or 'github_copilot'"
+    )
+    api_key: str = Field(default="", description="API key/token for the provider")
 
 
 class LLMModel(BaseModel):
@@ -5964,6 +5980,365 @@ class AvailableModelsResponse(BaseModel):
 # Sensible default models for each provider
 OPENAI_DEFAULT_MODEL = ""
 ANTHROPIC_DEFAULT_MODEL = ""
+
+
+def _normalize_github_domain(url_or_domain: str) -> str:
+    """Normalize enterprise URL/domain to plain host."""
+    value = (url_or_domain or "").strip()
+    if not value:
+        return ""
+    value = re.sub(r"^https?://", "", value, flags=re.IGNORECASE)
+    return value.rstrip("/")
+
+
+def _copilot_base_url_for_domain(domain: str) -> str:
+    """Resolve Copilot API base URL for github.com vs enterprise domains."""
+    normalized = _normalize_github_domain(domain)
+    if not normalized or normalized == "github.com":
+        return COPILOT_DEFAULT_BASE_URL
+    return f"https://copilot-api.{normalized}"
+
+
+async def _exchange_github_token_for_copilot_token(
+    github_token: str,
+) -> tuple[str, Optional[datetime]]:
+    """Exchange a GitHub OAuth token for a Copilot bearer token."""
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.get(
+            "https://api.github.com/copilot_internal/v2/token",
+            headers={
+                "Authorization": f"token {github_token}",
+                "Accept": "application/json",
+                "User-Agent": "ragtime",
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    copilot_token = str(data.get("token", "")).strip()
+    if not copilot_token:
+        raise ValueError("GitHub Copilot token exchange did not return a token")
+
+    expires_at = None
+    raw_expires_at = data.get("expires_at")
+    if isinstance(raw_expires_at, (int, float)):
+        try:
+            expires_at = datetime.fromtimestamp(float(raw_expires_at), tz=timezone.utc)
+        except Exception:
+            expires_at = None
+
+    return copilot_token, expires_at
+
+
+class CopilotDeviceStartRequest(BaseModel):
+    """Request to begin GitHub Copilot OAuth device flow."""
+
+    deployment_type: str = Field(
+        default="github.com",
+        description="GitHub deployment type: 'github.com' or 'enterprise'.",
+    )
+    enterprise_url: Optional[str] = Field(
+        default=None,
+        description="GitHub Enterprise URL/domain (required when deployment_type='enterprise').",
+    )
+
+
+class CopilotDeviceStartResponse(BaseModel):
+    """Response for GitHub Copilot OAuth device flow start."""
+
+    success: bool
+    request_id: str
+    verification_uri: str
+    verification_uri_complete: Optional[str] = None
+    user_code: str
+    interval: int
+    expires_in: int
+    deployment_type: str
+    enterprise_url: Optional[str] = None
+
+
+class CopilotDevicePollRequest(BaseModel):
+    """Request to poll GitHub Copilot OAuth device flow status."""
+
+    request_id: str
+
+
+class CopilotDevicePollResponse(BaseModel):
+    """Response for polling GitHub Copilot OAuth device flow status."""
+
+    success: bool
+    status: str
+    message: str
+    retry_after_seconds: Optional[int] = None
+
+
+class CopilotAuthStatusResponse(BaseModel):
+    """Current GitHub Copilot auth status."""
+
+    connected: bool
+    deployment_type: str
+    enterprise_url: Optional[str] = None
+    base_url: str
+    token_expires_at: Optional[datetime] = None
+
+
+@router.post(
+    "/github-copilot/device/start",
+    response_model=CopilotDeviceStartResponse,
+    tags=["Settings"],
+)
+async def start_copilot_device_flow(
+    request: CopilotDeviceStartRequest,
+    _user: User = Depends(require_admin),
+):
+    """Start GitHub Copilot OAuth device flow and return verification code."""
+    deployment_type = (request.deployment_type or "github.com").strip().lower()
+    if deployment_type not in {"github.com", "enterprise"}:
+        raise HTTPException(
+            status_code=400,
+            detail="deployment_type must be 'github.com' or 'enterprise'",
+        )
+
+    domain = "github.com"
+    enterprise_url = None
+    if deployment_type == "enterprise":
+        domain = _normalize_github_domain(request.enterprise_url or "")
+        if not domain:
+            raise HTTPException(
+                status_code=400,
+                detail="enterprise_url is required for enterprise deployment",
+            )
+        enterprise_url = domain
+
+    device_code_url = f"https://{domain}/login/device/code"
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                device_code_url,
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "User-Agent": "ragtime",
+                },
+                json={
+                    "client_id": GITHUB_COPILOT_CLIENT_ID,
+                    "scope": "read:user",
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"GitHub device flow request failed ({e.response.status_code})",
+        ) from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to start GitHub device flow: {str(e)}",
+        ) from e
+
+    request_id = secrets.token_urlsafe(24)
+    interval = max(int(data.get("interval", 5)), 1)
+    expires_in = max(int(data.get("expires_in", 900)), 60)
+    _copilot_device_requests[request_id] = {
+        "device_code": data.get("device_code", ""),
+        "domain": domain,
+        "deployment_type": deployment_type,
+        "enterprise_url": enterprise_url,
+        "interval": interval,
+        "expires_at": datetime.now(timezone.utc) + timedelta(seconds=expires_in),
+    }
+
+    return CopilotDeviceStartResponse(
+        success=True,
+        request_id=request_id,
+        verification_uri=data.get(
+            "verification_uri", "https://github.com/login/device"
+        ),
+        verification_uri_complete=data.get("verification_uri_complete"),
+        user_code=data.get("user_code", ""),
+        interval=interval,
+        expires_in=expires_in,
+        deployment_type=deployment_type,
+        enterprise_url=enterprise_url,
+    )
+
+
+@router.post(
+    "/github-copilot/device/poll",
+    response_model=CopilotDevicePollResponse,
+    tags=["Settings"],
+)
+async def poll_copilot_device_flow(
+    request: CopilotDevicePollRequest,
+    _user: User = Depends(require_admin),
+):
+    """Poll GitHub Copilot OAuth device flow and persist token on success."""
+    state = _copilot_device_requests.get(request.request_id)
+    if not state:
+        raise HTTPException(
+            status_code=404, detail="Device authorization request not found"
+        )
+
+    now = datetime.now(timezone.utc)
+    if now >= state["expires_at"]:
+        _copilot_device_requests.pop(request.request_id, None)
+        return CopilotDevicePollResponse(
+            success=False,
+            status="expired",
+            message="Device authorization code expired. Start again.",
+        )
+
+    access_token_url = f"https://{state['domain']}/login/oauth/access_token"
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                access_token_url,
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "User-Agent": "ragtime",
+                },
+                json={
+                    "client_id": GITHUB_COPILOT_CLIENT_ID,
+                    "device_code": state["device_code"],
+                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                },
+            )
+            if not response.is_success:
+                return CopilotDevicePollResponse(
+                    success=False,
+                    status="failed",
+                    message=f"GitHub OAuth token request failed ({response.status_code}).",
+                )
+            data = response.json()
+    except Exception as e:
+        return CopilotDevicePollResponse(
+            success=False,
+            status="failed",
+            message=f"GitHub OAuth polling failed: {str(e)}",
+        )
+
+    access_token = data.get("access_token")
+    if access_token:
+        oauth_expires_in = data.get("expires_in")
+        oauth_expires_at = None
+        if isinstance(oauth_expires_in, (int, float)) and int(oauth_expires_in) > 0:
+            oauth_expires_at = datetime.now(timezone.utc) + timedelta(
+                seconds=int(oauth_expires_in)
+            )
+
+        # Prefer Copilot bearer tokens for model/chat APIs.
+        # Keep the raw OAuth token in refresh_token so we can re-exchange later.
+        copilot_access_token = access_token
+        copilot_expires_at = oauth_expires_at
+        try:
+            exchanged_token, exchanged_expires_at = (
+                await _exchange_github_token_for_copilot_token(access_token)
+            )
+            copilot_access_token = exchanged_token
+            copilot_expires_at = exchanged_expires_at or oauth_expires_at
+        except Exception as exchange_error:
+            logger.warning(
+                "GitHub->Copilot token exchange failed; using OAuth token directly: %s",
+                exchange_error,
+            )
+
+        base_url = _copilot_base_url_for_domain(state["domain"])
+        await repository.update_settings(
+            {
+                "github_copilot_access_token": copilot_access_token,
+                # Keep OAuth token for future exchange refresh attempts.
+                "github_copilot_refresh_token": access_token,
+                "github_copilot_token_expires_at": copilot_expires_at,
+                "github_copilot_enterprise_url": state.get("enterprise_url"),
+                "github_copilot_base_url": base_url,
+            }
+        )
+        invalidate_settings_cache()
+        _copilot_device_requests.pop(request.request_id, None)
+        return CopilotDevicePollResponse(
+            success=True,
+            status="connected",
+            message="GitHub Copilot connected successfully.",
+        )
+
+    oauth_error = data.get("error")
+    if oauth_error == "authorization_pending":
+        retry_after = max(
+            int(state.get("interval", 5)) + OAUTH_POLLING_SAFETY_MARGIN_SECONDS,
+            1,
+        )
+        return CopilotDevicePollResponse(
+            success=True,
+            status="pending",
+            message="Waiting for authorization in browser...",
+            retry_after_seconds=retry_after,
+        )
+
+    if oauth_error == "slow_down":
+        new_interval = int(data.get("interval") or state.get("interval", 5)) + 5
+        state["interval"] = max(new_interval, 1)
+        retry_after = state["interval"] + OAUTH_POLLING_SAFETY_MARGIN_SECONDS
+        return CopilotDevicePollResponse(
+            success=True,
+            status="pending",
+            message="GitHub requested slower polling; retrying...",
+            retry_after_seconds=retry_after,
+        )
+
+    if oauth_error:
+        _copilot_device_requests.pop(request.request_id, None)
+        return CopilotDevicePollResponse(
+            success=False,
+            status="failed",
+            message=f"GitHub OAuth failed: {oauth_error}",
+        )
+
+    return CopilotDevicePollResponse(
+        success=False,
+        status="failed",
+        message="GitHub OAuth did not return a token.",
+    )
+
+
+@router.get(
+    "/github-copilot/auth/status",
+    response_model=CopilotAuthStatusResponse,
+    tags=["Settings"],
+)
+async def get_copilot_auth_status(_user: User = Depends(require_admin)):
+    """Get current GitHub Copilot auth status from settings."""
+    app_settings = await repository.get_settings()
+    connected = bool((app_settings.github_copilot_access_token or "").strip())
+    enterprise_url = app_settings.github_copilot_enterprise_url or None
+    deployment_type = "enterprise" if enterprise_url else "github.com"
+    return CopilotAuthStatusResponse(
+        connected=connected,
+        deployment_type=deployment_type,
+        enterprise_url=enterprise_url,
+        base_url=app_settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL,
+        token_expires_at=app_settings.github_copilot_token_expires_at,
+    )
+
+
+@router.post("/github-copilot/auth/clear", tags=["Settings"])
+async def clear_copilot_auth(_user: User = Depends(require_admin)):
+    """Clear stored GitHub Copilot auth credentials."""
+    await repository.update_settings(
+        {
+            "github_copilot_access_token": "",
+            "github_copilot_refresh_token": "",
+            "github_copilot_token_expires_at": None,
+            "github_copilot_enterprise_url": "",
+            "github_copilot_base_url": COPILOT_DEFAULT_BASE_URL,
+        }
+    )
+    invalidate_settings_cache()
+    return {"success": True, "message": "GitHub Copilot credentials cleared."}
 
 
 def _group_models(models: List[LLMModel], provider: str) -> List[LLMModel]:
@@ -6096,10 +6471,52 @@ async def fetch_llm_models(
         return await _fetch_openai_models(request.api_key)
     elif request.provider == "anthropic":
         return await _fetch_anthropic_models(request.api_key)
+    elif request.provider == "github_copilot":
+        token = request.api_key
+        base_url = COPILOT_DEFAULT_BASE_URL
+        refresh_token = ""
+        if not token:
+            settings = await repository.get_settings()
+            token = settings.github_copilot_access_token
+            base_url = settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL
+            refresh_token = settings.github_copilot_refresh_token or ""
+        if not token:
+            return LLMModelsResponse(
+                success=False,
+                message="GitHub Copilot is not connected. Use Connect in LLM settings first.",
+            )
+
+        result = await _fetch_github_copilot_models(token, base_url)
+        if result.success:
+            return result
+
+        # If the stored access token is stale or low-privilege, try exchanging the
+        # saved OAuth token for a fresh Copilot bearer token and retry once.
+        auth_failed = "authorization failed" in (result.message or "").lower()
+        if refresh_token and auth_failed and not request.api_key:
+            try:
+                exchanged_token, exchanged_expires_at = (
+                    await _exchange_github_token_for_copilot_token(refresh_token)
+                )
+                await repository.update_settings(
+                    {
+                        "github_copilot_access_token": exchanged_token,
+                        "github_copilot_token_expires_at": exchanged_expires_at,
+                    }
+                )
+                invalidate_settings_cache()
+                return await _fetch_github_copilot_models(exchanged_token, base_url)
+            except Exception as exchange_error:
+                logger.warning(
+                    "Failed to refresh Copilot bearer token from OAuth token: %s",
+                    exchange_error,
+                )
+
+        return result
     else:
         return LLMModelsResponse(
             success=False,
-            message=f"Unknown provider: {request.provider}. Supported: 'openai', 'anthropic'",
+            message=f"Unknown provider: {request.provider}. Supported: 'openai', 'anthropic', 'github_copilot'",
         )
 
 
@@ -6311,6 +6728,161 @@ async def _fetch_ollama_llm_models(base_url: str) -> LLMModelsResponse:
         )
 
 
+async def _fetch_github_copilot_models(
+    access_token: str,
+    base_url: str = COPILOT_DEFAULT_BASE_URL,
+) -> LLMModelsResponse:
+    """Fetch available models from GitHub Copilot API."""
+    normalized_base = (base_url or COPILOT_DEFAULT_BASE_URL).rstrip("/")
+    endpoint_specs: list[tuple[str, dict[str, str]]] = [
+        (
+            f"{normalized_base}/models",
+            {
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/json",
+                "User-Agent": "ragtime",
+                "Openai-Intent": "conversation-edits",
+                # Matching common Copilot editor headers tends to return
+                # the same model catalog users see in IDE integrations.
+                "Editor-Version": COPILOT_EDITOR_VERSION,
+                "Editor-Plugin-Version": COPILOT_PLUGIN_VERSION,
+                "Copilot-Integration-Id": COPILOT_INTEGRATION_ID,
+            },
+        ),
+        (
+            f"{normalized_base}/v1/models",
+            {
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/json",
+                "User-Agent": "ragtime",
+                "Openai-Intent": "conversation-edits",
+                "Editor-Version": COPILOT_EDITOR_VERSION,
+                "Editor-Plugin-Version": COPILOT_PLUGIN_VERSION,
+                "Copilot-Integration-Id": COPILOT_INTEGRATION_ID,
+            },
+        ),
+        # Fallback to GitHub Models catalog. This can expose additional models
+        # that are available to the account/plan and org policy.
+        (
+            "https://models.github.ai/catalog/models",
+            {
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "User-Agent": "ragtime",
+            },
+        ),
+    ]
+
+    models_by_id: dict[str, LLMModel] = {}
+    successful_sources = 0
+    last_error: Optional[str] = None
+
+    def _normalize_model_id(raw_id: str) -> str:
+        model_id = raw_id.strip()
+        if "/" in model_id:
+            # GitHub Models catalog uses publisher-prefixed IDs like
+            # "openai/gpt-4.1". Copilot/OpenAI-compatible chat APIs use
+            # the model slug itself.
+            model_id = model_id.split("/", 1)[1]
+        return model_id
+
+    def _extract_model_rows(payload: Any) -> list[dict[str, Any]]:
+        if isinstance(payload, dict):
+            data = payload.get("data", payload)
+            if isinstance(data, list):
+                return [row for row in data if isinstance(row, dict)]
+            return []
+        if isinstance(payload, list):
+            return [row for row in payload if isinstance(row, dict)]
+        return []
+
+    for url, headers in endpoint_specs:
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(
+                    url,
+                    headers=headers,
+                )
+
+                if response.status_code in (401, 403):
+                    return LLMModelsResponse(
+                        success=False,
+                        message="GitHub Copilot authorization failed. Please reconnect GitHub Copilot.",
+                    )
+                if response.status_code == 404:
+                    last_error = f"Endpoint not found at {url}"
+                    continue
+
+                response.raise_for_status()
+                payload = response.json()
+                rows = _extract_model_rows(payload)
+                if not rows:
+                    continue
+
+                successful_sources += 1
+                for row in rows:
+                    raw_id = str(row.get("id", "")).strip()
+                    if not raw_id:
+                        continue
+
+                    model_id = _normalize_model_id(raw_id)
+                    if not model_id:
+                        continue
+
+                    # Skip obvious non-chat models.
+                    if "embedding" in model_id.lower():
+                        continue
+                    output_modalities = row.get("supported_output_modalities")
+                    if isinstance(output_modalities, list) and output_modalities:
+                        if "text" not in [str(m).lower() for m in output_modalities]:
+                            continue
+
+                    model_name = str(row.get("name") or model_id)
+                    output_limit = (
+                        row.get("limits", {}).get("max_output_tokens")
+                        if isinstance(row.get("limits"), dict)
+                        else None
+                    )
+                    if not isinstance(output_limit, int):
+                        output_limit = await get_output_limit(model_id)
+
+                    existing = models_by_id.get(model_id)
+                    created = row.get("created") if isinstance(row.get("created"), int) else None
+                    candidate = LLMModel(
+                        id=model_id,
+                        name=model_name,
+                        created=created,
+                        max_output_tokens=output_limit,
+                    )
+
+                    # Prefer entries that include richer token limit metadata.
+                    if existing is None:
+                        models_by_id[model_id] = candidate
+                    elif existing.max_output_tokens is None and candidate.max_output_tokens is not None:
+                        models_by_id[model_id] = candidate
+        except Exception as e:
+            last_error = str(e)
+
+    if models_by_id and successful_sources > 0:
+        models = _group_models(list(models_by_id.values()), "github_copilot")
+        models.sort(
+            key=lambda m: (m.group or "", m.is_latest, m.created or 0, m.name.lower()),
+            reverse=True,
+        )
+        return LLMModelsResponse(
+            success=True,
+            message=f"Found {len(models)} model(s) from {successful_sources} source(s).",
+            models=models,
+            default_model=models[0].id if models else None,
+        )
+
+    return LLMModelsResponse(
+        success=False,
+        message=f"Failed to fetch GitHub Copilot models: {last_error or 'unknown error'}",
+    )
+
+
 # =============================================================================
 # Conversation/Chat Endpoints
 # =============================================================================
@@ -6323,7 +6895,7 @@ async def get_available_chat_models():
     """
     Get all available models from configured LLM providers.
 
-    Returns models from OpenAI and/or Anthropic based on which API keys are configured.
+    Returns models from configured providers (OpenAI, Anthropic, Ollama, GitHub Copilot).
     """
     app_settings = await repository.get_settings()
     if not app_settings:
@@ -6398,6 +6970,33 @@ async def get_available_chat_models():
                     default_model = result.default_model
         except Exception as e:
             logger.warning(f"Failed to fetch Ollama models: {e}")
+
+    # Fetch GitHub Copilot models when Copilot auth is configured
+    if (
+        app_settings.github_copilot_access_token
+        and len(app_settings.github_copilot_access_token) > 10
+    ):
+        try:
+            result = await _fetch_github_copilot_models(
+                app_settings.github_copilot_access_token,
+                app_settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL,
+            )
+            if result.success:
+                for m in result.models:
+                    all_models.append(
+                        AvailableModel(
+                            id=m.id,
+                            name=m.name,
+                            provider="github_copilot",
+                            context_limit=await get_context_limit(m.id),
+                            max_output_tokens=m.max_output_tokens,
+                            created=m.created,
+                        )
+                    )
+                if not default_model and result.default_model:
+                    default_model = result.default_model
+        except Exception as e:
+            logger.warning(f"Failed to fetch GitHub Copilot models: {e}")
 
     # Use current settings model as default if available
     current_model = app_settings.llm_model
@@ -6493,6 +7092,31 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
                     )
         except Exception as e:
             logger.warning(f"Failed to fetch Ollama models: {e}")
+
+    # Fetch GitHub Copilot models when Copilot auth is configured
+    if (
+        app_settings.github_copilot_access_token
+        and len(app_settings.github_copilot_access_token) > 10
+    ):
+        try:
+            result = await _fetch_github_copilot_models(
+                app_settings.github_copilot_access_token,
+                app_settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL,
+            )
+            if result.success:
+                for m in result.models:
+                    all_models.append(
+                        AvailableModel(
+                            id=m.id,
+                            name=m.name,
+                            provider="github_copilot",
+                            context_limit=await get_context_limit(m.id),
+                            max_output_tokens=m.max_output_tokens,
+                            created=m.created,
+                        )
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to fetch GitHub Copilot models: {e}")
 
     # Get currently allowed models from settings
     allowed_models = app_settings.allowed_chat_models or []

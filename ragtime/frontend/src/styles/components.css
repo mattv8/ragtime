@@ -1732,6 +1732,20 @@ textarea {
   flex-shrink: 0;
 }
 
+/* When no input is present, keep normal rounded corners on all buttons. */
+.input-with-button.input-with-actions .btn,
+.input-with-button.input-with-actions .btn-test {
+  border-top-left-radius: var(--radius-md);
+  border-bottom-left-radius: var(--radius-md);
+}
+
+/* Keep OpenAPI model selector trigger and adjacent settings action button aligned. */
+.settings-control-height {
+  min-height: 40px;
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
 /* API/Connection info boxes */
 .api-info-box {
   background: var(--color-surface);

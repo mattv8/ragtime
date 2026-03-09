@@ -15,7 +15,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, cast
 
-from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexStatus as PrismaIndexStatus
 from prisma.enums import ToolType as PrismaToolType
@@ -23,19 +22,35 @@ from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
+from prisma import Json, Prisma
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
-                                     decrypt_json_passwords, decrypt_secret,
-                                     encrypt_json_passwords, encrypt_secret)
+from ragtime.core.encryption import (
+    CONNECTION_CONFIG_PASSWORD_FIELDS,
+    decrypt_json_passwords,
+    decrypt_secret,
+    encrypt_json_passwords,
+    encrypt_secret,
+)
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
-from ragtime.indexer.models import (SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
-                                    AppSettings, ChatMessage, ChatTask,
-                                    ChatTaskStatus, ChatTaskStreamingState,
-                                    Conversation, IndexConfig, IndexJob,
-                                    IndexStatus, ProviderPromptDebugRecord,
-                                    ToolCallRecord, ToolConfig, ToolOutputMode,
-                                    ToolType, VectorStoreType)
+from ragtime.indexer.models import (
+    SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
+    AppSettings,
+    ChatMessage,
+    ChatTask,
+    ChatTaskStatus,
+    ChatTaskStreamingState,
+    Conversation,
+    IndexConfig,
+    IndexJob,
+    IndexStatus,
+    ProviderPromptDebugRecord,
+    ToolCallRecord,
+    ToolConfig,
+    ToolOutputMode,
+    ToolType,
+    VectorStoreType,
+)
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 
@@ -653,6 +668,12 @@ class IndexerRepository:
         # Decrypt secrets for API response
         openai_key = settings.openaiApiKey or ""
         anthropic_key = settings.anthropicApiKey or ""
+        github_copilot_access_token = (
+            getattr(settings, "githubCopilotAccessToken", "") or ""
+        )
+        github_copilot_refresh_token = (
+            getattr(settings, "githubCopilotRefreshToken", "") or ""
+        )
         mcp_password = getattr(settings, "mcpDefaultRoutePassword", None)
 
         # Decrypt if encrypted (starts with 'enc::')
@@ -660,6 +681,10 @@ class IndexerRepository:
             openai_key = decrypt_secret(openai_key)
         if anthropic_key:
             anthropic_key = decrypt_secret(anthropic_key)
+        if github_copilot_access_token:
+            github_copilot_access_token = decrypt_secret(github_copilot_access_token)
+        if github_copilot_refresh_token:
+            github_copilot_refresh_token = decrypt_secret(github_copilot_refresh_token)
         if mcp_password:
             mcp_password = decrypt_secret(mcp_password)
 
@@ -681,6 +706,20 @@ class IndexerRepository:
             llm_max_tokens=getattr(settings, "llmMaxTokens", 4096),
             openai_api_key=openai_key,
             anthropic_api_key=anthropic_key,
+            github_copilot_access_token=github_copilot_access_token,
+            github_copilot_refresh_token=github_copilot_refresh_token,
+            github_copilot_token_expires_at=getattr(
+                settings, "githubCopilotTokenExpiresAt", None
+            ),
+            github_copilot_enterprise_url=getattr(
+                settings, "githubCopilotEnterpriseUrl", None
+            ),
+            github_copilot_base_url=getattr(
+                settings,
+                "githubCopilotBaseUrl",
+                "https://api.githubcopilot.com",
+            ),
+            has_github_copilot_auth=bool(github_copilot_access_token),
             allowed_chat_models=settings.allowedChatModels or [],
             max_iterations=settings.maxIterations,
             # Tool settings
@@ -761,6 +800,11 @@ class IndexerRepository:
             "llm_max_tokens": "llmMaxTokens",
             "openai_api_key": "openaiApiKey",
             "anthropic_api_key": "anthropicApiKey",
+            "github_copilot_access_token": "githubCopilotAccessToken",
+            "github_copilot_refresh_token": "githubCopilotRefreshToken",
+            "github_copilot_token_expires_at": "githubCopilotTokenExpiresAt",
+            "github_copilot_enterprise_url": "githubCopilotEnterpriseUrl",
+            "github_copilot_base_url": "githubCopilotBaseUrl",
             "allowed_chat_models": "allowedChatModels",
             "max_iterations": "maxIterations",
             # Token optimization settings
@@ -816,7 +860,13 @@ class IndexerRepository:
 
         # Encrypt secret fields before storage
         # These need to be reversibly encrypted so we can show them in the UI
-        secret_fields = ["openai_api_key", "anthropic_api_key", "postgres_password"]
+        secret_fields = [
+            "openai_api_key",
+            "anthropic_api_key",
+            "github_copilot_access_token",
+            "github_copilot_refresh_token",
+            "postgres_password",
+        ]
         for field in secret_fields:
             if field in updates and updates[field]:
                 camel_key = field_mapping[field]
@@ -842,6 +892,20 @@ class IndexerRepository:
                 update_data["mcpDefaultRouteAllowedGroup"] = None
             elif group_value is not None:
                 update_data["mcpDefaultRouteAllowedGroup"] = group_value
+
+        # Special handling for GitHub Copilot nullable fields.
+        # These may need explicit clearing to NULL.
+        if "github_copilot_token_expires_at" in updates:
+            update_data["githubCopilotTokenExpiresAt"] = updates[
+                "github_copilot_token_expires_at"
+            ]
+
+        if "github_copilot_enterprise_url" in updates:
+            enterprise_value = updates["github_copilot_enterprise_url"]
+            if enterprise_value == "":
+                update_data["githubCopilotEnterpriseUrl"] = None
+            else:
+                update_data["githubCopilotEnterpriseUrl"] = enterprise_value
 
         if not update_data:
             return await self.get_settings()

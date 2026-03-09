@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from ragtime.core.embedding_models import (get_embedding_models,
                                            get_model_dimensions_sync)
 
+
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
 
@@ -476,7 +477,7 @@ class AppSettings(BaseModel):
     # LLM Configuration (for chat/RAG responses)
     llm_provider: str = Field(
         default="openai",
-        description="LLM provider: 'openai', 'anthropic', or 'ollama'",
+        description="LLM provider: 'openai', 'anthropic', 'ollama', or 'github_copilot'",
     )
     llm_model: str = Field(
         default="gpt-4-turbo",
@@ -509,6 +510,30 @@ class AppSettings(BaseModel):
     anthropic_api_key: str = Field(
         default="",
         description="Anthropic API key (used when llm_provider is 'anthropic')",
+    )
+    github_copilot_access_token: str = Field(
+        default="",
+        description="GitHub Copilot OAuth access token (used when llm_provider is 'github_copilot')",
+    )
+    github_copilot_refresh_token: str = Field(
+        default="",
+        description="GitHub Copilot OAuth refresh token (if provided by OAuth flow)",
+    )
+    github_copilot_token_expires_at: Optional[datetime] = Field(
+        default=None,
+        description="GitHub Copilot token expiration timestamp (UTC). Null for non-expiring tokens.",
+    )
+    github_copilot_enterprise_url: Optional[str] = Field(
+        default=None,
+        description="GitHub Enterprise domain used for Copilot auth (if enterprise deployment is selected).",
+    )
+    github_copilot_base_url: str = Field(
+        default="https://api.githubcopilot.com",
+        description="GitHub Copilot API base URL for chat/model requests.",
+    )
+    has_github_copilot_auth: bool = Field(
+        default=False,
+        description="Indicates whether GitHub Copilot auth credentials are configured.",
     )
     allowed_chat_models: List[str] = Field(
         default=[],
@@ -849,6 +874,11 @@ class UpdateSettingsRequest(BaseModel):
     llm_max_tokens: Optional[int] = Field(default=None, ge=1)
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
+    github_copilot_access_token: Optional[str] = None
+    github_copilot_refresh_token: Optional[str] = None
+    github_copilot_token_expires_at: Optional[datetime] = None
+    github_copilot_enterprise_url: Optional[str] = None
+    github_copilot_base_url: Optional[str] = None
     allowed_chat_models: Optional[List[str]] = None
     max_iterations: Optional[int] = Field(default=None, ge=1, le=100)
     # Legacy tool settings (for backward compatibility)

@@ -53,6 +53,12 @@ class SettingsCache:
             # Decrypt secrets that may be encrypted
             openai_key = prisma_settings.openaiApiKey or ""
             anthropic_key = prisma_settings.anthropicApiKey or ""
+            github_copilot_access_token = (
+                getattr(prisma_settings, "githubCopilotAccessToken", "") or ""
+            )
+            github_copilot_refresh_token = (
+                getattr(prisma_settings, "githubCopilotRefreshToken", "") or ""
+            )
             postgres_password = prisma_settings.postgresPassword or ""
             mcp_password = prisma_settings.mcpDefaultRoutePassword
 
@@ -60,6 +66,14 @@ class SettingsCache:
                 openai_key = decrypt_secret(openai_key)
             if anthropic_key:
                 anthropic_key = decrypt_secret(anthropic_key)
+            if github_copilot_access_token:
+                github_copilot_access_token = decrypt_secret(
+                    github_copilot_access_token
+                )
+            if github_copilot_refresh_token:
+                github_copilot_refresh_token = decrypt_secret(
+                    github_copilot_refresh_token
+                )
             if postgres_password:
                 postgres_password = decrypt_secret(postgres_password)
             # Note: mcp_default_route_password stays encrypted for auth verification
@@ -106,6 +120,19 @@ class SettingsCache:
                 "llm_max_tokens": getattr(prisma_settings, "llmMaxTokens", 4096),
                 "openai_api_key": openai_key,
                 "anthropic_api_key": anthropic_key,
+                "github_copilot_access_token": github_copilot_access_token,
+                "github_copilot_refresh_token": github_copilot_refresh_token,
+                "github_copilot_token_expires_at": getattr(
+                    prisma_settings, "githubCopilotTokenExpiresAt", None
+                ),
+                "github_copilot_enterprise_url": getattr(
+                    prisma_settings, "githubCopilotEnterpriseUrl", None
+                ),
+                "github_copilot_base_url": getattr(
+                    prisma_settings,
+                    "githubCopilotBaseUrl",
+                    "https://api.githubcopilot.com",
+                ),
                 "allowed_chat_models": prisma_settings.allowedChatModels or [],
                 "max_iterations": prisma_settings.maxIterations,
                 # Embedding settings
@@ -167,6 +194,11 @@ class SettingsCache:
                 "llm_model": "gpt-4-turbo",
                 "openai_api_key": "",
                 "anthropic_api_key": "",
+                "github_copilot_access_token": "",
+                "github_copilot_refresh_token": "",
+                "github_copilot_token_expires_at": None,
+                "github_copilot_enterprise_url": None,
+                "github_copilot_base_url": "https://api.githubcopilot.com",
                 "allowed_chat_models": [],
                 "max_iterations": 15,
                 # Embedding settings

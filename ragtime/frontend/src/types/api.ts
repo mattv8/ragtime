@@ -460,7 +460,7 @@ export interface AppSettings {
   ollama_port: number;
   ollama_base_url: string;
   // LLM Configuration (for chat/RAG responses)
-  llm_provider: 'openai' | 'anthropic' | 'ollama';
+  llm_provider: 'openai' | 'anthropic' | 'ollama' | 'github_copilot';
   llm_model: string;
   llm_max_tokens?: number;
   // Ollama LLM connection settings (separate from embedding Ollama)
@@ -470,6 +470,12 @@ export interface AppSettings {
   llm_ollama_base_url: string;
   openai_api_key: string;
   anthropic_api_key: string;
+  github_copilot_access_token: string;
+  github_copilot_refresh_token: string;
+  github_copilot_token_expires_at?: string | null;
+  github_copilot_enterprise_url?: string | null;
+  github_copilot_base_url: string;
+  has_github_copilot_auth: boolean;
   allowed_chat_models: string[];
   max_iterations: number;
   // Token optimization settings
@@ -530,7 +536,7 @@ export interface UpdateSettingsRequest {
   ollama_port?: number;
   ollama_base_url?: string;
   // LLM settings
-  llm_provider?: 'openai' | 'anthropic' | 'ollama';
+  llm_provider?: 'openai' | 'anthropic' | 'ollama' | 'github_copilot';
   llm_model?: string;
   llm_max_tokens?: number;
   // LLM Ollama connection settings
@@ -540,6 +546,11 @@ export interface UpdateSettingsRequest {
   llm_ollama_base_url?: string;
   openai_api_key?: string;
   anthropic_api_key?: string;
+  github_copilot_access_token?: string;
+  github_copilot_refresh_token?: string;
+  github_copilot_token_expires_at?: string | null;
+  github_copilot_enterprise_url?: string | null;
+  github_copilot_base_url?: string;
   allowed_chat_models?: string[];
   max_iterations?: number;
   // Token optimization settings
@@ -632,8 +643,8 @@ export interface OllamaVisionModelsResponse {
 
 // LLM Provider Model Fetching
 export interface LLMModelsRequest {
-  provider: 'openai' | 'anthropic';
-  api_key: string;
+  provider: 'openai' | 'anthropic' | 'github_copilot';
+  api_key?: string;
 }
 
 export interface LLMModel {
@@ -650,6 +661,42 @@ export interface LLMModelsResponse {
   message: string;
   models: LLMModel[];
   default_model?: string;
+}
+
+export interface CopilotDeviceStartRequest {
+  deployment_type?: 'github.com' | 'enterprise';
+  enterprise_url?: string;
+}
+
+export interface CopilotDeviceStartResponse {
+  success: boolean;
+  request_id: string;
+  verification_uri: string;
+  verification_uri_complete?: string | null;
+  user_code: string;
+  interval: number;
+  expires_in: number;
+  deployment_type: 'github.com' | 'enterprise';
+  enterprise_url?: string | null;
+}
+
+export interface CopilotDevicePollRequest {
+  request_id: string;
+}
+
+export interface CopilotDevicePollResponse {
+  success: boolean;
+  status: 'pending' | 'connected' | 'expired' | 'failed';
+  message: string;
+  retry_after_seconds?: number;
+}
+
+export interface CopilotAuthStatusResponse {
+  connected: boolean;
+  deployment_type: 'github.com' | 'enterprise';
+  enterprise_url?: string | null;
+  base_url: string;
+  token_expires_at?: string | null;
 }
 
 // Embedding Provider Model Fetching
@@ -1783,7 +1830,7 @@ export interface RetryVisualizationResponse {
 export interface AvailableModel {
   id: string;
   name: string;
-  provider: 'openai' | 'anthropic' | 'ollama';
+  provider: 'openai' | 'anthropic' | 'ollama' | 'github_copilot';
   context_limit: number;  // Max context window tokens
   max_output_tokens?: number;  // Max output tokens for this model
   group?: string;  // Optional group for UI organization
