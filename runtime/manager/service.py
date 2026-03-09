@@ -10,18 +10,16 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
-from runtime.manager.models import (
-    ManagerSession,
-    RuntimeExecResponse,
-    RuntimeFileReadResponse,
-    RuntimePtyUrlResponse,
-    RuntimeScreenshotRequest,
-    RuntimeScreenshotResponse,
-    RuntimeSessionResponse,
-    StartSessionRequest,
-    WorkerSessionResponse,
-    WorkerStartSessionRequest,
-)
+from runtime.manager.models import (ManagerSession, RuntimeContentProbeRequest,
+                                    RuntimeContentProbeResponse,
+                                    RuntimeExecResponse,
+                                    RuntimeFileReadResponse,
+                                    RuntimePtyUrlResponse,
+                                    RuntimeScreenshotRequest,
+                                    RuntimeScreenshotResponse,
+                                    RuntimeSessionResponse,
+                                    StartSessionRequest, WorkerSessionResponse,
+                                    WorkerStartSessionRequest)
 from runtime.worker.service import get_worker_service
 
 
@@ -375,6 +373,17 @@ class SessionManager:
     ) -> RuntimeScreenshotResponse:
         session = self._get_session_or_raise(provider_session_id)
         return await self._worker_service.capture_screenshot(
+            session.worker_session_id,
+            payload,
+        )
+
+    async def content_probe(
+        self,
+        provider_session_id: str,
+        payload: RuntimeContentProbeRequest,
+    ) -> RuntimeContentProbeResponse:
+        session = self._get_session_or_raise(provider_session_id)
+        return await self._worker_service.content_probe(
             session.worker_session_id,
             payload,
         )

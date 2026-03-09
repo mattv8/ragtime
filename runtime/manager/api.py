@@ -6,7 +6,9 @@ from typing import Any
 from fastapi import FastAPI
 
 from runtime.auth import ManagerAuth
-from runtime.manager.models import (RuntimeExecRequest, RuntimeExecResponse,
+from runtime.manager.models import (RuntimeContentProbeRequest,
+                                    RuntimeContentProbeResponse,
+                                    RuntimeExecRequest, RuntimeExecResponse,
                                     RuntimeFileReadResponse,
                                     RuntimeFileWriteRequest,
                                     RuntimeManagerHealthResponse,
@@ -145,6 +147,17 @@ def create_app() -> FastAPI:
         _auth: None = ManagerAuth,
     ) -> RuntimeScreenshotResponse:
         return await manager.capture_screenshot(provider_session_id, payload)
+
+    @application.post(
+        "/sessions/{provider_session_id}/content-probe",
+        response_model=RuntimeContentProbeResponse,
+    )
+    async def content_probe(
+        provider_session_id: str,
+        payload: RuntimeContentProbeRequest,
+        _auth: None = ManagerAuth,
+    ) -> RuntimeContentProbeResponse:
+        return await manager.content_probe(provider_session_id, payload)
 
     @application.post(
         "/sessions/{provider_session_id}/exec",

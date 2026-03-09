@@ -18,32 +18,23 @@ from typing import Any
 import httpx
 from fastapi import HTTPException
 
-from runtime.manager.models import (
-    RuntimeExecResponse,
-    RuntimeFileReadResponse,
-    RuntimeScreenshotRequest,
-    RuntimeScreenshotResponse,
-    WorkerHealthResponse,
-    WorkerSessionResponse,
-    WorkerStartSessionRequest,
-)
-from runtime.shared import (
-    RUNTIME_BOOTSTRAP_CONFIG_PATH,
-    RUNTIME_BOOTSTRAP_STAMP_PATH,
-    EntrypointStatus,
-    RuntimeSessionState,
-    normalize_file_path,
-    parse_entrypoint_config,
-)
-from runtime.worker.sandbox import (
-    SANDBOX_WORKSPACE_MOUNT,
-    SandboxSpec,
-    cleanup_sandbox,
-    ensure_sandbox_ready,
-    get_sandbox_spec,
-    sandbox_diagnostics,
-    spawn_sandboxed,
-)
+from runtime.manager.models import (RuntimeContentProbeRequest,
+                                    RuntimeContentProbeResponse,
+                                    RuntimeExecResponse,
+                                    RuntimeFileReadResponse,
+                                    RuntimeScreenshotRequest,
+                                    RuntimeScreenshotResponse,
+                                    WorkerHealthResponse,
+                                    WorkerSessionResponse,
+                                    WorkerStartSessionRequest)
+from runtime.shared import (RUNTIME_BOOTSTRAP_CONFIG_PATH,
+                            RUNTIME_BOOTSTRAP_STAMP_PATH, EntrypointStatus,
+                            RuntimeSessionState, normalize_file_path,
+                            parse_entrypoint_config)
+from runtime.worker.sandbox import (SANDBOX_WORKSPACE_MOUNT, SandboxSpec,
+                                    cleanup_sandbox, ensure_sandbox_ready,
+                                    get_sandbox_spec, sandbox_diagnostics,
+                                    spawn_sandboxed)
 
 _PORT_PATTERNS = (
     re.compile(r"(?:^|\s)--port(?:=|\s+)(\d{2,5})(?:\s|$)"),
@@ -87,11 +78,17 @@ _SCREENSHOT_WAIT_AFTER_LOAD_FLOOR_MS = 900
 _SCREENSHOT_WAIT_AFTER_LOAD_HMR_FLOOR_MS = 1800
 
 _SCREENSHOT_JS_PATH = Path(__file__).with_name("screenshot.js")
+_CONTENT_PROBE_JS_PATH = Path(__file__).with_name("content_probe.js")
 
 
 def _load_screenshot_script() -> str:
     """Load the Playwright screenshot script from the adjacent JS file."""
     return _SCREENSHOT_JS_PATH.read_text(encoding="utf-8")
+
+
+def _load_content_probe_script() -> str:
+    """Load the Playwright content probe script from the adjacent JS file."""
+    return _CONTENT_PROBE_JS_PATH.read_text(encoding="utf-8")
 
 
 @dataclass
@@ -1374,6 +1371,92 @@ class WorkerService:
                 "refresh_before_capture": bool(payload.refresh_before_capture),
             },
             probe=probe if isinstance(probe, dict) else {},
+        )
+
+    async def content_probe(
+        self,
+        worker_session_id: str,
+        payload: RuntimeContentProbeRequest,
+    ) -> RuntimeContentProbeResponse:
+        async with self._lock:
+            session = self._sessions.get(worker_session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Worker session not found")
+            if session.state not in {"running", "starting"}:
+                raise HTTPException(status_code=409, detail="Worker session not active")
+
+            await self._sync_devserver_state_locked(session)
+            if not session.devserver_running:
+                self._schedule_startup_locked(session)
+            if not session.devserver_running or not session.devserver_port:
+                raise HTTPException(
+                    status_code=503,
+                    detail=session.last_error
+                    or "Dev server is starting. Retry when runtime is ready.",
+                )
+
+            normalized_preview_path = (payload.path or "").strip().lstrip("/")
+            if normalized_preview_path:
+                normalized_preview_path = self._normalize_file_path(
+                    normalized_preview_path
+                )
+            upstream_base = f"http://127.0.0.1:{session.devserver_port}"
+            upstream_url = (
+                f"{upstream_base}/{normalized_preview_path}"
+                if normalized_preview_path
+                else f"{upstream_base}/"
+            )
+
+        node_binary = shutil.which("node")
+        if not node_binary:
+            raise HTTPException(
+                status_code=503,
+                detail="Content probe requires Node.js but it is not installed.",
+            )
+
+        node_env = {**os.environ, "NODE_PATH": "/usr/local/lib/node_modules"}
+
+        process = await asyncio.create_subprocess_exec(
+            node_binary,
+            "-e",
+            _load_content_probe_script(),
+            upstream_url,
+            str(payload.timeout_ms),
+            str(payload.wait_after_load_ms),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=node_env,
+        )
+        stdout, stderr = await process.communicate()
+        stdout_text = stdout.decode("utf-8", errors="replace").strip()
+        stderr_text = stderr.decode("utf-8", errors="replace").strip()
+
+        if process.returncode != 0:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "Content probe failed. Ensure Playwright + Chromium "
+                    f"are available. {stderr_text or stdout_text or 'unknown error'}"
+                ),
+            )
+
+        probe: dict[str, Any]
+        try:
+            probe = json.loads(stdout_text) if stdout_text else {}
+        except Exception:
+            probe = {}
+
+        return RuntimeContentProbeResponse(
+            ok=probe.get("ok", False),
+            workspace_id=session.workspace_id,
+            preview_path=normalized_preview_path,
+            status_code=probe.get("status_code"),
+            body_text_length=probe.get("body_text_length", 0),
+            body_text_preview=probe.get("body_text_preview", ""),
+            body_html_length=probe.get("body_html_length", 0),
+            title=probe.get("title", ""),
+            has_error_indicator=probe.get("has_error_indicator", False),
+            console_errors=probe.get("console_errors", []),
         )
 
     async def preview_response(

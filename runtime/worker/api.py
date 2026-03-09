@@ -11,33 +11,22 @@ import termios
 from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import (
-    APIRouter,
-    FastAPI,
-    HTTPException,
-    Request,
-    WebSocket,
-    WebSocketDisconnect,
-)
+from fastapi import (APIRouter, FastAPI, HTTPException, Request, WebSocket,
+                     WebSocketDisconnect)
 from fastapi.responses import Response
 
 from runtime.auth import WorkerAuth
-from runtime.manager.models import (
-    RuntimeExecRequest,
-    RuntimeExecResponse,
-    RuntimeFileReadResponse,
-    RuntimeScreenshotRequest,
-    RuntimeScreenshotResponse,
-    WorkerHealthResponse,
-    WorkerSessionResponse,
-    WorkerStartSessionRequest,
-)
-from runtime.worker.sandbox import (
-    SandboxSpec,
-    ensure_sandbox_ready,
-    make_sandbox_preexec,
-    sandbox_env,
-)
+from runtime.manager.models import (RuntimeContentProbeRequest,
+                                    RuntimeContentProbeResponse,
+                                    RuntimeExecRequest, RuntimeExecResponse,
+                                    RuntimeFileReadResponse,
+                                    RuntimeScreenshotRequest,
+                                    RuntimeScreenshotResponse,
+                                    WorkerHealthResponse,
+                                    WorkerSessionResponse,
+                                    WorkerStartSessionRequest)
+from runtime.worker.sandbox import (SandboxSpec, ensure_sandbox_ready,
+                                    make_sandbox_preexec, sandbox_env)
 from runtime.worker.service import get_worker_service
 
 router = APIRouter(tags=["Runtime Worker"])
@@ -169,6 +158,22 @@ async def capture_screenshot(
     if capture_method is None:
         raise HTTPException(status_code=503, detail="Runtime screenshot not available")
     return await capture_method(worker_session_id, payload)
+
+
+@router.post(
+    "/worker/sessions/{worker_session_id}/content-probe",
+    response_model=RuntimeContentProbeResponse,
+)
+async def content_probe(
+    worker_session_id: str,
+    payload: RuntimeContentProbeRequest,
+    _auth: None = WorkerAuth,
+) -> RuntimeContentProbeResponse:
+    service = get_worker_service()
+    probe_method = getattr(service, "content_probe", None)
+    if probe_method is None:
+        raise HTTPException(status_code=503, detail="Runtime content probe not available")
+    return await probe_method(worker_session_id, payload)
 
 
 @router.post(

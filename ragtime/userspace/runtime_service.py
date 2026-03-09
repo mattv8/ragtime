@@ -14,24 +14,22 @@ from uuid import uuid4
 import httpx
 from fastapi import HTTPException
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-from prisma import fields as prisma_fields
 from prisma.errors import ForeignKeyViolationError
 from starlette.websockets import WebSocket
 
+from prisma import fields as prisma_fields
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
-from ragtime.userspace.models import (
-    RuntimeOperationPhase,
-    RuntimeSessionState,
-    UserSpaceCapabilityTokenResponse,
-    UserSpaceCollabSnapshotResponse,
-    UserSpaceFileResponse,
-    UserSpaceRuntimeActionResponse,
-    UserSpaceRuntimeSession,
-    UserSpaceRuntimeSessionResponse,
-    UserSpaceRuntimeStatusResponse,
-)
+from ragtime.userspace.models import (RuntimeOperationPhase,
+                                      RuntimeSessionState,
+                                      UserSpaceCapabilityTokenResponse,
+                                      UserSpaceCollabSnapshotResponse,
+                                      UserSpaceFileResponse,
+                                      UserSpaceRuntimeActionResponse,
+                                      UserSpaceRuntimeSession,
+                                      UserSpaceRuntimeSessionResponse,
+                                      UserSpaceRuntimeStatusResponse)
 from ragtime.userspace.service import userspace_service
 
 logger = get_logger(__name__)
@@ -598,6 +596,20 @@ class UserSpaceRuntimeService:
         return await self._runtime_manager_request(
             "POST",
             f"/sessions/{provider_session_id}/screenshot",
+            json_payload=payload,
+        )
+
+    async def _runtime_provider_content_probe(
+        self,
+        provider_session_id: str | None,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not provider_session_id:
+            raise HTTPException(status_code=404, detail="Runtime session unavailable")
+        self._require_runtime_manager()
+        return await self._runtime_manager_request(
+            "POST",
+            f"/sessions/{provider_session_id}/content-probe",
             json_payload=payload,
         )
 
@@ -1796,6 +1808,27 @@ class UserSpaceRuntimeService:
             "filename": filename,
         }
         return await self._runtime_provider_capture_screenshot(
+            session.provider_session_id,
+            payload,
+        )
+
+    async def probe_workspace_content(
+        self,
+        workspace_id: str,
+        user_id: str,
+        path: str = "",
+        timeout_ms: int = 15000,
+        wait_after_load_ms: int = 2000,
+    ) -> dict[str, Any]:
+        """Run a lightweight Playwright content probe against the preview."""
+        await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
+        session = await self.ensure_workspace_preview_session(workspace_id, user_id)
+        payload: dict[str, Any] = {
+            "path": str(path or ""),
+            "timeout_ms": int(timeout_ms),
+            "wait_after_load_ms": int(wait_after_load_ms),
+        }
+        return await self._runtime_provider_content_probe(
             session.provider_session_id,
             payload,
         )

@@ -118,6 +118,42 @@ class RuntimeFileWriteRequest(BaseModel):
     content: str = Field(description="File content to persist")
 
 
+class RuntimeContentProbeRequest(BaseModel):
+    path: str = Field(default="", description="Workspace-relative preview path")
+    timeout_ms: int = Field(default=15000, description="Navigation timeout in ms")
+    wait_after_load_ms: int = Field(
+        default=2000,
+        description="Post-load settle wait for JS rendering",
+    )
+
+
+class RuntimeContentProbeResponse(BaseModel):
+    ok: bool = Field(description="Whether the content probe succeeded")
+    workspace_id: str = Field(description="Workspace ID")
+    preview_path: str = Field(description="Workspace-relative preview path")
+    status_code: int | None = Field(
+        default=None, description="HTTP status code from the page"
+    )
+    body_text_length: int = Field(
+        default=0, description="Length of visible text in the rendered page"
+    )
+    body_text_preview: str = Field(
+        default="", description="First 200 chars of visible text"
+    )
+    body_html_length: int = Field(
+        default=0, description="Length of innerHTML in the rendered page"
+    )
+    title: str = Field(default="", description="Document title after render")
+    has_error_indicator: bool = Field(
+        default=False,
+        description="Whether common error strings were found in page text",
+    )
+    console_errors: list[str] = Field(
+        default_factory=list,
+        description="First few console errors captured during page load",
+    )
+
+
 class RuntimeScreenshotRequest(BaseModel):
     path: str = Field(default="", description="Workspace-relative preview path")
     width: int = Field(default=1440, description="Requested viewport width")
