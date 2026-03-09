@@ -53,6 +53,9 @@ class SettingsCache:
             # Decrypt secrets that may be encrypted
             openai_key = prisma_settings.openaiApiKey or ""
             anthropic_key = prisma_settings.anthropicApiKey or ""
+            github_models_api_token = (
+                getattr(prisma_settings, "githubModelsApiToken", "") or ""
+            )
             github_copilot_access_token = (
                 getattr(prisma_settings, "githubCopilotAccessToken", "") or ""
             )
@@ -66,6 +69,8 @@ class SettingsCache:
                 openai_key = decrypt_secret(openai_key)
             if anthropic_key:
                 anthropic_key = decrypt_secret(anthropic_key)
+            if github_models_api_token:
+                github_models_api_token = decrypt_secret(github_models_api_token)
             if github_copilot_access_token:
                 github_copilot_access_token = decrypt_secret(
                     github_copilot_access_token
@@ -120,6 +125,7 @@ class SettingsCache:
                 "llm_max_tokens": getattr(prisma_settings, "llmMaxTokens", 4096),
                 "openai_api_key": openai_key,
                 "anthropic_api_key": anthropic_key,
+                "github_models_api_token": github_models_api_token,
                 "github_copilot_access_token": github_copilot_access_token,
                 "github_copilot_refresh_token": github_copilot_refresh_token,
                 "github_copilot_token_expires_at": getattr(
@@ -132,6 +138,9 @@ class SettingsCache:
                     prisma_settings,
                     "githubCopilotBaseUrl",
                     "https://api.githubcopilot.com",
+                ),
+                "include_copilot_third_party_models": getattr(
+                    prisma_settings, "includeCopilotThirdPartyModels", False
                 ),
                 "allowed_chat_models": prisma_settings.allowedChatModels or [],
                 "max_iterations": prisma_settings.maxIterations,
@@ -194,11 +203,13 @@ class SettingsCache:
                 "llm_model": "gpt-4-turbo",
                 "openai_api_key": "",
                 "anthropic_api_key": "",
+                "github_models_api_token": "",
                 "github_copilot_access_token": "",
                 "github_copilot_refresh_token": "",
                 "github_copilot_token_expires_at": None,
                 "github_copilot_enterprise_url": None,
                 "github_copilot_base_url": "https://api.githubcopilot.com",
+                "include_copilot_third_party_models": False,
                 "allowed_chat_models": [],
                 "max_iterations": 15,
                 # Embedding settings

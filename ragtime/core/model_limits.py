@@ -1,11 +1,11 @@
 """
-Model context limits fetched from LiteLLM's community-maintained dataset.
+Model context and capability limits fetched from models.dev.
 
-Source: https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+Source: https://models.dev/api.json
 """
 
 import asyncio
-from typing import Optional
+import re
 
 import httpx
 
@@ -13,8 +13,8 @@ from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# LiteLLM's community-maintained model data (updated frequently)
-LITELLM_MODEL_DATA_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
+# models.dev provider/model catalog (updated frequently)
+MODELS_DEV_API_URL = "https://models.dev/api.json"
 
 # Cache for model limits (populated on first request)
 _model_limits_cache: dict[str, int] = {}
@@ -55,8 +55,9 @@ MODEL_FAMILY_PATTERNS = {
     ],
     "anthropic": [
         # Haiku models grouped together (all versions) - must be BEFORE general claude-3.5/3 patterns
-        (r"claude-haiku-4", "Claude Haiku"),
-        (r"claude-(3-5|3\.5|3)-haiku", "Claude Haiku"),
+        (r"claude-haiku-4-5", "Haiku"),
+        (r"claude-haiku-4", "Haiku"),
+        (r"claude-(3-5|3\.5|3)-haiku", "Haiku"),
         # Opus and Sonnet families
         (r"claude-opus-4", "Claude Opus 4"),
         (r"claude-sonnet-4", "Claude Sonnet 4"),
@@ -70,60 +71,273 @@ MODEL_FAMILY_PATTERNS = {
     ],
     "ollama": [(r"^([a-z0-9]+)", None)],
     "github_copilot": [
+        # GitHub-hosted OpenAI families
+        (r"^(openai/)?gpt-5\.2", "GPT-5.2"),
+        (r"^(openai/)?gpt-5\.1", "GPT-5.1"),
         (r"^gpt-5", "GPT-5"),
+        (r"^(openai/)?gpt-4\.5", "GPT-4.5"),
+        (r"^(openai/)?gpt-4\.1", "GPT-4.1"),
+        (r"^(openai/)?gpt-4o", "GPT-4o"),
         (r"^gpt-4", "GPT-4"),
+        # Claude families (supports both prefixed and unprefixed ids)
+        (r"(anthropic/)?claude-haiku-4-5", "Haiku"),
+        (r"(anthropic/)?claude-haiku-4", "Haiku"),
+        (r"(anthropic/)?claude-opus-4", "Claude Opus 4"),
+        (r"(anthropic/)?claude-sonnet-4", "Claude Sonnet 4"),
+        (r"(anthropic/)?claude-4", "Claude 4"),
+        (r"(anthropic/)?claude-(3-5|3\.5)-sonnet", "Claude 3.5 Sonnet"),
+        (r"(anthropic/)?claude-(3-5|3\.5)", "Claude 3.5"),
+        (r"(anthropic/)?claude-3-opus", "Claude 3 Opus"),
+        (r"(anthropic/)?claude-3-sonnet", "Claude 3 Sonnet"),
+        (r"(anthropic/)?claude-3", "Claude 3"),
+        (r"(anthropic/)?claude-2", "Claude 2"),
         (r"claude", "Claude"),
+        # Gemini families
+        (r"(google/)?gemini-2\.5", "Gemini 2.5"),
+        (r"(google/)?gemini-2", "Gemini 2"),
+        (r"(google/)?gemini-1\.5", "Gemini 1.5"),
         (r"gemini", "Gemini"),
+        (r"(xai/)?grok", "Grok"),
         (r"o\d", "O-Series"),
+    ],
+    "github_models": [
+        (r"^openai/gpt-5", "GPT-5"),
+        (r"^openai/gpt-4", "GPT-4"),
+        (r"^anthropic/claude", "Claude"),
+        (r"^google/gemini", "Gemini"),
+        (r"^xai/grok", "Grok"),
+        (r"^openai/o\d", "O-Series"),
     ],
 }
 
 
-async def _fetch_litellm_data() -> tuple[dict[str, int], dict[str, int]]:
-    """Fetch model limits from LiteLLM's dataset."""
+def _coerce_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+def _expand_model_keys(model_id: str, provider: str) -> set[str]:
+    """Generate key aliases so prefixed and unprefixed lookups both work."""
+    keys = {model_id}
+
+    if "/" in model_id:
+        _, _, short_id = model_id.partition("/")
+        if short_id:
+            keys.add(short_id)
+    elif provider in {
+        "openai",
+        "anthropic",
+        "google",
+        "xai",
+        "github-copilot",
+        "github_models",
+        "github_copilot",
+    }:
+        keys.add(f"{provider}/{model_id}")
+
+    return keys
+
+
+def _candidate_lookup_keys(model_id: str) -> list[str]:
+    """Build ranked lookup candidates for provider/version-normalized model IDs."""
+    raw = str(model_id or "").strip()
+    if not raw:
+        return []
+
+    candidates: list[str] = []
+
+    def add(value: str) -> None:
+        value = value.strip()
+        if value and value not in candidates:
+            candidates.append(value)
+
+    add(raw)
+
+    # Drop provider prefix for fallback matching.
+    if "/" in raw:
+        _, _, short_id = raw.partition("/")
+        add(short_id)
+
+    # Strip common date/version suffixes often appended by providers.
+    raw_no_suffix = re.sub(r"[-_@](?:20\d{6}|v\d+:\d+)$", "", raw)
+    add(raw_no_suffix)
+
+    # Anthropic family normalization between forms like:
+    # - claude-haiku-4-5-20251001
+    # - claude-4-5-haiku
+    for base in list(candidates):
+        short = base.split("/", 1)[1] if "/" in base else base
+        m = re.match(
+            r"^(claude)-(haiku|sonnet|opus)-(\d+)(?:-(\d+))?(?:-\d{8})?$",
+            short,
+        )
+        if m:
+            family, major, minor = m.group(2), m.group(3), m.group(4)
+            version = f"{major}-{minor}" if minor else major
+            add(f"claude-{version}-{family}")
+            add(f"claude-{family}-{version}")
+
+        m2 = re.match(
+            r"^(claude)-(\d+)(?:-(\d+))?-(haiku|sonnet|opus)(?:-\d{8})?$",
+            short,
+        )
+        if m2:
+            major, minor, family = m2.group(2), m2.group(3), m2.group(4)
+            version = f"{major}-{minor}" if minor else major
+            add(f"claude-{family}-{version}")
+            add(f"claude-{version}-{family}")
+
+    return candidates
+
+
+def _best_match_value(cache: dict[str, int], model_id: str) -> int | None:
+    """Return best cached value using deterministic ranked matching."""
+    if not cache:
+        return None
+
+    candidates = _candidate_lookup_keys(model_id)
+    if not candidates:
+        return None
+
+    best: tuple[int, int, int] | None = None
+    best_value: int | None = None
+
+    for candidate in candidates:
+        c = candidate.lower()
+        for key, value in cache.items():
+            k = key.lower()
+            score = 0
+            if c == k:
+                score = 1000
+            elif c.startswith(k):
+                score = 900
+            elif k.startswith(c):
+                score = 800
+            elif k in c or c in k:
+                score = 600
+            if score == 0:
+                continue
+
+            rank = (score, len(k), len(c))
+            if best is None or rank > best:
+                best = rank
+                best_value = value
+
+    return best_value
+
+
+def _best_match_flag(cache: dict[str, bool], model_id: str) -> bool | None:
+    """Return best cached boolean flag using same lookup strategy as limits."""
+    if not cache:
+        return None
+
+    candidates = _candidate_lookup_keys(model_id)
+    if not candidates:
+        return None
+
+    best: tuple[int, int, int] | None = None
+    best_value: bool | None = None
+
+    for candidate in candidates:
+        c = candidate.lower()
+        for key, value in cache.items():
+            k = key.lower()
+            score = 0
+            if c == k:
+                score = 1000
+            elif c.startswith(k):
+                score = 900
+            elif k.startswith(c):
+                score = 800
+            elif k in c or c in k:
+                score = 600
+            if score == 0:
+                continue
+
+            rank = (score, len(k), len(c))
+            if best is None or rank > best:
+                best = rank
+                best_value = value
+
+    return best_value
+
+
+async def _fetch_models_dev_data() -> tuple[dict[str, int], dict[str, int]]:
+    """Fetch model limits and capabilities from models.dev."""
     global _model_supports_function_calling, _model_supports_reasoning
     limits: dict[str, int] = {}
     output_limits: dict[str, int] = {}
+    function_calling: dict[str, bool] = {}
+    reasoning_support: dict[str, bool] = {}
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(LITELLM_MODEL_DATA_URL)
+            response = await client.get(MODELS_DEV_API_URL)
             response.raise_for_status()
             data = response.json()
 
-            for model_id, model_info in data.items():
-                if isinstance(model_info, dict):
-                    # LiteLLM uses "max_input_tokens" or "max_tokens" for context window
-                    ctx = model_info.get("max_input_tokens") or model_info.get(
-                        "max_tokens"
-                    )
-                    if ctx and isinstance(ctx, int):
-                        limits[model_id] = ctx
+            if not isinstance(data, dict):
+                logger.warning("models.dev payload was not a dictionary")
+                return {}, {}
 
-                    # LiteLLM uses "max_output_tokens" or "max_completion_tokens"
-                    out = model_info.get("max_output_tokens") or model_info.get(
-                        "max_completion_tokens"
-                    )
-                    if out and isinstance(out, int):
-                        output_limits[model_id] = out
+            for provider, provider_payload in data.items():
+                if not isinstance(provider_payload, dict):
+                    continue
+                models_obj = provider_payload.get("models", {})
+                if not isinstance(models_obj, dict):
+                    continue
 
-                    # Track function calling support
-                    supports_fc = model_info.get("supports_function_calling", False)
-                    if isinstance(supports_fc, bool):
-                        _model_supports_function_calling[model_id] = supports_fc
+                for fallback_id, model_info in models_obj.items():
+                    if not isinstance(model_info, dict):
+                        continue
 
-                    # Track reasoning/thinking support
-                    supports_r = model_info.get("supports_reasoning", False)
-                    if isinstance(supports_r, bool):
-                        _model_supports_reasoning[model_id] = supports_r
+                    model_id = str(model_info.get("id") or fallback_id or "").strip()
+                    if not model_id:
+                        continue
+
+                    limit_info = model_info.get("limit", {})
+                    if not isinstance(limit_info, dict):
+                        limit_info = {}
+
+                    context_limit = _coerce_int(limit_info.get("context"))
+                    output_limit = _coerce_int(limit_info.get("output"))
+
+                    supports_fc = model_info.get("tool_call")
+                    supports_reasoning_flag = model_info.get("reasoning")
+
+                    key_variants = _expand_model_keys(model_id, str(provider).lower())
+
+                    for key in key_variants:
+                        if context_limit is not None:
+                            limits[key] = context_limit
+                        if output_limit is not None:
+                            output_limits[key] = output_limit
+                        if isinstance(supports_fc, bool):
+                            function_calling[key] = supports_fc
+                        if isinstance(supports_reasoning_flag, bool):
+                            reasoning_support[key] = supports_reasoning_flag
+
+            _model_supports_function_calling = function_calling
+            _model_supports_reasoning = reasoning_support
 
             logger.info(
-                f"Loaded {len(limits)} context limits and {len(output_limits)} output limits from LiteLLM"
+                "Loaded %s context limits, %s output limits, %s function-calling flags, %s reasoning flags from models.dev",
+                len(limits),
+                len(output_limits),
+                len(_model_supports_function_calling),
+                len(_model_supports_reasoning),
             )
             return limits, output_limits
 
     except Exception as e:
-        logger.warning(f"Failed to fetch LiteLLM model data: {e}")
+        logger.warning(f"Failed to fetch models.dev model data: {e}")
         return {}, {}
 
 
@@ -139,8 +353,8 @@ async def _ensure_cache_loaded() -> None:
         if _cache_loaded:
             return
 
-        # Try to fetch from LiteLLM
-        fetched_limits, fetched_output = await _fetch_litellm_data()
+        # Try to fetch from models.dev
+        fetched_limits, fetched_output = await _fetch_models_dev_data()
 
         if fetched_limits:
             _model_limits_cache = fetched_limits
@@ -159,15 +373,9 @@ async def get_context_limit(model_id: str) -> int:
     """
     await _ensure_cache_loaded()
 
-    # Try exact match
-    if model_id in _model_limits_cache:
-        return _model_limits_cache[model_id]
-
-    # Try partial match (e.g., "gpt-4o-2024-05-13" should match "gpt-4o")
-    model_lower = model_id.lower()
-    for key, value in _model_limits_cache.items():
-        if model_lower.startswith(key.lower()) or key.lower() in model_lower:
-            return value
+    matched = _best_match_value(_model_limits_cache, model_id)
+    if matched is not None:
+        return matched
 
     return DEFAULT_CONTEXT_LIMIT
 
@@ -190,15 +398,9 @@ async def get_output_limit(model_id: str) -> int | None:
     """
     await _ensure_cache_loaded()
 
-    # Try exact match
-    if model_id in _model_output_limits_cache:
-        return _model_output_limits_cache[model_id]
-
-    # Try partial match
-    model_lower = model_id.lower()
-    for key, value in _model_output_limits_cache.items():
-        if model_lower.startswith(key.lower()) or key.lower() in model_lower:
-            return value
+    matched = _best_match_value(_model_output_limits_cache, model_id)
+    if matched is not None:
+        return matched
 
     return None
 
@@ -228,19 +430,13 @@ async def supports_function_calling(model_id: str) -> bool:
     Check if a model supports function calling (indicates it's a chat model).
 
     Returns True if the model supports function calling, False otherwise.
-    Uses LiteLLM's dataset for authoritative data.
+    Uses models.dev metadata when available.
     """
     await _ensure_cache_loaded()
 
-    # Try exact match
-    if model_id in _model_supports_function_calling:
-        return _model_supports_function_calling[model_id]
-
-    # Try partial match (e.g., "gpt-4o-2024-05-13" should match "gpt-4o")
-    model_lower = model_id.lower()
-    for key, value in _model_supports_function_calling.items():
-        if model_lower.startswith(key.lower()) or key.lower() in model_lower:
-            return value
+    matched = _best_match_flag(_model_supports_function_calling, model_id)
+    if matched is not None:
+        return matched
 
     # Default heuristics if not in LiteLLM data
     # OpenAI: gpt-* and o-series models support function calling (except whisper, dall-e, tts, embeddings)
@@ -266,21 +462,16 @@ async def supports_reasoning(model_id: str) -> bool:
     Check if a model supports reasoning/thinking tokens.
 
     Returns True if the model supports extended thinking, False otherwise.
-    Uses LiteLLM's dataset for authoritative data, with heuristic fallbacks.
+    Uses models.dev metadata when available, with heuristic fallbacks.
     """
     await _ensure_cache_loaded()
 
-    # Try exact match
-    if model_id in _model_supports_reasoning:
-        return _model_supports_reasoning[model_id]
-
-    # Try partial match (e.g., "claude-sonnet-4-20250514" should match "claude-sonnet-4")
-    model_lower = model_id.lower()
-    for key, value in _model_supports_reasoning.items():
-        if model_lower.startswith(key.lower()) or key.lower() in model_lower:
-            return value
+    matched = _best_match_flag(_model_supports_reasoning, model_id)
+    if matched is not None:
+        return matched
 
     # Heuristic fallbacks if not in LiteLLM data
+    model_lower = model_id.lower()
 
     # OpenAI: o-series reasoning models (o1, o3, o4-mini, etc.)
     if any(model_lower.startswith(p) for p in ["o1", "o3", "o4"]):

@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, cast
 
+from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexStatus as PrismaIndexStatus
 from prisma.enums import ToolType as PrismaToolType
@@ -22,7 +23,6 @@ from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
-from prisma import Json, Prisma
 from ragtime.core.database import get_db
 from ragtime.core.encryption import (
     CONNECTION_CONFIG_PASSWORD_FIELDS,
@@ -668,6 +668,7 @@ class IndexerRepository:
         # Decrypt secrets for API response
         openai_key = settings.openaiApiKey or ""
         anthropic_key = settings.anthropicApiKey or ""
+        github_models_api_token = getattr(settings, "githubModelsApiToken", "") or ""
         github_copilot_access_token = (
             getattr(settings, "githubCopilotAccessToken", "") or ""
         )
@@ -681,6 +682,8 @@ class IndexerRepository:
             openai_key = decrypt_secret(openai_key)
         if anthropic_key:
             anthropic_key = decrypt_secret(anthropic_key)
+        if github_models_api_token:
+            github_models_api_token = decrypt_secret(github_models_api_token)
         if github_copilot_access_token:
             github_copilot_access_token = decrypt_secret(github_copilot_access_token)
         if github_copilot_refresh_token:
@@ -706,6 +709,7 @@ class IndexerRepository:
             llm_max_tokens=getattr(settings, "llmMaxTokens", 4096),
             openai_api_key=openai_key,
             anthropic_api_key=anthropic_key,
+            github_models_api_token=github_models_api_token,
             github_copilot_access_token=github_copilot_access_token,
             github_copilot_refresh_token=github_copilot_refresh_token,
             github_copilot_token_expires_at=getattr(
@@ -718,6 +722,9 @@ class IndexerRepository:
                 settings,
                 "githubCopilotBaseUrl",
                 "https://api.githubcopilot.com",
+            ),
+            include_copilot_third_party_models=getattr(
+                settings, "includeCopilotThirdPartyModels", False
             ),
             has_github_copilot_auth=bool(github_copilot_access_token),
             allowed_chat_models=settings.allowedChatModels or [],
@@ -800,11 +807,13 @@ class IndexerRepository:
             "llm_max_tokens": "llmMaxTokens",
             "openai_api_key": "openaiApiKey",
             "anthropic_api_key": "anthropicApiKey",
+            "github_models_api_token": "githubModelsApiToken",
             "github_copilot_access_token": "githubCopilotAccessToken",
             "github_copilot_refresh_token": "githubCopilotRefreshToken",
             "github_copilot_token_expires_at": "githubCopilotTokenExpiresAt",
             "github_copilot_enterprise_url": "githubCopilotEnterpriseUrl",
             "github_copilot_base_url": "githubCopilotBaseUrl",
+            "include_copilot_third_party_models": "includeCopilotThirdPartyModels",
             "allowed_chat_models": "allowedChatModels",
             "max_iterations": "maxIterations",
             # Token optimization settings
@@ -863,6 +872,7 @@ class IndexerRepository:
         secret_fields = [
             "openai_api_key",
             "anthropic_api_key",
+            "github_models_api_token",
             "github_copilot_access_token",
             "github_copilot_refresh_token",
             "postgres_password",

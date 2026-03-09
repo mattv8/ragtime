@@ -147,16 +147,18 @@ model AppSettings {
   ollamaBaseUrl     String   @default("http://localhost:11434") @map("ollama_base_url")
 
   // LLM Configuration (for chat/RAG responses)
-  llmProvider       String   @default("openai") @map("llm_provider") // "openai", "anthropic", "ollama", or "github_copilot"
+  llmProvider       String   @default("openai") @map("llm_provider") // "openai", "anthropic", "ollama", "github_copilot", or "github_models"
   llmModel          String   @default("gpt-4-turbo") @map("llm_model")
   llmMaxTokens      Int      @default(4096) @map("llm_max_tokens") // Max output tokens
   openaiApiKey      String   @default("") @map("openai_api_key")
   anthropicApiKey   String   @default("") @map("anthropic_api_key")
+  githubModelsApiToken String @default("") @map("github_models_api_token")
   githubCopilotAccessToken String  @default("") @map("github_copilot_access_token")
   githubCopilotRefreshToken String @default("") @map("github_copilot_refresh_token")
   githubCopilotTokenExpiresAt DateTime? @map("github_copilot_token_expires_at")
   githubCopilotEnterpriseUrl String? @map("github_copilot_enterprise_url")
   githubCopilotBaseUrl String @default("https://api.githubcopilot.com") @map("github_copilot_base_url")
+  includeCopilotThirdPartyModels Boolean @default(false) @map("include_copilot_third_party_models")
   allowedChatModels String[] @default([]) @map("allowed_chat_models") // Empty = all models allowed
 
   // Legacy tool configuration (deprecated - use ToolConfig table)

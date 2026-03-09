@@ -11,9 +11,10 @@ from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from ragtime.core.embedding_models import (get_embedding_models,
-                                           get_model_dimensions_sync)
-
+from ragtime.core.embedding_models import (
+    get_embedding_models,
+    get_model_dimensions_sync,
+)
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -477,7 +478,7 @@ class AppSettings(BaseModel):
     # LLM Configuration (for chat/RAG responses)
     llm_provider: str = Field(
         default="openai",
-        description="LLM provider: 'openai', 'anthropic', 'ollama', or 'github_copilot'",
+        description="LLM provider: 'openai', 'anthropic', 'ollama', 'github_copilot', or 'github_models'",
     )
     llm_model: str = Field(
         default="gpt-4-turbo",
@@ -511,6 +512,10 @@ class AppSettings(BaseModel):
         default="",
         description="Anthropic API key (used when llm_provider is 'anthropic')",
     )
+    github_models_api_token: str = Field(
+        default="",
+        description="GitHub Models API token/PAT (used when llm_provider is 'github_models')",
+    )
     github_copilot_access_token: str = Field(
         default="",
         description="GitHub Copilot OAuth access token (used when llm_provider is 'github_copilot')",
@@ -530,6 +535,10 @@ class AppSettings(BaseModel):
     github_copilot_base_url: str = Field(
         default="https://api.githubcopilot.com",
         description="GitHub Copilot API base URL for chat/model requests.",
+    )
+    include_copilot_third_party_models: bool = Field(
+        default=False,
+        description="When true, include 3rd-party families (Anthropic/Google) from models.dev in GitHub Copilot model discovery.",
     )
     has_github_copilot_auth: bool = Field(
         default=False,
@@ -874,11 +883,13 @@ class UpdateSettingsRequest(BaseModel):
     llm_max_tokens: Optional[int] = Field(default=None, ge=1)
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
+    github_models_api_token: Optional[str] = None
     github_copilot_access_token: Optional[str] = None
     github_copilot_refresh_token: Optional[str] = None
     github_copilot_token_expires_at: Optional[datetime] = None
     github_copilot_enterprise_url: Optional[str] = None
     github_copilot_base_url: Optional[str] = None
+    include_copilot_third_party_models: Optional[bool] = None
     allowed_chat_models: Optional[List[str]] = None
     max_iterations: Optional[int] = Field(default=None, ge=1, le=100)
     # Legacy tool settings (for backward compatibility)
@@ -1599,9 +1610,7 @@ class DatabaseDiscoverOption(BaseModel):
     name: str = Field(description="Database name")
     accessible: bool = Field(
         default=True,
-        description=(
-            "Whether the provided credentials can open/query this database"
-        ),
+        description=("Whether the provided credentials can open/query this database"),
     )
     access_error: Optional[str] = Field(
         default=None,

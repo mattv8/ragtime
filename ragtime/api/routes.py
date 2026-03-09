@@ -15,10 +15,18 @@ from ragtime import __version__
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.logging import get_logger
-from ragtime.models import (AgentOptions, ChatChoice, ChatCompletionRequest,
-                            ChatCompletionResponse, HealthResponse,
-                            IndexLoadingDetail, MemoryStats, Message,
-                            ModelInfo, ModelsResponse)
+from ragtime.models import (
+    AgentOptions,
+    ChatChoice,
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    HealthResponse,
+    IndexLoadingDetail,
+    MemoryStats,
+    Message,
+    ModelInfo,
+    ModelsResponse,
+)
 from ragtime.rag import rag
 
 logger = get_logger(__name__)
@@ -286,7 +294,9 @@ async def _stream_response_tokens(
         return output
 
     # Stream tokens from the RAG agent
-    async for event in rag.process_query_stream(user_message, chat_history):
+    async for event in rag.process_query_stream(
+        user_message, chat_history, conversation_model=model
+    ):
         # Handle structured events (tool calls)
         if isinstance(event, dict):
             event_type = event.get("type")

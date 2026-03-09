@@ -27,6 +27,40 @@ interface GroupedModels<T extends BaseModel> {
   otherModels: T[];
 }
 
+function inferCompactFamilyLabel(model: BaseModel): string | null {
+  const id = model.id.toLowerCase();
+  if (id.includes('claude-haiku-4-5')) {
+    return 'Haiku4.5';
+  }
+  if (id.includes('claude-haiku-4')) {
+    return 'Haiku4';
+  }
+  if (id.includes('claude-3-5-haiku') || id.includes('claude-3.5-haiku') || id.includes('claude-3-haiku')) {
+    return 'Claude Haiku';
+  }
+  if (id.includes('claude-sonnet-4')) {
+    return 'Claude Sonnet 4';
+  }
+  if (id.includes('claude-opus-4')) {
+    return 'Claude Opus 4';
+  }
+  if (id.includes('claude')) {
+    return 'Claude';
+  }
+  return null;
+}
+
+function inferCompactFamilyLabelFromId(modelId: string): string | null {
+  const normalizedId = modelId
+    .toLowerCase()
+    .replace(/^anthropic\//, '')
+    .replace(/^github_copilot\//, '');
+  return inferCompactFamilyLabel({
+    id: normalizedId,
+    name: modelId,
+  });
+}
+
 /**
  * Model selector dropdown with expandable submenus on hover.
  *
@@ -94,10 +128,22 @@ export function ModelSelector<T extends BaseModel>({
 
   // Display text for the button
   const displayText = useMemo(() => {
-    if (!selectedModel) return selectedModelId || placeholder;
-    // For compact variant, if selected model is a "latest" model, show group name
-    if (variant === 'compact' && selectedModel.is_latest && selectedModel.group) {
+    if (!selectedModel) {
+      return inferCompactFamilyLabelFromId(selectedModelId) || selectedModelId || placeholder;
+    }
+    // For compact variant, prefer the family/group label when available.
+    // This keeps chat header labels stable (e.g., "Claude Haiku") even when
+    // a dated version within that family is selected.
+    if (
+      variant === 'compact' &&
+      selectedModel.group &&
+      !selectedModel.group.startsWith('Other')
+    ) {
       return selectedModel.group;
+    }
+    if (variant === 'compact') {
+      const inferred = inferCompactFamilyLabel(selectedModel);
+      if (inferred) return inferred;
     }
     return selectedModel.name;
   }, [selectedModel, selectedModelId, placeholder, variant]);

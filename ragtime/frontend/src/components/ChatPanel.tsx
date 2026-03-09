@@ -1531,7 +1531,7 @@ export function ChatPanel({
     onFullscreenChange?.(next);
   }, [isFullscreen, onFullscreenChange]);
 
-  const parseStoredConversationModel = useCallback((storedModel: string): { provider?: 'openai' | 'anthropic' | 'ollama'; modelId: string } => {
+  const parseStoredConversationModel = useCallback((storedModel: string): { provider?: 'openai' | 'anthropic' | 'ollama' | 'github_copilot' | 'github_models'; modelId: string } => {
     if (!storedModel) {
       return { modelId: '' };
     }
@@ -1541,10 +1541,10 @@ export function ChatPanel({
       return { modelId: storedModel };
     }
 
-    const provider = storedModel.slice(0, delimiterIndex) as 'openai' | 'anthropic' | 'ollama';
+    const provider = storedModel.slice(0, delimiterIndex) as 'openai' | 'anthropic' | 'ollama' | 'github_copilot' | 'github_models';
     const modelId = storedModel.slice(delimiterIndex + 2);
 
-    if (provider !== 'openai' && provider !== 'anthropic' && provider !== 'ollama') {
+    if (provider !== 'openai' && provider !== 'anthropic' && provider !== 'ollama' && provider !== 'github_copilot' && provider !== 'github_models') {
       return { modelId: storedModel };
     }
 

@@ -1741,9 +1741,11 @@ textarea {
 
 /* Keep OpenAPI model selector trigger and adjacent settings action button aligned. */
 .settings-control-height {
-  min-height: 40px;
-  padding-top: 10px;
-  padding-bottom: 10px;
+  height: 42px;
+  min-height: 42px;
+  box-sizing: border-box;
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 /* API/Connection info boxes */

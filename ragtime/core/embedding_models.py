@@ -1,14 +1,13 @@
 """
-Embedding model data fetched from LiteLLM's community-maintained dataset.
+Embedding model data fetched from models.dev provider catalog.
 
-Filters models by "mode": "embedding" from the LiteLLM dataset.
+Filters models by embedding-capable output modality or embedding model naming.
 
-Source: https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+Source: https://models.dev/api.json
 """
 
 import asyncio
 from dataclasses import dataclass
-from typing import Optional
 
 import httpx
 
@@ -17,8 +16,8 @@ from ragtime.core.ollama import get_model_embedding_dimension
 
 logger = get_logger(__name__)
 
-# LiteLLM's community-maintained model data (updated frequently)
-LITELLM_MODEL_DATA_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
+# models.dev provider/model catalog (updated frequently)
+MODELS_DEV_API_URL = "https://models.dev/api.json"
 
 # OpenAI embedding models priority order (recommended first)
 # Used for sorting in the embedding model selection UI
@@ -36,52 +35,116 @@ _cache_loaded = False
 
 @dataclass
 class EmbeddingModelInfo:
-    """Information about an embedding model from LiteLLM."""
+    """Information about an embedding model from models.dev."""
 
     id: str
     provider: str
-    max_input_tokens: Optional[int] = None
-    output_vector_size: Optional[int] = None
+    max_input_tokens: int | None = None
+    output_vector_size: int | None = None
 
 
-async def _fetch_litellm_embedding_models() -> dict[str, EmbeddingModelInfo]:
-    """Fetch embedding models from LiteLLM's dataset."""
+def _coerce_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+async def _fetch_models_dev_embedding_models() -> dict[str, EmbeddingModelInfo]:
+    """Fetch embedding models from models.dev catalog."""
     models: dict[str, EmbeddingModelInfo] = {}
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.get(LITELLM_MODEL_DATA_URL)
+            response = await client.get(MODELS_DEV_API_URL)
             response.raise_for_status()
             data = response.json()
 
-            for model_id, model_info in data.items():
-                if isinstance(model_info, dict):
-                    # Filter for embedding models only
-                    if model_info.get("mode") == "embedding":
-                        provider = model_info.get("litellm_provider", "unknown")
-                        models[model_id] = EmbeddingModelInfo(
-                            id=model_id,
-                            provider=provider,
-                            max_input_tokens=model_info.get("max_input_tokens")
-                            or model_info.get("max_tokens"),
-                            output_vector_size=model_info.get("output_vector_size"),
-                        )
+            if not isinstance(data, dict):
+                logger.warning("models.dev payload was not a dictionary")
+                return {}
 
-            logger.info(f"Loaded {len(models)} embedding models from LiteLLM")
+            for provider, provider_payload in data.items():
+                if not isinstance(provider_payload, dict):
+                    continue
+                models_obj = provider_payload.get("models", {})
+                if not isinstance(models_obj, dict):
+                    continue
+
+                for fallback_id, model_info in models_obj.items():
+                    if not isinstance(model_info, dict):
+                        continue
+
+                    model_id = str(model_info.get("id") or fallback_id or "").strip()
+                    if not model_id:
+                        continue
+
+                    modalities = model_info.get("modalities", {})
+                    output_modalities = (
+                        modalities.get("output", [])
+                        if isinstance(modalities, dict)
+                        else []
+                    )
+                    output_set = {
+                        str(v).strip().lower()
+                        for v in output_modalities
+                        if isinstance(v, str)
+                    }
+
+                    is_embedding = (
+                        "embedding" in output_set or "embedding" in model_id.lower()
+                    )
+                    if not is_embedding:
+                        continue
+
+                    limit_info = model_info.get("limit", {})
+                    if not isinstance(limit_info, dict):
+                        limit_info = {}
+
+                    info = EmbeddingModelInfo(
+                        id=model_id,
+                        provider=str(provider),
+                        max_input_tokens=_coerce_int(limit_info.get("context")),
+                        output_vector_size=_coerce_int(limit_info.get("output")),
+                    )
+
+                    existing = models.get(model_id)
+                    if existing is None or (
+                        existing.provider != "openai" and info.provider == "openai"
+                    ):
+                        models[model_id] = info
+
+                    # Alias provider-prefixed IDs to short ID when safe.
+                    if "/" in model_id:
+                        _, _, short_id = model_id.partition("/")
+                        if short_id and short_id not in models:
+                            models[short_id] = EmbeddingModelInfo(
+                                id=short_id,
+                                provider=str(provider),
+                                max_input_tokens=info.max_input_tokens,
+                                output_vector_size=info.output_vector_size,
+                            )
+
+            logger.info(f"Loaded {len(models)} embedding models from models.dev")
             return models
 
     except Exception as e:
-        logger.warning(f"Failed to fetch LiteLLM embedding model data: {e}")
+        logger.warning(f"Failed to fetch models.dev embedding model data: {e}")
         return {}
 
 
 async def get_embedding_models() -> dict[str, EmbeddingModelInfo]:
-    """Get cached embedding models, fetching from LiteLLM if needed."""
+    """Get cached embedding models, fetching from models.dev if needed."""
     global _cache_loaded, _embedding_models_cache
 
     async with _cache_lock:
         if not _cache_loaded:
-            _embedding_models_cache = await _fetch_litellm_embedding_models()
+            _embedding_models_cache = await _fetch_models_dev_embedding_models()
             _cache_loaded = True
 
     return _embedding_models_cache
@@ -101,7 +164,7 @@ def get_openai_embedding_models_sync(
         if m.provider == "openai" and "embedding" in m.id.lower()
     ]
 
-    def sort_key(m: EmbeddingModelInfo) -> tuple:
+    def sort_key(m: EmbeddingModelInfo) -> str:
         return m.id
 
     openai_models.sort(key=sort_key)
@@ -109,7 +172,7 @@ def get_openai_embedding_models_sync(
 
 
 async def get_openai_embedding_models() -> list[EmbeddingModelInfo]:
-    """Get OpenAI embedding models from LiteLLM data (cached)."""
+    """Get OpenAI embedding models from models.dev data (cached)."""
     all_models = await get_embedding_models()
     return get_openai_embedding_models_sync(all_models)
 
@@ -117,7 +180,7 @@ async def get_openai_embedding_models() -> list[EmbeddingModelInfo]:
 def is_embedding_model(
     model_id: str, all_models: dict[str, EmbeddingModelInfo]
 ) -> bool:
-    """Check if a model ID is an embedding model according to LiteLLM."""
+    """Check if a model ID is an embedding model according to models.dev."""
     return model_id in all_models
 
 
@@ -172,7 +235,7 @@ async def get_embedding_model_context_limit(
     Get the context/input token limit for an embedding model.
 
     For Ollama models, queries /api/show for context_length.
-    For OpenAI/other models, uses LiteLLM's max_input_tokens data.
+    For OpenAI/other models, uses models.dev limit metadata.
 
     Args:
         model_name: The embedding model name
@@ -202,7 +265,7 @@ async def get_embedding_model_context_limit(
         )
         return default_limit
 
-    # For OpenAI and other providers, check LiteLLM data
+    # For OpenAI and other providers, check models.dev data
     models = await get_embedding_models()
     model_info = models.get(model_name)
     if model_info and model_info.max_input_tokens:

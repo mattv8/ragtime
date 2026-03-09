@@ -190,33 +190,80 @@ async def generate_index_description(
                 logger.debug("OpenAI selected but no API key configured")
 
         elif provider == "github_copilot":
-            token = app_settings.get(
-                "github_copilot_access_token", ""
-            ) or app_settings.get("github_copilot_refresh_token", "")
-            if token:
+            pat_token = app_settings.get("github_models_api_token", "")
+            if pat_token:
                 from langchain_openai import ChatOpenAI
 
-                base_url = (
-                    app_settings.get("github_copilot_base_url")
-                    or "https://api.githubcopilot.com"
-                )
-                model = app_settings.get("llm_model", "gpt-4o")
+                model = app_settings.get("llm_model", "openai/gpt-4.1")
                 llm = ChatOpenAI(
                     model=model,
                     temperature=0.3,
-                    api_key=token,
-                    base_url=str(base_url).rstrip("/"),
+                    api_key=pat_token,
+                    base_url="https://models.github.ai/inference",
                     default_headers={
-                        "Openai-Intent": "conversation-edits",
-                        "x-initiator": "agent",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
                         "User-Agent": "ragtime",
                     },
                 )
                 logger.debug(
-                    f"Using GitHub Copilot for description generation: {model}"
+                    f"Using GitHub Copilot provider with PAT mode for description generation: {model}"
                 )
             else:
-                logger.debug("GitHub Copilot selected but no OAuth token configured")
+                token = app_settings.get(
+                    "github_copilot_access_token", ""
+                ) or app_settings.get("github_copilot_refresh_token", "")
+                if token:
+                    from langchain_openai import ChatOpenAI
+
+                    base_url = (
+                        app_settings.get("github_copilot_base_url")
+                        or "https://api.githubcopilot.com"
+                    )
+                    model = app_settings.get("llm_model", "gpt-4o")
+                    llm = ChatOpenAI(
+                        model=model,
+                        temperature=0.3,
+                        api_key=token,
+                        base_url=str(base_url).rstrip("/"),
+                        default_headers={
+                            "Openai-Intent": "conversation-edits",
+                            "x-initiator": "agent",
+                            "User-Agent": "ragtime",
+                        },
+                    )
+                    logger.debug(
+                        f"Using GitHub Copilot for description generation: {model}"
+                    )
+                else:
+                    logger.debug(
+                        "GitHub Copilot selected but no OAuth token configured"
+                    )
+
+        elif provider == "github_models":
+            token = app_settings.get("github_models_api_token", "") or app_settings.get(
+                "github_copilot_refresh_token", ""
+            )
+            if not token:
+                token = app_settings.get("github_copilot_access_token", "")
+            if token:
+                from langchain_openai import ChatOpenAI
+
+                model = app_settings.get("llm_model", "openai/gpt-4.1")
+                llm = ChatOpenAI(
+                    model=model,
+                    temperature=0.3,
+                    api_key=token,
+                    base_url="https://models.github.ai/inference",
+                    default_headers={
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                        "User-Agent": "ragtime",
+                    },
+                )
+                logger.debug(f"Using GitHub Models for description generation: {model}")
+            else:
+                logger.debug("GitHub Models selected but no API token configured")
 
         if llm is None:
             logger.debug(

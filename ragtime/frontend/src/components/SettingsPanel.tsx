@@ -123,6 +123,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   const [copilotCodeCopied, setCopilotCodeCopied] = useState(false);
   const [copilotWizardVisible, setCopilotWizardVisible] = useState(false);
   const [copilotWizardStep, setCopilotWizardStep] = useState<1 | 2 | 3>(1);
+  const [copilotAuthMode, setCopilotAuthMode] = useState<'oauth' | 'pat'>('oauth');
   const copilotPollTimerRef = useRef<number | null>(null);
   const copilotPollGenerationRef = useRef(0);
 
@@ -245,7 +246,13 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   // Fetch LLM models from provider API
   const fetchLlmModels = useCallback(async (
     provider: 'openai' | 'anthropic' | 'github_copilot',
-    apiKey?: string
+    apiKey?: string,
+    options?: {
+      authMode?: 'oauth' | 'pat';
+      includeDirectoryModels?: boolean;
+      includeAnthropicModels?: boolean;
+      includeGoogleModels?: boolean;
+    }
   ) => {
     if ((provider === 'openai' || provider === 'anthropic') && (!apiKey || apiKey.length < 10)) {
       setLlmModelsError('Please enter a valid API key first');
@@ -261,6 +268,10 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       const response = await api.fetchLLMModels({
         provider,
         api_key: apiKey,
+        auth_mode: options?.authMode,
+        include_directory_models: options?.includeDirectoryModels,
+        include_anthropic_models: options?.includeAnthropicModels,
+        include_google_models: options?.includeGoogleModels,
       });
 
       if (response.success) {
@@ -340,8 +351,14 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           await refreshCopilotStatus();
           setSuccess('GitHub Copilot connected successfully');
           setTimeout(() => setSuccess(null), 3000);
-          if ((formData.llm_provider || 'openai') === 'github_copilot') {
-            await fetchLlmModels('github_copilot');
+          const selectedProvider = formData.llm_provider || 'openai';
+          if (selectedProvider === 'github_copilot') {
+            await fetchLlmModels('github_copilot', undefined, {
+              authMode: copilotAuthMode,
+              includeDirectoryModels: true,
+              includeAnthropicModels: true,
+              includeGoogleModels: true,
+            });
           }
           return;
         }
@@ -366,7 +383,13 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         }
       }
     }, Math.max(delaySeconds, 1) * 1000);
-  }, [clearCopilotPollTimer, fetchLlmModels, formData.llm_provider, refreshCopilotStatus]);
+  }, [
+    clearCopilotPollTimer,
+    fetchLlmModels,
+    formData.llm_provider,
+    refreshCopilotStatus,
+    copilotAuthMode,
+  ]);
 
   const startCopilotDeviceFlow = useCallback(async () => {
     setLlmModelsError(null);
@@ -505,37 +528,97 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
 
     try {
       const response = await api.getAllModels();
-      setAllAvailableModels(response.models);
+      let models: AvailableModel[] = response.models.map((model) => ({
+        ...model,
+        provider: model.provider === 'github_models' ? 'github_copilot' : model.provider,
+      }));
+
+      const copilotPatToken = (formData.github_models_api_token || settings?.github_models_api_token || '').trim();
+      const copilotConnected = Boolean(copilotAuthStatus?.connected || settings?.has_github_copilot_auth);
+
+      // Include GitHub 3rd-party families in selector.
+      if (copilotPatToken || copilotConnected) {
+        const githubResponse = await api.fetchLLMModels({
+          provider: 'github_copilot',
+          auth_mode: copilotPatToken ? 'pat' : 'oauth',
+          include_directory_models: true,
+          include_anthropic_models: true,
+          include_google_models: true,
+        });
+
+        if (githubResponse.success) {
+          const contextLimitById = new Map(models.map((m) => [m.id, m.context_limit]));
+          const nonGithubModels = models.filter((m) => m.provider !== 'github_copilot');
+          const githubModels: AvailableModel[] = githubResponse.models.map((m) => ({
+            id: m.id,
+            name: m.name,
+            provider: 'github_copilot',
+            context_limit: contextLimitById.get(m.id) ?? 200000,
+            max_output_tokens: m.max_output_tokens,
+            group: m.group,
+            is_latest: m.is_latest,
+          }));
+          models = [...nonGithubModels, ...githubModels];
+        }
+      }
+
+      setAllAvailableModels(models);
+
+      const toScopedKey = (model: AvailableModel): string => `${model.provider}::${model.id}`;
 
       // Initialize selected models from current settings or all models
       const allowedModels = response.allowed_models || [];
       if (allowedModels.length > 0) {
-        setSelectedModels(new Set(allowedModels));
+        const hasScopedEntries = allowedModels.some((value) => value.includes('::'));
+        if (hasScopedEntries) {
+          setSelectedModels(new Set(allowedModels));
+        } else {
+          // Legacy format fallback: model IDs only.
+          const legacyIds = new Set(allowedModels);
+          const scopedFromLegacy = models
+            .filter((model) => legacyIds.has(model.id))
+            .map((model) => toScopedKey(model));
+          setSelectedModels(new Set(scopedFromLegacy));
+        }
       } else {
         // Default to all models selected
-        setSelectedModels(new Set(response.models.map(m => m.id)));
+        setSelectedModels(new Set(models.map((m) => toScopedKey(m))));
       }
     } catch (err) {
       console.error('Failed to load models:', err);
     } finally {
       setModelsLoading(false);
     }
-  }, []);
+  }, [
+    copilotAuthStatus?.connected,
+    formData.github_models_api_token,
+    settings?.github_models_api_token,
+    settings?.has_github_copilot_auth,
+  ]);
 
-  const toggleModel = (modelId: string) => {
+  const toggleModel = (model: AvailableModel) => {
+    const selectionKey = `${model.provider}::${model.id}`;
     setSelectedModels(prev => {
       const next = new Set(prev);
-      if (next.has(modelId)) {
-        next.delete(modelId);
+      if (next.has(selectionKey)) {
+        next.delete(selectionKey);
       } else {
-        next.add(modelId);
+        // Keep one provider binding per model ID so provider priority is explicit.
+        for (const key of Array.from(next)) {
+          const delimiter = key.indexOf('::');
+          const keyModelId = delimiter >= 0 ? key.slice(delimiter + 2) : key;
+          if (keyModelId === model.id) {
+            next.delete(key);
+          }
+        }
+        next.add(selectionKey);
       }
       return next;
     });
   };
 
   const selectAllModels = () => {
-    setSelectedModels(new Set(allAvailableModels.map(m => m.id)));
+    setSelectedModels(new Set(allAvailableModels.map((m) => `${m.provider}::${m.id}`)));
   };
 
   const deselectAllModels = () => {
@@ -562,6 +645,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       setLoading(true);
       const { settings: data } = await api.getSettings();
       setSettings(data);
+      const normalizedLlmProvider = data.llm_provider === 'github_models' ? 'github_copilot' : data.llm_provider;
       setFormData({
         // Server branding
         server_name: data.server_name,
@@ -574,7 +658,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         ollama_port: data.ollama_port,
         ollama_base_url: data.ollama_base_url,
         // LLM settings
-        llm_provider: data.llm_provider,
+        llm_provider: normalizedLlmProvider,
         llm_model: data.llm_model,
         llm_max_tokens: data.llm_max_tokens,
         llm_ollama_protocol: data.llm_ollama_protocol,
@@ -583,6 +667,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         llm_ollama_base_url: data.llm_ollama_base_url,
         openai_api_key: data.openai_api_key,
         anthropic_api_key: data.anthropic_api_key,
+        github_models_api_token: data.github_models_api_token,
         github_copilot_base_url: data.github_copilot_base_url,
         github_copilot_enterprise_url: data.github_copilot_enterprise_url,
         max_iterations: data.max_iterations,
@@ -631,6 +716,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       setCopilotDeviceCode('');
       setCopilotVerificationUri('');
       setError(null);
+      setCopilotAuthMode(data.github_models_api_token ? 'pat' : 'oauth');
 
       const copilotStatus = await refreshCopilotStatus();
 
@@ -654,8 +740,15 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         );
       }
 
-      if (data.llm_provider === 'github_copilot' && copilotStatus?.connected) {
-        fetchLlmModels('github_copilot');
+      if (normalizedLlmProvider === 'github_copilot') {
+        if (data.github_models_api_token || copilotStatus?.connected) {
+          fetchLlmModels('github_copilot', undefined, {
+            authMode: data.github_models_api_token ? 'pat' : 'oauth',
+            includeDirectoryModels: true,
+            includeAnthropicModels: true,
+            includeGoogleModels: true,
+          });
+        }
       }
 
       // Load MCP routes (for summary display)
@@ -722,11 +815,50 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     } finally {
       setLoading(false);
     }
-  }, [clearCopilotPollTimer, fetchLlmModels, refreshCopilotStatus, testLlmOllamaConnection, testOllamaConnection]);
+  }, [
+    clearCopilotPollTimer,
+    fetchLlmModels,
+    refreshCopilotStatus,
+    testLlmOllamaConnection,
+    testOllamaConnection,
+  ]);
 
   useEffect(() => {
     loadSettings();
   }, [loadSettings]);
+
+  useEffect(() => {
+    const normalizedProvider = formData.llm_provider === 'github_models' ? 'github_copilot' : formData.llm_provider;
+    if (normalizedProvider !== 'github_copilot') {
+      return;
+    }
+
+    const copilotPatToken = (formData.github_models_api_token || settings?.github_models_api_token || '').trim();
+    const hasCopilotAuth = Boolean(copilotPatToken || copilotAuthStatus?.connected || settings?.has_github_copilot_auth);
+    if (!hasCopilotAuth) {
+      return;
+    }
+
+    void fetchLlmModels('github_copilot', undefined, {
+      authMode: copilotPatToken ? 'pat' : 'oauth',
+      includeDirectoryModels: true,
+      includeAnthropicModels: true,
+      includeGoogleModels: true,
+    });
+
+    if (showModelFilterModal) {
+      void openModelFilterModal();
+    }
+  }, [
+    copilotAuthStatus?.connected,
+    fetchLlmModels,
+    formData.github_models_api_token,
+    formData.llm_provider,
+    openModelFilterModal,
+    settings?.github_models_api_token,
+    settings?.has_github_copilot_auth,
+    showModelFilterModal,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -872,12 +1004,14 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     setError(null);
 
     try {
+      const normalizedProvider = formData.llm_provider === 'github_models' ? 'github_copilot' : formData.llm_provider;
       const dataToSave: Record<string, unknown> = {
-        llm_provider: formData.llm_provider,
+        llm_provider: normalizedProvider,
         llm_model: formData.llm_model,
         llm_max_tokens: formData.llm_max_tokens,
         openai_api_key: formData.openai_api_key,
         anthropic_api_key: formData.anthropic_api_key,
+        github_models_api_token: formData.github_models_api_token,
         github_copilot_base_url: formData.github_copilot_base_url,
         github_copilot_enterprise_url: formData.github_copilot_enterprise_url,
         allowed_chat_models: formData.allowed_chat_models,
@@ -887,8 +1021,18 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         scratchpad_window_size: formData.scratchpad_window_size,
         context_token_budget: formData.context_token_budget,
       };
+
+      if (normalizedProvider === 'github_copilot') {
+        if (copilotAuthMode === 'pat') {
+          dataToSave.github_copilot_access_token = '';
+          dataToSave.github_copilot_refresh_token = '';
+          dataToSave.github_copilot_token_expires_at = null;
+        } else {
+          dataToSave.github_models_api_token = '';
+        }
+      }
       // Include LLM Ollama connection fields when using Ollama provider
-      if (formData.llm_provider === 'ollama') {
+      if (normalizedProvider === 'ollama') {
         dataToSave.llm_ollama_protocol = formData.llm_ollama_protocol;
         dataToSave.llm_ollama_host = formData.llm_ollama_host;
         dataToSave.llm_ollama_port = formData.llm_ollama_port;
@@ -1222,6 +1366,11 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   const openAiConfigured = Boolean((formData.openai_api_key ?? settings?.openai_api_key)?.trim());
   const claudeConfigured = Boolean((formData.anthropic_api_key ?? settings?.anthropic_api_key)?.trim());
   const copilotConfigured = Boolean(copilotAuthStatus?.connected ?? settings?.has_github_copilot_auth);
+  const copilotPatToken = (formData.github_models_api_token ?? settings?.github_models_api_token ?? '').trim();
+  const hasCopilotPatToken = Boolean(copilotPatToken);
+  const copilotPatConfigured = Boolean(
+    copilotPatToken
+  );
   const ollamaConfigured = Boolean(
     (formData.llm_ollama_protocol ?? settings?.llm_ollama_protocol) &&
     (formData.llm_ollama_host ?? settings?.llm_ollama_host)?.trim() &&
@@ -1406,10 +1555,10 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                 />
                 <span className="llm-provider-status-label">Ollama</span>
               </span>
-              <span className="llm-provider-status-item" title={copilotConfigured ? 'GitHub Copilot configured' : 'GitHub Copilot not configured'}>
+              <span className="llm-provider-status-item" title={(copilotConfigured || copilotPatConfigured) ? 'GitHub Copilot configured' : 'GitHub Copilot not configured'}>
                 <span
-                  className={`llm-provider-status-dot ${copilotConfigured ? 'configured' : ''}`}
-                  aria-label={copilotConfigured ? 'GitHub Copilot configured' : 'GitHub Copilot not configured'}
+                  className={`llm-provider-status-dot ${(copilotConfigured || copilotPatConfigured) ? 'configured' : ''}`}
+                  aria-label={(copilotConfigured || copilotPatConfigured) ? 'GitHub Copilot configured' : 'GitHub Copilot not configured'}
                 />
                 <span className="llm-provider-status-label">Copilot</span>
               </span>
@@ -1446,8 +1595,13 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                   setLlmOllamaModels([]);
                 }
 
-                if (newProvider === 'github_copilot' && (copilotAuthStatus?.connected || settings?.has_github_copilot_auth)) {
-                  fetchLlmModels('github_copilot');
+                if (newProvider === 'github_copilot' && ((copilotAuthMode === 'oauth' && (copilotAuthStatus?.connected || settings?.has_github_copilot_auth)) || (copilotAuthMode === 'pat' && hasCopilotPatToken))) {
+                  fetchLlmModels('github_copilot', undefined, {
+                    authMode: copilotAuthMode,
+                    includeDirectoryModels: true,
+                    includeAnthropicModels: true,
+                    includeGoogleModels: true,
+                  });
                 }
               }}
             >
@@ -1577,33 +1731,83 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           ) : formData.llm_provider === 'github_copilot' ? (
             <div className="form-group">
               <label>GitHub Copilot Connection</label>
+              <div className="form-row" style={{ marginBottom: '0.75rem' }}>
+                <label style={{ marginRight: '0.75rem' }}>Authentication</label>
+                <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <label style={{ display: 'inline-flex', gap: '0.35rem', alignItems: 'center', marginBottom: 0 }}>
+                    <input
+                      type="radio"
+                      name="copilot-auth-mode"
+                      checked={copilotAuthMode === 'oauth'}
+                      onChange={() => setCopilotAuthMode('oauth')}
+                    />
+                    OAuth (GitHub device login)
+                  </label>
+                  <label style={{ display: 'inline-flex', gap: '0.35rem', alignItems: 'center', marginBottom: 0 }}>
+                    <input
+                      type="radio"
+                      name="copilot-auth-mode"
+                      checked={copilotAuthMode === 'pat'}
+                      onChange={() => setCopilotAuthMode('pat')}
+                    />
+                    PAT (Copilot models)
+                  </label>
+                </div>
+              </div>
+              {copilotAuthMode === 'pat' && (
+                <div style={{ marginBottom: '0.75rem' }}>
+                  <input
+                    type="password"
+                    value={formData.github_models_api_token || ''}
+                    onChange={(e) => {
+                      setFormData({ ...formData, github_models_api_token: e.target.value });
+                      setLlmModels([]);
+                      setLlmModelsError(null);
+                      setLlmModelsLoaded(false);
+                    }}
+                    placeholder="github_pat_..."
+                  />
+                  <p className="field-help">
+                    Use a fine-grained GitHub token with the `Models:read` permission. Stored encrypted in backend settings.
+                  </p>
+                </div>
+              )}
               <div className="input-with-button input-with-actions" style={{ gap: '0.5rem', flexWrap: 'wrap' }}>
-                <button
-                  type="button"
-                  className={`btn btn-test ${copilotConfigured ? 'btn-connected' : ''}`}
-                  onClick={startCopilotDeviceFlow}
-                  disabled={copilotConnecting}
-                >
-                  {copilotConnecting ? 'Preparing...' : copilotConfigured ? 'Reauthorize' : 'Authorize'}
-                </button>
+                {copilotAuthMode === 'oauth' && (
+                  <button
+                    type="button"
+                    className={`btn btn-test ${copilotConfigured ? 'btn-connected' : ''}`}
+                    onClick={startCopilotDeviceFlow}
+                    disabled={copilotConnecting}
+                  >
+                    {copilotConnecting ? 'Preparing...' : copilotConfigured ? 'Reauthorize' : 'Authorize'}
+                  </button>
+                )}
                 <button
                   type="button"
                   className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'github_copilot' ? 'btn-connected' : ''}`}
-                  onClick={() => fetchLlmModels('github_copilot')}
-                  disabled={llmModelsFetching || !copilotConfigured}
+                  onClick={() => fetchLlmModels('github_copilot', undefined, {
+                    authMode: copilotAuthMode,
+                    includeDirectoryModels: true,
+                    includeAnthropicModels: true,
+                    includeGoogleModels: true,
+                  })}
+                  disabled={llmModelsFetching || (copilotAuthMode === 'oauth' ? !copilotConfigured : !hasCopilotPatToken)}
                 >
                   {llmModelsFetching ? 'Fetching...' : llmModelsLoaded && formData.llm_provider === 'github_copilot' ? 'Loaded' : 'Fetch Models'}
                 </button>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={clearCopilotAuth}
-                  disabled={copilotConnecting || !copilotConfigured}
-                >
-                  Disconnect
-                </button>
+                {copilotAuthMode === 'oauth' && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={clearCopilotAuth}
+                    disabled={copilotConnecting || !copilotConfigured}
+                  >
+                    Disconnect
+                  </button>
+                )}
               </div>
-              {copilotWizardVisible && copilotRequestId && copilotDeviceCode && copilotVerificationUri && (
+              {copilotAuthMode === 'oauth' && copilotWizardVisible && copilotRequestId && copilotDeviceCode && copilotVerificationUri && (
                 <div
                   className="field-help"
                   style={{
@@ -1614,9 +1818,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                     background: 'var(--bg-secondary)',
                   }}
                 >
-                  <div style={{ fontWeight: 700, marginBottom: '0.5rem' }}>GitHub Copilot Authorization</div>
-                  <div className="muted" style={{ marginBottom: '0.75rem' }}>Step {copilotWizardStep} of 3</div>
-
+                  <div style={{ fontWeight: 700, marginBottom: '0.5rem' }}>GitHub Authorization</div>
                   {copilotWizardStep === 1 && (
                     <div>
                       <div><strong>Step 1: Copy your device code</strong></div>
@@ -1703,7 +1905,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                 <p className="field-error">{llmModelsError}</p>
               )}
               <p className="field-help">
-                Uses your active GitHub Copilot subscription via OAuth device login. Models available depend on your Copilot plan and enabled model access.
+                OAuth uses GitHub device authorization. PAT mode uses Copilot-compatible models APIs via your personal token.
               </p>
             </div>
           ) : null}
@@ -1726,6 +1928,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                   />
                 ) : (
                   <input
+                    className="settings-control-height"
                     type="text"
                     value={formData.llm_model || ''}
                     onChange={(e) =>
@@ -3138,6 +3341,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                       {selectedModels.size} of {allAvailableModels.length} selected
                     </span>
                   </div>
+                  <p className="field-help" style={{ margin: '0 0 0.5rem 0' }}>
+                    If the same model exists from multiple providers, selecting a row sets the provider to use for that model.
+                  </p>
                   <div className="model-filter-list">
                     {(() => {
                       // Filter models by name, id, and provider
@@ -3148,12 +3354,6 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                         model.id.toLowerCase().includes(filterLower) ||
                         model.provider.toLowerCase().includes(filterLower)
                       );
-
-                      // Detect duplicate model names across providers for disambiguation
-                      const nameCounts: Record<string, number> = {};
-                      allAvailableModels.forEach(m => {
-                        nameCounts[m.name] = (nameCounts[m.name] || 0) + 1;
-                      });
 
                       // Group by provider first, then by model group within provider
                       // Collect unique providers in order of appearance
@@ -3174,6 +3374,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                         anthropic: 'Anthropic',
                         ollama: 'Ollama',
                         github_copilot: 'GitHub Copilot',
+                        github_models: 'GitHub Copilot',
                       };
 
                       return providerOrder.map(provider => (
@@ -3203,16 +3404,14 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                                   }}>
                                   <input
                                     type="checkbox"
-                                    checked={selectedModels.has(model.id)}
-                                    onChange={() => toggleModel(model.id)}
+                                    checked={selectedModels.has(`${model.provider}::${model.id}`)}
+                                    onChange={() => toggleModel(model)}
                                   />
                                   <span className="model-filter-name">
                                     {model.id !== model.name ? model.id : model.name}
-                                    {(nameCounts[model.name] || 0) > 1 && (
-                                      <span style={{ marginLeft: '6px', fontSize: '0.7em', padding: '1px 4px', borderRadius: '4px', background: 'var(--bg-secondary, #2d2d2d)', color: 'var(--text-muted, #888)' }}>
-                                        {providerLabels[model.provider] || model.provider}
-                                      </span>
-                                    )}
+                                    <span style={{ marginLeft: '6px', fontSize: '0.7em', padding: '1px 4px', borderRadius: '4px', background: 'var(--bg-secondary, #2d2d2d)', color: 'var(--text-muted, #888)' }}>
+                                      via {providerLabels[model.provider] || model.provider}
+                                    </span>
                                     {model.is_latest && <span style={{ marginLeft: '6px', fontSize: '0.7em', padding: '1px 4px', borderRadius: '4px', background: '#e0e0e0', color: '#555' }}>LATEST</span>}
                                   </span>
                                 </label>

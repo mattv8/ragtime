@@ -21,11 +21,19 @@ import zipfile
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, List, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, List, Optional
 
 import httpx
-from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException,
-                     Query, UploadFile)
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+)
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from pydantic import BaseModel, Field
@@ -34,75 +42,111 @@ from starlette.responses import StreamingResponse
 from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.container_capabilities import get_container_capabilities
-from ragtime.core.embedding_models import (OPENAI_EMBEDDING_PRIORITY,
-                                           get_embedding_models)
+from ragtime.core.copilot_auth import (
+    ensure_copilot_token_fresh,
+    exchange_github_token_for_copilot_token,
+)
+from ragtime.core.embedding_models import (
+    OPENAI_EMBEDDING_PRIORITY,
+    get_embedding_models,
+)
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (MODEL_FAMILY_PATTERNS,
-                                       get_context_limit, get_output_limit,
-                                       supports_function_calling,
-                                       update_model_function_calling,
-                                       update_model_limit)
-from ragtime.core.ollama import (extract_effective_context_length,
-                                 get_model_details, is_embedding_capable,
-                                 is_reachable)
+from ragtime.core.model_limits import (
+    MODEL_FAMILY_PATTERNS,
+    get_context_limit,
+    get_output_limit,
+    supports_function_calling,
+    update_model_function_calling,
+    update_model_limit,
+)
+from ragtime.core.ollama import (
+    extract_effective_context_length,
+    get_model_details,
+    is_embedding_capable,
+    is_reachable,
+)
 from ragtime.core.ollama import list_models
 from ragtime.core.ollama import list_models as ollama_list_models
 from ragtime.core.security import get_current_user, require_admin
-from ragtime.core.sql_utils import (MssqlConnectionError, MysqlConnectionError,
-                                    mssql_connect, mysql_connect,
-                                    normalize_mssql_error_message)
-from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
-                              execute_ssh_command, ssh_tunnel_config_from_dict,
-                              test_ssh_connection)
+from ragtime.core.sql_utils import (
+    MssqlConnectionError,
+    MysqlConnectionError,
+    mssql_connect,
+    mysql_connect,
+    normalize_mssql_error_message,
+)
+from ragtime.core.ssh import (
+    SSHConfig,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    ssh_tunnel_config_from_dict,
+    test_ssh_connection,
+)
 from ragtime.core.tokenization import count_tokens
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.core.vision_models import list_vision_models
 from ragtime.indexer.background_tasks import background_task_service
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
-                                    ChatMessage, ChatTaskResponse,
-                                    ChatTaskStatus, CheckRepoVisibilityRequest,
-                                    ConfigurationWarning, Conversation,
-                                    ConversationResponse,
-                                    CreateConversationRequest,
-                                    CreateIndexRequest,
-                                    CreateToolConfigRequest,
-                                    DatabaseDiscoverOption, EmbeddingStatus,
-                                    FetchBranchesRequest,
-                                    FetchBranchesResponse,
-                                    FilesystemAnalysisJobResponse,
-                                    FilesystemConnectionConfig,
-                                    FilesystemIndexJobResponse,
-                                    IndexAnalysisResult, IndexConfig,
-                                    IndexInfo, IndexJobResponse, IndexStatus,
-                                    MssqlDiscoverRequest,
-                                    MssqlDiscoverResponse,
-                                    MysqlDiscoverRequest,
-                                    MysqlDiscoverResponse, OcrMode,
-                                    PdmDiscoverRequest, PdmDiscoverResponse,
-                                    PdmIndexJobResponse,
-                                    PostgresDiscoverRequest,
-                                    PostgresDiscoverResponse,
-                                    ProviderPromptDebugListResponse,
-                                    ProviderPromptDebugRecord,
-                                    RepoVisibilityResponse,
-                                    RetryVisualizationRequest,
-                                    RetryVisualizationResponse,
-                                    SchemaIndexJobResponse, SendMessageRequest,
-                                    ToolConfig, ToolTestRequest, ToolType,
-                                    TriggerFilesystemIndexRequest,
-                                    TriggerPdmIndexRequest,
-                                    TriggerSchemaIndexRequest,
-                                    UpdateSettingsRequest,
-                                    UpdateToolConfigRequest, VectorStoreType)
+from ragtime.indexer.models import (
+    AnalyzeIndexRequest,
+    AppSettings,
+    ChatMessage,
+    ChatTaskResponse,
+    ChatTaskStatus,
+    CheckRepoVisibilityRequest,
+    ConfigurationWarning,
+    Conversation,
+    ConversationResponse,
+    CreateConversationRequest,
+    CreateIndexRequest,
+    CreateToolConfigRequest,
+    DatabaseDiscoverOption,
+    EmbeddingStatus,
+    FetchBranchesRequest,
+    FetchBranchesResponse,
+    FilesystemAnalysisJobResponse,
+    FilesystemConnectionConfig,
+    FilesystemIndexJobResponse,
+    IndexAnalysisResult,
+    IndexConfig,
+    IndexInfo,
+    IndexJobResponse,
+    IndexStatus,
+    MssqlDiscoverRequest,
+    MssqlDiscoverResponse,
+    MysqlDiscoverRequest,
+    MysqlDiscoverResponse,
+    OcrMode,
+    PdmDiscoverRequest,
+    PdmDiscoverResponse,
+    PdmIndexJobResponse,
+    PostgresDiscoverRequest,
+    PostgresDiscoverResponse,
+    ProviderPromptDebugListResponse,
+    ProviderPromptDebugRecord,
+    RepoVisibilityResponse,
+    RetryVisualizationRequest,
+    RetryVisualizationResponse,
+    SchemaIndexJobResponse,
+    SendMessageRequest,
+    ToolConfig,
+    ToolTestRequest,
+    ToolType,
+    TriggerFilesystemIndexRequest,
+    TriggerPdmIndexRequest,
+    TriggerSchemaIndexRequest,
+    UpdateSettingsRequest,
+    UpdateToolConfigRequest,
+    VectorStoreType,
+)
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
-                                            schema_indexer)
+from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
 from ragtime.indexer.service import indexer
 from ragtime.indexer.title_generation import schedule_title_generation
 from ragtime.indexer.utils import safe_tool_name
@@ -122,8 +166,11 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 # GitHub Copilot OAuth device flow
-GITHUB_COPILOT_CLIENT_ID = os.getenv("GITHUB_COPILOT_CLIENT_ID", "Ov23livu7XnA0KWQypFt")
+# We must use VSCode's Client ID to get user subscribed models
+GITHUB_COPILOT_CLIENT_ID = os.getenv("GITHUB_COPILOT_CLIENT_ID", "Iv1.b507a08c87ecfe98")
 COPILOT_DEFAULT_BASE_URL = "https://api.githubcopilot.com"
+GITHUB_MODELS_CATALOG_URL = "https://models.github.ai/catalog/models"
+MODELS_DEV_API_URL = "https://models.dev/api.json"
 OAUTH_POLLING_SAFETY_MARGIN_SECONDS = 3
 COPILOT_EDITOR_VERSION = "Ragtime/1.0"
 COPILOT_PLUGIN_VERSION = "Ragtime/1.0"
@@ -146,6 +193,56 @@ DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 # This allows the heartbeat to return cached deep-check results
 _ssh_credential_cache: dict[str, tuple[float, ToolTestResponse]] = {}
 _SSH_CREDENTIAL_CACHE_TTL = 15.0  # seconds
+
+# Short-lived cache for external model discovery endpoints used by settings/chat
+# model selectors. This avoids repeated high-latency calls during UI refreshes.
+_MODEL_DISCOVERY_CACHE_TTL_SECONDS = float(
+    os.getenv("MODEL_DISCOVERY_CACHE_TTL_SECONDS", "30")
+)
+_model_discovery_cache: dict[str, tuple[float, "LLMModelsResponse"]] = {}
+_model_discovery_inflight: dict[str, asyncio.Task["LLMModelsResponse"]] = {}
+_model_discovery_lock = asyncio.Lock()
+
+
+def _copilot_token_fingerprint(token: str) -> str:
+    """Build a non-sensitive token fingerprint for cache keying."""
+    token = token.strip()
+    return f"len={len(token)}:tail={token[-8:] if token else ''}"
+
+
+async def _get_or_fetch_model_discovery(
+    cache_key: str,
+    fetcher: Callable[[], Awaitable["LLMModelsResponse"]],
+) -> "LLMModelsResponse":
+    """Return cached model discovery result or dedupe concurrent refreshes."""
+    now = time.monotonic()
+
+    async with _model_discovery_lock:
+        cached = _model_discovery_cache.get(cache_key)
+        if cached and (now - cached[0]) < _MODEL_DISCOVERY_CACHE_TTL_SECONDS:
+            return cached[1].model_copy(deep=True)
+
+        inflight = _model_discovery_inflight.get(cache_key)
+        if inflight is None:
+            inflight = asyncio.create_task(fetcher())
+            _model_discovery_inflight[cache_key] = inflight
+
+    try:
+        result = await inflight
+    finally:
+        async with _model_discovery_lock:
+            current = _model_discovery_inflight.get(cache_key)
+            if current is inflight:
+                _model_discovery_inflight.pop(cache_key, None)
+
+    if result.success:
+        async with _model_discovery_lock:
+            _model_discovery_cache[cache_key] = (
+                time.monotonic(),
+                result.model_copy(deep=True),
+            )
+
+    return result
 
 
 @router.get("", response_model=List[IndexInfo])
@@ -1644,8 +1741,7 @@ async def update_tool_config(
 
                 # Check for name conflicts with existing indexes
                 if is_faiss and new_index_name != old_index_name:
-                    from ragtime.indexer.vector_backends import \
-                        FAISS_INDEX_BASE_PATH
+                    from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 
                     new_path = FAISS_INDEX_BASE_PATH / new_index_name
                     if new_path.exists():
@@ -1666,8 +1762,7 @@ async def update_tool_config(
             # For FAISS filesystem indexes, rename using the backend
             if is_faiss and old_index_name and new_index_name:
                 if old_index_name != new_index_name:
-                    from ragtime.indexer.vector_backends import \
-                        get_faiss_backend
+                    from ragtime.indexer.vector_backends import get_faiss_backend
 
                     faiss_backend = get_faiss_backend()
                     success = await faiss_backend.rename_index(
@@ -5810,7 +5905,7 @@ class EmbeddingModelsResponse(BaseModel):
     default_model: Optional[str] = None
 
 
-# OpenAI embedding models - prioritized list (from LiteLLM community data)
+# OpenAI embedding models - prioritized list (metadata from models.dev)
 # These are the recommended models for most use cases
 OPENAI_DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
@@ -5824,7 +5919,7 @@ async def fetch_embedding_models(
     """
     Fetch available embedding models from a provider given a valid API key.
 
-    Uses LiteLLM's community-maintained model database to identify embedding models.
+    Uses models.dev metadata to identify embedding-capable models.
     Currently only supports OpenAI. Anthropic does not provide embedding models.
     """
     if request.provider == "openai":
@@ -5840,12 +5935,12 @@ async def _fetch_openai_embedding_models(api_key: str) -> EmbeddingModelsRespons
     """
     Fetch available embedding models from OpenAI API.
 
-    Uses LiteLLM's community-maintained database to identify which models are
+    Uses models.dev metadata to identify which models are
     embedding models and to get metadata like output dimensions.
     """
     try:
-        # Get embedding model metadata from LiteLLM (cached)
-        litellm_embedding_models = await get_embedding_models()
+        # Get embedding model metadata from models.dev (cached)
+        models_dev_embedding_models = await get_embedding_models()
 
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.get(
@@ -5857,22 +5952,22 @@ async def _fetch_openai_embedding_models(api_key: str) -> EmbeddingModelsRespons
             data = response.json()
             models = []
 
-            # Filter for embedding models using LiteLLM data
+            # Filter for embedding models using models.dev data
             for model in data.get("data", []):
                 model_id = model.get("id", "")
 
-                # Check if LiteLLM knows this is an embedding model
-                litellm_info = litellm_embedding_models.get(model_id)
-                if litellm_info and litellm_info.provider == "openai":
+                # Check if models.dev knows this is an embedding model
+                model_info = models_dev_embedding_models.get(model_id)
+                if model_info and model_info.provider == "openai":
                     models.append(
                         EmbeddingModel(
                             id=model_id,
                             name=model_id,
-                            dimensions=litellm_info.output_vector_size,
+                            dimensions=model_info.output_vector_size,
                         )
                     )
                 # Fallback: also include models with "embedding" in the name
-                # (covers new models not yet in LiteLLM)
+                # (covers new models not yet in models.dev)
                 elif "embedding" in model_id.lower() and model_id not in [
                     m.id for m in models
                 ]:
@@ -5892,7 +5987,7 @@ async def _fetch_openai_embedding_models(api_key: str) -> EmbeddingModelsRespons
 
             return EmbeddingModelsResponse(
                 success=True,
-                message=f"Found {len(models)} embedding model(s) (validated against LiteLLM database).",
+                message=f"Found {len(models)} embedding model(s) (validated against models.dev metadata).",
                 models=models,
                 default_model=(
                     OPENAI_DEFAULT_EMBEDDING_MODEL
@@ -5929,9 +6024,26 @@ class LLMModelsRequest(BaseModel):
     """Request to fetch available models from an LLM provider."""
 
     provider: str = Field(
-        ..., description="LLM provider: 'openai', 'anthropic', or 'github_copilot'"
+        ...,
+        description="LLM provider: 'openai', 'anthropic', or 'github_copilot'",
     )
     api_key: str = Field(default="", description="API key/token for the provider")
+    auth_mode: Optional[str] = Field(
+        default=None,
+        description="Auth mode for github_copilot: 'oauth' (Copilot token) or 'pat' (GitHub PAT).",
+    )
+    include_directory_models: bool = Field(
+        default=False,
+        description="Include models from models.dev directory to show known Copilot models.",
+    )
+    include_anthropic_models: bool = Field(
+        default=False,
+        description="Include Anthropic/Claude models from directory results.",
+    )
+    include_google_models: bool = Field(
+        default=False,
+        description="Include Google/Gemini models from directory results.",
+    )
 
 
 class LLMModel(BaseModel):
@@ -5999,35 +6111,8 @@ def _copilot_base_url_for_domain(domain: str) -> str:
     return f"https://copilot-api.{normalized}"
 
 
-async def _exchange_github_token_for_copilot_token(
-    github_token: str,
-) -> tuple[str, Optional[datetime]]:
-    """Exchange a GitHub OAuth token for a Copilot bearer token."""
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.get(
-            "https://api.github.com/copilot_internal/v2/token",
-            headers={
-                "Authorization": f"token {github_token}",
-                "Accept": "application/json",
-                "User-Agent": "ragtime",
-            },
-        )
-        response.raise_for_status()
-        data = response.json()
-
-    copilot_token = str(data.get("token", "")).strip()
-    if not copilot_token:
-        raise ValueError("GitHub Copilot token exchange did not return a token")
-
-    expires_at = None
-    raw_expires_at = data.get("expires_at")
-    if isinstance(raw_expires_at, (int, float)):
-        try:
-            expires_at = datetime.fromtimestamp(float(raw_expires_at), tz=timezone.utc)
-        except Exception:
-            expires_at = None
-
-    return copilot_token, expires_at
+# Re-export for backward compatibility within this module.
+_exchange_github_token_for_copilot_token = exchange_github_token_for_copilot_token
 
 
 class CopilotDeviceStartRequest(BaseModel):
@@ -6114,18 +6199,34 @@ async def start_copilot_device_flow(
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
+            headers = {
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "User-Agent": "ragtime",
+            }
+
+            # GitHub OAuth Apps do not always accept `models:read` in device flow.
+            # Try broader scope first, then gracefully fall back to read:user.
             response = await client.post(
                 device_code_url,
-                headers={
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                    "User-Agent": "ragtime",
-                },
+                headers=headers,
                 json={
                     "client_id": GITHUB_COPILOT_CLIENT_ID,
-                    "scope": "read:user",
+                    "scope": "read:user models:read",
                 },
             )
+            if response.status_code == 400:
+                logger.warning(
+                    "GitHub device flow rejected models:read scope; retrying with read:user"
+                )
+                response = await client.post(
+                    device_code_url,
+                    headers=headers,
+                    json={
+                        "client_id": GITHUB_COPILOT_CLIENT_ID,
+                        "scope": "read:user",
+                    },
+                )
             response.raise_for_status()
             data = response.json()
     except httpx.HTTPStatusError as e:
@@ -6393,6 +6494,7 @@ def _extract_version(name: str) -> float:
     - OpenAI display: 'GPT-4.1 Mini' -> 4.1
     - OpenAI ID: 'gpt-4.1-mini' -> 4.1
     - Dated versions: 'gpt-4-0613' -> 4.0 (base version, no sub-version)
+    - Gemini: 'Gemini 3.1 Pro' -> 3.1, 'Gemini 3 Flash (Preview)' -> 3.0
     """
     name_lower = name.lower()
 
@@ -6405,6 +6507,12 @@ def _extract_version(name: str) -> float:
     end_match = re.search(r"(\d+(?:\.\d+)?)\s*$", name)
     if end_match:
         return float(end_match.group(1))
+
+    # Gemini/general: version number followed by non-digit qualifier
+    # e.g. 'Gemini 3.1 Pro' -> 3.1, 'Gemini 3 Flash (Preview)' -> 3.0
+    mid_match = re.search(r"(\d+(?:\.\d+)?)\s+\w", name)
+    if mid_match:
+        return float(mid_match.group(1))
 
     return 0.0
 
@@ -6471,46 +6579,77 @@ async def fetch_llm_models(
         return await _fetch_openai_models(request.api_key)
     elif request.provider == "anthropic":
         return await _fetch_anthropic_models(request.api_key)
-    elif request.provider == "github_copilot":
-        token = request.api_key
-        base_url = COPILOT_DEFAULT_BASE_URL
-        refresh_token = ""
-        if not token:
-            settings = await repository.get_settings()
-            token = settings.github_copilot_access_token
-            base_url = settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL
-            refresh_token = settings.github_copilot_refresh_token or ""
-        if not token:
-            return LLMModelsResponse(
-                success=False,
-                message="GitHub Copilot is not connected. Use Connect in LLM settings first.",
+    elif request.provider in {"github_copilot", "github_models"}:
+        settings = await repository.get_settings()
+        requested_mode = (request.auth_mode or "").strip().lower()
+        auth_mode = requested_mode or (
+            "pat" if (settings.github_models_api_token or "").strip() else "oauth"
+        )
+
+        if auth_mode == "pat":
+            token = request.api_key or settings.github_models_api_token or ""
+            if not token:
+                return LLMModelsResponse(
+                    success=False,
+                    message="GitHub Copilot PAT mode requires a token. Paste a fine-grained PAT with Models:read.",
+                )
+            result = await _fetch_github_models_catalog(token)
+        else:
+            token = request.api_key
+            base_url = COPILOT_DEFAULT_BASE_URL
+            refresh_token = ""
+            if not token:
+                token = settings.github_copilot_access_token
+                base_url = settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL
+                refresh_token = settings.github_copilot_refresh_token or ""
+            if not token:
+                return LLMModelsResponse(
+                    success=False,
+                    message="GitHub Copilot is not connected. Use OAuth connect in LLM settings first.",
+                )
+
+            # Proactively refresh HMAC token if near expiry.
+            if not request.api_key:
+                refreshed = await ensure_copilot_token_fresh()
+                if refreshed:
+                    token = refreshed
+
+            result = await _fetch_github_copilot_models(
+                token,
+                base_url,
             )
+            if not result.success:
+                # If the stored access token is stale or low-privilege, try exchanging
+                # the saved OAuth token for a fresh Copilot bearer token and retry once.
+                auth_failed = "authorization failed" in (result.message or "").lower()
+                if refresh_token and auth_failed and not request.api_key:
+                    try:
+                        exchanged_token, exchanged_expires_at = (
+                            await exchange_github_token_for_copilot_token(refresh_token)
+                        )
+                        await repository.update_settings(
+                            {
+                                "github_copilot_access_token": exchanged_token,
+                                "github_copilot_token_expires_at": exchanged_expires_at,
+                            }
+                        )
+                        invalidate_settings_cache()
+                        result = await _fetch_github_copilot_models(
+                            exchanged_token,
+                            base_url,
+                        )
+                    except Exception as exchange_error:
+                        logger.warning(
+                            "Failed to refresh Copilot bearer token from OAuth token: %s",
+                            exchange_error,
+                        )
 
-        result = await _fetch_github_copilot_models(token, base_url)
-        if result.success:
-            return result
-
-        # If the stored access token is stale or low-privilege, try exchanging the
-        # saved OAuth token for a fresh Copilot bearer token and retry once.
-        auth_failed = "authorization failed" in (result.message or "").lower()
-        if refresh_token and auth_failed and not request.api_key:
-            try:
-                exchanged_token, exchanged_expires_at = (
-                    await _exchange_github_token_for_copilot_token(refresh_token)
-                )
-                await repository.update_settings(
-                    {
-                        "github_copilot_access_token": exchanged_token,
-                        "github_copilot_token_expires_at": exchanged_expires_at,
-                    }
-                )
-                invalidate_settings_cache()
-                return await _fetch_github_copilot_models(exchanged_token, base_url)
-            except Exception as exchange_error:
-                logger.warning(
-                    "Failed to refresh Copilot bearer token from OAuth token: %s",
-                    exchange_error,
-                )
+        if request.include_directory_models:
+            directory_result = await _fetch_copilot_directory_models(
+                include_anthropic=request.include_anthropic_models,
+                include_google=request.include_google_models,
+            )
+            result = _merge_llm_model_results(result, directory_result)
 
         return result
     else:
@@ -6518,6 +6657,143 @@ async def fetch_llm_models(
             success=False,
             message=f"Unknown provider: {request.provider}. Supported: 'openai', 'anthropic', 'github_copilot'",
         )
+
+
+def _merge_llm_model_results(
+    primary: LLMModelsResponse, extra: LLMModelsResponse
+) -> LLMModelsResponse:
+    """Merge model results by id while keeping primary metadata precedence."""
+    if not primary.success and extra.success:
+        return extra
+    if primary.success and not extra.success:
+        return primary
+    if not primary.success and not extra.success:
+        return primary
+
+    merged: dict[str, LLMModel] = {m.id: m for m in primary.models}
+    for model in extra.models:
+        merged.setdefault(model.id, model)
+
+    models = list(merged.values())
+    models = _group_models(models, "github_copilot")
+    models.sort(
+        key=lambda m: (m.group or "", m.is_latest, m.created or 0, m.name.lower()),
+        reverse=True,
+    )
+
+    return LLMModelsResponse(
+        success=True,
+        message=f"Found {len(models)} model(s).",
+        models=models,
+        default_model=primary.default_model or (models[0].id if models else None),
+    )
+
+
+async def _fetch_copilot_directory_models(
+    include_anthropic: bool = False,
+    include_google: bool = False,
+) -> LLMModelsResponse:
+    """Fetch known GitHub Copilot models from models.dev directory."""
+    cache_key = (
+        "copilot-directory:"
+        f"anthropic={int(include_anthropic)}:google={int(include_google)}"
+    )
+
+    async def _fetch_uncached() -> LLMModelsResponse:
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(
+                    MODELS_DEV_API_URL,
+                    headers={
+                        "Accept": "application/json",
+                        "User-Agent": "ragtime",
+                    },
+                )
+                response.raise_for_status()
+
+            payload = response.json()
+            provider_payload = (
+                payload.get("github-copilot", {}) if isinstance(payload, dict) else {}
+            )
+            models_obj = (
+                provider_payload.get("models", {})
+                if isinstance(provider_payload, dict)
+                else {}
+            )
+            if not isinstance(models_obj, dict):
+                return LLMModelsResponse(
+                    success=False,
+                    message="models.dev github-copilot payload was malformed.",
+                )
+
+            models: list[LLMModel] = []
+            for model_key, row in models_obj.items():
+                if not isinstance(row, dict):
+                    continue
+                model_id = str(row.get("id") or model_key or "").strip()
+                model_id = re.sub(r"/+", "/", model_id).lstrip("/")
+                if not model_id:
+                    continue
+
+                model_id_l = model_id.lower()
+                if not include_anthropic and (
+                    "claude" in model_id_l or "anthropic" in model_id_l
+                ):
+                    continue
+                if not include_google and (
+                    "gemini" in model_id_l or "google" in model_id_l
+                ):
+                    continue
+
+                output_modalities = row.get("modalities", {}).get("output")
+                if isinstance(output_modalities, list) and output_modalities:
+                    text_outputs = {str(x).lower() for x in output_modalities}
+                    if "text" not in text_outputs:
+                        continue
+
+                output_limit = None
+                if isinstance(row.get("limit"), dict):
+                    limit_out = row.get("limit", {}).get("output")
+                    if isinstance(limit_out, int):
+                        output_limit = limit_out
+
+                models.append(
+                    LLMModel(
+                        id=model_id,
+                        name=str(row.get("name") or model_id),
+                        max_output_tokens=output_limit,
+                    )
+                )
+
+            if not models:
+                return LLMModelsResponse(
+                    success=False,
+                    message="No matching directory models found for the selected filters.",
+                )
+
+            models = _group_models(models, "github_copilot")
+            models.sort(
+                key=lambda m: (
+                    m.group or "",
+                    m.is_latest,
+                    m.created or 0,
+                    m.name.lower(),
+                ),
+                reverse=True,
+            )
+            return LLMModelsResponse(
+                success=True,
+                message=f"Found {len(models)} known Copilot model(s) from models.dev.",
+                models=models,
+                default_model=models[0].id if models else None,
+            )
+        except Exception as e:
+            return LLMModelsResponse(
+                success=False,
+                message=f"Failed to fetch models.dev directory: {str(e)}",
+            )
+
+    return await _get_or_fetch_model_discovery(cache_key, _fetch_uncached)
 
 
 async def _fetch_openai_models(api_key: str) -> LLMModelsResponse:
@@ -6734,57 +7010,22 @@ async def _fetch_github_copilot_models(
 ) -> LLMModelsResponse:
     """Fetch available models from GitHub Copilot API."""
     normalized_base = (base_url or COPILOT_DEFAULT_BASE_URL).rstrip("/")
-    endpoint_specs: list[tuple[str, dict[str, str]]] = [
-        (
-            f"{normalized_base}/models",
-            {
-                "Authorization": f"Bearer {access_token}",
-                "Accept": "application/json",
-                "User-Agent": "ragtime",
-                "Openai-Intent": "conversation-edits",
-                # Matching common Copilot editor headers tends to return
-                # the same model catalog users see in IDE integrations.
-                "Editor-Version": COPILOT_EDITOR_VERSION,
-                "Editor-Plugin-Version": COPILOT_PLUGIN_VERSION,
-                "Copilot-Integration-Id": COPILOT_INTEGRATION_ID,
-            },
-        ),
-        (
-            f"{normalized_base}/v1/models",
-            {
-                "Authorization": f"Bearer {access_token}",
-                "Accept": "application/json",
-                "User-Agent": "ragtime",
-                "Openai-Intent": "conversation-edits",
-                "Editor-Version": COPILOT_EDITOR_VERSION,
-                "Editor-Plugin-Version": COPILOT_PLUGIN_VERSION,
-                "Copilot-Integration-Id": COPILOT_INTEGRATION_ID,
-            },
-        ),
-        # Fallback to GitHub Models catalog. This can expose additional models
-        # that are available to the account/plan and org policy.
-        (
-            "https://models.github.ai/catalog/models",
-            {
-                "Authorization": f"Bearer {access_token}",
-                "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28",
-                "User-Agent": "ragtime",
-            },
-        ),
-    ]
-
-    models_by_id: dict[str, LLMModel] = {}
-    successful_sources = 0
-    last_error: Optional[str] = None
+    cache_key = (
+        "copilot-models:"
+        f"base={normalized_base}:token={_copilot_token_fingerprint(access_token)}"
+    )
 
     def _normalize_model_id(raw_id: str) -> str:
         model_id = raw_id.strip()
+        model_id = re.sub(r"/+", "/", model_id)
         if "/" in model_id:
             # GitHub Models catalog uses publisher-prefixed IDs like
             # "openai/gpt-4.1". Copilot/OpenAI-compatible chat APIs use
             # the model slug itself.
             model_id = model_id.split("/", 1)[1]
+        # Some catalog payloads may include double-slash forms like
+        # "anthropic//claude-haiku-4.5"; ensure we never surface "/model".
+        model_id = model_id.lstrip("/")
         return model_id
 
     def _extract_model_rows(payload: Any) -> list[dict[str, Any]]:
@@ -6797,90 +7038,233 @@ async def _fetch_github_copilot_models(
             return [row for row in payload if isinstance(row, dict)]
         return []
 
-    for url, headers in endpoint_specs:
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                response = await client.get(
-                    url,
-                    headers=headers,
-                )
+    async def _fetch_uncached() -> LLMModelsResponse:
+        endpoint_specs: list[tuple[str, dict[str, str]]] = [
+            (
+                f"{normalized_base}/models",
+                {
+                    "Authorization": f"Bearer {access_token}",
+                    "Accept": "application/json",
+                    "User-Agent": "ragtime",
+                    "Openai-Intent": "conversation-edits",
+                    # Matching common Copilot editor headers tends to return
+                    # the same model catalog users see in IDE integrations.
+                    "Editor-Version": COPILOT_EDITOR_VERSION,
+                    "Editor-Plugin-Version": COPILOT_PLUGIN_VERSION,
+                    "Copilot-Integration-Id": COPILOT_INTEGRATION_ID,
+                },
+            ),
+            (
+                f"{normalized_base}/v1/models",
+                {
+                    "Authorization": f"Bearer {access_token}",
+                    "Accept": "application/json",
+                    "User-Agent": "ragtime",
+                    "Openai-Intent": "conversation-edits",
+                    "Editor-Version": COPILOT_EDITOR_VERSION,
+                    "Editor-Plugin-Version": COPILOT_PLUGIN_VERSION,
+                    "Copilot-Integration-Id": COPILOT_INTEGRATION_ID,
+                },
+            ),
+        ]
 
-                if response.status_code in (401, 403):
-                    return LLMModelsResponse(
-                        success=False,
-                        message="GitHub Copilot authorization failed. Please reconnect GitHub Copilot.",
+        models_by_id: dict[str, LLMModel] = {}
+        successful_sources = 0
+        last_error: Optional[str] = None
+
+        for url, headers in endpoint_specs:
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    response = await client.get(
+                        url,
+                        headers=headers,
                     )
-                if response.status_code == 404:
-                    last_error = f"Endpoint not found at {url}"
-                    continue
 
-                response.raise_for_status()
-                payload = response.json()
-                rows = _extract_model_rows(payload)
-                if not rows:
-                    continue
-
-                successful_sources += 1
-                for row in rows:
-                    raw_id = str(row.get("id", "")).strip()
-                    if not raw_id:
+                    if response.status_code in (401, 403):
+                        return LLMModelsResponse(
+                            success=False,
+                            message="GitHub Copilot authorization failed. Please reconnect GitHub Copilot.",
+                        )
+                    if response.status_code == 404:
+                        last_error = f"Endpoint not found at {url}"
                         continue
 
-                    model_id = _normalize_model_id(raw_id)
-                    if not model_id:
+                    response.raise_for_status()
+                    payload = response.json()
+                    rows = _extract_model_rows(payload)
+                    if not rows:
                         continue
 
-                    # Skip obvious non-chat models.
-                    if "embedding" in model_id.lower():
-                        continue
-                    output_modalities = row.get("supported_output_modalities")
-                    if isinstance(output_modalities, list) and output_modalities:
-                        if "text" not in [str(m).lower() for m in output_modalities]:
+                    successful_sources += 1
+                    for row in rows:
+                        raw_id = str(row.get("id", "")).strip()
+                        if not raw_id:
                             continue
 
-                    model_name = str(row.get("name") or model_id)
-                    output_limit = (
-                        row.get("limits", {}).get("max_output_tokens")
-                        if isinstance(row.get("limits"), dict)
+                        model_id = _normalize_model_id(raw_id)
+                        if not model_id:
+                            continue
+
+                        # Skip obvious non-chat models.
+                        if "embedding" in model_id.lower():
+                            continue
+                        output_modalities = row.get("supported_output_modalities")
+                        if isinstance(output_modalities, list) and output_modalities:
+                            if "text" not in [
+                                str(m).lower() for m in output_modalities
+                            ]:
+                                continue
+
+                        model_name = str(row.get("name") or model_id)
+                        output_limit = (
+                            row.get("limits", {}).get("max_output_tokens")
+                            if isinstance(row.get("limits"), dict)
+                            else None
+                        )
+                        if not isinstance(output_limit, int):
+                            output_limit = await get_output_limit(model_id)
+
+                        existing = models_by_id.get(model_id)
+                        created = (
+                            row.get("created")
+                            if isinstance(row.get("created"), int)
+                            else None
+                        )
+                        candidate = LLMModel(
+                            id=model_id,
+                            name=model_name,
+                            created=created,
+                            max_output_tokens=output_limit,
+                        )
+
+                        # Prefer entries that include richer token limit metadata.
+                        if existing is None:
+                            models_by_id[model_id] = candidate
+                        elif (
+                            existing.max_output_tokens is None
+                            and candidate.max_output_tokens is not None
+                        ):
+                            models_by_id[model_id] = candidate
+            except Exception as e:
+                last_error = str(e)
+
+        if models_by_id and successful_sources > 0:
+            models = _group_models(list(models_by_id.values()), "github_copilot")
+            models.sort(
+                key=lambda m: (
+                    m.group or "",
+                    m.is_latest,
+                    m.created or 0,
+                    m.name.lower(),
+                ),
+                reverse=True,
+            )
+            return LLMModelsResponse(
+                success=True,
+                message=f"Found {len(models)} model(s) from {successful_sources} source(s).",
+                models=models,
+                default_model=models[0].id if models else None,
+            )
+
+        return LLMModelsResponse(
+            success=False,
+            message=f"Failed to fetch GitHub Copilot models: {last_error or 'unknown error'}",
+        )
+
+    return await _get_or_fetch_model_discovery(cache_key, _fetch_uncached)
+
+
+async def _fetch_github_models_catalog(github_token: str) -> LLMModelsResponse:
+    """Fetch available models from GitHub Models catalog."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(
+                GITHUB_MODELS_CATALOG_URL,
+                headers={
+                    "Authorization": f"Bearer {github_token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                    "User-Agent": "ragtime",
+                },
+            )
+
+        if response.status_code in (401, 403):
+            return LLMModelsResponse(
+                success=False,
+                message="GitHub Models authorization failed. Reconnect GitHub auth and ensure model access is enabled.",
+            )
+
+        response.raise_for_status()
+        payload = response.json()
+        rows = payload if isinstance(payload, list) else []
+
+        models: list[LLMModel] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+
+            model_id = str(row.get("id", "")).strip()
+            model_id = re.sub(r"/+", "/", model_id).lstrip("/")
+            if not model_id:
+                continue
+            if "embedding" in model_id.lower():
+                continue
+
+            output_modalities = row.get("supported_output_modalities")
+            if isinstance(output_modalities, list) and output_modalities:
+                if "text" not in [str(m).lower() for m in output_modalities]:
+                    continue
+
+            model_name = str(row.get("name") or model_id)
+            output_limit = (
+                row.get("limits", {}).get("max_output_tokens")
+                if isinstance(row.get("limits"), dict)
+                else None
+            )
+            if not isinstance(output_limit, int):
+                short_id = model_id.split("/", 1)[1] if "/" in model_id else model_id
+                output_limit = await get_output_limit(short_id)
+
+            models.append(
+                LLMModel(
+                    id=model_id,
+                    name=model_name,
+                    created=(
+                        row.get("created")
+                        if isinstance(row.get("created"), int)
                         else None
-                    )
-                    if not isinstance(output_limit, int):
-                        output_limit = await get_output_limit(model_id)
+                    ),
+                    max_output_tokens=output_limit,
+                )
+            )
 
-                    existing = models_by_id.get(model_id)
-                    created = row.get("created") if isinstance(row.get("created"), int) else None
-                    candidate = LLMModel(
-                        id=model_id,
-                        name=model_name,
-                        created=created,
-                        max_output_tokens=output_limit,
-                    )
+        if not models:
+            return LLMModelsResponse(
+                success=False,
+                message="GitHub Models catalog returned no chat-capable models for this account.",
+            )
 
-                    # Prefer entries that include richer token limit metadata.
-                    if existing is None:
-                        models_by_id[model_id] = candidate
-                    elif existing.max_output_tokens is None and candidate.max_output_tokens is not None:
-                        models_by_id[model_id] = candidate
-        except Exception as e:
-            last_error = str(e)
-
-    if models_by_id and successful_sources > 0:
-        models = _group_models(list(models_by_id.values()), "github_copilot")
+        models = _group_models(models, "github_models")
         models.sort(
             key=lambda m: (m.group or "", m.is_latest, m.created or 0, m.name.lower()),
             reverse=True,
         )
         return LLMModelsResponse(
             success=True,
-            message=f"Found {len(models)} model(s) from {successful_sources} source(s).",
+            message=f"Found {len(models)} model(s) from GitHub Models catalog.",
             models=models,
             default_model=models[0].id if models else None,
         )
-
-    return LLMModelsResponse(
-        success=False,
-        message=f"Failed to fetch GitHub Copilot models: {last_error or 'unknown error'}",
-    )
+    except httpx.HTTPStatusError as e:
+        return LLMModelsResponse(
+            success=False,
+            message=f"GitHub Models API error: {e.response.status_code}",
+        )
+    except Exception as e:
+        return LLMModelsResponse(
+            success=False,
+            message=f"Failed to fetch GitHub Models catalog: {str(e)}",
+        )
 
 
 # =============================================================================
@@ -6971,24 +7355,55 @@ async def get_available_chat_models():
         except Exception as e:
             logger.warning(f"Failed to fetch Ollama models: {e}")
 
-    # Fetch GitHub Copilot models when Copilot auth is configured
-    if (
-        app_settings.github_copilot_access_token
-        and len(app_settings.github_copilot_access_token) > 10
-    ):
+    # Fetch GitHub provider models when credentials are configured.
+    # If PAT is present, treat Copilot provider as GitHub Models-compatible mode.
+    github_models_token = (app_settings.github_models_api_token or "").strip()
+    github_copilot_token = (app_settings.github_copilot_access_token or "").strip()
+    if github_models_token or (github_copilot_token and len(github_copilot_token) > 10):
         try:
-            result = await _fetch_github_copilot_models(
-                app_settings.github_copilot_access_token,
-                app_settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL,
+            github_provider = (
+                "github_models" if github_models_token else "github_copilot"
             )
+            if github_provider == "github_models":
+                token = (
+                    github_models_token
+                    or app_settings.github_copilot_refresh_token
+                    or github_copilot_token
+                )
+                if not token:
+                    result = LLMModelsResponse(success=False, message="")
+                else:
+                    result = await _fetch_github_models_catalog(token)
+            elif github_copilot_token and len(github_copilot_token) > 10:
+                result = await _fetch_github_copilot_models(
+                    github_copilot_token,
+                    app_settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL,
+                )
+            else:
+                result = LLMModelsResponse(success=False, message="")
+
+            # Always merge directory models when using Copilot OAuth so
+            # 3rd-party families (Claude, Gemini, etc.) are available.
+            if result.success and github_provider == "github_copilot":
+                directory_result = await _fetch_copilot_directory_models(
+                    include_anthropic=True,
+                    include_google=True,
+                )
+                result = _merge_llm_model_results(result, directory_result)
+
             if result.success:
                 for m in result.models:
+                    context_model_id = (
+                        m.id.split("/", 1)[1]
+                        if github_provider == "github_models" and "/" in m.id
+                        else m.id
+                    )
                     all_models.append(
                         AvailableModel(
                             id=m.id,
                             name=m.name,
                             provider="github_copilot",
-                            context_limit=await get_context_limit(m.id),
+                            context_limit=await get_context_limit(context_model_id),
                             max_output_tokens=m.max_output_tokens,
                             created=m.created,
                         )
@@ -6996,19 +7411,73 @@ async def get_available_chat_models():
                 if not default_model and result.default_model:
                     default_model = result.default_model
         except Exception as e:
-            logger.warning(f"Failed to fetch GitHub Copilot models: {e}")
+            logger.warning(f"Failed to fetch GitHub models: {e}")
 
     # Use current settings model as default if available
     current_model = app_settings.llm_model
     if current_model and any(m.id == current_model for m in all_models):
         default_model = current_model
 
-    # Filter by allowed models if specified
-    allowed_models = app_settings.allowed_chat_models or []
+    # Filter by allowed models if specified.
+    # Supports legacy model IDs and provider-scoped keys: provider::model_id.
+    allowed_models = [
+        str(value).strip()
+        for value in (app_settings.allowed_chat_models or [])
+        if str(value).strip()
+    ]
     if allowed_models:
-        all_models = [m for m in all_models if m.id in allowed_models]
+        scoped_provider_by_model: dict[str, str] = {}
+        legacy_model_ids: set[str] = set()
+        for value in allowed_models:
+            if "::" in value:
+                provider, _, model_id = value.partition("::")
+                provider = provider.strip().lower()
+                model_id = model_id.strip()
+                if (
+                    provider
+                    in {
+                        "openai",
+                        "anthropic",
+                        "ollama",
+                        "github_copilot",
+                        "github_models",
+                    }
+                    and model_id
+                ):
+                    scoped_provider_by_model[model_id] = provider
+                    continue
+            legacy_model_ids.add(value)
+
+        def _providers_match(selected: str, actual: str) -> bool:
+            if selected == actual:
+                return True
+            return {selected, actual} <= {"github_copilot", "github_models"}
+
+        def _lookup_filter_provider(model_id: str) -> str:
+            """Look up the filter provider, handling publisher-prefixed IDs.
+
+            Catalog models use publisher-prefixed IDs (e.g. 'openai/gpt-4o')
+            while directory/OAuth models use bare slugs ('gpt-4o').  The filter
+            may have been saved in either format, so try both.
+            """
+            provider = scoped_provider_by_model.get(model_id, "")
+            if not provider and "/" in model_id:
+                provider = scoped_provider_by_model.get(model_id.split("/", 1)[1], "")
+            return provider
+
+        all_models = [
+            model
+            for model in all_models
+            if (
+                _providers_match(_lookup_filter_provider(model.id), model.provider)
+                or (
+                    model.id in legacy_model_ids
+                    and not _lookup_filter_provider(model.id)
+                )
+            )
+        ]
         # Ensure default model is in allowed list
-        if default_model and default_model not in allowed_models:
+        if default_model and not any(m.id == default_model for m in all_models):
             default_model = all_models[0].id if all_models else None
 
     # Assign groups to models for UI organization
@@ -7093,30 +7562,60 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
         except Exception as e:
             logger.warning(f"Failed to fetch Ollama models: {e}")
 
-    # Fetch GitHub Copilot models when Copilot auth is configured
-    if (
-        app_settings.github_copilot_access_token
-        and len(app_settings.github_copilot_access_token) > 10
-    ):
+    # Fetch GitHub provider models when credentials are configured.
+    # If PAT is present, treat Copilot provider as GitHub Models-compatible mode.
+    github_models_token = (app_settings.github_models_api_token or "").strip()
+    github_copilot_token = (app_settings.github_copilot_access_token or "").strip()
+    if github_models_token or (github_copilot_token and len(github_copilot_token) > 10):
         try:
-            result = await _fetch_github_copilot_models(
-                app_settings.github_copilot_access_token,
-                app_settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL,
+            github_provider = (
+                "github_models" if github_models_token else "github_copilot"
             )
+            if github_provider == "github_models":
+                token = (
+                    github_models_token
+                    or app_settings.github_copilot_refresh_token
+                    or github_copilot_token
+                )
+                if not token:
+                    result = LLMModelsResponse(success=False, message="")
+                else:
+                    result = await _fetch_github_models_catalog(token)
+            elif github_copilot_token and len(github_copilot_token) > 10:
+                result = await _fetch_github_copilot_models(
+                    github_copilot_token,
+                    app_settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL,
+                )
+            else:
+                result = LLMModelsResponse(success=False, message="")
+
+            # Always merge directory models for Copilot OAuth.
+            if result.success and github_provider == "github_copilot":
+                directory_result = await _fetch_copilot_directory_models(
+                    include_anthropic=True,
+                    include_google=True,
+                )
+                result = _merge_llm_model_results(result, directory_result)
+
             if result.success:
                 for m in result.models:
+                    context_model_id = (
+                        m.id.split("/", 1)[1]
+                        if github_provider == "github_models" and "/" in m.id
+                        else m.id
+                    )
                     all_models.append(
                         AvailableModel(
                             id=m.id,
                             name=m.name,
                             provider="github_copilot",
-                            context_limit=await get_context_limit(m.id),
+                            context_limit=await get_context_limit(context_model_id),
                             max_output_tokens=m.max_output_tokens,
                             created=m.created,
                         )
                     )
         except Exception as e:
-            logger.warning(f"Failed to fetch GitHub Copilot models: {e}")
+            logger.warning(f"Failed to fetch GitHub models: {e}")
 
     # Get currently allowed models from settings
     allowed_models = app_settings.allowed_chat_models or []
@@ -7424,14 +7923,21 @@ async def update_conversation_model(
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     model = body.get("model", "").strip()
+    model = model.lstrip("/")
     if not model:
         raise HTTPException(status_code=400, detail="Model is required")
 
     provider = (body.get("provider") or "").strip().lower()
-    if provider and provider not in {"openai", "anthropic", "ollama"}:
+    if provider and provider not in {
+        "openai",
+        "anthropic",
+        "ollama",
+        "github_copilot",
+        "github_models",
+    }:
         raise HTTPException(
             status_code=400,
-            detail="provider must be one of: openai, anthropic, ollama",
+            detail="provider must be one of: openai, anthropic, ollama, github_copilot, github_models",
         )
 
     stored_model = f"{provider}::{model}" if provider else model

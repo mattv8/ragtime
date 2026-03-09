@@ -38,6 +38,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
+from ragtime.core.copilot_auth import ensure_copilot_token_fresh
 from ragtime.core.entrypoint_status import FRAMEWORK_REQUIRED_PACKAGES
 from ragtime.core.file_constants import (
     USERSPACE_MODULE_SOURCE_EXTENSIONS,
@@ -772,6 +773,37 @@ async def validate_userspace_typescript_content(
     return parsed
 
 
+class _CopilotChatOpenAI(ChatOpenAI):
+    """ChatOpenAI variant that preserves ``reasoning_text`` from Copilot deltas.
+
+    The Copilot API returns extended-thinking tokens in a ``reasoning_text``
+    field on the streaming delta.  Upstream LangChain's
+    ``_convert_delta_to_message_chunk`` only extracts ``content``, ``role``,
+    ``function_call`` and ``tool_calls``, silently dropping the field.  This
+    subclass intercepts the chunk *after* base conversion and copies the
+    original ``reasoning_text`` value into ``additional_kwargs`` so the
+    existing reasoning-extraction pipeline can surface it.
+    """
+
+    def _convert_chunk_to_generation_chunk(
+        self, chunk, default_chunk_class, base_generation_info
+    ):
+        result = super()._convert_chunk_to_generation_chunk(
+            chunk, default_chunk_class, base_generation_info
+        )
+        if result is None or result.message is None:
+            return result
+
+        choices = chunk.get("choices") or []
+        if choices:
+            delta = choices[0].get("delta") or {}
+            reasoning_text = delta.get("reasoning_text")
+            if reasoning_text:
+                result.message.additional_kwargs["reasoning_text"] = reasoning_text
+
+        return result
+
+
 class RAGComponents:
     """Container for RAG components initialized at startup.
 
@@ -1206,6 +1238,8 @@ class RAGComponents:
             logger.info(f"Using Ollama LLM: {model}")
         elif provider == "anthropic":
             logger.info(f"Using Anthropic LLM: {model}")
+        elif provider == "github_models":
+            logger.info(f"Using GitHub Models LLM: {model}")
         elif provider == "github_copilot":
             logger.info(f"Using GitHub Copilot LLM: {model}")
         elif hasattr(self.llm, "model_name"):
@@ -1256,6 +1290,9 @@ class RAGComponents:
         assert self._app_settings is not None
         provider_normalized = provider.lower().strip()
 
+        if provider_normalized in {"github_copilot", "github_models"}:
+            model = model.lstrip("/")
+
         if provider_normalized == "ollama":
             try:
                 base_url = self._app_settings.get(
@@ -1304,7 +1341,27 @@ class RAGComponents:
                 return None
 
         if provider_normalized == "github_copilot":
-            token = self._app_settings.get("github_copilot_access_token", "")
+            # PAT mode uses GitHub Models-compatible endpoint under Copilot provider.
+            pat_token = self._app_settings.get("github_models_api_token", "")
+            if pat_token:
+                return ChatOpenAI(
+                    model=model,
+                    temperature=0,
+                    streaming=True,
+                    api_key=pat_token,
+                    base_url="https://models.github.ai/inference",
+                    max_tokens=max_tokens,
+                    default_headers={
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                        "User-Agent": "ragtime",
+                    },
+                )
+
+            # Proactively refresh the short-lived HMAC token if near expiry.
+            token = await ensure_copilot_token_fresh()
+            if not token:
+                token = self._app_settings.get("github_copilot_access_token", "")
             if not token:
                 token = self._app_settings.get("github_copilot_refresh_token", "")
             if not token:
@@ -1318,16 +1375,47 @@ class RAGComponents:
 
             # Copilot exposes an OpenAI-compatible chat API and requires
             # provider-specific headers for conversation traffic.
-            return ChatOpenAI(
+            # Use our subclass that preserves reasoning_text from the
+            # streaming delta so the thinking pipeline can surface it.
+            return _CopilotChatOpenAI(
                 model=model,
                 temperature=0,
                 streaming=True,
                 api_key=token,
                 base_url=base_url,
                 max_tokens=max_tokens,
+                reasoning_effort="high",
+                extra_body={"thinking_budget": 16384},
                 default_headers={
-                    "Openai-Intent": "conversation-edits",
-                    "x-initiator": "agent",
+                    "Openai-Intent": "conversation-panel",
+                    "Copilot-Integration-Id": "vscode-chat",
+                    "Editor-Version": "vscode/1.99.0",
+                    "Editor-Plugin-Version": "copilot-chat/0.26.3",
+                    "User-Agent": "GitHubCopilotChat/0.26.3",
+                },
+            )
+
+        if provider_normalized == "github_models":
+            token = self._app_settings.get("github_models_api_token", "")
+            if not token:
+                token = self._app_settings.get("github_copilot_refresh_token", "")
+            if not token:
+                token = self._app_settings.get("github_copilot_access_token", "")
+            if not token:
+                logger.warning("GitHub Models selected but no API token configured")
+                return None
+
+            # GitHub Models exposes OpenAI-compatible chat completions at /inference.
+            return ChatOpenAI(
+                model=model,
+                temperature=0,
+                streaming=True,
+                api_key=token,
+                base_url="https://models.github.ai/inference",
+                max_tokens=max_tokens,
+                default_headers={
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
                     "User-Agent": "ragtime",
                 },
             )
@@ -4090,6 +4178,7 @@ except Exception as e:
         if isinstance(additional_kwargs, dict):
             reasoning_text = str(
                 additional_kwargs.get("reasoning_content")
+                or additional_kwargs.get("reasoning_text")
                 or additional_kwargs.get("thinking")
                 or ""
             )
@@ -4174,6 +4263,7 @@ except Exception as e:
             if isinstance(additional_kwargs, dict):
                 reasoning_text = str(
                     additional_kwargs.get("reasoning_content")
+                    or additional_kwargs.get("reasoning_text")
                     or additional_kwargs.get("thinking")
                     or ""
                 )
@@ -4204,6 +4294,7 @@ except Exception as e:
                         if isinstance(message_kwargs, dict):
                             reasoning_text = str(
                                 message_kwargs.get("reasoning_content")
+                                or message_kwargs.get("reasoning_text")
                                 or message_kwargs.get("thinking")
                                 or ""
                             )
@@ -4217,6 +4308,7 @@ except Exception as e:
                         if isinstance(message_kwargs, dict):
                             reasoning_text = str(
                                 message_kwargs.get("reasoning_content")
+                                or message_kwargs.get("reasoning_text")
                                 or message_kwargs.get("thinking")
                                 or ""
                             )
@@ -7270,7 +7362,19 @@ except Exception as e:
             return None, model
 
         prefix, _, remainder = model.partition("::")
-        if prefix in {"openai", "anthropic", "ollama"} and remainder:
+        if prefix in {"github_copilot", "github_models"}:
+            remainder = remainder.lstrip("/")
+        if (
+            prefix
+            in {
+                "openai",
+                "anthropic",
+                "ollama",
+                "github_copilot",
+                "github_models",
+            }
+            and remainder
+        ):
             return prefix, remainder
 
         return None, model
