@@ -2,6 +2,27 @@ import type { ChatMessage } from '@/types';
 
 const CHARS_PER_TOKEN = 4;
 
+export interface ParsedStoredModel {
+  provider?: string;
+  modelId: string;
+}
+
+export function parseStoredModelIdentifier(storedModel: string): ParsedStoredModel {
+  if (!storedModel) {
+    return { modelId: '' };
+  }
+
+  const delimiterIndex = storedModel.indexOf('::');
+  if (delimiterIndex <= 0) {
+    return { modelId: storedModel };
+  }
+
+  return {
+    provider: storedModel.slice(0, delimiterIndex),
+    modelId: storedModel.slice(delimiterIndex + 2),
+  };
+}
+
 export function estimateTokens(text: string): number {
   return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
@@ -48,6 +69,59 @@ export type StreamingRenderEvent =
   | { type: 'content'; content: string }
   | { type: 'tool'; toolCall: { input?: Record<string, unknown>; output?: string } }
   | { type: 'reasoning'; content: string };
+
+export interface ConversationContextUsage {
+  currentTokens: number;
+  totalTokens: number;
+  contextLimit: number;
+  contextUsagePercent: number;
+  projectedInputPercent: number;
+  hasHeadroom: boolean;
+}
+
+interface ConversationContextUsageParams {
+  messages: ChatMessage[];
+  persistedConversationTokens?: number | null;
+  contextLimit: number;
+  inputText?: string;
+  isStreaming?: boolean;
+  streamingEvents?: StreamingRenderEvent[];
+  streamingContent?: string;
+}
+
+export function calculateConversationContextUsage({
+  messages,
+  persistedConversationTokens,
+  contextLimit,
+  inputText = '',
+  isStreaming = false,
+  streamingEvents = [],
+  streamingContent = '',
+}: ConversationContextUsageParams): ConversationContextUsage {
+  const estimatedConversationTokens = calculateConversationTokens(messages);
+  const persistedTokens = Math.max(0, persistedConversationTokens || 0);
+  const currentTokens = persistedTokens > 0
+    ? persistedTokens
+    : estimatedConversationTokens;
+  const streamingTokens = isStreaming
+    ? calculateStreamingTokens(streamingEvents, streamingContent)
+    : 0;
+  const totalTokens = currentTokens + streamingTokens;
+  const safeContextLimit = contextLimit > 0 ? contextLimit : 1;
+  const contextUsagePercent = Math.round((totalTokens / safeContextLimit) * 100);
+  const nextMessageTokens = estimateTokens(inputText.trim());
+  const projectedInputPercent = Math.round(((totalTokens + nextMessageTokens) / safeContextLimit) * 100);
+  const hasHeadroom = totalTokens + nextMessageTokens <= safeContextLimit * 0.9;
+
+  return {
+    currentTokens,
+    totalTokens,
+    contextLimit: safeContextLimit,
+    contextUsagePercent,
+    projectedInputPercent,
+    hasHeadroom,
+  };
+}
 
 export function calculateStreamingTokens(events: StreamingRenderEvent[], streamingContent: string): number {
   if (events.length > 0) {

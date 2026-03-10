@@ -7,7 +7,7 @@ import type { Conversation, ChatMessage, ChatTask, User, ContentPart, Conversati
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
-import { calculateConversationTokens, calculateStreamingTokens, estimateTokens } from '@/utils/contextUsage';
+import { calculateConversationContextUsage, parseStoredModelIdentifier } from '@/utils/contextUsage';
 import { ContextUsagePie } from './shared/ContextUsagePie';
 import { MemberManagementModal } from './shared/MemberManagementModal';
 import { ToolSelectorDropdown } from './shared/ToolSelectorDropdown';
@@ -1531,26 +1531,6 @@ export function ChatPanel({
     onFullscreenChange?.(next);
   }, [isFullscreen, onFullscreenChange]);
 
-  const parseStoredConversationModel = useCallback((storedModel: string): { provider?: 'openai' | 'anthropic' | 'ollama' | 'github_copilot' | 'github_models'; modelId: string } => {
-    if (!storedModel) {
-      return { modelId: '' };
-    }
-
-    const delimiterIndex = storedModel.indexOf('::');
-    if (delimiterIndex <= 0) {
-      return { modelId: storedModel };
-    }
-
-    const provider = storedModel.slice(0, delimiterIndex) as 'openai' | 'anthropic' | 'ollama' | 'github_copilot' | 'github_models';
-    const modelId = storedModel.slice(delimiterIndex + 2);
-
-    if (provider !== 'openai' && provider !== 'anthropic' && provider !== 'ollama' && provider !== 'github_copilot' && provider !== 'github_models') {
-      return { modelId: storedModel };
-    }
-
-    return { provider, modelId };
-  }, []);
-
   const loadPromptDebugRecords = useCallback(async (messageIndex: number | null) => {
     if (!activeConversation || !showPromptDebugButton) return;
     if (messageIndex === null) {
@@ -1991,6 +1971,14 @@ export function ChatPanel({
     [],
   );
 
+  const defaultContextLimit = useMemo(() => {
+    const maxAvailableLimit = availableModels.reduce((max, model) => {
+      const limit = Number(model.context_limit || 0);
+      return Number.isFinite(limit) ? Math.max(max, limit) : max;
+    }, 0);
+    return Math.max(DEFAULT_CONTEXT_LIMIT, maxAvailableLimit);
+  }, [availableModels]);
+
   const groupedConversations = useMemo(() => {
     if (!isAdmin) return [] as Array<{ key: string; label: string; conversations: Conversation[] }>;
 
@@ -2371,11 +2359,49 @@ export function ChatPanel({
     return `@${username}`;
   }, []);
 
-  // Get context limit for a model from API-provided data (uses LiteLLM's dataset)
-  const getContextLimit = useCallback((modelId: string): number => {
-    const model = availableModels.find(m => m.id === modelId);
-    return model?.context_limit ?? DEFAULT_CONTEXT_LIMIT;
-  }, [availableModels]);
+  // Resolve context limit from stored conversation model value.
+  // Handles provider-scoped and legacy model id formats to avoid 8k fallback mismatches.
+  const getContextLimit = useCallback((storedModel: string): number => {
+    const parsed = parseStoredModelIdentifier(storedModel);
+    const modelId = parsed.modelId.trim();
+    const provider = parsed.provider?.trim().toLowerCase();
+
+    if (!modelId) {
+      return defaultContextLimit;
+    }
+
+    const exactProviderMatch = provider
+      ? availableModels.find((model) => model.provider.toLowerCase() === provider && model.id === modelId)
+      : undefined;
+    if (exactProviderMatch) {
+      return exactProviderMatch.context_limit;
+    }
+
+    const exactModelMatch = availableModels.find((model) => model.id === modelId);
+    if (exactModelMatch) {
+      return exactModelMatch.context_limit;
+    }
+
+    const slashIndex = modelId.indexOf('/');
+    if (slashIndex > 0) {
+      const inferredProvider = modelId.slice(0, slashIndex).toLowerCase();
+      const providerModelId = modelId.slice(slashIndex + 1);
+
+      const providerScopedMatch = availableModels.find((model) =>
+        model.id === providerModelId && (provider ? model.provider.toLowerCase() === provider : model.provider.toLowerCase() === inferredProvider)
+      );
+      if (providerScopedMatch) {
+        return providerScopedMatch.context_limit;
+      }
+
+      const unscopedMatch = availableModels.find((model) => model.id === providerModelId);
+      if (unscopedMatch) {
+        return unscopedMatch.context_limit;
+      }
+    }
+
+    return defaultContextLimit;
+  }, [availableModels, defaultContextLimit]);
 
   const createNewConversation = async () => {
     if (readOnly) return;
@@ -2903,17 +2929,16 @@ export function ChatPanel({
     setIsConnectionError(false);
     setLastSentMessage(userMessage);
 
-    // Check context limit before sending
-    const estimatedConversationTokens = calculateConversationTokens(activeConversation.messages);
-    const persistedConversationTokens = activeConversation.total_tokens || 0;
-    const currentTokens = persistedConversationTokens > 0
-      ? persistedConversationTokens
-      : estimatedConversationTokens;
-    const newMessageTokens = estimateTokens(userMessage);
-    const contextLimit = getContextLimit(parseStoredConversationModel(activeConversation.model).modelId);
+    const contextLimit = getContextLimit(activeConversation.model);
+    const contextUsage = calculateConversationContextUsage({
+      messages: activeConversation.messages,
+      persistedConversationTokens: activeConversation.total_tokens,
+      contextLimit,
+      inputText: userMessage,
+    });
 
-    if (currentTokens + newMessageTokens > contextLimit * 0.9) {
-      setError(`Context limit nearly reached (${Math.round((currentTokens + newMessageTokens) / contextLimit * 100)}%). Consider starting a new conversation.`);
+    if (!contextUsage.hasHeadroom) {
+      setError(`Context limit nearly reached (${contextUsage.projectedInputPercent}%). Consider starting a new conversation.`);
       return;
     }
 
@@ -3163,35 +3188,24 @@ export function ChatPanel({
       return {
         currentTokens: 0,
         totalTokens: 0,
-        contextLimit: DEFAULT_CONTEXT_LIMIT,
+        contextLimit: defaultContextLimit,
         contextUsagePercent: 0,
         projectedInputPercent: 0,
         hasHeadroom: true,
       };
     }
 
-    const estimatedConversationTokens = calculateConversationTokens(activeConversation.messages);
-    const persistedConversationTokens = activeConversation.total_tokens || 0;
-    const currentTokens = persistedConversationTokens > 0
-      ? persistedConversationTokens
-      : estimatedConversationTokens;
-    const streamingTokens = isStreaming ? calculateStreamingTokens(streamingEvents as any, streamingContent) : 0;
-    const totalTokens = currentTokens + streamingTokens;
-    const contextLimit = getContextLimit(parseStoredConversationModel(activeConversation.model).modelId);
-    const contextUsagePercent = Math.round((totalTokens / contextLimit) * 100);
-    const nextMessageTokens = estimateTokens(inputValue.trim());
-    const projectedInputPercent = Math.round(((totalTokens + nextMessageTokens) / contextLimit) * 100);
-    const hasHeadroom = totalTokens + nextMessageTokens <= contextLimit * 0.9;
-
-    return {
-      currentTokens,
-      totalTokens,
+    const contextLimit = getContextLimit(activeConversation.model);
+    return calculateConversationContextUsage({
+      messages: activeConversation.messages,
+      persistedConversationTokens: activeConversation.total_tokens,
       contextLimit,
-      contextUsagePercent,
-      projectedInputPercent,
-      hasHeadroom,
-    };
-  }, [activeConversation, getContextLimit, inputValue, isStreaming, streamingContent, streamingEvents]);
+      inputText: inputValue,
+      isStreaming,
+      streamingEvents: streamingEvents as StreamingRenderEvent[],
+      streamingContent,
+    });
+  }, [activeConversation, defaultContextLimit, getContextLimit, inputValue, isStreaming, streamingContent, streamingEvents]);
 
   const showWorkspaceConversationSelect = embedded && Boolean(workspaceId);
   const showInlineToolSelector = Boolean(activeConversation)
@@ -3478,7 +3492,7 @@ export function ChatPanel({
                 </button>
                 <ModelSelector
                   models={availableModels}
-                  selectedModelId={parseStoredConversationModel(activeConversation.model).modelId}
+                  selectedModelId={parseStoredModelIdentifier(activeConversation.model).modelId}
                   onModelChange={changeModel}
                   disabled={isStreaming || modelsLoading}
                   triggerIcon={showWorkspaceConversationSelect ? <Bot size={14} /> : undefined}
