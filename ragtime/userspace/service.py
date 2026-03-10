@@ -21,34 +21,45 @@ from ragtime.config import settings
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
-from ragtime.core.entrypoint_status import (EntrypointStatus,
-                                            parse_entrypoint_config)
+from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
-                                    add_table_metadata_to_psql_output,
-                                    enforce_max_results, format_query_result,
-                                    validate_sql_query)
-from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.sql_utils import (
+    DB_TYPE_POSTGRES,
+    add_table_metadata_to_psql_output,
+    enforce_max_results,
+    format_query_result,
+    validate_sql_query,
+)
+from ragtime.core.ssh import (
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
-                                      ExecuteComponentRequest,
-                                      ExecuteComponentResponse,
-                                      PaginatedWorkspacesResponse,
-                                      ShareAccessMode, SqlitePersistenceMode,
-                                      UpdateWorkspaceMembersRequest,
-                                      UpdateWorkspaceRequest,
-                                      UpdateWorkspaceShareAccessRequest,
-                                      UpsertWorkspaceFileRequest,
-                                      UserSpaceFileInfo, UserSpaceFileResponse,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection,
-                                      UserSpaceSharedPreviewResponse,
-                                      UserSpaceSnapshot, UserSpaceWorkspace,
-                                      UserSpaceWorkspaceShareLink,
-                                      UserSpaceWorkspaceShareLinkStatus,
-                                      WorkspaceMember,
-                                      WorkspaceShareSlugAvailabilityResponse)
+from ragtime.userspace.models import (
+    ArtifactType,
+    CreateWorkspaceRequest,
+    ExecuteComponentRequest,
+    ExecuteComponentResponse,
+    PaginatedWorkspacesResponse,
+    ShareAccessMode,
+    SqlitePersistenceMode,
+    UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+    UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot,
+    UserSpaceWorkspace,
+    UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceMember,
+    WorkspaceShareSlugAvailabilityResponse,
+)
 
 logger = get_logger(__name__)
 
@@ -117,7 +128,7 @@ _MODULE_SOURCE_EXTENSIONS = (
 _RUNTIME_BOOTSTRAP_CONFIG_PATH = ".ragtime/runtime-bootstrap.json"
 _RUNTIME_BOOTSTRAP_TEMPLATE_VERSION = 5
 _RUNTIME_BRIDGE_PATH = ".ragtime/bridge.js"
-_RUNTIME_BRIDGE_VERSION = 3
+_RUNTIME_BRIDGE_VERSION = 4
 _RUNTIME_BRIDGE_VERSION_TAG = f"@ragtime/bridge v{_RUNTIME_BRIDGE_VERSION}"
 _RUNTIME_BRIDGE_CONTENT = (
     f"// {_RUNTIME_BRIDGE_VERSION_TAG} — platform-managed, do not edit\n"
@@ -127,10 +138,105 @@ _RUNTIME_BRIDGE_CONTENT = (
     "  var R = 'ragtime-execute-result';\n"
     "  var T = 60000;\n"
     "\n"
+    "  function getDirectExecuteUrl() {\n"
+    "    var pathname = window.location && window.location.pathname ? window.location.pathname : '/';\n"
+    "    var parts = pathname.split('/').filter(Boolean);\n"
+    "\n"
+    "    if (parts.length >= 6 &&\n"
+    "        parts[0] === 'indexes' &&\n"
+    "        parts[1] === 'userspace' &&\n"
+    "        parts[2] === 'shared' &&\n"
+    "        parts[5] === 'preview') {\n"
+    "      return '/indexes/userspace/shared/' +\n"
+    "        encodeURIComponent(parts[3]) + '/' +\n"
+    "        encodeURIComponent(parts[4]) +\n"
+    "        '/execute-component';\n"
+    "    }\n"
+    "\n"
+    "    if (parts.length >= 5 &&\n"
+    "        parts[0] === 'indexes' &&\n"
+    "        parts[1] === 'userspace' &&\n"
+    "        parts[2] === 'shared' &&\n"
+    "        parts[4] === 'preview') {\n"
+    "      return '/indexes/userspace/shared/' +\n"
+    "        encodeURIComponent(parts[3]) +\n"
+    "        '/execute-component';\n"
+    "    }\n"
+    "\n"
+    "    var reserved = {\n"
+    "      auth: true,\n"
+    "      authorize: true,\n"
+    "      docs: true,\n"
+    "      health: true,\n"
+    "      indexes: true,\n"
+    "      mcp: true,\n"
+    "      openapi: true,\n"
+    "      shared: true,\n"
+    "      v1: true\n"
+    "    };\n"
+    "\n"
+    "    if (parts.length >= 2 && !reserved[parts[0]]) {\n"
+    "      return '/indexes/userspace/shared/' +\n"
+    "        encodeURIComponent(parts[0]) + '/' +\n"
+    "        encodeURIComponent(parts[1]) +\n"
+    "        '/execute-component';\n"
+    "    }\n"
+    "\n"
+    "    return null;\n"
+    "  }\n"
+    "\n"
+    "  function executeDirect(componentId, request, resolve) {\n"
+    "    var executeUrl = getDirectExecuteUrl();\n"
+    "    if (!executeUrl) {\n"
+    "      resolve({ rows: [], columns: [], row_count: 0, error: 'Live data host unavailable in this context' });\n"
+    "      return;\n"
+    "    }\n"
+    "\n"
+    "    fetch(executeUrl, {\n"
+    "      method: 'POST',\n"
+    "      credentials: 'include',\n"
+    "      headers: { 'Content-Type': 'application/json' },\n"
+    "      body: JSON.stringify({ component_id: componentId, request: request || {} }),\n"
+    "    })\n"
+    "      .then(function (response) {\n"
+    "        return response\n"
+    "          .json()\n"
+    "          .catch(function () { return {}; })\n"
+    "          .then(function (payload) { return { ok: response.ok, payload: payload }; });\n"
+    "      })\n"
+    "      .then(function (result) {\n"
+    "        if (result.ok) {\n"
+    "          resolve(result.payload || { rows: [], columns: [], row_count: 0 });\n"
+    "          return;\n"
+    "        }\n"
+    "        var detail = result.payload && (result.payload.detail || result.payload.error);\n"
+    "        resolve({\n"
+    "          rows: [],\n"
+    "          columns: [],\n"
+    "          row_count: 0,\n"
+    "          error: detail || 'Failed to execute live data component',\n"
+    "        });\n"
+    "      })\n"
+    "      .catch(function (error) {\n"
+    "        resolve({\n"
+    "          rows: [],\n"
+    "          columns: [],\n"
+    "          row_count: 0,\n"
+    "          error: error && error.message ? error.message : String(error),\n"
+    "        });\n"
+    "      });\n"
+    "  }\n"
+    "\n"
     "  function makeExecute(componentId) {\n"
     "    return function execute(request) {\n"
+    "      var hasParentHost = !!(window.parent && window.parent !== window);\n"
     "      var callId = '__exec_' + Math.random().toString(36).slice(2) + '_' + Date.now();\n"
     "      return new Promise(function (resolve) {\n"
+    "        if (!hasParentHost) {\n"
+    "          executeDirect(componentId, request, resolve);\n"
+    "          return;\n"
+    "        }\n"
+    "\n"
     "        var timer = setTimeout(function () {\n"
     "          window.removeEventListener('message', handler);\n"
     "          resolve({ rows: [], columns: [], row_count: 0, error: 'Execute timed out after 60s' });\n"
@@ -1709,6 +1815,7 @@ class UserSpaceService:
         if not workspace_record:
             raise HTTPException(status_code=404, detail="Shared workspace not found")
         await self._enforce_share_access(workspace_record, current_user, password)
+        self._sync_runtime_bridge_script(workspace_id)
         return workspace_id
 
     async def get_shared_preview_by_slug(
@@ -1743,6 +1850,7 @@ class UserSpaceService:
         if not workspace_record:
             raise HTTPException(status_code=404, detail="Shared workspace not found")
         await self._enforce_share_access(workspace_record, current_user, password)
+        self._sync_runtime_bridge_script(workspace_id)
         return workspace_id
 
     async def _build_shared_preview_response(
@@ -1756,6 +1864,7 @@ class UserSpaceService:
         if not workspace_record:
             raise HTTPException(status_code=404, detail="Shared workspace not found")
         await self._enforce_share_access(workspace_record, current_user, password)
+        self._sync_runtime_bridge_script(workspace_id)
 
         files_dir = self._workspace_files_dir(workspace_id)
         if not files_dir.exists() or not files_dir.is_dir():
