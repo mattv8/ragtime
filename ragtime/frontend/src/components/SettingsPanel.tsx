@@ -539,10 +539,11 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       const copilotConnected = Boolean(copilotAuthStatus?.connected || settings?.has_github_copilot_auth);
 
       // Include GitHub 3rd-party families in selector.
-      if (copilotPatToken || copilotConnected) {
+      const hasSelectedAuth = copilotAuthMode === 'pat' ? Boolean(copilotPatToken) : copilotConnected;
+      if (hasSelectedAuth) {
         const githubResponse = await api.fetchLLMModels({
           provider: 'github_copilot',
-          auth_mode: copilotPatToken ? 'pat' : 'oauth',
+          auth_mode: copilotAuthMode,
           include_directory_models: true,
           include_anthropic_models: true,
           include_google_models: true,
@@ -592,6 +593,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       setModelsLoading(false);
     }
   }, [
+    copilotAuthMode,
     copilotAuthStatus?.connected,
     formData.github_models_api_token,
     settings?.github_models_api_token,
@@ -837,13 +839,15 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     }
 
     const copilotPatToken = (formData.github_models_api_token || settings?.github_models_api_token || '').trim();
-    const hasCopilotAuth = Boolean(copilotPatToken || copilotAuthStatus?.connected || settings?.has_github_copilot_auth);
+    const hasCopilotAuth = copilotAuthMode === 'pat'
+      ? Boolean(copilotPatToken)
+      : Boolean(copilotAuthStatus?.connected || settings?.has_github_copilot_auth);
     if (!hasCopilotAuth) {
       return;
     }
 
     void fetchLlmModels('github_copilot', undefined, {
-      authMode: copilotPatToken ? 'pat' : 'oauth',
+      authMode: copilotAuthMode,
       includeDirectoryModels: true,
       includeAnthropicModels: true,
       includeGoogleModels: true,
@@ -853,6 +857,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       void openModelFilterModal();
     }
   }, [
+    copilotAuthMode,
     copilotAuthStatus?.connected,
     fetchLlmModels,
     formData.github_models_api_token,
@@ -1743,7 +1748,13 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                       type="radio"
                       name="copilot-auth-mode"
                       checked={copilotAuthMode === 'oauth'}
-                      onChange={() => setCopilotAuthMode('oauth')}
+                      onChange={() => {
+                        setCopilotAuthMode('oauth');
+                        setFormData((prev) => ({ ...prev, github_models_api_token: '' }));
+                        setLlmModels([]);
+                        setLlmModelsError(null);
+                        setLlmModelsLoaded(false);
+                      }}
                     />
                     OAuth (GitHub device login)
                   </label>
@@ -1752,7 +1763,17 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                       type="radio"
                       name="copilot-auth-mode"
                       checked={copilotAuthMode === 'pat'}
-                      onChange={() => setCopilotAuthMode('pat')}
+                      onChange={() => {
+                        setCopilotAuthMode('pat');
+                        clearCopilotPollTimer();
+                        setCopilotConnecting(false);
+                        setCopilotRequestId(null);
+                        setCopilotWizardVisible(false);
+                        setCopilotWizardStep(1);
+                        setLlmModels([]);
+                        setLlmModelsError(null);
+                        setLlmModelsLoaded(false);
+                      }}
                     />
                     PAT (Copilot models)
                   </label>
@@ -1909,7 +1930,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                 <p className="field-error">{llmModelsError}</p>
               )}
               <p className="field-help">
-                OAuth uses GitHub device authorization. PAT mode uses Copilot-compatible models APIs via your personal token.
+                {copilotAuthMode === 'oauth'
+                  ? 'OAuth uses GitHub device authorization and is required to access models included with your GitHub Copilot subscription.'
+                  : 'PAT mode uses your personal GitHub token (Models:read) with the GitHub Models API. PAT mode does not grant Copilot subscription model access.'}
               </p>
             </div>
           ) : null}

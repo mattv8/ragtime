@@ -24,129 +24,87 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, List, Optional
 
 import httpx
-from fastapi import (
-    APIRouter,
-    Body,
-    Depends,
-    File,
-    Form,
-    HTTPException,
-    Query,
-    UploadFile,
-)
+from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException,
+                     Query, UploadFile)
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from prisma import Prisma
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
+from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.container_capabilities import get_container_capabilities
-from ragtime.core.copilot_auth import (
-    ensure_copilot_token_fresh,
-    exchange_github_token_for_copilot_token,
-)
-from ragtime.core.embedding_models import (
-    OPENAI_EMBEDDING_PRIORITY,
-    get_embedding_models,
-)
+from ragtime.core.copilot_auth import (ensure_copilot_token_fresh,
+                                       exchange_github_token_for_copilot_token)
+from ragtime.core.embedding_models import (OPENAI_EMBEDDING_PRIORITY,
+                                           get_embedding_models)
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (
-    MODEL_FAMILY_PATTERNS,
-    get_context_limit,
-    get_output_limit,
-    supports_function_calling,
-    update_model_function_calling,
-    update_model_limit,
-)
-from ragtime.core.ollama import (
-    extract_effective_context_length,
-    get_model_details,
-    is_embedding_capable,
-    is_reachable,
-)
+from ragtime.core.model_limits import (MODEL_FAMILY_PATTERNS,
+                                       get_context_limit, get_output_limit,
+                                       supports_function_calling,
+                                       update_model_function_calling,
+                                       update_model_limit)
+from ragtime.core.ollama import (extract_effective_context_length,
+                                 get_model_details, is_embedding_capable,
+                                 is_reachable)
 from ragtime.core.ollama import list_models
 from ragtime.core.ollama import list_models as ollama_list_models
 from ragtime.core.security import get_current_user, require_admin
-from ragtime.core.sql_utils import (
-    MssqlConnectionError,
-    MysqlConnectionError,
-    mssql_connect,
-    mysql_connect,
-    normalize_mssql_error_message,
-)
-from ragtime.core.ssh import (
-    SSHConfig,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    execute_ssh_command,
-    ssh_tunnel_config_from_dict,
-    test_ssh_connection,
-)
+from ragtime.core.sql_utils import (MssqlConnectionError, MysqlConnectionError,
+                                    mssql_connect, mysql_connect,
+                                    normalize_mssql_error_message)
+from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
+                              execute_ssh_command, ssh_tunnel_config_from_dict,
+                              test_ssh_connection)
 from ragtime.core.tokenization import count_tokens
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.core.vision_models import list_vision_models
 from ragtime.indexer.background_tasks import background_task_service
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (
-    AnalyzeIndexRequest,
-    AppSettings,
-    ChatMessage,
-    ChatTaskResponse,
-    ChatTaskStatus,
-    CheckRepoVisibilityRequest,
-    ConfigurationWarning,
-    Conversation,
-    ConversationResponse,
-    CreateConversationRequest,
-    CreateIndexRequest,
-    CreateToolConfigRequest,
-    DatabaseDiscoverOption,
-    EmbeddingStatus,
-    FetchBranchesRequest,
-    FetchBranchesResponse,
-    FilesystemAnalysisJobResponse,
-    FilesystemConnectionConfig,
-    FilesystemIndexJobResponse,
-    IndexAnalysisResult,
-    IndexConfig,
-    IndexInfo,
-    IndexJobResponse,
-    IndexStatus,
-    MssqlDiscoverRequest,
-    MssqlDiscoverResponse,
-    MysqlDiscoverRequest,
-    MysqlDiscoverResponse,
-    OcrMode,
-    PdmDiscoverRequest,
-    PdmDiscoverResponse,
-    PdmIndexJobResponse,
-    PostgresDiscoverRequest,
-    PostgresDiscoverResponse,
-    ProviderPromptDebugListResponse,
-    ProviderPromptDebugRecord,
-    RepoVisibilityResponse,
-    RetryVisualizationRequest,
-    RetryVisualizationResponse,
-    SchemaIndexJobResponse,
-    SendMessageRequest,
-    ToolConfig,
-    ToolTestRequest,
-    ToolType,
-    TriggerFilesystemIndexRequest,
-    TriggerPdmIndexRequest,
-    TriggerSchemaIndexRequest,
-    UpdateSettingsRequest,
-    UpdateToolConfigRequest,
-    VectorStoreType,
-)
+from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
+                                    ChatMessage, ChatTaskResponse,
+                                    ChatTaskStatus, CheckRepoVisibilityRequest,
+                                    ConfigurationWarning, Conversation,
+                                    ConversationResponse,
+                                    CreateConversationRequest,
+                                    CreateIndexRequest,
+                                    CreateToolConfigRequest,
+                                    DatabaseDiscoverOption, EmbeddingStatus,
+                                    FetchBranchesRequest,
+                                    FetchBranchesResponse,
+                                    FilesystemAnalysisJobResponse,
+                                    FilesystemConnectionConfig,
+                                    FilesystemIndexJobResponse,
+                                    IndexAnalysisResult, IndexConfig,
+                                    IndexInfo, IndexJobResponse, IndexStatus,
+                                    MssqlDiscoverRequest,
+                                    MssqlDiscoverResponse,
+                                    MysqlDiscoverRequest,
+                                    MysqlDiscoverResponse, OcrMode,
+                                    PdmDiscoverRequest, PdmDiscoverResponse,
+                                    PdmIndexJobResponse,
+                                    PostgresDiscoverRequest,
+                                    PostgresDiscoverResponse,
+                                    ProviderPromptDebugListResponse,
+                                    ProviderPromptDebugRecord,
+                                    RepoVisibilityResponse,
+                                    RetryVisualizationRequest,
+                                    RetryVisualizationResponse,
+                                    SchemaIndexJobResponse, SendMessageRequest,
+                                    ToolConfig, ToolTestRequest, ToolType,
+                                    TriggerFilesystemIndexRequest,
+                                    TriggerPdmIndexRequest,
+                                    TriggerSchemaIndexRequest,
+                                    UpdateSettingsRequest,
+                                    UpdateToolConfigRequest, VectorStoreType)
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
+from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
+                                            schema_indexer)
 from ragtime.indexer.service import indexer
 from ragtime.indexer.title_generation import schedule_title_generation
 from ragtime.indexer.utils import safe_tool_name
@@ -202,6 +160,33 @@ _MODEL_DISCOVERY_CACHE_TTL_SECONDS = float(
 _model_discovery_cache: dict[str, tuple[float, "LLMModelsResponse"]] = {}
 _model_discovery_inflight: dict[str, asyncio.Task["LLMModelsResponse"]] = {}
 _model_discovery_lock = asyncio.Lock()
+
+
+def _resolve_github_auth_mode(
+    settings: AppSettings,
+    requested_mode: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Resolve GitHub auth mode and enforce PAT/OAuth exclusivity."""
+    pat_token = (settings.github_models_api_token or "").strip()
+    oauth_access = (settings.github_copilot_access_token or "").strip()
+    oauth_refresh = (settings.github_copilot_refresh_token or "").strip()
+    has_pat = bool(pat_token)
+    has_oauth = bool(oauth_access or oauth_refresh)
+
+    mode = (requested_mode or "").strip().lower()
+    if mode:
+        if mode not in {"oauth", "pat"}:
+            return None, "Invalid auth_mode. Supported values: oauth, pat."
+        return mode, None
+
+    if has_pat and has_oauth:
+        return (
+            None,
+            "Both GitHub PAT and Copilot OAuth credentials are configured. "
+            "Choose one authentication mode and clear the other.",
+        )
+
+    return ("pat" if has_pat else "oauth"), None
 
 
 def _copilot_token_fingerprint(token: str) -> str:
@@ -1397,8 +1382,39 @@ async def update_settings(
     """
     updates = request.model_dump(exclude_unset=True)
 
-    # Check if embedding config is changing
+    # Enforce mutually-exclusive GitHub auth modes (PAT vs Copilot OAuth).
     current_settings = await repository.get_settings()
+    pat_candidate = str(
+        updates.get(
+            "github_models_api_token",
+            current_settings.github_models_api_token,
+        )
+        or ""
+    ).strip()
+    oauth_access_candidate = str(
+        updates.get(
+            "github_copilot_access_token",
+            current_settings.github_copilot_access_token,
+        )
+        or ""
+    ).strip()
+    oauth_refresh_candidate = str(
+        updates.get(
+            "github_copilot_refresh_token",
+            current_settings.github_copilot_refresh_token,
+        )
+        or ""
+    ).strip()
+    if pat_candidate and (oauth_access_candidate or oauth_refresh_candidate):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "GitHub authentication must use exactly one mode: PAT or OAuth. "
+                "Clear one credential set before saving."
+            ),
+        )
+
+    # Check if embedding config is changing
     old_config_hash = current_settings.get_embedding_config_hash()
 
     result = await repository.update_settings(updates)
@@ -1741,7 +1757,8 @@ async def update_tool_config(
 
                 # Check for name conflicts with existing indexes
                 if is_faiss and new_index_name != old_index_name:
-                    from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
+                    from ragtime.indexer.vector_backends import \
+                        FAISS_INDEX_BASE_PATH
 
                     new_path = FAISS_INDEX_BASE_PATH / new_index_name
                     if new_path.exists():
@@ -1762,7 +1779,8 @@ async def update_tool_config(
             # For FAISS filesystem indexes, rename using the backend
             if is_faiss and old_index_name and new_index_name:
                 if old_index_name != new_index_name:
-                    from ragtime.indexer.vector_backends import get_faiss_backend
+                    from ragtime.indexer.vector_backends import \
+                        get_faiss_backend
 
                     faiss_backend = get_faiss_backend()
                     success = await faiss_backend.rename_index(
@@ -6581,10 +6599,12 @@ async def fetch_llm_models(
         return await _fetch_anthropic_models(request.api_key)
     elif request.provider in {"github_copilot", "github_models"}:
         settings = await repository.get_settings()
-        requested_mode = (request.auth_mode or "").strip().lower()
-        auth_mode = requested_mode or (
-            "pat" if (settings.github_models_api_token or "").strip() else "oauth"
+        auth_mode, auth_error = _resolve_github_auth_mode(
+            settings, request.auth_mode
         )
+        if auth_error:
+            return LLMModelsResponse(success=False, message=auth_error)
+        assert auth_mode is not None
 
         if auth_mode == "pat":
             token = request.api_key or settings.github_models_api_token or ""
@@ -7359,28 +7379,13 @@ async def get_available_chat_models():
     # If PAT is present, treat Copilot provider as GitHub Models-compatible mode.
     github_models_token = (app_settings.github_models_api_token or "").strip()
     github_copilot_token = (app_settings.github_copilot_access_token or "").strip()
-    if github_models_token or (github_copilot_token and len(github_copilot_token) > 10):
+    github_auth_mode, github_auth_error = _resolve_github_auth_mode(app_settings)
+    if github_auth_error:
+        logger.warning("Skipping GitHub model discovery: %s", github_auth_error)
+    elif github_auth_mode == "pat" and github_models_token:
         try:
-            github_provider = (
-                "github_models" if github_models_token else "github_copilot"
-            )
-            if github_provider == "github_models":
-                token = (
-                    github_models_token
-                    or app_settings.github_copilot_refresh_token
-                    or github_copilot_token
-                )
-                if not token:
-                    result = LLMModelsResponse(success=False, message="")
-                else:
-                    result = await _fetch_github_models_catalog(token)
-            elif github_copilot_token and len(github_copilot_token) > 10:
-                result = await _fetch_github_copilot_models(
-                    github_copilot_token,
-                    app_settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL,
-                )
-            else:
-                result = LLMModelsResponse(success=False, message="")
+            github_provider = "github_models"
+            result = await _fetch_github_models_catalog(github_models_token)
 
             # Always merge directory models when using Copilot OAuth so
             # 3rd-party families (Claude, Gemini, etc.) are available.
@@ -7404,6 +7409,39 @@ async def get_available_chat_models():
                             name=m.name,
                             provider="github_copilot",
                             context_limit=await get_context_limit(context_model_id),
+                            max_output_tokens=m.max_output_tokens,
+                            created=m.created,
+                        )
+                    )
+                if not default_model and result.default_model:
+                    default_model = result.default_model
+        except Exception as e:
+            logger.warning(f"Failed to fetch GitHub models: {e}")
+    elif github_auth_mode == "oauth" and github_copilot_token and len(github_copilot_token) > 10:
+        try:
+            github_provider = "github_copilot"
+            result = await _fetch_github_copilot_models(
+                github_copilot_token,
+                app_settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL,
+            )
+
+            # Always merge directory models when using Copilot OAuth so
+            # 3rd-party families (Claude, Gemini, etc.) are available.
+            if result.success:
+                directory_result = await _fetch_copilot_directory_models(
+                    include_anthropic=True,
+                    include_google=True,
+                )
+                result = _merge_llm_model_results(result, directory_result)
+
+            if result.success:
+                for m in result.models:
+                    all_models.append(
+                        AvailableModel(
+                            id=m.id,
+                            name=m.name,
+                            provider="github_copilot",
+                            context_limit=await get_context_limit(m.id),
                             max_output_tokens=m.max_output_tokens,
                             created=m.created,
                         )
@@ -7566,28 +7604,13 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
     # If PAT is present, treat Copilot provider as GitHub Models-compatible mode.
     github_models_token = (app_settings.github_models_api_token or "").strip()
     github_copilot_token = (app_settings.github_copilot_access_token or "").strip()
-    if github_models_token or (github_copilot_token and len(github_copilot_token) > 10):
+    github_auth_mode, github_auth_error = _resolve_github_auth_mode(app_settings)
+    if github_auth_error:
+        logger.warning("Skipping GitHub model discovery: %s", github_auth_error)
+    elif github_auth_mode == "pat" and github_models_token:
         try:
-            github_provider = (
-                "github_models" if github_models_token else "github_copilot"
-            )
-            if github_provider == "github_models":
-                token = (
-                    github_models_token
-                    or app_settings.github_copilot_refresh_token
-                    or github_copilot_token
-                )
-                if not token:
-                    result = LLMModelsResponse(success=False, message="")
-                else:
-                    result = await _fetch_github_models_catalog(token)
-            elif github_copilot_token and len(github_copilot_token) > 10:
-                result = await _fetch_github_copilot_models(
-                    github_copilot_token,
-                    app_settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL,
-                )
-            else:
-                result = LLMModelsResponse(success=False, message="")
+            github_provider = "github_models"
+            result = await _fetch_github_models_catalog(github_models_token)
 
             # Always merge directory models for Copilot OAuth.
             if result.success and github_provider == "github_copilot":
@@ -7610,6 +7633,35 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
                             name=m.name,
                             provider="github_copilot",
                             context_limit=await get_context_limit(context_model_id),
+                            max_output_tokens=m.max_output_tokens,
+                            created=m.created,
+                        )
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to fetch GitHub models: {e}")
+    elif github_auth_mode == "oauth" and github_copilot_token and len(github_copilot_token) > 10:
+        try:
+            result = await _fetch_github_copilot_models(
+                github_copilot_token,
+                app_settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL,
+            )
+
+            # Always merge directory models for Copilot OAuth.
+            if result.success:
+                directory_result = await _fetch_copilot_directory_models(
+                    include_anthropic=True,
+                    include_google=True,
+                )
+                result = _merge_llm_model_results(result, directory_result)
+
+            if result.success:
+                for m in result.models:
+                    all_models.append(
+                        AvailableModel(
+                            id=m.id,
+                            name=m.name,
+                            provider="github_copilot",
+                            context_limit=await get_context_limit(m.id),
                             max_output_tokens=m.max_output_tokens,
                             created=m.created,
                         )

@@ -65,6 +65,29 @@ async def ensure_copilot_token_fresh() -> Optional[str]:
     refresh_token = (settings.github_copilot_refresh_token or "").strip()
 
     if not access_token:
+        # Recover when only the long-lived GitHub OAuth token is present.
+        if refresh_token:
+            try:
+                new_token, new_expires = await exchange_github_token_for_copilot_token(
+                    refresh_token
+                )
+                await repository.update_settings(
+                    {
+                        "github_copilot_access_token": new_token,
+                        "github_copilot_token_expires_at": new_expires,
+                    }
+                )
+                invalidate_settings_cache()
+                logger.info(
+                    "Exchanged GitHub OAuth token for Copilot token (expires %s)",
+                    new_expires,
+                )
+                return new_token
+            except Exception as exc:
+                logger.warning(
+                    "Failed to exchange GitHub OAuth token for Copilot token: %s",
+                    exc,
+                )
         return None
 
     expires_at = settings.github_copilot_token_expires_at
@@ -104,4 +127,8 @@ async def ensure_copilot_token_fresh() -> Optional[str]:
             return new_token
         except Exception as exc:
             logger.warning("Failed to refresh Copilot HMAC token: %s", exc)
+            # Avoid reusing a known-expired token (causes "unauthorized: token expired").
+            if isinstance(expires_at, datetime) and expires_at <= now:
+                return None
+            # If still valid but within refresh buffer, keep using it temporarily.
             return access_token
