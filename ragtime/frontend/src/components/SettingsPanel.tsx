@@ -1,6 +1,6 @@
 import { LdapGroupSelect } from './LdapGroupSelect';
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Lock, LockOpen, Info, Search } from 'lucide-react';
+import { Lock, LockOpen, Info, Search, Clipboard, ExternalLink, X } from 'lucide-react';
 import { api } from '@/api';
 import type { AppSettings, UpdateSettingsRequest, OllamaModel, OllamaVisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus } from '@/types';
 import { MCPRoutesPanel } from './MCPRoutesPanel';
@@ -44,11 +44,12 @@ function normalizeSettingsSearchText(value: string): string {
   return value.trim().toLowerCase();
 }
 
-function settingsTextMatchesQuery(text: string | null | undefined, query: string): boolean {
-  if (!query) {
+function settingsTextMatchesQuery(text: string | null | undefined, queries: string[]): boolean {
+  if (queries.length === 0) {
     return true;
   }
-  return normalizeSettingsSearchText(text || '').includes(query);
+  const normalized = normalizeSettingsSearchText(text || '');
+  return queries.some((q) => normalized.includes(q));
 }
 
 interface SettingsPanelProps {
@@ -66,8 +67,16 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [settingsFilterText, setSettingsFilterText] = useState('');
+  const [settingsFilterTags, setSettingsFilterTags] = useState<string[]>([]);
+  const [settingsFilterInput, setSettingsFilterInput] = useState('');
+  const [debouncedFilterInput, setDebouncedFilterInput] = useState('');
   const [settingsFilterHasMatches, setSettingsFilterHasMatches] = useState(true);
+  const settingsFilterInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedFilterInput(settingsFilterInput), 200);
+    return () => clearTimeout(timer);
+  }, [settingsFilterInput]);
 
   // Section-specific saving states
   const [embeddingSaving, setEmbeddingSaving] = useState(false);
@@ -921,10 +930,11 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       return;
     }
 
-    const query = normalizeSettingsSearchText(settingsFilterText);
+    const liveInput = normalizeSettingsSearchText(debouncedFilterInput);
+    const queries = [...settingsFilterTags.map(normalizeSettingsSearchText), ...(liveInput ? [liveInput] : [])].filter(Boolean);
     const infoCards = form.parentElement?.querySelectorAll<HTMLElement>('[data-settings-filter-card="true"]') || [];
 
-    if (!query) {
+    if (queries.length === 0) {
       infoCards.forEach((card) => {
         card.style.display = '';
       });
@@ -950,7 +960,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
 
     infoCards.forEach((card) => {
       const cardText = card.textContent || '';
-      const isMatch = settingsTextMatchesQuery(cardText, query);
+      const isMatch = settingsTextMatchesQuery(cardText, queries);
       card.style.display = isMatch ? '' : 'none';
       if (isMatch) {
         hasAnyMatches = true;
@@ -961,14 +971,14 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     fieldsets.forEach((fieldset) => {
       const legendText = fieldset.querySelector('legend')?.textContent || '';
       const helpText = fieldset.querySelector('.fieldset-help')?.textContent || '';
-      const fieldsetTextMatch = settingsTextMatchesQuery(`${legendText} ${helpText}`, query);
+      const fieldsetTextMatch = settingsTextMatchesQuery(`${legendText} ${helpText}`, queries);
 
       let visibleFormGroupCount = 0;
       const formGroups = Array.from(fieldset.querySelectorAll<HTMLElement>('.form-group'));
       formGroups.forEach((group) => {
         const labelText = group.querySelector('label')?.textContent || '';
         const groupText = group.textContent || '';
-        const isMatch = fieldsetTextMatch || settingsTextMatchesQuery(`${labelText} ${groupText}`, query);
+        const isMatch = fieldsetTextMatch || settingsTextMatchesQuery(`${labelText} ${groupText}`, queries);
         group.style.display = isMatch ? '' : 'none';
         if (isMatch) {
           visibleFormGroupCount += 1;
@@ -980,7 +990,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         const summaryText = details.querySelector('summary')?.textContent || '';
         const detailText = details.textContent || '';
         const hasVisibleChild = Array.from(details.querySelectorAll<HTMLElement>('.form-group')).some((group) => group.style.display !== 'none');
-        const detailsMatch = fieldsetTextMatch || hasVisibleChild || settingsTextMatchesQuery(`${summaryText} ${detailText}`, query);
+        const detailsMatch = fieldsetTextMatch || hasVisibleChild || settingsTextMatchesQuery(`${summaryText} ${detailText}`, queries);
         details.style.display = detailsMatch ? '' : 'none';
         if (detailsMatch && hasVisibleChild && !details.open) {
           details.open = true;
@@ -990,7 +1000,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
 
       const fieldsetHelp = fieldset.querySelector<HTMLElement>('.fieldset-help');
       if (fieldsetHelp) {
-        const helpMatch = fieldsetTextMatch || settingsTextMatchesQuery(fieldsetHelp.textContent, query);
+        const helpMatch = fieldsetTextMatch || settingsTextMatchesQuery(fieldsetHelp.textContent, queries);
         fieldsetHelp.style.display = helpMatch ? '' : 'none';
       }
 
@@ -1007,7 +1017,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     });
 
     setSettingsFilterHasMatches(hasAnyMatches);
-  }, [settingsFilterText, loading]);
+  }, [settingsFilterTags, debouncedFilterInput, loading]);
 
   if (loading) {
     return (
@@ -1036,28 +1046,74 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     <div className="card">
       <h2>Settings</h2>
 
-      <div className="settings-filter-search" role="search" aria-label="Filter settings">
+      <div className="settings-filter-search" role="search" aria-label="Filter settings" onClick={() => settingsFilterInputRef.current?.focus()}>
         <Search size={16} className="settings-filter-search-icon" aria-hidden="true" />
+        {settingsFilterTags.map((tag, i) => (
+          <span key={i} className="settings-filter-tag">
+            {tag}
+            <button
+              type="button"
+              className="settings-filter-tag-remove"
+              onClick={(e) => { e.stopPropagation(); setSettingsFilterTags((prev) => prev.filter((_, idx) => idx !== i)); }}
+              aria-label={`Remove filter: ${tag}`}
+            >
+              <X size={12} />
+            </button>
+          </span>
+        ))}
         <input
+          ref={settingsFilterInputRef}
           type="text"
-          placeholder="Filter settings by keyword..."
-          value={settingsFilterText}
-          onChange={(e) => setSettingsFilterText(e.target.value)}
+          placeholder={settingsFilterTags.length === 0 ? 'Filter settings by keyword...' : ''}
+          value={settingsFilterInput}
+          onChange={(e) => {
+            const val = e.target.value;
+            if (val.endsWith(',')) {
+              const tag = val.slice(0, -1).trim();
+              if (tag && !settingsFilterTags.includes(tag)) {
+                setSettingsFilterTags((prev) => [...prev, tag]);
+              }
+              setSettingsFilterInput('');
+            } else {
+              setSettingsFilterInput(val);
+            }
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Tab' && settingsFilterInput.trim()) {
+              e.preventDefault();
+              const tag = settingsFilterInput.trim();
+              if (!settingsFilterTags.includes(tag)) {
+                setSettingsFilterTags((prev) => [...prev, tag]);
+              }
+              setSettingsFilterInput('');
+            }
+            if (e.key === 'Backspace' && !settingsFilterInput && settingsFilterTags.length > 0) {
+              setSettingsFilterTags((prev) => prev.slice(0, -1));
+            }
+          }}
+          onBlur={() => {
+            const tag = settingsFilterInput.trim();
+            if (tag && !settingsFilterTags.includes(tag)) {
+              setSettingsFilterTags((prev) => [...prev, tag]);
+            }
+            setSettingsFilterInput('');
+          }}
           aria-label="Filter settings by keyword"
         />
-        {settingsFilterText.trim() && (
+        {(settingsFilterTags.length > 0 || settingsFilterInput.trim()) && (
           <button
             type="button"
-            className="btn btn-sm btn-secondary"
-            onClick={() => setSettingsFilterText('')}
+            className="settings-filter-clear"
+            onClick={(e) => { e.stopPropagation(); setSettingsFilterTags([]); setSettingsFilterInput(''); }}
+            aria-label="Clear all filters"
           >
-            Clear
+            <X size={16} />
           </button>
         )}
       </div>
 
-      {!settingsFilterHasMatches && settingsFilterText.trim() && (
-        <p className="muted settings-filter-empty">No settings match "{settingsFilterText.trim()}".</p>
+      {!settingsFilterHasMatches && (settingsFilterTags.length > 0 || debouncedFilterInput.trim()) && (
+        <p className="muted settings-filter-empty">No settings match the current filters.</p>
       )}
 
       {/* API Endpoint Info */}
@@ -1079,11 +1135,11 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
             <strong>Security:</strong>
             {!authStatus?.api_key_configured && (
               <span> The API endpoint accepts an API Key for authentication (set via <code>API_KEY</code> environment variable).
-              Without an API key, anyone with network access can use your LLM and tools.</span>
+                Without an API key, anyone with network access can use your LLM and tools.</span>
             )}
             {window.location.protocol === 'http:' && (
               <span> {authStatus?.api_key_configured ? '' : 'Additionally, y'}ou are currently accessing over HTTP - API keys and credentials will be transmitted in plaintext.
-              Consider using HTTPS via a reverse proxy or setting <code>ENABLE_HTTPS=true</code>.</span>
+                Consider using HTTPS via a reverse proxy or setting <code>ENABLE_HTTPS=true</code>.</span>
             )}
           </div>
         )}
@@ -1808,12 +1864,12 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                 <p className="field-help">
                   {embeddingModelsLoaded
                     ? (() => {
-                        const selectedModel = embeddingModels.find(m => m.id === formData.embedding_model);
-                        const dimInfo = selectedModel?.dimensions
-                          ? ` Selected model outputs ${selectedModel.dimensions}-dimension vectors.`
-                          : '';
-                        return `Select an embedding model from OpenAI.${dimInfo}`;
-                      })()
+                      const selectedModel = embeddingModels.find(m => m.id === formData.embedding_model);
+                      const dimInfo = selectedModel?.dimensions
+                        ? ` Selected model outputs ${selectedModel.dimensions}-dimension vectors.`
+                        : '';
+                      return `Select an embedding model from OpenAI.${dimInfo}`;
+                    })()
                     : 'Requires OpenAI API key (configured above). Click "Fetch Models" to see available embedding models.'}
                 </p>
               </div>
@@ -2373,26 +2429,26 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
 
               {/* LDAP Group restriction - only for OAuth2 auth method */}
               {(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) &&
-               ldapConfig?.server_url &&
-               (formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'password') === 'oauth2' && (
-                <div className="form-group" style={{ marginTop: '1rem' }}>
-                  <label htmlFor="mcp-allowed-group">Allowed LDAP Group (Optional)</label>
-                  <div style={{ maxWidth: '500px' }}>
-                    <LdapGroupSelect
-                      id="mcp-allowed-group"
-                      value={formData.mcp_default_route_allowed_group ?? settings?.mcp_default_route_allowed_group ?? ''}
-                      onChange={(value) =>
-                        setFormData({ ...formData, mcp_default_route_allowed_group: value || null })
-                      }
-                      groups={ldapDiscoveredGroups}
-                      emptyOptionLabel="Any authenticated LDAP user"
-                    />
+                ldapConfig?.server_url &&
+                (formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'password') === 'oauth2' && (
+                  <div className="form-group" style={{ marginTop: '1rem' }}>
+                    <label htmlFor="mcp-allowed-group">Allowed LDAP Group (Optional)</label>
+                    <div style={{ maxWidth: '500px' }}>
+                      <LdapGroupSelect
+                        id="mcp-allowed-group"
+                        value={formData.mcp_default_route_allowed_group ?? settings?.mcp_default_route_allowed_group ?? ''}
+                        onChange={(value) =>
+                          setFormData({ ...formData, mcp_default_route_allowed_group: value || null })
+                        }
+                        groups={ldapDiscoveredGroups}
+                        emptyOptionLabel="Any authenticated LDAP user"
+                      />
+                    </div>
+                    <p className="field-help">
+                      Restrict access to members of a specific LDAP group. Leave empty to allow all authenticated LDAP users.
+                    </p>
                   </div>
-                  <p className="field-help">
-                    Restrict access to members of a specific LDAP group. Leave empty to allow all authenticated LDAP users.
-                  </p>
-                </div>
-              )}
+                )}
 
               {/* Warning when auth is disabled */}
               {!(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) && (
@@ -2405,58 +2461,58 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
 
               {/* Password for default MCP route - only show for password auth method */}
               {(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) &&
-               (formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'password') === 'password' && (
-                <div className="form-group" style={{ marginTop: '1rem' }}>
-                  <label htmlFor="mcp-password">MCP Password</label>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <input
-                      type={showMcpPassword ? 'text' : 'password'}
-                      id="mcp-password"
-                      placeholder={settings?.has_mcp_default_password ? '••••••••' : 'Enter password (min 8 characters)'}
-                      value={formData.mcp_default_route_password ?? ''}
-                      onChange={(e) =>
-                        setFormData({ ...formData, mcp_default_route_password: e.target.value })
-                  }
-                  style={{ flex: 1, maxWidth: '400px' }}
-                />
-                <button
-                  type="button"
-                  className="btn btn-small"
-                  onClick={() => setShowMcpPassword(!showMcpPassword)}
-                  title={showMcpPassword ? 'Hide password' : 'Show password'}
-                >
-                  {showMcpPassword ? 'Hide' : 'Show'}
-                </button>
-                {settings?.has_mcp_default_password && (
-                  <button
-                    type="button"
-                    className="btn btn-small btn-secondary"
-                    onClick={() => setFormData({ ...formData, mcp_default_route_password: '' })}
-                    title="Clear password (submit empty to remove)"
-                  >
-                    Clear
-                  </button>
+                (formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'password') === 'password' && (
+                  <div className="form-group" style={{ marginTop: '1rem' }}>
+                    <label htmlFor="mcp-password">MCP Password</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <input
+                        type={showMcpPassword ? 'text' : 'password'}
+                        id="mcp-password"
+                        placeholder={settings?.has_mcp_default_password ? '••••••••' : 'Enter password (min 8 characters)'}
+                        value={formData.mcp_default_route_password ?? ''}
+                        onChange={(e) =>
+                          setFormData({ ...formData, mcp_default_route_password: e.target.value })
+                        }
+                        style={{ flex: 1, maxWidth: '400px' }}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-small"
+                        onClick={() => setShowMcpPassword(!showMcpPassword)}
+                        title={showMcpPassword ? 'Hide password' : 'Show password'}
+                      >
+                        {showMcpPassword ? 'Hide' : 'Show'}
+                      </button>
+                      {settings?.has_mcp_default_password && (
+                        <button
+                          type="button"
+                          className="btn btn-small btn-secondary"
+                          onClick={() => setFormData({ ...formData, mcp_default_route_password: '' })}
+                          title="Clear password (submit empty to remove)"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                    <p className="field-help">
+                      {settings?.has_mcp_default_password
+                        ? 'Password is set. Leave blank to keep current password, or enter a new one to change it. Clear and save to remove password protection.'
+                        : 'Set a password that MCP clients will use as their Bearer token. Minimum 8 characters.'}
+                    </p>
+                    {window.location.protocol === 'http:' && (
+                      <div className="field-warning" style={{ marginTop: '0.5rem', padding: '0.5rem', backgroundColor: 'rgba(255, 193, 7, 0.15)', borderLeft: '3px solid #ffc107', borderRadius: '4px', fontSize: '0.85em' }}>
+                        <strong>Security:</strong> You are accessing over HTTP. MCP passwords will be transmitted in plaintext.
+                        Consider using HTTPS via a reverse proxy for production deployments.
+                      </div>
+                    )}
+                    {mcpError && <p className="field-error">{mcpError}</p>}
+                  </div>
                 )}
-              </div>
-              <p className="field-help">
-                {settings?.has_mcp_default_password
-                  ? 'Password is set. Leave blank to keep current password, or enter a new one to change it. Clear and save to remove password protection.'
-                  : 'Set a password that MCP clients will use as their Bearer token. Minimum 8 characters.'}
-              </p>
-              {window.location.protocol === 'http:' && (
-                <div className="field-warning" style={{ marginTop: '0.5rem', padding: '0.5rem', backgroundColor: 'rgba(255, 193, 7, 0.15)', borderLeft: '3px solid #ffc107', borderRadius: '4px', fontSize: '0.85em' }}>
-                  <strong>Security:</strong> You are accessing over HTTP. MCP passwords will be transmitted in plaintext.
-                  Consider using HTTPS via a reverse proxy for production deployments.
-                </div>
-              )}
-              {mcpError && <p className="field-error">{mcpError}</p>}
-            </div>
-          )}
 
-          {/* Show MCP error when password field is not visible */}
-          {!(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) && mcpError && (
-            <p className="field-error" style={{ marginTop: '0.5rem' }}>{mcpError}</p>
-          )}
+              {/* Show MCP error when password field is not visible */}
+              {!(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) && mcpError && (
+                <p className="field-error" style={{ marginTop: '0.5rem' }}>{mcpError}</p>
+              )}
             </>
           )}
 
@@ -2852,7 +2908,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                                   paddingLeft: '1rem',
                                   backgroundColor: model.is_latest ? 'rgba(0,0,0,0.03)' : undefined,
                                   fontWeight: model.is_latest ? 500 : undefined
-                                  }}>
+                                }}>
                                   <input
                                     type="checkbox"
                                     checked={selectedModels.has(model.id)}
@@ -2907,15 +2963,15 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
               ldapConfigured={!!ldapConfig?.server_url}
               ldapGroups={ldapDiscoveredGroups}
               onClose={async () => {
-              setShowMcpRoutesPanel(false);
-              // Refresh routes list
-              try {
-                const routesRes = await api.listMcpRoutes();
-                setMcpRoutes(routesRes.routes);
-              } catch {
-                // Silent fail
-              }
-            }} />
+                setShowMcpRoutesPanel(false);
+                // Refresh routes list
+                try {
+                  const routesRes = await api.listMcpRoutes();
+                  setMcpRoutes(routesRes.routes);
+                } catch {
+                  // Silent fail
+                }
+              }} />
           </div>
         </div>
       )}
