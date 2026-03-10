@@ -56,6 +56,7 @@ MODEL_FAMILY_PATTERNS = {
     "anthropic": [
         # Haiku models grouped together (all versions) - must be BEFORE general claude-3.5/3 patterns
         (r"claude-haiku-4-5", "Haiku"),
+        (r"claude-haiku-4\.5", "Haiku"),
         (r"claude-haiku-4", "Haiku"),
         (r"claude-(3-5|3\.5|3)-haiku", "Haiku"),
         # Opus and Sonnet families
@@ -81,7 +82,9 @@ MODEL_FAMILY_PATTERNS = {
         (r"^gpt-4", "GPT-4"),
         # Claude families (supports both prefixed and unprefixed ids)
         (r"(anthropic/)?claude-haiku-4-5", "Haiku"),
+        (r"(anthropic/)?claude-haiku-4\.5", "Haiku"),
         (r"(anthropic/)?claude-haiku-4", "Haiku"),
+        (r"(anthropic/)?claude-(3-5|3\.5|3)-haiku", "Haiku"),
         (r"(anthropic/)?claude-opus-4", "Claude Opus 4"),
         (r"(anthropic/)?claude-sonnet-4", "Claude Sonnet 4"),
         (r"(anthropic/)?claude-4", "Claude 4"),
@@ -103,6 +106,12 @@ MODEL_FAMILY_PATTERNS = {
     "github_models": [
         (r"^openai/gpt-5", "GPT-5"),
         (r"^openai/gpt-4", "GPT-4"),
+        (r"^anthropic/claude-haiku-4-5", "Haiku"),
+        (r"^anthropic/claude-haiku-4\.5", "Haiku"),
+        (r"^anthropic/claude-haiku-4", "Haiku"),
+        (r"^anthropic/claude-(3-5|3\.5|3)-haiku", "Haiku"),
+        (r"^anthropic/claude-opus-4", "Claude Opus 4"),
+        (r"^anthropic/claude-sonnet-4", "Claude Sonnet 4"),
         (r"^anthropic/claude", "Claude"),
         (r"^google/gemini", "Gemini"),
         (r"^xai/grok", "Grok"),

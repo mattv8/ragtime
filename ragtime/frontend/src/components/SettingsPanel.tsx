@@ -6,6 +6,7 @@ import type { AppSettings, UpdateSettingsRequest, OllamaModel, OllamaVisionModel
 import { MCPRoutesPanel } from './MCPRoutesPanel';
 import { OllamaConnectionForm } from './OllamaConnectionForm';
 import { ModelSelector } from './ModelSelector';
+import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 
 /**
  * Format a DN for display like Active Directory tree view.
@@ -62,6 +63,7 @@ interface SettingsPanelProps {
 }
 
 export function SettingsPanel({ onServerNameChange, highlightSetting, onHighlightComplete, authStatus }: SettingsPanelProps) {
+  const { refresh: refreshModels } = useAvailableModels();
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -634,6 +636,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       await api.updateSettings({ allowed_chat_models: allowedModels });
       setShowModelFilterModal(false);
       setSuccess('Model filter saved');
+      refreshModels();
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save model filter');
@@ -1041,6 +1044,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
       setSuccess('LLM configuration saved');
+      refreshModels();
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save LLM settings');

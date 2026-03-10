@@ -29,14 +29,14 @@ interface GroupedModels<T extends BaseModel> {
 
 function inferCompactFamilyLabel(model: BaseModel): string | null {
   const id = model.id.toLowerCase();
-  if (id.includes('claude-haiku-4-5')) {
-    return 'Haiku4.5';
+  if (id.includes('claude-haiku-4-5') || id.includes('claude-haiku-4.5')) {
+    return 'Haiku';
   }
   if (id.includes('claude-haiku-4')) {
-    return 'Haiku4';
+    return 'Haiku';
   }
   if (id.includes('claude-3-5-haiku') || id.includes('claude-3.5-haiku') || id.includes('claude-3-haiku')) {
-    return 'Claude Haiku';
+    return 'Haiku';
   }
   if (id.includes('claude-sonnet-4')) {
     return 'Claude Sonnet 4';
@@ -131,22 +131,24 @@ export function ModelSelector<T extends BaseModel>({
     if (!selectedModel) {
       return inferCompactFamilyLabelFromId(selectedModelId) || selectedModelId || placeholder;
     }
-    // For compact variant, prefer the family/group label when available.
-    // This keeps chat header labels stable (e.g., "Claude Haiku") even when
-    // a dated version within that family is selected.
-    if (
-      variant === 'compact' &&
-      selectedModel.group &&
-      !selectedModel.group.startsWith('Other')
-    ) {
-      return selectedModel.group;
+    // Prefer the family/group label when available.
+    // For full variant we only do this when the group has multiple versions,
+    // so singleton groups still show the concrete model name.
+    const selectedGroup = selectedModel.group
+      ? groupedModels.find(group => group.group === selectedModel.group)
+      : undefined;
+    const hasMultipleVersions = !!selectedGroup && selectedGroup.otherModels.length > 0;
+    if (selectedModel.group && !selectedModel.group.startsWith('Other')) {
+      if (variant === 'compact' || hasMultipleVersions) {
+        return selectedModel.group;
+      }
     }
     if (variant === 'compact') {
       const inferred = inferCompactFamilyLabel(selectedModel);
       if (inferred) return inferred;
     }
     return selectedModel.name;
-  }, [selectedModel, selectedModelId, placeholder, variant]);
+  }, [selectedModel, selectedModelId, placeholder, variant, groupedModels]);
 
   // Close dropdown when clicking outside
   useEffect(() => {

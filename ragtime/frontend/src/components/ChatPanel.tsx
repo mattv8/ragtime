@@ -3,7 +3,7 @@ import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock } from 'lucide-react';
 import { api } from '@/api';
-import type { Conversation, ChatMessage, AvailableModel, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ToolCallRecord } from '@/types';
+import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ToolCallRecord } from '@/types';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
@@ -11,6 +11,7 @@ import { calculateConversationTokens, calculateStreamingTokens, estimateTokens }
 import { ContextUsagePie } from './shared/ContextUsagePie';
 import { MemberManagementModal } from './shared/MemberManagementModal';
 import { ToolSelectorDropdown } from './shared/ToolSelectorDropdown';
+import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 
 interface CodeBlockProps {
   inline?: boolean;
@@ -1461,9 +1462,8 @@ export function ChatPanel({
   const [interruptedTask, setInterruptedTask] = useState<ChatTask | null>(null);  // Last interrupted task for continue
   const [_isPollingTask, setIsPollingTask] = useState(false);
   const lastSeenVersionRef = useRef<number>(0);  // Track last seen version for delta polling
-  // Available models state
-  const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
-  const [modelsLoading, setModelsLoading] = useState(true);
+  // Available models from shared context
+  const { models: availableModels, loading: modelsLoading, refresh: refreshModels } = useAvailableModels();
   const [isWorkspaceConversationMenuOpen, setIsWorkspaceConversationMenuOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [conversationMembers, setConversationMembers] = useState<ConversationMember[]>([]);
@@ -2181,8 +2181,8 @@ export function ChatPanel({
   // Load conversations and available models on mount
   useEffect(() => {
     loadConversations();
-    loadAvailableModels();
-  }, [workspaceId]);
+    refreshModels();
+  }, [workspaceId, refreshModels]);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -2206,18 +2206,6 @@ export function ChatPanel({
   useEffect(() => {
     inputRef.current?.focus();
   }, [activeConversation?.id]);
-
-  const loadAvailableModels = async () => {
-    try {
-      setModelsLoading(true);
-      const data = await api.getAvailableModels();
-      setAvailableModels(data.models);
-    } catch (err) {
-      console.error('Failed to load available models:', err);
-    } finally {
-      setModelsLoading(false);
-    }
-  };
 
   const loadConversations = async () => {
     try {
@@ -2403,7 +2391,11 @@ export function ChatPanel({
   };
 
 
-  // Listen for auto-generated titles per conversation using SSE
+  // Listen for auto-generated titles per conversation using SSE.
+  // IMPORTANT: We only open ONE SSE connection for the active conversation to
+  // avoid exhausting the browser's HTTP/1.1 connection limit (6 per origin).
+  // Opening SSE streams for every "New Chat" conversation would saturate the
+  // connection pool and lock up the UI.
   const stopTitleStreamFor = useCallback((conversationId: string) => {
     const es = titleSourceRef.current.get(conversationId);
     if (es) {
@@ -2412,11 +2404,10 @@ export function ChatPanel({
     titleSourceRef.current.delete(conversationId);
   }, []);
 
-  const startTitleStreamFor = useCallback((conversationId: string) => {
+  const startTitleStreamFor = useCallback((conversationId: string, title: string) => {
     if (titleSourceRef.current.has(conversationId)) return;
 
-    const target = conversations.find(c => c.id === conversationId);
-    if (!target || target.title !== 'New Chat') return;
+    if (title !== 'New Chat') return;
 
     try {
       const url = api.getConversationEventsUrl(conversationId, workspaceId);
@@ -2452,10 +2443,6 @@ export function ChatPanel({
       };
 
       es.onerror = () => {
-        // Just close on error, don't retry locally as SSE retries automatically
-        // But if connection keeps failing, we might want to clean up.
-        // For now, let generic browser retry logic handle transient issues?
-        // Actually, if we get error, it might be 404 or something, let's close to be safe from inf loops
         es.close();
         titleSourceRef.current.delete(conversationId);
       };
@@ -2464,25 +2451,35 @@ export function ChatPanel({
     } catch (e) {
       console.error("Failed to start title stream", e);
     }
-  }, [conversations]);
+  }, [workspaceId]);
 
+  // Only subscribe to title events for the ACTIVE conversation to avoid
+  // saturating the browser's 6-connection-per-origin limit with idle SSE streams.
   useEffect(() => {
-    const newChatIds = conversations.filter(c => c.title === 'New Chat').map(c => c.id);
+    const activeId = activeConversation?.id;
 
-    newChatIds.forEach(startTitleStreamFor);
-
-    // Stop streams for conversations that resolved or were removed
+    // Close streams for any conversation that is NOT the active one
     titleSourceRef.current.forEach((_, id) => {
-      if (!newChatIds.includes(id)) {
+      if (id !== activeId) {
         stopTitleStreamFor(id);
       }
     });
+
+    // Open a stream for the active conversation if it still needs a title
+    if (activeId && activeConversation?.title) {
+      startTitleStreamFor(activeId, activeConversation.title);
+    }
 
     return () => {
       titleSourceRef.current.forEach(es => es.close());
       titleSourceRef.current.clear();
     };
-  }, [conversations, startTitleStreamFor, stopTitleStreamFor]);
+  }, [
+    activeConversation?.id,
+    activeConversation?.title,
+    startTitleStreamFor,
+    stopTitleStreamFor,
+  ]);
 
   // =========================================================================
   // Background Task Streaming (Resume & Reconnect)
@@ -2731,6 +2728,10 @@ export function ChatPanel({
       // Refresh the conversation to get latest messages
       const fresh = await api.getConversation(conversation.id, workspaceId);
       setActiveConversation(fresh);
+      // Sync sidebar title in case it was updated while another conversation was active
+      if (fresh.title !== conversation.title) {
+        setConversations(prev => prev.map(c => c.id === fresh.id ? { ...c, title: fresh.title } : c));
+      }
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load conversation');

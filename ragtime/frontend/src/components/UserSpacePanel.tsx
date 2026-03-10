@@ -229,6 +229,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [collabVersion, setCollabVersion] = useState(0);
   const [collabPresenceCount, setCollabPresenceCount] = useState(0);
   const [collabReconnectNonce, setCollabReconnectNonce] = useState(0);
+  const [workspaceEventsReconnectNonce, setWorkspaceEventsReconnectNonce] = useState(0);
   const [terminalReadOnly, setTerminalReadOnly] = useState(false);
   const [terminalReconnectNonce, setTerminalReconnectNonce] = useState(0);
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
@@ -290,6 +291,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const collabReconnectTimerRef = useRef<number | null>(null);
   const collabReconnectAttemptsRef = useRef(0);
   const collabSuppressNextSendRef = useRef(false);
+  const workspaceEventsReconnectTimerRef = useRef<number | null>(null);
   const terminalSocketRef = useRef<WebSocket | null>(null);
   const terminalReconnectTimerRef = useRef<number | null>(null);
   const terminalReadOnlyRef = useRef(false);
@@ -794,10 +796,18 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   useEffect(() => {
     if (!activeWorkspaceId) return;
 
+    if (workspaceEventsReconnectTimerRef.current !== null) {
+      window.clearTimeout(workspaceEventsReconnectTimerRef.current);
+      workspaceEventsReconnectTimerRef.current = null;
+    }
+
     const source = api.subscribeWorkspaceEvents(activeWorkspaceId, 0);
     let lastGeneration = 0;
+    let consecutiveErrors = 0;
+    let reconnectScheduled = false;
 
     source.onmessage = (event) => {
+      consecutiveErrors = 0; // reset on successful message
       try {
         const data = JSON.parse(event.data) as { generation: number; event_type?: string };
         if (data.generation > lastGeneration) {
@@ -831,13 +841,34 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     };
 
     source.onerror = () => {
-      // EventSource auto-reconnects; nothing to do
+      consecutiveErrors++;
+      // Close after repeated failures to avoid burning a connection slot
+      // with an infinite auto-reconnect loop (e.g. 401/404 responses).
+      if (consecutiveErrors >= 5) {
+        source.close();
+        if (!reconnectScheduled) {
+          reconnectScheduled = true;
+          workspaceEventsReconnectTimerRef.current = window.setTimeout(() => {
+            workspaceEventsReconnectTimerRef.current = null;
+            setWorkspaceEventsReconnectNonce((value) => value + 1);
+          }, 5000);
+        }
+      }
     };
 
     return () => {
       source.close();
+      if (workspaceEventsReconnectTimerRef.current !== null) {
+        window.clearTimeout(workspaceEventsReconnectTimerRef.current);
+        workspaceEventsReconnectTimerRef.current = null;
+      }
     };
-  }, [activeWorkspaceId, isCodeEditorFocused, loadWorkspaceData]);
+  }, [
+    activeWorkspaceId,
+    isCodeEditorFocused,
+    loadWorkspaceData,
+    workspaceEventsReconnectNonce,
+  ]);
 
   useEffect(() => {
     selectedFilePathRef.current = selectedFilePath;

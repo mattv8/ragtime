@@ -128,6 +128,12 @@ logger = get_logger(__name__)
 # AI can request up to this limit; configured per-tool timeout is the default
 MAX_TOOL_TIMEOUT_SECONDS = 300
 
+# Maximum idle time (seconds) to wait between streamed chunks from the LLM.
+# httpx interprets a flat float as per-operation timeout (connect, read, write, pool),
+# NOT as a total request duration.  During streaming, "read=300" means we timeout only
+# if 300 s pass with zero data — safe for long reasoning/thinking phases.
+LLM_REQUEST_TIMEOUT_SECONDS: float = 300
+
 # User Space screenshot caps to keep vision payloads useful but bounded.
 MAX_USERSPACE_SCREENSHOT_WIDTH = 1600
 MAX_USERSPACE_SCREENSHOT_HEIGHT = 1200
@@ -1335,6 +1341,7 @@ class RAGComponents:
                     temperature=0,
                     api_key=api_key,
                     max_tokens=max_tokens,
+                    default_request_timeout=LLM_REQUEST_TIMEOUT_SECONDS,
                 )
             except ImportError:
                 logger.warning("langchain-anthropic not installed")
@@ -1351,6 +1358,7 @@ class RAGComponents:
                     api_key=pat_token,
                     base_url="https://models.github.ai/inference",
                     max_tokens=max_tokens,
+                    request_timeout=LLM_REQUEST_TIMEOUT_SECONDS,
                     default_headers={
                         "Accept": "application/vnd.github+json",
                         "X-GitHub-Api-Version": "2022-11-28",
@@ -1384,6 +1392,7 @@ class RAGComponents:
                 api_key=token,
                 base_url=base_url,
                 max_tokens=max_tokens,
+                request_timeout=LLM_REQUEST_TIMEOUT_SECONDS,
                 reasoning_effort="high",
                 extra_body={"thinking_budget": 16384},
                 default_headers={
@@ -1413,6 +1422,7 @@ class RAGComponents:
                 api_key=token,
                 base_url="https://models.github.ai/inference",
                 max_tokens=max_tokens,
+                request_timeout=LLM_REQUEST_TIMEOUT_SECONDS,
                 default_headers={
                     "Accept": "application/vnd.github+json",
                     "X-GitHub-Api-Version": "2022-11-28",
@@ -1431,6 +1441,7 @@ class RAGComponents:
             streaming=True,
             api_key=api_key,
             max_tokens=max_tokens,
+            request_timeout=LLM_REQUEST_TIMEOUT_SECONDS,
         )
 
     async def _get_embedding_model(self):

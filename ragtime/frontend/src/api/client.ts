@@ -1945,7 +1945,7 @@ export const api = {
    */
   subscribeWorkspaceEvents(workspaceId: string, afterGeneration: number = 0): EventSource {
     const url = `${API_BASE}/userspace/runtime/workspaces/${encodeURIComponent(workspaceId)}/events?after=${afterGeneration}`;
-    return new EventSource(url);
+    return new EventSource(url, { withCredentials: true });
   },
 
   async issueUserSpaceCapabilityToken(workspaceId: string, capabilities: string[], sessionId?: string): Promise<UserSpaceCapabilityTokenResponse> {

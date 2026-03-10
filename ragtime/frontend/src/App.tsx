@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/api';
 import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, UserSpacePanel, LoginPage, OAuthLoginPage, MemoryStatus, UserMenu, SecurityBanner, ConfigurationBanner } from '@/components';
+import { AvailableModelsProvider } from '@/contexts/AvailableModelsContext';
 import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob, ToolConfig, ConfigurationWarning } from '@/types';
 import type { OAuthParams } from '@/components';
 import '@/styles/global.css';
@@ -529,6 +530,7 @@ export function App() {
   }
 
   return (
+    <AvailableModelsProvider>
     <div className={`app-shell${lockViewportLayout ? ' app-shell-locked' : ''}`}>
       <nav className="topnav" style={hideChrome ? { display: 'none' } : undefined}>
         <span className="topnav-brand">{serverName}</span>
@@ -668,5 +670,6 @@ export function App() {
       )}
       </div>
     </div>
+    </AvailableModelsProvider>
   );
 }
