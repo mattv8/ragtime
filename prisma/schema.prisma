@@ -161,6 +161,10 @@ model AppSettings {
   includeCopilotThirdPartyModels Boolean @default(false) @map("include_copilot_third_party_models")
   allowedChatModels String[] @default([]) @map("allowed_chat_models") // Empty = all models allowed
 
+  // OpenAPI-compatible endpoint model configuration
+  allowedOpenapiModels    String[]  @default([]) @map("allowed_openapi_models") // Models exposed via /v1/models; empty = use chat models
+  openapiSyncChatModels   Boolean   @default(true) @map("openapi_sync_chat_models") // true = mirror chat models list
+
   // Legacy tool configuration (deprecated - use ToolConfig table)
   enabledTools      String[] @default([]) @map("enabled_tools")
   odooContainer     String   @default("odoo-server") @map("odoo_container")

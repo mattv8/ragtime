@@ -2,7 +2,6 @@
 Indexer data models and schemas.
 """
 
-
 import hashlib
 import json
 from datetime import datetime
@@ -15,6 +14,7 @@ from ragtime.core.embedding_models import (
     get_embedding_models,
     get_model_dimensions_sync,
 )
+
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -549,6 +549,16 @@ class AppSettings(BaseModel):
         description="List of allowed model IDs for chat. Empty = all models allowed.",
     )
 
+    # OpenAPI-compatible endpoint model configuration
+    allowed_openapi_models: List[str] = Field(
+        default=[],
+        description="Models exposed via /v1/models. Empty = use chat models list.",
+    )
+    openapi_sync_chat_models: bool = Field(
+        default=True,
+        description="When true, /v1/models mirrors the Chat Models list.",
+    )
+
     # Agent behavior
     max_iterations: int = Field(
         default=15,
@@ -891,6 +901,8 @@ class UpdateSettingsRequest(BaseModel):
     github_copilot_base_url: Optional[str] = None
     include_copilot_third_party_models: Optional[bool] = None
     allowed_chat_models: Optional[List[str]] = None
+    allowed_openapi_models: Optional[List[str]] = None
+    openapi_sync_chat_models: Optional[bool] = None
     max_iterations: Optional[int] = Field(default=None, ge=1, le=100)
     # Legacy tool settings (for backward compatibility)
     enabled_tools: Optional[List[str]] = None

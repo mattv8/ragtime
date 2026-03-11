@@ -5,7 +5,6 @@ import { api } from '@/api';
 import type { AppSettings, UpdateSettingsRequest, OllamaModel, OllamaVisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus, CopilotAuthStatusResponse } from '@/types';
 import { MCPRoutesPanel } from './MCPRoutesPanel';
 import { OllamaConnectionForm } from './OllamaConnectionForm';
-import { ModelSelector } from './ModelSelector';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 
 /**
@@ -150,6 +149,13 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set());
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelFilterText, setModelFilterText] = useState('');
+
+  // OpenAPI model filter modal state
+  const [showOpenapiModelModal, setShowOpenapiModelModal] = useState(false);
+  const [selectedOpenapiModels, setSelectedOpenapiModels] = useState<Set<string>>(new Set());
+  const [openapiModelsLoading, setOpenapiModelsLoading] = useState(false);
+  const [openapiModelFilterText, setOpenapiModelFilterText] = useState('');
+  const [openapiAvailableModels, setOpenapiAvailableModels] = useState<AvailableModel[]>([]);
 
   // MCP Routes panel state
   const [showMcpRoutesPanel, setShowMcpRoutesPanel] = useState(false);
@@ -531,76 +537,42 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     }
   }, [formData.embedding_model]);
 
-  // Open model filter modal and load all available models
-  const openModelFilterModal = useCallback(async () => {
-    setModelsLoading(true);
-    setShowModelFilterModal(true);
-    setModelFilterText('');
+  // --- Shared model-fetching helpers for Chat & OpenAPI modal ---
+  const fetchModelsForModal = useCallback(async (): Promise<{ models: AvailableModel[]; response: Awaited<ReturnType<typeof api.getAllModels>> }> => {
+    const response = await api.getAllModels();
+    let models: AvailableModel[] = response.models.map((model) => ({
+      ...model,
+      provider: model.provider === 'github_models' ? 'github_copilot' : model.provider,
+    }));
 
-    try {
-      const response = await api.getAllModels();
-      let models: AvailableModel[] = response.models.map((model) => ({
-        ...model,
-        provider: model.provider === 'github_models' ? 'github_copilot' : model.provider,
-      }));
-
-      const copilotPatToken = (formData.github_models_api_token || settings?.github_models_api_token || '').trim();
-      const copilotConnected = Boolean(copilotAuthStatus?.connected || settings?.has_github_copilot_auth);
-
-      // Include GitHub 3rd-party families in selector.
-      const hasSelectedAuth = copilotAuthMode === 'pat' ? Boolean(copilotPatToken) : copilotConnected;
-      if (hasSelectedAuth) {
-        const githubResponse = await api.fetchLLMModels({
+    const copilotPatToken = (formData.github_models_api_token || settings?.github_models_api_token || '').trim();
+    const copilotConnected = Boolean(copilotAuthStatus?.connected || settings?.has_github_copilot_auth);
+    const hasSelectedAuth = copilotAuthMode === 'pat' ? Boolean(copilotPatToken) : copilotConnected;
+    if (hasSelectedAuth) {
+      const githubResponse = await api.fetchLLMModels({
+        provider: 'github_copilot',
+        auth_mode: copilotAuthMode,
+        include_directory_models: true,
+        include_anthropic_models: true,
+        include_google_models: true,
+      });
+      if (githubResponse.success) {
+        const contextLimitById = new Map(models.map((m) => [m.id, m.context_limit]));
+        const nonGithubModels = models.filter((m) => m.provider !== 'github_copilot');
+        const githubModels: AvailableModel[] = githubResponse.models.map((m) => ({
+          id: m.id,
+          name: m.name,
           provider: 'github_copilot',
-          auth_mode: copilotAuthMode,
-          include_directory_models: true,
-          include_anthropic_models: true,
-          include_google_models: true,
-        });
-
-        if (githubResponse.success) {
-          const contextLimitById = new Map(models.map((m) => [m.id, m.context_limit]));
-          const nonGithubModels = models.filter((m) => m.provider !== 'github_copilot');
-          const githubModels: AvailableModel[] = githubResponse.models.map((m) => ({
-            id: m.id,
-            name: m.name,
-            provider: 'github_copilot',
-            context_limit: contextLimitById.get(m.id) ?? 200000,
-            max_output_tokens: m.max_output_tokens,
-            group: m.group,
-            is_latest: m.is_latest,
-          }));
-          models = [...nonGithubModels, ...githubModels];
-        }
+          context_limit: contextLimitById.get(m.id) ?? 200000,
+          max_output_tokens: m.max_output_tokens,
+          group: m.group,
+          is_latest: m.is_latest,
+        }));
+        models = [...nonGithubModels, ...githubModels];
       }
-
-      setAllAvailableModels(models);
-
-      const toScopedKey = (model: AvailableModel): string => `${model.provider}::${model.id}`;
-
-      // Initialize selected models from current settings or all models
-      const allowedModels = response.allowed_models || [];
-      if (allowedModels.length > 0) {
-        const hasScopedEntries = allowedModels.some((value) => value.includes('::'));
-        if (hasScopedEntries) {
-          setSelectedModels(new Set(allowedModels));
-        } else {
-          // Legacy format fallback: model IDs only.
-          const legacyIds = new Set(allowedModels);
-          const scopedFromLegacy = models
-            .filter((model) => legacyIds.has(model.id))
-            .map((model) => toScopedKey(model));
-          setSelectedModels(new Set(scopedFromLegacy));
-        }
-      } else {
-        // Default to all models selected
-        setSelectedModels(new Set(models.map((m) => toScopedKey(m))));
-      }
-    } catch (err) {
-      console.error('Failed to load models:', err);
-    } finally {
-      setModelsLoading(false);
     }
+
+    return { models, response };
   }, [
     copilotAuthMode,
     copilotAuthStatus?.connected,
@@ -608,6 +580,39 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     settings?.github_models_api_token,
     settings?.has_github_copilot_auth,
   ]);
+
+  const initSelectedFromAllowed = (models: AvailableModel[], allowedModels: string[]): Set<string> => {
+    const toScopedKey = (model: AvailableModel): string => `${model.provider}::${model.id}`;
+    if (allowedModels.length > 0) {
+      const hasScopedEntries = allowedModels.some((value) => value.includes('::'));
+      if (hasScopedEntries) {
+        return new Set(allowedModels);
+      }
+      const legacyIds = new Set(allowedModels);
+      return new Set(
+        models.filter((model) => legacyIds.has(model.id)).map((model) => toScopedKey(model))
+      );
+    }
+    return new Set(models.map((m) => toScopedKey(m)));
+  };
+
+  // Open model filter modal and load all available models
+  const openModelFilterModal = useCallback(async () => {
+    setModelsLoading(true);
+    setShowModelFilterModal(true);
+    setModelFilterText('');
+
+    try {
+      const { models, response } = await fetchModelsForModal();
+      setAllAvailableModels(models);
+      const allowedModels = response.allowed_models || [];
+      setSelectedModels(initSelectedFromAllowed(models, allowedModels));
+    } catch (err) {
+      console.error('Failed to load models:', err);
+    } finally {
+      setModelsLoading(false);
+    }
+  }, [fetchModelsForModal]);
 
   const toggleModel = (model: AvailableModel) => {
     const selectionKey = `${model.provider}::${model.id}`;
@@ -651,6 +656,65 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save model filter');
+    }
+  };
+
+  const openOpenapiModelModal = useCallback(async () => {
+    setOpenapiModelsLoading(true);
+    setShowOpenapiModelModal(true);
+    setOpenapiModelFilterText('');
+
+    try {
+      const { models, response } = await fetchModelsForModal();
+      setOpenapiAvailableModels(models);
+      const allowedOpenapiModels = response.allowed_openapi_models || [];
+      setSelectedOpenapiModels(initSelectedFromAllowed(models, allowedOpenapiModels));
+    } catch (err) {
+      console.error('Failed to load models:', err);
+    } finally {
+      setOpenapiModelsLoading(false);
+    }
+  }, [fetchModelsForModal]);
+
+  const toggleOpenapiModel = (model: AvailableModel) => {
+    const selectionKey = `${model.provider}::${model.id}`;
+    setSelectedOpenapiModels(prev => {
+      const next = new Set(prev);
+      if (next.has(selectionKey)) {
+        next.delete(selectionKey);
+      } else {
+        for (const key of Array.from(next)) {
+          const delimiter = key.indexOf('::');
+          const keyModelId = delimiter >= 0 ? key.slice(delimiter + 2) : key;
+          if (keyModelId === model.id) {
+            next.delete(key);
+          }
+        }
+        next.add(selectionKey);
+      }
+      return next;
+    });
+  };
+
+  const selectAllOpenapiModels = () => {
+    setSelectedOpenapiModels(new Set(openapiAvailableModels.map((m) => `${m.provider}::${m.id}`)));
+  };
+
+  const deselectAllOpenapiModels = () => {
+    setSelectedOpenapiModels(new Set());
+  };
+
+  const saveOpenapiModelFilter = async () => {
+    const allSelected = selectedOpenapiModels.size === openapiAvailableModels.length;
+    const allowedModels = allSelected ? [] : Array.from(selectedOpenapiModels);
+
+    try {
+      await api.updateSettings({ allowed_openapi_models: allowedModels });
+      setShowOpenapiModelModal(false);
+      setSuccess('OpenAPI model filter saved');
+      setTimeout(() => setSuccess(null), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save OpenAPI model filter');
     }
   };
 
@@ -711,6 +775,8 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         ocr_concurrency_limit: data.ocr_concurrency_limit,
         // User Space settings
         snapshot_retention_days: data.snapshot_retention_days,
+        // OpenAPI model settings
+        openapi_sync_chat_models: data.openapi_sync_chat_models,
       });
       // Reset Ollama connection state (for embeddings)
       setOllamaConnected(false);
@@ -1033,6 +1099,8 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         github_copilot_enterprise_url: formData.github_copilot_enterprise_url,
         allowed_chat_models: formData.allowed_chat_models,
         max_iterations: formData.max_iterations,
+        // OpenAPI model settings
+        openapi_sync_chat_models: formData.openapi_sync_chat_models,
         // Token optimization settings
         max_tool_output_chars: formData.max_tool_output_chars,
         scratchpad_window_size: formData.scratchpad_window_size,
@@ -1488,7 +1556,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         </p>
         <code>{getDisplayUrl('/v1')}</code>
         <p className="field-help" style={{ marginTop: '0.5rem' }}>
-          Model: <code>{(formData.server_name || settings?.server_name || 'Ragtime').toLowerCase().replace(/\s+/g, '-')}</code>. The <code>/v1</code> path is required for OpenAI API compatibility.
+          Default model: <code>{formData.llm_model || settings?.llm_model || 'not configured'}</code>. <code>/v1/models</code> returns {formData.openapi_sync_chat_models !== false ? 'your Chat Models selection' : 'a separately configured OpenAPI models list'}.
         </p>
         {(!authStatus?.api_key_configured || window.location.protocol === 'http:') && (
           <div className="field-warning" style={{ marginTop: '0.75rem', padding: '0.75rem', backgroundColor: 'rgba(255, 193, 7, 0.15)', borderLeft: '3px solid #ffc107', borderRadius: '4px' }}>
@@ -1994,40 +2062,6 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           ) : null}
 
           <div className="form-row">
-            {/* Model Selection - for OpenAI and Anthropic only (Ollama has its own section above) */}
-            {formData.llm_provider !== 'ollama' && (
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>OpenAPI Model</label>
-                {llmModelsLoaded && llmModels.length > 0 ? (
-                  <ModelSelector
-                    models={llmModels}
-                    selectedModelId={formData.llm_model || ''}
-                    onModelChange={(modelId) =>
-                      setFormData({ ...formData, llm_model: modelId })
-                    }
-                    placeholder="Select a model..."
-                    variant="full"
-                    triggerClassName="settings-control-height"
-                  />
-                ) : (
-                  <input
-                    className="settings-control-height"
-                    type="text"
-                    value={formData.llm_model || ''}
-                    onChange={(e) =>
-                      setFormData({ ...formData, llm_model: e.target.value })
-                    }
-                    placeholder="Select a model..."
-                  />
-                )}
-                <p className="field-help">
-                  {llmModelsLoaded
-                    ? 'Select the model that will be used for chat completions and RAG responses.'
-                    : 'This model ID is sent to the provider API for all chat/RAG requests. Click "Fetch Models" to see available options.'}
-                </p>
-              </div>
-            )}
-
             {/* Chat Model Filter */}
             <div className="form-group" style={{ flex: 1 }}>
               <label>Chat Models</label>
@@ -2040,6 +2074,37 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
               </button>
               <p className="field-help">
                 Limit which models appear in the Chat view dropdown. Includes all configured providers (OpenAI, Anthropic, Ollama, GitHub Copilot).
+              </p>
+            </div>
+
+            {/* OpenAPI Models configuration */}
+            <div className="form-group" style={{ flex: 1 }}>
+              <label>OpenAPI Models</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontSize: '0.9em', margin: 0, whiteSpace: 'nowrap' }}>
+                  <input
+                    type="checkbox"
+                    checked={formData.openapi_sync_chat_models !== false}
+                    onChange={(e) =>
+                      setFormData({ ...formData, openapi_sync_chat_models: e.target.checked })
+                    }
+                  />
+                  Mirror Chat Models
+                </label>
+                {formData.openapi_sync_chat_models === false && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary settings-control-height"
+                    onClick={openOpenapiModelModal}
+                  >
+                    Configure OpenAPI Models
+                  </button>
+                )}
+              </div>
+              <p className="field-help">
+                {formData.openapi_sync_chat_models !== false
+                  ? 'The /v1/models endpoint returns the same models as Chat Models above.'
+                  : 'Configure a separate list of models exposed via the /v1/models endpoint for external clients.'}
               </p>
             </div>
           </div>
@@ -3521,6 +3586,158 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                 className="btn"
                 onClick={saveModelFilter}
                 disabled={modelsLoading || allAvailableModels.length === 0}
+              >
+                Save Filter
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MCP Routes Panel Modal */}
+      {showOpenapiModelModal && (
+        <div className="modal-overlay" onClick={() => setShowOpenapiModelModal(false)}>
+          <div className="modal-content modal-medium" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Configure OpenAPI Models</h3>
+              <button
+                className="modal-close"
+                onClick={() => setShowOpenapiModelModal(false)}
+              >
+                &times;
+              </button>
+            </div>
+            <div className="modal-body">
+              {openapiModelsLoading ? (
+                <p className="muted">Loading available models...</p>
+              ) : openapiAvailableModels.length === 0 ? (
+                <p className="muted">
+                  No models available. Please configure API keys or Ollama connection and save settings first.
+                </p>
+              ) : (
+                <>
+                  <div className="model-filter-search">
+                    <input
+                      type="text"
+                      placeholder="Filter models..."
+                      value={openapiModelFilterText}
+                      onChange={(e) => setOpenapiModelFilterText(e.target.value)}
+                      autoFocus
+                    />
+                  </div>
+                  <div className="model-filter-actions">
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={selectAllOpenapiModels}
+                    >
+                      Select All
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-secondary"
+                      onClick={deselectAllOpenapiModels}
+                    >
+                      Deselect All
+                    </button>
+                    <span className="muted" style={{ marginLeft: 'auto' }}>
+                      {selectedOpenapiModels.size} of {openapiAvailableModels.length} selected
+                    </span>
+                  </div>
+                  <p className="field-help" style={{ margin: '0 0 0.5rem 0' }}>
+                    Select models to expose via the <code>/v1/models</code> endpoint for external clients (e.g., Open WebUI).
+                  </p>
+                  <div className="model-filter-list">
+                    {(() => {
+                      const filterLower = openapiModelFilterText.toLowerCase();
+                      const filtered = openapiAvailableModels.filter((model) =>
+                        openapiModelFilterText === '' ||
+                        model.name.toLowerCase().includes(filterLower) ||
+                        model.id.toLowerCase().includes(filterLower) ||
+                        model.provider.toLowerCase().includes(filterLower)
+                      );
+
+                      const providerOrder: string[] = [];
+                      const providerGroups: Record<string, Record<string, typeof filtered>> = {};
+                      filtered.forEach(m => {
+                        if (!providerGroups[m.provider]) {
+                          providerGroups[m.provider] = {};
+                          providerOrder.push(m.provider);
+                        }
+                        const g = m.group || 'Other';
+                        if (!providerGroups[m.provider][g]) providerGroups[m.provider][g] = [];
+                        providerGroups[m.provider][g].push(m);
+                      });
+
+                      const providerLabels: Record<string, string> = {
+                        openai: 'OpenAI',
+                        anthropic: 'Anthropic',
+                        ollama: 'Ollama',
+                        github_copilot: 'GitHub Copilot',
+                        github_models: 'GitHub Copilot',
+                      };
+
+                      return providerOrder.map(provider => (
+                        <div key={provider}>
+                          <div className="model-group-header" style={{
+                            position: 'sticky',
+                            top: 0,
+                            zIndex: 1,
+                            padding: '6px 8px',
+                            fontWeight: 600,
+                            fontSize: '0.85em',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.05em',
+                            borderBottom: '1px solid var(--border-color, #3c3c3c)',
+                            background: 'var(--bg-primary, #1e1e1e)',
+                          }}>
+                            {providerLabels[provider] || provider}
+                          </div>
+                          {Object.keys(providerGroups[provider]).map(groupName => (
+                            <div key={groupName} className="model-group">
+                              <div className="model-group-header" style={{ paddingLeft: '0.5rem', fontSize: '0.8em' }}>{groupName}</div>
+                              {providerGroups[provider][groupName].map((model) => (
+                                <label key={`${model.provider}:${model.id}`} className="model-filter-item" style={{
+                                  paddingLeft: '1rem',
+                                  backgroundColor: model.is_latest ? 'rgba(0,0,0,0.03)' : undefined,
+                                  fontWeight: model.is_latest ? 500 : undefined
+                                }}>
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedOpenapiModels.has(`${model.provider}::${model.id}`)}
+                                    onChange={() => toggleOpenapiModel(model)}
+                                  />
+                                  <span className="model-filter-name">
+                                    {model.id !== model.name ? model.id : model.name}
+                                    <span style={{ marginLeft: '6px', fontSize: '0.7em', padding: '1px 4px', borderRadius: '4px', background: 'var(--bg-secondary, #2d2d2d)', color: 'var(--text-muted, #888)' }}>
+                                      via {providerLabels[model.provider] || model.provider}
+                                    </span>
+                                    {model.is_latest && <span style={{ marginLeft: '6px', fontSize: '0.7em', padding: '1px 4px', borderRadius: '4px', background: '#e0e0e0', color: '#555' }}>LATEST</span>}
+                                  </span>
+                                </label>
+                              ))}
+                            </div>
+                          ))}
+                        </div>
+                      ));
+                    })()}
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setShowOpenapiModelModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={saveOpenapiModelFilter}
+                disabled={openapiModelsLoading || openapiAvailableModels.length === 0}
               >
                 Save Filter
               </button>

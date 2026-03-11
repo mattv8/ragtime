@@ -143,6 +143,13 @@ class SettingsCache:
                     prisma_settings, "includeCopilotThirdPartyModels", False
                 ),
                 "allowed_chat_models": prisma_settings.allowedChatModels or [],
+                "allowed_openapi_models": getattr(
+                    prisma_settings, "allowedOpenapiModels", None
+                )
+                or [],
+                "openapi_sync_chat_models": getattr(
+                    prisma_settings, "openapiSyncChatModels", True
+                ),
                 "max_iterations": prisma_settings.maxIterations,
                 # Embedding settings
                 "embedding_provider": prisma_settings.embeddingProvider,
@@ -211,6 +218,8 @@ class SettingsCache:
                 "github_copilot_base_url": "https://api.githubcopilot.com",
                 "include_copilot_third_party_models": False,
                 "allowed_chat_models": [],
+                "allowed_openapi_models": [],
+                "openapi_sync_chat_models": True,
                 "max_iterations": 15,
                 # Embedding settings
                 "embedding_provider": "ollama",

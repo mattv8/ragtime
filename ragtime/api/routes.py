@@ -15,6 +15,7 @@ from ragtime import __version__
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.logging import get_logger
+from ragtime.indexer.routes import get_available_chat_models
 from ragtime.models import (
     AgentOptions,
     ChatChoice,
@@ -32,6 +33,100 @@ from ragtime.rag import rag
 logger = get_logger(__name__)
 
 router = APIRouter()
+
+
+def _configured_openapi_model(app_settings: dict) -> str:
+    """Return the model ID configured for OpenAI-compatible clients."""
+    return str(app_settings.get("llm_model", "") or "").strip()
+
+
+def _configured_openapi_models(app_settings: dict) -> list[str]:
+    """Return OpenAPI-visible model IDs in stable order."""
+    configured = _configured_openapi_model(app_settings)
+    allowed = [
+        str(value).strip()
+        for value in (app_settings.get("allowed_chat_models") or [])
+        if str(value).strip()
+    ]
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def _push(model_id: str) -> None:
+        if model_id and model_id not in seen:
+            seen.add(model_id)
+            ordered.append(model_id)
+
+    # Keep the configured OpenAPI model first when present.
+    _push(configured)
+    for model_id in allowed:
+        _push(model_id)
+
+    return ordered
+
+
+def _normalize_runtime_model(provider: str, model: str) -> str:
+    """Normalize model IDs before forwarding to provider APIs."""
+    model_id = (model or "").strip()
+    if not model_id:
+        return ""
+
+    if "::" in model_id:
+        scoped_provider, _, scoped_model = model_id.partition("::")
+        scoped_provider = scoped_provider.strip().lower()
+        scoped_model = scoped_model.strip()
+        if not scoped_provider or not scoped_model:
+            return model_id
+        normalized_scoped_model = _normalize_runtime_model(
+            scoped_provider, scoped_model
+        )
+        return f"{scoped_provider}::{normalized_scoped_model}"
+
+    provider_name = (provider or "").strip().lower()
+    model_id = model_id.lstrip("/")
+
+    # Copilot chat endpoints expect bare model slugs (e.g. "gpt-4.1"),
+    # not publisher-prefixed forms (e.g. "openai/gpt-4.1").
+    if provider_name == "github_copilot" and "/" in model_id:
+        _, _, remainder = model_id.partition("/")
+        if remainder:
+            return remainder
+
+    return model_id
+
+
+def _resolve_effective_model(requested_model: Optional[str], app_settings: dict) -> str:
+    """Resolve the provider runtime model from OpenAPI request model aliases."""
+    provider = str(app_settings.get("llm_provider", "openai") or "openai")
+    configured_openapi_model = _configured_openapi_model(app_settings)
+    configured_runtime_model = _normalize_runtime_model(
+        provider, configured_openapi_model
+    )
+
+    requested = (requested_model or "").strip()
+    if not requested:
+        return configured_runtime_model
+
+    requested_runtime_model = _normalize_runtime_model(provider, requested)
+
+    if configured_runtime_model:
+        configured_aliases = {
+            configured_openapi_model.lower(),
+            configured_runtime_model.lower(),
+        }
+        # Configured OpenAPI model aliases all map to the configured runtime model.
+        if requested.lower() in configured_aliases:
+            return configured_runtime_model
+
+    return requested_runtime_model
+
+
+def _normalize_openapi_model_id(default_provider: str, model_id: str) -> str:
+    """Normalize an OpenAPI-visible model ID to its runtime-safe form."""
+    raw = (model_id or "").strip()
+    if not raw:
+        return ""
+    return _normalize_runtime_model(default_provider, raw)
 
 
 async def verify_api_key(authorization: Optional[str] = Header(None)):
@@ -115,14 +210,80 @@ async def list_models():
     """List available models (OpenAI-compatible)."""
     now = int(time.time())
     app_settings = await get_app_settings()
-    server_name = app_settings.get("server_name", "Ragtime")
-    # Use lowercase for API model ID
-    model_id = server_name.lower().replace(" ", "-")
+    provider = str(app_settings.get("llm_provider", "openai") or "openai")
+
+    sync_chat = app_settings.get("openapi_sync_chat_models", True)
+    allowed_openapi = (
+        [
+            str(v).strip()
+            for v in (app_settings.get("allowed_openapi_models") or [])
+            if str(v).strip()
+        ]
+        if not sync_chat
+        else []
+    )
+    allowed_openapi_set = set(allowed_openapi) if allowed_openapi else None
+
+    model_ids: list[str] = []
+    try:
+        available = await get_available_chat_models()
+        duplicate_ids: set[str] = set()
+        id_counts: dict[str, int] = {}
+        for model in available.models:
+            model_id = str(model.id or "").strip()
+            if not model_id:
+                continue
+            id_counts[model_id] = id_counts.get(model_id, 0) + 1
+        duplicate_ids = {mid for mid, count in id_counts.items() if count > 1}
+
+        for model in available.models:
+            base_model_id = str(model.id or "").strip()
+            model_provider = str(model.provider or provider).strip().lower() or provider
+            if not base_model_id:
+                continue
+
+            # When using a separate OpenAPI list, filter to only allowed models.
+            if allowed_openapi_set is not None:
+                scoped_key = f"{model_provider}::{base_model_id}"
+                if (
+                    scoped_key not in allowed_openapi_set
+                    and base_model_id not in allowed_openapi_set
+                ):
+                    continue
+
+            # Scope non-default-provider models (and duplicates) so the request
+            # can route to the intended provider without ambiguity.
+            openapi_id = base_model_id
+            if model_provider != provider or base_model_id in duplicate_ids:
+                openapi_id = f"{model_provider}::{base_model_id}"
+
+            normalized = _normalize_openapi_model_id(model_provider, openapi_id)
+            if normalized and normalized not in model_ids:
+                model_ids.append(normalized)
+    except Exception as exc:
+        logger.warning("Failed to load available chat models for /v1/models: %s", exc)
+
+    if not model_ids:
+        model_ids = [
+            _normalize_openapi_model_id(provider, model_id)
+            for model_id in _configured_openapi_models(app_settings)
+        ]
+        model_ids = [model_id for model_id in model_ids if model_id]
+
+    if not model_ids:
+        # Last-resort fallback for partially configured instances.
+        model_ids = ["gpt-4.1"]
+
     return ModelsResponse(
         data=[
             ModelInfo(
-                id=model_id, created=now, owned_by=model_id, root=model_id, parent=None
-            ),
+                id=model_id,
+                created=now,
+                owned_by=(model_id.split("::", 1)[0] if "::" in model_id else provider),
+                root=model_id,
+                parent=None,
+            )
+            for model_id in model_ids
         ]
     )
 
@@ -138,6 +299,14 @@ async def chat_completions(request: ChatCompletionRequest):
             status_code=503, detail="Service initializing, please retry"
         )
 
+    app_settings = await get_app_settings()
+    effective_model = _resolve_effective_model(request.model, app_settings)
+    if not effective_model:
+        raise HTTPException(
+            status_code=400,
+            detail="No model configured. Set an LLM model in Settings.",
+        )
+
     # Extract the latest user message (full message, including multimodal content)
     user_message = next(
         (m for m in reversed(request.messages) if m.role == "user"),
@@ -148,7 +317,7 @@ async def chat_completions(request: ChatCompletionRequest):
         raise HTTPException(status_code=400, detail="No user message found")
 
     user_text = user_message.get_text_content()
-    logger.info(f"Processing query: {user_text[:100]}...")
+    logger.info(f"Processing query with model {effective_model}: {user_text[:100]}...")
 
     # Build chat history for context (convert to LangChain format)
     chat_history = []
@@ -187,14 +356,18 @@ async def chat_completions(request: ChatCompletionRequest):
             _stream_response_tokens(
                 user_message,
                 chat_history,
-                request.model,
+                effective_model,
                 agent_options=request.agent_options,
             ),
             media_type="text/event-stream",
         )
 
     # Non-streaming: process the query normally
-    answer = await rag.process_query(user_message, chat_history)
+    answer = await rag.process_query(
+        user_message,
+        chat_history,
+        conversation_model=effective_model,
+    )
 
     logger.info(f"Response generated ({len(answer)} chars)")
 
@@ -202,7 +375,7 @@ async def chat_completions(request: ChatCompletionRequest):
     return ChatCompletionResponse(
         id=f"chatcmpl-{int(time.time())}",
         created=int(time.time()),
-        model=request.model,
+        model=effective_model,
         choices=[
             ChatChoice(
                 index=0,

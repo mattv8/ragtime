@@ -15,7 +15,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, cast
 
-from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexStatus as PrismaIndexStatus
 from prisma.enums import ToolType as PrismaToolType
@@ -23,6 +22,7 @@ from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
+from prisma import Json, Prisma
 from ragtime.core.database import get_db
 from ragtime.core.encryption import (
     CONNECTION_CONFIG_PASSWORD_FIELDS,
@@ -728,6 +728,10 @@ class IndexerRepository:
             ),
             has_github_copilot_auth=bool(github_copilot_access_token),
             allowed_chat_models=settings.allowedChatModels or [],
+            # OpenAPI model configuration
+            allowed_openapi_models=getattr(settings, "allowedOpenapiModels", None)
+            or [],
+            openapi_sync_chat_models=getattr(settings, "openapiSyncChatModels", True),
             max_iterations=settings.maxIterations,
             # Tool settings
             enabled_tools=settings.enabledTools,
@@ -815,6 +819,8 @@ class IndexerRepository:
             "github_copilot_base_url": "githubCopilotBaseUrl",
             "include_copilot_third_party_models": "includeCopilotThirdPartyModels",
             "allowed_chat_models": "allowedChatModels",
+            "allowed_openapi_models": "allowedOpenapiModels",
+            "openapi_sync_chat_models": "openapiSyncChatModels",
             "max_iterations": "maxIterations",
             # Token optimization settings
             "max_tool_output_chars": "maxToolOutputChars",
