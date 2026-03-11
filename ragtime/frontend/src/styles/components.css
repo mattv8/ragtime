@@ -2252,8 +2252,20 @@ textarea {
 .settings-filter-search {
   display: flex;
   align-items: center;
-  gap: var(--space-sm);
+  flex-wrap: wrap;
+  gap: var(--space-xs);
   margin-bottom: var(--space-md);
+  padding: 6px 10px;
+  border: 1px solid var(--color-input-border);
+  border-radius: var(--radius-md);
+  background: var(--color-input-bg);
+  cursor: text;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.settings-filter-search:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(var(--color-primary-rgb), 0.1);
 }
 
 .settings-filter-search-icon {
@@ -2263,21 +2275,69 @@ textarea {
 
 .settings-filter-search input {
   flex: 1;
-  min-width: 0;
-  padding: 10px 14px;
-  border: 1px solid var(--color-input-border);
-  border-radius: var(--radius-md);
-  background: var(--color-input-bg);
+  min-width: 80px;
+  padding: 4px 0;
+  border: none !important;
+  box-shadow: none !important;
+  background: transparent;
   color: var(--color-text-primary);
   font-family: var(--font-sans);
   font-size: var(--text-base);
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  outline: none;
 }
 
-.settings-filter-search input:focus {
-  outline: none;
-  border-color: var(--color-primary);
-  box-shadow: 0 0 0 3px rgba(var(--color-primary-rgb), 0.1);
+.settings-filter-search input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.settings-filter-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px 2px 8px;
+  background: var(--color-surface-secondary);
+  border: 1px solid var(--color-input-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  line-height: 1.4;
+}
+
+.settings-filter-tag-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  padding: 1px;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  border-radius: var(--radius-xs);
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.settings-filter-tag-remove:hover {
+  color: var(--color-text-primary);
+  background: var(--color-surface-tertiary, rgba(255,255,255,0.1));
+}
+
+.settings-filter-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  padding: 2px;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+  border-radius: var(--radius-xs);
+  transition: color var(--transition-fast);
+}
+
+.settings-filter-clear:hover {
+  color: var(--color-text-primary);
 }
 
 .settings-filter-empty {
@@ -2285,12 +2345,8 @@ textarea {
 }
 
 @media (max-width: 640px) {
-  .settings-filter-search {
-    flex-wrap: wrap;
-  }
-
-  .settings-filter-search .btn {
-    width: 100%;
+  .settings-filter-search input {
+    min-width: 60px;
   }
 }
 
