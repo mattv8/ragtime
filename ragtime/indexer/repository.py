@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, cast
 
+from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexStatus as PrismaIndexStatus
 from prisma.enums import ToolType as PrismaToolType
@@ -22,7 +23,6 @@ from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
-from prisma import Json, Prisma
 from ragtime.core.database import get_db
 from ragtime.core.encryption import (
     CONNECTION_CONFIG_PASSWORD_FIELDS,
@@ -675,6 +675,9 @@ class IndexerRepository:
         github_copilot_refresh_token = (
             getattr(settings, "githubCopilotRefreshToken", "") or ""
         )
+        github_copilot_oauth_refresh_token = (
+            getattr(settings, "githubCopilotOauthRefreshToken", "") or ""
+        )
         mcp_password = getattr(settings, "mcpDefaultRoutePassword", None)
 
         # Decrypt if encrypted (starts with 'enc::')
@@ -688,6 +691,10 @@ class IndexerRepository:
             github_copilot_access_token = decrypt_secret(github_copilot_access_token)
         if github_copilot_refresh_token:
             github_copilot_refresh_token = decrypt_secret(github_copilot_refresh_token)
+        if github_copilot_oauth_refresh_token:
+            github_copilot_oauth_refresh_token = decrypt_secret(
+                github_copilot_oauth_refresh_token
+            )
         if mcp_password:
             mcp_password = decrypt_secret(mcp_password)
 
@@ -712,6 +719,7 @@ class IndexerRepository:
             github_models_api_token=github_models_api_token,
             github_copilot_access_token=github_copilot_access_token,
             github_copilot_refresh_token=github_copilot_refresh_token,
+            github_copilot_oauth_refresh_token=github_copilot_oauth_refresh_token,
             github_copilot_token_expires_at=getattr(
                 settings, "githubCopilotTokenExpiresAt", None
             ),
@@ -814,6 +822,7 @@ class IndexerRepository:
             "github_models_api_token": "githubModelsApiToken",
             "github_copilot_access_token": "githubCopilotAccessToken",
             "github_copilot_refresh_token": "githubCopilotRefreshToken",
+            "github_copilot_oauth_refresh_token": "githubCopilotOauthRefreshToken",
             "github_copilot_token_expires_at": "githubCopilotTokenExpiresAt",
             "github_copilot_enterprise_url": "githubCopilotEnterpriseUrl",
             "github_copilot_base_url": "githubCopilotBaseUrl",
@@ -881,6 +890,7 @@ class IndexerRepository:
             "github_models_api_token",
             "github_copilot_access_token",
             "github_copilot_refresh_token",
+            "github_copilot_oauth_refresh_token",
             "postgres_password",
         ]
         for field in secret_fields:

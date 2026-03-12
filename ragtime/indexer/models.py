@@ -2,6 +2,7 @@
 Indexer data models and schemas.
 """
 
+
 import hashlib
 import json
 from datetime import datetime
@@ -14,7 +15,6 @@ from ragtime.core.embedding_models import (
     get_embedding_models,
     get_model_dimensions_sync,
 )
-
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -523,6 +523,10 @@ class AppSettings(BaseModel):
     github_copilot_refresh_token: str = Field(
         default="",
         description="GitHub Copilot OAuth refresh token (if provided by OAuth flow)",
+    )
+    github_copilot_oauth_refresh_token: str = Field(
+        default="",
+        description="Long-lived OAuth refresh token (ghr_*) for renewing expired access tokens",
     )
     github_copilot_token_expires_at: Optional[datetime] = Field(
         default=None,

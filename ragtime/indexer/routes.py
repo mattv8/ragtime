@@ -36,10 +36,10 @@ from fastapi import (
 )
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from prisma import Prisma
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
-from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.container_capabilities import get_container_capabilities
 from ragtime.core.copilot_auth import (
@@ -6391,6 +6391,11 @@ async def poll_copilot_device_flow(
                 seconds=int(oauth_expires_in)
             )
 
+        # Capture the OAuth refresh_token (ghr_*) if present.  GitHub Apps
+        # with token expiration enabled return this alongside the access_token.
+        # It can be used to obtain a new ghu_* after the original expires.
+        oauth_refresh_token = (data.get("refresh_token") or "").strip()
+
         # Prefer Copilot bearer tokens for model/chat APIs.
         # Keep the raw OAuth token in refresh_token so we can re-exchange later.
         copilot_access_token = access_token
@@ -6408,16 +6413,17 @@ async def poll_copilot_device_flow(
             )
 
         base_url = _copilot_base_url_for_domain(state["domain"])
-        await repository.update_settings(
-            {
-                "github_copilot_access_token": copilot_access_token,
-                # Keep OAuth token for future exchange refresh attempts.
-                "github_copilot_refresh_token": access_token,
-                "github_copilot_token_expires_at": copilot_expires_at,
-                "github_copilot_enterprise_url": state.get("enterprise_url"),
-                "github_copilot_base_url": base_url,
-            }
-        )
+        settings_update: dict = {
+            "github_copilot_access_token": copilot_access_token,
+            # Keep OAuth token for future exchange refresh attempts.
+            "github_copilot_refresh_token": access_token,
+            "github_copilot_token_expires_at": copilot_expires_at,
+            "github_copilot_enterprise_url": state.get("enterprise_url"),
+            "github_copilot_base_url": base_url,
+        }
+        if oauth_refresh_token:
+            settings_update["github_copilot_oauth_refresh_token"] = oauth_refresh_token
+        await repository.update_settings(settings_update)
         invalidate_settings_cache()
         _copilot_device_requests.pop(request.request_id, None)
         return CopilotDevicePollResponse(
@@ -6492,6 +6498,7 @@ async def clear_copilot_auth(_user: User = Depends(require_admin)):
         {
             "github_copilot_access_token": "",
             "github_copilot_refresh_token": "",
+            "github_copilot_oauth_refresh_token": "",
             "github_copilot_token_expires_at": None,
             "github_copilot_enterprise_url": "",
             "github_copilot_base_url": COPILOT_DEFAULT_BASE_URL,

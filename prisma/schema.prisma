@@ -155,6 +155,7 @@ model AppSettings {
   githubModelsApiToken String @default("") @map("github_models_api_token")
   githubCopilotAccessToken String  @default("") @map("github_copilot_access_token")
   githubCopilotRefreshToken String @default("") @map("github_copilot_refresh_token")
+  githubCopilotOauthRefreshToken String @default("") @map("github_copilot_oauth_refresh_token") // ghr_* token for refreshing expired ghu_* access tokens
   githubCopilotTokenExpiresAt DateTime? @map("github_copilot_token_expires_at")
   githubCopilotEnterpriseUrl String? @map("github_copilot_enterprise_url")
   githubCopilotBaseUrl String @default("https://api.githubcopilot.com") @map("github_copilot_base_url")

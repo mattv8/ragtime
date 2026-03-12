@@ -62,6 +62,9 @@ class SettingsCache:
             github_copilot_refresh_token = (
                 getattr(prisma_settings, "githubCopilotRefreshToken", "") or ""
             )
+            github_copilot_oauth_refresh_token = (
+                getattr(prisma_settings, "githubCopilotOauthRefreshToken", "") or ""
+            )
             postgres_password = prisma_settings.postgresPassword or ""
             mcp_password = prisma_settings.mcpDefaultRoutePassword
 
@@ -78,6 +81,10 @@ class SettingsCache:
             if github_copilot_refresh_token:
                 github_copilot_refresh_token = decrypt_secret(
                     github_copilot_refresh_token
+                )
+            if github_copilot_oauth_refresh_token:
+                github_copilot_oauth_refresh_token = decrypt_secret(
+                    github_copilot_oauth_refresh_token
                 )
             if postgres_password:
                 postgres_password = decrypt_secret(postgres_password)
@@ -128,6 +135,7 @@ class SettingsCache:
                 "github_models_api_token": github_models_api_token,
                 "github_copilot_access_token": github_copilot_access_token,
                 "github_copilot_refresh_token": github_copilot_refresh_token,
+                "github_copilot_oauth_refresh_token": github_copilot_oauth_refresh_token,
                 "github_copilot_token_expires_at": getattr(
                     prisma_settings, "githubCopilotTokenExpiresAt", None
                 ),
@@ -213,6 +221,7 @@ class SettingsCache:
                 "github_models_api_token": "",
                 "github_copilot_access_token": "",
                 "github_copilot_refresh_token": "",
+                "github_copilot_oauth_refresh_token": "",
                 "github_copilot_token_expires_at": None,
                 "github_copilot_enterprise_url": None,
                 "github_copilot_base_url": "https://api.githubcopilot.com",

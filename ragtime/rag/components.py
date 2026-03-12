@@ -824,6 +824,10 @@ class RAGComponents:
         self._scratchpad_window_size: int = 6  # Default, updated from settings
         # Request-scoped prompt fragments cache
         self._request_prompt_cache: dict[tuple[Any, ...], str] = {}
+        # Track the Copilot HMAC token baked into the cached LLM so we can
+        # detect when it changes (expiry refresh or re-authorization) and
+        # rebuild the LLM transparently.
+        self._copilot_llm_token: Optional[str] = None
 
     def _schedule_ollama_warmup(self) -> None:
         """Start best-effort Ollama warmup without blocking API startup."""
@@ -1341,6 +1345,10 @@ class RAGComponents:
                     "Reconnect GitHub Copilot in Settings."
                 )
                 return None
+
+            # Track the token baked into this LLM instance so
+            # _ensure_copilot_llm_fresh can detect when it changes.
+            self._copilot_llm_token = token
 
             base_url = self._app_settings.get(
                 "github_copilot_base_url", "https://api.githubcopilot.com"
@@ -7384,6 +7392,40 @@ except Exception as e:
 
         return resolved
 
+    async def _ensure_copilot_llm_fresh(self) -> None:
+        """Transparently refresh the cached LLM when the Copilot HMAC token has changed.
+
+        Called before returning ``self.llm`` for github_copilot (OAuth) requests.
+        If the stored token differs from what was baked into the LLM at construction
+        time (e.g. proactive refresh or user re-authorization), the LLM is rebuilt
+        in-place so subsequent requests use the valid credential.
+        """
+        if not self._app_settings or not self.llm:
+            return
+        provider = str(self._app_settings.get("llm_provider", "openai")).lower()
+        if provider != "github_copilot":
+            return
+        # PAT mode doesn't use short-lived HMAC tokens.
+        if self._app_settings.get("github_models_api_token"):
+            return
+
+        fresh_token = await ensure_copilot_token_fresh()
+        if not fresh_token:
+            # Token is gone/expired and couldn't be refreshed.
+            # Clear the cached LLM so callers get a clear error.
+            self.llm = None
+            self._copilot_llm_token = None
+            return
+
+        if fresh_token != self._copilot_llm_token:
+            model = str(self._app_settings.get("llm_model", "")).strip()
+            max_tokens = await self._resolve_llm_max_tokens(provider, model)
+            new_llm = await self._build_llm(provider, model, max_tokens)
+            if new_llm is not None:
+                self.llm = new_llm
+                self._copilot_llm_token = fresh_token
+                logger.debug("Refreshed cached Copilot LLM with updated token")
+
     async def _get_request_scoped_llm(
         self, conversation_model: Optional[str]
     ) -> Optional[Any]:
@@ -7393,6 +7435,7 @@ except Exception as e:
         )
 
         if not model_id:
+            await self._ensure_copilot_llm_fresh()
             return self.llm
 
         if not self._app_settings:
@@ -7409,6 +7452,7 @@ except Exception as e:
             and self.llm is not None
             and (provider_override is None or provider_override == configured_provider)
         ):
+            await self._ensure_copilot_llm_fresh()
             return self.llm
 
         provider = provider_override or configured_provider
