@@ -2,6 +2,7 @@
 API route definitions.
 """
 
+import asyncio
 import json
 import time
 from typing import Optional
@@ -16,7 +17,7 @@ from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.logging import get_logger
 from ragtime.indexer.routes import get_available_chat_models
-from ragtime.models import (AgentOptions, ChatChoice, ChatCompletionRequest,
+from ragtime.models import (ChatChoice, ChatCompletionRequest,
                             ChatCompletionResponse, HealthResponse,
                             IndexLoadingDetail, MemoryStats, Message,
                             ModelInfo, ModelsResponse)
@@ -25,6 +26,10 @@ from ragtime.rag import rag
 logger = get_logger(__name__)
 
 router = APIRouter()
+
+_MODELS_CACHE_TTL_SECONDS = 30.0
+_models_cache_lock = asyncio.Lock()
+_models_cache: dict[tuple, tuple[float, list[str]]] = {}
 
 
 # Canonical provider aliases accepted on input.
@@ -79,6 +84,49 @@ def _split_openapi_model_id(
         scope, _, slug = raw.partition("::")
         return _canonical_provider_name(scope), slug.strip()
     return _canonical_provider_name(default_provider), raw
+
+
+def _models_cache_key(app_settings: dict, default_provider: str) -> tuple:
+    """Build a stable cache key for /v1/models responses."""
+    sync_chat = bool(app_settings.get("openapi_sync_chat_models", True))
+    allowed_openapi = tuple(
+        str(v).strip()
+        for v in (app_settings.get("allowed_openapi_models") or [])
+        if str(v).strip()
+    )
+    allowed_chat = tuple(
+        str(v).strip()
+        for v in (app_settings.get("allowed_chat_models") or [])
+        if str(v).strip()
+    )
+    llm_model = str(app_settings.get("llm_model", "") or "").strip()
+    return (
+        default_provider,
+        sync_chat,
+        allowed_openapi,
+        allowed_chat,
+        llm_model,
+    )
+
+
+def _get_cached_model_ids(cache_key: tuple) -> Optional[list[str]]:
+    entry = _models_cache.get(cache_key)
+    if not entry:
+        return None
+
+    expires_at, model_ids = entry
+    if expires_at <= time.monotonic():
+        _models_cache.pop(cache_key, None)
+        return None
+
+    return list(model_ids)
+
+
+def _set_cached_model_ids(cache_key: tuple, model_ids: list[str]) -> None:
+    _models_cache[cache_key] = (
+        time.monotonic() + _MODELS_CACHE_TTL_SECONDS,
+        list(model_ids),
+    )
 
 
 def _configured_openapi_model(app_settings: dict) -> str:
@@ -269,126 +317,167 @@ async def list_models():
     default_provider = _canonical_provider_name(
         str(app_settings.get("llm_provider", "openai") or "openai")
     )
+    cache_key = _models_cache_key(app_settings, default_provider)
 
-    sync_chat = app_settings.get("openapi_sync_chat_models", True)
-    allowed_openapi = (
-        [
-            str(v).strip()
-            for v in (app_settings.get("allowed_openapi_models") or [])
-            if str(v).strip()
-        ]
-        if not sync_chat
-        else []
-    )
-    allowed_openapi_scoped_set: Optional[set[str]] = None
-    allowed_openapi_bare_set: Optional[set[str]] = None
-    if allowed_openapi:
-        allowed_openapi_scoped_set = set()
-        allowed_openapi_bare_set = set()
-        for allowed_model in allowed_openapi:
-            normalized_openapi_id = _normalize_openapi_model_id(
-                default_provider, allowed_model
-            )
-            if normalized_openapi_id:
-                allowed_openapi_scoped_set.add(normalized_openapi_id)
-
-            normalized_runtime_id = _normalize_runtime_model(
-                default_provider, allowed_model
-            )
-            if normalized_runtime_id and "::" not in normalized_runtime_id:
-                allowed_openapi_bare_set.add(normalized_runtime_id)
-
-    model_ids: list[str] = []
-    # In synced mode, collapse duplicate slugs across providers to avoid
-    # duplicate choices in OpenWebUI model discovery.
-    collapse_cross_provider_duplicates = allowed_openapi_scoped_set is None
-    selected_by_slug: dict[str, str] = {}
-    selected_slug_order: list[str] = []
-
-    def _append_or_select(normalized_model_id: str) -> None:
-        if not normalized_model_id:
-            return
-        if not collapse_cross_provider_duplicates:
-            if normalized_model_id not in model_ids:
-                model_ids.append(normalized_model_id)
-            return
-
-        candidate_provider, candidate_slug = _split_openapi_model_id(
-            default_provider, normalized_model_id
+    cached_model_ids = _get_cached_model_ids(cache_key)
+    if cached_model_ids is not None:
+        return ModelsResponse(
+            data=[
+                ModelInfo(
+                    id=model_id,
+                    created=now,
+                    owned_by=_owned_by_from_openapi_model_id(
+                        default_provider, model_id
+                    ),
+                    root=model_id,
+                    parent=None,
+                )
+                for model_id in cached_model_ids
+            ]
         )
-        if not candidate_slug:
-            return
 
-        current = selected_by_slug.get(candidate_slug)
-        if current is None:
-            selected_by_slug[candidate_slug] = normalized_model_id
-            selected_slug_order.append(candidate_slug)
-            return
-
-        current_provider, _ = _split_openapi_model_id(default_provider, current)
-        # Prefer the configured default provider when the slug exists from
-        # multiple providers (e.g. openai and github-copilot catalogs).
-        if (
-            current_provider != default_provider
-            and candidate_provider == default_provider
-        ):
-            selected_by_slug[candidate_slug] = normalized_model_id
-    try:
-        available = await get_available_chat_models()
-
-        for model in available.models:
-            base_model_id = str(model.id or "").strip()
-            model_provider = _canonical_provider_name(
-                str(model.provider or default_provider).strip().lower()
-                or default_provider
+    async with _models_cache_lock:
+        cached_model_ids = _get_cached_model_ids(cache_key)
+        if cached_model_ids is not None:
+            return ModelsResponse(
+                data=[
+                    ModelInfo(
+                        id=model_id,
+                        created=now,
+                        owned_by=_owned_by_from_openapi_model_id(
+                            default_provider, model_id
+                        ),
+                        root=model_id,
+                        parent=None,
+                    )
+                    for model_id in cached_model_ids
+                ]
             )
-            if not base_model_id:
-                continue
 
-            scoped_openapi_id = _normalize_openapi_model_id(
-                model_provider, f"{model_provider}::{base_model_id}"
+        sync_chat = app_settings.get("openapi_sync_chat_models", True)
+        allowed_openapi = (
+            [
+                str(v).strip()
+                for v in (app_settings.get("allowed_openapi_models") or [])
+                if str(v).strip()
+            ]
+            if not sync_chat
+            else []
+        )
+        allowed_openapi_scoped_set: Optional[set[str]] = None
+        allowed_openapi_bare_set: Optional[set[str]] = None
+        if allowed_openapi:
+            allowed_openapi_scoped_set = set()
+            allowed_openapi_bare_set = set()
+            for allowed_model in allowed_openapi:
+                normalized_openapi_id = _normalize_openapi_model_id(
+                    default_provider, allowed_model
+                )
+                if normalized_openapi_id:
+                    allowed_openapi_scoped_set.add(normalized_openapi_id)
+
+                normalized_runtime_id = _normalize_runtime_model(
+                    default_provider, allowed_model
+                )
+                if normalized_runtime_id and "::" not in normalized_runtime_id:
+                    allowed_openapi_bare_set.add(normalized_runtime_id)
+
+        allowed_openapi_bare_lookup = allowed_openapi_bare_set or set()
+
+        model_ids: list[str] = []
+        # In synced mode, collapse duplicate slugs across providers to avoid
+        # duplicate choices in OpenWebUI model discovery.
+        collapse_cross_provider_duplicates = allowed_openapi_scoped_set is None
+        selected_by_slug: dict[str, str] = {}
+        selected_slug_order: list[str] = []
+
+        def _append_or_select(normalized_model_id: str) -> None:
+            if not normalized_model_id:
+                return
+            if not collapse_cross_provider_duplicates:
+                if normalized_model_id not in model_ids:
+                    model_ids.append(normalized_model_id)
+                return
+
+            candidate_provider, candidate_slug = _split_openapi_model_id(
+                default_provider, normalized_model_id
             )
-            runtime_base_id = _normalize_runtime_model(model_provider, base_model_id)
+            if not candidate_slug:
+                return
 
-            # When using a separate OpenAPI list, filter to only allowed models.
-            if allowed_openapi_scoped_set is not None:
-                if (
-                    scoped_openapi_id not in allowed_openapi_scoped_set
-                    and runtime_base_id not in (allowed_openapi_bare_set or set())
-                ):
+            current = selected_by_slug.get(candidate_slug)
+            if current is None:
+                selected_by_slug[candidate_slug] = normalized_model_id
+                selected_slug_order.append(candidate_slug)
+                return
+
+            current_provider, _ = _split_openapi_model_id(default_provider, current)
+            # Prefer the configured default provider when the slug exists from
+            # multiple providers (e.g. openai and github-copilot catalogs).
+            if (
+                current_provider != default_provider
+                and candidate_provider == default_provider
+            ):
+                selected_by_slug[candidate_slug] = normalized_model_id
+
+        try:
+            available = await get_available_chat_models()
+
+            for model in available.models:
+                base_model_id = str(model.id or "").strip()
+                model_provider = _canonical_provider_name(
+                    str(model.provider or default_provider).strip().lower()
+                    or default_provider
+                )
+                if not base_model_id:
                     continue
 
-            # Deterministic contract: always emit provider-scoped model IDs.
-            normalized = scoped_openapi_id
-            _append_or_select(normalized)
-    except Exception as exc:
-        logger.warning("Failed to load available chat models for /v1/models: %s", exc)
+                scoped_openapi_id = _normalize_openapi_model_id(
+                    model_provider, f"{model_provider}::{base_model_id}"
+                )
+                runtime_base_id = _normalize_runtime_model(model_provider, base_model_id)
 
-    if collapse_cross_provider_duplicates and selected_slug_order:
-        model_ids = [selected_by_slug[slug] for slug in selected_slug_order]
+                # When using a separate OpenAPI list, filter to only allowed models.
+                if allowed_openapi_scoped_set is not None:
+                    if (
+                        scoped_openapi_id not in allowed_openapi_scoped_set
+                        and runtime_base_id not in allowed_openapi_bare_lookup
+                    ):
+                        continue
 
-    if not model_ids:
-        for model_id in _configured_openapi_models(app_settings):
-            _append_or_select(
-                _normalize_openapi_model_id(default_provider, model_id)
+                # Deterministic contract: always emit provider-scoped model IDs.
+                normalized = scoped_openapi_id
+                _append_or_select(normalized)
+        except Exception as exc:
+            logger.warning(
+                "Failed to load available chat models for /v1/models: %s", exc
             )
+
         if collapse_cross_provider_duplicates and selected_slug_order:
             model_ids = [selected_by_slug[slug] for slug in selected_slug_order]
-        else:
-            model_ids = [model_id for model_id in model_ids if model_id]
 
-    if not model_ids:
-        # Last-resort fallback for partially configured instances.
-        model_ids = ["gpt-4.1"]
+        if not model_ids:
+            for model_id in _configured_openapi_models(app_settings):
+                _append_or_select(
+                    _normalize_openapi_model_id(default_provider, model_id)
+                )
+            if collapse_cross_provider_duplicates and selected_slug_order:
+                model_ids = [selected_by_slug[slug] for slug in selected_slug_order]
+            else:
+                model_ids = [model_id for model_id in model_ids if model_id]
+
+        if not model_ids:
+            # Last-resort fallback for partially configured instances.
+            model_ids = ["gpt-4.1"]
+
+        _set_cached_model_ids(cache_key, model_ids)
 
     return ModelsResponse(
         data=[
             ModelInfo(
                 id=model_id,
                 created=now,
-                owned_by=_owned_by_from_openapi_model_id(
-                    default_provider, model_id
-                ),
+                owned_by=_owned_by_from_openapi_model_id(default_provider, model_id),
                 root=model_id,
                 parent=None,
             )
@@ -421,6 +510,12 @@ async def chat_completions(request: ChatCompletionRequest):
     response_model = _normalize_openapi_model_id(
         default_provider, request.model or effective_model
     ) or _normalize_openapi_model_id(default_provider, effective_model)
+    tool_output_mode = (
+        request.agent_options.tool_output_mode
+        if request.agent_options and request.agent_options.tool_output_mode is not None
+        else app_settings.get("tool_output_mode", "default")
+    )
+    suppress_tool_output = tool_output_mode == "hide"
 
     # Extract the latest user message (full message, including multimodal content)
     user_message = next(
@@ -473,7 +568,7 @@ async def chat_completions(request: ChatCompletionRequest):
                 chat_history,
                 effective_model,
                 response_model=response_model,
-                agent_options=request.agent_options,
+                suppress_tool_output=suppress_tool_output,
             ),
             media_type="text/event-stream",
         )
@@ -507,7 +602,7 @@ async def _stream_response_tokens(
     chat_history: list,
     model: str,
     response_model: Optional[str] = None,
-    agent_options: Optional[AgentOptions] = None,
+    suppress_tool_output: bool = False,
 ):
     """
     Generate true streaming response by yielding tokens from the LLM.
@@ -516,29 +611,12 @@ async def _stream_response_tokens(
     structured output without filtering. Tool calls are formatted as readable
     text for OpenAI API compatibility with external clients.
 
-    Tool call output can be suppressed via the tool_output_mode setting,
-    or overridden per-request via agent_options.
-
     Args:
         user_message: Message object (can contain multimodal content)
         chat_history: Previous messages
         model: Model name string
-        agent_options: Optional agent-controllable options for this request
+        suppress_tool_output: Whether to hide tool-call/result blocks in stream
     """
-    # Load global settings
-    app_settings = await get_app_settings()
-
-    # Resolve tool_output_mode: request override > global setting > default
-    if agent_options and agent_options.tool_output_mode is not None:
-        tool_output_mode = agent_options.tool_output_mode
-    else:
-        tool_output_mode = app_settings.get("tool_output_mode", "default")
-
-    # Determine if we should suppress output
-    # 'hide' -> suppress
-    # 'default', 'show', 'auto' -> show (do not suppress)
-    suppress_tool_output = tool_output_mode == "hide"
-
     chunk_id = f"chatcmpl-{int(time.time())}"
 
     def make_chunk(content: str, finish_reason: str | None = None) -> str:
@@ -560,7 +638,6 @@ async def _stream_response_tokens(
 
     # Track active tool for formatting
     current_tool: str | None = None
-    pending_tool_input: dict | None = None  # Buffer tool input until tool_end
 
     def _detect_code_language(tool_name: str, tool_input: dict) -> str:
         """Detect the appropriate code language for syntax highlighting."""
@@ -600,9 +677,6 @@ async def _stream_response_tokens(
                 if suppress_tool_output:
                     continue
 
-                # Buffer the tool input for the complete details block on tool_end
-                pending_tool_input = tool_input
-
                 # Format tool input for immediate display
                 input_display = ""
                 if tool_input:
@@ -628,7 +702,6 @@ async def _stream_response_tokens(
                 tool_name = event.get("tool", current_tool or "unknown")
                 tool_output = event.get("output", "")
                 current_tool = None
-                pending_tool_input = None
 
                 # Skip tool output if suppressed
                 if suppress_tool_output:
