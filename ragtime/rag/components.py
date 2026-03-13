@@ -196,16 +196,28 @@ def wrap_tool_with_truncation(tool: StructuredTool, max_chars: int) -> Structure
             return truncate_tool_output(result, max_chars)
         return result
 
-    # Create a new tool with the same config but wrapped functions
-    return StructuredTool(
-        name=tool.name,
-        description=tool.description,
-        func=truncating_func if original_func else None,
-        coroutine=truncating_coroutine if original_coroutine else None,
-        args_schema=tool.args_schema,
-        return_direct=tool.return_direct,
-        handle_tool_error=tool.handle_tool_error,
-    )
+    tool_kwargs: dict[str, Any] = {
+        "name": tool.name,
+        "description": tool.description,
+        "func": truncating_func if original_func else None,
+        "coroutine": truncating_coroutine if original_coroutine else None,
+        "args_schema": tool.args_schema,
+        "return_direct": tool.return_direct,
+        "handle_tool_error": tool.handle_tool_error,
+    }
+    if hasattr(tool, "handle_validation_error"):
+        tool_kwargs["handle_validation_error"] = getattr(
+            tool,
+            "handle_validation_error",
+            False,
+        )
+
+    # Some langchain_core versions may not expose handle_validation_error.
+    try:
+        return StructuredTool(**tool_kwargs)
+    except TypeError:
+        tool_kwargs.pop("handle_validation_error", None)
+        return StructuredTool(**tool_kwargs)
 
 
 def compress_intermediate_step(
@@ -4504,14 +4516,10 @@ except Exception as e:
                     return result
 
                 wrapped_tools.append(
-                    StructuredTool(
-                        name=tool.name,
-                        description=getattr(tool, "description", ""),
-                        func=original_func,
+                    self._clone_structured_tool(
+                        tool,
                         coroutine=proofing_coroutine,
-                        args_schema=getattr(tool, "args_schema", None),
-                        return_direct=getattr(tool, "return_direct", False),
-                        handle_tool_error=getattr(tool, "handle_tool_error", False),
+                        func=original_func,
                     )
                 )
                 continue
@@ -4571,16 +4579,9 @@ except Exception as e:
                 continue
 
             overridden_tools.append(
-                StructuredTool(
-                    name=tool.name,
-                    description=(
-                        description.rstrip() + "\n" + description_suffix.strip()
-                    ),
-                    func=getattr(tool, "func", None),
-                    coroutine=getattr(tool, "coroutine", None),
-                    args_schema=getattr(tool, "args_schema", None),
-                    return_direct=getattr(tool, "return_direct", False),
-                    handle_tool_error=getattr(tool, "handle_tool_error", False),
+                self._clone_structured_tool(
+                    tool,
+                    description=(description.rstrip() + "\n" + description_suffix.strip()),
                 )
             )
 
@@ -4592,6 +4593,32 @@ except Exception as e:
         user_id: str,
     ) -> list[StructuredTool]:
         """Create request-scoped User Space file tools for agentic artifact editing."""
+
+        def _create_userspace_tool(
+            *,
+            coroutine: Any,
+            name: str,
+            description: str,
+            args_schema: Any,
+            handle_tool_error: bool = True,
+        ) -> StructuredTool:
+            kwargs: dict[str, Any] = {
+                "coroutine": coroutine,
+                "name": name,
+                "description": description,
+                "args_schema": args_schema,
+                "handle_tool_error": handle_tool_error,
+            }
+
+            # Keep invalid tool inputs as tool-level failures (instead of
+            # chat-level exceptions) where supported by langchain_core.
+            try:
+                return StructuredTool.from_function(
+                    **kwargs,
+                    handle_validation_error=True,
+                )
+            except TypeError:
+                return StructuredTool.from_function(**kwargs)
 
         class ListUserSpaceFilesInput(BaseModel):
             reason: str = Field(
@@ -4755,6 +4782,23 @@ except Exception as e:
                     except (json.JSONDecodeError, ValueError):
                         pass
                 return v
+
+            @field_validator("artifact_type", mode="before")
+            @classmethod
+            def _normalize_artifact_type(cls, value: Any) -> Any:
+                if value is None:
+                    return None
+
+                normalized = str(value).strip().lower()
+                if not normalized:
+                    return None
+
+                if normalized == "module_ts":
+                    return "module_ts"
+
+                # Treat unknown values as unspecified to avoid bubbling
+                # pydantic literal validation errors into chat-level failures.
+                return None
 
             artifact_type: ArtifactType | None = Field(
                 default="module_ts",
@@ -6760,7 +6804,7 @@ except Exception as e:
             return json.dumps(result, indent=2)
 
         return [
-            StructuredTool.from_function(
+            _create_userspace_tool(
                 coroutine=assay_userspace_code,
                 name="assay_userspace_code",
                 description=(
@@ -6769,7 +6813,7 @@ except Exception as e:
                 ),
                 args_schema=AssayUserSpaceCodeInput,
             ),
-            StructuredTool.from_function(
+            _create_userspace_tool(
                 coroutine=list_userspace_files,
                 name="list_userspace_files",
                 description=(
@@ -6777,7 +6821,7 @@ except Exception as e:
                 ),
                 args_schema=ListUserSpaceFilesInput,
             ),
-            StructuredTool.from_function(
+            _create_userspace_tool(
                 coroutine=read_userspace_file,
                 name="read_userspace_file",
                 description=(
@@ -6785,7 +6829,7 @@ except Exception as e:
                 ),
                 args_schema=ReadUserSpaceFileInput,
             ),
-            StructuredTool.from_function(
+            _create_userspace_tool(
                 coroutine=delete_userspace_file,
                 name="delete_userspace_file",
                 description=(
@@ -6793,9 +6837,8 @@ except Exception as e:
                     "Use to remove stale/conflicting files that block runtime builds."
                 ),
                 args_schema=DeleteUserSpaceFileInput,
-                handle_tool_error=True,
             ),
-            StructuredTool.from_function(
+            _create_userspace_tool(
                 coroutine=move_userspace_file,
                 name="move_userspace_file",
                 description=(
@@ -6803,9 +6846,8 @@ except Exception as e:
                     "Use this to reorganize files without rewriting content."
                 ),
                 args_schema=MoveUserSpaceFileInput,
-                handle_tool_error=True,
             ),
-            StructuredTool.from_function(
+            _create_userspace_tool(
                 coroutine=upsert_userspace_file,
                 name="upsert_userspace_file",
                 description=(
@@ -6819,9 +6861,8 @@ except Exception as e:
                     "Output may include CSS/theme warnings that must be fixed in follow-up edits."
                 ),
                 args_schema=UpsertUserSpaceFileInput,
-                handle_tool_error=True,
             ),
-            StructuredTool.from_function(
+            _create_userspace_tool(
                 coroutine=patch_userspace_file,
                 name="patch_userspace_file",
                 description=(
@@ -6831,9 +6872,8 @@ except Exception as e:
                     "For reliable matches, source old_text from read_userspace_file output (not shell-derived views)."
                 ),
                 args_schema=PatchUserSpaceFileInput,
-                handle_tool_error=True,
             ),
-            StructuredTool.from_function(
+            _create_userspace_tool(
                 coroutine=create_userspace_snapshot,
                 name="create_userspace_snapshot",
                 description=(
@@ -6841,9 +6881,8 @@ except Exception as e:
                     "Use this automatically at each completed user-requested change loop."
                 ),
                 args_schema=CreateUserSpaceSnapshotInput,
-                handle_tool_error=True,
             ),
-            StructuredTool.from_function(
+            _create_userspace_tool(
                 coroutine=validate_userspace_code,
                 name="validate_userspace_code",
                 description=(
@@ -6852,9 +6891,8 @@ except Exception as e:
                     "Use after edits and before creating snapshots."
                 ),
                 args_schema=ValidateUserSpaceCodeInput,
-                handle_tool_error=True,
             ),
-            StructuredTool.from_function(
+            _create_userspace_tool(
                 coroutine=capture_userspace_screenshot,
                 name="capture_userspace_screenshot",
                 description=(
@@ -6863,9 +6901,8 @@ except Exception as e:
                     "(blank screen, crashes, broken layout). Saves PNG files under ./.data/_tmp/{workspace_id}/."
                 ),
                 args_schema=CaptureUserSpaceScreenshotInput,
-                handle_tool_error=True,
             ),
-            StructuredTool.from_function(
+            _create_userspace_tool(
                 coroutine=run_terminal_command,
                 name="run_terminal_command",
                 description=(
@@ -6876,9 +6913,51 @@ except Exception as e:
                     "Returns exit code, stdout, and stderr."
                 ),
                 args_schema=RunTerminalCommandInput,
-                handle_tool_error=True,
             ),
         ]
+
+    @staticmethod
+    def _clone_structured_tool(tool: Any, **overrides: Any) -> StructuredTool:
+        """Clone StructuredTool while preserving tool/validation error handlers."""
+        kwargs: dict[str, Any] = {
+            "name": overrides.get("name", getattr(tool, "name", "")),
+            "description": overrides.get(
+                "description",
+                getattr(tool, "description", ""),
+            ),
+            "func": overrides.get("func", getattr(tool, "func", None)),
+            "coroutine": overrides.get(
+                "coroutine",
+                getattr(tool, "coroutine", None),
+            ),
+            "args_schema": overrides.get(
+                "args_schema",
+                getattr(tool, "args_schema", None),
+            ),
+            "return_direct": overrides.get(
+                "return_direct",
+                getattr(tool, "return_direct", False),
+            ),
+            "handle_tool_error": overrides.get(
+                "handle_tool_error",
+                getattr(tool, "handle_tool_error", False),
+            ),
+        }
+
+        if "handle_validation_error" in overrides or hasattr(
+            tool,
+            "handle_validation_error",
+        ):
+            kwargs["handle_validation_error"] = overrides.get(
+                "handle_validation_error",
+                getattr(tool, "handle_validation_error", False),
+            )
+
+        try:
+            return StructuredTool(**kwargs)
+        except TypeError:
+            kwargs.pop("handle_validation_error", None)
+            return StructuredTool(**kwargs)
 
     def get_blocked_config_tool_names(
         self, allowed_tool_config_ids: list[str]
