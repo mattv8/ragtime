@@ -24,6 +24,8 @@ _model_output_limits_cache: dict[str, int] = {}
 _model_supports_function_calling: dict[str, bool] = {}
 # Cache for reasoning/thinking support
 _model_supports_reasoning: dict[str, bool] = {}
+# Cache for thinking budget support
+_model_supports_thinking_budget: dict[str, bool] = {}
 _cache_lock = asyncio.Lock()
 _cache_loaded = False
 
@@ -154,6 +156,42 @@ def _expand_model_keys(model_id: str, provider: str) -> set[str]:
     return keys
 
 
+def _infer_thinking_budget_support(model_info: dict[str, object]) -> bool | None:
+    """Infer thinking-budget support from models.dev metadata.
+
+    Prefer any explicit budget-related fields exposed by models.dev. When those
+    are absent, use the generic `reasoning` field as the capability signal.
+    """
+    explicit_budget_keys = [
+        "thinking_budget",
+        "supports_thinking_budget",
+        "thinkingBudget",
+        "max_thinking_budget",
+        "min_thinking_budget",
+    ]
+    for key in explicit_budget_keys:
+        value = model_info.get(key)
+        if isinstance(value, bool):
+            return value
+        if _coerce_int(value) is not None:
+            return True
+
+    provider_obj = model_info.get("provider")
+    if isinstance(provider_obj, dict):
+        for key in explicit_budget_keys:
+            value = provider_obj.get(key)
+            if isinstance(value, bool):
+                return value
+            if _coerce_int(value) is not None:
+                return True
+
+    reasoning = model_info.get("reasoning")
+    if isinstance(reasoning, bool):
+        return reasoning
+
+    return None
+
+
 def _candidate_lookup_keys(model_id: str) -> list[str]:
     """Build ranked lookup candidates for provider/version-normalized model IDs."""
     raw = str(model_id or "").strip()
@@ -280,11 +318,12 @@ def _best_match_flag(cache: dict[str, bool], model_id: str) -> bool | None:
 
 async def _fetch_models_dev_data() -> tuple[dict[str, int], dict[str, int]]:
     """Fetch model limits and capabilities from models.dev."""
-    global _model_supports_function_calling, _model_supports_reasoning
+    global _model_supports_function_calling, _model_supports_reasoning, _model_supports_thinking_budget
     limits: dict[str, int] = {}
     output_limits: dict[str, int] = {}
     function_calling: dict[str, bool] = {}
     reasoning_support: dict[str, bool] = {}
+    thinking_budget_support: dict[str, bool] = {}
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -320,6 +359,9 @@ async def _fetch_models_dev_data() -> tuple[dict[str, int], dict[str, int]]:
 
                     supports_fc = model_info.get("tool_call")
                     supports_reasoning_flag = model_info.get("reasoning")
+                    supports_thinking_budget_flag = _infer_thinking_budget_support(
+                        model_info
+                    )
 
                     key_variants = _expand_model_keys(model_id, str(provider).lower())
 
@@ -332,16 +374,20 @@ async def _fetch_models_dev_data() -> tuple[dict[str, int], dict[str, int]]:
                             function_calling[key] = supports_fc
                         if isinstance(supports_reasoning_flag, bool):
                             reasoning_support[key] = supports_reasoning_flag
+                        if isinstance(supports_thinking_budget_flag, bool):
+                            thinking_budget_support[key] = supports_thinking_budget_flag
 
             _model_supports_function_calling = function_calling
             _model_supports_reasoning = reasoning_support
+            _model_supports_thinking_budget = thinking_budget_support
 
             logger.info(
-                "Loaded %s context limits, %s output limits, %s function-calling flags, %s reasoning flags from models.dev",
+                "Loaded %s context limits, %s output limits, %s function-calling flags, %s reasoning flags, %s thinking-budget flags from models.dev",
                 len(limits),
                 len(output_limits),
                 len(_model_supports_function_calling),
                 len(_model_supports_reasoning),
+                len(_model_supports_thinking_budget),
             )
             return limits, output_limits
 
@@ -432,6 +478,7 @@ def invalidate_cache() -> None:
     _model_output_limits_cache.clear()
     _model_supports_function_calling.clear()
     _model_supports_reasoning.clear()
+    _model_supports_thinking_budget.clear()
 
 
 async def supports_function_calling(model_id: str) -> bool:
@@ -509,4 +556,20 @@ async def supports_reasoning(model_id: str) -> bool:
         return True
 
     # Conservative default
+    return False
+
+
+async def supports_thinking_budget(model_id: str) -> bool:
+    """Check if a model supports Copilot/OpenAI-style `thinking_budget`.
+
+    This uses models.dev metadata when available. If models.dev does not expose
+    an explicit budget-related field for a model, the generic `reasoning`
+    capability is used as the fallback signal.
+    """
+    await _ensure_cache_loaded()
+
+    matched = _best_match_flag(_model_supports_thinking_budget, model_id)
+    if matched is not None:
+        return matched
+
     return False
