@@ -130,6 +130,18 @@ class SettingsCache:
                 "llm_provider": prisma_settings.llmProvider,
                 "llm_model": prisma_settings.llmModel,
                 "llm_max_tokens": getattr(prisma_settings, "llmMaxTokens", 4096),
+                "image_payload_max_width": getattr(
+                    prisma_settings, "imagePayloadMaxWidth", 1024
+                ),
+                "image_payload_max_height": getattr(
+                    prisma_settings, "imagePayloadMaxHeight", 1024
+                ),
+                "image_payload_max_pixels": getattr(
+                    prisma_settings, "imagePayloadMaxPixels", 786432
+                ),
+                "image_payload_max_bytes": getattr(
+                    prisma_settings, "imagePayloadMaxBytes", 350000
+                ),
                 "openai_api_key": openai_key,
                 "anthropic_api_key": anthropic_key,
                 "github_models_api_token": github_models_api_token,
@@ -216,6 +228,11 @@ class SettingsCache:
                 # LLM settings
                 "llm_provider": "openai",
                 "llm_model": "gpt-4-turbo",
+                "llm_max_tokens": 4096,
+                "image_payload_max_width": 1024,
+                "image_payload_max_height": 1024,
+                "image_payload_max_pixels": 786432,
+                "image_payload_max_bytes": 350000,
                 "openai_api_key": "",
                 "anthropic_api_key": "",
                 "github_models_api_token": "",

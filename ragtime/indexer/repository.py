@@ -15,7 +15,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, cast
 
-from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexStatus as PrismaIndexStatus
 from prisma.enums import ToolType as PrismaToolType
@@ -23,6 +22,7 @@ from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
+from prisma import Json, Prisma
 from ragtime.core.database import get_db
 from ragtime.core.encryption import (
     CONNECTION_CONFIG_PASSWORD_FIELDS,
@@ -714,6 +714,10 @@ class IndexerRepository:
             llm_provider=settings.llmProvider,
             llm_model=settings.llmModel,
             llm_max_tokens=getattr(settings, "llmMaxTokens", 4096),
+            image_payload_max_width=getattr(settings, "imagePayloadMaxWidth", 1024),
+            image_payload_max_height=getattr(settings, "imagePayloadMaxHeight", 1024),
+            image_payload_max_pixels=getattr(settings, "imagePayloadMaxPixels", 786432),
+            image_payload_max_bytes=getattr(settings, "imagePayloadMaxBytes", 350000),
             openai_api_key=openai_key,
             anthropic_api_key=anthropic_key,
             github_models_api_token=github_models_api_token,
@@ -817,6 +821,10 @@ class IndexerRepository:
             "llm_provider": "llmProvider",
             "llm_model": "llmModel",
             "llm_max_tokens": "llmMaxTokens",
+            "image_payload_max_width": "imagePayloadMaxWidth",
+            "image_payload_max_height": "imagePayloadMaxHeight",
+            "image_payload_max_pixels": "imagePayloadMaxPixels",
+            "image_payload_max_bytes": "imagePayloadMaxBytes",
             "openai_api_key": "openaiApiKey",
             "anthropic_api_key": "anthropicApiKey",
             "github_models_api_token": "githubModelsApiToken",

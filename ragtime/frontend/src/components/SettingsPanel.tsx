@@ -739,6 +739,10 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         llm_provider: normalizedLlmProvider,
         llm_model: data.llm_model,
         llm_max_tokens: data.llm_max_tokens,
+        image_payload_max_width: data.image_payload_max_width,
+        image_payload_max_height: data.image_payload_max_height,
+        image_payload_max_pixels: data.image_payload_max_pixels,
+        image_payload_max_bytes: data.image_payload_max_bytes,
         llm_ollama_protocol: data.llm_ollama_protocol,
         llm_ollama_host: data.llm_ollama_host,
         llm_ollama_port: data.llm_ollama_port,
@@ -1092,6 +1096,10 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         llm_provider: normalizedProvider,
         llm_model: formData.llm_model,
         llm_max_tokens: formData.llm_max_tokens,
+        image_payload_max_width: formData.image_payload_max_width,
+        image_payload_max_height: formData.image_payload_max_height,
+        image_payload_max_pixels: formData.image_payload_max_pixels,
+        image_payload_max_bytes: formData.image_payload_max_bytes,
         openai_api_key: formData.openai_api_key,
         anthropic_api_key: formData.anthropic_api_key,
         github_models_api_token: formData.github_models_api_token,
@@ -2210,6 +2218,114 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                 </div>
                 <p className="field-help">
                   Maximum number of agent tool-calling steps.
+                </p>
+              </div>
+            </div>
+
+            <div className="form-row">
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>Image Max Width (px)</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <input
+                    type="range"
+                    min="320"
+                    max="4096"
+                    step="16"
+                    style={{ flex: 1 }}
+                    value={formData.image_payload_max_width ?? 1024}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        image_payload_max_width: parseInt(e.target.value, 10),
+                      })
+                    }
+                  />
+                  <span style={{ minWidth: '56px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                    {(formData.image_payload_max_width ?? 1024).toLocaleString()}
+                  </span>
+                </div>
+                <p className="field-help">
+                  Maximum width for inline image attachments before downsampling.
+                </p>
+              </div>
+
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>Image Max Height (px)</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <input
+                    type="range"
+                    min="240"
+                    max="4096"
+                    step="16"
+                    style={{ flex: 1 }}
+                    value={formData.image_payload_max_height ?? 1024}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        image_payload_max_height: parseInt(e.target.value, 10),
+                      })
+                    }
+                  />
+                  <span style={{ minWidth: '56px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                    {(formData.image_payload_max_height ?? 1024).toLocaleString()}
+                  </span>
+                </div>
+                <p className="field-help">
+                  Maximum height for inline image attachments before downsampling.
+                </p>
+              </div>
+            </div>
+
+            <div className="form-row">
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>Image Max Pixels</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <input
+                    type="range"
+                    min="76800"
+                    max="8000000"
+                    step="25600"
+                    style={{ flex: 1 }}
+                    value={formData.image_payload_max_pixels ?? 786432}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        image_payload_max_pixels: parseInt(e.target.value, 10),
+                      })
+                    }
+                  />
+                  <span style={{ minWidth: '72px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                    {(formData.image_payload_max_pixels ?? 786432).toLocaleString()}
+                  </span>
+                </div>
+                <p className="field-help">
+                  Total pixel budget (width x height). Images exceeding this are scaled down proportionally.
+                </p>
+              </div>
+
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>Image Max Bytes</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <input
+                    type="range"
+                    min="50000"
+                    max="5000000"
+                    step="10000"
+                    style={{ flex: 1 }}
+                    value={formData.image_payload_max_bytes ?? 350000}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        image_payload_max_bytes: parseInt(e.target.value, 10),
+                      })
+                    }
+                  />
+                  <span style={{ minWidth: '72px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                    {(formData.image_payload_max_bytes ?? 350000).toLocaleString()}
+                  </span>
+                </div>
+                <p className="field-help">
+                  Max encoded size of each image. Larger images are re-compressed with lower JPEG quality.
                 </p>
               </div>
             </div>

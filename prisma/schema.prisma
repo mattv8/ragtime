@@ -150,6 +150,10 @@ model AppSettings {
   llmProvider       String   @default("openai") @map("llm_provider") // "openai", "anthropic", "ollama", "github_copilot", or "github_models"
   llmModel          String   @default("gpt-4-turbo") @map("llm_model")
   llmMaxTokens      Int      @default(4096) @map("llm_max_tokens") // Max output tokens
+  imagePayloadMaxWidth  Int   @default(1024) @map("image_payload_max_width") // Max width (px) for image attachments
+  imagePayloadMaxHeight Int   @default(1024) @map("image_payload_max_height") // Max height (px) for image attachments
+  imagePayloadMaxPixels Int   @default(786432) @map("image_payload_max_pixels") // Max total pixels for image attachments
+  imagePayloadMaxBytes  Int   @default(350000) @map("image_payload_max_bytes") // Max compressed bytes for image attachments
   openaiApiKey      String   @default("") @map("openai_api_key")
   anthropicApiKey   String   @default("") @map("anthropic_api_key")
   githubModelsApiToken String @default("") @map("github_models_api_token")

@@ -468,6 +468,10 @@ export interface AppSettings {
   llm_provider: LlmProviderWire;
   llm_model: string;
   llm_max_tokens?: number;
+  image_payload_max_width?: number;
+  image_payload_max_height?: number;
+  image_payload_max_pixels?: number;
+  image_payload_max_bytes?: number;
   // Ollama LLM connection settings (separate from embedding Ollama)
   llm_ollama_protocol: 'http' | 'https';
   llm_ollama_host: string;
@@ -549,6 +553,10 @@ export interface UpdateSettingsRequest {
   llm_provider?: LlmProviderWire;
   llm_model?: string;
   llm_max_tokens?: number;
+  image_payload_max_width?: number;
+  image_payload_max_height?: number;
+  image_payload_max_pixels?: number;
+  image_payload_max_bytes?: number;
   // LLM Ollama connection settings
   llm_ollama_protocol?: 'http' | 'https';
   llm_ollama_host?: string;

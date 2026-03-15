@@ -17,10 +17,17 @@ from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.logging import get_logger
 from ragtime.indexer.routes import get_available_chat_models
-from ragtime.models import (ChatChoice, ChatCompletionRequest,
-                            ChatCompletionResponse, HealthResponse,
-                            IndexLoadingDetail, MemoryStats, Message,
-                            ModelInfo, ModelsResponse)
+from ragtime.models import (
+    ChatChoice,
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    HealthResponse,
+    IndexLoadingDetail,
+    MemoryStats,
+    Message,
+    ModelInfo,
+    ModelsResponse,
+)
 from ragtime.rag import rag
 
 logger = get_logger(__name__)
@@ -75,9 +82,7 @@ def _owned_by_from_openapi_model_id(default_provider: str, model_id: str) -> str
     return _canonical_provider_name(default_provider)
 
 
-def _split_openapi_model_id(
-    default_provider: str, model_id: str
-) -> tuple[str, str]:
+def _split_openapi_model_id(default_provider: str, model_id: str) -> tuple[str, str]:
     """Split OpenAPI model ID into (canonical_provider, model_slug)."""
     raw = (model_id or "").strip()
     if "::" in raw:
@@ -435,7 +440,9 @@ async def list_models():
                 scoped_openapi_id = _normalize_openapi_model_id(
                     model_provider, f"{model_provider}::{base_model_id}"
                 )
-                runtime_base_id = _normalize_runtime_model(model_provider, base_model_id)
+                runtime_base_id = _normalize_runtime_model(
+                    model_provider, base_model_id
+                )
 
                 # When using a separate OpenAPI list, filter to only allowed models.
                 if allowed_openapi_scoped_set is not None:
@@ -533,7 +540,9 @@ async def chat_completions(request: ChatCompletionRequest):
     chat_history = []
     for msg in request.messages[:-1]:  # Exclude the current message
         if msg.role == "user":
-            chat_history.append(HumanMessage(content=msg.content))
+            chat_history.append(
+                HumanMessage(content=await rag._convert_message_to_langchain_async(msg))
+            )
         elif msg.role == "assistant":
             if msg.tool_calls:
                 # Reconstruct native AIMessage with tool_calls

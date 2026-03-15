@@ -2,7 +2,6 @@
 Indexer data models and schemas.
 """
 
-
 import hashlib
 import json
 from datetime import datetime
@@ -15,6 +14,7 @@ from ragtime.core.embedding_models import (
     get_embedding_models,
     get_model_dimensions_sync,
 )
+
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -489,6 +489,30 @@ class AppSettings(BaseModel):
         ge=1,
         description="Maximum number of tokens to generate in LLM response",
     )
+    image_payload_max_width: int = Field(
+        default=1024,
+        ge=320,
+        le=4096,
+        description="Maximum image width in pixels for multimodal attachments.",
+    )
+    image_payload_max_height: int = Field(
+        default=1024,
+        ge=240,
+        le=4096,
+        description="Maximum image height in pixels for multimodal attachments.",
+    )
+    image_payload_max_pixels: int = Field(
+        default=786_432,
+        ge=76_800,
+        le=8_000_000,
+        description="Maximum total pixels for multimodal image attachments.",
+    )
+    image_payload_max_bytes: int = Field(
+        default=350_000,
+        ge=50_000,
+        le=5_000_000,
+        description="Target max compressed bytes for multimodal image attachments.",
+    )
     # LLM Ollama connection settings (separate from embedding Ollama)
     llm_ollama_protocol: str = Field(
         default="http", description="Ollama LLM server protocol: 'http' or 'https'"
@@ -895,6 +919,26 @@ class UpdateSettingsRequest(BaseModel):
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
     llm_max_tokens: Optional[int] = Field(default=None, ge=1)
+    image_payload_max_width: Optional[int] = Field(
+        default=None,
+        ge=320,
+        le=4096,
+    )
+    image_payload_max_height: Optional[int] = Field(
+        default=None,
+        ge=240,
+        le=4096,
+    )
+    image_payload_max_pixels: Optional[int] = Field(
+        default=None,
+        ge=76_800,
+        le=8_000_000,
+    )
+    image_payload_max_bytes: Optional[int] = Field(
+        default=None,
+        ge=50_000,
+        le=5_000_000,
+    )
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     github_models_api_token: Optional[str] = None

@@ -3,8 +3,11 @@ RAG Components - FAISS Vector Store and LangChain Agent setup.
 """
 
 import asyncio
+import base64
 import fnmatch
+import io
 import json
+import math
 import os
 import re
 import resource
@@ -34,6 +37,7 @@ from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
@@ -139,10 +143,18 @@ MAX_TOOL_TIMEOUT_SECONDS = 300
 # if 300 s pass with zero data — safe for long reasoning/thinking phases.
 LLM_REQUEST_TIMEOUT_SECONDS: float = 300
 
-# User Space screenshot caps to keep vision payloads useful but bounded.
-MAX_USERSPACE_SCREENSHOT_WIDTH = 1600
-MAX_USERSPACE_SCREENSHOT_HEIGHT = 1200
-MAX_USERSPACE_SCREENSHOT_PIXELS = 1_440_000
+# Shared image payload caps for all vision-related message content.
+# Keep a single source of truth to avoid drift between userspace and chat paths.
+IMAGE_PAYLOAD_LIMITS = {
+    "max_width": 1024,
+    "max_height": 1024,
+    "max_pixels": 786_432,
+    "max_bytes": 350_000,
+}
+
+# Keep at most this many concurrent image downsampling jobs.
+IMAGE_DOWNSAMPLE_MAX_CONCURRENCY = 2
+
 _USERSPACE_LIVE_DATA_BINDING_VALIDATOR_JS_PATH = Path(__file__).with_name(
     "userspace_live_data_binding_validator.js"
 )
@@ -878,6 +890,34 @@ class RAGComponents:
         # detect when it changes (expiry refresh or re-authorization) and
         # rebuild the LLM transparently.
         self._copilot_llm_token: Optional[str] = None
+        self._image_downsample_semaphore = asyncio.Semaphore(
+            IMAGE_DOWNSAMPLE_MAX_CONCURRENCY
+        )
+
+    def _get_image_payload_limits(self) -> dict[str, int]:
+        """Resolve image payload limits from settings with sane bounds."""
+        app_settings = self._app_settings or {}
+
+        def _get_int(
+            settings_key: str, limit_key: str, minimum: int, maximum: int
+        ) -> int:
+            raw = app_settings.get(settings_key, IMAGE_PAYLOAD_LIMITS[limit_key])
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                value = IMAGE_PAYLOAD_LIMITS[limit_key]
+            return min(maximum, max(minimum, value))
+
+        return {
+            "max_width": _get_int("image_payload_max_width", "max_width", 320, 4096),
+            "max_height": _get_int("image_payload_max_height", "max_height", 240, 4096),
+            "max_pixels": _get_int(
+                "image_payload_max_pixels", "max_pixels", 76_800, 8_000_000
+            ),
+            "max_bytes": _get_int(
+                "image_payload_max_bytes", "max_bytes", 50_000, 5_000_000
+            ),
+        }
 
     def _schedule_ollama_warmup(self) -> None:
         """Start best-effort Ollama warmup without blocking API startup."""
@@ -2199,7 +2239,7 @@ class RAGComponents:
             [
                 ("system", escape_prompt_template_braces(self._system_prompt)),
                 MessagesPlaceholder(variable_name="chat_history", optional=True),
-                ("human", "{input}"),
+                MessagesPlaceholder(variable_name="user_input"),
                 MessagesPlaceholder(variable_name="agent_scratchpad"),
             ]
         )
@@ -2233,7 +2273,7 @@ class RAGComponents:
             [
                 ("system", escape_prompt_template_braces(self._system_prompt_ui)),
                 MessagesPlaceholder(variable_name="chat_history", optional=True),
-                ("human", "{input}"),
+                MessagesPlaceholder(variable_name="user_input"),
                 MessagesPlaceholder(variable_name="agent_scratchpad"),
             ]
         )
@@ -4097,21 +4137,80 @@ except Exception as e:
                             {"type": "text", "text": item.get("text", "")}
                         )
                     elif item.get("type") == "image_url":
-                        langchain_content.append(item)  # Pass through
+                        langchain_content.append(self._normalize_image_part(item))
                 elif hasattr(item, "type"):
                     # Pydantic model
                     if item.type == "text":
                         langchain_content.append({"type": "text", "text": item.text})
                     elif item.type == "image_url":
-                        langchain_content.append(
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": item.image_url.url},
-                            }
-                        )
+                        image_part = {
+                            "type": "image_url",
+                            "image_url": {"url": item.image_url.url},
+                        }
+                        langchain_content.append(self._normalize_image_part(image_part))
             return langchain_content if langchain_content else ""
 
         # Fallback: convert to string
+        return str(content)
+
+    async def _convert_message_to_langchain_async(self, message: Any) -> Any:
+        """Async message conversion with non-blocking image downsampling."""
+        if isinstance(message, str):
+            return message
+
+        content = getattr(message, "content", message)
+        if isinstance(content, str):
+            return content
+
+        if isinstance(content, list):
+            langchain_content: list[Any] = []
+            image_tasks: list[tuple[int, asyncio.Task[dict[str, Any]]]] = []
+
+            for item in content:
+                if isinstance(item, dict):
+                    if item.get("type") == "text":
+                        langchain_content.append(
+                            {"type": "text", "text": item.get("text", "")}
+                        )
+                    elif item.get("type") == "image_url":
+                        index = len(langchain_content)
+                        langchain_content.append(None)
+                        image_tasks.append(
+                            (
+                                index,
+                                asyncio.create_task(
+                                    self._normalize_image_part_async(item)
+                                ),
+                            )
+                        )
+                elif hasattr(item, "type"):
+                    if item.type == "text":
+                        langchain_content.append({"type": "text", "text": item.text})
+                    elif item.type == "image_url":
+                        image_part = {
+                            "type": "image_url",
+                            "image_url": {"url": item.image_url.url},
+                        }
+                        index = len(langchain_content)
+                        langchain_content.append(None)
+                        image_tasks.append(
+                            (
+                                index,
+                                asyncio.create_task(
+                                    self._normalize_image_part_async(image_part)
+                                ),
+                            )
+                        )
+
+            if image_tasks:
+                for index, task in image_tasks:
+                    langchain_content[index] = await task
+                langchain_content = [
+                    item for item in langchain_content if item is not None
+                ]
+
+            return langchain_content if langchain_content else ""
+
         return str(content)
 
     def _strip_images_from_content(self, content: Any) -> Any:
@@ -4150,6 +4249,200 @@ except Exception as e:
             )
 
         return stripped if stripped else content
+
+    def _fetch_http_image_as_data_url(self, url: str) -> str:
+        """Fetch an HTTP/HTTPS image URL and return it as a base64 data URL.
+
+        Clients like OpenWebUI may send image URLs pointing to their internal
+        file storage instead of inline base64 data URLs.  LLM providers cannot
+        reach those addresses, so we fetch the image server-side and convert it
+        to a data URL that can be processed by the normal downsampling pipeline.
+        """
+        try:
+            with httpx.Client(timeout=30, follow_redirects=True) as client:
+                resp = client.get(url)
+                resp.raise_for_status()
+                content_type = (
+                    resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+                )
+                if not content_type.startswith("image/"):
+                    logger.debug(
+                        "HTTP URL %s returned non-image content-type: %s",
+                        url[:120],
+                        content_type,
+                    )
+                    return url
+                encoded = base64.b64encode(resp.content).decode("ascii")
+                data_url = f"data:{content_type};base64,{encoded}"
+                logger.info(
+                    "Fetched HTTP image URL (%d bytes) and converted to data URL",
+                    len(resp.content),
+                )
+                return data_url
+        except Exception as exc:
+            logger.warning("Failed to fetch HTTP image URL %s: %s", url[:120], exc)
+            return url
+
+    async def _fetch_http_image_as_data_url_async(self, url: str) -> str:
+        """Async version of HTTP image URL fetching."""
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                content_type = (
+                    resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+                )
+                if not content_type.startswith("image/"):
+                    logger.debug(
+                        "HTTP URL %s returned non-image content-type: %s",
+                        url[:120],
+                        content_type,
+                    )
+                    return url
+                encoded = base64.b64encode(resp.content).decode("ascii")
+                data_url = f"data:{content_type};base64,{encoded}"
+                logger.info(
+                    "Fetched HTTP image URL (%d bytes) and converted to data URL",
+                    len(resp.content),
+                )
+                return data_url
+        except Exception as exc:
+            logger.warning("Failed to fetch HTTP image URL %s: %s", url[:120], exc)
+            return url
+
+    def _downsample_image_data_url(self, url: str) -> str:
+        """Downsample and compress base64 image data URLs to control prompt payload size."""
+        if not isinstance(url, str):
+            return url
+
+        # Fetch HTTP/HTTPS image URLs and convert to data URLs first
+        if url.lower().startswith(("http://", "https://")):
+            url = self._fetch_http_image_as_data_url(url)
+
+        header, sep, payload = url.partition(",")
+        if not sep or not header.lower().startswith("data:image/"):
+            return url
+        if ";base64" not in header.lower() or not payload:
+            return url
+
+        try:
+            raw_bytes = base64.b64decode(payload, validate=False)
+            if not raw_bytes:
+                return url
+
+            with Image.open(io.BytesIO(raw_bytes)) as original:
+                image = ImageOps.exif_transpose(original)
+                width, height = image.size
+                limits = self._get_image_payload_limits()
+
+                if width <= 0 or height <= 0:
+                    return url
+
+                scale = min(
+                    limits["max_width"] / width,
+                    limits["max_height"] / height,
+                    math.sqrt(limits["max_pixels"] / (width * height)),
+                    1.0,
+                )
+
+                if scale < 1.0:
+                    resized_width = max(1, int(width * scale))
+                    resized_height = max(1, int(height * scale))
+                    image = image.resize(
+                        (resized_width, resized_height),
+                        Image.Resampling.LANCZOS,
+                    )
+
+                if image.mode in ("RGBA", "LA"):
+                    background = Image.new("RGB", image.size, (255, 255, 255))
+                    alpha = image.split()[-1]
+                    background.paste(image, mask=alpha)
+                    image = background
+                elif image.mode != "RGB":
+                    image = image.convert("RGB")
+
+                best_bytes = b""
+                for quality in (80, 70, 60, 50):
+                    buffer = io.BytesIO()
+                    image.save(
+                        buffer,
+                        format="JPEG",
+                        quality=quality,
+                        optimize=True,
+                        progressive=True,
+                    )
+                    candidate = buffer.getvalue()
+                    if not candidate:
+                        continue
+                    best_bytes = candidate
+                    if len(candidate) <= limits["max_bytes"]:
+                        break
+
+                if not best_bytes:
+                    return url
+
+                encoded = base64.b64encode(best_bytes).decode("ascii")
+                return f"data:image/jpeg;base64,{encoded}"
+
+        except (UnidentifiedImageError, OSError, ValueError, TypeError) as exc:
+            logger.debug(f"Skipping image downsample for invalid data URL: {exc}")
+            return url
+        except Exception:
+            logger.exception("Unexpected error downsampling image attachment")
+            return url
+
+    async def _downsample_image_data_url_async(self, url: str) -> str:
+        """Downsample data URL off the event loop, bounded by semaphore."""
+        if not isinstance(url, str):
+            return url
+
+        # Fetch HTTP/HTTPS image URLs and convert to data URLs first
+        if url.lower().startswith(("http://", "https://")):
+            url = await self._fetch_http_image_as_data_url_async(url)
+
+        if not url.lower().startswith("data:image/"):
+            return url
+
+        async with self._image_downsample_semaphore:
+            return await asyncio.to_thread(self._downsample_image_data_url, url)
+
+    def _normalize_image_part(self, part: dict[str, Any]) -> dict[str, Any]:
+        """Normalize image_url content part and downsample inline data URLs."""
+        normalized = dict(part)
+        image_url = normalized.get("image_url")
+
+        if isinstance(image_url, dict):
+            image_url_dict = dict(image_url)
+            current_url = image_url_dict.get("url")
+            if isinstance(current_url, str):
+                image_url_dict["url"] = self._downsample_image_data_url(current_url)
+            normalized["image_url"] = image_url_dict
+        elif isinstance(image_url, str):
+            normalized["image_url"] = {
+                "url": self._downsample_image_data_url(image_url)
+            }
+
+        return normalized
+
+    async def _normalize_image_part_async(self, part: dict[str, Any]) -> dict[str, Any]:
+        """Async image part normalization/downsampling that avoids loop blocking."""
+        normalized = dict(part)
+        image_url = normalized.get("image_url")
+
+        if isinstance(image_url, dict):
+            image_url_dict = dict(image_url)
+            current_url = image_url_dict.get("url")
+            if isinstance(current_url, str):
+                image_url_dict["url"] = await self._downsample_image_data_url_async(
+                    current_url
+                )
+            normalized["image_url"] = image_url_dict
+        elif isinstance(image_url, str):
+            normalized["image_url"] = {
+                "url": await self._downsample_image_data_url_async(image_url)
+            }
+
+        return normalized
 
     def _has_image_content(self, content: Any) -> bool:
         """Return True when content contains one or more image_url parts."""
@@ -5003,7 +5296,7 @@ except Exception as e:
             width: int = Field(
                 default=1440,
                 ge=320,
-                le=MAX_USERSPACE_SCREENSHOT_WIDTH,
+                le=IMAGE_PAYLOAD_LIMITS["max_width"],
                 description=(
                     "Viewport width in pixels. Hard-capped for AI-friendly screenshot size."
                 ),
@@ -5011,7 +5304,7 @@ except Exception as e:
             height: int = Field(
                 default=900,
                 ge=240,
-                le=MAX_USERSPACE_SCREENSHOT_HEIGHT,
+                le=IMAGE_PAYLOAD_LIMITS["max_height"],
                 description=(
                     "Viewport height in pixels. Hard-capped for AI-friendly screenshot size."
                 ),
@@ -7295,7 +7588,7 @@ except Exception as e:
             messages.append(("ai", escape_prompt_template_braces(turn_system_content)))
         messages.extend(
             [
-                ("human", "{input}"),
+                MessagesPlaceholder(variable_name="user_input"),
                 MessagesPlaceholder(variable_name="agent_scratchpad"),
             ]
         )
@@ -7713,7 +8006,7 @@ except Exception as e:
             chat_history = []
 
         # Convert to LangChain format (preserves multimodal content)
-        langchain_content = self._convert_message_to_langchain(user_message)
+        langchain_content = await self._convert_message_to_langchain_async(user_message)
 
         try:
             executor = self.agent_executor
@@ -7830,7 +8123,11 @@ except Exception as e:
                 )
                 # Use agent with tools
                 result = await executor.ainvoke(
-                    {"input": langchain_content, "chat_history": chat_history}
+                    {
+                        "input": langchain_content,
+                        "user_input": [HumanMessage(content=langchain_content)],
+                        "chat_history": chat_history,
+                    }
                 )
                 output = result.get("output", "I couldn't generate a response.")
                 # Handle Anthropic-style content blocks (list of dicts with 'text' key)
@@ -7923,7 +8220,7 @@ except Exception as e:
             chat_history = []
 
         # Convert to LangChain format (preserves multimodal content)
-        langchain_content = self._convert_message_to_langchain(user_message)
+        langchain_content = await self._convert_message_to_langchain_async(user_message)
 
         # Select the appropriate agent executor
         executor = self.agent_executor_ui if is_ui else self.agent_executor
@@ -8059,7 +8356,11 @@ except Exception as e:
                 _generating_tool_names: dict[str, str] = {}
 
                 async for event in executor.astream_events(
-                    {"input": agent_input, "chat_history": chat_history},
+                    {
+                        "input": agent_input,
+                        "user_input": [HumanMessage(content=agent_input)],
+                        "chat_history": chat_history,
+                    },
                     version="v2",
                 ):
                     kind = event.get("event", "")
