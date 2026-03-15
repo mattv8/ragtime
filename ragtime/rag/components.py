@@ -4151,6 +4151,19 @@ except Exception as e:
 
         return stripped if stripped else content
 
+    def _has_image_content(self, content: Any) -> bool:
+        """Return True when content contains one or more image_url parts."""
+        if not isinstance(content, list):
+            return False
+
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "image_url":
+                return True
+            if hasattr(part, "type") and getattr(part, "type", None) == "image_url":
+                return True
+
+        return False
+
     def _extract_text_from_message(self, message: Any) -> str:
         """
         Extract text content from a message (string or multimodal).
@@ -7979,9 +7992,14 @@ except Exception as e:
                 # Strip images from input - tool-calling agents resend the full input
                 # on each iteration (tool call -> response -> tool call...) which
                 # quickly exhausts rate limits. Images are replaced with [image attached].
-                stripped_content = self._strip_images_from_content(langchain_content)
-
-                agent_input = stripped_content
+                if self._has_image_content(langchain_content):
+                    logger.info(
+                        "Streaming request contains image_url content; preserving images "
+                        "for first-party vision handling"
+                    )
+                    agent_input = langchain_content
+                else:
+                    agent_input = self._strip_images_from_content(langchain_content)
                 provider_name = (
                     self._parse_provider_scoped_model(conversation_model)[0]
                     or str(
