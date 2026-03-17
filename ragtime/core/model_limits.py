@@ -26,6 +26,8 @@ _model_supports_function_calling: dict[str, bool] = {}
 _model_supports_reasoning: dict[str, bool] = {}
 # Cache for thinking budget support
 _model_supports_thinking_budget: dict[str, bool] = {}
+# Cache for models requiring Responses API (populated from Copilot /models)
+_model_requires_responses_api: dict[str, bool] = {}
 _cache_lock = asyncio.Lock()
 _cache_loaded = False
 
@@ -159,8 +161,11 @@ def _expand_model_keys(model_id: str, provider: str) -> set[str]:
 def _infer_thinking_budget_support(model_info: dict[str, object]) -> bool | None:
     """Infer thinking-budget support from models.dev metadata.
 
-    Prefer any explicit budget-related fields exposed by models.dev. When those
-    are absent, use the generic `reasoning` field as the capability signal.
+    Only returns True when explicit budget-related fields are present.
+    The generic ``reasoning`` flag is NOT used as a fallback because many
+    reasoning-capable models (e.g. GPT-5.x) do not accept a
+    ``thinking_budget`` parameter and will reject it with
+    ``invalid_thinking_budget``.
     """
     explicit_budget_keys = [
         "thinking_budget",
@@ -184,10 +189,6 @@ def _infer_thinking_budget_support(model_info: dict[str, object]) -> bool | None
                 return value
             if _coerce_int(value) is not None:
                 return True
-
-    reasoning = model_info.get("reasoning")
-    if isinstance(reasoning, bool):
-        return reasoning
 
     return None
 
@@ -479,6 +480,7 @@ def invalidate_cache() -> None:
     _model_supports_function_calling.clear()
     _model_supports_reasoning.clear()
     _model_supports_thinking_budget.clear()
+    _model_requires_responses_api.clear()
 
 
 async def supports_function_calling(model_id: str) -> bool:
@@ -562,13 +564,56 @@ async def supports_reasoning(model_id: str) -> bool:
 async def supports_thinking_budget(model_id: str) -> bool:
     """Check if a model supports Copilot/OpenAI-style `thinking_budget`.
 
-    This uses models.dev metadata when available. If models.dev does not expose
-    an explicit budget-related field for a model, the generic `reasoning`
-    capability is used as the fallback signal.
+    Only returns True when explicit budget-related fields are present in the
+    models.dev metadata. The generic ``reasoning`` capability is NOT used as a
+    fallback because reasoning-capable models (e.g. GPT-5.x) may not accept a
+    ``thinking_budget`` parameter.
     """
     await _ensure_cache_loaded()
 
     matched = _best_match_flag(_model_supports_thinking_budget, model_id)
+    if matched is not None:
+        return matched
+
+    return False
+
+
+def register_model_supported_endpoints(
+    model_id: str, supported_endpoints: list[str]
+) -> None:
+    """Register supported API endpoints for a model from provider API responses.
+
+    Called when model metadata is fetched from provider-specific APIs
+    (e.g. Copilot ``/models`` endpoint) that report which endpoints each model
+    supports.
+    """
+    needs_responses = (
+        "/responses" in supported_endpoints
+        and "/chat/completions" not in supported_endpoints
+    )
+    _model_requires_responses_api[model_id] = needs_responses
+    # Also register models that support BOTH endpoints so we can prefer
+    # Responses API for them when available.
+    if "/responses" in supported_endpoints:
+        _model_requires_responses_api[model_id] = needs_responses
+
+
+async def requires_responses_api(model_id: str) -> bool:
+    """Check if a model requires the OpenAI Responses API instead of Chat Completions.
+
+    Returns True if the model is known to only support ``/responses`` and not
+    ``/chat/completions``.  Data comes from provider model APIs (e.g. Copilot
+    ``/models`` endpoint's ``supportedEndpoints`` field) or from a previous
+    runtime fallback cached by ``register_model_supported_endpoints``.
+
+    If no data is available, returns False — the caller should use
+    ``/chat/completions`` and rely on the runtime auto-fallback in
+    ``_CopilotChatOpenAI`` to catch ``unsupported_api_for_model`` errors and
+    switch transparently.
+    """
+    await _ensure_cache_loaded()
+
+    matched = _best_match_flag(_model_requires_responses_api, model_id)
     if matched is not None:
         return matched
 
