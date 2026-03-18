@@ -19,7 +19,6 @@ from pathlib import Path, PurePosixPath
 from typing import Any, List, Optional, Union
 
 import httpx
-from PIL import Image, ImageOps, UnidentifiedImageError
 from fastapi import HTTPException
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
@@ -38,6 +37,7 @@ from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
@@ -2672,8 +2672,19 @@ class RAGComponents:
             "Use 'max_chars_per_result' to control content length (use 0 for full content when results are truncated)."
         )
 
+        async def _search_knowledge_async(
+            query: str,
+            index_name: str = "",
+            k: int = default_k,
+            max_chars_per_result: int = 500,
+        ) -> str:
+            return await asyncio.to_thread(
+                search_knowledge, query, index_name, k, max_chars_per_result
+            )
+
         return StructuredTool.from_function(
             func=search_knowledge,
+            coroutine=_search_knowledge_async,
             name="search_knowledge",
             description=description,
             args_schema=KnowledgeSearchInput,
@@ -2765,8 +2776,14 @@ class RAGComponents:
                 return f"File '{file_path}' not found.\nErrors: " + "; ".join(errors)
             return f"File '{file_path}' not found in indexed repositories. Use list_files_in_index to see available files, or search_knowledge to find relevant files."
 
+        async def _read_file_from_index_async(
+            file_path: str, index_name: str = ""
+        ) -> str:
+            return await asyncio.to_thread(read_file_from_index, file_path, index_name)
+
         read_file_tool = StructuredTool.from_function(
             func=read_file_from_index,
+            coroutine=_read_file_from_index_async,
             name="read_file_from_index",
             description=(
                 "Read the complete content of a specific file from an indexed repository by its path. "
@@ -2861,8 +2878,16 @@ class RAGComponents:
 
             return "\n\n".join(results) if results else "No indexes available."
 
+        async def _list_files_in_index_async(
+            index_name: str = "", pattern: str = "", limit: int = 50
+        ) -> str:
+            return await asyncio.to_thread(
+                list_files_in_index, index_name, pattern, limit
+            )
+
         list_files_tool = StructuredTool.from_function(
             func=list_files_in_index,
+            coroutine=_list_files_in_index_async,
             name="list_files_in_index",
             description=(
                 "List all files in an indexed repository. Use this to discover what files are available, "
@@ -3107,8 +3132,21 @@ class RAGComponents:
             safe_name = index_name.replace("-", "_").replace(" ", "_").lower()
             tool_name = f"search_{safe_name}"
 
+            _sync_func = make_search_func(
+                index_name, db, use_mmr, mmr_lambda, default_k
+            )
+
+            async def _async_search_index(
+                query: str,
+                k: int = default_k,
+                max_chars_per_result: int = 500,
+                _fn=_sync_func,
+            ) -> str:
+                return await asyncio.to_thread(_fn, query, k, max_chars_per_result)
+
             tool = StructuredTool.from_function(
-                func=make_search_func(index_name, db, use_mmr, mmr_lambda, default_k),
+                func=_sync_func,
+                coroutine=_async_search_index,
                 name=tool_name,
                 description=tool_description,
                 args_schema=IndexSearchInput,
@@ -8430,6 +8468,10 @@ except Exception as e:
                 # Track tool call argument generation progress (line count)
                 _generating_tool_lines: dict[str, int] = {}
                 _generating_tool_names: dict[str, str] = {}
+                # Track tool execution wall-clock times for watchdog logging
+                _tool_start_times: dict[str, tuple[float, str]] = (
+                    {}
+                )  # run_id -> (mono_time, tool_name)
 
                 async for event in executor.astream_events(
                     {
@@ -8452,6 +8494,8 @@ except Exception as e:
                         tool_name = event.get("name", "unknown")
                         tool_input = event.get("data", {}).get("input", {})
                         connection_meta = self._get_tool_connection_metadata(tool_name)
+                        _tool_start_times[run_id] = (time.monotonic(), tool_name)
+                        logger.debug(f"Tool started: {tool_name} (run_id={run_id[:8]})")
                         yield {
                             "type": "tool_start",
                             "tool": tool_name,
@@ -8470,6 +8514,20 @@ except Exception as e:
                         tool_name = event.get("name", "unknown")
                         tool_output = event.get("data", {}).get("output", "")
                         connection_meta = self._get_tool_connection_metadata(tool_name)
+
+                        # Watchdog: log tool execution duration
+                        start_info = _tool_start_times.pop(run_id, None)
+                        if start_info:
+                            elapsed = time.monotonic() - start_info[0]
+                            if elapsed > 10:
+                                logger.warning(
+                                    f"Slow tool execution: {tool_name} took {elapsed:.1f}s (run_id={run_id[:8]})"
+                                )
+                            else:
+                                logger.debug(
+                                    f"Tool completed: {tool_name} in {elapsed:.1f}s (run_id={run_id[:8]})"
+                                )
+
                         # Don't truncate UI visualization tools - their JSON must be complete
                         # Truncate other long outputs for display
                         ui_tools = {"create_chart", "create_datatable"}
@@ -8500,6 +8558,15 @@ except Exception as e:
                             or "Tool execution failed"
                         )
                         connection_meta = self._get_tool_connection_metadata(tool_name)
+
+                        # Watchdog: log tool error duration
+                        start_info = _tool_start_times.pop(run_id, None)
+                        if start_info:
+                            elapsed = time.monotonic() - start_info[0]
+                            logger.warning(
+                                f"Tool error: {tool_name} failed after {elapsed:.1f}s (run_id={run_id[:8]}): {error_output[:200]}"
+                            )
+
                         yield {
                             "type": "tool_end",
                             "tool": tool_name,
