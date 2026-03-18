@@ -67,8 +67,17 @@ Last updated: 2026-03-03 (codebase-scanned; concise agent-focused)
   - server-side execution proofs required for referenced component IDs.
 - Helper modules under `dashboard/` can receive transformed data from entrypoint modules and do not need their own connection metadata.
 - Never substitute mock/static data to bypass live wiring when tools are selected.
-- SQLite is for out-of-scope local persistence (cache/preferences/local app state), not as a substitute source of truth for live dashboards.
-- Workspace SQLite snapshot mode default is `exclude` (live-data-first default). `include` is opt-in behavior.
+
+### Two-lane persistence (when `sqlite_persistence_mode=include`)
+
+- When SQLite local persistence is enabled (`include` mode), the system prompt instructs a **two-lane contract**:
+  - **Lane A (live data)**: dashboard datasets fetched at runtime via `context.components[componentId].execute()`. All existing live data enforcement (metadata, AST binding, execution proofs) remains active.
+  - **Lane B (SQLite local persistence)**: local app/domain state persisted in `.ragtime/db/app.sqlite3` with numbered SQL migration files in `.ragtime/db/migrations/`.
+- The per-turn reminder includes a lane-awareness line so the agent delivers both lanes in a single pass.
+- Validation/tool feedback in include mode appends `SQLITE_INCLUDE_MODE_HINT` (from `ragtime/rag/prompts.py`) to error and violation payloads, reinforcing the dual expectation without duplicating prose.
+- Service-layer error messages (`ragtime/userspace/service.py`) also append a sqlite suffix when the workspace is in include mode.
+- SQLite is **never** a substitute for live dashboard datasets. It supplements live data with local state (preferences, cache, drafts, operational data).
+- Default mode is `exclude` (live-data-first, no SQLite prompt block, no lane reminder).
 
 ## Live Data Bridge Architecture
 

@@ -2445,8 +2445,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
   const sqliteLiveDataOnlyMode = activeWorkspace?.sqlite_persistence_mode === 'exclude';
   const sqlitePersistenceModeTitle = sqliteLiveDataOnlyMode
-    ? 'Live data only mode. Local SQLite files are not persisted with workspace snapshots. Click to enable SQLite local persistence mode.'
-    : 'SQLite local persistence mode. Local SQLite files are persisted with workspace snapshots. Click to switch to live data only mode.';
+    ? 'Live data only mode. SQLite local files are excluded from snapshots. Click to enable two-lane persistence (live data + SQLite local state with migrations).'
+    : 'Two-lane persistence mode. Live data wiring is primary for dashboards; SQLite local state is persisted with snapshots. Click to switch to live data only mode.';
   const formattedError = useMemo(() => formatUserSpaceErrorMessage(error), [error]);
   const hasStatusOverlayContent = Boolean(
     loading || creatingWorkspace || deletingWorkspaceId || (formattedError && !creatingWorkspace && !deletingWorkspaceId)
@@ -2781,7 +2781,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
               onClick={handleToggleSqlitePersistence}
               disabled={!activeWorkspaceId || !canEditWorkspace}
               title={sqlitePersistenceModeTitle}
-              aria-label={sqliteLiveDataOnlyMode ? 'Live data only mode' : 'SQLite local persistence mode'}
+              aria-label={sqliteLiveDataOnlyMode ? 'Live data only mode' : 'Two-lane persistence mode'}
             >
               <span className="userspace-sqlite-mode-icon" aria-hidden="true">
                 <Database size={14} />

@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     dos2unix \
     nodejs \
     npm \
+    sqlite3 \
     tini \
     && rm -rf /var/lib/apt/lists/*
 

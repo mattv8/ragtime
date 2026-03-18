@@ -21,45 +21,34 @@ from ragtime.config import settings
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
-from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
+from ragtime.core.entrypoint_status import (EntrypointStatus,
+                                            parse_entrypoint_config)
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (
-    DB_TYPE_POSTGRES,
-    add_table_metadata_to_psql_output,
-    enforce_max_results,
-    format_query_result,
-    validate_sql_query,
-)
-from ragtime.core.ssh import (
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
+                                    add_table_metadata_to_psql_output,
+                                    enforce_max_results, format_query_result,
+                                    validate_sql_query)
+from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
+                              ssh_tunnel_config_from_dict)
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (
-    ArtifactType,
-    CreateWorkspaceRequest,
-    ExecuteComponentRequest,
-    ExecuteComponentResponse,
-    PaginatedWorkspacesResponse,
-    ShareAccessMode,
-    SqlitePersistenceMode,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-    UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot,
-    UserSpaceWorkspace,
-    UserSpaceWorkspaceShareLink,
-    UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceMember,
-    WorkspaceShareSlugAvailabilityResponse,
-)
+from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
+                                      ExecuteComponentRequest,
+                                      ExecuteComponentResponse,
+                                      PaginatedWorkspacesResponse,
+                                      ShareAccessMode, SqlitePersistenceMode,
+                                      UpdateWorkspaceMembersRequest,
+                                      UpdateWorkspaceRequest,
+                                      UpdateWorkspaceShareAccessRequest,
+                                      UpsertWorkspaceFileRequest,
+                                      UserSpaceFileInfo, UserSpaceFileResponse,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection,
+                                      UserSpaceSharedPreviewResponse,
+                                      UserSpaceSnapshot, UserSpaceWorkspace,
+                                      UserSpaceWorkspaceShareLink,
+                                      UserSpaceWorkspaceShareLinkStatus,
+                                      WorkspaceMember,
+                                      WorkspaceShareSlugAvailabilityResponse)
 
 logger = get_logger(__name__)
 
@@ -2089,6 +2078,16 @@ class UserSpaceService:
         parsed_live_data_connections = request.live_data_connections or []
         parsed_live_data_checks = request.live_data_checks or []
         workspace_has_tools = bool(workspace.selected_tool_ids)
+        _sqlite_include = (
+            getattr(workspace, "sqlite_persistence_mode", "exclude") == "include"
+        )
+        _sqlite_suffix = (
+            " Note: this workspace has SQLite local persistence enabled -- "
+            "live data wiring is still required for dashboard datasets; "
+            "use .ragtime/db/app.sqlite3 with numbered migrations for local app state."
+            if _sqlite_include
+            else ""
+        )
         if not skip_live_data_enforcement and _requires_live_data_contract(
             relative_path,
             request.live_data_requested,
@@ -2102,6 +2101,7 @@ class UserSpaceService:
                         "For live-data-requested module source writes in dashboard/* or with artifact_type=module_ts, "
                         "provide at least one connection with component_kind=tool_config, "
                         "component_id, and request. Set live_data_requested=false for scaffolding without live wiring."
+                        + _sqlite_suffix
                     ),
                 )
             if not parsed_live_data_checks:
@@ -2111,6 +2111,7 @@ class UserSpaceService:
                         "Missing required live_data_checks verification metadata. "
                         "For live-data-requested module source writes, include checks proving successful "
                         "connection and transformation for each live_data_connections component_id."
+                        + _sqlite_suffix
                     ),
                 )
 
@@ -2184,6 +2185,7 @@ class UserSpaceService:
                         + ", ".join(unproven_ids)
                         + ". Execute a successful query via the workspace tool or "
                         "execute-component endpoint before persisting live data connections."
+                        + _sqlite_suffix
                     ),
                 )
 

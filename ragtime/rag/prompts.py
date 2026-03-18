@@ -86,7 +86,7 @@ This is a turn-level reminder to follow real tool-calling behavior.
 
 """
 
-USERSPACE_TURN_REMINDER = """[USER SPACE TURN CHECKLIST
+_USERSPACE_TURN_REMINDER_BASE = """[USER SPACE TURN CHECKLIST
 - Before finalizing, run validate_userspace_code on EVERY changed source file
     (including .ts/.tsx, .py, .js, .html, and the entrypoint), then fix all reported errors.
 - Persist implementation changes via userspace file tools (not chat-only prose).
@@ -97,12 +97,32 @@ USERSPACE_TURN_REMINDER = """[USER SPACE TURN CHECKLIST
     (do NOT re-send the full file content).
 - Never use hardcoded/mock/sample/static data in entrypoint files (dashboard/main.ts, app.py, etc.)
     when the workspace has selected tools; wire live data instead.
-- After validation passes with no errors, call create_userspace_snapshot with a concise completion message.
+{sqlite_reminder_line}- After validation passes with no errors, call create_userspace_snapshot with a concise completion message.
 - Never skip validation or snapshot.
 - Finalization sequence: validate -> fix errors -> validate again -> snapshot.
 ]
 
 """
+
+_SQLITE_TURN_REMINDER_LINE = (
+    "- SQLite local persistence is ON: ensure this delivery includes both live data "
+    "wiring (Lane A) and any needed SQLite migrations under .ragtime/db/migrations/ (Lane B).\n"
+)
+
+
+def build_userspace_turn_reminder(*, include_sqlite_persistence: bool) -> str:
+    """Build the per-turn userspace checklist with optional SQLite lane reminder."""
+    return _USERSPACE_TURN_REMINDER_BASE.format(
+        sqlite_reminder_line=(
+            _SQLITE_TURN_REMINDER_LINE if include_sqlite_persistence else ""
+        ),
+    )
+
+
+# Backward-compatible constant for non-workspace callers (exclude mode default).
+USERSPACE_TURN_REMINDER = build_userspace_turn_reminder(
+    include_sqlite_persistence=False
+)
 
 
 # =============================================================================
@@ -213,16 +233,38 @@ Default to hiding unless the user benefits from seeing technical details.
 
 _USERSPACE_SQLITE_PERSISTENCE_BLOCK = """
 
-#### SQLite persistence (devcontainer-friendly)
+#### Two-lane persistence contract
 
-- Use SQLite at `.ragtime/db/app.sqlite3` for out-of-scope local persistence (for example: UI state, cache, drafts, local operational data).
-- Do not treat local SQLite as the source of truth for persistent dashboard datasets when workspace live tools are available.
-- Migration convention is `.ragtime/db/migrations/*.sql` in lexical order (`0001_init.sql`, `0002_add_table.sql`, ...).
+This workspace has SQLite local persistence enabled. You must satisfy **both** lanes in every delivery:
+
+**Lane A -- Live data (primary, required when workspace has tools)**
+- Dashboard datasets requested by the user MUST be fetched at runtime via `context.components[componentId].execute()`.
+- Live tool responses are the source of truth for rendered data. Never substitute SQLite tables or local snapshots for live datasets.
+- All `live_data_connections`, `live_data_checks`, and AST `execute()` binding rules still apply.
+
+**Lane B -- SQLite local persistence (required for local app state)**
+- Use SQLite at `.ragtime/db/app.sqlite3` for local domain/app state (for example: user preferences, UI state, cache, drafts, operational data, computed aggregations for offline use).
+- Every schema change requires a new numbered migration file in `.ragtime/db/migrations/` in lexical order (`0001_init.sql`, `0002_add_table.sql`, ...).
 - Runtime bootstrap runs `.ragtime/scripts/sqlite_migrate.py --db .ragtime/db/app.sqlite3 --migrations .ragtime/db/migrations` when present.
 - `.ragtime/scripts/sqlite_migrate.py` tracks applied migrations in `_ragtime_migrations` with SHA-256 checksums.
-- Never edit a previously applied migration file; create a new migration instead.
-- When scaffolding backend code, wire database configuration to the same SQLite path so local preview/runtime stays deterministic.
+- Never edit a previously applied migration file; always create a new migration.
+- When scaffolding backend code, wire database configuration to `.ragtime/db/app.sqlite3` so local preview/runtime stays deterministic.
+
+**Delivery checklist (both lanes in one pass):**
+1. Create/extend the SQLite migration chain for any local state schema needs.
+2. Wire live data via `context.components[componentId].execute()` for dashboard datasets.
+3. Ensure local SQLite reads supplement but never replace live data connections.
+4. Validate all changed files, then snapshot.
 """
+
+# Reusable hint appended to validation/tool feedback when sqlite_persistence_mode=include.
+# Keeps the two-lane expectation visible in error/violation payloads without duplicating prose.
+SQLITE_INCLUDE_MODE_HINT = (
+    "This workspace has SQLite local persistence enabled (include mode). "
+    "Live data wiring remains required for dashboard datasets; additionally, "
+    "persist local app state in .ragtime/db/app.sqlite3 with numbered SQL "
+    "migration files in .ragtime/db/migrations/."
+)
 
 
 _USERSPACE_MODE_PROMPT_TEMPLATE = """
