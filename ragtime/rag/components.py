@@ -19,6 +19,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, List, Optional, Union
 
 import httpx
+from PIL import Image, ImageOps, UnidentifiedImageError
 from fastapi import HTTPException
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
@@ -37,7 +38,6 @@ from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings

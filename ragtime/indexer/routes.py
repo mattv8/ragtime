@@ -7361,6 +7361,7 @@ async def get_available_chat_models():
     Get all available models from configured LLM providers.
 
     Returns models from configured providers (OpenAI, Anthropic, Ollama, GitHub Copilot).
+    Provider fetches run in parallel to avoid blocking the event loop when one provider is slow.
     """
     app_settings = await repository.get_settings()
     if not app_settings:
@@ -7369,152 +7370,140 @@ async def get_available_chat_models():
     all_models: List[AvailableModel] = []
     default_model = None
 
-    # Fetch OpenAI models if API key is configured
-    if app_settings.openai_api_key and len(app_settings.openai_api_key) > 10:
+    # --- Build parallel fetch tasks for each configured provider ---
+
+    async def _fetch_openai_task() -> tuple[str, LLMModelsResponse | None]:
         try:
-            result = await _fetch_openai_models(app_settings.openai_api_key)
-            if result.success:
-                for m in result.models:
-                    all_models.append(
-                        AvailableModel(
-                            id=m.id,
-                            name=m.name,
-                            provider="openai",
-                            context_limit=await get_context_limit(m.id),
-                            max_output_tokens=m.max_output_tokens,
-                            created=m.created,
-                        )
-                    )
-                if not default_model and result.default_model:
-                    default_model = result.default_model
+            return ("openai", await _fetch_openai_models(app_settings.openai_api_key))
         except Exception as e:
             logger.warning(f"Failed to fetch OpenAI models: {e}")
+            return ("openai", None)
 
-    # Fetch Anthropic models if API key is configured
-    if app_settings.anthropic_api_key and len(app_settings.anthropic_api_key) > 10:
+    async def _fetch_anthropic_task() -> tuple[str, LLMModelsResponse | None]:
         try:
-            result = await _fetch_anthropic_models(app_settings.anthropic_api_key)
-            if result.success:
-                for m in result.models:
-                    all_models.append(
-                        AvailableModel(
-                            id=m.id,
-                            name=m.name,
-                            provider="anthropic",
-                            context_limit=await get_context_limit(m.id),
-                            max_output_tokens=m.max_output_tokens,
-                            created=m.created,
-                        )
-                    )
-                if not default_model and result.default_model:
-                    default_model = result.default_model
+            return (
+                "anthropic",
+                await _fetch_anthropic_models(app_settings.anthropic_api_key),
+            )
         except Exception as e:
             logger.warning(f"Failed to fetch Anthropic models: {e}")
+            return ("anthropic", None)
 
-    # Fetch Ollama models whenever an Ollama URL is configured (regardless of active provider)
-    # Prefer LLM-specific URL; fall back to embedding Ollama URL (the only one persisted in DB)
+    async def _fetch_ollama_task(url: str) -> tuple[str, LLMModelsResponse | None]:
+        try:
+            return ("ollama", await _fetch_ollama_llm_models(url))
+        except Exception as e:
+            logger.warning(f"Failed to fetch Ollama models: {e}")
+            return ("ollama", None)
+
+    async def _fetch_github_pat_task(
+        token: str, provider_name: str
+    ) -> tuple[str, LLMModelsResponse | None]:
+        try:
+            result = await _fetch_github_models_catalog(token)
+            if result.success and provider_name == "github_copilot":
+                directory_result = await _fetch_copilot_directory_models(
+                    include_anthropic=True,
+                    include_google=True,
+                )
+                result = _merge_llm_model_results(result, directory_result)
+            return ("github_copilot", result)
+        except Exception as e:
+            logger.warning(f"Failed to fetch GitHub models: {e}")
+            return ("github_copilot", None)
+
+    async def _fetch_github_oauth_task(
+        token: str, base_url: str
+    ) -> tuple[str, LLMModelsResponse | None]:
+        try:
+            result = await _fetch_github_copilot_models(token, base_url)
+            if result.success:
+                directory_result = await _fetch_copilot_directory_models(
+                    include_anthropic=True,
+                    include_google=True,
+                )
+                result = _merge_llm_model_results(result, directory_result)
+            return ("github_copilot", result)
+        except Exception as e:
+            logger.warning(f"Failed to fetch GitHub models: {e}")
+            return ("github_copilot", None)
+
+    tasks: list[asyncio.Task] = []
+
+    if app_settings.openai_api_key and len(app_settings.openai_api_key) > 10:
+        tasks.append(asyncio.create_task(_fetch_openai_task()))
+
+    if app_settings.anthropic_api_key and len(app_settings.anthropic_api_key) > 10:
+        tasks.append(asyncio.create_task(_fetch_anthropic_task()))
+
     ollama_url = getattr(app_settings, "llm_ollama_base_url", "") or ""
     if not ollama_url or ollama_url == "http://localhost:11434":
         ollama_url = getattr(app_settings, "ollama_base_url", "") or ""
     if ollama_url:
-        try:
-            result = await _fetch_ollama_llm_models(ollama_url)
-            if result.success:
-                for m in result.models:
-                    all_models.append(
-                        AvailableModel(
-                            id=m.id,
-                            name=m.name,
-                            provider="ollama",
-                            context_limit=m.context_limit or 8192,
-                            max_output_tokens=m.max_output_tokens,
-                            created=m.created,
-                        )
-                    )
-                if not default_model and result.default_model:
-                    default_model = result.default_model
-        except Exception as e:
-            logger.warning(f"Failed to fetch Ollama models: {e}")
+        tasks.append(asyncio.create_task(_fetch_ollama_task(ollama_url)))
 
-    # Fetch GitHub provider models when credentials are configured.
-    # If PAT is present, treat Copilot provider as GitHub Models-compatible mode.
     github_models_token = (app_settings.github_models_api_token or "").strip()
     github_copilot_token = (app_settings.github_copilot_access_token or "").strip()
     github_auth_mode, github_auth_error = _resolve_github_auth_mode(app_settings)
     if github_auth_error:
         logger.warning("Skipping GitHub model discovery: %s", github_auth_error)
     elif github_auth_mode == "pat" and github_models_token:
-        try:
-            github_provider = "github_models"
-            result = await _fetch_github_models_catalog(github_models_token)
-
-            # Always merge directory models when using Copilot OAuth so
-            # 3rd-party families (Claude, Gemini, etc.) are available.
-            if result.success and github_provider == "github_copilot":
-                directory_result = await _fetch_copilot_directory_models(
-                    include_anthropic=True,
-                    include_google=True,
-                )
-                result = _merge_llm_model_results(result, directory_result)
-
-            if result.success:
-                for m in result.models:
-                    context_model_id = (
-                        m.id.split("/", 1)[1]
-                        if github_provider == "github_models" and "/" in m.id
-                        else m.id
-                    )
-                    all_models.append(
-                        AvailableModel(
-                            id=m.id,
-                            name=m.name,
-                            provider="github_copilot",
-                            context_limit=await get_context_limit(context_model_id),
-                            max_output_tokens=m.max_output_tokens,
-                            created=m.created,
-                        )
-                    )
-                if not default_model and result.default_model:
-                    default_model = result.default_model
-        except Exception as e:
-            logger.warning(f"Failed to fetch GitHub models: {e}")
+        tasks.append(
+            asyncio.create_task(
+                _fetch_github_pat_task(github_models_token, "github_models")
+            )
+        )
     elif (
         github_auth_mode == "oauth"
         and github_copilot_token
         and len(github_copilot_token) > 10
     ):
-        try:
-            github_provider = "github_copilot"
-            result = await _fetch_github_copilot_models(
-                github_copilot_token,
-                app_settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL,
-            )
-
-            # Always merge directory models when using Copilot OAuth so
-            # 3rd-party families (Claude, Gemini, etc.) are available.
-            if result.success:
-                directory_result = await _fetch_copilot_directory_models(
-                    include_anthropic=True,
-                    include_google=True,
+        tasks.append(
+            asyncio.create_task(
+                _fetch_github_oauth_task(
+                    github_copilot_token,
+                    app_settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL,
                 )
-                result = _merge_llm_model_results(result, directory_result)
+            )
+        )
 
-            if result.success:
-                for m in result.models:
-                    all_models.append(
-                        AvailableModel(
-                            id=m.id,
-                            name=m.name,
-                            provider="github_copilot",
-                            context_limit=await get_context_limit(m.id),
-                            max_output_tokens=m.max_output_tokens,
-                            created=m.created,
-                        )
-                    )
-                if not default_model and result.default_model:
-                    default_model = result.default_model
-        except Exception as e:
-            logger.warning(f"Failed to fetch GitHub models: {e}")
+    # --- Await all provider fetches in parallel ---
+    results: list[tuple[str, LLMModelsResponse | None]] = []
+    if tasks:
+        results = await asyncio.gather(*tasks)
+
+    # --- Process results in stable order ---
+    for provider_key, result in results:
+        if not result or not result.success:
+            continue
+
+        for m in result.models:
+            if provider_key == "github_copilot":
+                # For PAT-mode catalog models, strip publisher prefix for context lookup
+                context_model_id = (
+                    m.id.split("/", 1)[1]
+                    if github_auth_mode == "pat" and "/" in m.id
+                    else m.id
+                )
+            else:
+                context_model_id = m.id
+
+            all_models.append(
+                AvailableModel(
+                    id=m.id,
+                    name=m.name,
+                    provider=provider_key,
+                    context_limit=(
+                        m.context_limit or 8192
+                        if provider_key == "ollama"
+                        else await get_context_limit(context_model_id)
+                    ),
+                    max_output_tokens=m.max_output_tokens,
+                    created=m.created,
+                )
+            )
+        if not default_model and result.default_model:
+            default_model = result.default_model
 
     # Use current settings model as default if available
     current_model = app_settings.llm_model
@@ -7597,6 +7586,7 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
     Get ALL available models from configured LLM providers (unfiltered).
 
     Used by the settings UI to show all models for selection.
+    Provider fetches run in parallel.
     """
     app_settings = await repository.get_settings()
     if not app_settings:
@@ -7604,139 +7594,137 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
 
     all_models: List[AvailableModel] = []
 
-    # Fetch OpenAI models if API key is configured
-    if app_settings.openai_api_key and len(app_settings.openai_api_key) > 10:
+    # --- Build parallel fetch tasks for each configured provider ---
+
+    async def _fetch_openai_task() -> tuple[str, LLMModelsResponse | None]:
         try:
-            result = await _fetch_openai_models(app_settings.openai_api_key)
-            if result.success:
-                for m in result.models:
-                    all_models.append(
-                        AvailableModel(
-                            id=m.id,
-                            name=m.name,
-                            provider="openai",
-                            context_limit=await get_context_limit(m.id),
-                            max_output_tokens=m.max_output_tokens,
-                            created=m.created,
-                        )
-                    )
+            return ("openai", await _fetch_openai_models(app_settings.openai_api_key))
         except Exception as e:
             logger.warning(f"Failed to fetch OpenAI models: {e}")
+            return ("openai", None)
 
-    # Fetch Anthropic models if API key is configured
-    if app_settings.anthropic_api_key and len(app_settings.anthropic_api_key) > 10:
+    async def _fetch_anthropic_task() -> tuple[str, LLMModelsResponse | None]:
         try:
-            result = await _fetch_anthropic_models(app_settings.anthropic_api_key)
-            if result.success:
-                for m in result.models:
-                    all_models.append(
-                        AvailableModel(
-                            id=m.id,
-                            name=m.name,
-                            provider="anthropic",
-                            context_limit=await get_context_limit(m.id),
-                            max_output_tokens=m.max_output_tokens,
-                            created=m.created,
-                        )
-                    )
+            return (
+                "anthropic",
+                await _fetch_anthropic_models(app_settings.anthropic_api_key),
+            )
         except Exception as e:
             logger.warning(f"Failed to fetch Anthropic models: {e}")
+            return ("anthropic", None)
 
-    # Fetch Ollama models whenever an Ollama URL is configured (regardless of active provider)
-    # Prefer LLM-specific URL; fall back to embedding Ollama URL (the only one persisted in DB)
+    async def _fetch_ollama_task(url: str) -> tuple[str, LLMModelsResponse | None]:
+        try:
+            return ("ollama", await _fetch_ollama_llm_models(url))
+        except Exception as e:
+            logger.warning(f"Failed to fetch Ollama models: {e}")
+            return ("ollama", None)
+
+    async def _fetch_github_pat_task(
+        token: str, provider_name: str
+    ) -> tuple[str, LLMModelsResponse | None]:
+        try:
+            result = await _fetch_github_models_catalog(token)
+            if result.success and provider_name == "github_copilot":
+                directory_result = await _fetch_copilot_directory_models(
+                    include_anthropic=True,
+                    include_google=True,
+                )
+                result = _merge_llm_model_results(result, directory_result)
+            return ("github_copilot", result)
+        except Exception as e:
+            logger.warning(f"Failed to fetch GitHub models: {e}")
+            return ("github_copilot", None)
+
+    async def _fetch_github_oauth_task(
+        token: str, base_url: str
+    ) -> tuple[str, LLMModelsResponse | None]:
+        try:
+            result = await _fetch_github_copilot_models(token, base_url)
+            if result.success:
+                directory_result = await _fetch_copilot_directory_models(
+                    include_anthropic=True,
+                    include_google=True,
+                )
+                result = _merge_llm_model_results(result, directory_result)
+            return ("github_copilot", result)
+        except Exception as e:
+            logger.warning(f"Failed to fetch GitHub models: {e}")
+            return ("github_copilot", None)
+
+    tasks: list[asyncio.Task] = []
+
+    if app_settings.openai_api_key and len(app_settings.openai_api_key) > 10:
+        tasks.append(asyncio.create_task(_fetch_openai_task()))
+
+    if app_settings.anthropic_api_key and len(app_settings.anthropic_api_key) > 10:
+        tasks.append(asyncio.create_task(_fetch_anthropic_task()))
+
     ollama_url = getattr(app_settings, "llm_ollama_base_url", "") or ""
     if not ollama_url or ollama_url == "http://localhost:11434":
         ollama_url = getattr(app_settings, "ollama_base_url", "") or ""
     if ollama_url:
-        try:
-            result = await _fetch_ollama_llm_models(ollama_url)
-            if result.success:
-                for m in result.models:
-                    all_models.append(
-                        AvailableModel(
-                            id=m.id,
-                            name=m.name,
-                            provider="ollama",
-                            context_limit=m.context_limit or 8192,
-                            max_output_tokens=m.max_output_tokens,
-                            created=m.created,
-                        )
-                    )
-        except Exception as e:
-            logger.warning(f"Failed to fetch Ollama models: {e}")
+        tasks.append(asyncio.create_task(_fetch_ollama_task(ollama_url)))
 
-    # Fetch GitHub provider models when credentials are configured.
-    # If PAT is present, treat Copilot provider as GitHub Models-compatible mode.
     github_models_token = (app_settings.github_models_api_token or "").strip()
     github_copilot_token = (app_settings.github_copilot_access_token or "").strip()
     github_auth_mode, github_auth_error = _resolve_github_auth_mode(app_settings)
     if github_auth_error:
         logger.warning("Skipping GitHub model discovery: %s", github_auth_error)
     elif github_auth_mode == "pat" and github_models_token:
-        try:
-            github_provider = "github_models"
-            result = await _fetch_github_models_catalog(github_models_token)
-
-            # Always merge directory models for Copilot OAuth.
-            if result.success and github_provider == "github_copilot":
-                directory_result = await _fetch_copilot_directory_models(
-                    include_anthropic=True,
-                    include_google=True,
-                )
-                result = _merge_llm_model_results(result, directory_result)
-
-            if result.success:
-                for m in result.models:
-                    context_model_id = (
-                        m.id.split("/", 1)[1]
-                        if github_provider == "github_models" and "/" in m.id
-                        else m.id
-                    )
-                    all_models.append(
-                        AvailableModel(
-                            id=m.id,
-                            name=m.name,
-                            provider="github_copilot",
-                            context_limit=await get_context_limit(context_model_id),
-                            max_output_tokens=m.max_output_tokens,
-                            created=m.created,
-                        )
-                    )
-        except Exception as e:
-            logger.warning(f"Failed to fetch GitHub models: {e}")
+        tasks.append(
+            asyncio.create_task(
+                _fetch_github_pat_task(github_models_token, "github_models")
+            )
+        )
     elif (
         github_auth_mode == "oauth"
         and github_copilot_token
         and len(github_copilot_token) > 10
     ):
-        try:
-            result = await _fetch_github_copilot_models(
-                github_copilot_token,
-                app_settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL,
-            )
-
-            # Always merge directory models for Copilot OAuth.
-            if result.success:
-                directory_result = await _fetch_copilot_directory_models(
-                    include_anthropic=True,
-                    include_google=True,
+        tasks.append(
+            asyncio.create_task(
+                _fetch_github_oauth_task(
+                    github_copilot_token,
+                    app_settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL,
                 )
-                result = _merge_llm_model_results(result, directory_result)
+            )
+        )
 
-            if result.success:
-                for m in result.models:
-                    all_models.append(
-                        AvailableModel(
-                            id=m.id,
-                            name=m.name,
-                            provider="github_copilot",
-                            context_limit=await get_context_limit(m.id),
-                            max_output_tokens=m.max_output_tokens,
-                            created=m.created,
-                        )
-                    )
-        except Exception as e:
-            logger.warning(f"Failed to fetch GitHub models: {e}")
+    # --- Await all provider fetches in parallel ---
+    results: list[tuple[str, LLMModelsResponse | None]] = []
+    if tasks:
+        results = await asyncio.gather(*tasks)
+
+    # --- Process results ---
+    for provider_key, result in results:
+        if not result or not result.success:
+            continue
+
+        for m in result.models:
+            if provider_key == "github_copilot":
+                context_model_id = (
+                    m.id.split("/", 1)[1]
+                    if github_auth_mode == "pat" and "/" in m.id
+                    else m.id
+                )
+            else:
+                context_model_id = m.id
+
+            all_models.append(
+                AvailableModel(
+                    id=m.id,
+                    name=m.name,
+                    provider=provider_key,
+                    context_limit=(
+                        m.context_limit or 8192
+                        if provider_key == "ollama"
+                        else await get_context_limit(context_model_id)
+                    ),
+                    max_output_tokens=m.max_output_tokens,
+                    created=m.created,
+                )
+            )
 
     # Get currently allowed models from settings
     allowed_models = app_settings.allowed_chat_models or []
