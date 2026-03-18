@@ -19,7 +19,7 @@ import logging
 import sys
 import weakref
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 from mcp.server import Server
 from mcp.server.session import ServerSession
@@ -28,13 +28,18 @@ from mcp.types import TextContent, Tool
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.database import connect_db, disconnect_db, get_db
 from ragtime.core.logging import get_logger
+from ragtime.indexer.utils import safe_tool_name
 from ragtime.mcp.tools import McpRouteFilter, MCPToolAdapter, mcp_tool_adapter
 from ragtime.rag import rag
 
 logger = get_logger(__name__)
 
-# MCP server instance - created lazily with dynamic name
-_mcp_server: Server | None = None
+# Default MCP server identity (brandable from settings)
+_DEFAULT_MCP_SERVER_ID = "ragtime"
+_mcp_server_state: dict[str, Any] = {
+    "id": _DEFAULT_MCP_SERVER_ID,
+    "server": None,
+}
 
 # Cache of custom route servers
 _custom_route_servers: dict[str, Server] = {}
@@ -49,6 +54,20 @@ _active_sessions: weakref.WeakSet[ServerSession] = weakref.WeakSet()
 
 # Callbacks invoked when tools/routes change (used by HTTP transport layer caches)
 _tools_changed_callbacks: list[Callable[[], None]] = []
+
+
+def _to_mcp_server_id(server_name: str | None) -> str:
+    """Convert display name into a stable MCP server identifier."""
+    sanitized = safe_tool_name(server_name)
+    # MCP server ids conventionally use dash separators.
+    return sanitized.replace("_", "-") or _DEFAULT_MCP_SERVER_ID
+
+
+def _create_server(server_id: str) -> Server:
+    """Create a new MCP server instance with default handlers registered."""
+    server = Server(server_id)
+    _register_handlers(server)
+    return server
 
 
 def register_tools_changed_callback(callback: Callable[[], None]) -> None:
@@ -80,15 +99,23 @@ async def _notify_active_sessions_tool_list_changed() -> None:
 
 
 async def get_mcp_server() -> Server:
-    """Get or create MCP server with dynamic name from settings."""
-    global _mcp_server
-    if _mcp_server is None:
-        app_settings = await get_app_settings()
-        server_name = app_settings.get("server_name", "Ragtime")
-        _mcp_server = Server(server_name.lower().replace(" ", "-"))
-        _register_handlers(_mcp_server)
-        logger.info(f"Created MCP server with name: {server_name}")
-    return _mcp_server
+    """Get the default MCP server and refresh branding from current settings."""
+    app_settings = await get_app_settings()
+    configured_name = str(app_settings.get("server_name", "Ragtime") or "Ragtime")
+    server_id = _to_mcp_server_id(configured_name)
+    current_server_id = str(_mcp_server_state["id"])
+    if server_id != current_server_id:
+        _mcp_server_state["server"] = _create_server(server_id)
+        # Keep legacy module-level export in sync for backward compatibility.
+        globals()["mcp_server"] = _mcp_server_state["server"]
+        logger.info("Updated MCP server name to %s from Server Branding", server_id)
+        _mcp_server_state["id"] = server_id
+    return cast(Server, _mcp_server_state["server"])
+
+
+def get_mcp_server_id() -> str:
+    """Return the current default MCP server identifier."""
+    return str(_mcp_server_state["id"])
 
 
 def notify_tools_changed() -> None:
@@ -278,7 +305,7 @@ async def get_custom_route_server(
 
     app_settings = await get_app_settings()
     server_name = app_settings.get("server_name", "Ragtime")
-    route_server_name = f"{server_name.lower().replace(' ', '-')}-{route_path}"
+    route_server_name = _to_mcp_server_id(f"{server_name}-{route_path}")
 
     server = Server(route_server_name)
     _register_handlers(server, adapter, route_filter)
@@ -348,9 +375,7 @@ async def get_default_route_filtered_server(
 
     app_settings = await get_app_settings()
     server_name = app_settings.get("server_name", "Ragtime")
-    filter_server_name = (
-        f"{server_name.lower().replace(' ', '-')}-filter-{filter_id[:8]}"
-    )
+    filter_server_name = _to_mcp_server_id(f"{server_name}-filter-{filter_id[:8]}")
 
     server = Server(filter_server_name)
     _register_handlers(server, adapter, route_filter)
@@ -362,8 +387,8 @@ async def get_default_route_filtered_server(
 
 
 # For backward compatibility - create a default instance with handlers
-mcp_server = Server("ragtime")
-_register_handlers(mcp_server)
+_mcp_server_state["server"] = _create_server(_DEFAULT_MCP_SERVER_ID)
+mcp_server = cast(Server, _mcp_server_state["server"])
 
 
 async def run_mcp_server(transport: str = "stdio") -> None:
@@ -389,13 +414,15 @@ async def run_mcp_server(transport: str = "stdio") -> None:
             from mcp.server.lowlevel import NotificationOptions
             from mcp.server.stdio import stdio_server
 
+            default_server = await get_mcp_server()
+
             async with stdio_server() as (read_stream, write_stream):
                 # Advertise listChanged: true so clients know to poll for tool updates
                 notification_options = NotificationOptions(tools_changed=True)
-                await mcp_server.run(
+                await default_server.run(
                     read_stream,
                     write_stream,
-                    mcp_server.create_initialization_options(
+                    default_server.create_initialization_options(
                         notification_options=notification_options
                     ),
                 )

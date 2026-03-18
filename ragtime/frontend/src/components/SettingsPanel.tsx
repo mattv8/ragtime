@@ -1039,11 +1039,37 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     setError(null);
 
     try {
+      const normalizedServerName = (formData.server_name || '').trim();
+      if (!normalizedServerName) {
+        setError('Server name cannot be empty');
+        return;
+      }
+
       const dataToSave = {
-        server_name: formData.server_name,
+        server_name: normalizedServerName,
       };
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
+      setFormData((prev) => ({ ...prev, server_name: normalizedServerName }));
+      // Show restart guidance in the dismissable security banner.
+      sessionStorage.setItem('ragtime_branding_restart_notice', 'true');
+      const dismissedNoticesKey = 'ragtime_security_banner_dismissed_notices';
+      const legacyDismissKey = 'ragtime_security_banner_dismissed';
+      const brandingNoticeId = 'branding-restart';
+      const existingDismissedNoticesRaw = sessionStorage.getItem(dismissedNoticesKey);
+      if (existingDismissedNoticesRaw) {
+        try {
+          const existingDismissedNotices = JSON.parse(existingDismissedNoticesRaw);
+          if (Array.isArray(existingDismissedNotices)) {
+            const nextDismissedNotices = existingDismissedNotices.filter((n) => n !== brandingNoticeId);
+            sessionStorage.setItem(dismissedNoticesKey, JSON.stringify(nextDismissedNotices));
+          }
+        } catch {
+          // Ignore invalid session storage payload.
+        }
+      }
+      sessionStorage.removeItem(legacyDismissKey);
+      window.dispatchEvent(new CustomEvent('ragtime:branding-notice-updated'));
       // Notify parent component of name change
       if (onServerNameChange && updated.server_name) {
         onServerNameChange(updated.server_name);
@@ -1560,9 +1586,8 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       >
         <strong>OpenAI-Compatible API</strong>
         <p>
-          Connect external clients (e.g., Open WebUI) using:
+          Connect external clients (e.g., Open WebUI) using <code>{getDisplayUrl('/v1')}</code>.
         </p>
-        <code>{getDisplayUrl('/v1')}</code>
         <p className="field-help" style={{ marginTop: '0.5rem' }}>
           Default model: <code>{formData.llm_model || settings?.llm_model || 'not configured'}</code>. <code>/v1/models</code> returns {formData.openapi_sync_chat_models !== false ? 'your Chat Models selection' : 'a separately configured OpenAPI models list'}.
         </p>
@@ -1639,9 +1664,20 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       {error && <div className="error-banner">{error}</div>}
       {success && <div className="success-banner">{success}</div>}
 
-      <form ref={settingsFormRef} onSubmit={handleSubmit}>
+      <form
+        ref={settingsFormRef}
+        onSubmit={handleSubmit}
+        autoComplete="off"
+        data-form-type="other"
+        data-bwignore="true"
+        data-lpignore="true"
+        data-1p-ignore="true"
+      >
         {/* Server Branding */}
-        <fieldset>
+        <fieldset
+          id="setting-server_branding"
+          className={highlightSetting === 'server_branding' ? 'highlight-setting' : ''}
+        >
           <legend>Server Branding</legend>
           <p className="fieldset-help">
             Customize the server name displayed in the UI, API model name, and MCP server identity.

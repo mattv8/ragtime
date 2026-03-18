@@ -39,7 +39,7 @@ from ragtime.core.security import require_admin
 from ragtime.mcp.server import (
     get_custom_route_server,
     get_default_route_filtered_server,
-    mcp_server,
+    get_mcp_server,
     notify_tools_changed,
     register_tools_changed_callback,
 )
@@ -51,7 +51,9 @@ router = APIRouter(prefix="/mcp-debug", tags=["MCP Debug"])
 
 # Session manager for Streamable HTTP transport (default route)
 # Stateless mode with JSON responses for maximum compatibility
-_session_manager: StreamableHTTPSessionManager | None = None
+_mcp_http_state: dict[str, Any] = {
+    "session_manager": None,
+}
 
 # Cached custom route MCP servers (keyed by route path)
 # We use the low-level server directly since StreamableHTTPSessionManager
@@ -74,18 +76,21 @@ def invalidate_http_route_cache() -> None:
 register_tools_changed_callback(invalidate_http_route_cache)
 
 
-def get_session_manager() -> StreamableHTTPSessionManager:
+async def get_session_manager() -> StreamableHTTPSessionManager:
     """Get or create the MCP session manager for the default route."""
-    global _session_manager
-    if _session_manager is None:
-        _session_manager = StreamableHTTPSessionManager(
-            app=mcp_server,
+    session_manager = _mcp_http_state["session_manager"]
+
+    if session_manager is None:
+        default_server = await get_mcp_server()
+        session_manager = StreamableHTTPSessionManager(
+            app=default_server,
             event_store=None,  # Stateless mode - no event persistence
             json_response=True,  # JSON responses for broad client compatibility
             stateless=True,  # Stateless mode - each request is independent
         )
+        _mcp_http_state["session_manager"] = session_manager
         logger.info("Created MCP StreamableHTTP session manager (stateless mode)")
-    return _session_manager
+    return session_manager
 
 
 async def get_filtered_server(
@@ -208,7 +213,7 @@ async def get_custom_route_server_cached(
 @asynccontextmanager
 async def mcp_lifespan_manager() -> AsyncIterator[None]:
     """Lifespan manager for MCP session manager."""
-    session_manager = get_session_manager()
+    session_manager = await get_session_manager()
     async with session_manager.run():
         logger.info("MCP StreamableHTTP session manager started")
         try:
@@ -715,7 +720,8 @@ class MCPTransportEndpoint:
                 # Filter found but couldn't create server - fall back to default
 
         # Use the default session manager
-        await get_session_manager().handle_request(scope, receive, send)
+        session_manager = await get_session_manager()
+        await session_manager.handle_request(scope, receive, send)
 
 
 class MCPCustomRouteEndpoint:

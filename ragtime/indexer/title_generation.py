@@ -178,7 +178,7 @@ async def update_conversation_title_from_question(
 ) -> None:
     """Update the conversation title if it is still the default."""
     conv = await repository.get_conversation(conversation_id)
-    if not conv or conv.title != "New Chat":
+    if not conv or conv.title != "Untitled Chat":
         return
 
     question_text = _extract_text(user_message).strip()

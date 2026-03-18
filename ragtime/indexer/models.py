@@ -1912,7 +1912,7 @@ class Conversation(BaseModel):
     """A chat conversation with the RAG assistant."""
 
     id: str
-    title: str = Field(default="New Chat")
+    title: str = Field(default="Untitled Chat")
     model: str = Field(default="gpt-4-turbo")
     user_id: Optional[str] = Field(
         default=None, description="ID of the conversation owner"

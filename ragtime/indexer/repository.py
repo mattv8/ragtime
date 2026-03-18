@@ -1361,7 +1361,7 @@ class IndexerRepository:
 
     async def create_conversation(
         self,
-        title: str = "New Chat",
+        title: str = "Untitled Chat",
         model: str = "gpt-4-turbo",
         user_id: Optional[str] = None,
         workspace_id: Optional[str] = None,

@@ -132,10 +132,10 @@ export function App() {
     const loadSettings = async () => {
       try {
         const { settings, configuration_warnings } = await api.getSettings();
-        if (settings.server_name) {
-          setServerName(settings.server_name);
-          document.title = settings.server_name;
-        }
+        const configuredServerName = (settings.server_name || '').trim();
+        const resolvedServerName = configuredServerName || 'Ragtime';
+        setServerName(resolvedServerName);
+        document.title = resolvedServerName;
         // Also load aggregate_search setting
         setAggregateSearch(settings.aggregate_search ?? true);
         // Load embedding dimensions for memory calculation
@@ -151,8 +151,9 @@ export function App() {
 
   // Callback to update server name from SettingsPanel
   const handleServerNameChange = useCallback((name: string) => {
-    setServerName(name);
-    document.title = name;
+    const resolvedName = name.trim() || 'Ragtime';
+    setServerName(resolvedName);
+    document.title = resolvedName;
   }, []);
 
   // Check authentication status on mount
@@ -579,9 +580,9 @@ export function App() {
         authStatus={authStatus}
         isAdmin={isAdmin}
         hidden={hideChrome}
-        onNavigateToSettings={() => {
+        onNavigateToSettings={(highlightTarget) => {
           if (isAdmin) {
-            setHighlightSetting('api_key_info');
+            setHighlightSetting(highlightTarget || 'api_key_info');
             setActiveView('settings');
           }
         }}

@@ -1362,7 +1362,7 @@ const ChatTitle = memo(({ title }: { title: string }) => {
   useEffect(() => {
     if (previousTitleRef.current === title) return;
 
-    if (previousTitleRef.current === 'New Chat' && title !== 'New Chat') {
+    if (previousTitleRef.current === 'Untitled Chat' && title !== 'Untitled Chat') {
       let i = 0;
       setDisplayTitle('');
       const interval = setInterval(() => {
@@ -2420,7 +2420,7 @@ export function ChatPanel({
   // Listen for auto-generated titles per conversation using SSE.
   // IMPORTANT: We only open ONE SSE connection for the active conversation to
   // avoid exhausting the browser's HTTP/1.1 connection limit (6 per origin).
-  // Opening SSE streams for every "New Chat" conversation would saturate the
+  // Opening SSE streams for every untitled conversation would saturate the
   // connection pool and lock up the UI.
   const stopTitleStreamFor = useCallback((conversationId: string) => {
     const es = titleSourceRef.current.get(conversationId);
@@ -2433,7 +2433,7 @@ export function ChatPanel({
   const startTitleStreamFor = useCallback((conversationId: string, title: string) => {
     if (titleSourceRef.current.has(conversationId)) return;
 
-    if (title !== 'New Chat') return;
+    if (title !== 'Untitled Chat') return;
 
     try {
       const url = api.getConversationEventsUrl(conversationId, workspaceId);
@@ -3208,6 +3208,7 @@ export function ChatPanel({
   }, [activeConversation, defaultContextLimit, getContextLimit, inputValue, isStreaming, streamingContent, streamingEvents]);
 
   const showWorkspaceConversationSelect = embedded && Boolean(workspaceId);
+  const workspaceConversationOptions = conversations.filter((conv) => conv.title !== 'Untitled Chat');
   const showInlineToolSelector = Boolean(activeConversation)
     && !isConversationViewer
     && !readOnly;
@@ -3387,14 +3388,14 @@ export function ChatPanel({
                       aria-expanded={isWorkspaceConversationMenuOpen}
                     >
                       <MessageSquare size={14} className="chat-workspace-conversation-icon" aria-hidden="true" />
-                      <span className="model-selector-text chat-workspace-conversation-trigger-label">{activeConversation.title || 'New Chat'}</span>
+                      <span className="model-selector-text chat-workspace-conversation-trigger-label">{activeConversation.title || 'Untitled Chat'}</span>
                       <span className="model-selector-arrow chat-workspace-conversation-trigger-arrow">▾</span>
                     </button>
 
                     {isWorkspaceConversationMenuOpen && (
                       <div className="model-selector-dropdown chat-workspace-conversation-dropdown">
                         <div className="model-selector-dropdown-inner" role="listbox" aria-label="Workspace chats">
-                          {conversations.map((conversation) => (
+                          {workspaceConversationOptions.map((conversation) => (
                             <button
                               key={conversation.id}
                               type="button"
@@ -3406,7 +3407,7 @@ export function ChatPanel({
                                 void selectConversation(conversation);
                               }}
                             >
-                              <span className="model-selector-item-name">{conversation.title || 'New Chat'}</span>
+                              <span className="model-selector-item-name">{conversation.title || 'Untitled Chat'}</span>
                             </button>
                           ))}
                         </div>

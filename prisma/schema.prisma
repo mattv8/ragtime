@@ -767,7 +767,7 @@ enum ConversationToolOutputMode {
 /// A chat conversation with the RAG assistant
 model Conversation {
   id        String    @id @default(uuid())
-  title     String    @default("New Chat") // Auto-generated from first message or user-set
+  title     String    @default("Untitled Chat") // Auto-generated from first message or user-set
   model     String    @default("gpt-4-turbo") // Model used for this conversation
 
   // Owner - null for legacy conversations before auth was added
