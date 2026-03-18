@@ -1414,11 +1414,32 @@ class IndexerRepository:
 
         where_clause: dict[str, Any] = {}
         if workspace_id is not None:
+            if not include_all:
+                if not user_id:
+                    return []
+
+                workspace = await db.workspace.find_unique(
+                    where={"id": workspace_id},
+                    include={"members": True},
+                )
+                if not workspace:
+                    return []
+
+                has_workspace_access = bool(
+                    workspace.ownerUserId == user_id
+                    or any(
+                        getattr(member, "userId", None) == user_id
+                        for member in list(getattr(workspace, "members", []) or [])
+                    )
+                )
+                if not has_workspace_access:
+                    return []
+
             where_clause["workspaceId"] = workspace_id
         else:
             where_clause["workspaceId"] = None
 
-        if not include_all and user_id:
+        if workspace_id is None and not include_all and user_id:
             where_clause["userId"] = user_id
 
         prisma_convs = await db.conversation.find_many(
@@ -1623,6 +1644,22 @@ class IndexerRepository:
 
         if not user_id:
             return False
+
+        if conversation_workspace_id:
+            workspace = await db.workspace.find_unique(
+                where={"id": conversation_workspace_id},
+                include={"members": True},
+            )
+            if not workspace:
+                return False
+
+            if workspace.ownerUserId == user_id:
+                return True
+
+            return any(
+                getattr(member, "userId", None) == user_id
+                for member in list(getattr(workspace, "members", []) or [])
+            )
 
         # Allow access if conversation has no owner (legacy) or matches user
         return conv.userId is None or conv.userId == user_id
