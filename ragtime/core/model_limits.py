@@ -44,18 +44,12 @@ MODEL_FAMILY_PATTERNS = {
         # O-series models (reasoning models) - must come before gpt patterns
         (r"^o\d+-", "O-Series"),
         (r"^o\d+$", "O-Series"),
-        # GPT-5.x series (more specific patterns first)
-        (r"^gpt-5\.2", "GPT-5.2"),
-        (r"^gpt-5\.1", "GPT-5.1"),
-        (r"^gpt-5", "GPT-5"),
-        # GPT-4.x series (more specific first)
-        (r"^gpt-4\.5", "GPT-4.5"),
-        (r"^gpt-4\.1", "GPT-4.1"),
+        # GPT-4o/turbo aliases should stay explicit before numeric captures.
         (r"^gpt-4o", "GPT-4o"),
         (r"^gpt-4-turbo", "GPT-4 Turbo"),
-        (r"^gpt-4", "GPT-4"),
-        # GPT-3.5 series
-        (r"^gpt-3\.5", "GPT-3.5"),
+        # Numeric GPT families are captured dynamically (e.g. 5.4 -> GPT-5.4).
+        (r"^gpt-(\d+\.\d+)(?:$|[-_])", None),
+        (r"^gpt-(\d+)(?:$|[-_])", None),
     ],
     "anthropic": [
         # Haiku models grouped together (all versions) - must be BEFORE general claude-3.5/3 patterns
@@ -77,13 +71,9 @@ MODEL_FAMILY_PATTERNS = {
     "ollama": [(r"^([a-z0-9]+)", None)],
     "github_copilot": [
         # GitHub-hosted OpenAI families
-        (r"^(openai/)?gpt-5\.2", "GPT-5.2"),
-        (r"^(openai/)?gpt-5\.1", "GPT-5.1"),
-        (r"^gpt-5", "GPT-5"),
-        (r"^(openai/)?gpt-4\.5", "GPT-4.5"),
-        (r"^(openai/)?gpt-4\.1", "GPT-4.1"),
         (r"^(openai/)?gpt-4o", "GPT-4o"),
-        (r"^gpt-4", "GPT-4"),
+        (r"^(?:openai/)?gpt-(\d+\.\d+)(?:$|[-_])", None),
+        (r"^(?:openai/)?gpt-(\d+)(?:$|[-_])", None),
         # Claude families (supports both prefixed and unprefixed ids)
         (r"(anthropic/)?claude-haiku-4-5", "Haiku"),
         (r"(anthropic/)?claude-haiku-4\.5", "Haiku"),
@@ -108,8 +98,8 @@ MODEL_FAMILY_PATTERNS = {
         (r"o\d", "O-Series"),
     ],
     "github_models": [
-        (r"^openai/gpt-5", "GPT-5"),
-        (r"^openai/gpt-4", "GPT-4"),
+        (r"^openai/gpt-(\d+\.\d+)(?:$|[-_])", None),
+        (r"^openai/gpt-(\d+)(?:$|[-_])", None),
         (r"^anthropic/claude-haiku-4-5", "Haiku"),
         (r"^anthropic/claude-haiku-4\.5", "Haiku"),
         (r"^anthropic/claude-haiku-4", "Haiku"),
