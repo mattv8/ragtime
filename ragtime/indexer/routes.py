@@ -24,88 +24,130 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, List, Optional
 
 import httpx
-from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException,
-                     Query, UploadFile)
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+)
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from prisma import Prisma
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
+from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.container_capabilities import get_container_capabilities
-from ragtime.core.copilot_auth import (ensure_copilot_token_fresh,
-                                       exchange_github_token_for_copilot_token)
-from ragtime.core.embedding_models import (OPENAI_EMBEDDING_PRIORITY,
-                                           get_embedding_models)
+from ragtime.core.copilot_auth import (
+    ensure_copilot_token_fresh,
+    exchange_github_token_for_copilot_token,
+)
+from ragtime.core.embedding_models import (
+    OPENAI_EMBEDDING_PRIORITY,
+    get_embedding_models,
+)
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (MODEL_FAMILY_PATTERNS,
-                                       get_context_limit, get_output_limit,
-                                       register_model_supported_endpoints,
-                                       supports_function_calling,
-                                       update_model_function_calling,
-                                       update_model_limit)
-from ragtime.core.ollama import (extract_effective_context_length,
-                                 get_model_details, is_embedding_capable,
-                                 is_reachable)
+from ragtime.core.model_limits import (
+    MODEL_FAMILY_PATTERNS,
+    get_context_limit,
+    get_output_limit,
+    register_model_supported_endpoints,
+    supports_function_calling,
+    update_model_function_calling,
+    update_model_limit,
+)
+from ragtime.core.ollama import (
+    extract_effective_context_length,
+    get_model_details,
+    is_embedding_capable,
+    is_reachable,
+)
 from ragtime.core.ollama import list_models
 from ragtime.core.ollama import list_models as ollama_list_models
 from ragtime.core.security import get_current_user, require_admin
-from ragtime.core.sql_utils import (MssqlConnectionError, MysqlConnectionError,
-                                    mssql_connect, mysql_connect,
-                                    normalize_mssql_error_message)
-from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
-                              execute_ssh_command, ssh_tunnel_config_from_dict,
-                              test_ssh_connection)
+from ragtime.core.sql_utils import (
+    MssqlConnectionError,
+    MysqlConnectionError,
+    mssql_connect,
+    mysql_connect,
+    normalize_mssql_error_message,
+)
+from ragtime.core.ssh import (
+    SSHConfig,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    ssh_tunnel_config_from_dict,
+    test_ssh_connection,
+)
 from ragtime.core.tokenization import count_tokens
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.core.vision_models import list_vision_models
 from ragtime.indexer.background_tasks import background_task_service
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
-                                    ChatMessage, ChatTaskResponse,
-                                    ChatTaskStatus, CheckRepoVisibilityRequest,
-                                    ConfigurationWarning, Conversation,
-                                    ConversationResponse,
-                                    CreateConversationRequest,
-                                    CreateIndexRequest,
-                                    CreateToolConfigRequest,
-                                    DatabaseDiscoverOption, EmbeddingStatus,
-                                    FetchBranchesRequest,
-                                    FetchBranchesResponse,
-                                    FilesystemAnalysisJobResponse,
-                                    FilesystemConnectionConfig,
-                                    FilesystemIndexJobResponse,
-                                    IndexAnalysisResult, IndexConfig,
-                                    IndexInfo, IndexJobResponse, IndexStatus,
-                                    MssqlDiscoverRequest,
-                                    MssqlDiscoverResponse,
-                                    MysqlDiscoverRequest,
-                                    MysqlDiscoverResponse, OcrMode,
-                                    PdmDiscoverRequest, PdmDiscoverResponse,
-                                    PdmIndexJobResponse,
-                                    PostgresDiscoverRequest,
-                                    PostgresDiscoverResponse,
-                                    ProviderPromptDebugListResponse,
-                                    ProviderPromptDebugRecord,
-                                    RepoVisibilityResponse,
-                                    RetryVisualizationRequest,
-                                    RetryVisualizationResponse,
-                                    SchemaIndexJobResponse, SendMessageRequest,
-                                    ToolConfig, ToolTestRequest, ToolType,
-                                    TriggerFilesystemIndexRequest,
-                                    TriggerPdmIndexRequest,
-                                    TriggerSchemaIndexRequest,
-                                    UpdateSettingsRequest,
-                                    UpdateToolConfigRequest, VectorStoreType)
+from ragtime.indexer.models import (
+    AnalyzeIndexRequest,
+    AppSettings,
+    ChatMessage,
+    ChatTaskResponse,
+    ChatTaskStatus,
+    CheckRepoVisibilityRequest,
+    ConfigurationWarning,
+    Conversation,
+    ConversationResponse,
+    CreateConversationRequest,
+    CreateIndexRequest,
+    CreateToolConfigRequest,
+    DatabaseDiscoverOption,
+    EmbeddingStatus,
+    FetchBranchesRequest,
+    FetchBranchesResponse,
+    FilesystemAnalysisJobResponse,
+    FilesystemConnectionConfig,
+    FilesystemIndexJobResponse,
+    IndexAnalysisResult,
+    IndexConfig,
+    IndexInfo,
+    IndexJobResponse,
+    IndexStatus,
+    MssqlDiscoverRequest,
+    MssqlDiscoverResponse,
+    MysqlDiscoverRequest,
+    MysqlDiscoverResponse,
+    OcrMode,
+    PdmDiscoverRequest,
+    PdmDiscoverResponse,
+    PdmIndexJobResponse,
+    PostgresDiscoverRequest,
+    PostgresDiscoverResponse,
+    ProviderPromptDebugListResponse,
+    ProviderPromptDebugRecord,
+    RepoVisibilityResponse,
+    RetryVisualizationRequest,
+    RetryVisualizationResponse,
+    SchemaIndexJobResponse,
+    SendMessageRequest,
+    ToolConfig,
+    ToolTestRequest,
+    ToolType,
+    TriggerFilesystemIndexRequest,
+    TriggerPdmIndexRequest,
+    TriggerSchemaIndexRequest,
+    UpdateSettingsRequest,
+    UpdateToolConfigRequest,
+    VectorStoreType,
+)
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
-                                            schema_indexer)
+from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
 from ragtime.indexer.service import indexer
 from ragtime.indexer.title_generation import schedule_title_generation
 from ragtime.indexer.utils import safe_tool_name
@@ -1389,6 +1431,14 @@ async def update_settings(
             raise HTTPException(status_code=400, detail="Server name cannot be empty")
         updates["server_name"] = normalized_server_name
 
+    if "default_chat_model" in updates:
+        default_chat_model = updates.get("default_chat_model")
+        if default_chat_model is None:
+            updates["default_chat_model"] = None
+        else:
+            normalized_default_chat_model = str(default_chat_model).strip()
+            updates["default_chat_model"] = normalized_default_chat_model or None
+
     # Enforce mutually-exclusive GitHub auth modes (PAT vs Copilot OAuth).
     current_settings = await repository.get_settings()
     pat_candidate = str(
@@ -1764,8 +1814,7 @@ async def update_tool_config(
 
                 # Check for name conflicts with existing indexes
                 if is_faiss and new_index_name != old_index_name:
-                    from ragtime.indexer.vector_backends import \
-                        FAISS_INDEX_BASE_PATH
+                    from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 
                     new_path = FAISS_INDEX_BASE_PATH / new_index_name
                     if new_path.exists():
@@ -1786,8 +1835,7 @@ async def update_tool_config(
             # For FAISS filesystem indexes, rename using the backend
             if is_faiss and old_index_name and new_index_name:
                 if old_index_name != new_index_name:
-                    from ragtime.indexer.vector_backends import \
-                        get_faiss_backend
+                    from ragtime.indexer.vector_backends import get_faiss_backend
 
                     faiss_backend = get_faiss_backend()
                     success = await faiss_backend.rename_index(
@@ -6110,6 +6158,7 @@ class AvailableModelsResponse(BaseModel):
 
     models: List[AvailableModel] = []
     default_model: Optional[str] = None
+    automatic_default_model: Optional[str] = None
     current_model: Optional[str] = None  # Currently selected model in settings
     allowed_models: List[str] = []  # List of allowed model IDs (for settings UI)
     allowed_openapi_models: List[str] = []  # Separately curated OpenAPI model list
@@ -6118,6 +6167,77 @@ class AvailableModelsResponse(BaseModel):
 # Sensible default models for each provider
 OPENAI_DEFAULT_MODEL = ""
 ANTHROPIC_DEFAULT_MODEL = ""
+
+
+def _providers_equivalent(selected: str, actual: str) -> bool:
+    """Check provider equivalence, treating github_models/github_copilot as aliases."""
+    if selected == actual:
+        return True
+    return {selected, actual} <= {"github_copilot", "github_models"}
+
+
+def _parse_model_identifier(value: str) -> tuple[Optional[str], str]:
+    """Parse model identifier into (provider, model_id), supporting provider::model format."""
+    raw = (value or "").strip()
+    if not raw:
+        return None, ""
+    if "::" in raw:
+        provider, _, model_id = raw.partition("::")
+        provider = provider.strip().lower()
+        model_id = model_id.strip()
+        if (
+            provider
+            in {"openai", "anthropic", "ollama", "github_copilot", "github_models"}
+            and model_id
+        ):
+            return provider, model_id
+    return None, raw
+
+
+def _build_scoped_model_identifier(model: AvailableModel) -> str:
+    """Build provider-scoped model identifier for durable persistence."""
+    return f"{model.provider}::{model.id}"
+
+
+def _find_available_model_for_identifier(
+    models: List[AvailableModel], identifier: Optional[str]
+) -> Optional[AvailableModel]:
+    """Find a model from available models by bare or provider-scoped identifier."""
+    provider, model_id = _parse_model_identifier(identifier or "")
+    if not model_id:
+        return None
+
+    if provider:
+        for model in models:
+            if model.id == model_id and _providers_equivalent(provider, model.provider):
+                return model
+        return None
+
+    for model in models:
+        if model.id == model_id:
+            return model
+    return None
+
+
+def _identifier_in_allowed_models(identifier: str, allowed_models: List[str]) -> bool:
+    """Check whether a candidate identifier matches any allowed model entry."""
+    if not identifier:
+        return False
+
+    candidate_provider, candidate_model_id = _parse_model_identifier(identifier)
+    if not candidate_model_id:
+        return False
+
+    for allowed in allowed_models:
+        allowed_provider, allowed_model_id = _parse_model_identifier(allowed)
+        if allowed_model_id != candidate_model_id:
+            continue
+        if allowed_provider is None or candidate_provider is None:
+            return True
+        if _providers_equivalent(allowed_provider, candidate_provider):
+            return True
+
+    return False
 
 
 def _normalize_github_domain(url_or_domain: str) -> str:
@@ -6491,8 +6611,12 @@ def _group_models(models: List[LLMModel], provider: str) -> List[LLMModel]:
             if match:
                 if group_name:
                     model.group = group_name
-                elif provider == "ollama":
-                    model.group = match.group(1).title()
+                elif match.lastindex:
+                    model.group = _derive_group_label(
+                        provider,
+                        model.id.lower(),
+                        match.group(1),
+                    )
                 found_group = True
                 break
 
@@ -6517,6 +6641,17 @@ def _group_models(models: List[LLMModel], provider: str) -> List[LLMModel]:
         group_models[0].is_latest = True
 
     return models
+
+
+def _derive_group_label(provider: str, model_id: str, capture: str) -> str:
+    """Build a group label from regex captures for dynamic family patterns."""
+    if provider in {"openai", "github_copilot", "github_models"} and "gpt-" in model_id:
+        return f"GPT-{capture}"
+
+    if provider == "ollama":
+        return capture.title()
+
+    return capture
 
 
 def _extract_version(name: str) -> float:
@@ -6562,8 +6697,12 @@ def _assign_model_groups(models: List[AvailableModel]) -> List[AvailableModel]:
             if match:
                 if group_name:
                     model.group = group_name
-                elif model.provider == "ollama":
-                    model.group = match.group(1).title()
+                elif match.lastindex:
+                    model.group = _derive_group_label(
+                        model.provider,
+                        model.id.lower(),
+                        match.group(1),
+                    )
                 found_group = True
                 break
 
@@ -7469,10 +7608,13 @@ async def get_available_chat_models():
         if not default_model and result.default_model:
             default_model = result.default_model
 
-    # Use current settings model as default if available
-    current_model = app_settings.llm_model
-    if current_model and any(m.id == current_model for m in all_models):
-        default_model = current_model
+    # Use current configured LLM model as automatic default when available.
+    current_model = (app_settings.llm_model or "").strip() or None
+    current_model_match = _find_available_model_for_identifier(
+        all_models, current_model
+    )
+    if current_model_match:
+        default_model = current_model_match.id
 
     # Filter by allowed models if specified.
     # Supports legacy model IDs and provider-scoped keys: provider::model_id.
@@ -7504,11 +7646,6 @@ async def get_available_chat_models():
                     continue
             legacy_model_ids.add(value)
 
-        def _providers_match(selected: str, actual: str) -> bool:
-            if selected == actual:
-                return True
-            return {selected, actual} <= {"github_copilot", "github_models"}
-
         def _lookup_filter_provider(model_id: str) -> str:
             """Look up the filter provider, handling publisher-prefixed IDs.
 
@@ -7525,22 +7662,41 @@ async def get_available_chat_models():
             model
             for model in all_models
             if (
-                _providers_match(_lookup_filter_provider(model.id), model.provider)
+                _providers_equivalent(_lookup_filter_provider(model.id), model.provider)
                 or (
                     model.id in legacy_model_ids
                     and not _lookup_filter_provider(model.id)
                 )
             )
         ]
-        # Ensure default model is in allowed list
-        if default_model and not any(m.id == default_model for m in all_models):
-            default_model = all_models[0].id if all_models else None
 
     # Assign groups to models for UI organization
     all_models = _assign_model_groups(all_models)
 
+    automatic_default_match = _find_available_model_for_identifier(
+        all_models, default_model
+    )
+    if automatic_default_match is None and all_models:
+        automatic_default_match = all_models[0]
+
+    manual_default_identifier = (
+        str(getattr(app_settings, "default_chat_model", "") or "").strip() or None
+    )
+    manual_default_match = _find_available_model_for_identifier(
+        all_models, manual_default_identifier
+    )
+
+    effective_default_match = manual_default_match or automatic_default_match
+
     return AvailableModelsResponse(
-        models=all_models, default_model=default_model, current_model=current_model
+        models=all_models,
+        default_model=effective_default_match.id if effective_default_match else None,
+        automatic_default_model=(
+            _build_scoped_model_identifier(automatic_default_match)
+            if automatic_default_match
+            else None
+        ),
+        current_model=current_model,
     )
 
 
@@ -7813,15 +7969,53 @@ async def list_conversations(
     return [_to_conversation_response(c) for c in convs]
 
 
+def _resolve_default_conversation_model(app_settings: Optional[AppSettings]) -> str:
+    """Resolve default model for new conversations.
+
+    Preference order:
+    1. Manual default_chat_model override (if allowed)
+    2. llm_model (if allowed)
+    3. First allowed_chat_models entry (if any)
+    4. Hard fallback
+    """
+    if app_settings is None:
+        return "gpt-4-turbo"
+
+    manual_default = str(getattr(app_settings, "default_chat_model", "") or "").strip()
+    configured_model = str(app_settings.llm_model or "").strip()
+    allowed_models = [
+        str(value).strip()
+        for value in (app_settings.allowed_chat_models or [])
+        if str(value).strip()
+    ]
+
+    if allowed_models:
+        if manual_default and _identifier_in_allowed_models(
+            manual_default, allowed_models
+        ):
+            return manual_default
+        if configured_model and _identifier_in_allowed_models(
+            configured_model, allowed_models
+        ):
+            return configured_model
+        return allowed_models[0]
+
+    if manual_default:
+        return manual_default
+    if configured_model:
+        return configured_model
+    return "gpt-4-turbo"
+
+
 @router.post("/conversations", response_model=ConversationResponse)
 async def create_conversation(
     request: Optional[CreateConversationRequest] = None,
     user: User = Depends(get_current_user),
 ):
     """Create a new chat conversation for the current user."""
-    # Get default model from app settings if not provided
+    # Get default model from settings (manual override or sensible automatic fallback).
     app_settings = await repository.get_settings()
-    default_model = app_settings.llm_model if app_settings else "gpt-4-turbo"
+    default_model = _resolve_default_conversation_model(app_settings)
 
     title = request.title if request and request.title else "Untitled Chat"
     model = request.model if request and request.model else default_model

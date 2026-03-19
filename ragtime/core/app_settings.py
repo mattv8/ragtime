@@ -8,11 +8,8 @@ replacing environment-based configuration for tool settings.
 from typing import List, Optional
 
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (
-    CONNECTION_CONFIG_PASSWORD_FIELDS,
-    decrypt_json_passwords,
-    decrypt_secret,
-)
+from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
+                                     decrypt_json_passwords, decrypt_secret)
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -163,6 +160,7 @@ class SettingsCache:
                     prisma_settings, "includeCopilotThirdPartyModels", False
                 ),
                 "allowed_chat_models": prisma_settings.allowedChatModels or [],
+                "default_chat_model": getattr(prisma_settings, "defaultChatModel", None),
                 "allowed_openapi_models": getattr(
                     prisma_settings, "allowedOpenapiModels", None
                 )
@@ -244,6 +242,7 @@ class SettingsCache:
                 "github_copilot_base_url": "https://api.githubcopilot.com",
                 "include_copilot_third_party_models": False,
                 "allowed_chat_models": [],
+                "default_chat_model": None,
                 "allowed_openapi_models": [],
                 "openapi_sync_chat_models": True,
                 "max_iterations": 15,

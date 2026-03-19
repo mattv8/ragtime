@@ -165,6 +165,7 @@ model AppSettings {
   githubCopilotBaseUrl String @default("https://api.githubcopilot.com") @map("github_copilot_base_url")
   includeCopilotThirdPartyModels Boolean @default(false) @map("include_copilot_third_party_models")
   allowedChatModels String[] @default([]) @map("allowed_chat_models") // Empty = all models allowed
+  defaultChatModel String? @map("default_chat_model") // Optional manual override for chat default model selection
 
   // OpenAPI-compatible endpoint model configuration
   allowedOpenapiModels    String[]  @default([]) @map("allowed_openapi_models") // Models exposed via /v1/models; empty = use chat models

@@ -17,17 +17,10 @@ from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.logging import get_logger
 from ragtime.indexer.routes import get_available_chat_models
-from ragtime.models import (
-    ChatChoice,
-    ChatCompletionRequest,
-    ChatCompletionResponse,
-    HealthResponse,
-    IndexLoadingDetail,
-    MemoryStats,
-    Message,
-    ModelInfo,
-    ModelsResponse,
-)
+from ragtime.models import (ChatChoice, ChatCompletionRequest,
+                            ChatCompletionResponse, HealthResponse,
+                            IndexLoadingDetail, MemoryStats, Message,
+                            ModelInfo, ModelsResponse)
 from ragtime.rag import rag
 
 logger = get_logger(__name__)
@@ -105,12 +98,14 @@ def _models_cache_key(app_settings: dict, default_provider: str) -> tuple:
         if str(v).strip()
     )
     llm_model = str(app_settings.get("llm_model", "") or "").strip()
+    default_chat_model = str(app_settings.get("default_chat_model", "") or "").strip()
     return (
         default_provider,
         sync_chat,
         allowed_openapi,
         allowed_chat,
         llm_model,
+        default_chat_model,
     )
 
 
@@ -136,6 +131,9 @@ def _set_cached_model_ids(cache_key: tuple, model_ids: list[str]) -> None:
 
 def _configured_openapi_model(app_settings: dict) -> str:
     """Return the model ID configured for OpenAI-compatible clients."""
+    override = str(app_settings.get("default_chat_model", "") or "").strip()
+    if override:
+        return override
     return str(app_settings.get("llm_model", "") or "").strip()
 
 

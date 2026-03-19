@@ -488,6 +488,7 @@ export interface AppSettings {
   include_copilot_third_party_models: boolean;
   has_github_copilot_auth: boolean;
   allowed_chat_models: string[];
+  default_chat_model?: string | null;
   // OpenAPI-compatible endpoint model configuration
   allowed_openapi_models: string[];
   openapi_sync_chat_models: boolean;
@@ -572,6 +573,7 @@ export interface UpdateSettingsRequest {
   github_copilot_base_url?: string;
   include_copilot_third_party_models?: boolean;
   allowed_chat_models?: string[];
+  default_chat_model?: string | null;
   allowed_openapi_models?: string[];
   openapi_sync_chat_models?: boolean;
   max_iterations?: number;
@@ -1867,6 +1869,7 @@ export interface AvailableModel {
 export interface AvailableModelsResponse {
   models: AvailableModel[];
   default_model: string | null;
+  automatic_default_model?: string | null;
   current_model: string | null;
   allowed_models: string[];  // List of allowed model IDs (for settings UI)
   allowed_openapi_models: string[];  // Separately curated OpenAPI model list

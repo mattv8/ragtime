@@ -15,7 +15,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, cast
 
-from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexStatus as PrismaIndexStatus
 from prisma.enums import ToolType as PrismaToolType
@@ -23,34 +22,20 @@ from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
+from prisma import Json, Prisma
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (
-    CONNECTION_CONFIG_PASSWORD_FIELDS,
-    decrypt_json_passwords,
-    decrypt_secret,
-    encrypt_json_passwords,
-    encrypt_secret,
-)
+from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
+                                     decrypt_json_passwords, decrypt_secret,
+                                     encrypt_json_passwords, encrypt_secret)
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
-from ragtime.indexer.models import (
-    SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
-    AppSettings,
-    ChatMessage,
-    ChatTask,
-    ChatTaskStatus,
-    ChatTaskStreamingState,
-    Conversation,
-    IndexConfig,
-    IndexJob,
-    IndexStatus,
-    ProviderPromptDebugRecord,
-    ToolCallRecord,
-    ToolConfig,
-    ToolOutputMode,
-    ToolType,
-    VectorStoreType,
-)
+from ragtime.indexer.models import (SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
+                                    AppSettings, ChatMessage, ChatTask,
+                                    ChatTaskStatus, ChatTaskStreamingState,
+                                    Conversation, IndexConfig, IndexJob,
+                                    IndexStatus, ProviderPromptDebugRecord,
+                                    ToolCallRecord, ToolConfig, ToolOutputMode,
+                                    ToolType, VectorStoreType)
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 
@@ -740,6 +725,7 @@ class IndexerRepository:
             ),
             has_github_copilot_auth=bool(github_copilot_access_token),
             allowed_chat_models=settings.allowedChatModels or [],
+            default_chat_model=getattr(settings, "defaultChatModel", None),
             # OpenAPI model configuration
             allowed_openapi_models=getattr(settings, "allowedOpenapiModels", None)
             or [],
@@ -836,6 +822,7 @@ class IndexerRepository:
             "github_copilot_base_url": "githubCopilotBaseUrl",
             "include_copilot_third_party_models": "includeCopilotThirdPartyModels",
             "allowed_chat_models": "allowedChatModels",
+            "default_chat_model": "defaultChatModel",
             "allowed_openapi_models": "allowedOpenapiModels",
             "openapi_sync_chat_models": "openapiSyncChatModels",
             "max_iterations": "maxIterations",
@@ -926,6 +913,18 @@ class IndexerRepository:
                 update_data["mcpDefaultRouteAllowedGroup"] = None
             elif group_value is not None:
                 update_data["mcpDefaultRouteAllowedGroup"] = group_value
+
+        # Optional manual default chat model override:
+        # - None or empty string clears override (automatic selection)
+        if "default_chat_model" in updates:
+            default_chat_model_value = updates["default_chat_model"]
+            if default_chat_model_value is None:
+                update_data["defaultChatModel"] = None
+            else:
+                normalized_default_chat_model = str(default_chat_model_value).strip()
+                update_data["defaultChatModel"] = (
+                    normalized_default_chat_model or None
+                )
 
         # Special handling for GitHub Copilot nullable fields.
         # These may need explicit clearing to NULL.

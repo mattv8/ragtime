@@ -52,6 +52,68 @@ function settingsTextMatchesQuery(text: string | null | undefined, queries: stri
   return queries.some((q) => normalized.includes(q));
 }
 
+const CHAT_MODEL_PROVIDER_LABELS: Record<string, string> = {
+  openai: 'OpenAI',
+  anthropic: 'Anthropic',
+  ollama: 'Ollama',
+  github_copilot: 'GitHub Copilot',
+  github_models: 'GitHub Copilot',
+};
+
+function parseScopedModelIdentifier(value: string | null | undefined): { provider: string | null; modelId: string } {
+  const raw = (value || '').trim();
+  if (!raw) {
+    return { provider: null, modelId: '' };
+  }
+  if (raw.includes('::')) {
+    const [provider, ...rest] = raw.split('::');
+    return {
+      provider: provider.trim() || null,
+      modelId: rest.join('::').trim(),
+    };
+  }
+  return { provider: null, modelId: raw };
+}
+
+function toScopedModelIdentifier(model: AvailableModel): string {
+  return `${model.provider}::${model.id}`;
+}
+
+function formatModelIdentifierForDisplay(identifier: string | null | undefined, models: AvailableModel[]): string {
+  const { provider, modelId } = parseScopedModelIdentifier(identifier);
+  if (!modelId) {
+    return 'not configured';
+  }
+
+  const providerMatches = (candidate: string, target: string) => {
+    if (candidate === target) return true;
+    return (candidate === 'github_models' && target === 'github_copilot')
+      || (candidate === 'github_copilot' && target === 'github_models');
+  };
+
+  const exactMatch = models.find((m) => (
+    m.id === modelId
+    && provider
+    && providerMatches(m.provider, provider)
+  ));
+  if (exactMatch) {
+    const label = CHAT_MODEL_PROVIDER_LABELS[exactMatch.provider] || exactMatch.provider;
+    return `${exactMatch.id} (${label})`;
+  }
+
+  const unscopedMatch = models.find((m) => m.id === modelId);
+  if (unscopedMatch) {
+    const label = CHAT_MODEL_PROVIDER_LABELS[unscopedMatch.provider] || unscopedMatch.provider;
+    return `${unscopedMatch.id} (${label})`;
+  }
+
+  if (provider) {
+    const label = CHAT_MODEL_PROVIDER_LABELS[provider] || provider;
+    return `${modelId} (${label})`;
+  }
+  return modelId;
+}
+
 interface SettingsPanelProps {
   onServerNameChange?: (name: string) => void;
   /** Setting ID to highlight and scroll to (e.g., 'sequential_index_loading') */
@@ -149,6 +211,8 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set());
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelFilterText, setModelFilterText] = useState('');
+  const [filteredChatModels, setFilteredChatModels] = useState<AvailableModel[]>([]);
+  const [automaticDefaultChatModel, setAutomaticDefaultChatModel] = useState<string | null>(null);
 
   // OpenAPI model filter modal state
   const [showOpenapiModelModal, setShowOpenapiModelModal] = useState(false);
@@ -653,6 +717,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       setShowModelFilterModal(false);
       setSuccess('Model filter saved');
       refreshModels();
+      await refreshDefaultChatModelPreview();
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save model filter');
@@ -718,6 +783,17 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     }
   };
 
+  const refreshDefaultChatModelPreview = useCallback(async () => {
+    try {
+      const response = await api.getAvailableModels();
+      setFilteredChatModels(response.models || []);
+      setAutomaticDefaultChatModel(response.automatic_default_model || null);
+    } catch {
+      setFilteredChatModels([]);
+      setAutomaticDefaultChatModel(null);
+    }
+  }, []);
+
   const loadSettings = useCallback(async () => {
     try {
       setLoading(true);
@@ -752,6 +828,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         github_models_api_token: data.github_models_api_token,
         github_copilot_base_url: data.github_copilot_base_url,
         github_copilot_enterprise_url: data.github_copilot_enterprise_url,
+        default_chat_model: data.default_chat_model ?? null,
         max_iterations: data.max_iterations,
         // Token optimization settings
         max_tool_output_chars: data.max_tool_output_chars,
@@ -835,6 +912,8 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         }
       }
 
+      await refreshDefaultChatModelPreview();
+
       // Load MCP routes (for summary display)
       try {
         const routesRes = await api.listMcpRoutes();
@@ -902,6 +981,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   }, [
     clearCopilotPollTimer,
     fetchLlmModels,
+    refreshDefaultChatModelPreview,
     refreshCopilotStatus,
     testLlmOllamaConnection,
     testOllamaConnection,
@@ -1131,6 +1211,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         github_models_api_token: formData.github_models_api_token,
         github_copilot_base_url: formData.github_copilot_base_url,
         github_copilot_enterprise_url: formData.github_copilot_enterprise_url,
+        default_chat_model: formData.default_chat_model,
         allowed_chat_models: formData.allowed_chat_models,
         max_iterations: formData.max_iterations,
         // OpenAPI model settings
@@ -1161,6 +1242,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       setSettings(updated);
       setSuccess('LLM configuration saved');
       refreshModels();
+      await refreshDefaultChatModelPreview();
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save LLM settings');
@@ -1503,6 +1585,22 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     (formData.ollama_host ?? settings?.ollama_host)?.trim() &&
     (formData.ollama_port ?? settings?.ollama_port)
   );
+  const manualDefaultChatModel = (() => {
+    if (formData.default_chat_model !== undefined) {
+      return formData.default_chat_model ?? null;
+    }
+    return settings?.default_chat_model ?? null;
+  })();
+  const defaultChatModelOptions = filteredChatModels.map((model) => ({
+    value: toScopedModelIdentifier(model),
+    label: `${model.id} (${CHAT_MODEL_PROVIDER_LABELS[model.provider] || model.provider})`,
+  }));
+  const manualDefaultExistsInOptions = !!manualDefaultChatModel
+    && defaultChatModelOptions.some((option) => option.value === manualDefaultChatModel);
+  const effectiveDefaultChatModelDisplay = formatModelIdentifierForDisplay(
+    manualDefaultExistsInOptions ? manualDefaultChatModel : automaticDefaultChatModel,
+    filteredChatModels,
+  );
 
   return (
     <div className="card">
@@ -1589,7 +1687,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           Connect external clients (e.g., Open WebUI) using <code>{getDisplayUrl('/v1')}</code>.
         </p>
         <p className="field-help" style={{ marginTop: '0.5rem' }}>
-          Default model: <code>{formData.llm_model || settings?.llm_model || 'not configured'}</code>. <code>/v1/models</code> returns {formData.openapi_sync_chat_models !== false ? 'your Chat Models selection' : 'a separately configured OpenAPI models list'}.
+          Default model: <code>{effectiveDefaultChatModelDisplay}</code>. <code>/v1/models</code> returns {formData.openapi_sync_chat_models !== false ? 'your Chat Models selection' : 'a separately configured OpenAPI models list'}.
         </p>
         {(!authStatus?.api_key_configured || window.location.protocol === 'http:') && (
           <div className="field-warning" style={{ marginTop: '0.75rem', padding: '0.75rem', backgroundColor: 'rgba(255, 193, 7, 0.15)', borderLeft: '3px solid #ffc107', borderRadius: '4px' }}>
@@ -1909,7 +2007,6 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
             <div className="form-group">
               <label>GitHub Copilot Connection</label>
               <div className="form-row" style={{ marginBottom: '0.75rem' }}>
-                <label style={{ marginRight: '0.75rem' }}>Authentication</label>
                 <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
                   <label style={{ display: 'inline-flex', gap: '0.35rem', alignItems: 'center', marginBottom: 0 }}>
                     <input
@@ -2105,9 +2202,9 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
             </div>
           ) : null}
 
-          <div className="form-row">
+          <div className="form-row-3">
             {/* Chat Model Filter */}
-            <div className="form-group" style={{ flex: 1 }}>
+            <div className="form-group">
               <label>Chat Models</label>
               <button
                 type="button"
@@ -2121,8 +2218,47 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
               </p>
             </div>
 
+            {/* Default Chat Model configuration */}
+            <div className="form-group">
+              <label>Default Chat Model</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <select
+                  style={{ flex: 1 }}
+                  value={manualDefaultChatModel ?? automaticDefaultChatModel ?? ''}
+                  onChange={(e) => {
+                    const selectedValue = e.target.value;
+                    setFormData({
+                      ...formData,
+                      default_chat_model: selectedValue || null,
+                    });
+                  }}
+                  disabled={filteredChatModels.length === 0}
+                >
+                  {defaultChatModelOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+                {manualDefaultChatModel && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary settings-control-height"
+                    style={{ padding: '0 0.5rem', fontSize: '0.85em', whiteSpace: 'nowrap' }}
+                    title="Reset to default model"
+                    onClick={() => setFormData({ ...formData, default_chat_model: null })}
+                  >
+                    Reset
+                  </button>
+                )}
+              </div>
+              <p className="field-help">
+                {manualDefaultChatModel
+                  ? 'Manually selected. Click Reset to use the default.'
+                  : 'Using the default model. Select a different model to override.'}
+              </p>
+            </div>
+
             {/* OpenAPI Models configuration */}
-            <div className="form-group" style={{ flex: 1 }}>
+            <div className="form-group">
               <label>OpenAPI Models</label>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontSize: '0.9em', margin: 0, whiteSpace: 'nowrap' }}>

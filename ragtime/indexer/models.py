@@ -11,10 +11,9 @@ from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from ragtime.core.embedding_models import (
-    get_embedding_models,
-    get_model_dimensions_sync,
-)
+from ragtime.core.embedding_models import (get_embedding_models,
+                                           get_model_dimensions_sync)
+
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -576,6 +575,10 @@ class AppSettings(BaseModel):
         default=[],
         description="List of allowed model IDs for chat. Empty = all models allowed.",
     )
+    default_chat_model: Optional[str] = Field(
+        default=None,
+        description="Optional manual override for the default chat model. Must be in filtered Chat Models to apply.",
+    )
 
     # OpenAPI-compatible endpoint model configuration
     allowed_openapi_models: List[str] = Field(
@@ -949,6 +952,7 @@ class UpdateSettingsRequest(BaseModel):
     github_copilot_base_url: Optional[str] = None
     include_copilot_third_party_models: Optional[bool] = None
     allowed_chat_models: Optional[List[str]] = None
+    default_chat_model: Optional[str] = None
     allowed_openapi_models: Optional[List[str]] = None
     openapi_sync_chat_models: Optional[bool] = None
     max_iterations: Optional[int] = Field(default=None, ge=1, le=100)
