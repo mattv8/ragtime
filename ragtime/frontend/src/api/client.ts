@@ -1746,13 +1746,29 @@ export const api = {
     return handleResponse<UserSpaceWorkspace>(response);
   },
 
+  _fileListEtags: {} as Record<string, { etag: string; data: UserSpaceFileInfo[] }>,
+
   async listUserSpaceFiles(
     workspaceId: string,
     options?: { includeDirs?: boolean }
   ): Promise<UserSpaceFileInfo[]> {
     const query = options?.includeDirs ? '?include_dirs=true' : '';
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/files${query}`);
-    return handleResponse<UserSpaceFileInfo[]>(response);
+    const cacheKey = `${workspaceId}:${query}`;
+    const cached = this._fileListEtags[cacheKey];
+    const headers: Record<string, string> = {};
+    if (cached) {
+      headers['If-None-Match'] = cached.etag;
+    }
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/files${query}`, { headers });
+    if (response.status === 304 && cached) {
+      return cached.data;
+    }
+    const data = await handleResponse<UserSpaceFileInfo[]>(response);
+    const etag = response.headers.get('etag');
+    if (etag) {
+      this._fileListEtags[cacheKey] = { etag, data };
+    }
+    return data;
   },
 
   async getUserSpaceFile(workspaceId: string, filePath: string): Promise<UserSpaceFile> {

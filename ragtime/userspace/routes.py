@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import (APIRouter, Depends, Header, HTTPException, Query, Request,
+                     Response)
 
 from ragtime.core.security import get_current_user, get_current_user_optional
 from ragtime.indexer.repository import repository
@@ -136,12 +137,22 @@ async def update_workspace_members(
 @router.get("/workspaces/{workspace_id}/files", response_model=list[UserSpaceFileInfo])
 async def list_workspace_files(
     workspace_id: str,
+    response: Response,
     include_dirs: bool = False,
+    if_none_match: str | None = Header(None),
     user: Any = Depends(get_current_user),
 ):
-    return await userspace_service.list_workspace_files(
+    generation = await userspace_runtime_service.get_workspace_generation(workspace_id)
+    etag = f'W/"{workspace_id}:{generation}"'
+
+    if if_none_match and if_none_match == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+
+    result = await userspace_service.list_workspace_files(
         workspace_id, user.id, include_dirs=include_dirs
     )
+    response.headers["ETag"] = etag
+    return result
 
 
 @router.put(
@@ -157,6 +168,7 @@ async def upsert_workspace_file(
     result = await userspace_service.upsert_workspace_file(
         workspace_id, file_path, request, user.id
     )
+    userspace_service.invalidate_file_list_cache(workspace_id)
     await userspace_runtime_service.bump_workspace_generation(
         workspace_id, "file_upsert"
     )
@@ -182,6 +194,7 @@ async def delete_workspace_file(
     user: Any = Depends(get_current_user),
 ):
     await userspace_service.delete_workspace_file(workspace_id, file_path, user.id)
+    userspace_service.invalidate_file_list_cache(workspace_id)
     await userspace_runtime_service.bump_workspace_generation(
         workspace_id, "file_delete"
     )
@@ -426,4 +439,5 @@ async def restore_snapshot(
     return RestoreSnapshotResponse(
         restored_snapshot_id=snapshot.id,
         file_count=snapshot.file_count,
+    )
     )

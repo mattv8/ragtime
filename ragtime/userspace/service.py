@@ -21,47 +21,39 @@ from ragtime.config import settings
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
-from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
+from ragtime.core.entrypoint_status import (EntrypointStatus,
+                                            parse_entrypoint_config)
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (
-    DB_TYPE_POSTGRES,
-    add_table_metadata_to_psql_output,
-    enforce_max_results,
-    format_query_result,
-    validate_sql_query,
-)
-from ragtime.core.ssh import (
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
+                                    add_table_metadata_to_psql_output,
+                                    enforce_max_results, format_query_result,
+                                    validate_sql_query)
+from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
+                              ssh_tunnel_config_from_dict)
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (
-    ArtifactType,
-    CreateWorkspaceRequest,
-    ExecuteComponentRequest,
-    ExecuteComponentResponse,
-    PaginatedWorkspacesResponse,
-    ShareAccessMode,
-    SqlitePersistenceMode,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-    UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot,
-    UserSpaceWorkspace,
-    UserSpaceWorkspaceShareLink,
-    UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceMember,
-    WorkspaceShareSlugAvailabilityResponse,
-)
+from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
+                                      ExecuteComponentRequest,
+                                      ExecuteComponentResponse,
+                                      PaginatedWorkspacesResponse,
+                                      ShareAccessMode, SqlitePersistenceMode,
+                                      UpdateWorkspaceMembersRequest,
+                                      UpdateWorkspaceRequest,
+                                      UpdateWorkspaceShareAccessRequest,
+                                      UpsertWorkspaceFileRequest,
+                                      UserSpaceFileInfo, UserSpaceFileResponse,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection,
+                                      UserSpaceSharedPreviewResponse,
+                                      UserSpaceSnapshot, UserSpaceWorkspace,
+                                      UserSpaceWorkspaceShareLink,
+                                      UserSpaceWorkspaceShareLinkStatus,
+                                      WorkspaceMember,
+                                      WorkspaceShareSlugAvailabilityResponse)
 
 logger = get_logger(__name__)
+
+_FILE_LIST_CACHE_TTL_SECONDS = 2
+_ENTRYPOINT_STATUS_CACHE_TTL_SECONDS = 300  # 5-minute TTL for entrypoint status
 
 
 class _ExecutionProofRecord:
@@ -475,9 +467,6 @@ def _enforce_sqlite_file_path_policy(relative_path: str) -> None:
         )
 
 
-_ENTRYPOINT_STATUS_CACHE_TTL_SECONDS = 300  # 5-minute TTL for entrypoint status
-
-
 class UserSpaceService:
     def __init__(self) -> None:
         self._base_dir = Path(settings.index_data_path) / "_userspace"
@@ -486,6 +475,8 @@ class UserSpaceService:
         self._execution_proofs: dict[str, dict[str, _ExecutionProofRecord]] = {}
         # TTL-cached entrypoint status per workspace: {workspace_id: (EntrypointStatus, timestamp)}
         self._entrypoint_status_cache: dict[str, tuple[EntrypointStatus, float]] = {}
+        # Short-lived file list cache: {workspace_id: (result, include_dirs, timestamp)}
+        self._file_list_cache: dict[str, tuple[list[UserSpaceFileInfo], bool, float]] = {}
 
     def record_execution_proof(
         self,
@@ -2029,6 +2020,9 @@ class UserSpaceService:
 
         return self._workspace_from_record(refreshed)
 
+    def invalidate_file_list_cache(self, workspace_id: str) -> None:
+        self._file_list_cache.pop(workspace_id, None)
+
     async def list_workspace_files(
         self, workspace_id: str, user_id: str, include_dirs: bool = False
     ) -> list[UserSpaceFileInfo]:
@@ -2038,9 +2032,19 @@ class UserSpaceService:
         if not files_dir.exists():
             return []
 
-        return await asyncio.to_thread(
+        import time as _time
+
+        cached = self._file_list_cache.get(workspace_id)
+        if cached is not None:
+            cached_result, cached_include_dirs, cached_ts = cached
+            if cached_include_dirs == include_dirs and (_time.monotonic() - cached_ts) < _FILE_LIST_CACHE_TTL_SECONDS:
+                return cached_result
+
+        result = await asyncio.to_thread(
             self._list_workspace_files_sync, files_dir, include_dirs
         )
+        self._file_list_cache[workspace_id] = (result, include_dirs, _time.monotonic())
+        return result
 
     async def upsert_workspace_file(
         self,

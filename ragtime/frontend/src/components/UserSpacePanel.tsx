@@ -64,6 +64,10 @@ function areSameNormalizedStringArrays(left: string[], right: string[]): boolean
   return normalizedLeft.every((value, index) => value === normalizedRight[index]);
 }
 
+function fileEntriesFingerprint(entries: UserSpaceFileInfo[]): string {
+  return entries.map((e) => `${e.path}:${e.updated_at ?? ''}`).join('\n');
+}
+
 const LAST_WORKSPACE_COOKIE_PREFIX = 'userspace_last_workspace_id_';
 const LAST_WORKSPACE_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
 const USERSPACE_LAYOUT_COOKIE_PREFIX = 'userspace_layout_';
@@ -293,6 +297,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const collabReconnectAttemptsRef = useRef(0);
   const collabSuppressNextSendRef = useRef(false);
   const workspaceEventsReconnectTimerRef = useRef<number | null>(null);
+  const loadWorkspaceDataDebounceRef = useRef<number | null>(null);
+  const refreshRuntimeStatusInflightRef = useRef(false);
+  const fileBrowserEntriesRef = useRef<UserSpaceFileInfo[]>([]);
   const terminalSocketRef = useRef<WebSocket | null>(null);
   const terminalReconnectTimerRef = useRef<number | null>(null);
   const terminalReadOnlyRef = useRef(false);
@@ -650,6 +657,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         return;
       }
 
+      // Skip state updates if the file list is unchanged (same paths and timestamps).
+      if (fileEntriesFingerprint(nextEntries) === fileEntriesFingerprint(fileBrowserEntriesRef.current)) {
+        return;
+      }
+
       setFileBrowserEntries(nextEntries);
       setFiles(nextFiles);
 
@@ -727,6 +739,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, []);
 
+  const debouncedLoadWorkspaceData = useCallback((workspaceId: string) => {
+    if (loadWorkspaceDataDebounceRef.current !== null) {
+      window.clearTimeout(loadWorkspaceDataDebounceRef.current);
+    }
+    loadWorkspaceDataDebounceRef.current = window.setTimeout(() => {
+      loadWorkspaceDataDebounceRef.current = null;
+      void loadWorkspaceData(workspaceId);
+    }, 300);
+  }, [loadWorkspaceData]);
+
   useEffect(() => {
     loadWorkspaces();
   }, [loadWorkspaces]);
@@ -788,6 +810,32 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     fileDirtyRef.current = fileDirty;
   }, [fileDirty]);
 
+  useEffect(() => {
+    fileBrowserEntriesRef.current = fileBrowserEntries;
+  }, [fileBrowserEntries]);
+
+  const refreshRuntimeStatus = useCallback(async () => {
+    if (!activeWorkspaceId) {
+      setRuntimeStatus(null);
+      return;
+    }
+    if (refreshRuntimeStatusInflightRef.current) return;
+    refreshRuntimeStatusInflightRef.current = true;
+    const requestId = ++loadRuntimeStatusRequestIdRef.current;
+    try {
+      const status = await api.getUserSpaceRuntimeDevserverStatus(activeWorkspaceId);
+      if (requestId === loadRuntimeStatusRequestIdRef.current) {
+        setRuntimeStatus(status);
+      }
+    } catch {
+      if (requestId === loadRuntimeStatusRequestIdRef.current) {
+        setRuntimeStatus(null);
+      }
+    } finally {
+      refreshRuntimeStatusInflightRef.current = false;
+    }
+  }, [activeWorkspaceId]);
+
   // SSE subscription for workspace change events (file upsert/patch/delete, snapshots).
   // Bumps previewRefreshCounter to remount the preview iframe and reloads workspace data.
   useEffect(() => {
@@ -811,11 +859,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           lastGeneration = data.generation;
           const eventType = data.event_type ?? 'update';
           if (eventType === 'runtime_phase') {
-            void api.getUserSpaceRuntimeDevserverStatus(activeWorkspaceId)
-              .then((status) => setRuntimeStatus(status))
-              .catch(() => {
-                // Ignore transient runtime status errors during startup transitions.
-              });
+            void refreshRuntimeStatus();
             return;
           }
 
@@ -829,7 +873,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           // Skip full workspace reloads for collab/snapshot update events to reduce UI churn.
           const shouldReloadWorkspace = eventType !== 'update' && eventType !== 'snapshot';
           if (shouldReloadWorkspace && !fileDirtyRef.current && !isCodeEditorFocused()) {
-            void loadWorkspaceData(activeWorkspaceId);
+            debouncedLoadWorkspaceData(activeWorkspaceId);
           }
         }
       } catch {
@@ -855,6 +899,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
     return () => {
       source.close();
+      if (loadWorkspaceDataDebounceRef.current !== null) {
+        window.clearTimeout(loadWorkspaceDataDebounceRef.current);
+        loadWorkspaceDataDebounceRef.current = null;
+      }
       if (workspaceEventsReconnectTimerRef.current !== null) {
         window.clearTimeout(workspaceEventsReconnectTimerRef.current);
         workspaceEventsReconnectTimerRef.current = null;
@@ -862,8 +910,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     };
   }, [
     activeWorkspaceId,
+    debouncedLoadWorkspaceData,
     isCodeEditorFocused,
-    loadWorkspaceData,
+    refreshRuntimeStatus,
     workspaceEventsReconnectNonce,
   ]);
 
@@ -1199,24 +1248,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       setError(err instanceof Error ? err.message : 'Failed to restore snapshot');
     }
   }, [activeWorkspaceId, canEditWorkspace, loadSnapshots, loadWorkspaceData]);
-
-  const refreshRuntimeStatus = useCallback(async () => {
-    if (!activeWorkspaceId) {
-      setRuntimeStatus(null);
-      return;
-    }
-    const requestId = ++loadRuntimeStatusRequestIdRef.current;
-    try {
-      const status = await api.getUserSpaceRuntimeDevserverStatus(activeWorkspaceId);
-      if (requestId === loadRuntimeStatusRequestIdRef.current) {
-        setRuntimeStatus(status);
-      }
-    } catch {
-      if (requestId === loadRuntimeStatusRequestIdRef.current) {
-        setRuntimeStatus(null);
-      }
-    }
-  }, [activeWorkspaceId]);
 
   const handleStartRuntime = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
