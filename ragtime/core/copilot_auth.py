@@ -2,7 +2,7 @@
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Literal, Optional
 
 import httpx
 
@@ -17,6 +17,7 @@ _REFRESH_BUFFER = timedelta(minutes=5)
 
 # Singleflight lock: prevents concurrent callers from all triggering a refresh.
 _refresh_lock = asyncio.Lock()
+_background_refresh_task_holder: dict[str, Optional[asyncio.Task]] = {"task": None}
 
 # GitHub App client ID used for the OAuth device flow (Copilot extension).
 _GITHUB_COPILOT_CLIENT_ID = "Iv1.b507a08c87ecfe98"
@@ -146,12 +147,28 @@ async def _try_oauth_refresh_and_exchange(
     return new_hmac
 
 
-async def ensure_copilot_token_fresh() -> Optional[str]:
-    """Proactively refresh the stored Copilot HMAC token if it is near expiry.
+def _should_refresh_in_background(
+    access_token: str,
+    refresh_token: str,
+    oauth_refresh_token: str,
+    expires_at: Optional[datetime],
+) -> bool:
+    """Determine whether a background refresh should be scheduled."""
+    now = datetime.now(timezone.utc)
+    if not access_token:
+        return bool(refresh_token or oauth_refresh_token)
+    if isinstance(expires_at, datetime):
+        return expires_at <= now + _REFRESH_BUFFER
+    return False
 
-    Returns the (possibly refreshed) access token, or ``None`` when no
-    Copilot OAuth connection exists.  Settings and cache are updated
-    transparently on refresh.
+
+async def ensure_copilot_token_fresh(
+    mode: Literal["blocking", "background"] = "blocking",
+) -> Optional[str]:
+    """Return a Copilot token, optionally refreshing credentials.
+
+    `mode="blocking"` performs the full refresh flow synchronously.
+    `mode="background"` schedules refresh asynchronously and returns quickly.
     """
     settings = await repository.get_settings()
     access_token = (settings.github_copilot_access_token or "").strip()
@@ -160,6 +177,17 @@ async def ensure_copilot_token_fresh() -> Optional[str]:
         getattr(settings, "github_copilot_oauth_refresh_token", "") or ""
     )
     oauth_refresh_token = oauth_refresh_token.strip()
+    expires_at = settings.github_copilot_token_expires_at
+
+    if mode == "background":
+        if _should_refresh_in_background(
+            access_token,
+            refresh_token,
+            oauth_refresh_token,
+            expires_at,
+        ):
+            _schedule_background_refresh()
+        return access_token or None
 
     if not access_token:
         # Recover when only the long-lived GitHub OAuth token is present.
@@ -192,7 +220,6 @@ async def ensure_copilot_token_fresh() -> Optional[str]:
                         return result
         return None
 
-    expires_at = settings.github_copilot_token_expires_at
     if expires_at is None or not refresh_token:
         # No expiry tracked or no refresh token — use what we have.
         return access_token
@@ -245,3 +272,24 @@ async def ensure_copilot_token_fresh() -> Optional[str]:
                 return None
             # If still valid but within refresh buffer, keep using it temporarily.
             return access_token
+
+
+def _schedule_background_refresh() -> None:
+    """Schedule a best-effort refresh task if one is not already running."""
+    task = _background_refresh_task_holder.get("task")
+    if task and not task.done():
+        return
+
+    async def _runner() -> None:
+        try:
+            await ensure_copilot_token_fresh()
+        except Exception as exc:
+            logger.debug("Background Copilot token refresh failed: %s", exc)
+
+    try:
+        _background_refresh_task_holder["task"] = asyncio.create_task(_runner())
+    except RuntimeError:
+        # No running event loop in this context.
+        return
+
+

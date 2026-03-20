@@ -7462,9 +7462,9 @@ async def get_available_chat_models():
     Returns models from configured providers (OpenAI, Anthropic, Ollama, GitHub Copilot).
     Provider fetches run in parallel to avoid blocking the event loop when one provider is slow.
     """
-    # Proactively refresh GitHub Copilot HMAC token if near expiry so
-    # non-admin users (chat / userspace tabs) don't hit a stale 401.
-    await ensure_copilot_token_fresh()
+    # Kick off Copilot refresh in the background to avoid blocking model
+    # discovery when another request is already refreshing.
+    await ensure_copilot_token_fresh(mode="background")
 
     app_settings = await repository.get_settings()
     if not app_settings:
@@ -7708,8 +7708,9 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
     Used by the settings UI to show all models for selection.
     Provider fetches run in parallel.
     """
-    # Proactively refresh GitHub Copilot HMAC token if near expiry.
-    await ensure_copilot_token_fresh()
+    # Kick off Copilot refresh in the background to avoid blocking model
+    # discovery when another request is already refreshing.
+    await ensure_copilot_token_fresh(mode="background")
 
     app_settings = await repository.get_settings()
     if not app_settings:
