@@ -280,6 +280,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [savingMembers, setSavingMembers] = useState(false);
   const [showToolPicker, setShowToolPicker] = useState(false);
   const [showSnapshots, setShowSnapshots] = useState(false);
+  const [snapshotsLoadedForWorkspace, setSnapshotsLoadedForWorkspace] = useState<string | null>(null);
   const toolPickerRef = useRef<HTMLDivElement>(null);
   const workspaceDropdownRef = useRef<HTMLDivElement>(null);
   const selectedFilePathRef = useRef(selectedFilePath);
@@ -641,10 +642,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     const requestId = ++loadWorkspaceDataRequestIdRef.current;
 
     try {
-      const [nextEntries, nextSnapshots] = await Promise.all([
-        api.listUserSpaceFiles(workspaceId, { includeDirs: true }),
-        api.listUserSpaceSnapshots(workspaceId),
-      ]);
+      const nextEntries = await api.listUserSpaceFiles(workspaceId, { includeDirs: true });
 
       const nextFiles = nextEntries.filter((entry) => entry.entry_type !== 'directory');
 
@@ -654,7 +652,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
       setFileBrowserEntries(nextEntries);
       setFiles(nextFiles);
-      setSnapshots(nextSnapshots);
 
       const validPaths = new Set(nextFiles.map((file) => file.path));
       setFileContentCache((current) => {
@@ -720,6 +717,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, [previewEntryPath]);
 
+  const loadSnapshots = useCallback(async (workspaceId: string) => {
+    try {
+      const result = await api.listUserSpaceSnapshots(workspaceId);
+      setSnapshots(result);
+      setSnapshotsLoadedForWorkspace(workspaceId);
+    } catch {
+      // Snapshot list is non-critical; keep UI functional.
+    }
+  }, []);
+
   useEffect(() => {
     loadWorkspaces();
   }, [loadWorkspaces]);
@@ -767,21 +774,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
   useEffect(() => {
     if (!activeWorkspaceId) return;
+    setSnapshots([]);
+    setSnapshotsLoadedForWorkspace(null);
+    setShowSnapshots(false);
     loadWorkspaceData(activeWorkspaceId);
   }, [activeWorkspaceId, loadWorkspaceData]);
-
-  useEffect(() => {
-    if (!activeWorkspaceId) return;
-
-    const refreshInterval = window.setInterval(() => {
-      if (fileDirty || savingFile || isCodeEditorFocused()) return;
-      loadWorkspaceData(activeWorkspaceId);
-    }, 4000);
-
-    return () => {
-      window.clearInterval(refreshInterval);
-    };
-  }, [activeWorkspaceId, fileDirty, isCodeEditorFocused, loadWorkspaceData, savingFile]);
 
   useEffect(() => {
     fileContentCacheRef.current = fileContentCache;
@@ -824,13 +821,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
           // Avoid remounting preview on high-frequency collab doc updates.
           // Runtime HMR handles content refresh; remount only for structural events.
-          const shouldRefreshPreview = eventType === 'file_upsert' || eventType === 'file_delete' || eventType === 'snapshot';
+          const shouldRefreshPreview = eventType === 'file_upsert' || eventType === 'file_delete';
           if (shouldRefreshPreview) {
             setPreviewRefreshCounter((c) => c + 1);
           }
 
-          // Skip full workspace reloads for collab update events to reduce UI churn.
-          const shouldReloadWorkspace = eventType !== 'update';
+          // Skip full workspace reloads for collab/snapshot update events to reduce UI churn.
+          const shouldReloadWorkspace = eventType !== 'update' && eventType !== 'snapshot';
           if (shouldReloadWorkspace && !fileDirtyRef.current && !isCodeEditorFocused()) {
             void loadWorkspaceData(activeWorkspaceId);
           }
@@ -1184,10 +1181,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, [activeWorkspace, canEditWorkspace]);
 
-  const handleUserMessageSubmitted = useCallback(async (message: string) => {
+  const handleUserMessageSubmitted = useCallback(async (_message: string) => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
-    const snapshot = await api.createUserSpaceSnapshot(activeWorkspaceId, { message });
-    setSnapshots((current) => [snapshot, ...current]);
     await loadWorkspaceData(activeWorkspaceId);
   }, [activeWorkspaceId, canEditWorkspace, loadWorkspaceData]);
 
@@ -1195,11 +1190,15 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     if (!activeWorkspaceId || !canEditWorkspace) return;
     try {
       await api.restoreUserSpaceSnapshot(activeWorkspaceId, snapshotId);
-      await loadWorkspaceData(activeWorkspaceId);
+      setSnapshotsLoadedForWorkspace(null);
+      await Promise.all([
+        loadWorkspaceData(activeWorkspaceId),
+        loadSnapshots(activeWorkspaceId),
+      ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to restore snapshot');
     }
-  }, [activeWorkspaceId, canEditWorkspace, loadWorkspaceData]);
+  }, [activeWorkspaceId, canEditWorkspace, loadSnapshots, loadWorkspaceData]);
 
   const refreshRuntimeStatus = useCallback(async () => {
     if (!activeWorkspaceId) {
@@ -3038,9 +3037,15 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
           {/* Snapshots */}
           <div className="userspace-snapshots-section">
-            <button className="userspace-snapshots-toggle" onClick={() => setShowSnapshots(!showSnapshots)}>
+            <button className="userspace-snapshots-toggle" onClick={() => {
+              const next = !showSnapshots;
+              setShowSnapshots(next);
+              if (next && activeWorkspaceId && snapshotsLoadedForWorkspace !== activeWorkspaceId) {
+                void loadSnapshots(activeWorkspaceId);
+              }
+            }}>
               <History size={14} />
-              <span>Snapshots ({snapshots.length})</span>
+              <span>Snapshots{snapshotsLoadedForWorkspace === activeWorkspaceId ? ` (${snapshots.length})` : ''}</span>
               <ChevronDown size={14} className={showSnapshots ? '' : 'rotated'} />
             </button>
             {showSnapshots && (

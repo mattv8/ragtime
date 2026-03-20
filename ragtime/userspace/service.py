@@ -21,34 +21,45 @@ from ragtime.config import settings
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
-from ragtime.core.entrypoint_status import (EntrypointStatus,
-                                            parse_entrypoint_config)
+from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
-                                    add_table_metadata_to_psql_output,
-                                    enforce_max_results, format_query_result,
-                                    validate_sql_query)
-from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.sql_utils import (
+    DB_TYPE_POSTGRES,
+    add_table_metadata_to_psql_output,
+    enforce_max_results,
+    format_query_result,
+    validate_sql_query,
+)
+from ragtime.core.ssh import (
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
-                                      ExecuteComponentRequest,
-                                      ExecuteComponentResponse,
-                                      PaginatedWorkspacesResponse,
-                                      ShareAccessMode, SqlitePersistenceMode,
-                                      UpdateWorkspaceMembersRequest,
-                                      UpdateWorkspaceRequest,
-                                      UpdateWorkspaceShareAccessRequest,
-                                      UpsertWorkspaceFileRequest,
-                                      UserSpaceFileInfo, UserSpaceFileResponse,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection,
-                                      UserSpaceSharedPreviewResponse,
-                                      UserSpaceSnapshot, UserSpaceWorkspace,
-                                      UserSpaceWorkspaceShareLink,
-                                      UserSpaceWorkspaceShareLinkStatus,
-                                      WorkspaceMember,
-                                      WorkspaceShareSlugAvailabilityResponse)
+from ragtime.userspace.models import (
+    ArtifactType,
+    CreateWorkspaceRequest,
+    ExecuteComponentRequest,
+    ExecuteComponentResponse,
+    PaginatedWorkspacesResponse,
+    ShareAccessMode,
+    SqlitePersistenceMode,
+    UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+    UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot,
+    UserSpaceWorkspace,
+    UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceMember,
+    WorkspaceShareSlugAvailabilityResponse,
+)
 
 logger = get_logger(__name__)
 
@@ -2382,23 +2393,6 @@ class UserSpaceService:
             file_count=file_count,
         )
 
-    async def _get_snapshot_retention_cutoff(self) -> float | None:
-        """Return a UNIX timestamp cutoff based on app_settings snapshot_retention_days.
-
-        Returns None if retention is disabled (0 or unset).
-        """
-        try:
-            app_settings = await repository.get_settings()
-
-            if not app_settings:
-                return None
-            retention_days = getattr(app_settings, "snapshot_retention_days", 0) or 0
-            if retention_days <= 0:
-                return None
-            return _utc_now().timestamp() - (retention_days * 86400)
-        except Exception:
-            return None
-
     async def list_snapshots(
         self, workspace_id: str, user_id: str
     ) -> list[UserSpaceSnapshot]:
@@ -2411,9 +2405,6 @@ class UserSpaceService:
         if head_check.returncode != 0:
             return []
 
-        cutoff = await self._get_snapshot_retention_cutoff()
-
-        snapshots: list[UserSpaceSnapshot] = []
         git_log = (
             await self._run_git(
                 workspace_id,
@@ -2421,6 +2412,7 @@ class UserSpaceService:
             )
         ).stdout
 
+        snapshots: list[UserSpaceSnapshot] = []
         for line in git_log.splitlines():
             if not line.strip():
                 continue
@@ -2429,27 +2421,13 @@ class UserSpaceService:
                 continue
 
             commit_id, commit_ts, commit_subject = parts
-            ts = int(commit_ts)
-            if cutoff is not None and ts < cutoff:
-                continue
-            tracked_files = (
-                await self._run_git(
-                    workspace_id,
-                    ["ls-tree", "-r", "--name-only", commit_id],
-                )
-            ).stdout.splitlines()
-            file_count = sum(
-                1
-                for file_name in tracked_files
-                if not self._is_reserved_internal_path(file_name)
-            )
             snapshots.append(
                 UserSpaceSnapshot(
                     id=commit_id,
                     workspace_id=workspace_id,
                     message=commit_subject,
-                    created_at=datetime.fromtimestamp(ts, tz=timezone.utc),
-                    file_count=file_count,
+                    created_at=datetime.fromtimestamp(int(commit_ts), tz=timezone.utc),
+                    file_count=0,
                 )
             )
         return snapshots
@@ -2470,36 +2448,17 @@ class UserSpaceService:
         if commit_check.returncode != 0:
             raise HTTPException(status_code=404, detail="Snapshot not found")
 
-        # Enforce retention window on restore
-        cutoff = await self._get_snapshot_retention_cutoff()
-        if cutoff is not None:
-            commit_ts = (
-                await self._run_git(
-                    workspace_id,
-                    ["show", "-s", "--format=%ct", snapshot_id],
-                )
-            ).stdout.strip()
-            if int(commit_ts) < cutoff:
-                raise HTTPException(
-                    status_code=410,
-                    detail="Snapshot has expired and cannot be restored",
-                )
-
         await self._run_git(workspace_id, ["reset", "--hard", snapshot_id])
         await self._run_git(workspace_id, ["clean", "-fd"])
 
-        commit_ts = (
+        commit_info = (
             await self._run_git(
                 workspace_id,
-                ["show", "-s", "--format=%ct", snapshot_id],
+                ["show", "-s", "--format=%ct%x1f%s", snapshot_id],
             )
         ).stdout.strip()
-        commit_subject = (
-            await self._run_git(
-                workspace_id,
-                ["show", "-s", "--format=%s", snapshot_id],
-            )
-        ).stdout.strip()
+        commit_ts, commit_subject = commit_info.split("\x1f", 1)
+
         tracked_files = (
             await self._run_git(
                 workspace_id,
