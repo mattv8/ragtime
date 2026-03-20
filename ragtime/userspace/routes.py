@@ -2,29 +2,32 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import (APIRouter, Depends, Header, HTTPException, Query, Request,
-                     Response)
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 
 from ragtime.core.security import get_current_user, get_current_user_optional
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (CreateSnapshotRequest,
-                                      CreateWorkspaceRequest,
-                                      ExecuteComponentRequest,
-                                      ExecuteComponentResponse,
-                                      PaginatedWorkspacesResponse,
-                                      RestoreSnapshotResponse,
-                                      UpdateWorkspaceMembersRequest,
-                                      UpdateWorkspaceRequest,
-                                      UpdateWorkspaceShareAccessRequest,
-                                      UpdateWorkspaceShareSlugRequest,
-                                      UpsertWorkspaceFileRequest,
-                                      UserSpaceAvailableTool,
-                                      UserSpaceFileInfo, UserSpaceFileResponse,
-                                      UserSpaceSharedPreviewResponse,
-                                      UserSpaceSnapshot, UserSpaceWorkspace,
-                                      UserSpaceWorkspaceShareLink,
-                                      UserSpaceWorkspaceShareLinkStatus,
-                                      WorkspaceShareSlugAvailabilityResponse)
+from ragtime.userspace.models import (
+    CreateSnapshotRequest,
+    CreateWorkspaceRequest,
+    ExecuteComponentRequest,
+    ExecuteComponentResponse,
+    PaginatedWorkspacesResponse,
+    RestoreSnapshotResponse,
+    UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest,
+    UpdateWorkspaceShareSlugRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceAvailableTool,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot,
+    UserSpaceWorkspace,
+    UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceShareSlugAvailabilityResponse,
+)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -439,5 +442,4 @@ async def restore_snapshot(
     return RestoreSnapshotResponse(
         restored_snapshot_id=snapshot.id,
         file_count=snapshot.file_count,
-    )
     )

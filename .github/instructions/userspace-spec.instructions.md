@@ -55,7 +55,9 @@ Last updated: 2026-03-03 (codebase-scanned; concise agent-focused)
 - When entrypoint is **invalid**: system prompt includes a fix-required notice with the specific error plus the full setup prompt.
 - When entrypoint is **valid with a real framework**: system prompt includes only a compact `_USERSPACE_ENTRYPOINT_LOCKED_TEMPLATE` (framework name, command, cwd) and omits all setup guidance.
 - This is built by `build_userspace_entrypoint_nudge()` in `ragtime/rag/components.py` and appended per-request in `_build_request_runtime_context`.
-- The base userspace prompt (`USERSPACE_MODE_PROMPT_ADDITION`) always includes persistence rules, data wiring, file workflow, theme/CSS, terminal, and resilient data loading regardless of entrypoint state.
+- The base userspace prompt (`USERSPACE_MODE_PROMPT_ADDITION`) always includes workspace continuity guidance, persistence rules, data wiring, file workflow, theme/CSS, and resilient data loading regardless of entrypoint state.
+- **Workspace continuity**: `build_workspace_continuity_context()` in `ragtime/rag/prompts.py` produces a conditional per-request block injected into the base prompt via `{workspace_continuity}`. For fresh workspaces (0 user files) it emits a short "starting fresh" note; for existing workspaces it emits concrete state (file count, key files, framework, last snapshot) plus continuity rules (assay first, extend don't replace). No generic/hedging prose is sent — every token reflects actual workspace state.
+- The prompt is architecture-agnostic: it supports single-page apps, multi-page apps, API backends, and hybrid structures. The `dashboard/main.ts` module-dashboard pattern is documented as one option, not the only option.
 
 ## Live Data + SQLite Contract (Critical)
 

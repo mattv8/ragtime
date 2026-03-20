@@ -97,7 +97,8 @@ _USERSPACE_TURN_REMINDER_BASE = """[USER SPACE TURN CHECKLIST
     (do NOT re-send the full file content).
 - Never use hardcoded/mock/sample/static data in entrypoint files (dashboard/main.ts, app.py, etc.)
     when the workspace has selected tools; wire live data instead.
-{sqlite_reminder_line}- After validation passes with no errors, call create_userspace_snapshot with a concise completion message.
+{sqlite_reminder_line}- Prefer incremental edits: use patch_userspace_file or targeted upsert_userspace_file calls to extend existing code rather than regenerating entire files.
+- After validation passes with no errors, call create_userspace_snapshot with a concise completion message.
 - Never skip validation or snapshot.
 - Finalization sequence: validate -> fix errors -> validate again -> snapshot.
 ]
@@ -273,21 +274,25 @@ _USERSPACE_MODE_PROMPT_TEMPLATE = """
 
 You are operating in User Space mode for a persistent workspace artifact workflow.
 
+{workspace_continuity}
+
 ### Persistence rules
 
 - Persist implementation as files, not only chat text.
-- Prefer TypeScript modules for interactive reports and dashboards.
-- Build one cohesive frontend app with `dashboard/main.ts` as the fixed entry artifact.
-- If `dashboard/main.ts` exists, treat it as the authoritative app entrypoint for feature work. Do not implement dashboard behavior changes in `index.html` unless the user explicitly asks to edit `index.html`.
-- In `module_dashboard` workspaces, prefer implementing behavior changes in `dashboard/*` files. `index.html` is allowed for runtime scaffolding (e.g., loading bundled scripts, including CDN resources like Chart.js) but should not contain application logic.
 - For any request to create/build/update a report, dashboard, or frontend, you MUST write/update workspace files via `upsert_userspace_file` before finalizing.
 - Default to implementation-first execution: go straight to building the requested artifact/files, not planning documents.
 - Do not create docs/readmes/specs/plans/changelogs unless the user explicitly asks for documentation output.
 - Do not end with chat-only guidance when the user asked for implementation; persist a runnable scaffold first, then describe blockers.
-- Do not keep all logic in `dashboard/main.ts` once complexity grows.
-- Split concerns into stable subpaths under `dashboard/` (for example: `dashboard/components/*`, `dashboard/data/*`, `dashboard/charts/*`, `dashboard/styles/*`).
-- Keep `dashboard/main.ts` as a thin composition entrypoint that wires imports, layout, and bootstrapping.
-- Do not treat each file as an independent rendered page; compose routes, breadcrumbs, and shell navigation inside the single app rooted at `dashboard/main.ts`.
+
+#### App structure
+
+- The workspace may be a single-page app, a multi-page app, an API backend, or any combination — match the architecture to what the user is building.
+- For TypeScript module dashboards using `dashboard/main.ts` as the entry artifact:
+  - If `dashboard/main.ts` exists, treat it as the authoritative app entrypoint for feature work.
+  - In `module_dashboard` workspaces, prefer implementing behavior changes in `dashboard/*` files. `index.html` is allowed for runtime scaffolding (e.g., loading bundled scripts, including CDN resources) but should not contain application logic.
+  - Do not keep all logic in `dashboard/main.ts` once complexity grows; split concerns into stable subpaths under `dashboard/` (for example: `dashboard/components/*`, `dashboard/data/*`, `dashboard/charts/*`, `dashboard/styles/*`).
+  - Keep `dashboard/main.ts` as a thin composition entrypoint that wires imports, layout, and bootstrapping.
+- For multi-page or multi-route apps, organize pages/routes with clear naming conventions and shared layout components.
 - When adding files, preserve a clear module boundary and reusable naming conventions.
 {sqlite_persistence_block}
 
@@ -357,23 +362,96 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 """
 
 
-def build_userspace_mode_prompt_addition(*, include_sqlite_persistence: bool) -> str:
-    """Build userspace prompt additions with optional SQLite guidance.
+def build_userspace_mode_prompt_addition(
+    *,
+    include_sqlite_persistence: bool,
+    workspace_continuity: str = "",
+) -> str:
+    """Build userspace prompt additions with optional SQLite guidance and workspace continuity.
 
     Args:
         include_sqlite_persistence: Whether to include the SQLite persistence block.
+        workspace_continuity: Conditional continuity context block built by
+            ``build_workspace_continuity_context``.
     """
     return _USERSPACE_MODE_PROMPT_TEMPLATE.format(
         sqlite_persistence_block=(
             _USERSPACE_SQLITE_PERSISTENCE_BLOCK if include_sqlite_persistence else ""
         ),
         userspace_shared_live_data_guardrails=USERSPACE_SHARED_LIVE_DATA_GUARDRAILS.strip(),
+        workspace_continuity=workspace_continuity,
     )
 
 
 USERSPACE_MODE_PROMPT_ADDITION = build_userspace_mode_prompt_addition(
-    include_sqlite_persistence=True
+    include_sqlite_persistence=True,
 )
+
+
+_WORKSPACE_CONTINUITY_MAX_KEY_FILES = 15
+_WORKSPACE_CONTINUITY_MAX_SNAPSHOT_CHARS = 200
+_WORKSPACE_CONTINUITY_EXISTING_RULES = [
+    "- Run `assay_userspace_code` first to understand current structure before editing.",
+    "- Extend, refactor, or add to existing code rather than replacing it wholesale.",
+    "- Respect the existing app architecture (framework, routing, file layout).",
+    "- Only perform a full rewrite when the user explicitly requests rebuilding from scratch.",
+]
+
+
+def build_workspace_continuity_context(
+    *,
+    file_count: int,
+    key_files: list[str],
+    framework: str | None,
+    entrypoint_valid: bool,
+    last_snapshot_message: str | None,
+) -> str:
+    """Build the workspace continuity prompt section.
+
+    Returns a targeted block based on actual workspace state:
+    - Fresh/empty workspace: short "starting fresh" note.
+    - Existing workspace: full continuity guidance with concrete state summary.
+    """
+    if file_count == 0:
+        return (
+            "### Workspace\n\n"
+            "- This is a fresh workspace with no existing files.\n"
+            "- Choose an architecture that fits the user's request and start building."
+        )
+
+    state_lines: list[str] = [f"- **{file_count} files** in workspace."]
+
+    if framework and entrypoint_valid:
+        state_lines.append(
+            f"- Framework: **{framework}** (entrypoint configured and valid)."
+        )
+    elif entrypoint_valid:
+        state_lines.append("- Runtime entrypoint is configured and valid.")
+
+    if key_files:
+        state_lines.append(
+            "- Key files: "
+            + ", ".join(
+                f"`{path}`" for path in key_files[:_WORKSPACE_CONTINUITY_MAX_KEY_FILES]
+            )
+            + "."
+        )
+
+    if last_snapshot_message:
+        state_lines.append(
+            f'- Last snapshot: "{last_snapshot_message[:_WORKSPACE_CONTINUITY_MAX_SNAPSHOT_CHARS].strip()}"'
+        )
+
+    rules_block = "\n".join(_WORKSPACE_CONTINUITY_EXISTING_RULES)
+
+    return (
+        "### Workspace continuity\n"
+        "\n"
+        "This workspace contains an existing application. Build on top of it.\n"
+        "\n" + "\n".join(state_lines) + "\n"
+        "\n"
+        "**Rules for existing workspaces:**\n" + rules_block
+    )
 
 
 # =============================================================================
