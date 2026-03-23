@@ -68,9 +68,18 @@ async def list_userspace_tools(user: Any = Depends(get_current_user)):
                 name=tool.name,
                 tool_type=tool.tool_type.value,
                 description=tool.description,
+                group_id=tool.group_id,
+                group_name=tool.group_name,
             )
         )
     return results
+
+
+@router.get("/tool-groups")
+async def list_userspace_tool_groups(user: Any = Depends(get_current_user)):
+    del user
+    groups = await repository.list_tool_groups()
+    return [g.model_dump() for g in groups]
 
 
 @router.get("/workspaces", response_model=PaginatedWorkspacesResponse)
@@ -90,6 +99,7 @@ async def create_workspace(
     request.selected_tool_ids = await _normalize_selected_tool_ids(
         request.selected_tool_ids
     )
+    # selected_tool_group_ids are validated in service layer
     return await userspace_service.create_workspace(request, user.id)
 
 

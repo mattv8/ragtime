@@ -647,6 +647,279 @@ textarea:focus {
   padding: 4px 6px;
 }
 
+/* Tool group items in dropdown */
+.tool-group-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.tool-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  user-select: none;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.tool-group-header:hover {
+  background: var(--color-surface-hover);
+}
+
+.tool-group-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-group-count {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  font-weight: 400;
+}
+
+.tool-group-chevron {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+  transition: transform 0.15s ease;
+}
+
+.tool-group-chevron.rotated {
+  transform: rotate(90deg);
+}
+
+.tool-group-submenu {
+  padding-left: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Card header actions row */
+.card-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+/* Tool group tabs row */
+.tool-group-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: var(--space-sm);
+  position: relative;
+  z-index: 1;
+}
+
+/* When a group is selected, remove bottom gap so panel connects */
+.tool-group-content.has-selection .tool-group-tabs {
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.tool-group-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  line-height: 1.4;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.tool-group-tab:hover {
+  border-color: var(--color-text-muted);
+}
+
+.tool-group-tab.active {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+}
+
+/* Active tab merges into panel below */
+.tool-group-content.has-selection .tool-group-tab.active {
+  border-color: var(--color-accent);
+  border-bottom-color: transparent;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  background: color-mix(in srgb, var(--color-accent) 6%, transparent);
+  margin-bottom: -1px;
+  z-index: 2;
+}
+
+/* When a tool is being dragged, pulse all group tabs as drop targets */
+.tool-group-tabs.dragging .tool-group-tab:not(.tool-group-tab-add) {
+  border-color: var(--color-accent);
+  border-style: dashed;
+  animation: group-tab-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes group-tab-pulse {
+  0%, 100% { background: color-mix(in srgb, var(--color-accent) 4%, transparent); }
+  50% { background: color-mix(in srgb, var(--color-accent) 12%, transparent); }
+}
+
+/* The specific tab being hovered gets a stronger highlight */
+.tool-group-tab.drag-over {
+  border-color: var(--color-accent);
+  border-style: solid;
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  animation: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 30%, transparent);
+}
+
+.tool-group-tab-name {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-group-tab-input {
+  width: 100px;
+  border: none;
+  background: transparent;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--color-text);
+  outline: none;
+  padding: 0;
+}
+
+.tool-group-tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.tool-group-tab.active .tool-group-tab-count {
+  background: var(--color-accent);
+  color: #fff;
+}
+
+.tool-group-tab-rename,
+.tool-group-tab-delete {
+  display: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.tool-group-tab:hover .tool-group-tab-rename,
+.tool-group-tab:hover .tool-group-tab-delete {
+  display: inline-flex;
+}
+
+.tool-group-tab-rename:hover {
+  color: var(--color-text);
+}
+
+.tool-group-tab-delete:hover {
+  color: var(--color-danger);
+}
+
+.tool-group-tab-add {
+  border-style: dashed;
+  color: var(--color-text-muted);
+  font-weight: 400;
+}
+
+.tool-group-tab-add:hover {
+  color: var(--color-text);
+  border-color: var(--color-text-muted);
+}
+
+.tool-group-tab-ungrouped {
+  border-style: dashed;
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+/* Active group panel — connected to active tab */
+.tool-group-active-panel {
+  border: 1px solid var(--color-accent);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) var(--radius-sm);
+  background: color-mix(in srgb, var(--color-accent) 6%, transparent);
+  padding: var(--space-sm);
+  margin-bottom: var(--space-sm);
+}
+
+.tool-group-active-panel-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.tool-group-active-panel-header strong {
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+.tool-group-active-hint {
+  margin-left: auto;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+/* Tool group sections in ToolsPanel */
+.tool-group-section-panel {
+  margin-bottom: var(--space-md);
+}
+
+/* Drag-and-drop feedback */
+.tool-card-drag-wrap {
+  transition: opacity 0.15s ease;
+}
+
+.tool-card-drag-wrap.dragging {
+  opacity: 0.4;
+}
+
+.tool-ungrouped-drop-zone {
+  border: 2px dashed transparent;
+  border-radius: var(--radius-md);
+  padding: var(--space-xs);
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.tool-ungrouped-drop-zone.drag-over {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 5%, transparent);
+}
+
 /* --- Status / inline edit bars --- */
 
 .userspace-status {

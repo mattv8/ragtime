@@ -21,34 +21,45 @@ from ragtime.config import settings
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
-from ragtime.core.entrypoint_status import (EntrypointStatus,
-                                            parse_entrypoint_config)
+from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
-                                    add_table_metadata_to_psql_output,
-                                    enforce_max_results, format_query_result,
-                                    validate_sql_query)
-from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.sql_utils import (
+    DB_TYPE_POSTGRES,
+    add_table_metadata_to_psql_output,
+    enforce_max_results,
+    format_query_result,
+    validate_sql_query,
+)
+from ragtime.core.ssh import (
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
-                                      ExecuteComponentRequest,
-                                      ExecuteComponentResponse,
-                                      PaginatedWorkspacesResponse,
-                                      ShareAccessMode, SqlitePersistenceMode,
-                                      UpdateWorkspaceMembersRequest,
-                                      UpdateWorkspaceRequest,
-                                      UpdateWorkspaceShareAccessRequest,
-                                      UpsertWorkspaceFileRequest,
-                                      UserSpaceFileInfo, UserSpaceFileResponse,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection,
-                                      UserSpaceSharedPreviewResponse,
-                                      UserSpaceSnapshot, UserSpaceWorkspace,
-                                      UserSpaceWorkspaceShareLink,
-                                      UserSpaceWorkspaceShareLinkStatus,
-                                      WorkspaceMember,
-                                      WorkspaceShareSlugAvailabilityResponse)
+from ragtime.userspace.models import (
+    ArtifactType,
+    CreateWorkspaceRequest,
+    ExecuteComponentRequest,
+    ExecuteComponentResponse,
+    PaginatedWorkspacesResponse,
+    ShareAccessMode,
+    SqlitePersistenceMode,
+    UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+    UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot,
+    UserSpaceWorkspace,
+    UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceMember,
+    WorkspaceShareSlugAvailabilityResponse,
+)
 
 logger = get_logger(__name__)
 
@@ -476,7 +487,9 @@ class UserSpaceService:
         # TTL-cached entrypoint status per workspace: {workspace_id: (EntrypointStatus, timestamp)}
         self._entrypoint_status_cache: dict[str, tuple[EntrypointStatus, float]] = {}
         # Short-lived file list cache: {workspace_id: (result, include_dirs, timestamp)}
-        self._file_list_cache: dict[str, tuple[list[UserSpaceFileInfo], bool, float]] = {}
+        self._file_list_cache: dict[
+            str, tuple[list[UserSpaceFileInfo], bool, float]
+        ] = {}
 
     def record_execution_proof(
         self,
@@ -855,7 +868,11 @@ class UserSpaceService:
         db = await get_db()
         workspace = await db.workspace.find_first(
             where={"shareToken": token},
-            include={"members": True, "toolSelections": True},
+            include={
+                "members": True,
+                "toolSelections": True,
+                "toolGroupSelections": True,
+            },
         )
         if not workspace:
             raise HTTPException(status_code=404, detail="Shared workspace not found")
@@ -897,7 +914,11 @@ class UserSpaceService:
                 "shareSlug": normalized_slug,
                 "shareToken": {"not": None},
             },
-            include={"members": True, "toolSelections": True},
+            include={
+                "members": True,
+                "toolSelections": True,
+                "toolGroupSelections": True,
+            },
         )
         if not workspace:
             raise HTTPException(status_code=404, detail="Shared workspace not found")
@@ -1270,6 +1291,13 @@ class UserSpaceService:
             if getattr(tool_row, "toolConfigId", None)
         ]
 
+        group_rows = list(getattr(record, "toolGroupSelections", []) or [])
+        selected_tool_group_ids = [
+            getattr(row, "toolGroupId", "")
+            for row in group_rows
+            if getattr(row, "toolGroupId", None)
+        ]
+
         return UserSpaceWorkspace(
             id=record.id,
             name=record.name,
@@ -1284,6 +1312,7 @@ class UserSpaceService:
             ),
             owner_user_id=record.ownerUserId,
             selected_tool_ids=selected_tool_ids,
+            selected_tool_group_ids=selected_tool_group_ids,
             conversation_ids=[],
             members=members,
             created_at=record.createdAt,
@@ -1300,7 +1329,11 @@ class UserSpaceService:
 
         workspace = await db.workspace.find_unique(
             where={"id": workspace_id},
-            include={"members": True, "toolSelections": True},
+            include={
+                "members": True,
+                "toolSelections": True,
+                "toolGroupSelections": True,
+            },
         )
         if not workspace:
             raise HTTPException(status_code=404, detail="Workspace not found")
@@ -1336,7 +1369,11 @@ class UserSpaceService:
         db = await get_db()
         return await db.workspace.find_unique(
             where={"id": workspace_id},
-            include={"members": True, "toolSelections": True},
+            include={
+                "members": True,
+                "toolSelections": True,
+                "toolGroupSelections": True,
+            },
         )
 
     async def list_workspaces(
@@ -1356,7 +1393,11 @@ class UserSpaceService:
 
         rows = await db.workspace.find_many(
             where=where_clause,
-            include={"members": True, "toolSelections": True},
+            include={
+                "members": True,
+                "toolSelections": True,
+                "toolGroupSelections": True,
+            },
             order={"updatedAt": "desc"},
             skip=offset,
             take=limit,
@@ -1402,7 +1443,11 @@ class UserSpaceService:
                     "createdAt": now,
                     "updatedAt": now,
                 },
-                include={"members": True, "toolSelections": True},
+                include={
+                    "members": True,
+                    "toolSelections": True,
+                    "toolGroupSelections": True,
+                },
             )
         except Exception as exc:
             if _is_workspace_name_conflict_error(exc):
@@ -1436,6 +1481,18 @@ class UserSpaceService:
                 }
             )
 
+        if request.selected_tool_group_ids:
+            for group_id in request.selected_tool_group_ids:
+                grp = await db.toolgroup.find_unique(where={"id": group_id})
+                if not grp:
+                    continue
+                await db.workspacetoolgroupselection.create(
+                    data={
+                        "workspaceId": workspace_id,
+                        "toolGroupId": group_id,
+                    }
+                )
+
         self._workspace_files_dir(workspace_id).mkdir(parents=True, exist_ok=True)
         self._seed_runtime_bootstrap_config(workspace_id)
         self._seed_runtime_entrypoint_config(workspace_id)
@@ -1443,7 +1500,11 @@ class UserSpaceService:
 
         refreshed = await db.workspace.find_unique(
             where={"id": workspace_id},
-            include={"members": True, "toolSelections": True},
+            include={
+                "members": True,
+                "toolSelections": True,
+                "toolGroupSelections": True,
+            },
         )
         if not refreshed:
             raise HTTPException(status_code=500, detail="Failed to create workspace")
@@ -1959,9 +2020,28 @@ class UserSpaceService:
                     }
                 )
 
+        if request.selected_tool_group_ids is not None:
+            await db.workspacetoolgroupselection.delete_many(
+                where={"workspaceId": workspace_id}
+            )
+            for group_id in request.selected_tool_group_ids:
+                grp = await db.toolgroup.find_unique(where={"id": group_id})
+                if not grp:
+                    continue
+                await db.workspacetoolgroupselection.create(
+                    data={
+                        "workspaceId": workspace_id,
+                        "toolGroupId": group_id,
+                    }
+                )
+
         refreshed = await db.workspace.find_unique(
             where={"id": workspace_id},
-            include={"members": True, "toolSelections": True},
+            include={
+                "members": True,
+                "toolSelections": True,
+                "toolGroupSelections": True,
+            },
         )
         if not refreshed:
             raise HTTPException(status_code=404, detail="Workspace not found")
@@ -2013,7 +2093,11 @@ class UserSpaceService:
 
         refreshed = await db.workspace.find_unique(
             where={"id": workspace_id},
-            include={"members": True, "toolSelections": True},
+            include={
+                "members": True,
+                "toolSelections": True,
+                "toolGroupSelections": True,
+            },
         )
         if not refreshed:
             raise HTTPException(status_code=404, detail="Workspace not found")
@@ -2037,7 +2121,10 @@ class UserSpaceService:
         cached = self._file_list_cache.get(workspace_id)
         if cached is not None:
             cached_result, cached_include_dirs, cached_ts = cached
-            if cached_include_dirs == include_dirs and (_time.monotonic() - cached_ts) < _FILE_LIST_CACHE_TTL_SECONDS:
+            if (
+                cached_include_dirs == include_dirs
+                and (_time.monotonic() - cached_ts) < _FILE_LIST_CACHE_TTL_SECONDS
+            ):
                 return cached_result
 
         result = await asyncio.to_thread(

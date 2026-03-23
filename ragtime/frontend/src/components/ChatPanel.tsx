@@ -10,7 +10,7 @@ import { ResizeHandle } from './ResizeHandle';
 import { calculateConversationContextUsage, parseStoredModelIdentifier } from '@/utils/contextUsage';
 import { ContextUsagePie } from './shared/ContextUsagePie';
 import { MemberManagementModal } from './shared/MemberManagementModal';
-import { ToolSelectorDropdown } from './shared/ToolSelectorDropdown';
+import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 
 interface CodeBlockProps {
@@ -1390,7 +1390,10 @@ interface ChatPanelProps {
   workspaceId?: string;
   workspaceAvailableTools?: UserSpaceAvailableTool[];
   workspaceSelectedToolIds?: string[];
+  workspaceSelectedToolGroupIds?: string[];
   onToggleWorkspaceTool?: (toolId: string) => void | Promise<void>;
+  onToggleWorkspaceToolGroup?: (groupId: string) => void | Promise<void>;
+  workspaceToolGroups?: ToolGroupInfo[];
   workspaceSavingTools?: boolean;
   onUserMessageSubmitted?: (message: string) => void | Promise<void>;
   onTaskComplete?: () => void;
@@ -1406,7 +1409,10 @@ export function ChatPanel({
   workspaceId,
   workspaceAvailableTools,
   workspaceSelectedToolIds,
+  workspaceSelectedToolGroupIds,
   onToggleWorkspaceTool,
+  onToggleWorkspaceToolGroup,
+  workspaceToolGroups,
   workspaceSavingTools = false,
   onUserMessageSubmitted,
   onTaskComplete,
@@ -1468,7 +1474,9 @@ export function ChatPanel({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [conversationMembers, setConversationMembers] = useState<ConversationMember[]>([]);
   const [conversationToolIds, setConversationToolIds] = useState<string[]>([]);
+  const [conversationToolGroupIds, setConversationToolGroupIds] = useState<string[]>([]);
   const [availableTools, setAvailableTools] = useState<UserSpaceAvailableTool[]>([]);
+  const [toolGroups, setToolGroups] = useState<ToolGroupInfo[]>([]);
   const [showMembersModal, setShowMembersModal] = useState(false);
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [savingMembers, setSavingMembers] = useState(false);
@@ -1507,6 +1515,21 @@ export function ChatPanel({
     return effectiveToolIds.length > 0 ? effectiveToolIds : availableIds;
   }, [effectiveAvailableTools, effectiveToolIds]);
   const effectiveSavingTools = useWorkspaceToolSource ? workspaceSavingTools : savingTools;
+
+  const effectiveToolGroupIds = useWorkspaceToolSource
+    ? (workspaceSelectedToolGroupIds ?? [])
+    : conversationToolGroupIds;
+  const effectiveToolGroups = useWorkspaceToolSource
+    ? (workspaceToolGroups ?? [])
+    : toolGroups;
+  const conversationToolGroupIdSet = useMemo(
+    () => new Set(conversationToolGroupIds),
+    [conversationToolGroupIds]
+  );
+  const effectiveToolGroupIdSet = useMemo(
+    () => new Set(effectiveToolGroupIds),
+    [effectiveToolGroupIds]
+  );
 
   // Computed conversation ownership and permissions
   const conversationOwnerId = useMemo(() => {
@@ -2249,21 +2272,28 @@ export function ChatPanel({
 
   const fetchConversationTools = useCallback(async (conversationId: string) => {
     try {
-      const toolIds = await api.getConversationTools(conversationId);
-      setConversationToolIds(toolIds);
+      const data = await api.getConversationTools(conversationId);
+      setConversationToolIds(data.tool_config_ids);
+      setConversationToolGroupIds(data.tool_group_ids);
     } catch (err) {
       console.error('Failed to fetch conversation tools:', err);
       setConversationToolIds([]);
+      setConversationToolGroupIds([]);
     }
   }, []);
 
   const fetchAvailableTools = useCallback(async () => {
     try {
-      const tools = await api.listUserSpaceAvailableTools();
+      const [tools, groups] = await Promise.all([
+        api.listUserSpaceAvailableTools(),
+        api.listUserSpaceToolGroups(),
+      ]);
       setAvailableTools(tools);
+      setToolGroups(groups.map((g) => ({ id: g.id, name: g.name })));
     } catch (err) {
       console.error('Failed to fetch available tools:', err);
       setAvailableTools([]);
+      setToolGroups([]);
     }
   }, []);
 
@@ -2333,6 +2363,7 @@ export function ChatPanel({
     try {
       await api.updateConversationTools(activeConversation.id, {
         tool_config_ids: normalizedSelection,
+        tool_group_ids: conversationToolGroupIds,
       });
       setConversationToolIds(normalizedSelection);
     } catch (err) {
@@ -2340,7 +2371,35 @@ export function ChatPanel({
     } finally {
       setSavingTools(false);
     }
-  }, [activeConversation, availableConversationToolIds, conversationToolIds, isConversationViewer]);
+  }, [activeConversation, availableConversationToolIds, conversationToolIds, conversationToolGroupIds, isConversationViewer]);
+
+  const handleToggleConversationToolGroup = useCallback(async (groupId: string) => {
+    if (!activeConversation || isConversationViewer) return;
+    const nextGroupIds = new Set(conversationToolGroupIds);
+    if (nextGroupIds.has(groupId)) {
+      nextGroupIds.delete(groupId);
+    } else {
+      nextGroupIds.add(groupId);
+    }
+    const groupArr = Array.from(nextGroupIds);
+
+    const currentToolIds = conversationToolIds.length > 0
+      ? conversationToolIds
+      : availableConversationToolIds;
+
+    setSavingTools(true);
+    try {
+      await api.updateConversationTools(activeConversation.id, {
+        tool_config_ids: currentToolIds,
+        tool_group_ids: groupArr,
+      });
+      setConversationToolGroupIds(groupArr);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update tool group selection');
+    } finally {
+      setSavingTools(false);
+    }
+  }, [activeConversation, availableConversationToolIds, conversationToolIds, conversationToolGroupIds, isConversationViewer]);
 
   const handleToggleInlineTool = useCallback(async (toolId: string) => {
     if (useWorkspaceToolSource && onToggleWorkspaceTool) {
@@ -2349,6 +2408,14 @@ export function ChatPanel({
     }
     await handleToggleConversationTool(toolId);
   }, [handleToggleConversationTool, onToggleWorkspaceTool, useWorkspaceToolSource]);
+
+  const handleToggleInlineToolGroup = useCallback(async (groupId: string) => {
+    if (useWorkspaceToolSource && onToggleWorkspaceToolGroup) {
+      await onToggleWorkspaceToolGroup(groupId);
+      return;
+    }
+    await handleToggleConversationToolGroup(groupId);
+  }, [handleToggleConversationToolGroup, onToggleWorkspaceToolGroup, useWorkspaceToolSource]);
 
   const formatUserLabel = useCallback((user?: Pick<User, 'username' | 'display_name'> | null, fallbackId?: string) => {
     const username = user?.username?.trim() || fallbackId?.trim() || 'unknown';
@@ -3470,6 +3537,9 @@ export function ChatPanel({
                     availableTools={availableTools}
                     selectedToolIds={new Set(resolvedConversationToolIds)}
                     onToggleTool={handleToggleConversationTool}
+                    selectedToolGroupIds={conversationToolGroupIdSet}
+                    onToggleToolGroup={handleToggleConversationToolGroup}
+                    toolGroups={toolGroups}
                     disabled={false}
                     readOnly={false}
                     saving={savingTools}
@@ -3886,6 +3956,9 @@ export function ChatPanel({
                         availableTools={effectiveAvailableTools}
                         selectedToolIds={new Set(resolvedEffectiveToolIds)}
                         onToggleTool={handleToggleInlineTool}
+                        selectedToolGroupIds={effectiveToolGroupIdSet}
+                        onToggleToolGroup={handleToggleInlineToolGroup}
+                        toolGroups={effectiveToolGroups}
                         disabled={effectiveSavingTools}
                         readOnly={false}
                         saving={effectiveSavingTools}
@@ -3911,6 +3984,9 @@ export function ChatPanel({
                           availableTools={effectiveAvailableTools}
                           selectedToolIds={new Set(resolvedEffectiveToolIds)}
                           onToggleTool={handleToggleInlineTool}
+                          selectedToolGroupIds={effectiveToolGroupIdSet}
+                          onToggleToolGroup={handleToggleInlineToolGroup}
+                          toolGroups={effectiveToolGroups}
                           disabled={effectiveSavingTools}
                           readOnly={false}
                           saving={effectiveSavingTools}

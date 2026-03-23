@@ -10,7 +10,7 @@ import '@xterm/xterm/css/xterm.css';
 
 import { api } from '@/api';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
-import { ToolSelectorDropdown } from './shared/ToolSelectorDropdown';
+import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
 import type { User, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceWorkspace, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus } from '@/types';
 import { buildUserSpaceTree, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { ChatPanel } from './ChatPanel';
@@ -217,6 +217,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [files, setFiles] = useState<UserSpaceFileInfo[]>([]);
   const [snapshots, setSnapshots] = useState<UserSpaceSnapshot[]>([]);
   const [availableTools, setAvailableTools] = useState<UserSpaceAvailableTool[]>([]);
+  const [toolGroups, setToolGroups] = useState<ToolGroupInfo[]>([]);
 
   const [selectedFilePath, setSelectedFilePath] = useState<string>('dashboard/main.ts');
   const [fileContent, setFileContent] = useState<string>('');
@@ -521,6 +522,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     () => new Set(resolvedSelectedToolIds),
     [resolvedSelectedToolIds]
   );
+  const resolvedSelectedToolGroupIds = useMemo(
+    () => activeWorkspace?.selected_tool_group_ids ?? [],
+    [activeWorkspace?.selected_tool_group_ids]
+  );
+  const selectedToolGroupIds = useMemo(
+    () => new Set(resolvedSelectedToolGroupIds),
+    [resolvedSelectedToolGroupIds]
+  );
   const fileTree = useMemo(() => buildUserSpaceTree(fileBrowserEntries), [fileBrowserEntries]);
   const folderPaths = useMemo(() => listFolderPaths(fileBrowserEntries), [fileBrowserEntries]);
 
@@ -784,8 +793,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   useEffect(() => {
     const loadTools = async () => {
       try {
-        const tools = await api.listUserSpaceAvailableTools();
+        const [tools, groups] = await Promise.all([
+          api.listUserSpaceAvailableTools(),
+          api.listUserSpaceToolGroups(),
+        ]);
         setAvailableTools(tools);
+        setToolGroups(groups.map((g) => ({ id: g.id, name: g.name })));
       } catch (err) {
         console.warn('Failed to load User Space tools', err);
       }
@@ -1212,6 +1225,30 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       setWorkspaces((current) => current.map((workspace) => workspace.id === updated.id ? updated : workspace));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update tool selection');
+    } finally {
+      setSavingWorkspaceTools(false);
+    }
+  }, [activeWorkspace, canEditWorkspace]);
+
+  const handleToggleWorkspaceToolGroup = useCallback(async (groupId: string) => {
+    if (!activeWorkspace || !canEditWorkspace) return;
+
+    const currentGroupIds = new Set(activeWorkspace.selected_tool_group_ids ?? []);
+    const nextGroupIds = new Set(currentGroupIds);
+    if (nextGroupIds.has(groupId)) {
+      nextGroupIds.delete(groupId);
+    } else {
+      nextGroupIds.add(groupId);
+    }
+
+    setSavingWorkspaceTools(true);
+    try {
+      const updated = await api.updateUserSpaceWorkspace(activeWorkspace.id, {
+        selected_tool_group_ids: Array.from(nextGroupIds),
+      });
+      setWorkspaces((current) => current.map((workspace) => workspace.id === updated.id ? updated : workspace));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update tool group selection');
     } finally {
       setSavingWorkspaceTools(false);
     }
@@ -2801,6 +2838,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
               availableTools={availableTools}
               selectedToolIds={selectedToolIds}
               onToggleTool={handleToggleWorkspaceTool}
+              selectedToolGroupIds={selectedToolGroupIds}
+              onToggleToolGroup={handleToggleWorkspaceToolGroup}
+              toolGroups={toolGroups}
               disabled={savingWorkspaceTools}
               readOnly={!canEditWorkspace}
               saving={savingWorkspaceTools}
@@ -2991,7 +3031,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 workspaceId={activeWorkspaceId}
                 workspaceAvailableTools={availableTools}
                 workspaceSelectedToolIds={resolvedSelectedToolIds}
+                workspaceSelectedToolGroupIds={resolvedSelectedToolGroupIds}
                 onToggleWorkspaceTool={handleToggleWorkspaceTool}
+                onToggleWorkspaceToolGroup={handleToggleWorkspaceToolGroup}
+                workspaceToolGroups={toolGroups}
                 workspaceSavingTools={savingWorkspaceTools}
                 onUserMessageSubmitted={canEditWorkspace ? handleUserMessageSubmitted : undefined}
                 embedded

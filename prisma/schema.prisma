@@ -239,6 +239,27 @@ model AppSettings {
 }
 
 // -----------------------------------------------------------------------------
+// Tool Groups (organise tool configs into named folders)
+// -----------------------------------------------------------------------------
+
+/// A named group (folder) of tool configs
+model ToolGroup {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String   @default("")
+  sortOrder   Int      @default(0) @map("sort_order")
+
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tools                       ToolConfig[]
+  workspaceGroupSelections    WorkspaceToolGroupSelection[]
+  conversationGroupSelections ConversationToolGroupSelection[]
+
+  @@map("tool_groups")
+}
+
+// -----------------------------------------------------------------------------
 // Tool Configurations (multiple instances per tool type)
 // -----------------------------------------------------------------------------
 
@@ -273,6 +294,10 @@ model ToolConfig {
   name        String   // User-friendly name (e.g., "Production DB", "Staging Odoo")
   toolType    ToolType @map("tool_type")
   enabled     Boolean  @default(true)
+
+  // Optional group membership (each tool belongs to at most one group)
+  groupId     String?  @map("group_id")
+  group       ToolGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
 
   // Description for RAG context - presented to the model
   description String   @default("")
@@ -315,6 +340,7 @@ model ToolConfig {
   // Relation to conversation tool selections
   conversationSelections ConversationToolSelection[]
 
+  @@index([groupId])
   @@map("tool_configs")
 }
 
@@ -803,6 +829,7 @@ model Conversation {
   // Relation to conversation members and tool selections
   members         ConversationMember[]
   toolSelections  ConversationToolSelection[]
+  toolGroupSelections ConversationToolGroupSelection[]
 
   @@index([workspaceId, updatedAt])
   @@index([userId, workspaceId, updatedAt])
@@ -832,6 +859,7 @@ model Workspace {
 
   members         WorkspaceMember[]
   toolSelections  WorkspaceToolSelection[]
+  toolGroupSelections WorkspaceToolGroupSelection[]
   conversations   Conversation[]
   runtimeSessions UserSpaceRuntimeSession[]
   runtimeAuditEvents UserSpaceRuntimeAuditEvent[]
@@ -876,6 +904,22 @@ model WorkspaceToolSelection {
   @@unique([workspaceId, toolConfigId])
   @@index([toolConfigId])
   @@map("workspace_tool_selections")
+}
+
+/// Workspace-selected tool groups (many-to-many)
+model WorkspaceToolGroupSelection {
+  id          String    @id @default(uuid())
+  workspaceId String    @map("workspace_id")
+  toolGroupId String    @map("tool_group_id")
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  toolGroup   ToolGroup @relation(fields: [toolGroupId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@unique([workspaceId, toolGroupId])
+  @@index([toolGroupId])
+  @@map("workspace_tool_group_selections")
 }
 
 /// Background chat task for async message processing
@@ -975,6 +1019,22 @@ model ConversationToolSelection {
   @@unique([conversationId, toolConfigId])
   @@index([toolConfigId])
   @@map("conversation_tool_selections")
+}
+
+/// Conversation-selected tool groups (many-to-many)
+model ConversationToolGroupSelection {
+  id             String       @id @default(uuid())
+  conversationId String       @map("conversation_id")
+  toolGroupId    String       @map("tool_group_id")
+
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  toolGroup      ToolGroup    @relation(fields: [toolGroupId], references: [id], onDelete: Cascade)
+
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  @@unique([conversationId, toolGroupId])
+  @@index([toolGroupId])
+  @@map("conversation_tool_group_selections")
 }
 
 /// Runtime session metadata for User Space execution environments

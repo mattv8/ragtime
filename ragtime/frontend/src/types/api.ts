@@ -926,12 +926,35 @@ export interface ToolConfig {
   timeout: number;
   timeout_max_seconds: number;
   allow_write: boolean;
+  group_id?: string | null;
+  group_name?: string | null;
   disabled_reason?: string;
   last_test_at: string | null;
   last_test_result: boolean | null;
   last_test_error: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface ToolGroup {
+  id: string;
+  name: string;
+  description: string;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateToolGroupRequest {
+  name: string;
+  description?: string;
+  sort_order?: number;
+}
+
+export interface UpdateToolGroupRequest {
+  name?: string;
+  description?: string;
+  sort_order?: number;
 }
 
 export interface CreateToolConfigRequest {
@@ -943,6 +966,7 @@ export interface CreateToolConfigRequest {
   timeout?: number;
   timeout_max_seconds?: number;
   allow_write?: boolean;
+  group_id?: string | null;
 }
 
 export interface UpdateToolConfigRequest {
@@ -954,6 +978,7 @@ export interface UpdateToolConfigRequest {
   timeout?: number;
   timeout_max_seconds?: number;
   allow_write?: boolean;
+  group_id?: string | null;
 }
 
 export interface ToolTestRequest {
@@ -1523,6 +1548,7 @@ export interface UpdateConversationMembersRequest {
 
 export interface UpdateConversationToolsRequest {
   tool_config_ids: string[];
+  tool_group_ids?: string[];
 }
 
 // =============================================================================
@@ -1545,6 +1571,7 @@ export interface UserSpaceWorkspace {
   sqlite_persistence_mode: SqlitePersistenceMode;
   owner_user_id: string;
   selected_tool_ids: string[];
+  selected_tool_group_ids: string[];
   conversation_ids: string[];
   members: UserSpaceWorkspaceMember[];
   created_at: string;
@@ -1556,6 +1583,8 @@ export interface UserSpaceAvailableTool {
   name: string;
   tool_type: string;
   description?: string | null;
+  group_id?: string | null;
+  group_name?: string | null;
 }
 
 export interface CreateUserSpaceWorkspaceRequest {
@@ -1563,6 +1592,7 @@ export interface CreateUserSpaceWorkspaceRequest {
   description?: string;
   sqlite_persistence_mode?: SqlitePersistenceMode;
   selected_tool_ids?: string[];
+  selected_tool_group_ids?: string[];
 }
 
 export interface UpdateUserSpaceWorkspaceRequest {
@@ -1570,6 +1600,7 @@ export interface UpdateUserSpaceWorkspaceRequest {
   description?: string;
   sqlite_persistence_mode?: SqlitePersistenceMode;
   selected_tool_ids?: string[];
+  selected_tool_group_ids?: string[];
 }
 
 export interface UpdateUserSpaceWorkspaceMembersRequest {

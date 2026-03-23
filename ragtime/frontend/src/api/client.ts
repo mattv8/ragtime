@@ -2,7 +2,7 @@
  * API client for Ragtime Indexer
  */
 
-import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, GetSettingsResponse, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, OllamaVisionModelsRequest, OllamaVisionModelsResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, MysqlDiscoverRequest, MysqlDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse, McpRouteConfig, CreateMcpRouteRequest, UpdateMcpRouteRequest, McpRouteListResponse, HealthResponse, UserSpaceWorkspace, CreateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceMembersRequest, UserSpaceFileInfo, UserSpaceFile, UpsertUserSpaceFileRequest, UserSpaceSnapshot, CreateUserSpaceSnapshotRequest, RestoreUserSpaceSnapshotResponse, UserSpaceAvailableTool, PaginatedWorkspacesResponse, ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus, UserSpaceSharedPreviewResponse, WorkspaceShareSlugAvailabilityResponse, UpdateUserSpaceWorkspaceShareAccessRequest, ConversationMember, UpdateConversationMembersRequest, UpdateConversationToolsRequest, UserSpaceRuntimeSessionResponse, UserSpaceRuntimeStatusResponse, UserSpaceRuntimeActionResponse, UserSpaceCapabilityTokenResponse, ProviderPromptDebugListResponse, ProviderPromptDebugRecord, CopilotAuthStatusResponse, CopilotDevicePollRequest, CopilotDevicePollResponse, CopilotDeviceStartRequest, CopilotDeviceStartResponse, LlmProviderWire } from '@/types';
+import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, GetSettingsResponse, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, OllamaVisionModelsRequest, OllamaVisionModelsResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, ToolGroup, CreateToolGroupRequest, UpdateToolGroupRequest, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, MysqlDiscoverRequest, MysqlDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse, McpRouteConfig, CreateMcpRouteRequest, UpdateMcpRouteRequest, McpRouteListResponse, HealthResponse, UserSpaceWorkspace, CreateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceMembersRequest, UserSpaceFileInfo, UserSpaceFile, UpsertUserSpaceFileRequest, UserSpaceSnapshot, CreateUserSpaceSnapshotRequest, RestoreUserSpaceSnapshotResponse, UserSpaceAvailableTool, PaginatedWorkspacesResponse, ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus, UserSpaceSharedPreviewResponse, WorkspaceShareSlugAvailabilityResponse, UpdateUserSpaceWorkspaceShareAccessRequest, ConversationMember, UpdateConversationMembersRequest, UpdateConversationToolsRequest, UserSpaceRuntimeSessionResponse, UserSpaceRuntimeStatusResponse, UserSpaceRuntimeActionResponse, UserSpaceCapabilityTokenResponse, ProviderPromptDebugListResponse, ProviderPromptDebugRecord, CopilotAuthStatusResponse, CopilotDevicePollRequest, CopilotDevicePollResponse, CopilotDeviceStartRequest, CopilotDeviceStartResponse, LlmProviderWire } from '@/types';
 
 const API_BASE = '/indexes';
 const AUTH_BASE = '/auth';
@@ -680,6 +680,43 @@ export const api = {
       body: JSON.stringify(request),
     });
     return handleResponse<ToolTestResponse>(response);
+  },
+
+  // =========================================================================
+  // Tool Group API
+  // =========================================================================
+
+  async listToolGroups(): Promise<ToolGroup[]> {
+    const response = await apiFetch(`${API_BASE}/tool-groups`);
+    return handleResponse<ToolGroup[]>(response);
+  },
+
+  async createToolGroup(request: CreateToolGroupRequest): Promise<ToolGroup> {
+    const response = await apiFetch(`${API_BASE}/tool-groups`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<ToolGroup>(response);
+  },
+
+  async updateToolGroup(groupId: string, request: UpdateToolGroupRequest): Promise<ToolGroup> {
+    const response = await apiFetch(`${API_BASE}/tool-groups/${groupId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<ToolGroup>(response);
+  },
+
+  async deleteToolGroup(groupId: string): Promise<void> {
+    const response = await apiFetch(`${API_BASE}/tool-groups/${groupId}`, {
+      method: 'DELETE',
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new ApiError(data.detail || 'Delete failed', response.status, data.detail);
+    }
   },
 
   /**
@@ -1551,10 +1588,10 @@ export const api = {
   /**
    * Get conversation tools
    */
-  async getConversationTools(conversationId: string): Promise<string[]> {
+  async getConversationTools(conversationId: string): Promise<{ tool_config_ids: string[]; tool_group_ids: string[] }> {
     const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/tools`);
-    const data = await handleResponse<{ tool_config_ids: string[] }>(response);
-    return data.tool_config_ids || [];
+    const data = await handleResponse<{ tool_config_ids: string[]; tool_group_ids?: string[] }>(response);
+    return { tool_config_ids: data.tool_config_ids || [], tool_group_ids: data.tool_group_ids || [] };
   },
 
   /**
@@ -1702,6 +1739,11 @@ export const api = {
   async listUserSpaceAvailableTools(): Promise<UserSpaceAvailableTool[]> {
     const response = await apiFetch(`${API_BASE}/userspace/tools`);
     return handleResponse<UserSpaceAvailableTool[]>(response);
+  },
+
+  async listUserSpaceToolGroups(): Promise<ToolGroup[]> {
+    const response = await apiFetch(`${API_BASE}/userspace/tool-groups`);
+    return handleResponse<ToolGroup[]>(response);
   },
 
   async createUserSpaceWorkspace(request: CreateUserSpaceWorkspaceRequest): Promise<UserSpaceWorkspace> {

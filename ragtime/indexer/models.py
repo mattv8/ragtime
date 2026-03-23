@@ -2,7 +2,6 @@
 Indexer data models and schemas.
 """
 
-
 import hashlib
 import json
 from datetime import datetime
@@ -11,8 +10,10 @@ from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from ragtime.core.embedding_models import (get_embedding_models,
-                                           get_model_dimensions_sync)
+from ragtime.core.embedding_models import (
+    get_embedding_models,
+    get_model_dimensions_sync,
+)
 
 
 class IndexStatus(str, Enum):
@@ -1562,12 +1563,27 @@ class FilesystemAnalysisJobResponse(BaseModel):
     result: Optional[FilesystemAnalysisResult] = None
 
 
+class ToolGroup(BaseModel):
+    """A named group (folder) of tool configs."""
+
+    id: Optional[str] = None
+    name: str = Field(description="Group display name")
+    description: str = Field(default="", description="Optional description")
+    sort_order: int = Field(default=0, description="Display ordering")
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
 class ToolConfig(BaseModel):
     """Configuration for a tool instance."""
 
     id: Optional[str] = None
     name: str = Field(description="User-friendly name for this tool instance")
     tool_type: ToolType = Field(description="Type of tool")
+    group_id: Optional[str] = Field(default=None, description="Tool group ID")
+    group_name: Optional[str] = Field(
+        default=None, description="Tool group name (read-only)"
+    )
     enabled: bool = Field(default=True, description="Whether this tool is enabled")
     description: str = Field(
         default="",
@@ -1618,6 +1634,7 @@ class CreateToolConfigRequest(BaseModel):
     timeout: int = Field(default=30, ge=0, le=86400)
     timeout_max_seconds: int = Field(default=300, ge=0, le=86400)
     allow_write: bool = Field(default=False)
+    group_id: Optional[str] = Field(default=None, description="Tool group ID")
 
 
 class UpdateToolConfigRequest(BaseModel):
@@ -1631,6 +1648,25 @@ class UpdateToolConfigRequest(BaseModel):
     timeout: Optional[int] = Field(default=None, ge=0, le=86400)
     timeout_max_seconds: Optional[int] = Field(default=None, ge=0, le=86400)
     allow_write: Optional[bool] = None
+    group_id: Optional[str] = Field(
+        default=None, description="Tool group ID (use empty string to ungroup)"
+    )
+
+
+class CreateToolGroupRequest(BaseModel):
+    """Request to create a tool group."""
+
+    name: str = Field(min_length=1, max_length=120, description="Group display name")
+    description: str = Field(default="", max_length=500)
+    sort_order: int = Field(default=0)
+
+
+class UpdateToolGroupRequest(BaseModel):
+    """Request to update a tool group."""
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=500)
+    sort_order: Optional[int] = None
 
 
 class ToolTestRequest(BaseModel):

@@ -44,6 +44,8 @@ class UserSpaceAvailableTool(BaseModel):
     name: str
     tool_type: str
     description: str | None = None
+    group_id: str | None = None
+    group_name: str | None = None
 
 
 class UserSpaceWorkspace(BaseModel):
@@ -53,6 +55,7 @@ class UserSpaceWorkspace(BaseModel):
     sqlite_persistence_mode: SqlitePersistenceMode = "exclude"
     owner_user_id: str
     selected_tool_ids: list[str] = Field(default_factory=list)
+    selected_tool_group_ids: list[str] = Field(default_factory=list)
     conversation_ids: list[str] = Field(default_factory=list)
     members: list[WorkspaceMember] = Field(default_factory=list)
     created_at: datetime
@@ -70,6 +73,10 @@ class CreateWorkspaceRequest(BaseModel):
             "are selected by default."
         ),
     )
+    selected_tool_group_ids: list[str] | None = Field(
+        default=None,
+        description="Workspace-selected tool group IDs.",
+    )
 
 
 class UpdateWorkspaceRequest(BaseModel):
@@ -77,6 +84,7 @@ class UpdateWorkspaceRequest(BaseModel):
     description: str | None = Field(default=None, max_length=1000)
     sqlite_persistence_mode: SqlitePersistenceMode | None = None
     selected_tool_ids: list[str] | None = None
+    selected_tool_group_ids: list[str] | None = None
 
 
 class UpdateWorkspaceMembersRequest(BaseModel):

@@ -106,6 +106,7 @@ from ragtime.indexer.models import (
     CreateConversationRequest,
     CreateIndexRequest,
     CreateToolConfigRequest,
+    CreateToolGroupRequest,
     DatabaseDiscoverOption,
     EmbeddingStatus,
     FetchBranchesRequest,
@@ -136,6 +137,7 @@ from ragtime.indexer.models import (
     SchemaIndexJobResponse,
     SendMessageRequest,
     ToolConfig,
+    ToolGroup,
     ToolTestRequest,
     ToolType,
     TriggerFilesystemIndexRequest,
@@ -143,6 +145,7 @@ from ragtime.indexer.models import (
     TriggerSchemaIndexRequest,
     UpdateSettingsRequest,
     UpdateToolConfigRequest,
+    UpdateToolGroupRequest,
     VectorStoreType,
 )
 from ragtime.indexer.pdm_service import pdm_indexer
@@ -1578,6 +1581,52 @@ async def list_tool_configs(
     return await repository.list_tool_configs(enabled_only=enabled_only)
 
 
+# =========================================================================
+# Tool Groups
+# =========================================================================
+
+
+@router.get("/tool-groups", response_model=List[ToolGroup], tags=["Tool Groups"])
+async def list_tool_groups(_user: User = Depends(require_admin)):
+    """List all tool groups. Admin only."""
+    return await repository.list_tool_groups()
+
+
+@router.post("/tool-groups", response_model=ToolGroup, tags=["Tool Groups"])
+async def create_tool_group(
+    request: CreateToolGroupRequest, _user: User = Depends(require_admin)
+):
+    """Create a tool group. Admin only."""
+    return await repository.create_tool_group(
+        name=request.name,
+        description=request.description,
+        sort_order=request.sort_order,
+    )
+
+
+@router.put("/tool-groups/{group_id}", response_model=ToolGroup, tags=["Tool Groups"])
+async def update_tool_group(
+    group_id: str,
+    request: UpdateToolGroupRequest,
+    _user: User = Depends(require_admin),
+):
+    """Update a tool group. Admin only."""
+    updates = request.model_dump(exclude_unset=True)
+    result = await repository.update_tool_group(group_id, updates)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Tool group not found")
+    return result
+
+
+@router.delete("/tool-groups/{group_id}", tags=["Tool Groups"])
+async def delete_tool_group(group_id: str, _user: User = Depends(require_admin)):
+    """Delete a tool group. Tools in it become ungrouped. Admin only."""
+    success = await repository.delete_tool_group(group_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Tool group not found")
+    return {"message": "Tool group deleted"}
+
+
 @router.post("/tools", response_model=ToolConfig, tags=["Tools"])
 async def create_tool_config(
     request: CreateToolConfigRequest, _user: User = Depends(require_admin)
@@ -1636,6 +1685,7 @@ async def create_tool_config(
         timeout=request.timeout,
         timeout_max_seconds=request.timeout_max_seconds,
         allow_write=request.allow_write,
+        group_id=request.group_id,
     )
     result = await repository.create_tool_config(config)
 
@@ -9253,7 +9303,15 @@ async def get_conversation_tools(
             where={"conversationId": conversation_id}
         )
 
-        return {"tool_config_ids": [s.toolConfigId for s in selections]}
+        # Get tool group selections
+        group_selections = await db.conversationtoolgroupselection.find_many(
+            where={"conversationId": conversation_id}
+        )
+
+        return {
+            "tool_config_ids": [s.toolConfigId for s in selections],
+            "tool_group_ids": [s.toolGroupId for s in group_selections],
+        }
     finally:
         await db.disconnect()
 
@@ -9285,6 +9343,7 @@ async def update_conversation_tools(
                 )
 
         tool_config_ids = request.get("tool_config_ids", [])
+        tool_group_ids = request.get("tool_group_ids", [])
 
         # Delete existing selections
         await db.conversationtoolselection.delete_many(
@@ -9295,6 +9354,15 @@ async def update_conversation_tools(
         for tool_id in tool_config_ids:
             await db.conversationtoolselection.create(
                 data={"conversationId": conversation_id, "toolConfigId": tool_id}
+            )
+
+        # Update group selections
+        await db.conversationtoolgroupselection.delete_many(
+            where={"conversationId": conversation_id}
+        )
+        for group_id in tool_group_ids:
+            await db.conversationtoolgroupselection.create(
+                data={"conversationId": conversation_id, "toolGroupId": group_id}
             )
 
         return {"success": True}

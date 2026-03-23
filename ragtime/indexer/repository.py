@@ -24,18 +24,34 @@ from prisma.models import IndexMetadata as PrismaIndexMetadata
 
 from prisma import Json, Prisma
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
-                                     decrypt_json_passwords, decrypt_secret,
-                                     encrypt_json_passwords, encrypt_secret)
+from ragtime.core.encryption import (
+    CONNECTION_CONFIG_PASSWORD_FIELDS,
+    decrypt_json_passwords,
+    decrypt_secret,
+    encrypt_json_passwords,
+    encrypt_secret,
+)
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
-from ragtime.indexer.models import (SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
-                                    AppSettings, ChatMessage, ChatTask,
-                                    ChatTaskStatus, ChatTaskStreamingState,
-                                    Conversation, IndexConfig, IndexJob,
-                                    IndexStatus, ProviderPromptDebugRecord,
-                                    ToolCallRecord, ToolConfig, ToolOutputMode,
-                                    ToolType, VectorStoreType)
+from ragtime.indexer.models import (
+    SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
+    AppSettings,
+    ChatMessage,
+    ChatTask,
+    ChatTaskStatus,
+    ChatTaskStreamingState,
+    Conversation,
+    IndexConfig,
+    IndexJob,
+    IndexStatus,
+    ProviderPromptDebugRecord,
+    ToolCallRecord,
+    ToolConfig,
+    ToolGroup,
+    ToolOutputMode,
+    ToolType,
+    VectorStoreType,
+)
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 
@@ -922,9 +938,7 @@ class IndexerRepository:
                 update_data["defaultChatModel"] = None
             else:
                 normalized_default_chat_model = str(default_chat_model_value).strip()
-                update_data["defaultChatModel"] = (
-                    normalized_default_chat_model or None
-                )
+                update_data["defaultChatModel"] = normalized_default_chat_model or None
 
         # Special handling for GitHub Copilot nullable fields.
         # These may need explicit clearing to NULL.
@@ -1012,18 +1026,23 @@ class IndexerRepository:
             config.connection_config, CONNECTION_CONFIG_PASSWORD_FIELDS
         )
 
+        create_data: dict[str, Any] = {
+            "name": config.name,
+            "toolType": _to_prisma_tool_type(config.tool_type),
+            "enabled": config.enabled,
+            "description": config.description,
+            "connectionConfig": Json(encrypted_config),
+            "maxResults": config.max_results,
+            "timeout": config.timeout,
+            "timeoutMaxSeconds": config.timeout_max_seconds,
+            "allowWrite": config.allow_write,
+        }
+        if config.group_id:
+            create_data["groupId"] = config.group_id
+
         prisma_config = await db.toolconfig.create(
-            data={  # type: ignore[arg-type]
-                "name": config.name,
-                "toolType": _to_prisma_tool_type(config.tool_type),
-                "enabled": config.enabled,
-                "description": config.description,
-                "connectionConfig": Json(encrypted_config),
-                "maxResults": config.max_results,
-                "timeout": config.timeout,
-                "timeoutMaxSeconds": config.timeout_max_seconds,
-                "allowWrite": config.allow_write,
-            }
+            data=create_data,  # type: ignore[arg-type]
+            include={"group": True},
         )
 
         logger.info(f"Created tool config: {config.name} ({config.tool_type.value})")
@@ -1045,7 +1064,9 @@ class IndexerRepository:
 
         where = {"enabled": True} if enabled_only else {}
         prisma_configs = await db.toolconfig.find_many(
-            where=where, order={"createdAt": "desc"}  # type: ignore[arg-type]
+            where=where,  # type: ignore[arg-type]
+            order={"createdAt": "desc"},
+            include={"group": True},
         )
 
         configs = [self._prisma_tool_config_to_model(c) for c in prisma_configs]
@@ -1127,6 +1148,11 @@ class IndexerRepository:
                     )
                     value = Json(value)
                 update_data[camel_key] = value
+
+        # Handle group_id: empty string means ungroup, non-empty means set
+        if "group_id" in updates:
+            gid = updates["group_id"]
+            update_data["groupId"] = None if gid in (None, "") else gid
 
         if not update_data:
             return await self.get_tool_config(config_id)
@@ -1336,6 +1362,13 @@ class IndexerRepository:
             prisma_config.connectionConfig, CONNECTION_CONFIG_PASSWORD_FIELDS
         )
 
+        # Resolve group fields if relation or raw field present
+        group_id = getattr(prisma_config, "groupId", None)
+        group_name: str | None = None
+        group_rel = getattr(prisma_config, "group", None)
+        if group_rel is not None:
+            group_name = getattr(group_rel, "name", None)
+
         return ToolConfig(
             id=prisma_config.id,
             name=prisma_config.name,
@@ -1347,12 +1380,120 @@ class IndexerRepository:
             timeout=prisma_config.timeout,
             timeout_max_seconds=getattr(prisma_config, "timeoutMaxSeconds", 300),
             allow_write=prisma_config.allowWrite,
+            group_id=group_id,
+            group_name=group_name,
             last_test_at=prisma_config.lastTestAt,
             last_test_result=prisma_config.lastTestResult,
             last_test_error=prisma_config.lastTestError,
             created_at=prisma_config.createdAt,
             updated_at=prisma_config.updatedAt,
         )
+
+    # -------------------------------------------------------------------------
+    # Tool Group Operations
+    # -------------------------------------------------------------------------
+
+    async def list_tool_groups(self) -> list["ToolGroup"]:
+        """List all tool groups ordered by sort_order then name."""
+        db = await self._get_db()
+        rows = await db.toolgroup.find_many(
+            order=[{"sortOrder": "asc"}, {"name": "asc"}]
+        )
+        return [
+            ToolGroup(
+                id=r.id,
+                name=r.name,
+                description=r.description,
+                sort_order=r.sortOrder,
+                created_at=r.createdAt,
+                updated_at=r.updatedAt,
+            )
+            for r in rows
+        ]
+
+    async def get_tool_group(self, group_id: str) -> "ToolGroup | None":
+        db = await self._get_db()
+        r = await db.toolgroup.find_unique(where={"id": group_id})
+        if r is None:
+            return None
+        return ToolGroup(
+            id=r.id,
+            name=r.name,
+            description=r.description,
+            sort_order=r.sortOrder,
+            created_at=r.createdAt,
+            updated_at=r.updatedAt,
+        )
+
+    async def create_tool_group(
+        self, name: str, description: str = "", sort_order: int = 0
+    ) -> "ToolGroup":
+        db = await self._get_db()
+        r = await db.toolgroup.create(
+            data={
+                "name": name,
+                "description": description,
+                "sortOrder": sort_order,
+            }
+        )
+        logger.info(f"Created tool group: {name}")
+        return ToolGroup(
+            id=r.id,
+            name=r.name,
+            description=r.description,
+            sort_order=r.sortOrder,
+            created_at=r.createdAt,
+            updated_at=r.updatedAt,
+        )
+
+    async def update_tool_group(
+        self, group_id: str, updates: dict[str, Any]
+    ) -> "ToolGroup | None":
+        db = await self._get_db()
+        data: dict[str, Any] = {}
+        if "name" in updates and updates["name"] is not None:
+            data["name"] = updates["name"]
+        if "description" in updates and updates["description"] is not None:
+            data["description"] = updates["description"]
+        if "sort_order" in updates and updates["sort_order"] is not None:
+            data["sortOrder"] = updates["sort_order"]
+        if not data:
+            return await self.get_tool_group(group_id)
+        try:
+            r = await db.toolgroup.update(where={"id": group_id}, data=data)
+        except Exception:
+            return None
+        return ToolGroup(
+            id=r.id,
+            name=r.name,
+            description=r.description,
+            sort_order=r.sortOrder,
+            created_at=r.createdAt,
+            updated_at=r.updatedAt,
+        )
+
+    async def delete_tool_group(self, group_id: str) -> bool:
+        """Delete a tool group. Tools in the group become ungrouped."""
+        db = await self._get_db()
+        try:
+            await db.toolgroup.delete(where={"id": group_id})
+            logger.info(f"Deleted tool group {group_id}")
+            return True
+        except Exception:
+            return False
+
+    async def get_tool_ids_for_groups(self, group_ids: list[str]) -> list[str]:
+        """Return enabled tool config IDs that belong to any of the given groups."""
+        if not group_ids:
+            return []
+        db = await self._get_db()
+        tools = await db.toolconfig.find_many(
+            where={
+                "groupId": {"in": group_ids},
+                "enabled": True,
+            },
+        )
+        return [t.id for t in tools]
 
     # -------------------------------------------------------------------------
     # Conversation Operations

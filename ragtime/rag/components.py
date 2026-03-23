@@ -7509,7 +7509,21 @@ except Exception as e:
 
         if has_workspace_context:
             workspace = await userspace_service.get_workspace(workspace_id, user_id)
-            allowed_tool_config_ids = workspace.selected_tool_ids
+            allowed_tool_config_ids = list(workspace.selected_tool_ids)
+
+            # Expand group selections: add all enabled tools from selected groups
+            if workspace.selected_tool_group_ids:
+                from ragtime.indexer.repository import repository as _repo
+
+                group_tool_ids = await _repo.get_tool_ids_for_groups(
+                    workspace.selected_tool_group_ids
+                )
+                existing = set(allowed_tool_config_ids)
+                for tid in group_tool_ids:
+                    if tid not in existing:
+                        allowed_tool_config_ids.append(tid)
+                        existing.add(tid)
+
             include_sqlite_persistence = workspace.sqlite_persistence_mode == "include"
 
             userspace_tools = await self._create_userspace_file_tools(

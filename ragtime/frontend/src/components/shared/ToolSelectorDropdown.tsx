@@ -1,5 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
-import { Settings } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Settings, ChevronRight } from 'lucide-react';
+
+export interface ToolGroupInfo {
+  id: string;
+  name: string;
+}
 
 interface ToolSelectorDropdownProps {
   availableTools: Array<{
@@ -7,9 +12,15 @@ interface ToolSelectorDropdownProps {
     name: string;
     tool_type: string;
     description?: string | null;
+    group_id?: string | null;
+    group_name?: string | null;
   }>;
   selectedToolIds: Set<string>;
   onToggleTool: (toolId: string) => void;
+  /** Selected tool group IDs. When a group is selected, all its tools are effectively enabled. */
+  selectedToolGroupIds?: Set<string>;
+  onToggleToolGroup?: (groupId: string) => void;
+  toolGroups?: ToolGroupInfo[];
   disabled?: boolean;
   readOnly?: boolean;
   saving?: boolean;
@@ -23,6 +34,9 @@ export function ToolSelectorDropdown({
   availableTools,
   selectedToolIds,
   onToggleTool,
+  selectedToolGroupIds,
+  onToggleToolGroup,
+  toolGroups,
   disabled = false,
   readOnly = false,
   saving = false,
@@ -31,6 +45,7 @@ export function ToolSelectorDropdown({
   onToggleToolCalls,
 }: ToolSelectorDropdownProps) {
   const [showDropdown, setShowDropdown] = useState(false);
+  const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   // Close dropdown when clicking outside
@@ -38,6 +53,7 @@ export function ToolSelectorDropdown({
     function handleClickOutside(event: MouseEvent) {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setShowDropdown(false);
+        setExpandedGroupId(null);
       }
     }
 
@@ -49,36 +65,168 @@ export function ToolSelectorDropdown({
     }
   }, [showDropdown]);
 
+  // Build grouped structure
+  const { groups, ungroupedTools } = useMemo(() => {
+    const groupMap = new Map<string, { name: string; tools: typeof availableTools }>();
+    const ungrouped: typeof availableTools = [];
+
+    // Initialise groups from toolGroups prop if available
+    if (toolGroups) {
+      for (const g of toolGroups) {
+        groupMap.set(g.id, { name: g.name, tools: [] });
+      }
+    }
+
+    for (const tool of availableTools) {
+      if (tool.group_id) {
+        let entry = groupMap.get(tool.group_id);
+        if (!entry) {
+          entry = { name: tool.group_name || 'Group', tools: [] };
+          groupMap.set(tool.group_id, entry);
+        }
+        entry.tools.push(tool);
+      } else {
+        ungrouped.push(tool);
+      }
+    }
+
+    // Remove groups with 0 tools
+    const groupList = Array.from(groupMap.entries())
+      .filter(([, v]) => v.tools.length > 0)
+      .map(([id, v]) => ({ id, name: v.name, tools: v.tools }));
+
+    return { groups: groupList, ungroupedTools: ungrouped };
+  }, [availableTools, toolGroups]);
+
+  const hasGroups = groups.length > 0;
+
+  // Effective selected count: direct + group-expanded
+  const effectiveSelectedCount = useMemo(() => {
+    const ids = new Set(selectedToolIds);
+    if (selectedToolGroupIds) {
+      for (const tool of availableTools) {
+        if (tool.group_id && selectedToolGroupIds.has(tool.group_id)) {
+          ids.add(tool.id);
+        }
+      }
+    }
+    return ids.size;
+  }, [selectedToolIds, selectedToolGroupIds, availableTools]);
+
+  // Group checkbox state
+  const getGroupCheckState = (groupId: string, tools: typeof availableTools): 'all' | 'some' | 'none' => {
+    if (selectedToolGroupIds?.has(groupId)) return 'all';
+    const selected = tools.filter((t) => selectedToolIds.has(t.id)).length;
+    if (selected === 0) return 'none';
+    if (selected === tools.length) return 'all';
+    return 'some';
+  };
+
+  const handleGroupToggle = (groupId: string, tools: typeof availableTools) => {
+    if (readOnly || saving || disabled) return;
+    if (onToggleToolGroup) {
+      // Use group-level selection
+      onToggleToolGroup(groupId);
+    } else {
+      // Fallback: toggle all individual tools in the group
+      const state = getGroupCheckState(groupId, tools);
+      if (state === 'all') {
+        // Deselect all tools in this group
+        for (const t of tools) {
+          if (selectedToolIds.has(t.id)) onToggleTool(t.id);
+        }
+      } else {
+        // Select all tools in this group
+        for (const t of tools) {
+          if (!selectedToolIds.has(t.id)) onToggleTool(t.id);
+        }
+      }
+    }
+  };
+
+  const renderToolItem = (tool: typeof availableTools[0]) => (
+    <label key={tool.id} className="checkbox-label userspace-tool-item">
+      <input
+        type="checkbox"
+        checked={
+          selectedToolIds.has(tool.id) ||
+          !!(tool.group_id && selectedToolGroupIds?.has(tool.group_id))
+        }
+        onChange={() => onToggleTool(tool.id)}
+        disabled={saving || readOnly || disabled}
+      />
+      <span>
+        <strong>{tool.name}</strong>
+        <small className="userspace-muted">{tool.tool_type}</small>
+      </span>
+    </label>
+  );
+
   return (
     <div className="userspace-tool-picker-wrap" ref={dropdownRef}>
       <button
         className={`btn btn-secondary btn-sm btn-icon userspace-toolbar-action-btn ${showDropdown ? 'active' : ''}`}
         onClick={() => setShowDropdown(!showDropdown)}
-        title={`${title} (${selectedToolIds.size}/${availableTools.length} selected)`}
+        title={`${title} (${effectiveSelectedCount}/${availableTools.length} selected)`}
         disabled={disabled}
       >
         <Settings size={14} />
-        <span className="tool-count-badge">{selectedToolIds.size}</span>
+        <span className="tool-count-badge">{effectiveSelectedCount}</span>
       </button>
       {showDropdown && (
         <div className="userspace-tool-dropdown">
           <h4>{title}</h4>
           {readOnly && <p className="userspace-muted">Read-only access</p>}
           <div className="userspace-tool-list">
-            {availableTools.map((tool) => (
-              <label key={tool.id} className="checkbox-label userspace-tool-item">
-                <input
-                  type="checkbox"
-                  checked={selectedToolIds.has(tool.id)}
-                  onChange={() => onToggleTool(tool.id)}
-                  disabled={saving || readOnly || disabled}
-                />
-                <span>
-                  <strong>{tool.name}</strong>
-                  <small className="userspace-muted">{tool.tool_type}</small>
-                </span>
-              </label>
-            ))}
+            {hasGroups && groups.map((group) => {
+              const checkState = getGroupCheckState(group.id, group.tools);
+              const isExpanded = expandedGroupId === group.id;
+              return (
+                <div key={group.id} className="tool-group-section">
+                  <div
+                    className={`tool-group-header ${isExpanded ? 'expanded' : ''}`}
+                    onMouseEnter={() => setExpandedGroupId(group.id)}
+                    onMouseLeave={() => setExpandedGroupId(null)}
+                    onClick={() => setExpandedGroupId(isExpanded ? null : group.id)}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setExpandedGroupId(isExpanded ? null : group.id);
+                      }
+                    }}
+                    aria-expanded={isExpanded}
+                    aria-label={`Tool group: ${group.name}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checkState === 'all'}
+                      ref={(el) => {
+                        if (el) el.indeterminate = checkState === 'some';
+                      }}
+                      onChange={() => handleGroupToggle(group.id, group.tools)}
+                      disabled={saving || readOnly || disabled}
+                      onClick={(e) => e.stopPropagation()}
+                      aria-label={`Select all tools in ${group.name}`}
+                    />
+                    <span className="tool-group-name">{group.name}</span>
+                    <span className="tool-group-count">{group.tools.length}</span>
+                    <ChevronRight size={14} className={`tool-group-chevron ${isExpanded ? 'rotated' : ''}`} />
+                  </div>
+                  {isExpanded && (
+                    <div
+                      className="tool-group-submenu"
+                      onMouseEnter={() => setExpandedGroupId(group.id)}
+                      onMouseLeave={() => setExpandedGroupId(null)}
+                    >
+                      {group.tools.map(renderToolItem)}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {ungroupedTools.map(renderToolItem)}
           </div>
           {onToggleToolCalls !== undefined && showToolCalls !== undefined && (
             <div className="userspace-tool-calls-toggle">
