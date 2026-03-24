@@ -123,6 +123,7 @@ from ragtime.tools.git_history import (
     create_aggregate_git_history_tool,
     create_per_index_git_history_tool,
 )
+from ragtime.tools.influxdb import create_influxdb_tool
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
@@ -2388,6 +2389,8 @@ class RAGComponents:
                     )
                     if schema_tool:
                         result_tools.append(schema_tool)
+                elif tool_type == "influxdb":
+                    tool = await self._create_influxdb_tool(config, tool_name, tool_id)
                 elif tool_type == "odoo_shell":
                     tool = await self._create_odoo_tool(config, tool_name, tool_id)
                 elif tool_type == "ssh_shell":
@@ -3473,6 +3476,53 @@ class RAGComponents:
             user=user,
             password=password,
             database=database,
+            timeout=timeout,
+            timeout_max_seconds=timeout_max_seconds,
+            max_results=max_results,
+            allow_write=allow_write,
+            description=description,
+            ssh_tunnel_config=ssh_tunnel_config,
+            include_metadata=include_metadata,
+        )
+
+    async def _create_influxdb_tool(
+        self,
+        config: dict,
+        tool_name: str,
+        _tool_id: str,
+        include_metadata: bool = True,
+    ):
+        """Create an InfluxDB 2.x (Flux) query tool from config."""
+
+        conn_config = config.get("connection_config", {})
+        timeout = config.get("timeout", 30)
+        timeout_max_seconds = int(
+            config.get("timeout_max_seconds", MAX_TOOL_TIMEOUT_SECONDS) or 0
+        )
+        max_results = config.get("max_results", 100)
+        allow_write = config.get("allow_write", False)
+        description = config.get("description", "")
+
+        host = conn_config.get("host", "")
+        port = int(conn_config.get("port", 8086) or 8086)
+        use_https = bool(conn_config.get("use_https", False))
+        token = conn_config.get("token", "")
+        org = conn_config.get("org", "")
+
+        # Build SSH tunnel config if enabled
+        ssh_tunnel_config = build_ssh_tunnel_config(conn_config, host, port)
+
+        if not host or not token or not org:
+            logger.error(f"InfluxDB tool {tool_name} missing required configuration")
+            return None
+
+        return create_influxdb_tool(
+            name=config.get("name", tool_name),
+            host=host,
+            port=port,
+            use_https=use_https,
+            token=token,
+            org=org,
             timeout=timeout,
             timeout_max_seconds=timeout_max_seconds,
             max_results=max_results,
@@ -4779,6 +4829,8 @@ except Exception as e:
         if tool_type in {"postgres", "mssql", "mysql"}:
             names.add(f"query_{tool_name}")
             names.add(f"search_{tool_name}_schema")
+        elif tool_type == "influxdb":
+            names.add(f"query_{tool_name}")
         elif tool_type == "odoo_shell":
             names.add(f"odoo_{tool_name}")
         elif tool_type == "ssh_shell":

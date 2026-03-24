@@ -683,6 +683,7 @@ No tools configured. Answer from indexed documentation only.
         "postgres": "PostgreSQL",
         "mssql": "SQL Server",
         "mysql": "MySQL",
+        "influxdb": "InfluxDB",
         "odoo_shell": "Odoo ORM",
         "ssh_shell": "SSH Shell",
         "filesystem_indexer": "File Search",

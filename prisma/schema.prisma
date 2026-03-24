@@ -268,6 +268,7 @@ enum ToolType {
   postgres
   mysql
   mssql
+  influxdb
   odoo_shell
   ssh_shell
   filesystem_indexer

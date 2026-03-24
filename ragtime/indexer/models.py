@@ -1055,6 +1055,7 @@ class ToolType(str, Enum):
     POSTGRES = "postgres"
     MSSQL = "mssql"
     MYSQL = "mysql"
+    INFLUXDB = "influxdb"
     ODOO_SHELL = "odoo_shell"
     SSH_SHELL = "ssh_shell"
     FILESYSTEM_INDEXER = "filesystem_indexer"
@@ -1207,6 +1208,44 @@ class MysqlConnectionConfig(BaseModel):
     )
     schema_hash: Optional[str] = Field(
         default=None, description="Hash of last indexed schema"
+    )
+
+
+class InfluxdbConnectionConfig(BaseModel):
+    """Connection configuration for InfluxDB 2.x (Flux) tool."""
+
+    host: str = Field(default="", description="InfluxDB server hostname or IP")
+    port: int = Field(default=8086, ge=1, le=65535, description="InfluxDB port")
+    use_https: bool = Field(
+        default=False,
+        description="Use HTTPS instead of HTTP for InfluxDB API",
+    )
+    token: str = Field(default="", description="InfluxDB API token")
+    org: str = Field(default="", description="InfluxDB organization name or ID")
+    bucket: str = Field(default="", description="Default bucket name")
+    # SSH tunnel configuration
+    ssh_tunnel_enabled: bool = Field(
+        default=False, description="Use SSH tunnel for InfluxDB connection"
+    )
+    ssh_tunnel_host: str = Field(
+        default="", description="SSH server hostname for tunnel"
+    )
+    ssh_tunnel_port: int = Field(
+        default=22, ge=1, le=65535, description="SSH server port"
+    )
+    ssh_tunnel_user: str = Field(default="", description="SSH username")
+    ssh_tunnel_password: str = Field(
+        default="", description="SSH password (if not using key)"
+    )
+    ssh_tunnel_key_path: str = Field(default="", description="Path to SSH private key")
+    ssh_tunnel_key_content: str = Field(
+        default="", description="SSH private key content (preferred over path)"
+    )
+    ssh_tunnel_key_passphrase: str = Field(
+        default="", description="Passphrase for encrypted SSH key"
+    )
+    ssh_tunnel_public_key: str = Field(
+        default="", description="SSH public key for generated keypairs"
     )
 
 
@@ -1839,6 +1878,56 @@ class MysqlDiscoverResponse(BaseModel):
         description=(
             "Discovered databases with per-database access metadata. "
             "`databases` remains the list of accessible names for backwards compatibility."
+        ),
+    )
+    error: Optional[str] = Field(
+        default=None, description="Error message if discovery failed"
+    )
+
+
+class InfluxdbDiscoverRequest(BaseModel):
+    """Request to discover buckets on an InfluxDB 2.x server."""
+
+    host: str = Field(description="InfluxDB server hostname or IP")
+    port: int = Field(default=8086, description="InfluxDB server port")
+    use_https: bool = Field(
+        default=False, description="Use HTTPS instead of HTTP for InfluxDB API"
+    )
+    token: str = Field(description="InfluxDB API token")
+    org: str = Field(description="InfluxDB organization name or ID")
+    # SSH tunnel configuration
+    ssh_tunnel_enabled: bool = Field(
+        default=False, description="Whether to use SSH tunnel"
+    )
+    ssh_tunnel_host: Optional[str] = Field(
+        default=None, description="SSH server hostname"
+    )
+    ssh_tunnel_port: int = Field(default=22, description="SSH server port")
+    ssh_tunnel_user: Optional[str] = Field(default=None, description="SSH username")
+    ssh_tunnel_password: Optional[str] = Field(default=None, description="SSH password")
+    ssh_tunnel_key_path: Optional[str] = Field(
+        default=None, description="Path to SSH private key"
+    )
+    ssh_tunnel_key_content: Optional[str] = Field(
+        default=None, description="SSH private key content"
+    )
+    ssh_tunnel_key_passphrase: Optional[str] = Field(
+        default=None, description="SSH key passphrase"
+    )
+
+
+class InfluxdbDiscoverResponse(BaseModel):
+    """Response from InfluxDB bucket discovery."""
+
+    success: bool = Field(description="Whether discovery succeeded")
+    buckets: List[str] = Field(
+        default_factory=list, description="List of discovered bucket names"
+    )
+    database_options: List[DatabaseDiscoverOption] = Field(
+        default_factory=list,
+        description=(
+            "Discovered buckets with per-bucket access metadata. "
+            "`buckets` remains the list of accessible names for backwards compatibility."
         ),
     )
     error: Optional[str] = Field(

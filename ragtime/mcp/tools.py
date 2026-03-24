@@ -160,6 +160,27 @@ TOOL_INPUT_SCHEMAS: dict[str, dict] = {
         },
         "required": ["query"],
     },
+    "influxdb": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Flux query to execute. Must include |> limit(n: ...) for result limiting.",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Brief description of what this query retrieves",
+            },
+            "timeout": {
+                "type": "integer",
+                "description": "Query timeout in seconds",
+                "default": 30,
+                "minimum": 5,
+                "maximum": 300,
+            },
+        },
+        "required": ["query"],
+    },
     "solidworks_pdm": {
         "type": "object",
         "properties": {
@@ -615,6 +636,7 @@ class MCPToolAdapter:
             "postgres": "query_",
             "mssql": "query_",
             "mysql": "query_",
+            "influxdb": "query_",
             "odoo_shell": "odoo_",
             "ssh_shell": "ssh_",
             "filesystem_indexer": "search_",
@@ -634,7 +656,7 @@ class MCPToolAdapter:
         timeout = int(config.get("timeout", 30) or 30)
         timeout_max_seconds = int(config.get("timeout_max_seconds", 300) or 0)
 
-        if tool_type in {"postgres", "mssql", "mysql"}:
+        if tool_type in {"postgres", "mssql", "mysql", "influxdb"}:
             timeout = max(0, timeout)
             timeout_schema = {
                 "type": "integer",
@@ -791,6 +813,7 @@ class MCPToolAdapter:
             "postgres": f"Query the '{name}' PostgreSQL database using SQL.",
             "mssql": f"Query the '{name}' MSSQL/SQL Server database using SQL.",
             "mysql": f"Query the '{name}' MySQL/MariaDB database using SQL.",
+            "influxdb": f"Query the '{name}' InfluxDB database using Flux.",
             "odoo_shell": f"Execute Python ORM code in '{name}' Odoo shell.",
             "ssh_shell": f"Execute shell commands on '{name}' via SSH.",
             "filesystem_indexer": f"Search indexed documents from '{name}'.",
@@ -839,6 +862,10 @@ class MCPToolAdapter:
             )  # pyright: ignore[reportPrivateUsage]
         elif tool_type == "mysql":
             tool = await rag_temp._create_mysql_tool(
+                config, tool_name, tool_id, include_metadata=False
+            )  # pyright: ignore[reportPrivateUsage]
+        elif tool_type == "influxdb":
+            tool = await rag_temp._create_influxdb_tool(
                 config, tool_name, tool_id, include_metadata=False
             )  # pyright: ignore[reportPrivateUsage]
         elif tool_type == "odoo_shell":

@@ -9,6 +9,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import time as _time
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
@@ -21,45 +22,34 @@ from ragtime.config import settings
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
-from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
+from ragtime.core.entrypoint_status import (EntrypointStatus,
+                                            parse_entrypoint_config)
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (
-    DB_TYPE_POSTGRES,
-    add_table_metadata_to_psql_output,
-    enforce_max_results,
-    format_query_result,
-    validate_sql_query,
-)
-from ragtime.core.ssh import (
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
+                                    add_table_metadata_to_psql_output,
+                                    enforce_max_results, format_query_result,
+                                    validate_sql_query)
+from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
+                              ssh_tunnel_config_from_dict)
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (
-    ArtifactType,
-    CreateWorkspaceRequest,
-    ExecuteComponentRequest,
-    ExecuteComponentResponse,
-    PaginatedWorkspacesResponse,
-    ShareAccessMode,
-    SqlitePersistenceMode,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-    UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot,
-    UserSpaceWorkspace,
-    UserSpaceWorkspaceShareLink,
-    UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceMember,
-    WorkspaceShareSlugAvailabilityResponse,
-)
+from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
+                                      ExecuteComponentRequest,
+                                      ExecuteComponentResponse,
+                                      PaginatedWorkspacesResponse,
+                                      ShareAccessMode, SqlitePersistenceMode,
+                                      UpdateWorkspaceMembersRequest,
+                                      UpdateWorkspaceRequest,
+                                      UpdateWorkspaceShareAccessRequest,
+                                      UpsertWorkspaceFileRequest,
+                                      UserSpaceFileInfo, UserSpaceFileResponse,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection,
+                                      UserSpaceSharedPreviewResponse,
+                                      UserSpaceSnapshot, UserSpaceWorkspace,
+                                      UserSpaceWorkspaceShareLink,
+                                      UserSpaceWorkspaceShareLinkStatus,
+                                      WorkspaceMember,
+                                      WorkspaceShareSlugAvailabilityResponse)
 
 logger = get_logger(__name__)
 
@@ -106,7 +96,7 @@ class _NonUtf8WorkspaceFileError(Exception):
 
 _EXECUTION_PROOF_MAX_AGE_SECONDS = 3600  # 1 hour
 
-_USPACE_EXEC_SUPPORTED_SQL_TOOLS = {"postgres", "mysql", "mssql"}
+_USPACE_EXEC_SUPPORTED_SQL_TOOLS = {"postgres", "mysql", "mssql", "influxdb"}
 _USERSPACE_PREVIEW_ENTRY_PATH = "dashboard/main.ts"
 _DEFAULT_SHARE_SLUG_PREFIX = "share"
 _USERSPACE_PREVIEW_MAX_FILES = 200
@@ -2116,8 +2106,6 @@ class UserSpaceService:
         if not files_dir.exists():
             return []
 
-        import time as _time
-
         cached = self._file_list_cache.get(workspace_id)
         if cached is not None:
             cached_result, cached_include_dirs, cached_ts = cached
@@ -2762,7 +2750,7 @@ class UserSpaceService:
                 status_code=400,
                 detail=(
                     "Live preview execution supports SQL tools only "
-                    "(postgres, mysql, mssql)."
+                    "(postgres, mysql, mssql, influxdb)."
                 ),
             )
 
@@ -2844,6 +2832,35 @@ class UserSpaceService:
                 user=user,
                 password=password,
                 database=database,
+                timeout=timeout,
+                max_results=max_results,
+                allow_write=False,
+                require_result_limit=False,
+                description="Preview component execution",
+                ssh_tunnel_config=ssh_tunnel_config,
+                include_metadata=True,
+            )
+        elif tool_type == "influxdb":
+            from ragtime.tools.influxdb import execute_influxdb_query_async
+
+            use_https = bool(conn_config.get("use_https", False))
+            token = conn_config.get("token", "")
+            org = conn_config.get("org", "")
+            influx_host = conn_config.get("host", "")
+            influx_port = int(conn_config.get("port", 8086))
+            ssh_tunnel_config = build_ssh_tunnel_config(
+                conn_config,
+                influx_host,
+                influx_port,
+            )
+
+            return await execute_influxdb_query_async(
+                query=query,
+                host=influx_host,
+                port=influx_port,
+                use_https=use_https,
+                token=token,
+                org=org,
                 timeout=timeout,
                 max_results=max_results,
                 allow_write=False,

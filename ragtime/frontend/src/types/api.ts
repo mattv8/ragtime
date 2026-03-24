@@ -747,7 +747,7 @@ export interface EmbeddingModelsResponse {
 }
 
 // Tool Configuration Types
-export type ToolType = 'postgres' | 'mysql' | 'mssql' | 'odoo_shell' | 'ssh_shell' | 'filesystem_indexer' | 'solidworks_pdm';
+export type ToolType = 'postgres' | 'mysql' | 'mssql' | 'influxdb' | 'odoo_shell' | 'ssh_shell' | 'filesystem_indexer' | 'solidworks_pdm';
 
 // Mount type for filesystem indexer
 export type FilesystemMountType = 'docker_volume' | 'smb' | 'nfs' | 'local';
@@ -809,6 +809,15 @@ export interface MysqlConnectionConfig extends SSHTunnelConfig {
   schema_index_interval_hours?: number;
   last_schema_indexed_at?: string | null;
   schema_hash?: string | null;
+}
+
+export interface InfluxdbConnectionConfig extends SSHTunnelConfig {
+  host?: string;
+  port?: number;
+  use_https?: boolean;
+  token?: string;
+  org?: string;
+  bucket?: string;
 }
 
 export interface OdooShellConnectionConfig {
@@ -913,7 +922,7 @@ export interface SolidworksPdmConnectionConfig extends SSHTunnelConfig {
   last_indexed_at?: string | null;
 }
 
-export type ConnectionConfig = PostgresConnectionConfig | MysqlConnectionConfig | MssqlConnectionConfig | OdooShellConnectionConfig | SSHShellConnectionConfig | FilesystemConnectionConfig | SolidworksPdmConnectionConfig;
+export type ConnectionConfig = PostgresConnectionConfig | MysqlConnectionConfig | MssqlConnectionConfig | InfluxdbConnectionConfig | OdooShellConnectionConfig | SSHShellConnectionConfig | FilesystemConnectionConfig | SolidworksPdmConnectionConfig;
 
 export interface ToolConfig {
   id: string;
@@ -1072,6 +1081,31 @@ export interface MysqlDiscoverResponse {
   error?: string;
 }
 
+// InfluxDB Bucket Discovery
+export interface InfluxdbDiscoverRequest {
+  host: string;
+  port?: number;
+  use_https?: boolean;
+  token: string;
+  org: string;
+  // SSH tunnel fields
+  ssh_tunnel_enabled?: boolean;
+  ssh_tunnel_host?: string;
+  ssh_tunnel_port?: number;
+  ssh_tunnel_user?: string;
+  ssh_tunnel_password?: string;
+  ssh_tunnel_key_path?: string;
+  ssh_tunnel_key_content?: string;
+  ssh_tunnel_key_passphrase?: string;
+}
+
+export interface InfluxdbDiscoverResponse {
+  success: boolean;
+  buckets: string[];
+  database_options?: DatabaseDiscoverOption[];
+  error?: string;
+}
+
 // PDM Schema Discovery
 export interface PdmDiscoverRequest {
   host: string;
@@ -1133,6 +1167,11 @@ export const TOOL_TYPE_INFO: Record<ToolType, { name: string; description: strin
   mssql: {
     name: 'MSSQL / SQL Server',
     description: 'Connect to Microsoft SQL Server or Azure SQL database',
+    icon: 'database',
+  },
+  influxdb: {
+    name: 'InfluxDB (Flux)',
+    description: 'Connect to InfluxDB 2.x to execute Flux queries',
     icon: 'database',
   },
   odoo_shell: {

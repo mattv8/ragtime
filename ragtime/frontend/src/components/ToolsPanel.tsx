@@ -72,6 +72,14 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
           return `${config.host}:${port}/${database}`;
         }
         return 'MSSQL connection';
+      case 'influxdb':
+        if ('host' in config && config.host) {
+          const port = 'port' in config ? config.port : 8086;
+          const scheme = 'use_https' in config && config.use_https ? 'https' : 'http';
+          const bucket = 'bucket' in config && config.bucket ? config.bucket : '(no bucket)';
+          return `${scheme}://${config.host}:${port}/${bucket}`;
+        }
+        return 'InfluxDB connection';
       case 'odoo_shell':
         if ('mode' in config && config.mode === 'ssh') {
           if ('ssh_host' in config && 'ssh_user' in config) {

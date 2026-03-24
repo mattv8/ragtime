@@ -9,6 +9,7 @@ import type {
   PostgresConnectionConfig,
   MysqlConnectionConfig,
   MssqlConnectionConfig,
+  InfluxdbConnectionConfig,
   OdooShellConnectionConfig,
   SSHShellConnectionConfig,
   FilesystemConnectionConfig,
@@ -1789,6 +1790,13 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
       : { host: '', port: 3306, user: '', password: '', database: '', container: '', docker_network: '' }
   );
 
+  // InfluxDB config state
+  const [influxdbConfig, setInfluxdbConfig] = useState<InfluxdbConnectionConfig>(
+    existingTool?.tool_type === 'influxdb'
+      ? (existingTool.connection_config as InfluxdbConnectionConfig)
+      : { host: '', port: 8086, use_https: false, token: '', org: '', bucket: '' }
+  );
+
   const [odooConnectionMode, setOdooConnectionMode] = useState<'docker' | 'ssh'>(
     existingTool?.tool_type === 'odoo_shell' && (existingTool.connection_config as OdooShellConnectionConfig).mode === 'ssh'
       ? 'ssh'
@@ -1822,6 +1830,11 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   const [mysqlDiscoveredDatabases, setMysqlDiscoveredDatabases] = useState<DatabaseDiscoverOption[]>([]);
   const [mysqlDiscoveringDatabases, setMysqlDiscoveringDatabases] = useState(false);
   const [mysqlDatabaseDiscoveryError, setMysqlDatabaseDiscoveryError] = useState<string | null>(null);
+
+  // InfluxDB bucket discovery state
+  const [influxdbDiscoveredBuckets, setInfluxdbDiscoveredBuckets] = useState<DatabaseDiscoverOption[]>([]);
+  const [influxdbDiscoveringBuckets, setInfluxdbDiscoveringBuckets] = useState(false);
+  const [influxdbBucketDiscoveryError, setInfluxdbBucketDiscoveryError] = useState<string | null>(null);
 
   const [sshConfig, setSshConfig] = useState<SSHShellConnectionConfig>(
     existingTool?.tool_type === 'ssh_shell'
@@ -2042,6 +2055,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
         return mysqlConfig;
       case 'mssql':
         return mssqlConfig;
+      case 'influxdb':
+        return influxdbConfig;
       case 'odoo_shell':
         return { ...odooConfig, mode: odooConnectionMode };
       case 'ssh_shell':
@@ -2269,6 +2284,54 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
     }
   };
 
+  // InfluxDB bucket discovery handler
+  const handleDiscoverInfluxdbBuckets = async () => {
+    if (!influxdbConfig.host || !influxdbConfig.token || !influxdbConfig.org) {
+      setInfluxdbBucketDiscoveryError('Host, token, and organization are required to discover buckets');
+      return;
+    }
+
+    setInfluxdbDiscoveringBuckets(true);
+    setInfluxdbBucketDiscoveryError(null);
+    setInfluxdbDiscoveredBuckets([]);
+
+    try {
+      const result = await api.discoverInfluxdbBuckets({
+        host: influxdbConfig.host,
+        port: influxdbConfig.port || 8086,
+        use_https: influxdbConfig.use_https ?? false,
+        token: influxdbConfig.token,
+        org: influxdbConfig.org,
+        // SSH tunnel fields
+        ssh_tunnel_enabled: influxdbConfig.ssh_tunnel_enabled,
+        ssh_tunnel_host: influxdbConfig.ssh_tunnel_host,
+        ssh_tunnel_port: influxdbConfig.ssh_tunnel_port,
+        ssh_tunnel_user: influxdbConfig.ssh_tunnel_user,
+        ssh_tunnel_password: influxdbConfig.ssh_tunnel_password,
+        ssh_tunnel_key_path: influxdbConfig.ssh_tunnel_key_path,
+        ssh_tunnel_key_content: influxdbConfig.ssh_tunnel_key_content,
+        ssh_tunnel_key_passphrase: influxdbConfig.ssh_tunnel_key_passphrase,
+      });
+
+      if (result.success) {
+        const options = (result.database_options && result.database_options.length > 0)
+          ? result.database_options
+          : result.buckets.map((name) => ({ name, accessible: true }));
+        setInfluxdbDiscoveredBuckets(options);
+        const firstAccessible = options.find((bucket) => bucket.accessible)?.name;
+        if (firstAccessible && !influxdbConfig.bucket) {
+          setInfluxdbConfig({ ...influxdbConfig, bucket: firstAccessible });
+        }
+      } else {
+        setInfluxdbBucketDiscoveryError(result.error || 'Discovery failed');
+      }
+    } catch (err) {
+      setInfluxdbBucketDiscoveryError(err instanceof Error ? err.message : 'Discovery failed');
+    } finally {
+      setInfluxdbDiscoveringBuckets(false);
+    }
+  };
+
   // SSH Key generation handler
   const handleGenerateSSHKey = async () => {
     setGeneratingKey(true);
@@ -2329,6 +2392,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
         passphrase = mysqlConfig.ssh_tunnel_key_passphrase;
       } else if (toolType === 'mssql') {
         passphrase = mssqlConfig.ssh_tunnel_key_passphrase;
+      } else if (toolType === 'influxdb') {
+        passphrase = influxdbConfig.ssh_tunnel_key_passphrase;
       } else if (toolType === 'solidworks_pdm') {
         passphrase = pdmConfig.ssh_tunnel_key_passphrase;
       }
@@ -2357,6 +2422,13 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           ssh_tunnel_public_key: result.public_key,
           ssh_tunnel_key_path: '',
         });
+      } else if (toolType === 'influxdb') {
+        setInfluxdbConfig({
+          ...influxdbConfig,
+          ssh_tunnel_key_content: result.private_key,
+          ssh_tunnel_public_key: result.public_key,
+          ssh_tunnel_key_path: '',
+        });
       } else if (toolType === 'solidworks_pdm') {
         setPdmConfig({
           ...pdmConfig,
@@ -2381,6 +2453,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
       pubKey = mysqlConfig.ssh_tunnel_public_key;
     } else if (toolType === 'mssql') {
       pubKey = mssqlConfig.ssh_tunnel_public_key;
+    } else if (toolType === 'influxdb') {
+      pubKey = influxdbConfig.ssh_tunnel_public_key;
     } else if (toolType === 'solidworks_pdm') {
       pubKey = pdmConfig.ssh_tunnel_public_key;
     }
@@ -2666,6 +2740,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
       case 'mssql':
         // Host, user, password, and database are required
         return Boolean(mssqlConfig.host && mssqlConfig.user && mssqlConfig.password && mssqlConfig.database);
+      case 'influxdb':
+        return Boolean(influxdbConfig.host && influxdbConfig.token && influxdbConfig.org);
       case 'odoo_shell':
         // For Docker mode, need container. For SSH mode, need host and user.
         if (odooConnectionMode === 'ssh') {
@@ -2702,7 +2778,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
 
   const renderTypeSelection = () => {
     // Define SQL tool types that should be grouped
-    const sqlToolTypes: ToolType[] = ['postgres', 'mysql', 'mssql'];
+    const sqlToolTypes: ToolType[] = ['postgres', 'mysql', 'mssql', 'influxdb'];
     const isSqlTool = (type: ToolType) => sqlToolTypes.includes(type);
     const nonSqlTools = (Object.entries(TOOL_TYPE_INFO) as [ToolType, typeof TOOL_TYPE_INFO[ToolType]][])
       .filter(([type]) => !isSqlTool(type));
@@ -2729,7 +2805,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 <Icon name="database" size={24} />
               </span>
               <span className="tool-type-option-name">SQL Databases</span>
-              <span className="tool-type-option-desc">PostgreSQL, MySQL/MariaDB, MSSQL/SQL Server</span>
+              <span className="tool-type-option-desc">PostgreSQL, MySQL/MariaDB, MSSQL/SQL Server, InfluxDB</span>
               <span className="tool-type-group-chevron">
                 <Icon name={sqlToolsExpanded || sqlToolSelected ? 'chevron-up' : 'chevron-down'} size={16} />
               </span>
@@ -3449,6 +3525,161 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
               style={{ marginTop: '1rem' }}
             />
           )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderInfluxdbConnection = () => {
+    return (
+      <div className="wizard-content">
+        <p className="wizard-help">
+          Connect to an InfluxDB 2.x instance and run Flux queries.
+        </p>
+
+        <div className="connection-panel">
+          <SSHTunnelPanel
+            enabled={influxdbConfig.ssh_tunnel_enabled ?? false}
+            onEnabledChange={(enabled) => {
+              const updates: Partial<typeof influxdbConfig> = { ssh_tunnel_enabled: enabled };
+              if (enabled && !influxdbConfig.host) {
+                updates.host = 'localhost';
+              }
+              setInfluxdbConfig({ ...influxdbConfig, ...updates });
+              setInfluxdbDiscoveredBuckets([]);
+            }}
+            config={{
+              ssh_tunnel_host: influxdbConfig.ssh_tunnel_host,
+              ssh_tunnel_port: influxdbConfig.ssh_tunnel_port,
+              ssh_tunnel_user: influxdbConfig.ssh_tunnel_user,
+              ssh_tunnel_password: influxdbConfig.ssh_tunnel_password,
+              ssh_tunnel_key_path: influxdbConfig.ssh_tunnel_key_path,
+              ssh_tunnel_key_content: influxdbConfig.ssh_tunnel_key_content,
+              ssh_tunnel_key_passphrase: influxdbConfig.ssh_tunnel_key_passphrase,
+              ssh_tunnel_public_key: influxdbConfig.ssh_tunnel_public_key,
+            }}
+            onConfigChange={(tunnelConfig) => setInfluxdbConfig({ ...influxdbConfig, ...tunnelConfig })}
+            databaseLabel="InfluxDB"
+            authMode={sshTunnelAuthMode}
+            onAuthModeChange={setSshTunnelAuthMode}
+            generatingKey={sshTunnelGeneratingKey}
+            onGenerateKey={handleGenerateTunnelSSHKey}
+            keyCopied={sshTunnelKeyCopied}
+            onCopyPublicKey={handleCopyTunnelPublicKey}
+            toolName={name || 'influxdb'}
+          />
+
+          <div className="form-row">
+            <div className="form-group" style={{ flex: 2 }}>
+              <label>{influxdbConfig.ssh_tunnel_enabled ? 'Database Host (on SSH server) *' : 'Host *'}</label>
+              <input
+                type="text"
+                value={influxdbConfig.host || ''}
+                onChange={(e) => setInfluxdbConfig({ ...influxdbConfig, host: e.target.value })}
+                placeholder="localhost"
+              />
+              {influxdbConfig.ssh_tunnel_enabled && (
+                <p className="field-help">Usually "localhost" - the InfluxDB host as seen from the SSH server</p>
+              )}
+            </div>
+            <div className="form-group form-group-small" style={{ flex: 1 }}>
+              <label>Port</label>
+              <input
+                type="number"
+                value={influxdbConfig.port || 8086}
+                onChange={(e) => setInfluxdbConfig({ ...influxdbConfig, port: parseInt(e.target.value) || 8086 })}
+                min={1}
+                max={65535}
+              />
+            </div>
+          </div>
+
+          <div className="form-group" style={{ marginTop: '0.25rem' }}>
+            <label className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={influxdbConfig.use_https ?? false}
+                onChange={(e) => setInfluxdbConfig({ ...influxdbConfig, use_https: e.target.checked })}
+                style={{ width: 'auto', margin: 0 }}
+              />
+              <span>Use HTTPS</span>
+            </label>
+            <p className="field-help">Enable this if your InfluxDB API is served over TLS</p>
+          </div>
+
+          <div className="form-row">
+            <div className="form-group">
+                <label>Token *</label>
+              <input
+                  type="password"
+                  value={influxdbConfig.token || ''}
+                onChange={(e) => {
+                    setInfluxdbConfig({ ...influxdbConfig, token: e.target.value });
+                  setInfluxdbDiscoveredBuckets([]);
+                }}
+                  placeholder="API token"
+              />
+            </div>
+            <div className="form-group">
+              <label>Organization *</label>
+              <input
+                  type="text"
+                  value={influxdbConfig.org || ''}
+                onChange={(e) => {
+                    setInfluxdbConfig({ ...influxdbConfig, org: e.target.value });
+                  setInfluxdbDiscoveredBuckets([]);
+                }}
+                  placeholder="my-org"
+              />
+                <p className="field-help">Required for queries and bucket discovery</p>
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label>Default Bucket</label>
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              {influxdbDiscoveredBuckets.length > 0 ? (
+                <select
+                  value={influxdbConfig.bucket || ''}
+                  onChange={(e) => setInfluxdbConfig({ ...influxdbConfig, bucket: e.target.value })}
+                  style={{ flex: 1 }}
+                >
+                  <option value="">Select bucket...</option>
+                  {influxdbDiscoveredBuckets.map((bucket) => (
+                    <option key={bucket.name} value={bucket.name} disabled={!bucket.accessible}>
+                      {bucket.accessible ? bucket.name : `${bucket.name} (no access)`}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={influxdbConfig.bucket || ''}
+                  onChange={(e) => setInfluxdbConfig({ ...influxdbConfig, bucket: e.target.value })}
+                  placeholder="my-bucket"
+                  style={{ flex: 1 }}
+                />
+              )}
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={handleDiscoverInfluxdbBuckets}
+                disabled={influxdbDiscoveringBuckets || !influxdbConfig.host || !influxdbConfig.token || !influxdbConfig.org}
+                title="Discover available buckets"
+              >
+                {influxdbDiscoveringBuckets ? 'Discovering...' : 'Discover'}
+              </button>
+            </div>
+            <p className="field-help">
+              {influxdbBucketDiscoveryError ? (
+                <span style={{ color: '#dc3545' }}>{influxdbBucketDiscoveryError}</span>
+              ) : influxdbDiscoveredBuckets.length > 0 ? (
+                `Found ${influxdbDiscoveredBuckets.length} bucket(s), ${influxdbDiscoveredBuckets.filter((bucket) => bucket.accessible).length} accessible.`
+              ) : (
+                'Enter host, token, and organization, then click Discover to find available buckets.'
+              )}
+            </p>
+          </div>
         </div>
       </div>
     );
@@ -4655,6 +4886,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           return renderMysqlConnection();
         case 'mssql':
           return renderMssqlConnection();
+        case 'influxdb':
+          return renderInfluxdbConnection();
         case 'odoo_shell':
           return renderOdooConnection();
         case 'ssh_shell':
@@ -4850,7 +5083,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
 
   const renderOptions = () => {
     // SQL-based tools need Max Results for query limiting
-    const showMaxResults = ['postgres', 'mysql', 'mssql', 'solidworks_pdm'].includes(toolType);
+    const showMaxResults = ['postgres', 'mysql', 'mssql', 'influxdb', 'solidworks_pdm'].includes(toolType);
 
     return (
       <div className="wizard-content">

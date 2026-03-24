@@ -119,6 +119,8 @@ from ragtime.indexer.models import (
     IndexInfo,
     IndexJobResponse,
     IndexStatus,
+    InfluxdbDiscoverRequest,
+    InfluxdbDiscoverResponse,
     MssqlDiscoverRequest,
     MssqlDiscoverResponse,
     MysqlDiscoverRequest,
@@ -160,6 +162,7 @@ from ragtime.mcp.server import notify_tools_changed
 from ragtime.rag import rag
 from ragtime.tools.chart import create_chart
 from ragtime.tools.datatable import create_datatable
+from ragtime.tools.influxdb import test_influxdb_connection
 from ragtime.tools.mssql import test_mssql_connection
 from ragtime.tools.mysql import test_mysql_connection
 from ragtime.userspace.service import userspace_service
@@ -2122,6 +2125,8 @@ async def test_tool_connection(
         return await _test_mssql_connection(config)
     elif tool_type == ToolType.MYSQL:
         return await _test_mysql_connection(config)
+    elif tool_type == ToolType.INFLUXDB:
+        return await _test_influxdb_connection(config)
     elif tool_type == ToolType.ODOO_SHELL:
         return await _test_odoo_connection(config)
     elif tool_type == ToolType.SSH_SHELL:
@@ -2841,6 +2846,166 @@ async def discover_mysql_databases(
             tunnel.stop()
 
 
+@router.post(
+    "/tools/influxdb/discover",
+    response_model=InfluxdbDiscoverResponse,
+    tags=["Tools"],
+)
+async def discover_influxdb_buckets(
+    request: InfluxdbDiscoverRequest, _user: User = Depends(require_admin)
+):
+    """
+    Discover available buckets on an InfluxDB server. Admin only.
+    Supports direct connections and SSH tunnels.
+    """
+    tunnel = None
+
+    def discover_buckets(effective_url: str) -> tuple[bool, list[str], str | None]:
+        try:
+            from influxdb_client import InfluxDBClient  # type: ignore[import-untyped]
+        except ImportError:
+            return False, [], "influxdb-client package not installed"
+
+        if not request.org:
+            return (
+                False,
+                [],
+                "Organization is required to discover buckets. Enter the org name and try again.",
+            )
+
+        client = None
+        try:
+            client = InfluxDBClient(
+                url=effective_url,
+                token=request.token,
+                org=request.org,
+                timeout=15000,
+            )
+            # Prefer the Flux buckets() query over the management API
+            # because read-only tokens typically cannot call the management
+            # endpoint but CAN run Flux queries.
+            try:
+                tables = client.query_api().query("buckets()", org=request.org)
+                buckets = sorted(
+                    {
+                        r.values.get("name", "")
+                        for t in tables
+                        for r in t.records
+                        if r.values.get("name")
+                    }
+                )
+                return True, buckets, None
+            except Exception:
+                pass
+
+            # Fallback: management API (requires broader permissions)
+            buckets_response = client.buckets_api().find_buckets(org=request.org)
+            buckets = sorted(
+                {b.name for b in (buckets_response.buckets or []) if b.name}
+            )
+            return True, buckets, None
+
+        except Exception as e:
+            err = str(e)
+            if "401" in err or "unauthorized" in err.lower():
+                return (
+                    False,
+                    [],
+                    "Token authentication failed — check the token and organization name",
+                )
+            if "not found" in err.lower() or "organization" in err.lower():
+                return (
+                    False,
+                    [],
+                    f"Organization '{request.org}' not found on this InfluxDB server",
+                )
+            return False, [], err
+        finally:
+            if client:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+
+    try:
+        if not request.host:
+            return InfluxdbDiscoverResponse(
+                success=False,
+                buckets=[],
+                database_options=[],
+                error="Host is required",
+            )
+        if not request.token:
+            return InfluxdbDiscoverResponse(
+                success=False,
+                buckets=[],
+                database_options=[],
+                error="Token is required",
+            )
+        if not request.org:
+            return InfluxdbDiscoverResponse(
+                success=False,
+                buckets=[],
+                database_options=[],
+                error="Organization is required",
+            )
+
+        host = request.host
+        port = request.port
+        scheme = "https" if request.use_https else "http"
+        effective_url = f"{scheme}://{host}:{port}"
+
+        if request.ssh_tunnel_enabled:
+            tunnel_config_dict = {
+                "host": host,
+                "port": port,
+                "ssh_tunnel_host": request.ssh_tunnel_host,
+                "ssh_tunnel_port": request.ssh_tunnel_port,
+                "ssh_tunnel_user": request.ssh_tunnel_user,
+                "ssh_tunnel_password": request.ssh_tunnel_password,
+                "ssh_tunnel_key_path": request.ssh_tunnel_key_path,
+                "ssh_tunnel_key_content": request.ssh_tunnel_key_content,
+                "ssh_tunnel_key_passphrase": request.ssh_tunnel_key_passphrase,
+            }
+            tunnel_config = ssh_tunnel_config_from_dict(
+                tunnel_config_dict, default_remote_port=port
+            )
+            tunnel = SSHTunnel(tunnel_config)
+            tunnel.start()
+            effective_url = f"{scheme}://127.0.0.1:{tunnel.local_port}"
+            logger.info(
+                f"SSH tunnel established for InfluxDB discovery: localhost:{tunnel.local_port}"
+            )
+
+        success, buckets, error = await asyncio.to_thread(
+            discover_buckets, effective_url
+        )
+        options = [
+            DatabaseDiscoverOption(name=name, accessible=True, access_error=None)
+            for name in buckets
+        ]
+
+        return InfluxdbDiscoverResponse(
+            success=success,
+            buckets=buckets,
+            database_options=options,
+            error=error,
+        )
+    except Exception as e:
+        error_msg = str(e)
+        if "Authentication" in error_msg:
+            error_msg = f"SSH tunnel authentication failed: {error_msg}"
+        return InfluxdbDiscoverResponse(
+            success=False,
+            buckets=[],
+            database_options=[],
+            error=f"Discovery failed: {error_msg}",
+        )
+    finally:
+        if tunnel:
+            tunnel.stop()
+
+
 @router.post("/tools/pdm/discover", response_model=PdmDiscoverResponse, tags=["Tools"])
 async def discover_pdm_schema(
     request: PdmDiscoverRequest, _user: User = Depends(require_admin)
@@ -3147,6 +3312,8 @@ async def _heartbeat_check(tool_type, config: dict) -> ToolTestResponse:
         return await _heartbeat_mysql(config)
     elif tool_type_str == "mssql":
         return await _heartbeat_mssql(config)
+    elif tool_type_str == "influxdb":
+        return await _heartbeat_influxdb(config)
     elif tool_type_str == "odoo_shell":
         return await _heartbeat_odoo(config)
     elif tool_type_str == "ssh_shell":
@@ -3315,6 +3482,37 @@ async def _heartbeat_mssql(config: dict) -> ToolTestResponse:
         database=database,
         ssh_tunnel_config=ssh_tunnel_config,
         timeout=5,
+    )
+
+    return ToolTestResponse(
+        success=success,
+        message="OK" if success else message[:100],
+    )
+
+
+async def _heartbeat_influxdb(config: dict) -> ToolTestResponse:
+    """Quick InfluxDB heartbeat check."""
+    host = config.get("host", "")
+    port = _coerce_int(config.get("port", 8086), 8086)
+    use_https = bool(config.get("use_https", False))
+    token = config.get("token", "")
+    org = config.get("org", "")
+    bucket = config.get("bucket", "")
+
+    if not host or not token or not org:
+        return ToolTestResponse(success=False, message="InfluxDB not configured")
+
+    ssh_tunnel_config = build_ssh_tunnel_config(config, host, port)
+
+    success, message, _ = await test_influxdb_connection(
+        host=host,
+        port=port,
+        use_https=use_https,
+        token=token,
+        org=org,
+        bucket=bucket,
+        timeout=5,
+        ssh_tunnel_config=ssh_tunnel_config,
     )
 
     return ToolTestResponse(
@@ -3967,6 +4165,63 @@ async def _test_mysql_connection(config: dict) -> ToolTestResponse:
             database=database,
             timeout=10,
         )
+
+    return ToolTestResponse(success=success, message=message, details=details)
+
+
+async def _test_influxdb_connection(config: dict) -> ToolTestResponse:
+    """Test InfluxDB connection. Supports direct and SSH tunnel modes."""
+    host = config.get("host", "")
+    port = _coerce_int(config.get("port", 8086), 8086)
+    use_https = bool(config.get("use_https", False))
+    token = config.get("token", "")
+    org = config.get("org", "")
+    bucket = config.get("bucket", "")
+    ssh_tunnel_enabled = config.get("ssh_tunnel_enabled", False)
+
+    if not host:
+        return ToolTestResponse(success=False, message="Host is required")
+    if not token:
+        return ToolTestResponse(success=False, message="Token is required")
+    if not org:
+        return ToolTestResponse(success=False, message="Organization is required")
+
+    ssh_tunnel_config = None
+    if ssh_tunnel_enabled:
+        ssh_tunnel_host = config.get("ssh_tunnel_host", "")
+        ssh_tunnel_user = config.get("ssh_tunnel_user", "")
+        if not ssh_tunnel_host:
+            return ToolTestResponse(
+                success=False, message="SSH tunnel host is required"
+            )
+        if not ssh_tunnel_user:
+            return ToolTestResponse(
+                success=False, message="SSH tunnel user is required"
+            )
+
+        ssh_tunnel_config = {
+            "ssh_tunnel_enabled": True,
+            "ssh_tunnel_host": ssh_tunnel_host,
+            "ssh_tunnel_port": _coerce_int(config.get("ssh_tunnel_port", 22), 22),
+            "ssh_tunnel_user": ssh_tunnel_user,
+            "ssh_tunnel_password": config.get("ssh_tunnel_password", ""),
+            "ssh_tunnel_key_path": config.get("ssh_tunnel_key_path", ""),
+            "ssh_tunnel_key_content": config.get("ssh_tunnel_key_content", ""),
+            "ssh_tunnel_key_passphrase": config.get("ssh_tunnel_key_passphrase", ""),
+            "host": host,
+            "port": port,
+        }
+
+    success, message, details = await test_influxdb_connection(
+        host=host,
+        port=port,
+        use_https=use_https,
+        token=token,
+        org=org,
+        bucket=bucket,
+        timeout=10,
+        ssh_tunnel_config=ssh_tunnel_config,
+    )
 
     return ToolTestResponse(success=success, message=message, details=details)
 

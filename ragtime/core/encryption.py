@@ -175,6 +175,7 @@ def decrypt_json_passwords(data: dict, password_fields: list[str]) -> dict:
 # Password fields in connection_config JSON
 CONNECTION_CONFIG_PASSWORD_FIELDS = [
     "password",  # postgres, mssql, solidworks_pdm
+    "token",  # influxdb
     "ssh_password",  # odoo_shell ssh mode
     "ssh_key_passphrase",  # odoo_shell ssh mode
     "ssh_key_content",  # ssh private key (sensitive)

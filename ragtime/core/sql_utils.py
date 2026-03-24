@@ -28,6 +28,7 @@ logger = get_logger(__name__)
 DB_TYPE_POSTGRES = "postgres"
 DB_TYPE_MSSQL = "mssql"
 DB_TYPE_MYSQL = "mysql"  # Reserved for future use
+DB_TYPE_INFLUXDB = "influxdb"
 
 
 # =============================================================================
@@ -51,6 +52,10 @@ LIMIT_PATTERNS: dict[str, dict[str, Any]] = {
     DB_TYPE_MYSQL: {
         "detect": r"\bLIMIT\s+(\d+)",
         "replace": lambda n: f"LIMIT {n}",
+    },
+    DB_TYPE_INFLUXDB: {
+        "detect": r"\|>\s*limit\s*\(\s*(?:n\s*:\s*(\d+)|(\d+))",
+        "replace": None,
     },
 }
 
@@ -174,6 +179,41 @@ def validate_sql_query(
 
         return True, "Query is safe"
 
+    # InfluxDB 2.x uses Flux query language (not SQL)
+    if db_type == DB_TYPE_INFLUXDB:
+        normalized_query = query.strip()
+
+        if not normalized_query:
+            return False, "Query cannot be empty"
+
+        # Keep default read-only behavior consistent with SQL tools.
+        if not enable_write:
+            influx_dangerous = [
+                r"\|>\s*to\s*\(",  # Write points
+                r"\bexperimental\.to\s*\(",
+                r"\b(createBucket|deleteBucket|createTask|updateTask|deleteTask)\s*\(",
+                r"\b(createUser|deleteUser|setPassword|setSecret|deleteSecret)\s*\(",
+                r";\s*\w+",  # Multi-statement chaining
+            ]
+            for pattern in influx_dangerous:
+                if re.search(pattern, normalized_query, re.IGNORECASE):
+                    logger.warning(f"InfluxDB dangerous pattern detected: {pattern}")
+                    return False, "Query contains forbidden InfluxDB operation"
+
+        if require_result_limit:
+            has_limit = re.search(
+                r"\|>\s*limit\s*\(\s*(?:n\s*:\s*\d+|\d+)",
+                normalized_query,
+                re.IGNORECASE,
+            )
+            if not has_limit:
+                return (
+                    False,
+                    "Flux queries must include |> limit(n: <value>) to limit results",
+                )
+
+        return True, "Query is safe"
+
     # For PostgreSQL and others, use core validation
     is_safe, reason = _validate_sql_query(
         query,
@@ -215,6 +255,13 @@ def extract_limit_value(query: str, db_type: str = DB_TYPE_POSTGRES) -> int | No
         # Check for FETCH (group 3)
         if match.lastindex is not None and match.lastindex >= 3 and match.group(3):
             return int(match.group(3))
+        return None
+
+    if db_type == DB_TYPE_INFLUXDB:
+        if match.group(1):
+            return int(match.group(1))
+        if match.lastindex is not None and match.lastindex >= 2 and match.group(2):
+            return int(match.group(2))
         return None
 
     return int(match.group(1))
@@ -265,6 +312,27 @@ def enforce_max_results(
             flags=re.IGNORECASE,
         )
     else:
+        if db_type == DB_TYPE_INFLUXDB:
+            # Flux prefers named arguments: |> limit(n: 100)
+            updated = re.sub(
+                r"(\|>\s*limit\s*\(\s*n\s*:\s*)\d+",
+                rf"\g<1>{max_results}",
+                query,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+            if updated != query:
+                return updated
+
+            # Fallback for positional syntax: |> limit(100)
+            return re.sub(
+                r"(\|>\s*limit\s*\(\s*)\d+",
+                rf"\g<1>{max_results}",
+                query,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+
         # PostgreSQL/MySQL style
         query = re.sub(
             r"\bLIMIT\s+\d+",
@@ -621,9 +689,7 @@ def normalize_mssql_error_message(
         return "Login failed for SQL Server user. Check username/password and database access."
 
     if "cannot open database" in lower and database:
-        return (
-            f"Cannot open database '{database}'. Check database name and user permissions."
-        )
+        return f"Cannot open database '{database}'. Check database name and user permissions."
 
     if "adaptive server connection failed" in lower:
         return (
