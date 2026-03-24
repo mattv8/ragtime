@@ -37,6 +37,8 @@ from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
                                       ExecuteComponentResponse,
                                       PaginatedWorkspacesResponse,
                                       ShareAccessMode, SqlitePersistenceMode,
+                                      SwitchSnapshotBranchRequest,
+                                      UpdateSnapshotRequest,
                                       UpdateWorkspaceMembersRequest,
                                       UpdateWorkspaceRequest,
                                       UpdateWorkspaceShareAccessRequest,
@@ -45,7 +47,10 @@ from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
                                       UserSpaceLiveDataCheck,
                                       UserSpaceLiveDataConnection,
                                       UserSpaceSharedPreviewResponse,
-                                      UserSpaceSnapshot, UserSpaceWorkspace,
+                                      UserSpaceSnapshot,
+                                      UserSpaceSnapshotBranch,
+                                      UserSpaceSnapshotTimelineResponse,
+                                      UserSpaceWorkspace,
                                       UserSpaceWorkspaceShareLink,
                                       UserSpaceWorkspaceShareLinkStatus,
                                       WorkspaceMember,
@@ -96,6 +101,7 @@ class _NonUtf8WorkspaceFileError(Exception):
 
 
 _EXECUTION_PROOF_MAX_AGE_SECONDS = 3600  # 1 hour
+_SNAPSHOT_BRANCH_REF_PREFIX = "userspace/"
 
 _USPACE_EXEC_SUPPORTED_SQL_TOOLS = {"postgres", "mysql", "mssql", "influxdb"}
 _USERSPACE_PREVIEW_ENTRY_PATH = "dashboard/main.ts"
@@ -483,6 +489,8 @@ class UserSpaceService:
         ] = {}
         # Limit concurrent git status requests to avoid overloading process slots.
         self._git_status_semaphore = asyncio.Semaphore(8)
+        # Serialize snapshot mutations to keep timeline metadata consistent.
+        self._snapshot_operation_semaphore = asyncio.Semaphore(1)
 
     def record_execution_proof(
         self,
@@ -2663,6 +2671,423 @@ class UserSpaceService:
         await self._touch_workspace(workspace_id)
         return {"old_path": normalized_old, "new_path": normalized_new}
 
+    @staticmethod
+    def _sql_quote(value: str | None) -> str:
+        if value is None:
+            return "NULL"
+        return "'" + value.replace("'", "''") + "'"
+
+    def _branch_ref_name(self, branch_id: str) -> str:
+        return f"{_SNAPSHOT_BRANCH_REF_PREFIX}{branch_id}"
+
+    def _snapshot_from_row(
+        self,
+        row: dict[str, Any],
+        current_snapshot_id: str | None,
+        branch_name_by_id: dict[str, str],
+        branch_tip_ids: set[str],
+    ) -> UserSpaceSnapshot:
+        created_at_raw = row.get("created_at")
+        created_at = created_at_raw if isinstance(created_at_raw, datetime) else _utc_now()
+        branch_id = str(row.get("branch_id") or "")
+        snapshot_id = str(row.get("id") or "")
+        return UserSpaceSnapshot(
+            id=snapshot_id,
+            workspace_id=str(row.get("workspace_id") or ""),
+            branch_id=branch_id,
+            branch_name=branch_name_by_id.get(branch_id, "Branch"),
+            parent_snapshot_id=(
+                str(row.get("parent_snapshot_id"))
+                if row.get("parent_snapshot_id")
+                else None
+            ),
+            is_current=snapshot_id == current_snapshot_id,
+            can_rename=snapshot_id in branch_tip_ids,
+            git_commit_hash=(
+                str(row.get("git_commit_hash"))
+                if row.get("git_commit_hash")
+                else None
+            ),
+            message=(str(row.get("message")) if row.get("message") is not None else None),
+            created_at=created_at,
+            file_count=int(row.get("file_count") or 0),
+        )
+
+    async def _set_current_snapshot_cursor(
+        self,
+        workspace_id: str,
+        snapshot_id: str | None,
+        branch_id: str | None,
+    ) -> None:
+        db = await get_db()
+        await db.execute_raw(
+            f"""
+            UPDATE workspaces
+            SET current_snapshot_id = {self._sql_quote(snapshot_id)},
+                current_snapshot_branch_id = {self._sql_quote(branch_id)},
+                updated_at = NOW()
+            WHERE id = {self._sql_quote(workspace_id)}
+            """
+        )
+
+    async def _activate_branch(self, workspace_id: str, branch_id: str) -> None:
+        db = await get_db()
+        await db.execute_raw(
+            f"""
+            UPDATE userspace_snapshot_branches
+            SET is_active = CASE WHEN id = {self._sql_quote(branch_id)} THEN TRUE ELSE FALSE END,
+                updated_at = NOW()
+            WHERE workspace_id = {self._sql_quote(workspace_id)}
+            """
+        )
+
+    async def _ensure_snapshot_timeline(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> None:
+        await self._enforce_workspace_access(workspace_id, user_id)
+        await self._ensure_workspace_git_repo(workspace_id)
+
+        async with self._snapshot_operation_semaphore:
+            db = await get_db()
+            existing = await db.query_raw(
+                f"""
+                SELECT id
+                FROM userspace_snapshot_branches
+                WHERE workspace_id = {self._sql_quote(workspace_id)}
+                LIMIT 1
+                """
+            )
+            if existing:
+                cursor_rows = await db.query_raw(
+                    f"""
+                    SELECT current_snapshot_id, current_snapshot_branch_id
+                    FROM workspaces
+                    WHERE id = {self._sql_quote(workspace_id)}
+                    LIMIT 1
+                    """
+                )
+                if cursor_rows:
+                    cursor = cursor_rows[0]
+                    if not cursor.get("current_snapshot_id") or not cursor.get("current_snapshot_branch_id"):
+                        latest_rows = await db.query_raw(
+                            f"""
+                            SELECT s.id AS snapshot_id, s.branch_id
+                            FROM userspace_snapshots s
+                            WHERE s.workspace_id = {self._sql_quote(workspace_id)}
+                            ORDER BY s.created_at DESC
+                            LIMIT 1
+                            """
+                        )
+                        if latest_rows:
+                            latest = latest_rows[0]
+                            await self._set_current_snapshot_cursor(
+                                workspace_id,
+                                str(latest.get("snapshot_id") or ""),
+                                str(latest.get("branch_id") or ""),
+                            )
+                return
+
+            git_branch = (
+                await self._run_git(workspace_id, ["branch", "--show-current"], check=False)
+            ).stdout.strip() or "main"
+            branch_id = str(uuid4())
+            await db.execute_raw(
+                f"""
+                INSERT INTO userspace_snapshot_branches
+                (id, workspace_id, name, git_ref_name, is_active, created_at, updated_at)
+                VALUES
+                (
+                    {self._sql_quote(branch_id)},
+                    {self._sql_quote(workspace_id)},
+                    'Main',
+                    {self._sql_quote(git_branch)},
+                    TRUE,
+                    NOW(),
+                    NOW()
+                )
+                """
+            )
+
+            git_log_result = await self._run_git(
+                workspace_id,
+                ["log", "--reverse", "--pretty=format:%H%x1f%ct%x1f%s"],
+                check=False,
+            )
+            if git_log_result.returncode != 0 or not git_log_result.stdout.strip():
+                await self._set_current_snapshot_cursor(workspace_id, None, branch_id)
+                return
+
+            parent_snapshot_id: str | None = None
+            last_snapshot_id: str | None = None
+            for line in git_log_result.stdout.splitlines():
+                parts = line.split("\x1f")
+                if len(parts) != 3:
+                    continue
+                commit_hash, commit_ts, commit_subject = parts
+                snapshot_id = str(uuid4())
+                last_snapshot_id = snapshot_id
+                created_at = datetime.fromtimestamp(int(commit_ts), tz=timezone.utc).isoformat()
+                await db.execute_raw(
+                    f"""
+                    INSERT INTO userspace_snapshots
+                    (
+                        id,
+                        workspace_id,
+                        branch_id,
+                        git_commit_hash,
+                        message,
+                        file_count,
+                        parent_snapshot_id,
+                        created_by_user_id,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES
+                    (
+                        {self._sql_quote(snapshot_id)},
+                        {self._sql_quote(workspace_id)},
+                        {self._sql_quote(branch_id)},
+                        {self._sql_quote(commit_hash)},
+                        {self._sql_quote(commit_subject[:200])},
+                        0,
+                        {self._sql_quote(parent_snapshot_id)},
+                        {self._sql_quote(user_id)},
+                        {self._sql_quote(created_at)},
+                        {self._sql_quote(created_at)}
+                    )
+                    ON CONFLICT (workspace_id, branch_id, git_commit_hash)
+                    DO NOTHING
+                    """
+                )
+                parent_snapshot_id = snapshot_id
+
+            await self._set_current_snapshot_cursor(workspace_id, last_snapshot_id, branch_id)
+
+    async def _get_snapshot_timeline_data(
+        self,
+        workspace_id: str,
+    ) -> tuple[list[UserSpaceSnapshot], list[UserSpaceSnapshotBranch], str | None, str | None]:
+        db = await get_db()
+        cursor_rows = await db.query_raw(
+            f"""
+            SELECT current_snapshot_id, current_snapshot_branch_id
+            FROM workspaces
+            WHERE id = {self._sql_quote(workspace_id)}
+            LIMIT 1
+            """
+        )
+        current_snapshot_id = None
+        current_branch_id = None
+        if cursor_rows:
+            first = cursor_rows[0]
+            current_snapshot_id = (
+                str(first.get("current_snapshot_id"))
+                if first.get("current_snapshot_id")
+                else None
+            )
+            current_branch_id = (
+                str(first.get("current_snapshot_branch_id"))
+                if first.get("current_snapshot_branch_id")
+                else None
+            )
+
+        branch_rows = await db.query_raw(
+            f"""
+            SELECT id, workspace_id, name, git_ref_name, base_snapshot_id,
+                   branched_from_snapshot_id, is_active, created_at
+            FROM userspace_snapshot_branches
+            WHERE workspace_id = {self._sql_quote(workspace_id)}
+            ORDER BY created_at ASC
+            """
+        )
+        branch_name_by_id: dict[str, str] = {}
+        branches: list[UserSpaceSnapshotBranch] = []
+        for row in branch_rows:
+            branch_id = str(row.get("id") or "")
+            branch_name = str(row.get("name") or "Branch")
+            branch_name_by_id[branch_id] = branch_name
+            branches.append(
+                UserSpaceSnapshotBranch(
+                    id=branch_id,
+                    workspace_id=str(row.get("workspace_id") or ""),
+                    name=branch_name,
+                    git_ref_name=str(row.get("git_ref_name") or ""),
+                    base_snapshot_id=(
+                        str(row.get("base_snapshot_id"))
+                        if row.get("base_snapshot_id")
+                        else None
+                    ),
+                    branched_from_snapshot_id=(
+                        str(row.get("branched_from_snapshot_id"))
+                        if row.get("branched_from_snapshot_id")
+                        else None
+                    ),
+                    is_active=bool(row.get("is_active")),
+                    created_at=(
+                        row.get("created_at")
+                        if isinstance(row.get("created_at"), datetime)
+                        else _utc_now()
+                    ),
+                )
+            )
+
+        tip_rows = await db.query_raw(
+            f"""
+            SELECT s.id, s.branch_id
+            FROM userspace_snapshots s
+            WHERE s.workspace_id = {self._sql_quote(workspace_id)}
+              AND NOT EXISTS (
+                SELECT 1
+                FROM userspace_snapshots child
+                WHERE child.workspace_id = s.workspace_id
+                  AND child.branch_id = s.branch_id
+                  AND child.parent_snapshot_id = s.id
+              )
+            """
+        )
+        branch_tip_ids = {
+            str(row.get("id"))
+            for row in tip_rows
+            if row.get("id") is not None
+        }
+
+        snapshot_rows = await db.query_raw(
+            f"""
+            SELECT id, workspace_id, branch_id, git_commit_hash, message,
+                   file_count, parent_snapshot_id, created_at
+            FROM userspace_snapshots
+            WHERE workspace_id = {self._sql_quote(workspace_id)}
+            ORDER BY created_at DESC
+            """
+        )
+        snapshots = [
+            self._snapshot_from_row(
+                row,
+                current_snapshot_id,
+                branch_name_by_id,
+                branch_tip_ids,
+            )
+            for row in snapshot_rows
+        ]
+        return snapshots, branches, current_snapshot_id, current_branch_id
+
+    async def get_snapshot_timeline(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> UserSpaceSnapshotTimelineResponse:
+        await self._enforce_workspace_access(workspace_id, user_id)
+        await self._ensure_snapshot_timeline(workspace_id, user_id)
+        snapshots, branches, current_snapshot_id, current_branch_id = (
+            await self._get_snapshot_timeline_data(workspace_id)
+        )
+
+        has_previous = False
+        has_next = False
+        if current_snapshot_id and current_branch_id:
+            current_snapshot = next(
+                (snapshot for snapshot in snapshots if snapshot.id == current_snapshot_id),
+                None,
+            )
+            if current_snapshot is not None:
+                has_previous = bool(current_snapshot.parent_snapshot_id)
+                has_next = any(
+                    snapshot.branch_id == current_branch_id
+                    and snapshot.parent_snapshot_id == current_snapshot_id
+                    for snapshot in snapshots
+                )
+                if not has_next:
+                    has_next = any(
+                        branch.branched_from_snapshot_id == current_snapshot_id
+                        for branch in branches
+                    )
+
+        return UserSpaceSnapshotTimelineResponse(
+            workspace_id=workspace_id,
+            current_snapshot_id=current_snapshot_id,
+            current_branch_id=current_branch_id,
+            has_previous=has_previous,
+            has_next=has_next,
+            snapshots=snapshots,
+            branches=branches,
+        )
+
+    async def list_snapshots(
+        self, workspace_id: str, user_id: str
+    ) -> list[UserSpaceSnapshot]:
+        timeline = await self.get_snapshot_timeline(workspace_id, user_id)
+        return timeline.snapshots
+
+    async def _restore_snapshot_by_id(
+        self,
+        workspace_id: str,
+        snapshot_id: str,
+        user_id: str,
+    ) -> UserSpaceSnapshot:
+        await self._ensure_snapshot_timeline(workspace_id, user_id)
+        db = await get_db()
+        rows = await db.query_raw(
+            f"""
+            SELECT s.id, s.workspace_id, s.branch_id, s.git_commit_hash, s.message,
+                   s.file_count, s.parent_snapshot_id, s.created_at,
+                   b.git_ref_name, b.name AS branch_name
+            FROM userspace_snapshots s
+            JOIN userspace_snapshot_branches b ON b.id = s.branch_id
+            WHERE s.workspace_id = {self._sql_quote(workspace_id)}
+              AND s.id = {self._sql_quote(snapshot_id)}
+            LIMIT 1
+            """
+        )
+        if not rows:
+            raise HTTPException(status_code=404, detail="Snapshot not found")
+        row = rows[0]
+        commit_hash = str(row.get("git_commit_hash") or "")
+        branch_id = str(row.get("branch_id") or "")
+        branch_ref_name = str(row.get("git_ref_name") or "")
+
+        async with self._snapshot_operation_semaphore:
+            if branch_ref_name:
+                await self._run_git(workspace_id, ["checkout", branch_ref_name])
+            await self._run_git(workspace_id, ["reset", "--hard", commit_hash])
+            await self._run_git(workspace_id, ["clean", "-fd"])
+            await self._activate_branch(workspace_id, branch_id)
+            await self._set_current_snapshot_cursor(workspace_id, snapshot_id, branch_id)
+
+        await self.clear_workspace_changed_file_acknowledgements_for_all_users(
+            workspace_id
+        )
+        await self._touch_workspace(workspace_id)
+
+        return UserSpaceSnapshot(
+            id=str(row.get("id") or ""),
+            workspace_id=str(row.get("workspace_id") or ""),
+            branch_id=branch_id,
+            branch_name=str(row.get("branch_name") or "Branch"),
+            parent_snapshot_id=(
+                str(row.get("parent_snapshot_id"))
+                if row.get("parent_snapshot_id")
+                else None
+            ),
+            is_current=True,
+            can_rename=True,
+            git_commit_hash=commit_hash,
+            message=(str(row.get("message")) if row.get("message") is not None else None),
+            created_at=(
+                row.get("created_at") if isinstance(row.get("created_at"), datetime) else _utc_now()
+            ),
+            file_count=int(row.get("file_count") or 0),
+        )
+
+    async def restore_snapshot(
+        self, workspace_id: str, snapshot_id: str, user_id: str
+    ) -> UserSpaceSnapshot:
+        await self._enforce_workspace_access(
+            workspace_id, user_id, required_role="editor"
+        )
+        return await self._restore_snapshot_by_id(workspace_id, snapshot_id, user_id)
+
     async def create_snapshot(
         self,
         workspace_id: str,
@@ -2672,9 +3097,8 @@ class UserSpaceService:
         await self._enforce_workspace_access(
             workspace_id, user_id, required_role="editor"
         )
+        await self._ensure_snapshot_timeline(workspace_id, user_id)
         await self._ensure_workspace_git_repo(workspace_id)
-        await self._run_git(workspace_id, ["add", "-A"])
-        await self._apply_snapshot_sqlite_policy(workspace_id)
 
         normalized_message = (message or "Snapshot").strip()
         commit_subject = (
@@ -2682,139 +3106,384 @@ class UserSpaceService:
             if normalized_message
             else "Snapshot"
         )
-        await self._run_git(
-            workspace_id,
-            ["commit", "--allow-empty", "-m", commit_subject],
-        )
 
-        snapshot_id = (
-            await self._run_git(workspace_id, ["rev-parse", "HEAD"])
-        ).stdout.strip()
-        commit_ts = (
+        async with self._snapshot_operation_semaphore:
+            db = await get_db()
+            cursor_rows = await db.query_raw(
+                f"""
+                SELECT current_snapshot_id, current_snapshot_branch_id
+                FROM workspaces
+                WHERE id = {self._sql_quote(workspace_id)}
+                LIMIT 1
+                """
+            )
+            current_snapshot_id = None
+            current_branch_id = None
+            if cursor_rows:
+                cursor = cursor_rows[0]
+                current_snapshot_id = (
+                    str(cursor.get("current_snapshot_id"))
+                    if cursor.get("current_snapshot_id")
+                    else None
+                )
+                current_branch_id = (
+                    str(cursor.get("current_snapshot_branch_id"))
+                    if cursor.get("current_snapshot_branch_id")
+                    else None
+                )
+
+            if not current_branch_id:
+                branch_rows = await db.query_raw(
+                    f"""
+                    SELECT id
+                    FROM userspace_snapshot_branches
+                    WHERE workspace_id = {self._sql_quote(workspace_id)}
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    """
+                )
+                current_branch_id = (
+                    str(branch_rows[0].get("id")) if branch_rows else str(uuid4())
+                )
+
+            tip_rows = await db.query_raw(
+                f"""
+                SELECT s.id
+                FROM userspace_snapshots s
+                WHERE s.workspace_id = {self._sql_quote(workspace_id)}
+                  AND s.branch_id = {self._sql_quote(current_branch_id)}
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM userspace_snapshots child
+                    WHERE child.workspace_id = s.workspace_id
+                      AND child.branch_id = s.branch_id
+                      AND child.parent_snapshot_id = s.id
+                  )
+                ORDER BY s.created_at DESC, s.id DESC
+                LIMIT 1
+                """
+            )
+            branch_tip_id = str(tip_rows[0].get("id")) if tip_rows else None
+
+            if current_snapshot_id and branch_tip_id and current_snapshot_id != branch_tip_id:
+                branch_count_rows = await db.query_raw(
+                    f"""
+                    SELECT COUNT(*) AS count
+                    FROM userspace_snapshot_branches
+                    WHERE workspace_id = {self._sql_quote(workspace_id)}
+                    """
+                )
+                branch_count = int(branch_count_rows[0].get("count") or 0) if branch_count_rows else 0
+                new_branch_id = str(uuid4())
+                branch_name = f"Branch {branch_count + 1}"
+                branch_ref_name = self._branch_ref_name(new_branch_id)
+                await self._run_git(workspace_id, ["checkout", "-b", branch_ref_name])
+                await db.execute_raw(
+                    f"""
+                    INSERT INTO userspace_snapshot_branches
+                    (id, workspace_id, name, git_ref_name, base_snapshot_id, branched_from_snapshot_id, is_active, created_at, updated_at)
+                    VALUES
+                    (
+                        {self._sql_quote(new_branch_id)},
+                        {self._sql_quote(workspace_id)},
+                        {self._sql_quote(branch_name)},
+                        {self._sql_quote(branch_ref_name)},
+                        {self._sql_quote(current_snapshot_id)},
+                        {self._sql_quote(current_snapshot_id)},
+                        TRUE,
+                        NOW(),
+                        NOW()
+                    )
+                    """
+                )
+                await self._activate_branch(workspace_id, new_branch_id)
+                current_branch_id = new_branch_id
+
+            await self._run_git(workspace_id, ["add", "-A"])
+            await self._apply_snapshot_sqlite_policy(workspace_id)
             await self._run_git(
                 workspace_id,
-                ["show", "-s", "--format=%ct", snapshot_id],
+                ["commit", "--allow-empty", "-m", commit_subject],
             )
-        ).stdout.strip()
-        created_at = datetime.fromtimestamp(int(commit_ts), tz=timezone.utc)
 
-        tracked_files = (
-            await self._run_git(
-                workspace_id,
-                ["ls-tree", "-r", "--name-only", snapshot_id],
+            commit_hash = (
+                await self._run_git(workspace_id, ["rev-parse", "HEAD"])
+            ).stdout.strip()
+            commit_ts = (
+                await self._run_git(
+                    workspace_id,
+                    ["show", "-s", "--format=%ct", commit_hash],
+                )
+            ).stdout.strip()
+            created_at = datetime.fromtimestamp(int(commit_ts), tz=timezone.utc)
+
+            tracked_files = (
+                await self._run_git(
+                    workspace_id,
+                    ["ls-tree", "-r", "--name-only", commit_hash],
+                )
+            ).stdout.splitlines()
+            file_count = sum(
+                1
+                for file_name in tracked_files
+                if not self._is_reserved_internal_path(file_name)
             )
-        ).stdout.splitlines()
-        file_count = sum(
-            1
-            for file_name in tracked_files
-            if not self._is_reserved_internal_path(file_name)
-        )
+
+            snapshot_id = str(uuid4())
+            await db.execute_raw(
+                f"""
+                INSERT INTO userspace_snapshots
+                (id, workspace_id, branch_id, git_commit_hash, message, file_count, parent_snapshot_id, created_by_user_id, created_at, updated_at)
+                VALUES
+                (
+                    {self._sql_quote(snapshot_id)},
+                    {self._sql_quote(workspace_id)},
+                    {self._sql_quote(current_branch_id)},
+                    {self._sql_quote(commit_hash)},
+                    {self._sql_quote(commit_subject)},
+                    {file_count},
+                    {self._sql_quote(current_snapshot_id)},
+                    {self._sql_quote(user_id)},
+                    {self._sql_quote(created_at.isoformat())},
+                    {self._sql_quote(created_at.isoformat())}
+                )
+                """
+            )
+            await self._activate_branch(workspace_id, current_branch_id)
+            await self._set_current_snapshot_cursor(
+                workspace_id,
+                snapshot_id,
+                current_branch_id,
+            )
 
         await self.clear_workspace_changed_file_acknowledgements_for_all_users(
             workspace_id
         )
         await self._touch_workspace(workspace_id, ts=created_at)
 
+        timeline = await self.get_snapshot_timeline(workspace_id, user_id)
+        created = next((s for s in timeline.snapshots if s.id == snapshot_id), None)
+        if created is not None:
+            return created
         return UserSpaceSnapshot(
             id=snapshot_id,
             workspace_id=workspace_id,
+            branch_id=current_branch_id or "",
+            branch_name="Branch",
+            parent_snapshot_id=current_snapshot_id,
+            is_current=True,
+            can_rename=True,
+            git_commit_hash=commit_hash,
             message=commit_subject,
             created_at=created_at,
             file_count=file_count,
         )
 
-    async def list_snapshots(
-        self, workspace_id: str, user_id: str
-    ) -> list[UserSpaceSnapshot]:
-        await self._enforce_workspace_access(workspace_id, user_id)
-        await self._ensure_workspace_git_repo(workspace_id)
-
-        head_check = await self._run_git(
-            workspace_id, ["rev-parse", "--verify", "HEAD"], check=False
-        )
-        if head_check.returncode != 0:
-            return []
-
-        git_log = (
-            await self._run_git(
-                workspace_id,
-                ["log", "--pretty=format:%H%x1f%ct%x1f%s"],
-            )
-        ).stdout
-
-        snapshots: list[UserSpaceSnapshot] = []
-        for line in git_log.splitlines():
-            if not line.strip():
-                continue
-            parts = line.split("\x1f")
-            if len(parts) != 3:
-                continue
-
-            commit_id, commit_ts, commit_subject = parts
-            snapshots.append(
-                UserSpaceSnapshot(
-                    id=commit_id,
-                    workspace_id=workspace_id,
-                    message=commit_subject,
-                    created_at=datetime.fromtimestamp(int(commit_ts), tz=timezone.utc),
-                    file_count=0,
-                )
-            )
-        return snapshots
-
-    async def restore_snapshot(
-        self, workspace_id: str, snapshot_id: str, user_id: str
+    async def update_snapshot(
+        self,
+        workspace_id: str,
+        snapshot_id: str,
+        request: UpdateSnapshotRequest,
+        user_id: str,
     ) -> UserSpaceSnapshot:
         await self._enforce_workspace_access(
             workspace_id, user_id, required_role="editor"
         )
-        await self._ensure_workspace_git_repo(workspace_id)
-
-        commit_check = await self._run_git(
-            workspace_id,
-            ["cat-file", "-e", f"{snapshot_id}^{{commit}}"],
-            check=False,
+        await self._ensure_snapshot_timeline(workspace_id, user_id)
+        db = await get_db()
+        await db.execute_raw(
+            f"""
+            UPDATE userspace_snapshots
+            SET message = {self._sql_quote(request.message.strip()[:200])},
+                updated_at = NOW()
+            WHERE workspace_id = {self._sql_quote(workspace_id)}
+              AND id = {self._sql_quote(snapshot_id)}
+            """
         )
-        if commit_check.returncode != 0:
+        timeline = await self.get_snapshot_timeline(workspace_id, user_id)
+        snapshot = next((item for item in timeline.snapshots if item.id == snapshot_id), None)
+        if snapshot is None:
             raise HTTPException(status_code=404, detail="Snapshot not found")
-
-        await self._run_git(workspace_id, ["reset", "--hard", snapshot_id])
-        await self._run_git(workspace_id, ["clean", "-fd"])
-
-        commit_info = (
-            await self._run_git(
-                workspace_id,
-                ["show", "-s", "--format=%ct%x1f%s", snapshot_id],
-            )
-        ).stdout.strip()
-        commit_ts, commit_subject = commit_info.split("\x1f", 1)
-
-        tracked_files = (
-            await self._run_git(
-                workspace_id,
-                ["ls-tree", "-r", "--name-only", snapshot_id],
-            )
-        ).stdout.splitlines()
-        file_count = sum(
-            1
-            for file_name in tracked_files
-            if not self._is_reserved_internal_path(file_name)
-        )
-
-        snapshot = UserSpaceSnapshot(
-            id=snapshot_id,
-            workspace_id=workspace_id,
-            message=commit_subject,
-            created_at=datetime.fromtimestamp(int(commit_ts), tz=timezone.utc),
-            file_count=file_count,
-        )
-
-        await self.clear_workspace_changed_file_acknowledgements_for_all_users(
-            workspace_id
-        )
-        await self._touch_workspace(workspace_id)
-
         return snapshot
+
+    async def navigate_snapshot_previous(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> UserSpaceSnapshot:
+        await self._enforce_workspace_access(
+            workspace_id, user_id, required_role="editor"
+        )
+        timeline = await self.get_snapshot_timeline(workspace_id, user_id)
+        if not timeline.current_snapshot_id or not timeline.current_branch_id:
+            raise HTTPException(status_code=409, detail="No current snapshot selected")
+
+        snapshots_by_id = {snapshot.id: snapshot for snapshot in timeline.snapshots}
+        current_snapshot = snapshots_by_id.get(timeline.current_snapshot_id)
+        if current_snapshot is None:
+            raise HTTPException(status_code=409, detail="Current snapshot not found")
+
+        # Primary behavior: move to the snapshot's parent pointer.
+        parent_snapshot_id = current_snapshot.parent_snapshot_id
+        if parent_snapshot_id and parent_snapshot_id in snapshots_by_id:
+            return await self._restore_snapshot_by_id(
+                workspace_id,
+                parent_snapshot_id,
+                user_id,
+            )
+
+        # Secondary fallback using branch metadata for older migrated timelines.
+        current_branch = next(
+            (branch for branch in timeline.branches if branch.id == timeline.current_branch_id),
+            None,
+        )
+        if (
+            current_branch
+            and current_branch.branched_from_snapshot_id
+            and current_branch.branched_from_snapshot_id in snapshots_by_id
+        ):
+            return await self._restore_snapshot_by_id(
+                workspace_id,
+                current_branch.branched_from_snapshot_id,
+                user_id,
+            )
+
+        raise HTTPException(status_code=409, detail="No previous snapshot available")
+
+    async def navigate_snapshot_next(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> UserSpaceSnapshot:
+        await self._enforce_workspace_access(
+            workspace_id, user_id, required_role="editor"
+        )
+        timeline = await self.get_snapshot_timeline(workspace_id, user_id)
+        if not timeline.current_snapshot_id or not timeline.current_branch_id:
+            raise HTTPException(status_code=409, detail="No current snapshot selected")
+
+        snapshots_by_id = {snapshot.id: snapshot for snapshot in timeline.snapshots}
+
+        # Primary behavior at branch points: move to a child-branch head that
+        # branched from the current snapshot.
+        child_branches = [
+            branch
+            for branch in timeline.branches
+            if branch.branched_from_snapshot_id == timeline.current_snapshot_id
+        ]
+        if child_branches:
+            current_branch = next(
+                (branch for branch in child_branches if branch.id == timeline.current_branch_id),
+                None,
+            )
+            preferred_children = [
+                branch for branch in child_branches if current_branch is None or branch.id != current_branch.id
+            ]
+            if not preferred_children:
+                preferred_children = child_branches
+
+            # Deterministic order: active child first, then newest branch.
+            preferred_children.sort(
+                key=lambda branch: (
+                    0 if branch.is_active else 1,
+                    -branch.created_at.timestamp(),
+                )
+            )
+            target_branch_id = preferred_children[0].id
+            target_branch_snapshots = [
+                snapshot
+                for snapshot in timeline.snapshots
+                if snapshot.branch_id == target_branch_id
+            ]
+            if target_branch_snapshots:
+                target_branch_snapshots.sort(
+                    key=lambda snapshot: snapshot.created_at.timestamp(),
+                    reverse=True,
+                )
+                target_snapshot = target_branch_snapshots[0]
+                if target_snapshot.id in snapshots_by_id:
+                    return await self._restore_snapshot_by_id(
+                        workspace_id,
+                        target_snapshot.id,
+                        user_id,
+                    )
+
+        # Fallback: move to the direct child in the current branch.
+        same_branch_children = [
+            snapshot
+            for snapshot in timeline.snapshots
+            if snapshot.branch_id == timeline.current_branch_id
+            and snapshot.parent_snapshot_id == timeline.current_snapshot_id
+        ]
+        if same_branch_children:
+            same_branch_children.sort(
+                key=lambda snapshot: (
+                    snapshot.created_at.timestamp(),
+                    snapshot.id,
+                ),
+                reverse=True,
+            )
+            return await self._restore_snapshot_by_id(
+                workspace_id,
+                same_branch_children[0].id,
+                user_id,
+            )
+
+        raise HTTPException(status_code=409, detail="No next snapshot available")
+
+    async def switch_snapshot_branch(
+        self,
+        workspace_id: str,
+        request: SwitchSnapshotBranchRequest,
+        user_id: str,
+    ) -> UserSpaceSnapshotTimelineResponse:
+        await self._enforce_workspace_access(
+            workspace_id, user_id, required_role="editor"
+        )
+        await self._ensure_snapshot_timeline(workspace_id, user_id)
+        db = await get_db()
+        rows = await db.query_raw(
+            f"""
+            SELECT id, git_ref_name
+            FROM userspace_snapshot_branches
+            WHERE workspace_id = {self._sql_quote(workspace_id)}
+              AND id = {self._sql_quote(request.branch_id)}
+            LIMIT 1
+            """
+        )
+        if not rows:
+            raise HTTPException(status_code=404, detail="Snapshot branch not found")
+
+        branch = rows[0]
+        branch_id = str(branch.get("id") or "")
+        branch_ref_name = str(branch.get("git_ref_name") or "")
+        head_rows = await db.query_raw(
+            f"""
+            SELECT s.id
+            FROM userspace_snapshots s
+            WHERE s.workspace_id = {self._sql_quote(workspace_id)}
+              AND s.branch_id = {self._sql_quote(branch_id)}
+              AND NOT EXISTS (
+                SELECT 1
+                FROM userspace_snapshots child
+                WHERE child.workspace_id = s.workspace_id
+                  AND child.branch_id = s.branch_id
+                  AND child.parent_snapshot_id = s.id
+              )
+            ORDER BY s.created_at DESC, s.id DESC
+            LIMIT 1
+            """
+        )
+        target_snapshot_id = str(head_rows[0].get("id")) if head_rows else None
+
+        async with self._snapshot_operation_semaphore:
+            if branch_ref_name:
+                await self._run_git(workspace_id, ["checkout", branch_ref_name], check=False)
+            await self._activate_branch(workspace_id, branch_id)
+            await self._set_current_snapshot_cursor(workspace_id, target_snapshot_id, branch_id)
+
+        await self._touch_workspace(workspace_id)
+        return await self.get_snapshot_timeline(workspace_id, user_id)
 
     # ──────────────────────────────────────────────────────────────
     # Component execution bridge (preview live data)
@@ -3600,4 +4269,5 @@ class UserSpaceService:
         return workspace_files
 
 
+userspace_service = UserSpaceService()
 userspace_service = UserSpaceService()

@@ -1702,18 +1702,56 @@ export interface UpsertUserSpaceFileRequest {
 export interface UserSpaceSnapshot {
   id: string;
   workspace_id: string;
+  branch_id: string;
+  branch_name: string;
+  parent_snapshot_id?: string | null;
+  is_current: boolean;
+  can_rename: boolean;
+  git_commit_hash?: string | null;
   message?: string | null;
   created_at: string;
   file_count: number;
+}
+
+export interface UserSpaceSnapshotBranch {
+  id: string;
+  workspace_id: string;
+  name: string;
+  git_ref_name: string;
+  base_snapshot_id?: string | null;
+  branched_from_snapshot_id?: string | null;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface UserSpaceSnapshotTimeline {
+  workspace_id: string;
+  current_snapshot_id?: string | null;
+  current_branch_id?: string | null;
+  has_previous: boolean;
+  has_next: boolean;
+  snapshots: UserSpaceSnapshot[];
+  branches: UserSpaceSnapshotBranch[];
 }
 
 export interface CreateUserSpaceSnapshotRequest {
   message?: string;
 }
 
+export interface UpdateUserSpaceSnapshotRequest {
+  message: string;
+}
+
+export interface SwitchUserSpaceSnapshotBranchRequest {
+  branch_id: string;
+}
+
 export interface RestoreUserSpaceSnapshotResponse {
   restored_snapshot_id: string;
   file_count: number;
+  current_branch_id?: string | null;
+  has_previous: boolean;
+  has_next: boolean;
 }
 
 export interface PaginatedWorkspacesResponse {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { Check, ChevronDown, ChevronRight, Database, ExternalLink, File, History, Link2, Loader2, Maximize2, Minimize2, Pencil, Play, Plus, RotateCw, Save, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
@@ -11,7 +11,7 @@ import '@xterm/xterm/css/xterm.css';
 import { api } from '@/api';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
-import type { User, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceWorkspace, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus } from '@/types';
+import type { User, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceWorkspace, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { ChatPanel } from './ChatPanel';
 import { LdapGroupSelect } from './LdapGroupSelect';
@@ -120,6 +120,29 @@ function clearCookieValue(name: string): void {
   document.cookie = `${name}=; path=/; max-age=0; samesite=lax`;
 }
 
+function formatSnapshotTimestamp(value: string): string {
+  const date = new Date(value);
+  return date.toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function getDeterministicBranchColor(seed: string): string {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = ((hash << 5) - hash + seed.charCodeAt(i)) | 0;
+  }
+
+  const positiveHash = Math.abs(hash);
+  const hue = positiveHash % 360;
+  const saturation = 62 + ((positiveHash >> 8) % 14);
+  const lightness = 50 + ((positiveHash >> 16) % 10);
+  return `hsl(${hue} ${saturation}% ${lightness}%)`;
+}
+
 interface StoredUserSpaceLayout {
   sidebarWidth: number;
   sidebarCollapsed: boolean;
@@ -217,6 +240,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [fileBrowserEntries, setFileBrowserEntries] = useState<UserSpaceFileInfo[]>([]);
   const [files, setFiles] = useState<UserSpaceFileInfo[]>([]);
   const [snapshots, setSnapshots] = useState<UserSpaceSnapshot[]>([]);
+  const [snapshotBranches, setSnapshotBranches] = useState<UserSpaceSnapshotBranch[]>([]);
+  const [currentSnapshotId, setCurrentSnapshotId] = useState<string | null>(null);
+  const [currentSnapshotBranchId, setCurrentSnapshotBranchId] = useState<string | null>(null);
+  const [renamingSnapshotId, setRenamingSnapshotId] = useState<string | null>(null);
+  const [snapshotEditValue, setSnapshotEditValue] = useState('');
+  const [savingSnapshotRename, setSavingSnapshotRename] = useState(false);
+  const [navigatingSnapshots, setNavigatingSnapshots] = useState(false);
+  const [restoringSnapshotId, setRestoringSnapshotId] = useState<string | null>(null);
   const [availableTools, setAvailableTools] = useState<UserSpaceAvailableTool[]>([]);
   const [toolGroups, setToolGroups] = useState<ToolGroupInfo[]>([]);
 
@@ -567,6 +598,93 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const canEditWorkspace = activeWorkspaceRole === 'owner' || activeWorkspaceRole === 'editor';
   const isOwner = activeWorkspaceRole === 'owner';
 
+  const snapshotsByBranch = useMemo(() => {
+    const grouped = new Map<string, UserSpaceSnapshot[]>();
+    for (const snapshot of snapshots) {
+      const current = grouped.get(snapshot.branch_id) ?? [];
+      current.push(snapshot);
+      grouped.set(snapshot.branch_id, current);
+    }
+    for (const list of grouped.values()) {
+      list.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    }
+
+    return snapshotBranches
+      .map((branch) => ({
+        branch,
+        snapshots: grouped.get(branch.id) ?? [],
+      }))
+      .filter((group) => group.snapshots.length > 0);
+  }, [snapshotBranches, snapshots]);
+
+  const snapshotTimelineRows = useMemo(() => {
+    const sortedSnapshots = [...snapshots].sort((left, right) => {
+      const timeDiff = new Date(left.created_at).getTime() - new Date(right.created_at).getTime();
+      if (timeDiff !== 0) {
+        return timeDiff;
+      }
+      return left.id.localeCompare(right.id);
+    });
+
+    const branchIndexById = new Map<string, number>();
+    const branchById = new Map<string, UserSpaceSnapshotBranch>();
+    const firstSnapshotIdByBranch = new Map<string, string>();
+    const snapshotById = new Map<string, UserSpaceSnapshot>();
+
+    snapshotsByBranch.forEach(({ branch, snapshots: branchSnapshots }, index) => {
+      branchIndexById.set(branch.id, index);
+      branchById.set(branch.id, branch);
+
+      const sortedBranchSnapshots = [...branchSnapshots].sort((left, right) => {
+        const timeDiff = new Date(left.created_at).getTime() - new Date(right.created_at).getTime();
+        if (timeDiff !== 0) {
+          return timeDiff;
+        }
+        return left.id.localeCompare(right.id);
+      });
+
+      const firstSnapshot = sortedBranchSnapshots[0];
+      if (firstSnapshot) {
+        firstSnapshotIdByBranch.set(branch.id, firstSnapshot.id);
+      }
+    });
+
+    for (const snapshot of snapshots) {
+      snapshotById.set(snapshot.id, snapshot);
+    }
+
+    return sortedSnapshots.map((snapshot) => {
+      const laneIndex = branchIndexById.get(snapshot.branch_id) ?? 0;
+      let forkFromLaneIndex: number | null = null;
+
+      const branch = branchById.get(snapshot.branch_id);
+      const firstSnapshotId = firstSnapshotIdByBranch.get(snapshot.branch_id);
+      if (branch?.branched_from_snapshot_id && firstSnapshotId === snapshot.id) {
+        const parentSnapshot = snapshotById.get(branch.branched_from_snapshot_id);
+        const parentLaneIndex = parentSnapshot ? branchIndexById.get(parentSnapshot.branch_id) : undefined;
+        if (parentLaneIndex !== undefined && parentLaneIndex !== laneIndex) {
+          forkFromLaneIndex = parentLaneIndex;
+        }
+      }
+
+      return {
+        snapshot,
+        laneIndex,
+        forkFromLaneIndex,
+      };
+    });
+  }, [snapshots, snapshotsByBranch]);
+
+  const snapshotBranchColorById = useMemo(() => {
+    const colors = new Map<string, string>();
+    for (const { branch } of snapshotsByBranch) {
+      colors.set(branch.id, getDeterministicBranchColor(branch.id));
+    }
+    return colors;
+  }, [snapshotsByBranch]);
+
+  const snapshotUiLocked = navigatingSnapshots || restoringSnapshotId !== null;
+
   const codeMirrorExtensions = useMemo(
     () => [
       javascript({ typescript: true, jsx: true }),
@@ -823,8 +941,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
   const loadSnapshots = useCallback(async (workspaceId: string) => {
     try {
-      const result = await api.listUserSpaceSnapshots(workspaceId);
-      setSnapshots(result);
+      const result = await api.getUserSpaceSnapshotTimeline(workspaceId);
+      setSnapshots(result.snapshots);
+      setSnapshotBranches(result.branches);
+      setCurrentSnapshotId(result.current_snapshot_id ?? null);
+      setCurrentSnapshotBranchId(result.current_branch_id ?? null);
       setSnapshotsLoadedForWorkspace(workspaceId);
     } catch {
       // Snapshot list is non-critical; keep UI functional.
@@ -903,6 +1024,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   useEffect(() => {
     if (!activeWorkspaceId) return;
     setSnapshots([]);
+    setSnapshotBranches([]);
+    setCurrentSnapshotId(null);
+    setCurrentSnapshotBranchId(null);
     setSnapshotsLoadedForWorkspace(null);
     setShowSnapshots(false);
     setChangedFiles(new Set());
@@ -1462,10 +1586,43 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     await loadWorkspaceData(activeWorkspaceId);
   }, [activeWorkspaceId, canEditWorkspace, loadWorkspaceData]);
 
-  const handleRestoreSnapshot = useCallback(async (snapshotId: string) => {
+  const handleRestoreSnapshot = useCallback(async (snapshotId: string, snapshotBranchId?: string) => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
+    const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
+    const waitForRestoredCursor = async (workspaceId: string, expectedSnapshotId: string): Promise<void> => {
+      const maxAttempts = 18;
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        try {
+          const timeline = await api.getUserSpaceSnapshotTimeline(workspaceId);
+          setSnapshots(timeline.snapshots);
+          setSnapshotBranches(timeline.branches);
+          setCurrentSnapshotId(timeline.current_snapshot_id ?? null);
+          setCurrentSnapshotBranchId(timeline.current_branch_id ?? null);
+          setSnapshotsLoadedForWorkspace(workspaceId);
+          if (timeline.current_snapshot_id === expectedSnapshotId) {
+            return;
+          }
+        } catch {
+          // Keep polling; final refresh happens below regardless.
+        }
+        await wait(250);
+      }
+    };
+
+    setNavigatingSnapshots(true);
+    setRestoringSnapshotId(snapshotId);
     try {
-      await api.restoreUserSpaceSnapshot(activeWorkspaceId, snapshotId);
+      if (snapshotBranchId && snapshotBranchId !== currentSnapshotBranchId) {
+        const timeline = await api.switchUserSpaceSnapshotBranch(activeWorkspaceId, { branch_id: snapshotBranchId });
+        setSnapshots(timeline.snapshots);
+        setSnapshotBranches(timeline.branches);
+        setCurrentSnapshotId(timeline.current_snapshot_id ?? null);
+        setCurrentSnapshotBranchId(timeline.current_branch_id ?? null);
+      }
+
+      const restoreResult = await api.restoreUserSpaceSnapshot(activeWorkspaceId, snapshotId);
+      await waitForRestoredCursor(activeWorkspaceId, restoreResult.restored_snapshot_id || snapshotId);
       setChangedFiles(new Set());
       setAcknowledgedFiles(new Set());
       setFileDirty(false);
@@ -1477,8 +1634,62 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to restore snapshot');
+    } finally {
+      setRestoringSnapshotId(null);
+      setNavigatingSnapshots(false);
     }
-  }, [activeWorkspaceId, canEditWorkspace, loadChangedFileState, loadSnapshots, loadWorkspaceData]);
+  }, [activeWorkspaceId, canEditWorkspace, currentSnapshotBranchId, loadChangedFileState, loadSnapshots, loadWorkspaceData]);
+
+  const handleStartSnapshotRename = useCallback((snapshot: UserSpaceSnapshot) => {
+    if (!canEditWorkspace) return;
+    setRenamingSnapshotId(snapshot.id);
+    setSnapshotEditValue(snapshot.message ?? '');
+  }, [canEditWorkspace]);
+
+  const handleCancelSnapshotRename = useCallback(() => {
+    setRenamingSnapshotId(null);
+    setSnapshotEditValue('');
+  }, []);
+
+  const handleSaveSnapshotRename = useCallback(async (snapshotId: string) => {
+    if (!activeWorkspaceId || !canEditWorkspace) return;
+    const next = snapshotEditValue.trim();
+    if (!next) {
+      handleCancelSnapshotRename();
+      return;
+    }
+    setSavingSnapshotRename(true);
+    try {
+      await api.updateUserSpaceSnapshot(activeWorkspaceId, snapshotId, { message: next });
+      await loadSnapshots(activeWorkspaceId);
+      setRenamingSnapshotId(null);
+      setSnapshotEditValue('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to rename snapshot');
+    } finally {
+      setSavingSnapshotRename(false);
+    }
+  }, [activeWorkspaceId, canEditWorkspace, handleCancelSnapshotRename, loadSnapshots, snapshotEditValue]);
+
+  const handleSwitchSnapshotBranch = useCallback(async (branchId: string) => {
+    if (!activeWorkspaceId || !canEditWorkspace) return;
+    setNavigatingSnapshots(true);
+    try {
+      const timeline = await api.switchUserSpaceSnapshotBranch(activeWorkspaceId, { branch_id: branchId });
+      setSnapshots(timeline.snapshots);
+      setSnapshotBranches(timeline.branches);
+      setCurrentSnapshotId(timeline.current_snapshot_id ?? null);
+      setCurrentSnapshotBranchId(timeline.current_branch_id ?? null);
+      await Promise.all([
+        loadWorkspaceData(activeWorkspaceId),
+        loadChangedFileState(activeWorkspaceId),
+      ]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to switch snapshot branch');
+    } finally {
+      setNavigatingSnapshots(false);
+    }
+  }, [activeWorkspaceId, canEditWorkspace, loadChangedFileState, loadWorkspaceData]);
 
   const handleStartRuntime = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
@@ -2163,6 +2374,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         setFileBrowserEntries([]);
         setFiles([]);
         setSnapshots([]);
+        setSnapshotBranches([]);
+        setCurrentSnapshotId(null);
+        setCurrentSnapshotBranchId(null);
         setFileContentCache({});
         setFileContent('');
         setSelectedFilePath('');
@@ -3376,7 +3590,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
           {/* Snapshots */}
           <div className="userspace-snapshots-section">
-            <button className="userspace-snapshots-toggle" onClick={() => {
+            <button className="userspace-snapshots-toggle" disabled={snapshotUiLocked} onClick={() => {
               const next = !showSnapshots;
               setShowSnapshots(next);
               if (next && activeWorkspaceId && snapshotsLoadedForWorkspace !== activeWorkspaceId) {
@@ -3389,22 +3603,144 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
             </button>
             {showSnapshots && (
               <div className="userspace-snapshots-list">
-                {snapshots.map((snapshot) => (
-                  <div key={snapshot.id} className="userspace-snapshot-item">
-                    <div className="userspace-snapshot-info">
-                      <code>{snapshot.id.slice(0, 8)}</code>
-                      <span className="userspace-muted">{snapshot.message || 'No message'}</span>
-                    </div>
-                    <button
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => handleRestoreSnapshot(snapshot.id)}
-                      disabled={!canEditWorkspace}
-                    >
-                      Restore
-                    </button>
+                {restoringSnapshotId && (
+                  <div className="userspace-snapshot-busy-indicator" role="status" aria-live="polite">
+                    Restoring snapshot {restoringSnapshotId.slice(0, 8)}...
                   </div>
-                ))}
-                {snapshots.length === 0 && (
+                )}
+                {snapshotsByBranch.length > 0 && snapshotTimelineRows.length > 0 ? (
+                  <div className="userspace-snapshot-graph">
+                    <div className="userspace-snapshot-graph-legend">
+                      {snapshotsByBranch.map(({ branch, snapshots: branchSnapshots }) => {
+                        const branchColor = snapshotBranchColorById.get(branch.id);
+                        return (
+                          <button
+                            key={`legend-${branch.id}`}
+                            type="button"
+                            className={`userspace-snapshot-branch-legend ${currentSnapshotBranchId === branch.id ? 'active' : ''}`}
+                            onClick={() => handleSwitchSnapshotBranch(branch.id)}
+                            disabled={!canEditWorkspace || snapshotUiLocked}
+                            title={branch.git_ref_name}
+                            style={{ '--userspace-branch-color': branchColor } as CSSProperties}
+                          >
+                            <span className="userspace-snapshot-branch-legend-name">{branch.name}</span>
+                            <span className="userspace-snapshot-branch-legend-count">{branchSnapshots.length}</span>
+                            {branch.branched_from_snapshot_id && (
+                              <span className="userspace-snapshot-branch-legend-fork">
+                                from {branch.branched_from_snapshot_id.slice(0, 8)}
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {snapshotTimelineRows.map(({ snapshot, laneIndex, forkFromLaneIndex }) => {
+                      const isCurrentSnapshot = snapshot.is_current || currentSnapshotId === snapshot.id;
+                      const branchColor = snapshotBranchColorById.get(snapshot.branch_id);
+                      const forkStart = typeof forkFromLaneIndex === 'number'
+                        ? Math.min(forkFromLaneIndex, laneIndex)
+                        : null;
+                      const forkWidth = typeof forkFromLaneIndex === 'number'
+                        ? Math.abs(forkFromLaneIndex - laneIndex)
+                        : null;
+
+                      return (
+                        <div
+                          key={snapshot.id}
+                          className={`userspace-snapshot-graph-row ${isCurrentSnapshot ? 'current' : ''}`}
+                          style={{ '--userspace-branch-color': branchColor } as CSSProperties}
+                        >
+                          <div
+                            className="userspace-snapshot-graph-lanes"
+                            style={{ gridTemplateColumns: `repeat(${snapshotsByBranch.length}, 18px)` }}
+                            aria-hidden="true"
+                          >
+                            {snapshotsByBranch.map(({ branch }, branchIndex) => (
+                              <div key={`${snapshot.id}-${branch.id}`} className="userspace-snapshot-lane-cell">
+                                <span className={`userspace-snapshot-lane-line ${branchIndex === laneIndex ? 'active' : ''}`} />
+                                {branchIndex === laneIndex && (
+                                  <span className={`userspace-snapshot-node-dot ${isCurrentSnapshot ? 'current' : ''}`} />
+                                )}
+                              </div>
+                            ))}
+                            {forkStart !== null && forkWidth !== null && forkWidth > 0 && (
+                              <span
+                                className="userspace-snapshot-fork-link"
+                                style={{
+                                  left: `${forkStart * 18 + 9}px`,
+                                  width: `${forkWidth * 18}px`,
+                                }}
+                              />
+                            )}
+                          </div>
+
+                          <div className="userspace-snapshot-row-main">
+                            <code className="userspace-snapshot-hash">{snapshot.id.slice(0, 8)}</code>
+                            {renamingSnapshotId === snapshot.id ? (
+                              <input
+                                className="userspace-snapshot-rename-input"
+                                value={snapshotEditValue}
+                                onChange={(event) => setSnapshotEditValue(event.target.value)}
+                                onBlur={() => void handleSaveSnapshotRename(snapshot.id)}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Escape') {
+                                    handleCancelSnapshotRename();
+                                  }
+                                  if (event.key === 'Enter') {
+                                    event.preventDefault();
+                                    void handleSaveSnapshotRename(snapshot.id);
+                                  }
+                                }}
+                                disabled={savingSnapshotRename}
+                              />
+                            ) : (
+                              <span className="userspace-snapshot-msg" title={snapshot.message || undefined}>
+                                {snapshot.message || 'No message'}
+                              </span>
+                            )}
+                            {!renamingSnapshotId && canEditWorkspace && snapshot.can_rename && (
+                              <button
+                                type="button"
+                                className="userspace-snapshot-rename-btn"
+                                title="Rename snapshot"
+                                disabled={snapshotUiLocked}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  handleStartSnapshotRename(snapshot);
+                                }}
+                              >
+                                <Pencil size={10} />
+                              </button>
+                            )}
+                            <span className="userspace-snapshot-ts">
+                              {formatSnapshotTimestamp(snapshot.created_at)}
+                            </span>
+                          </div>
+
+                          <div className="userspace-snapshot-row-actions">
+                            {isCurrentSnapshot ? (
+                              <span className="userspace-snapshot-current-badge">You are here</span>
+                            ) : (
+                              <button
+                                type="button"
+                                className="userspace-snapshot-restore-btn"
+                                onClick={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  void handleRestoreSnapshot(snapshot.id, snapshot.branch_id);
+                                }}
+                                disabled={!canEditWorkspace || snapshotUiLocked}
+                              >
+                                Restore
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
                   <p className="userspace-muted" style={{ padding: '8px' }}>No snapshots yet</p>
                 )}
               </div>

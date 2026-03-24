@@ -212,18 +212,56 @@ class UserSpaceSharedPreviewResponse(BaseModel):
 class UserSpaceSnapshot(BaseModel):
     id: str
     workspace_id: str
+    branch_id: str
+    branch_name: str
+    parent_snapshot_id: str | None = None
+    is_current: bool = False
+    can_rename: bool = True
+    git_commit_hash: str | None = None
     message: str | None = None
     created_at: datetime
     file_count: int
+
+
+class UserSpaceSnapshotBranch(BaseModel):
+    id: str
+    workspace_id: str
+    name: str
+    git_ref_name: str
+    base_snapshot_id: str | None = None
+    branched_from_snapshot_id: str | None = None
+    is_active: bool = False
+    created_at: datetime
+
+
+class UserSpaceSnapshotTimelineResponse(BaseModel):
+    workspace_id: str
+    current_snapshot_id: str | None = None
+    current_branch_id: str | None = None
+    has_previous: bool = False
+    has_next: bool = False
+    snapshots: list[UserSpaceSnapshot] = Field(default_factory=list)
+    branches: list[UserSpaceSnapshotBranch] = Field(default_factory=list)
 
 
 class CreateSnapshotRequest(BaseModel):
     message: str | None = Field(default=None, max_length=5000)
 
 
+class UpdateSnapshotRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=200)
+
+
+class SwitchSnapshotBranchRequest(BaseModel):
+    branch_id: str = Field(min_length=1)
+
+
 class RestoreSnapshotResponse(BaseModel):
     restored_snapshot_id: str
     file_count: int
+    current_branch_id: str | None = None
+    has_previous: bool = False
+    has_next: bool = False
 
 
 class UserSpaceRuntimeSession(BaseModel):

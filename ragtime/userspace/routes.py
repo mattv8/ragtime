@@ -13,6 +13,8 @@ from ragtime.userspace.models import (
     ExecuteComponentResponse,
     PaginatedWorkspacesResponse,
     RestoreSnapshotResponse,
+    SwitchSnapshotBranchRequest,
+    UpdateSnapshotRequest,
     UpdateWorkspaceMembersRequest,
     UpdateWorkspaceRequest,
     UpdateWorkspaceShareAccessRequest,
@@ -25,6 +27,7 @@ from ragtime.userspace.models import (
     UserSpaceFileResponse,
     UserSpaceSharedPreviewResponse,
     UserSpaceSnapshot,
+    UserSpaceSnapshotTimelineResponse,
     UserSpaceWorkspace,
     UserSpaceWorkspaceShareLink,
     UserSpaceWorkspaceShareLinkStatus,
@@ -535,6 +538,17 @@ async def list_snapshots(workspace_id: str, user: Any = Depends(get_current_user
     return await userspace_service.list_snapshots(workspace_id, user.id)
 
 
+@router.get(
+    "/workspaces/{workspace_id}/snapshots/timeline",
+    response_model=UserSpaceSnapshotTimelineResponse,
+)
+async def get_snapshot_timeline(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.get_snapshot_timeline(workspace_id, user.id)
+
+
 @router.post("/workspaces/{workspace_id}/snapshots", response_model=UserSpaceSnapshot)
 async def create_snapshot(
     workspace_id: str,
@@ -563,7 +577,87 @@ async def restore_snapshot(
         user.id,
     )
     await userspace_runtime_service.invalidate_workspace_runtime_state(workspace_id)
+    timeline = await userspace_service.get_snapshot_timeline(workspace_id, user.id)
     return RestoreSnapshotResponse(
         restored_snapshot_id=snapshot.id,
         file_count=snapshot.file_count,
+        current_branch_id=snapshot.branch_id,
+        has_previous=timeline.has_previous,
+        has_next=timeline.has_next,
     )
+
+
+@router.patch(
+    "/workspaces/{workspace_id}/snapshots/{snapshot_id}",
+    response_model=UserSpaceSnapshot,
+)
+async def update_snapshot(
+    workspace_id: str,
+    snapshot_id: str,
+    request: UpdateSnapshotRequest,
+    user: Any = Depends(get_current_user),
+):
+    result = await userspace_service.update_snapshot(
+        workspace_id,
+        snapshot_id,
+        request,
+        user.id,
+    )
+    await userspace_runtime_service.bump_workspace_generation(workspace_id, "snapshot")
+    return result
+
+
+@router.post(
+    "/workspaces/{workspace_id}/snapshots/previous",
+    response_model=RestoreSnapshotResponse,
+)
+async def restore_previous_snapshot(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    snapshot = await userspace_service.navigate_snapshot_previous(workspace_id, user.id)
+    await userspace_runtime_service.invalidate_workspace_runtime_state(workspace_id)
+    timeline = await userspace_service.get_snapshot_timeline(workspace_id, user.id)
+    return RestoreSnapshotResponse(
+        restored_snapshot_id=snapshot.id,
+        file_count=snapshot.file_count,
+        current_branch_id=snapshot.branch_id,
+        has_previous=timeline.has_previous,
+        has_next=timeline.has_next,
+    )
+
+
+@router.post(
+    "/workspaces/{workspace_id}/snapshots/next",
+    response_model=RestoreSnapshotResponse,
+)
+async def restore_next_snapshot(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    snapshot = await userspace_service.navigate_snapshot_next(workspace_id, user.id)
+    await userspace_runtime_service.invalidate_workspace_runtime_state(workspace_id)
+    timeline = await userspace_service.get_snapshot_timeline(workspace_id, user.id)
+    return RestoreSnapshotResponse(
+        restored_snapshot_id=snapshot.id,
+        file_count=snapshot.file_count,
+        current_branch_id=snapshot.branch_id,
+        has_previous=timeline.has_previous,
+        has_next=timeline.has_next,
+    )
+
+
+@router.post(
+    "/workspaces/{workspace_id}/snapshots/switch-branch",
+    response_model=UserSpaceSnapshotTimelineResponse,
+)
+async def switch_snapshot_branch(
+    workspace_id: str,
+    request: SwitchSnapshotBranchRequest,
+    user: Any = Depends(get_current_user),
+):
+    result = await userspace_service.switch_snapshot_branch(
+        workspace_id, request, user.id
+    )
+    await userspace_runtime_service.bump_workspace_generation(workspace_id, "snapshot")
+    return result
