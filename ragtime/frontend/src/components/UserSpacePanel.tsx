@@ -1207,20 +1207,46 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const handleToggleWorkspaceTool = useCallback(async (toolId: string) => {
     if (!activeWorkspace || !canEditWorkspace) return;
 
-    const currentSelected = new Set(activeWorkspace.selected_tool_ids);
-    const nextSelected = new Set(currentSelected);
+    const targetTool = availableTools.find((tool) => tool.id === toolId);
+    const currentGroupIds = new Set(activeWorkspace.selected_tool_group_ids ?? []);
+
+    if (targetTool?.group_id && currentGroupIds.has(targetTool.group_id)) {
+      const nextGroupIds = new Set(currentGroupIds);
+      nextGroupIds.delete(targetTool.group_id);
+      const nextSelected = new Set<string>();
+      for (const tool of availableTools) {
+        if (tool.group_id === targetTool.group_id && tool.id !== toolId) {
+          nextSelected.add(tool.id);
+        }
+      }
+
+      setSavingWorkspaceTools(true);
+      try {
+        const updated = await api.updateUserSpaceWorkspace(activeWorkspace.id, {
+          selected_tool_ids: Array.from(nextSelected),
+          selected_tool_group_ids: Array.from(nextGroupIds),
+        });
+        setWorkspaces((current) => current.map((workspace) => workspace.id === updated.id ? updated : workspace));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to update tool selection');
+      } finally {
+        setSavingWorkspaceTools(false);
+      }
+      return;
+    }
+
+    const nextSelected = new Set(activeWorkspace.selected_tool_ids ?? []);
     if (nextSelected.has(toolId)) {
       nextSelected.delete(toolId);
     } else {
       nextSelected.add(toolId);
     }
 
-    const normalizedSelection = Array.from(nextSelected);
-
     setSavingWorkspaceTools(true);
     try {
       const updated = await api.updateUserSpaceWorkspace(activeWorkspace.id, {
-        selected_tool_ids: normalizedSelection,
+        selected_tool_ids: Array.from(nextSelected),
+        selected_tool_group_ids: Array.from(currentGroupIds),
       });
       setWorkspaces((current) => current.map((workspace) => workspace.id === updated.id ? updated : workspace));
     } catch (err) {
@@ -1228,15 +1254,22 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     } finally {
       setSavingWorkspaceTools(false);
     }
-  }, [activeWorkspace, canEditWorkspace]);
+  }, [activeWorkspace, availableTools, canEditWorkspace]);
 
   const handleToggleWorkspaceToolGroup = useCallback(async (groupId: string) => {
     if (!activeWorkspace || !canEditWorkspace) return;
 
+    const groupToolIds = availableTools
+      .filter((tool) => tool.group_id === groupId)
+      .map((tool) => tool.id);
     const currentGroupIds = new Set(activeWorkspace.selected_tool_group_ids ?? []);
     const nextGroupIds = new Set(currentGroupIds);
+    const nextToolIds = new Set(activeWorkspace.selected_tool_ids ?? []);
     if (nextGroupIds.has(groupId)) {
       nextGroupIds.delete(groupId);
+      for (const toolId of groupToolIds) {
+        nextToolIds.delete(toolId);
+      }
     } else {
       nextGroupIds.add(groupId);
     }
@@ -1244,6 +1277,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     setSavingWorkspaceTools(true);
     try {
       const updated = await api.updateUserSpaceWorkspace(activeWorkspace.id, {
+        selected_tool_ids: Array.from(nextToolIds),
         selected_tool_group_ids: Array.from(nextGroupIds),
       });
       setWorkspaces((current) => current.map((workspace) => workspace.id === updated.id ? updated : workspace));
@@ -1252,7 +1286,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     } finally {
       setSavingWorkspaceTools(false);
     }
-  }, [activeWorkspace, canEditWorkspace]);
+  }, [activeWorkspace, availableTools, canEditWorkspace]);
 
   const handleToggleSqlitePersistence = useCallback(async () => {
     if (!activeWorkspace || !canEditWorkspace) return;

@@ -670,6 +670,65 @@ textarea:focus {
   background: var(--color-surface-hover);
 }
 
+.tool-group-checkbox {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  margin: 0;
+  border: 1px solid color-mix(in srgb, var(--color-border) 85%, var(--color-text-muted));
+  border-radius: 5px;
+  background: var(--color-bg-secondary);
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, transform 0.1s ease;
+  display: inline-grid;
+  place-items: center;
+}
+
+.tool-group-header:hover .tool-group-checkbox {
+  border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 5%, var(--color-bg-secondary));
+}
+
+.tool-group-header:hover .tool-group-checkbox:checked,
+.tool-group-header:hover .tool-group-checkbox:indeterminate {
+  border-color: var(--color-accent);
+  background-color: var(--color-accent);
+}
+
+.tool-group-checkbox:checked,
+.tool-group-checkbox:indeterminate {
+  border-color: var(--color-accent);
+  background-color: var(--color-accent);
+  background-repeat: no-repeat;
+  background-position: center;
+}
+
+.tool-group-checkbox:checked {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='white' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M3.5 8.5 6.5 11.5 12.5 4.5'/%3E%3C/svg%3E");
+  background-size: 12px 12px;
+}
+
+.tool-group-checkbox:indeterminate {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='white' stroke-linecap='round' stroke-width='2.4' d='M3.5 8h9'/%3E%3C/svg%3E");
+  background-size: 12px 12px;
+}
+
+.tool-group-checkbox:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 24%, transparent);
+}
+
+.tool-group-checkbox:active {
+  transform: scale(0.97);
+}
+
+.tool-group-checkbox:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .tool-group-name {
   flex: 1;
   min-width: 0;

@@ -201,6 +201,7 @@ export function ToolSelectorDropdown({
                   >
                     <input
                       type="checkbox"
+                      className="tool-group-checkbox"
                       checked={checkState === 'all'}
                       ref={(el) => {
                         if (el) el.indeterminate = checkState === 'some';

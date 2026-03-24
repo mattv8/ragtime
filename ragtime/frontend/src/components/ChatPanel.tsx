@@ -2344,10 +2344,38 @@ export function ChatPanel({
 
   const handleToggleConversationTool = useCallback(async (toolId: string) => {
     if (!activeConversation || isConversationViewer) return;
-    const currentSelected = conversationToolIds.length > 0
+    const targetTool = availableTools.find((tool) => tool.id === toolId);
+    const currentGroupIds = new Set(conversationToolGroupIds);
+
+    if (targetTool?.group_id && currentGroupIds.has(targetTool.group_id)) {
+      const nextGroupIds = new Set(currentGroupIds);
+      nextGroupIds.delete(targetTool.group_id);
+      const nextSelected = new Set<string>();
+      for (const tool of availableTools) {
+        if (tool.group_id === targetTool.group_id && tool.id !== toolId) {
+          nextSelected.add(tool.id);
+        }
+      }
+
+      setSavingTools(true);
+      try {
+        await api.updateConversationTools(activeConversation.id, {
+          tool_config_ids: Array.from(nextSelected),
+          tool_group_ids: Array.from(nextGroupIds),
+        });
+        setConversationToolIds(Array.from(nextSelected));
+        setConversationToolGroupIds(Array.from(nextGroupIds));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to update tool selection');
+      } finally {
+        setSavingTools(false);
+      }
+      return;
+    }
+
+    const nextSelected = conversationToolIds.length > 0
       ? new Set(conversationToolIds)
       : new Set(availableConversationToolIds);
-    const nextSelected = new Set(currentSelected);
     if (nextSelected.has(toolId)) {
       nextSelected.delete(toolId);
     } else {
@@ -2363,18 +2391,22 @@ export function ChatPanel({
     try {
       await api.updateConversationTools(activeConversation.id, {
         tool_config_ids: normalizedSelection,
-        tool_group_ids: conversationToolGroupIds,
+        tool_group_ids: Array.from(currentGroupIds),
       });
       setConversationToolIds(normalizedSelection);
+      setConversationToolGroupIds(Array.from(currentGroupIds));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update tool selection');
     } finally {
       setSavingTools(false);
     }
-  }, [activeConversation, availableConversationToolIds, conversationToolIds, conversationToolGroupIds, isConversationViewer]);
+  }, [activeConversation, availableConversationToolIds, availableTools, conversationToolIds, conversationToolGroupIds, isConversationViewer]);
 
   const handleToggleConversationToolGroup = useCallback(async (groupId: string) => {
     if (!activeConversation || isConversationViewer) return;
+    const groupToolIds = availableTools
+      .filter((tool) => tool.group_id === groupId)
+      .map((tool) => tool.id);
     const nextGroupIds = new Set(conversationToolGroupIds);
     if (nextGroupIds.has(groupId)) {
       nextGroupIds.delete(groupId);
@@ -2386,20 +2418,33 @@ export function ChatPanel({
     const currentToolIds = conversationToolIds.length > 0
       ? conversationToolIds
       : availableConversationToolIds;
+    const nextToolIds = new Set(currentToolIds);
+
+    if (!nextGroupIds.has(groupId)) {
+      for (const toolId of groupToolIds) {
+        nextToolIds.delete(toolId);
+      }
+    }
+
+    const normalizedToolIds = availableConversationToolIds.length > 0
+      && nextToolIds.size === availableConversationToolIds.length
+      ? []
+      : Array.from(nextToolIds);
 
     setSavingTools(true);
     try {
       await api.updateConversationTools(activeConversation.id, {
-        tool_config_ids: currentToolIds,
+        tool_config_ids: normalizedToolIds,
         tool_group_ids: groupArr,
       });
+      setConversationToolIds(normalizedToolIds);
       setConversationToolGroupIds(groupArr);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update tool group selection');
     } finally {
       setSavingTools(false);
     }
-  }, [activeConversation, availableConversationToolIds, conversationToolIds, conversationToolGroupIds, isConversationViewer]);
+  }, [activeConversation, availableConversationToolIds, availableTools, conversationToolIds, conversationToolGroupIds, isConversationViewer]);
 
   const handleToggleInlineTool = useCallback(async (toolId: string) => {
     if (useWorkspaceToolSource && onToggleWorkspaceTool) {
