@@ -19,6 +19,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, List, Optional, Union
 
 import httpx
+from PIL import Image, ImageOps, UnidentifiedImageError
 from fastapi import HTTPException
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
@@ -37,7 +38,6 @@ from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
@@ -5866,7 +5866,7 @@ except Exception as e:
                     f"Cannot delete {normalized_path}: {getattr(exc, 'detail', exc)}"
                 ) from exc
             await userspace_runtime_service.bump_workspace_generation(
-                workspace_id, "file_delete"
+                workspace_id, "file_delete", payload={"path": normalized_path}
             )
             return json.dumps(
                 {
@@ -6264,7 +6264,7 @@ except Exception as e:
             if typecheck is not None:
                 response_payload["typescript_validation"] = typecheck
             await userspace_runtime_service.bump_workspace_generation(
-                workspace_id, "file_patch"
+                workspace_id, "file_patch", payload={"path": normalized_path}
             )
             return json.dumps(response_payload, indent=2)
 
@@ -6712,7 +6712,9 @@ except Exception as e:
             if typecheck is not None:
                 success_response_payload["typescript_validation"] = typecheck
             await userspace_runtime_service.bump_workspace_generation(
-                workspace_id, "file_upsert"
+                workspace_id,
+                "file_upsert",
+                payload={"path": str(getattr(result, "path", path))},
             )
             return json.dumps(success_response_payload, indent=2)
 

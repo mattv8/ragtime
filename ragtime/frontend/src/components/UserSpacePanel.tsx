@@ -12,7 +12,7 @@ import { api } from '@/api';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
 import type { User, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceWorkspace, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus } from '@/types';
-import { buildUserSpaceTree, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
+import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { ChatPanel } from './ChatPanel';
 import { LdapGroupSelect } from './LdapGroupSelect';
 import { ResizeHandle } from './ResizeHandle';
@@ -81,6 +81,7 @@ const USERSPACE_CODEMIRROR_BASIC_SETUP = {
   indentOnInput: true,
   tabSize: 2,
 };
+const USERSPACE_CHANGED_FILE_STATE_MIN_INTERVAL_MS = 1000;
 
 function getLastWorkspaceCookieName(userId: string): string {
   return `${LAST_WORKSPACE_COOKIE_PREFIX}${encodeURIComponent(userId)}`;
@@ -267,7 +268,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     setIsFullscreen(next);
     onFullscreenChange?.(next);
   }, [isFullscreen, onFullscreenChange]);
-  const [savingFile, setSavingFile] = useState(false);
+  const [savingTreeFile, setSavingTreeFile] = useState<string | null>(null);
+  const [creatingSnapshot, setCreatingSnapshot] = useState(false);
+  // Per-file changed tracking: files marked changed since last snapshot baseline.
+  // A file is "changed" when the user edits it in the editor.
+  // A file is "acknowledged" when the user clicks the per-file Save in the tree.
+  // All markers reset on snapshot create/restore.
+  const [changedFiles, setChangedFiles] = useState<Set<string>>(new Set());
+  const [acknowledgedFiles, setAcknowledgedFiles] = useState<Set<string>>(new Set());
   const [savingWorkspaceTools, setSavingWorkspaceTools] = useState(false);
   const [deleteConfirmFileId, setDeleteConfirmFileId] = useState<string | null>(null);
   const [deleteConfirmFolderPath, setDeleteConfirmFolderPath] = useState<string | null>(null);
@@ -291,14 +299,20 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const selectedFilePathRef = useRef(selectedFilePath);
   const fileContentCacheRef = useRef(fileContentCache);
   const loadWorkspaceDataRequestIdRef = useRef(0);
+  const loadChangedFileStateRequestIdRef = useRef(0);
   const loadRuntimeStatusRequestIdRef = useRef(0);
   const fileDirtyRef = useRef(false);
+  const changedFileStateInFlightRef = useRef(false);
+  const changedFileStateLastStartedAtRef = useRef(0);
+  const changedFileStatePendingWorkspaceIdRef = useRef<string | null>(null);
+  const changedFileStateGuardTimerRef = useRef<number | null>(null);
   const collabSocketRef = useRef<WebSocket | null>(null);
   const collabReconnectTimerRef = useRef<number | null>(null);
   const collabReconnectAttemptsRef = useRef(0);
   const collabSuppressNextSendRef = useRef(false);
   const workspaceEventsReconnectTimerRef = useRef<number | null>(null);
   const loadWorkspaceDataDebounceRef = useRef<number | null>(null);
+  const loadChangedFileStateDebounceRef = useRef<number | null>(null);
   const refreshRuntimeStatusInflightRef = useRef(false);
   const fileBrowserEntriesRef = useRef<UserSpaceFileInfo[]>([]);
   const terminalSocketRef = useRef<WebSocket | null>(null);
@@ -533,6 +547,17 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const fileTree = useMemo(() => buildUserSpaceTree(fileBrowserEntries), [fileBrowserEntries]);
   const folderPaths = useMemo(() => listFolderPaths(fileBrowserEntries), [fileBrowserEntries]);
 
+  // Files that are changed but not yet acknowledged via per-file Save.
+  const changedFilePaths = useMemo(() => {
+    const paths = new Set<string>();
+    for (const path of changedFiles) {
+      if (!acknowledgedFiles.has(path)) {
+        paths.add(path);
+      }
+    }
+    return paths;
+  }, [changedFiles, acknowledgedFiles]);
+
   const activeWorkspaceRole = useMemo(() => {
     if (!activeWorkspace) return 'viewer';
     if (activeWorkspace.owner_user_id === currentUser.id) return 'owner';
@@ -738,6 +763,64 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, [previewEntryPath]);
 
+  const loadChangedFileState = useCallback(async (workspaceId: string) => {
+    if (changedFileStateInFlightRef.current) {
+      changedFileStatePendingWorkspaceIdRef.current = workspaceId;
+      return;
+    }
+
+    const elapsedMs = Date.now() - changedFileStateLastStartedAtRef.current;
+    if (elapsedMs < USERSPACE_CHANGED_FILE_STATE_MIN_INTERVAL_MS) {
+      changedFileStatePendingWorkspaceIdRef.current = workspaceId;
+      const waitMs = USERSPACE_CHANGED_FILE_STATE_MIN_INTERVAL_MS - elapsedMs;
+      if (changedFileStateGuardTimerRef.current !== null) {
+        window.clearTimeout(changedFileStateGuardTimerRef.current);
+      }
+      changedFileStateGuardTimerRef.current = window.setTimeout(() => {
+        changedFileStateGuardTimerRef.current = null;
+        const pendingWorkspaceId = changedFileStatePendingWorkspaceIdRef.current;
+        changedFileStatePendingWorkspaceIdRef.current = null;
+        if (pendingWorkspaceId) {
+          void loadChangedFileState(pendingWorkspaceId);
+        }
+      }, waitMs);
+      return;
+    }
+
+    changedFileStateInFlightRef.current = true;
+    changedFileStateLastStartedAtRef.current = Date.now();
+    const requestId = ++loadChangedFileStateRequestIdRef.current;
+
+    try {
+      const result = await api.getUserSpaceChangedFileState(workspaceId);
+      if (requestId !== loadChangedFileStateRequestIdRef.current) {
+        return;
+      }
+
+      setChangedFiles(new Set(result.changed_file_paths));
+      setAcknowledgedFiles(new Set(result.acknowledged_changed_file_paths));
+    } catch {
+      // changedFile-state bootstrap failure should not break core editor UX.
+    } finally {
+      changedFileStateInFlightRef.current = false;
+
+      const pendingWorkspaceId = changedFileStatePendingWorkspaceIdRef.current;
+      if (pendingWorkspaceId) {
+        changedFileStatePendingWorkspaceIdRef.current = null;
+        const sinceStartMs = Date.now() - changedFileStateLastStartedAtRef.current;
+        const waitMs = Math.max(0, USERSPACE_CHANGED_FILE_STATE_MIN_INTERVAL_MS - sinceStartMs);
+
+        if (changedFileStateGuardTimerRef.current !== null) {
+          window.clearTimeout(changedFileStateGuardTimerRef.current);
+        }
+        changedFileStateGuardTimerRef.current = window.setTimeout(() => {
+          changedFileStateGuardTimerRef.current = null;
+          void loadChangedFileState(pendingWorkspaceId);
+        }, waitMs);
+      }
+    }
+  }, []);
+
   const loadSnapshots = useCallback(async (workspaceId: string) => {
     try {
       const result = await api.listUserSpaceSnapshots(workspaceId);
@@ -757,6 +840,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       void loadWorkspaceData(workspaceId);
     }, 300);
   }, [loadWorkspaceData]);
+
+  const debouncedLoadChangedFileState = useCallback((workspaceId: string) => {
+    if (loadChangedFileStateDebounceRef.current !== null) {
+      window.clearTimeout(loadChangedFileStateDebounceRef.current);
+    }
+    loadChangedFileStateDebounceRef.current = window.setTimeout(() => {
+      loadChangedFileStateDebounceRef.current = null;
+      void loadChangedFileState(workspaceId);
+    }, 300);
+  }, [loadChangedFileState]);
 
   useEffect(() => {
     loadWorkspaces();
@@ -812,8 +905,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     setSnapshots([]);
     setSnapshotsLoadedForWorkspace(null);
     setShowSnapshots(false);
-    loadWorkspaceData(activeWorkspaceId);
-  }, [activeWorkspaceId, loadWorkspaceData]);
+    setChangedFiles(new Set());
+    setAcknowledgedFiles(new Set());
+    void Promise.all([
+      loadWorkspaceData(activeWorkspaceId),
+      loadChangedFileState(activeWorkspaceId),
+    ]);
+  }, [activeWorkspaceId, loadChangedFileState, loadWorkspaceData]);
 
   useEffect(() => {
     fileContentCacheRef.current = fileContentCache;
@@ -867,13 +965,37 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     source.onmessage = (event) => {
       consecutiveErrors = 0; // reset on successful message
       try {
-        const data = JSON.parse(event.data) as { generation: number; event_type?: string };
+        const data = JSON.parse(event.data) as { generation: number; event_type?: string; path?: string; old_path?: string; new_path?: string };
         if (data.generation > lastGeneration) {
           lastGeneration = data.generation;
           const eventType = data.event_type ?? 'update';
           if (eventType === 'runtime_phase') {
             void refreshRuntimeStatus();
             return;
+          }
+
+          // Mark files changed by agent tools (SSE events carry a path when originating from agent tools).
+          if (data.path && (eventType === 'file_upsert' || eventType === 'file_patch')) {
+            setChangedFiles((prev) => { const next = new Set(prev); next.add(data.path!); return next; });
+            setAcknowledgedFiles((prev) => { const next = new Set(prev); next.delete(data.path!); return next; });
+          }
+          if (data.path && eventType === 'file_delete') {
+            setChangedFiles((prev) => { const next = new Set(prev); next.delete(data.path!); return next; });
+            setAcknowledgedFiles((prev) => { const next = new Set(prev); next.delete(data.path!); return next; });
+          }
+          if (eventType === 'file_move' && data.old_path && data.new_path) {
+            setChangedFiles((prev) => {
+              if (!prev.has(data.old_path!)) return prev;
+              const next = new Set(prev); next.delete(data.old_path!); next.add(data.new_path!); return next;
+            });
+            setAcknowledgedFiles((prev) => {
+              if (!prev.has(data.old_path!)) return prev;
+              const next = new Set(prev); next.delete(data.old_path!); next.add(data.new_path!); return next;
+            });
+          }
+          if (eventType === 'snapshot') {
+            setChangedFiles(new Set());
+            setAcknowledgedFiles(new Set());
           }
 
           // Avoid remounting preview on high-frequency collab doc updates.
@@ -887,6 +1009,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           const shouldReloadWorkspace = eventType !== 'update' && eventType !== 'snapshot';
           if (shouldReloadWorkspace && !fileDirtyRef.current && !isCodeEditorFocused()) {
             debouncedLoadWorkspaceData(activeWorkspaceId);
+          }
+          if (shouldReloadWorkspace || eventType === 'snapshot' || eventType === 'update') {
+            debouncedLoadChangedFileState(activeWorkspaceId);
           }
         }
       } catch {
@@ -916,6 +1041,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         window.clearTimeout(loadWorkspaceDataDebounceRef.current);
         loadWorkspaceDataDebounceRef.current = null;
       }
+      if (loadChangedFileStateDebounceRef.current !== null) {
+        window.clearTimeout(loadChangedFileStateDebounceRef.current);
+        loadChangedFileStateDebounceRef.current = null;
+      }
+      if (changedFileStateGuardTimerRef.current !== null) {
+        window.clearTimeout(changedFileStateGuardTimerRef.current);
+        changedFileStateGuardTimerRef.current = null;
+      }
       if (workspaceEventsReconnectTimerRef.current !== null) {
         window.clearTimeout(workspaceEventsReconnectTimerRef.current);
         workspaceEventsReconnectTimerRef.current = null;
@@ -923,6 +1056,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     };
   }, [
     activeWorkspaceId,
+    debouncedLoadChangedFileState,
     debouncedLoadWorkspaceData,
     isCodeEditorFocused,
     refreshRuntimeStatus,
@@ -1177,32 +1311,54 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, [activeWorkspaceId, files]);
 
-  const handleSaveFile = useCallback(async () => {
+  const handleCreateSnapshot = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
-    setSavingFile(true);
+    setCreatingSnapshot(true);
     try {
-      await api.upsertUserSpaceFile(activeWorkspaceId, selectedFilePath, {
-        content: fileContent,
+      await api.createUserSpaceSnapshot(activeWorkspaceId, { message: 'Manual snapshot' });
+      // Reset all per-file changed/acknowledged markers after snapshot baseline resets.
+      setChangedFiles(new Set());
+      setAcknowledgedFiles(new Set());
+      setFileDirty(false);
+      // Refresh snapshots list if panel is open.
+      setSnapshotsLoadedForWorkspace(null);
+      await loadChangedFileState(activeWorkspaceId);
+      if (showSnapshots) {
+        await loadSnapshots(activeWorkspaceId);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create snapshot');
+    } finally {
+      setCreatingSnapshot(false);
+    }
+  }, [activeWorkspaceId, canEditWorkspace, loadChangedFileState, loadSnapshots, showSnapshots]);
+
+  const handleSaveTreeFile = useCallback(async (filePath: string) => {
+    if (!activeWorkspaceId || !canEditWorkspace) return;
+    setSavingTreeFile(filePath);
+    try {
+      // Determine content: if the file is currently selected, use editor state;
+      // otherwise fall back to the file content cache.
+      const content = filePath === selectedFilePath
+        ? fileContent
+        : (fileContentCacheRef.current[filePath]?.content ?? '');
+      await api.upsertUserSpaceFile(activeWorkspaceId, filePath, {
+        content,
         artifact_type: 'module_ts',
       });
-
-      const fileMeta = files.find((file) => file.path === selectedFilePath);
-      setFileContentCache((current) => ({
-        ...current,
-        [selectedFilePath]: {
-          content: fileContent,
-          updatedAt: fileMeta?.updated_at ?? current[selectedFilePath]?.updatedAt ?? '',
-        },
-      }));
-
-      setFileDirty(false);
-      await loadWorkspaceData(activeWorkspaceId);
+      const changedFileState = await api.acknowledgeUserSpaceChangedFilePath(activeWorkspaceId, { path: filePath });
+      setChangedFiles(new Set(changedFileState.changed_file_paths));
+      setAcknowledgedFiles(new Set(changedFileState.acknowledged_changed_file_paths));
+      // If saving the currently selected file, clear its editor dirty flag too.
+      if (filePath === selectedFilePath) {
+        setFileDirty(false);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save file');
     } finally {
-      setSavingFile(false);
+      setSavingTreeFile(null);
     }
-  }, [activeWorkspaceId, canEditWorkspace, fileContent, files, loadWorkspaceData, selectedFilePath]);
+  }, [activeWorkspaceId, canEditWorkspace, fileContent, selectedFilePath]);
 
   const handleToggleWorkspaceTool = useCallback(async (toolId: string) => {
     if (!activeWorkspace || !canEditWorkspace) return;
@@ -1310,15 +1466,19 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     if (!activeWorkspaceId || !canEditWorkspace) return;
     try {
       await api.restoreUserSpaceSnapshot(activeWorkspaceId, snapshotId);
+      setChangedFiles(new Set());
+      setAcknowledgedFiles(new Set());
+      setFileDirty(false);
       setSnapshotsLoadedForWorkspace(null);
       await Promise.all([
         loadWorkspaceData(activeWorkspaceId),
+        loadChangedFileState(activeWorkspaceId),
         loadSnapshots(activeWorkspaceId),
       ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to restore snapshot');
     }
-  }, [activeWorkspaceId, canEditWorkspace, loadSnapshots, loadWorkspaceData]);
+  }, [activeWorkspaceId, canEditWorkspace, loadChangedFileState, loadSnapshots, loadWorkspaceData]);
 
   const handleStartRuntime = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
@@ -1786,6 +1946,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         delete next[oldPath];
         return next;
       });
+      // Transfer changed/acknowledged markers from old path to new path.
+      setChangedFiles((prev) => {
+        if (!prev.has(oldPath)) return prev;
+        const next = new Set(prev);
+        next.delete(oldPath);
+        next.add(normalizedNewPath);
+        return next;
+      });
+      setAcknowledgedFiles((prev) => {
+        if (!prev.has(oldPath)) return prev;
+        const next = new Set(prev);
+        next.delete(oldPath);
+        next.add(normalizedNewPath);
+        return next;
+      });
       if (selectedFilePath === oldPath) {
         setSelectedFilePath(normalizedNewPath);
       }
@@ -1872,6 +2047,22 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       setSelectedFilePath(`${newPrefix}/${selectedFilePath.slice(oldPrefix.length + 1)}`);
     }
 
+    // Transfer changed/acknowledged markers from old paths to new paths.
+    setChangedFiles((prev) => {
+      const next = new Set(prev);
+      for (const move of moves) {
+        if (next.has(move.oldPath)) { next.delete(move.oldPath); next.add(move.newPath); }
+      }
+      return next;
+    });
+    setAcknowledgedFiles((prev) => {
+      const next = new Set(prev);
+      for (const move of moves) {
+        if (next.has(move.oldPath)) { next.delete(move.oldPath); next.add(move.newPath); }
+      }
+      return next;
+    });
+
     await loadWorkspaceData(activeWorkspaceId);
 
     if (deleteFailures > 0) {
@@ -1889,6 +2080,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         return next;
       });
       setDeleteConfirmFileId(null);
+      setChangedFiles((prev) => { const next = new Set(prev); next.delete(filePath); return next; });
+      setAcknowledgedFiles((prev) => { const next = new Set(prev); next.delete(filePath); return next; });
       if (selectedFilePath === filePath) {
         setSelectedFilePath('');
         setFileContent('');
@@ -1917,6 +2110,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     const failures = results.filter((result) => result.status === 'rejected').length;
 
     setDeleteConfirmFolderPath(null);
+    // Clean up changed/acknowledged markers for all deleted descendants.
+    const deletedPaths = new Set(descendants.map((file) => file.path));
+    setChangedFiles((prev) => { const next = new Set(prev); for (const p of deletedPaths) next.delete(p); return next; });
+    setAcknowledgedFiles((prev) => { const next = new Set(prev); for (const p of deletedPaths) next.delete(p); return next; });
     if (selectedFilePath.startsWith(`${normalizedFolderPath}/`)) {
       setSelectedFilePath('');
       setFileContent('');
@@ -2434,6 +2631,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
             </div>
           );
         } else {
+          const hasChangedFileDescendant = !isExpanded && collectFilePaths(node).some((p) => changedFilePaths.has(p));
           rows.push(
             <div key={node.path} className="userspace-file-item userspace-tree-row userspace-tree-folder-row">
               <button className="userspace-item-content userspace-tree-content" onClick={() => handleToggleFolder(node.path)} style={indentStyle}>
@@ -2441,6 +2639,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                   {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                 </span>
                 <span className="userspace-folder-label">{node.name}</span>
+                {hasChangedFileDescendant && <span className="userspace-tree-folder-changed-file-dot" title="Contains changed files" />}
               </button>
               {canEditWorkspace && (
                 <div className="userspace-item-actions">
@@ -2508,6 +2707,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         ];
       }
 
+      const isFileChanged = changedFilePaths.has(node.path);
+
       return [
         <div
           key={node.path}
@@ -2515,6 +2716,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         >
           <button className="userspace-item-content userspace-tree-content" onClick={() => handleSelectFile(node.path)} style={indentStyle}>
             <span className="userspace-tree-file-label">{node.name}</span>
+            {isFileChanged && <span className="userspace-tree-file-changed-dot" title="Changed since last snapshot" />}
           </button>
           {canEditWorkspace && (
             <div className="userspace-item-actions">
@@ -2529,6 +2731,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 </>
               ) : (
                 <>
+                  {isFileChanged && (
+                    <button
+                      className="userspace-tree-save-btn"
+                      onClick={(e) => { e.stopPropagation(); handleSaveTreeFile(node.path); }}
+                      disabled={savingTreeFile === node.path}
+                      title={savingTreeFile === node.path ? 'Saving...' : 'Save file'}
+                    >
+                      <Save size={12} className={savingTreeFile === node.path ? 'spinning' : undefined} />
+                    </button>
+                  )}
                   <button className="chat-action-btn" onClick={() => { setRenamingFilePath(node.path); setRenameValue(node.path); }} title="Rename">
                     <Pencil size={12} />
                   </button>
@@ -2542,7 +2754,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         </div>,
       ];
     });
-  }, [canEditWorkspace, deleteConfirmFileId, deleteConfirmFolderPath, expandedFolders, handleDeleteFile, handleDeleteFolder, handleRenameFile, handleRenameFolder, handleSelectFile, handleStartCreateFile, handleToggleFolder, renameValue, renamingFilePath, renamingFolderPath, selectedFilePath]);
+  }, [canEditWorkspace, changedFilePaths, deleteConfirmFileId, deleteConfirmFolderPath, expandedFolders, handleDeleteFile, handleDeleteFolder, handleRenameFile, handleRenameFolder, handleSaveTreeFile, handleSelectFile, handleStartCreateFile, handleToggleFolder, renameValue, renamingFilePath, renamingFolderPath, savingTreeFile, selectedFilePath]);
 
   const sqliteLiveDataOnlyMode = activeWorkspace?.sqlite_persistence_mode === 'exclude';
   const sqlitePersistenceModeTitle = sqliteLiveDataOnlyMode
@@ -2900,12 +3112,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
               {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
             </button>
             <button
-              className="btn btn-primary btn-sm btn-icon userspace-toolbar-action-btn userspace-save-btn"
-              onClick={handleSaveFile}
-              disabled={!activeWorkspaceId || !canEditWorkspace || savingFile || !fileDirty}
-              title={savingFile ? 'Saving file...' : 'Save file'}
+              className="btn btn-primary btn-sm btn-icon userspace-toolbar-action-btn userspace-snapshot-btn"
+              onClick={handleCreateSnapshot}
+              disabled={!activeWorkspaceId || !canEditWorkspace || creatingSnapshot}
+              title={creatingSnapshot ? 'Creating snapshot...' : 'Take snapshot'}
             >
-              <Save size={14} className={savingFile ? 'spinning' : undefined} />
+              <Save size={14} className={creatingSnapshot ? 'spinning' : undefined} />
             </button>
           </div>
         </div>
@@ -3029,6 +3241,25 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 onChange={(value) => {
                   setFileContent(value);
                   setFileDirty(true);
+                  setChangedFiles((prev) => {
+                    if (!selectedFilePath) return prev;
+                    if (prev.has(selectedFilePath)) return prev;
+                    const next = new Set(prev);
+                    next.add(selectedFilePath);
+                    return next;
+                  });
+                  setAcknowledgedFiles((prev) => {
+                    if (!selectedFilePath || !prev.has(selectedFilePath)) return prev;
+                    const next = new Set(prev);
+                    next.delete(selectedFilePath);
+                    return next;
+                  });
+
+                  // Re-check git-backed changed-file state after local edits settle
+                  // so undo/revert transitions are reflected in the tree markers.
+                  if (activeWorkspaceId) {
+                    debouncedLoadChangedFileState(activeWorkspaceId);
+                  }
                 }}
                 extensions={codeMirrorExtensions}
                 editable={canEditWorkspace}

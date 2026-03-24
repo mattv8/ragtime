@@ -98,6 +98,17 @@ class UserSpaceFileInfo(BaseModel):
     entry_type: Literal["file", "directory"] = "file"
 
 
+class UserSpaceAcknowledgeChangedFilePathRequest(BaseModel):
+    path: str = Field(min_length=1, description="Workspace-relative file path")
+
+
+class UserSpaceChangedFileStateResponse(BaseModel):
+    workspace_id: str
+    generation: int
+    changed_file_paths: list[str] = Field(default_factory=list)
+    acknowledged_changed_file_paths: list[str] = Field(default_factory=list)
+
+
 class UpsertWorkspaceFileRequest(BaseModel):
     content: str = Field(default="", description="UTF-8 text content")
     artifact_type: ArtifactType | None = None

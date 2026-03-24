@@ -722,6 +722,7 @@ model User {
   providerPromptDebugRecords ProviderPromptDebugRecord[]
   runtimeLeases UserSpaceRuntimeSession[] @relation("RuntimeLeaseUser")
   runtimeAuditEvents UserSpaceRuntimeAuditEvent[] @relation("RuntimeAuditUser")
+  userspaceChangedFileAcknowledgements UserSpaceChangedFileAcknowledgement[]
 
   @@map("users")
 }
@@ -865,12 +866,33 @@ model Workspace {
   runtimeSessions UserSpaceRuntimeSession[]
   runtimeAuditEvents UserSpaceRuntimeAuditEvent[]
   collabDocs UserSpaceCollabDoc[]
+  changedFileAcknowledgements UserSpaceChangedFileAcknowledgement[]
 
   @@index([ownerUserId])
   @@unique([ownerUserId, nameNormalized])
   @@unique([ownerUserId, shareSlug])
   @@index([updatedAt])
   @@map("workspaces")
+}
+
+/// Per-user acknowledgement of a changedFile userspace file path.
+/// changedFile truth comes from git status; acknowledgements suppress UI dots for a user.
+model UserSpaceChangedFileAcknowledgement {
+  id          String   @id @default(uuid())
+  workspaceId String   @map("workspace_id")
+  userId      String   @map("user_id")
+  path        String
+
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId, path])
+  @@index([workspaceId, userId])
+  @@index([workspaceId])
+  @@map("userspace_changed_file_acknowledgements")
 }
 
 /// Workspace member ACL entries

@@ -132,3 +132,13 @@ export function buildUserSpaceTree(files: UserSpaceFileInfo[]): UserSpaceTreeNod
 
   return tree;
 }
+
+/** Collect all file paths reachable under a tree node (recursive). */
+export function collectFilePaths(node: UserSpaceTreeNode): string[] {
+  if (node.type === 'file') return [node.path];
+  const paths: string[] = [];
+  for (const child of node.children) {
+    paths.push(...collectFilePaths(child));
+  }
+  return paths;
+}

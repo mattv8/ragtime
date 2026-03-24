@@ -18,7 +18,9 @@ from ragtime.userspace.models import (
     UpdateWorkspaceShareAccessRequest,
     UpdateWorkspaceShareSlugRequest,
     UpsertWorkspaceFileRequest,
+    UserSpaceAcknowledgeChangedFilePathRequest,
     UserSpaceAvailableTool,
+    UserSpaceChangedFileStateResponse,
     UserSpaceFileInfo,
     UserSpaceFileResponse,
     UserSpaceSharedPreviewResponse,
@@ -212,6 +214,118 @@ async def delete_workspace_file(
         workspace_id, "file_delete"
     )
     return {"success": True}
+
+
+@router.get(
+    "/workspaces/{workspace_id}/changed-file-state",
+    response_model=UserSpaceChangedFileStateResponse,
+)
+async def get_workspace_changed_file_state(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    changed_file_paths = await userspace_service.list_workspace_changed_file_paths(
+        workspace_id,
+        user.id,
+    )
+    acknowledged_changed_file_paths = (
+        await userspace_service.list_workspace_changed_file_acknowledgements(
+            workspace_id,
+            user.id,
+        )
+    )
+    generation = await userspace_runtime_service.get_workspace_generation(workspace_id)
+    return UserSpaceChangedFileStateResponse(
+        workspace_id=workspace_id,
+        generation=generation,
+        changed_file_paths=changed_file_paths,
+        acknowledged_changed_file_paths=acknowledged_changed_file_paths,
+    )
+
+
+@router.post(
+    "/workspaces/{workspace_id}/changed-file-acknowledgements",
+    response_model=UserSpaceChangedFileStateResponse,
+)
+async def acknowledge_workspace_changed_file_path(
+    workspace_id: str,
+    request: UserSpaceAcknowledgeChangedFilePathRequest,
+    user: Any = Depends(get_current_user),
+):
+    acknowledged_changed_file_paths = (
+        await userspace_service.acknowledge_workspace_changed_file_path(
+            workspace_id,
+            user.id,
+            request.path,
+        )
+    )
+    changed_file_paths = await userspace_service.list_workspace_changed_file_paths(
+        workspace_id,
+        user.id,
+    )
+    generation = await userspace_runtime_service.get_workspace_generation(workspace_id)
+    return UserSpaceChangedFileStateResponse(
+        workspace_id=workspace_id,
+        generation=generation,
+        changed_file_paths=changed_file_paths,
+        acknowledged_changed_file_paths=acknowledged_changed_file_paths,
+    )
+
+
+@router.delete(
+    "/workspaces/{workspace_id}/changed-file-acknowledgements",
+    response_model=UserSpaceChangedFileStateResponse,
+)
+async def clear_workspace_changed_file_acknowledgements(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    acknowledged_changed_file_paths = (
+        await userspace_service.clear_workspace_changed_file_acknowledgements(
+            workspace_id,
+            user.id,
+        )
+    )
+    changed_file_paths = await userspace_service.list_workspace_changed_file_paths(
+        workspace_id,
+        user.id,
+    )
+    generation = await userspace_runtime_service.get_workspace_generation(workspace_id)
+    return UserSpaceChangedFileStateResponse(
+        workspace_id=workspace_id,
+        generation=generation,
+        changed_file_paths=changed_file_paths,
+        acknowledged_changed_file_paths=acknowledged_changed_file_paths,
+    )
+
+
+@router.delete(
+    "/workspaces/{workspace_id}/changed-file-acknowledgements/{file_path:path}",
+    response_model=UserSpaceChangedFileStateResponse,
+)
+async def clear_workspace_changed_file_acknowledgement(
+    workspace_id: str,
+    file_path: str,
+    user: Any = Depends(get_current_user),
+):
+    acknowledged_changed_file_paths = (
+        await userspace_service.clear_workspace_changed_file_acknowledgements(
+            workspace_id,
+            user.id,
+            relative_path=file_path,
+        )
+    )
+    changed_file_paths = await userspace_service.list_workspace_changed_file_paths(
+        workspace_id,
+        user.id,
+    )
+    generation = await userspace_runtime_service.get_workspace_generation(workspace_id)
+    return UserSpaceChangedFileStateResponse(
+        workspace_id=workspace_id,
+        generation=generation,
+        changed_file_paths=changed_file_paths,
+        acknowledged_changed_file_paths=acknowledged_changed_file_paths,
+    )
 
 
 @router.post(

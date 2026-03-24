@@ -1653,6 +1653,17 @@ export interface UserSpaceFileInfo {
   entry_type?: 'file' | 'directory';
 }
 
+export interface UserSpaceAcknowledgeChangedFilePathRequest {
+  path: string;
+}
+
+export interface UserSpaceChangedFileState {
+  workspace_id: string;
+  generation: number;
+  changed_file_paths: string[];
+  acknowledged_changed_file_paths: string[];
+}
+
 export interface UserSpaceLiveDataConnection {
   component_kind: 'tool_config';
   component_id: string;

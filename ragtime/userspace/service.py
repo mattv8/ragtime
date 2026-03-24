@@ -55,6 +55,7 @@ logger = get_logger(__name__)
 
 _FILE_LIST_CACHE_TTL_SECONDS = 2
 _ENTRYPOINT_STATUS_CACHE_TTL_SECONDS = 300  # 5-minute TTL for entrypoint status
+_CHANGED_FILE_ACK_MAX_ROWS_PER_WORKSPACE_USER = 2000 # Threshold to bound growth of UserSpaceChangedFileAcknowledgement table
 
 
 class _ExecutionProofRecord:
@@ -480,6 +481,8 @@ class UserSpaceService:
         self._file_list_cache: dict[
             str, tuple[list[UserSpaceFileInfo], bool, float]
         ] = {}
+        # Limit concurrent git status requests to avoid overloading process slots.
+        self._git_status_semaphore = asyncio.Semaphore(8)
 
     def record_execution_proof(
         self,
@@ -809,6 +812,52 @@ class UserSpaceService:
         self, workspace_id: str, relative_path: str
     ) -> Path:
         return self._resolve_workspace_file_path(workspace_id, relative_path)
+
+    @staticmethod
+    def _normalize_workspace_relative_path(relative_path: str) -> str:
+        normalized = (relative_path or "").strip().replace("\\", "/")
+        while normalized.startswith("./"):
+            normalized = normalized[2:]
+        return normalized.lstrip("/")
+
+    def _parse_git_status_changed_file_paths(self, git_status_output: str) -> list[str]:
+        if not git_status_output:
+            return []
+
+        tokens = git_status_output.split("\x00")
+        changed_file_paths: set[str] = set()
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            if not token:
+                i += 1
+                continue
+
+            if len(token) < 3:
+                i += 1
+                continue
+
+            status = token[:2]
+            path = token[3:]
+            candidate_path = path
+
+            # In porcelain -z mode, renames/copies encode old path in the first token
+            # and new path in the following token.
+            if status and status[0] in {"R", "C"} and (i + 1) < len(tokens):
+                next_token = tokens[i + 1]
+                if next_token:
+                    candidate_path = next_token
+                i += 1
+
+            normalized = self._normalize_workspace_relative_path(candidate_path)
+            if not normalized or self._is_reserved_internal_path(normalized):
+                i += 1
+                continue
+
+            changed_file_paths.add(normalized)
+            i += 1
+
+        return sorted(changed_file_paths)
 
     def _is_reserved_internal_path(self, relative_path: str) -> bool:
         normalized = relative_path.strip("/")
@@ -2097,6 +2146,191 @@ class UserSpaceService:
     def invalidate_file_list_cache(self, workspace_id: str) -> None:
         self._file_list_cache.pop(workspace_id, None)
 
+    async def list_workspace_changed_file_paths(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> list[str]:
+        await self._enforce_workspace_access(workspace_id, user_id)
+        await self._ensure_workspace_git_repo(workspace_id)
+
+        async with self._git_status_semaphore:
+            status_result = await self._run_git(
+                workspace_id,
+                ["status", "--porcelain=1", "-z", "--untracked-files=all"],
+                check=False,
+            )
+        if status_result.returncode != 0:
+            stderr = (status_result.stderr or "").strip()
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to compute workspace changedFile paths: {stderr or 'git status failed'}",
+            )
+
+        return self._parse_git_status_changed_file_paths(status_result.stdout)
+
+    async def list_workspace_changed_file_acknowledgements(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> list[str]:
+        await self._enforce_workspace_access(workspace_id, user_id)
+        db = await get_db()
+        rows = await db.userspacechangedfileacknowledgement.find_many(
+            where={
+                "workspaceId": workspace_id,
+                "userId": user_id,
+            }
+        )
+
+        paths = {
+            self._normalize_workspace_relative_path(str(getattr(row, "path", "") or ""))
+            for row in rows
+        }
+        return sorted(path for path in paths if path)
+
+    async def _garbage_collect_workspace_changed_file_acknowledgements(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> None:
+        db = await get_db()
+        total_rows = await db.userspacechangedfileacknowledgement.count(
+            where={
+                "workspaceId": workspace_id,
+                "userId": user_id,
+            }
+        )
+        if total_rows <= _CHANGED_FILE_ACK_MAX_ROWS_PER_WORKSPACE_USER:
+            return
+
+        trim_to_rows = int(_CHANGED_FILE_ACK_MAX_ROWS_PER_WORKSPACE_USER * 0.75)
+        stale_rows_count = (
+            total_rows - trim_to_rows
+        )
+        if stale_rows_count <= 0:
+            return
+
+        stale_rows = await db.userspacechangedfileacknowledgement.find_many(
+            where={
+                "workspaceId": workspace_id,
+                "userId": user_id,
+            },
+            order={"updatedAt": "desc"},
+            skip=trim_to_rows,
+            take=stale_rows_count,
+        )
+        stale_ids = [
+            str(getattr(row, "id", "") or "")
+            for row in stale_rows
+            if getattr(row, "id", None)
+        ]
+        if not stale_ids:
+            return
+
+        await db.userspacechangedfileacknowledgement.delete_many(
+            where={"id": {"in": stale_ids}}
+        )
+
+    async def acknowledge_workspace_changed_file_path(
+        self,
+        workspace_id: str,
+        user_id: str,
+        relative_path: str,
+    ) -> list[str]:
+        await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="editor",
+        )
+
+        normalized = self._normalize_workspace_relative_path(relative_path)
+        if not normalized or self._is_reserved_internal_path(normalized):
+            raise HTTPException(status_code=400, detail="Invalid file path")
+
+        db = await get_db()
+        await db.userspacechangedfileacknowledgement.delete_many(
+            where={
+                "workspaceId": workspace_id,
+                "userId": user_id,
+                "path": normalized,
+            }
+        )
+        await db.userspacechangedfileacknowledgement.create(
+            data={
+                "workspaceId": workspace_id,
+                "userId": user_id,
+                "path": normalized,
+            }
+        )
+        # Keep newest acknowledgement rows and trim older ones in-band on writes.
+        await self._garbage_collect_workspace_changed_file_acknowledgements(
+            workspace_id,
+            user_id,
+        )
+        return await self.list_workspace_changed_file_acknowledgements(
+            workspace_id, user_id
+        )
+
+    async def clear_workspace_changed_file_acknowledgements(
+        self,
+        workspace_id: str,
+        user_id: str,
+        relative_path: str | None = None,
+    ) -> list[str]:
+        await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="editor",
+        )
+
+        where: dict[str, Any] = {
+            "workspaceId": workspace_id,
+            "userId": user_id,
+        }
+        if relative_path is not None:
+            normalized = self._normalize_workspace_relative_path(relative_path)
+            if not normalized:
+                raise HTTPException(status_code=400, detail="Invalid file path")
+            where["path"] = normalized
+
+        db = await get_db()
+        await db.userspacechangedfileacknowledgement.delete_many(where=where)
+        return await self.list_workspace_changed_file_acknowledgements(
+            workspace_id, user_id
+        )
+
+    async def clear_workspace_changed_file_acknowledgements_for_all_users(
+        self,
+        workspace_id: str,
+    ) -> None:
+        db = await get_db()
+        await db.userspacechangedfileacknowledgement.delete_many(
+            where={"workspaceId": workspace_id}
+        )
+
+    async def clear_workspace_changed_file_acknowledgements_for_paths_for_all_users(
+        self,
+        workspace_id: str,
+        relative_paths: list[str],
+    ) -> None:
+        normalized_paths_set: set[str] = set()
+        for path in relative_paths:
+            normalized = self._normalize_workspace_relative_path(path)
+            if normalized:
+                normalized_paths_set.add(normalized)
+        normalized_paths = sorted(normalized_paths_set)
+        if not normalized_paths:
+            return
+
+        db = await get_db()
+        await db.userspacechangedfileacknowledgement.delete_many(
+            where={
+                "workspaceId": workspace_id,
+                "path": {"in": normalized_paths},
+            }
+        )
+
     async def list_workspace_files(
         self, workspace_id: str, user_id: str, include_dirs: bool = False
     ) -> list[UserSpaceFileInfo]:
@@ -2288,6 +2522,10 @@ class UserSpaceService:
             request.live_data_connections,
             request.live_data_checks,
         )
+        await self.clear_workspace_changed_file_acknowledgements_for_paths_for_all_users(
+            workspace_id,
+            [relative_path],
+        )
         await self._touch_workspace(workspace_id)
 
         # Invalidate entrypoint status cache when the entrypoint config is written
@@ -2359,6 +2597,11 @@ class UserSpaceService:
         file_path = self._resolve_workspace_file_path(workspace_id, relative_path)
         await asyncio.to_thread(self._delete_workspace_file_sync, file_path)
 
+        await self.clear_workspace_changed_file_acknowledgements_for_paths_for_all_users(
+            workspace_id,
+            [relative_path],
+        )
+
         await self._touch_workspace(workspace_id)
 
         # Invalidate entrypoint status cache when the entrypoint config is deleted
@@ -2412,6 +2655,11 @@ class UserSpaceService:
                 status_code=409, detail="Target file already exists"
             ) from exc
 
+        await self.clear_workspace_changed_file_acknowledgements_for_paths_for_all_users(
+            workspace_id,
+            [normalized_old, normalized_new],
+        )
+
         await self._touch_workspace(workspace_id)
         return {"old_path": normalized_old, "new_path": normalized_new}
 
@@ -2462,6 +2710,9 @@ class UserSpaceService:
             if not self._is_reserved_internal_path(file_name)
         )
 
+        await self.clear_workspace_changed_file_acknowledgements_for_all_users(
+            workspace_id
+        )
         await self._touch_workspace(workspace_id, ts=created_at)
 
         return UserSpaceSnapshot(
@@ -2558,6 +2809,9 @@ class UserSpaceService:
             file_count=file_count,
         )
 
+        await self.clear_workspace_changed_file_acknowledgements_for_all_users(
+            workspace_id
+        )
         await self._touch_workspace(workspace_id)
 
         return snapshot
