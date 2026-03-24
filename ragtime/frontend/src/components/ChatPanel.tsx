@@ -3,7 +3,7 @@ import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock } from 'lucide-react';
 import { api } from '@/api';
-import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ToolCallRecord } from '@/types';
+import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ToolCallRecord, ProviderModelState } from '@/types';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
@@ -156,6 +156,45 @@ interface ChartConfig {
 
 // Global URL regex for efficient linkification
 const URL_PATTERN = /(https?:\/\/[^\s<]+[^<.,:;"')\]\s])/g;
+
+const KNOWN_PROVIDER_KEYS = new Set(['openai', 'anthropic', 'ollama', 'github_copilot', 'github_models']);
+
+function normalizeProviderAlias(provider?: string | null): string {
+  const value = (provider || '').trim().toLowerCase();
+  return value === 'github_models' ? 'github_copilot' : value;
+}
+
+function providersEquivalent(selected?: string | null, actual?: string | null): boolean {
+  const selectedNorm = normalizeProviderAlias(selected);
+  const actualNorm = normalizeProviderAlias(actual);
+  if (!selectedNorm || !actualNorm) {
+    return false;
+  }
+  return selectedNorm === actualNorm;
+}
+
+function inferProviderFromModelId(modelId: string): string | null {
+  const raw = (modelId || '').trim();
+  const slashIndex = raw.indexOf('/');
+  if (slashIndex <= 0) {
+    return null;
+  }
+  const maybeProvider = normalizeProviderAlias(raw.slice(0, slashIndex));
+  return KNOWN_PROVIDER_KEYS.has(maybeProvider) ? maybeProvider : null;
+}
+
+function findProviderState(
+  providerStates: ProviderModelState[] | undefined,
+  provider: string | null,
+): ProviderModelState | null {
+  const target = normalizeProviderAlias(provider);
+  if (!target || !providerStates?.length) {
+    return null;
+  }
+  return (
+    providerStates.find((state) => providersEquivalent(state.provider, target)) || null
+  );
+}
 
 // Helper component to parse URLs and render them as clickable links
 const LinkifiedText = memo(function LinkifiedText({ text }: { text: string }) {
@@ -1469,7 +1508,13 @@ export function ChatPanel({
   const [_isPollingTask, setIsPollingTask] = useState(false);
   const lastSeenVersionRef = useRef<number>(0);  // Track last seen version for delta polling
   // Available models from shared context
-  const { models: availableModels, loading: modelsLoading, refresh: refreshModels } = useAvailableModels();
+  const {
+    models: availableModels,
+    loading: modelsLoading,
+    error: modelsError,
+    readiness: modelsReadiness,
+    refresh: refreshModels,
+  } = useAvailableModels();
   const [isWorkspaceConversationMenuOpen, setIsWorkspaceConversationMenuOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [conversationMembers, setConversationMembers] = useState<ConversationMember[]>([]);
@@ -2515,6 +2560,80 @@ export function ChatPanel({
     return defaultContextLimit;
   }, [availableModels, defaultContextLimit]);
 
+  const sendReadinessBlockReason = useMemo(() => {
+    if (!activeConversation) {
+      return null;
+    }
+
+    const parsed = parseStoredModelIdentifier(activeConversation.model || '');
+    const modelId = parsed.modelId.trim();
+    const explicitProvider = normalizeProviderAlias(parsed.provider);
+
+    let matchedModel = undefined;
+    if (modelId) {
+      if (explicitProvider) {
+        matchedModel = availableModels.find(
+          (model) => providersEquivalent(model.provider, explicitProvider) && model.id === modelId,
+        );
+      }
+      if (!matchedModel) {
+        matchedModel = availableModels.find((model) => model.id === modelId);
+      }
+      if (!matchedModel && modelId.includes('/')) {
+        const slashIndex = modelId.indexOf('/');
+        const inferredProvider = normalizeProviderAlias(modelId.slice(0, slashIndex));
+        const providerModelId = modelId.slice(slashIndex + 1);
+        matchedModel = availableModels.find((model) =>
+          model.id === providerModelId
+          && providersEquivalent(model.provider, explicitProvider || inferredProvider),
+        );
+      }
+    }
+
+    const inferredProvider = inferProviderFromModelId(modelId);
+    const resolvedProvider = normalizeProviderAlias(
+      matchedModel?.provider || explicitProvider || inferredProvider,
+    ) || null;
+    const providerState = findProviderState(modelsReadiness?.provider_states, resolvedProvider);
+
+    const hasKnownActiveModel = Boolean(matchedModel);
+    const hasProviderFailure = Boolean(
+      providerState
+      && providerState.configured
+      && !providerState.loading
+      && (!providerState.connected || !providerState.available),
+    );
+    if (hasProviderFailure) {
+      return providerState?.error || 'Selected model provider is disconnected.';
+    }
+
+    if (providerState && !providerState.configured && resolvedProvider) {
+      return 'Selected model provider is not configured.';
+    }
+
+    if (modelsLoading && !hasKnownActiveModel) {
+      return 'Loading available models...';
+    }
+
+    if (
+      resolvedProvider === 'github_copilot'
+      && modelsReadiness?.copilot_refresh_in_progress
+      && !hasKnownActiveModel
+    ) {
+      return 'Refreshing GitHub Copilot credentials...';
+    }
+
+    if (!hasKnownActiveModel && modelsError) {
+      return 'Failed to load available models. Please refresh and try again.';
+    }
+
+    if (!hasKnownActiveModel && !modelsLoading && resolvedProvider) {
+      return 'Selected model is not available from the configured provider.';
+    }
+
+    return null;
+  }, [activeConversation, availableModels, modelsError, modelsLoading, modelsReadiness]);
+
   const createNewConversation = async () => {
     if (readOnly) return;
     try {
@@ -3033,6 +3152,10 @@ export function ChatPanel({
   // Direct message send - bypasses inputValue state for programmatic sending
   const sendMessageDirect = async (message: string) => {
     if (!message.trim() || !activeConversation || isStreaming || readOnly) return;
+    if (sendReadinessBlockReason) {
+      setError(sendReadinessBlockReason);
+      return;
+    }
     shouldAutoScrollRef.current = true;
 
     const userMessage = message.trim();
@@ -3092,6 +3215,10 @@ export function ChatPanel({
 
   const sendMessage = async () => {
     if ((!inputValue.trim() && attachments.length === 0) || !activeConversation || isStreaming || readOnly) return;
+    if (sendReadinessBlockReason) {
+      setError(sendReadinessBlockReason);
+      return;
+    }
 
     const userMessage = inputValue.trim();
     const messageAttachments = [...attachments];
@@ -4043,8 +4170,12 @@ export function ChatPanel({
                           type="button"
                           className="btn chat-send-btn-inline"
                           onClick={sendMessage}
-                          disabled={!activeConversation || !contextUsage.hasHeadroom}
-                          title={contextUsage.hasHeadroom ? 'Send message' : `Context headroom too low (${contextUsage.projectedInputPercent}%)`}
+                          disabled={!activeConversation || Boolean(sendReadinessBlockReason) || !contextUsage.hasHeadroom}
+                          title={sendReadinessBlockReason
+                            ? sendReadinessBlockReason
+                            : contextUsage.hasHeadroom
+                              ? 'Send message'
+                              : `Context headroom too low (${contextUsage.projectedInputPercent}%)`}
                         >
                           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <line x1="12" y1="19" x2="12" y2="5"></line>

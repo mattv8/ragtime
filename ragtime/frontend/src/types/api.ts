@@ -1935,6 +1935,15 @@ export interface AvailableModel {
   is_latest?: boolean; // Whether this model is considered the latest in its group
 }
 
+export interface ProviderModelState {
+  provider: LlmProviderWire;
+  configured: boolean;
+  connected: boolean;
+  loading: boolean;
+  available: boolean;
+  error?: string | null;
+}
+
 // Response with all available models
 export interface AvailableModelsResponse {
   models: AvailableModel[];
@@ -1943,6 +1952,9 @@ export interface AvailableModelsResponse {
   current_model: string | null;
   allowed_models: string[];  // List of allowed model IDs (for settings UI)
   allowed_openapi_models: string[];  // Separately curated OpenAPI model list
+  models_loading?: boolean;
+  copilot_refresh_in_progress?: boolean;
+  provider_states?: ProviderModelState[];
 }
 
 // =============================================================================

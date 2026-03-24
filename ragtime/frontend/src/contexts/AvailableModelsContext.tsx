@@ -9,6 +9,10 @@ interface AvailableModelsContextValue {
   models: AvailableModel[];
   /** Whether a fetch is currently in flight. */
   loading: boolean;
+  /** Last fetch error message, when model discovery fails. */
+  error: string | null;
+  /** Readiness details for provider/model availability checks. */
+  readiness: Pick<AvailableModelsResponse, 'models_loading' | 'copilot_refresh_in_progress' | 'provider_states'> | null;
   /** Metadata returned alongside models (default/current model, allowed list). */
   meta: Pick<AvailableModelsResponse, 'default_model' | 'current_model' | 'allowed_models'> | null;
   /** Trigger a (re)fetch. Safe to call multiple times; concurrent calls are coalesced. */
@@ -20,6 +24,8 @@ const AvailableModelsContext = createContext<AvailableModelsContextValue | null>
 export function AvailableModelsProvider({ children }: { children: ReactNode }) {
   const [models, setModels] = useState<AvailableModel[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [readiness, setReadiness] = useState<AvailableModelsContextValue['readiness']>(null);
   const [meta, setMeta] = useState<AvailableModelsContextValue['meta']>(null);
 
   // AbortController for the in-flight request so we can cancel on unmount or re-fetch.
@@ -55,6 +61,12 @@ export function AvailableModelsProvider({ children }: { children: ReactNode }) {
       }
       const data: AvailableModelsResponse = await response.json();
       setModels(data.models);
+      setError(null);
+      setReadiness({
+        models_loading: data.models_loading ?? false,
+        copilot_refresh_in_progress: data.copilot_refresh_in_progress ?? false,
+        provider_states: data.provider_states ?? [],
+      });
       setMeta({
         default_model: data.default_model,
         current_model: data.current_model,
@@ -62,6 +74,8 @@ export function AvailableModelsProvider({ children }: { children: ReactNode }) {
       });
     } catch (err) {
       if ((err as Error).name !== 'AbortError') {
+        const errorMessage = err instanceof Error ? err.message : 'Failed to load available models';
+        setError(errorMessage);
         console.error('Failed to load available models:', err);
       }
     } finally {
@@ -89,7 +103,7 @@ export function AvailableModelsProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AvailableModelsContext.Provider value={{ models, loading, meta, refresh }}>
+    <AvailableModelsContext.Provider value={{ models, loading, error, readiness, meta, refresh }}>
       {children}
     </AvailableModelsContext.Provider>
   );

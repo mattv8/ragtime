@@ -24,16 +24,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, List, Optional
 
 import httpx
-from fastapi import (
-    APIRouter,
-    Body,
-    Depends,
-    File,
-    Form,
-    HTTPException,
-    Query,
-    UploadFile,
-)
+from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException,
+                     Query, UploadFile)
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from pydantic import BaseModel, Field
@@ -42,117 +34,83 @@ from starlette.responses import StreamingResponse
 from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.container_capabilities import get_container_capabilities
-from ragtime.core.copilot_auth import (
-    ensure_copilot_token_fresh,
-    exchange_github_token_for_copilot_token,
-)
-from ragtime.core.embedding_models import (
-    OPENAI_EMBEDDING_PRIORITY,
-    get_embedding_models,
-)
+from ragtime.core.copilot_auth import (ensure_copilot_token_fresh,
+                                       exchange_github_token_for_copilot_token,
+                                       is_copilot_token_refresh_in_progress)
+from ragtime.core.embedding_models import (OPENAI_EMBEDDING_PRIORITY,
+                                           get_embedding_models)
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (
-    MODEL_FAMILY_PATTERNS,
-    get_context_limit,
-    get_output_limit,
-    register_model_supported_endpoints,
-    supports_function_calling,
-    update_model_function_calling,
-    update_model_limit,
-)
-from ragtime.core.ollama import (
-    extract_effective_context_length,
-    get_model_details,
-    is_embedding_capable,
-    is_reachable,
-)
+from ragtime.core.model_limits import (MODEL_FAMILY_PATTERNS,
+                                       get_context_limit, get_output_limit,
+                                       register_model_supported_endpoints,
+                                       supports_function_calling,
+                                       update_model_function_calling,
+                                       update_model_limit)
+from ragtime.core.ollama import (extract_effective_context_length,
+                                 get_model_details, is_embedding_capable,
+                                 is_reachable)
 from ragtime.core.ollama import list_models
 from ragtime.core.ollama import list_models as ollama_list_models
 from ragtime.core.security import get_current_user, require_admin
-from ragtime.core.sql_utils import (
-    MssqlConnectionError,
-    MysqlConnectionError,
-    mssql_connect,
-    mysql_connect,
-    normalize_mssql_error_message,
-)
-from ragtime.core.ssh import (
-    SSHConfig,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    execute_ssh_command,
-    ssh_tunnel_config_from_dict,
-    test_ssh_connection,
-)
+from ragtime.core.sql_utils import (MssqlConnectionError, MysqlConnectionError,
+                                    mssql_connect, mysql_connect,
+                                    normalize_mssql_error_message)
+from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
+                              execute_ssh_command, ssh_tunnel_config_from_dict,
+                              test_ssh_connection)
 from ragtime.core.tokenization import count_tokens
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.core.vision_models import list_vision_models
 from ragtime.indexer.background_tasks import background_task_service
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (
-    AnalyzeIndexRequest,
-    AppSettings,
-    ChatMessage,
-    ChatTaskResponse,
-    ChatTaskStatus,
-    CheckRepoVisibilityRequest,
-    ConfigurationWarning,
-    Conversation,
-    ConversationResponse,
-    CreateConversationRequest,
-    CreateIndexRequest,
-    CreateToolConfigRequest,
-    CreateToolGroupRequest,
-    DatabaseDiscoverOption,
-    EmbeddingStatus,
-    FetchBranchesRequest,
-    FetchBranchesResponse,
-    FilesystemAnalysisJobResponse,
-    FilesystemConnectionConfig,
-    FilesystemIndexJobResponse,
-    IndexAnalysisResult,
-    IndexConfig,
-    IndexInfo,
-    IndexJobResponse,
-    IndexStatus,
-    InfluxdbDiscoverRequest,
-    InfluxdbDiscoverResponse,
-    MssqlDiscoverRequest,
-    MssqlDiscoverResponse,
-    MysqlDiscoverRequest,
-    MysqlDiscoverResponse,
-    OcrMode,
-    PdmDiscoverRequest,
-    PdmDiscoverResponse,
-    PdmIndexJobResponse,
-    PostgresDiscoverRequest,
-    PostgresDiscoverResponse,
-    ProviderPromptDebugListResponse,
-    ProviderPromptDebugRecord,
-    RepoVisibilityResponse,
-    RetryVisualizationRequest,
-    RetryVisualizationResponse,
-    SchemaIndexJobResponse,
-    SendMessageRequest,
-    ToolConfig,
-    ToolGroup,
-    ToolTestRequest,
-    ToolType,
-    TriggerFilesystemIndexRequest,
-    TriggerPdmIndexRequest,
-    TriggerSchemaIndexRequest,
-    UpdateSettingsRequest,
-    UpdateToolConfigRequest,
-    UpdateToolGroupRequest,
-    VectorStoreType,
-)
+from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
+                                    ChatMessage, ChatTaskResponse,
+                                    ChatTaskStatus, CheckRepoVisibilityRequest,
+                                    ConfigurationWarning, Conversation,
+                                    ConversationResponse,
+                                    CreateConversationRequest,
+                                    CreateIndexRequest,
+                                    CreateToolConfigRequest,
+                                    CreateToolGroupRequest,
+                                    DatabaseDiscoverOption, EmbeddingStatus,
+                                    FetchBranchesRequest,
+                                    FetchBranchesResponse,
+                                    FilesystemAnalysisJobResponse,
+                                    FilesystemConnectionConfig,
+                                    FilesystemIndexJobResponse,
+                                    IndexAnalysisResult, IndexConfig,
+                                    IndexInfo, IndexJobResponse, IndexStatus,
+                                    InfluxdbDiscoverRequest,
+                                    InfluxdbDiscoverResponse,
+                                    MssqlDiscoverRequest,
+                                    MssqlDiscoverResponse,
+                                    MysqlDiscoverRequest,
+                                    MysqlDiscoverResponse, OcrMode,
+                                    PdmDiscoverRequest, PdmDiscoverResponse,
+                                    PdmIndexJobResponse,
+                                    PostgresDiscoverRequest,
+                                    PostgresDiscoverResponse,
+                                    ProviderPromptDebugListResponse,
+                                    ProviderPromptDebugRecord,
+                                    RepoVisibilityResponse,
+                                    RetryVisualizationRequest,
+                                    RetryVisualizationResponse,
+                                    SchemaIndexJobResponse, SendMessageRequest,
+                                    ToolConfig, ToolGroup, ToolTestRequest,
+                                    ToolType, TriggerFilesystemIndexRequest,
+                                    TriggerPdmIndexRequest,
+                                    TriggerSchemaIndexRequest,
+                                    UpdateSettingsRequest,
+                                    UpdateToolConfigRequest,
+                                    UpdateToolGroupRequest, VectorStoreType)
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
+from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
+                                            schema_indexer)
 from ragtime.indexer.service import indexer
 from ragtime.indexer.title_generation import schedule_title_generation
 from ragtime.indexer.utils import safe_tool_name
@@ -1867,7 +1825,8 @@ async def update_tool_config(
 
                 # Check for name conflicts with existing indexes
                 if is_faiss and new_index_name != old_index_name:
-                    from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
+                    from ragtime.indexer.vector_backends import \
+                        FAISS_INDEX_BASE_PATH
 
                     new_path = FAISS_INDEX_BASE_PATH / new_index_name
                     if new_path.exists():
@@ -1888,7 +1847,8 @@ async def update_tool_config(
             # For FAISS filesystem indexes, rename using the backend
             if is_faiss and old_index_name and new_index_name:
                 if old_index_name != new_index_name:
-                    from ragtime.indexer.vector_backends import get_faiss_backend
+                    from ragtime.indexer.vector_backends import \
+                        get_faiss_backend
 
                     faiss_backend = get_faiss_backend()
                     success = await faiss_backend.rename_index(
@@ -2862,7 +2822,8 @@ async def discover_influxdb_buckets(
 
     def discover_buckets(effective_url: str) -> tuple[bool, list[str], str | None]:
         try:
-            from influxdb_client import InfluxDBClient  # type: ignore[import-untyped]
+            from influxdb_client import \
+                InfluxDBClient  # type: ignore[import-untyped]
         except ImportError:
             return False, [], "influxdb-client package not installed"
 
@@ -6458,6 +6419,17 @@ class AvailableModel(BaseModel):
     created: Optional[int] = None
 
 
+class ProviderModelState(BaseModel):
+    """Readiness details for a specific model provider."""
+
+    provider: str
+    configured: bool = False
+    connected: bool = False
+    loading: bool = False
+    available: bool = False
+    error: Optional[str] = None
+
+
 class AvailableModelsResponse(BaseModel):
     """Response with all available models from configured providers."""
 
@@ -6467,6 +6439,9 @@ class AvailableModelsResponse(BaseModel):
     current_model: Optional[str] = None  # Currently selected model in settings
     allowed_models: List[str] = []  # List of allowed model IDs (for settings UI)
     allowed_openapi_models: List[str] = []  # Separately curated OpenAPI model list
+    models_loading: bool = False
+    copilot_refresh_in_progress: bool = False
+    provider_states: List[ProviderModelState] = []
 
 
 # Sensible default models for each provider
@@ -6479,6 +6454,17 @@ def _providers_equivalent(selected: str, actual: str) -> bool:
     if selected == actual:
         return True
     return {selected, actual} <= {"github_copilot", "github_models"}
+
+
+def _normalize_provider_alias(provider: Optional[str]) -> str:
+    value = (provider or "").strip().lower()
+    return "github_copilot" if value == "github_models" else value
+
+
+async def _is_model_discovery_loading() -> bool:
+    """Return whether any provider model-discovery task is currently in flight."""
+    async with _model_discovery_lock:
+        return any(not task.done() for task in _model_discovery_inflight.values())
 
 
 def _parse_model_identifier(value: str) -> tuple[Optional[str], str]:
@@ -7773,21 +7759,36 @@ async def get_available_chat_models():
 
     app_settings = await repository.get_settings()
     if not app_settings:
-        return AvailableModelsResponse()
+        return AvailableModelsResponse(
+            copilot_refresh_in_progress=is_copilot_token_refresh_in_progress(),
+            models_loading=await _is_model_discovery_loading(),
+        )
 
     all_models: List[AvailableModel] = []
     default_model = None
+    provider_states: dict[str, ProviderModelState] = {
+        "openai": ProviderModelState(provider="openai"),
+        "anthropic": ProviderModelState(provider="anthropic"),
+        "ollama": ProviderModelState(provider="ollama"),
+        "github_copilot": ProviderModelState(provider="github_copilot"),
+    }
 
     # --- Build parallel fetch tasks for each configured provider ---
 
-    async def _fetch_openai_task() -> tuple[str, LLMModelsResponse | None]:
+    async def _fetch_openai_task() -> tuple[str, LLMModelsResponse]:
         try:
             return ("openai", await _fetch_openai_models(app_settings.openai_api_key))
         except Exception as e:
             logger.warning(f"Failed to fetch OpenAI models: {e}")
-            return ("openai", None)
+            return (
+                "openai",
+                LLMModelsResponse(
+                    success=False,
+                    message=f"Failed to fetch OpenAI models: {str(e)}",
+                ),
+            )
 
-    async def _fetch_anthropic_task() -> tuple[str, LLMModelsResponse | None]:
+    async def _fetch_anthropic_task() -> tuple[str, LLMModelsResponse]:
         try:
             return (
                 "anthropic",
@@ -7795,18 +7796,30 @@ async def get_available_chat_models():
             )
         except Exception as e:
             logger.warning(f"Failed to fetch Anthropic models: {e}")
-            return ("anthropic", None)
+            return (
+                "anthropic",
+                LLMModelsResponse(
+                    success=False,
+                    message=f"Failed to fetch Anthropic models: {str(e)}",
+                ),
+            )
 
-    async def _fetch_ollama_task(url: str) -> tuple[str, LLMModelsResponse | None]:
+    async def _fetch_ollama_task(url: str) -> tuple[str, LLMModelsResponse]:
         try:
             return ("ollama", await _fetch_ollama_llm_models(url))
         except Exception as e:
             logger.warning(f"Failed to fetch Ollama models: {e}")
-            return ("ollama", None)
+            return (
+                "ollama",
+                LLMModelsResponse(
+                    success=False,
+                    message=f"Failed to fetch Ollama models: {str(e)}",
+                ),
+            )
 
     async def _fetch_github_pat_task(
         token: str, provider_name: str
-    ) -> tuple[str, LLMModelsResponse | None]:
+    ) -> tuple[str, LLMModelsResponse]:
         try:
             result = await _fetch_github_models_catalog(token)
             if result.success and provider_name == "github_copilot":
@@ -7818,11 +7831,17 @@ async def get_available_chat_models():
             return ("github_copilot", result)
         except Exception as e:
             logger.warning(f"Failed to fetch GitHub models: {e}")
-            return ("github_copilot", None)
+            return (
+                "github_copilot",
+                LLMModelsResponse(
+                    success=False,
+                    message=f"Failed to fetch GitHub models: {str(e)}",
+                ),
+            )
 
     async def _fetch_github_oauth_task(
         token: str, base_url: str
-    ) -> tuple[str, LLMModelsResponse | None]:
+    ) -> tuple[str, LLMModelsResponse]:
         try:
             result = await _fetch_github_copilot_models(token, base_url)
             if result.success:
@@ -7834,28 +7853,49 @@ async def get_available_chat_models():
             return ("github_copilot", result)
         except Exception as e:
             logger.warning(f"Failed to fetch GitHub models: {e}")
-            return ("github_copilot", None)
+            return (
+                "github_copilot",
+                LLMModelsResponse(
+                    success=False,
+                    message=f"Failed to fetch GitHub models: {str(e)}",
+                ),
+            )
 
     tasks: list[asyncio.Task] = []
 
     if app_settings.openai_api_key and len(app_settings.openai_api_key) > 10:
+        provider_states["openai"].configured = True
+        provider_states["openai"].connected = True
         tasks.append(asyncio.create_task(_fetch_openai_task()))
 
     if app_settings.anthropic_api_key and len(app_settings.anthropic_api_key) > 10:
+        provider_states["anthropic"].configured = True
+        provider_states["anthropic"].connected = True
         tasks.append(asyncio.create_task(_fetch_anthropic_task()))
 
     ollama_url = getattr(app_settings, "llm_ollama_base_url", "") or ""
     if not ollama_url or ollama_url == "http://localhost:11434":
         ollama_url = getattr(app_settings, "ollama_base_url", "") or ""
     if ollama_url:
+        provider_states["ollama"].configured = True
+        provider_states["ollama"].connected = True
         tasks.append(asyncio.create_task(_fetch_ollama_task(ollama_url)))
 
     github_models_token = (app_settings.github_models_api_token or "").strip()
     github_copilot_token = (app_settings.github_copilot_access_token or "").strip()
+    github_refresh_token = (app_settings.github_copilot_refresh_token or "").strip()
     github_auth_mode, github_auth_error = _resolve_github_auth_mode(app_settings)
+    provider_states["github_copilot"].loading = is_copilot_token_refresh_in_progress()
     if github_auth_error:
+        provider_states["github_copilot"].configured = bool(
+            github_models_token or github_copilot_token or github_refresh_token
+        )
+        provider_states["github_copilot"].connected = False
+        provider_states["github_copilot"].error = github_auth_error
         logger.warning("Skipping GitHub model discovery: %s", github_auth_error)
     elif github_auth_mode == "pat" and github_models_token:
+        provider_states["github_copilot"].configured = True
+        provider_states["github_copilot"].connected = True
         tasks.append(
             asyncio.create_task(
                 _fetch_github_pat_task(github_models_token, "github_models")
@@ -7863,27 +7903,54 @@ async def get_available_chat_models():
         )
     elif (
         github_auth_mode == "oauth"
-        and github_copilot_token
-        and len(github_copilot_token) > 10
+        and (github_copilot_token or github_refresh_token)
     ):
-        tasks.append(
-            asyncio.create_task(
-                _fetch_github_oauth_task(
-                    github_copilot_token,
-                    app_settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL,
+        provider_states["github_copilot"].configured = True
+        provider_states["github_copilot"].connected = bool(
+            github_copilot_token and len(github_copilot_token) > 10
+        )
+        if github_copilot_token and len(github_copilot_token) > 10:
+            tasks.append(
+                asyncio.create_task(
+                    _fetch_github_oauth_task(
+                        github_copilot_token,
+                        app_settings.github_copilot_base_url
+                        or COPILOT_DEFAULT_BASE_URL,
+                    )
                 )
             )
-        )
+        elif provider_states["github_copilot"].loading:
+            provider_states["github_copilot"].error = (
+                "Refreshing GitHub Copilot credentials."
+            )
+        else:
+            provider_states["github_copilot"].error = (
+                "GitHub Copilot access token is not available. Reconnect GitHub Copilot."
+            )
 
     # --- Await all provider fetches in parallel ---
-    results: list[tuple[str, LLMModelsResponse | None]] = []
+    results: list[tuple[str, LLMModelsResponse]] = []
     if tasks:
         results = await asyncio.gather(*tasks)
 
     # --- Process results in stable order ---
     for provider_key, result in results:
-        if not result or not result.success:
+        normalized_provider = _normalize_provider_alias(provider_key)
+        state = provider_states.get(normalized_provider)
+
+        if not result.success:
+            if state:
+                state.available = False
+                state.error = state.error or result.message
+                if any(code in (result.message or "") for code in ["401", "403"]):
+                    state.connected = False
             continue
+
+        if state:
+            state.available = bool(result.models)
+            state.error = None if state.available else result.message
+            if state.configured:
+                state.connected = True
 
         for m in result.models:
             if provider_key == "github_copilot":
@@ -7993,6 +8060,22 @@ async def get_available_chat_models():
 
     effective_default_match = manual_default_match or automatic_default_match
 
+    models_loading = await _is_model_discovery_loading()
+    copilot_refresh_in_progress = is_copilot_token_refresh_in_progress()
+    if copilot_refresh_in_progress and provider_states["github_copilot"].configured:
+        provider_states["github_copilot"].loading = True
+        if not provider_states["github_copilot"].connected:
+            provider_states["github_copilot"].error = (
+                provider_states["github_copilot"].error
+                or "Refreshing GitHub Copilot credentials."
+            )
+
+    # When a configured provider never fetched (e.g. temporary auth mismatch),
+    # keep availability false and attach a stable generic message.
+    for state in provider_states.values():
+        if state.configured and not state.available and not state.loading and not state.error:
+            state.error = "No models available from provider."
+
     return AvailableModelsResponse(
         models=all_models,
         default_model=effective_default_match.id if effective_default_match else None,
@@ -8002,6 +8085,9 @@ async def get_available_chat_models():
             else None
         ),
         current_model=current_model,
+        models_loading=models_loading,
+        copilot_refresh_in_progress=copilot_refresh_in_progress,
+        provider_states=list(provider_states.values()),
     )
 
 

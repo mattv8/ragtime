@@ -293,3 +293,7 @@ def _schedule_background_refresh() -> None:
         return
 
 
+def is_copilot_token_refresh_in_progress() -> bool:
+    """Return whether a background Copilot token refresh task is currently running."""
+    task = _background_refresh_task_holder.get("task")
+    return bool(task and not task.done())
