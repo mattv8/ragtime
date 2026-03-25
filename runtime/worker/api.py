@@ -11,9 +11,10 @@ import termios
 from collections.abc import AsyncIterator
 from typing import Any
 
+import httpx
 from fastapi import (APIRouter, FastAPI, HTTPException, Request, WebSocket,
                      WebSocketDisconnect)
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 
 from runtime.auth import WorkerAuth
 from runtime.manager.models import (RuntimeContentProbeRequest,
@@ -30,6 +31,102 @@ from runtime.worker.sandbox import (SandboxSpec, ensure_sandbox_ready,
 from runtime.worker.service import get_worker_service
 
 router = APIRouter(tags=["Runtime Worker"])
+
+_PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+
+
+def _preview_request_headers(request: Request) -> dict[str, str]:
+    blocked = {
+        "host",
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+        "content-length",
+        "authorization",
+        "cookie",
+    }
+    return {
+        key: value
+        for key, value in request.headers.items()
+        if key.lower() not in blocked
+    }
+
+
+def _preview_response_headers(headers: httpx.Headers) -> dict[str, str]:
+    blocked = {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+    }
+    return {key: value for key, value in headers.items() if key.lower() not in blocked}
+
+
+def _is_html_media_type(media_type: str) -> bool:
+    return "text/html" in (media_type or "").lower()
+
+
+async def _proxy_preview_request(request: Request, upstream_url: str) -> Response:
+    body = await request.body()
+    headers = _preview_request_headers(request)
+    timeout = httpx.Timeout(connect=2.0, read=30.0, write=30.0, pool=5.0)
+    client = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
+    try:
+        upstream_request = client.build_request(
+            method=request.method,
+            url=upstream_url,
+            content=body if body else None,
+            headers=headers,
+        )
+        upstream_response = await client.send(upstream_request, stream=True)
+    except httpx.RequestError as exc:
+        await client.aclose()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Runtime dev server unavailable: {exc}",
+        ) from exc
+
+    media_type = (
+        upstream_response.headers.get("content-type") or "application/octet-stream"
+    )
+    response_headers = _preview_response_headers(upstream_response.headers)
+
+    if _is_html_media_type(media_type):
+        try:
+            content = await upstream_response.aread()
+        finally:
+            await upstream_response.aclose()
+            await client.aclose()
+        return Response(
+            content=content,
+            status_code=upstream_response.status_code,
+            headers=response_headers,
+            media_type=media_type or None,
+        )
+
+    async def _iter_stream() -> AsyncIterator[bytes]:
+        try:
+            async for chunk in upstream_response.aiter_bytes():
+                yield chunk
+        finally:
+            await upstream_response.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        _iter_stream(),
+        status_code=upstream_response.status_code,
+        headers=response_headers,
+        media_type=media_type or None,
+    )
 
 
 def _write_sandbox_init_file(spec: SandboxSpec) -> None:
@@ -193,20 +290,22 @@ async def exec_command(
     )
 
 
-@router.get("/worker/sessions/{worker_session_id}/preview")
-@router.get("/worker/sessions/{worker_session_id}/preview/{path:path}")
+@router.api_route("/worker/sessions/{worker_session_id}/preview", methods=_PROXY_METHODS)
+@router.api_route(
+    "/worker/sessions/{worker_session_id}/preview/{path:path}", methods=_PROXY_METHODS
+)
 async def preview(
     worker_session_id: str,
     request: Request,
     path: str = "",
     _auth: None = WorkerAuth,
 ) -> Response:
-    content, media_type, status_code = await get_worker_service().preview_response(
+    upstream_url = await get_worker_service().build_preview_upstream_url(
         worker_session_id,
         path,
         query=request.url.query or None,
     )
-    return Response(content=content, media_type=media_type, status_code=status_code)
+    return await _proxy_preview_request(request, upstream_url)
 
 
 # ---------------------------------------------------------------------------

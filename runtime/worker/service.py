@@ -1451,12 +1451,12 @@ class WorkerService:
             console_errors=probe.get("console_errors", []),
         )
 
-    async def preview_response(
+    async def build_preview_upstream_url(
         self,
         worker_session_id: str,
         path: str,
         query: str | None = None,
-    ) -> tuple[bytes | str, str, int]:
+    ) -> str:
         async with self._lock:
             session = self._sessions.get(worker_session_id)
             if not session:
@@ -1489,21 +1489,7 @@ class WorkerService:
             )
             if query:
                 upstream_url = f"{upstream_url}?{query}"
-
-        timeout = httpx.Timeout(connect=2.0, read=30.0, write=30.0, pool=5.0)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
-            try:
-                upstream_response = await client.get(upstream_url)
-            except Exception as exc:
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Runtime dev server unavailable: {exc}",
-                ) from exc
-
-        media_type = (
-            upstream_response.headers.get("content-type") or "application/octet-stream"
-        )
-        return upstream_response.content, media_type, upstream_response.status_code
+        return upstream_url
 
     async def verify_pty_token(
         self, worker_session_id: str, token: str

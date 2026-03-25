@@ -6,6 +6,7 @@ import importlib
 import json
 import os
 import re
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -97,6 +98,10 @@ def _proxy_response_headers(headers: httpx.Headers) -> dict[str, str]:
         "upgrade",
     }
     return {key: value for key, value in headers.items() if key.lower() not in blocked}
+
+
+def _is_html_media_type(media_type: str) -> bool:
+    return "text/html" in (media_type or "").lower()
 
 
 def _to_websocket_url(http_url: str) -> str:
@@ -221,33 +226,56 @@ async def _proxy_http_request(
         headers["authorization"] = f"Bearer {worker_token}"
 
     timeout = httpx.Timeout(connect=2.0, read=30.0, write=30.0, pool=5.0)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
-        try:
-            upstream_response = await client.request(
-                method=request.method,
-                url=upstream_url,
-                content=body if body else None,
-                headers=headers,
-            )
-        except httpx.RequestError as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Runtime preview upstream unavailable: {exc}",
-            ) from exc
+    client = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
+    try:
+        upstream_request = client.build_request(
+            method=request.method,
+            url=upstream_url,
+            content=body if body else None,
+            headers=headers,
+        )
+        upstream_response = await client.send(upstream_request, stream=True)
+    except httpx.RequestError as exc:
+        await client.aclose()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Runtime preview upstream unavailable: {exc}",
+        ) from exc
 
-    content = upstream_response.content
     media_type = upstream_response.headers.get("content-type", "")
     resp_headers = _proxy_response_headers(upstream_response.headers)
 
-    if proxy_base_path and "text/html" in media_type:
-        content = _rewrite_root_relative_urls(content, proxy_base_path)
-        content = _inject_bridge_script(content, proxy_base_path)
-        # Content length changed after rewriting; drop stale header so
-        # Starlette re-calculates it from the actual body.
-        resp_headers.pop("content-length", None)
+    if _is_html_media_type(media_type):
+        try:
+            content = await upstream_response.aread()
+        finally:
+            await upstream_response.aclose()
+            await client.aclose()
 
-    return Response(
-        content=content,
+        if proxy_base_path:
+            content = _rewrite_root_relative_urls(content, proxy_base_path)
+            content = _inject_bridge_script(content)
+            # Content length changed after rewriting; drop stale header so
+            # Starlette re-calculates it from the actual body.
+            resp_headers.pop("content-length", None)
+
+        return Response(
+            content=content,
+            status_code=upstream_response.status_code,
+            headers=resp_headers,
+            media_type=media_type or None,
+        )
+
+    async def _iter_stream() -> AsyncIterator[bytes]:
+        try:
+            async for chunk in upstream_response.aiter_bytes():
+                yield chunk
+        finally:
+            await upstream_response.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        _iter_stream(),
         status_code=upstream_response.status_code,
         headers=resp_headers,
         media_type=media_type or None,
@@ -274,7 +302,7 @@ _HEAD_CLOSE_RE = re.compile(rb'(</head\s*>)', re.IGNORECASE)
 _FIRST_SCRIPT_RE = re.compile(rb'(<script[\s>])', re.IGNORECASE)
 
 
-def _inject_bridge_script(html: bytes, proxy_base_path: str) -> bytes:
+def _inject_bridge_script(html: bytes) -> bytes:
     """Inject the platform data-bridge script into HTML responses.
 
     Inserts ``<script src=".ragtime/bridge.js">`` before ``</head>`` or
