@@ -9,35 +9,24 @@ import re
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
-from fastapi import (
-    APIRouter,
-    Depends,
-    Header,
-    HTTPException,
-    Request,
-    WebSocket,
-    WebSocketDisconnect,
-)
+from fastapi import (APIRouter, Depends, Header, HTTPException, Request,
+                     WebSocket, WebSocketDisconnect)
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from ragtime.config.settings import settings
 from ragtime.core.auth import validate_session
 from ragtime.core.database import get_db
 from ragtime.core.security import get_current_user, get_current_user_optional
-from ragtime.userspace.models import (
-    UserSpaceCapabilityTokenResponse,
-    UserSpaceFileResponse,
-    UserSpaceRuntimeActionResponse,
-    UserSpaceRuntimeSessionResponse,
-    UserSpaceRuntimeStatusResponse,
-)
-from ragtime.userspace.runtime_service import (
-    RuntimeVersionConflictError,
-    userspace_runtime_service,
-)
+from ragtime.userspace.models import (UserSpaceCapabilityTokenResponse,
+                                      UserSpaceFileResponse,
+                                      UserSpaceRuntimeActionResponse,
+                                      UserSpaceRuntimeSessionResponse,
+                                      UserSpaceRuntimeStatusResponse)
+from ragtime.userspace.runtime_service import (RuntimeVersionConflictError,
+                                               userspace_runtime_service)
 from ragtime.userspace.service import userspace_service
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space Runtime"])
@@ -185,6 +174,19 @@ def _to_websocket_url(http_url: str) -> str:
     return urlunsplit(
         (scheme, parsed.netloc, parsed.path, parsed.query, parsed.fragment)
     )
+
+
+def _sanitize_preview_query(query: str | None) -> str | None:
+    if not query:
+        return None
+    cleaned_pairs = [
+        (key, value)
+        for key, value in parse_qsl(query, keep_blank_values=True)
+        if key != "cap_token"
+    ]
+    if not cleaned_pairs:
+        return None
+    return urlencode(cleaned_pairs, doseq=True)
 
 
 async def _proxy_websocket_request(
@@ -997,7 +999,7 @@ async def workspace_preview_proxy(
         workspace_id,
         user_id,
         path,
-        query=request.url.query or None,
+        query=_sanitize_preview_query(request.url.query),
     )
     base = f"/indexes/userspace/workspaces/{workspace_id}/preview"
     response = await _proxy_http_request(request, upstream_url, proxy_base_path=base)
@@ -1098,7 +1100,7 @@ async def workspace_preview_proxy_websocket(
         workspace_id,
         user_id,
         path,
-        query=websocket.url.query or None,
+        query=_sanitize_preview_query(websocket.url.query),
     )
     await _proxy_websocket_request(websocket, _to_websocket_url(upstream_url))
 
