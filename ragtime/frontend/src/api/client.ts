@@ -184,7 +184,7 @@ export const api = {
   },
 
   /**
-   * List all users (admin only)
+   * List all users
    */
   async listUsers(): Promise<User[]> {
     const response = await apiFetch(`${AUTH_BASE}/users`, {

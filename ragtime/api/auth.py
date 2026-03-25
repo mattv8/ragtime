@@ -10,36 +10,25 @@ import time
 from typing import Optional
 from urllib.parse import urlparse
 
-from fastapi import (
-    APIRouter,
-    Depends,
-    Form,
-    HTTPException,
-    Request,
-    Response,
-    status,
-)
+from fastapi import (APIRouter, Depends, Form, HTTPException, Request,
+                     Response, status)
 from fastapi.responses import HTMLResponse, RedirectResponse
-from prisma import Json
 from prisma.enums import UserRole
 from prisma.models import User
 from pydantic import BaseModel, Field
 
+from prisma import Json
 from ragtime.config.settings import settings
-from ragtime.core.auth import (
-    authenticate,
-    create_access_token,
-    create_session,
-    discover_ldap_structure,
-    get_ldap_config,
-    invalidate_session,
-    lookup_bind_dn,
-)
+from ragtime.core.auth import (authenticate, create_access_token,
+                               create_session, discover_ldap_structure,
+                               get_ldap_config, invalidate_session,
+                               lookup_bind_dn)
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
 from ragtime.core.logging import get_logger
 from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, limiter
-from ragtime.core.security import get_current_user, get_session_token, require_admin
+from ragtime.core.security import (get_current_user, get_session_token,
+                                   require_admin)
 
 logger = get_logger(__name__)
 
@@ -970,12 +959,12 @@ async def test_ldap_connection(
 
 
 # =============================================================================
-# User Management (Admin Only)
+# User Management
 # =============================================================================
 
 
 @router.get("/users")
-async def list_users(_user: User = Depends(require_admin)):
+async def list_users(_user: User = Depends(get_current_user)):
     """List all users."""
     db = await get_db()
     users = await db.user.find_many(
