@@ -619,11 +619,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
   const snapshotTimelineRows = useMemo(() => {
     const sortedSnapshots = [...snapshots].sort((left, right) => {
-      const timeDiff = new Date(left.created_at).getTime() - new Date(right.created_at).getTime();
+      const timeDiff = new Date(right.created_at).getTime() - new Date(left.created_at).getTime();
       if (timeDiff !== 0) {
         return timeDiff;
       }
-      return left.id.localeCompare(right.id);
+      return right.id.localeCompare(left.id);
     });
 
     const branchIndexById = new Map<string, number>();

@@ -22,45 +22,57 @@ from ragtime.config import settings
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
-from ragtime.core.entrypoint_status import (EntrypointStatus,
-                                            parse_entrypoint_config)
+from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
-                                    add_table_metadata_to_psql_output,
-                                    enforce_max_results, format_query_result,
-                                    validate_sql_query)
-from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.sql_utils import (
+    DB_TYPE_POSTGRES,
+    add_table_metadata_to_psql_output,
+    enforce_max_results,
+    format_query_result,
+    validate_sql_query,
+)
+from ragtime.core.ssh import (
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
-                                      ExecuteComponentRequest,
-                                      ExecuteComponentResponse,
-                                      PaginatedWorkspacesResponse,
-                                      ShareAccessMode, SqlitePersistenceMode,
-                                      SwitchSnapshotBranchRequest,
-                                      UpdateSnapshotRequest,
-                                      UpdateWorkspaceMembersRequest,
-                                      UpdateWorkspaceRequest,
-                                      UpdateWorkspaceShareAccessRequest,
-                                      UpsertWorkspaceFileRequest,
-                                      UserSpaceFileInfo, UserSpaceFileResponse,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection,
-                                      UserSpaceSharedPreviewResponse,
-                                      UserSpaceSnapshot,
-                                      UserSpaceSnapshotBranch,
-                                      UserSpaceSnapshotTimelineResponse,
-                                      UserSpaceWorkspace,
-                                      UserSpaceWorkspaceShareLink,
-                                      UserSpaceWorkspaceShareLinkStatus,
-                                      WorkspaceMember,
-                                      WorkspaceShareSlugAvailabilityResponse)
+from ragtime.userspace.models import (
+    ArtifactType,
+    CreateWorkspaceRequest,
+    ExecuteComponentRequest,
+    ExecuteComponentResponse,
+    PaginatedWorkspacesResponse,
+    ShareAccessMode,
+    SqlitePersistenceMode,
+    SwitchSnapshotBranchRequest,
+    UpdateSnapshotRequest,
+    UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+    UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot,
+    UserSpaceSnapshotBranch,
+    UserSpaceSnapshotTimelineResponse,
+    UserSpaceWorkspace,
+    UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceMember,
+    WorkspaceShareSlugAvailabilityResponse,
+)
 
 logger = get_logger(__name__)
 
 _FILE_LIST_CACHE_TTL_SECONDS = 2
 _ENTRYPOINT_STATUS_CACHE_TTL_SECONDS = 300  # 5-minute TTL for entrypoint status
-_CHANGED_FILE_ACK_MAX_ROWS_PER_WORKSPACE_USER = 2000 # Threshold to bound growth of UserSpaceChangedFileAcknowledgement table
+_CHANGED_FILE_ACK_MAX_ROWS_PER_WORKSPACE_USER = (
+    2000  # Threshold to bound growth of UserSpaceChangedFileAcknowledgement table
+)
 
 
 class _ExecutionProofRecord:
@@ -286,6 +298,24 @@ _AGENT_WRITABLE_RAGTIME_PREFIXES = ("db/migrations/",)
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _coerce_utc_datetime(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized:
+            try:
+                parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+            except ValueError:
+                return _utc_now()
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+    return _utc_now()
 
 
 def _normalize_workspace_name_for_uniqueness(name: str) -> str:
@@ -2213,9 +2243,7 @@ class UserSpaceService:
             return
 
         trim_to_rows = int(_CHANGED_FILE_ACK_MAX_ROWS_PER_WORKSPACE_USER * 0.75)
-        stale_rows_count = (
-            total_rows - trim_to_rows
-        )
+        stale_rows_count = total_rows - trim_to_rows
         if stale_rows_count <= 0:
             return
 
@@ -2688,7 +2716,7 @@ class UserSpaceService:
         branch_tip_ids: set[str],
     ) -> UserSpaceSnapshot:
         created_at_raw = row.get("created_at")
-        created_at = created_at_raw if isinstance(created_at_raw, datetime) else _utc_now()
+        created_at = _coerce_utc_datetime(created_at_raw)
         branch_id = str(row.get("branch_id") or "")
         snapshot_id = str(row.get("id") or "")
         return UserSpaceSnapshot(
@@ -2704,11 +2732,11 @@ class UserSpaceService:
             is_current=snapshot_id == current_snapshot_id,
             can_rename=snapshot_id in branch_tip_ids,
             git_commit_hash=(
-                str(row.get("git_commit_hash"))
-                if row.get("git_commit_hash")
-                else None
+                str(row.get("git_commit_hash")) if row.get("git_commit_hash") else None
             ),
-            message=(str(row.get("message")) if row.get("message") is not None else None),
+            message=(
+                str(row.get("message")) if row.get("message") is not None else None
+            ),
             created_at=created_at,
             file_count=int(row.get("file_count") or 0),
         )
@@ -2770,7 +2798,9 @@ class UserSpaceService:
                 )
                 if cursor_rows:
                     cursor = cursor_rows[0]
-                    if not cursor.get("current_snapshot_id") or not cursor.get("current_snapshot_branch_id"):
+                    if not cursor.get("current_snapshot_id") or not cursor.get(
+                        "current_snapshot_branch_id"
+                    ):
                         latest_rows = await db.query_raw(
                             f"""
                             SELECT s.id AS snapshot_id, s.branch_id
@@ -2790,7 +2820,9 @@ class UserSpaceService:
                 return
 
             git_branch = (
-                await self._run_git(workspace_id, ["branch", "--show-current"], check=False)
+                await self._run_git(
+                    workspace_id, ["branch", "--show-current"], check=False
+                )
             ).stdout.strip() or "main"
             branch_id = str(uuid4())
             await db.execute_raw(
@@ -2828,7 +2860,9 @@ class UserSpaceService:
                 commit_hash, commit_ts, commit_subject = parts
                 snapshot_id = str(uuid4())
                 last_snapshot_id = snapshot_id
-                created_at = datetime.fromtimestamp(int(commit_ts), tz=timezone.utc).isoformat()
+                created_at = datetime.fromtimestamp(
+                    int(commit_ts), tz=timezone.utc
+                ).isoformat()
                 await db.execute_raw(
                     f"""
                     INSERT INTO userspace_snapshots
@@ -2863,12 +2897,16 @@ class UserSpaceService:
                 )
                 parent_snapshot_id = snapshot_id
 
-            await self._set_current_snapshot_cursor(workspace_id, last_snapshot_id, branch_id)
+            await self._set_current_snapshot_cursor(
+                workspace_id, last_snapshot_id, branch_id
+            )
 
     async def _get_snapshot_timeline_data(
         self,
         workspace_id: str,
-    ) -> tuple[list[UserSpaceSnapshot], list[UserSpaceSnapshotBranch], str | None, str | None]:
+    ) -> tuple[
+        list[UserSpaceSnapshot], list[UserSpaceSnapshotBranch], str | None, str | None
+    ]:
         db = await get_db()
         cursor_rows = await db.query_raw(
             f"""
@@ -2925,11 +2963,7 @@ class UserSpaceService:
                         else None
                     ),
                     is_active=bool(row.get("is_active")),
-                    created_at=(
-                        row.get("created_at")
-                        if isinstance(row.get("created_at"), datetime)
-                        else _utc_now()
-                    ),
+                    created_at=_coerce_utc_datetime(row.get("created_at")),
                 )
             )
 
@@ -2948,9 +2982,7 @@ class UserSpaceService:
             """
         )
         branch_tip_ids = {
-            str(row.get("id"))
-            for row in tip_rows
-            if row.get("id") is not None
+            str(row.get("id")) for row in tip_rows if row.get("id") is not None
         }
 
         snapshot_rows = await db.query_raw(
@@ -2988,7 +3020,11 @@ class UserSpaceService:
         has_next = False
         if current_snapshot_id and current_branch_id:
             current_snapshot = next(
-                (snapshot for snapshot in snapshots if snapshot.id == current_snapshot_id),
+                (
+                    snapshot
+                    for snapshot in snapshots
+                    if snapshot.id == current_snapshot_id
+                ),
                 None,
             )
             if current_snapshot is not None:
@@ -3053,7 +3089,9 @@ class UserSpaceService:
             await self._run_git(workspace_id, ["reset", "--hard", commit_hash])
             await self._run_git(workspace_id, ["clean", "-fd"])
             await self._activate_branch(workspace_id, branch_id)
-            await self._set_current_snapshot_cursor(workspace_id, snapshot_id, branch_id)
+            await self._set_current_snapshot_cursor(
+                workspace_id, snapshot_id, branch_id
+            )
 
         await self.clear_workspace_changed_file_acknowledgements_for_all_users(
             workspace_id
@@ -3073,10 +3111,10 @@ class UserSpaceService:
             is_current=True,
             can_rename=True,
             git_commit_hash=commit_hash,
-            message=(str(row.get("message")) if row.get("message") is not None else None),
-            created_at=(
-                row.get("created_at") if isinstance(row.get("created_at"), datetime) else _utc_now()
+            message=(
+                str(row.get("message")) if row.get("message") is not None else None
             ),
+            created_at=_coerce_utc_datetime(row.get("created_at")),
             file_count=int(row.get("file_count") or 0),
         )
 
@@ -3165,7 +3203,11 @@ class UserSpaceService:
             )
             branch_tip_id = str(tip_rows[0].get("id")) if tip_rows else None
 
-            if current_snapshot_id and branch_tip_id and current_snapshot_id != branch_tip_id:
+            if (
+                current_snapshot_id
+                and branch_tip_id
+                and current_snapshot_id != branch_tip_id
+            ):
                 branch_count_rows = await db.query_raw(
                     f"""
                     SELECT COUNT(*) AS count
@@ -3173,7 +3215,11 @@ class UserSpaceService:
                     WHERE workspace_id = {self._sql_quote(workspace_id)}
                     """
                 )
-                branch_count = int(branch_count_rows[0].get("count") or 0) if branch_count_rows else 0
+                branch_count = (
+                    int(branch_count_rows[0].get("count") or 0)
+                    if branch_count_rows
+                    else 0
+                )
                 new_branch_id = str(uuid4())
                 branch_name = f"Branch {branch_count + 1}"
                 branch_ref_name = self._branch_ref_name(new_branch_id)
@@ -3301,7 +3347,9 @@ class UserSpaceService:
             """
         )
         timeline = await self.get_snapshot_timeline(workspace_id, user_id)
-        snapshot = next((item for item in timeline.snapshots if item.id == snapshot_id), None)
+        snapshot = next(
+            (item for item in timeline.snapshots if item.id == snapshot_id), None
+        )
         if snapshot is None:
             raise HTTPException(status_code=404, detail="Snapshot not found")
         return snapshot
@@ -3334,7 +3382,11 @@ class UserSpaceService:
 
         # Secondary fallback using branch metadata for older migrated timelines.
         current_branch = next(
-            (branch for branch in timeline.branches if branch.id == timeline.current_branch_id),
+            (
+                branch
+                for branch in timeline.branches
+                if branch.id == timeline.current_branch_id
+            ),
             None,
         )
         if (
@@ -3373,11 +3425,17 @@ class UserSpaceService:
         ]
         if child_branches:
             current_branch = next(
-                (branch for branch in child_branches if branch.id == timeline.current_branch_id),
+                (
+                    branch
+                    for branch in child_branches
+                    if branch.id == timeline.current_branch_id
+                ),
                 None,
             )
             preferred_children = [
-                branch for branch in child_branches if current_branch is None or branch.id != current_branch.id
+                branch
+                for branch in child_branches
+                if current_branch is None or branch.id != current_branch.id
             ]
             if not preferred_children:
                 preferred_children = child_branches
@@ -3478,9 +3536,13 @@ class UserSpaceService:
 
         async with self._snapshot_operation_semaphore:
             if branch_ref_name:
-                await self._run_git(workspace_id, ["checkout", branch_ref_name], check=False)
+                await self._run_git(
+                    workspace_id, ["checkout", branch_ref_name], check=False
+                )
             await self._activate_branch(workspace_id, branch_id)
-            await self._set_current_snapshot_cursor(workspace_id, target_snapshot_id, branch_id)
+            await self._set_current_snapshot_cursor(
+                workspace_id, target_snapshot_id, branch_id
+            )
 
         await self._touch_workspace(workspace_id)
         return await self.get_snapshot_timeline(workspace_id, user_id)
