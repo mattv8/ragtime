@@ -12,28 +12,38 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
-from fastapi import (APIRouter, Depends, Header, HTTPException, Request,
-                     WebSocket, WebSocketDisconnect)
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from ragtime.config.settings import settings
 from ragtime.core.auth import validate_session
 from ragtime.core.database import get_db
 from ragtime.core.security import get_current_user, get_current_user_optional
-from ragtime.userspace.models import (UserSpaceCapabilityTokenResponse,
-                                      UserSpaceFileResponse,
-                                      UserSpaceRuntimeActionResponse,
-                                      UserSpaceRuntimeSessionResponse,
-                                      UserSpaceRuntimeStatusResponse)
-from ragtime.userspace.runtime_service import (RuntimeVersionConflictError,
-                                               userspace_runtime_service)
+from ragtime.userspace.models import (
+    UserSpaceCapabilityTokenResponse,
+    UserSpaceFileResponse,
+    UserSpaceRuntimeActionResponse,
+    UserSpaceRuntimeSessionResponse,
+    UserSpaceRuntimeStatusResponse,
+)
+from ragtime.userspace.runtime_service import (
+    RuntimeVersionConflictError,
+    userspace_runtime_service,
+)
 from ragtime.userspace.service import userspace_service
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space Runtime"])
 
 
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
-_SCREENSHOT_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,220}$")
 _PREVIEW_CAPABILITY_COOKIE = "userspace_preview_capability"
 
 
@@ -453,7 +463,6 @@ async def stop_runtime_session(
 async def workspace_events_sse(
     workspace_id: str,
     request: Request,
-    _after: int = 0,
     _user: Any = Depends(get_current_user),
 ):
     """SSE stream that emits a message whenever the workspace generation advances."""
@@ -547,7 +556,6 @@ async def get_runtime_screenshot(
     if (
         not basename
         or basename != normalized_name
-        or not _SCREENSHOT_NAME_RE.fullmatch(basename)
         or not basename.lower().endswith(".png")
     ):
         raise HTTPException(status_code=400, detail="Invalid screenshot filename")
@@ -661,12 +669,11 @@ async def runtime_fs_delete(
 async def runtime_pty(workspace_id: str, websocket: WebSocket):
     token = _extract_capability_token_from_websocket(websocket)
     try:
-        claims, user_id = _require_workspace_capability(
+        _, user_id = _require_workspace_capability(
             token,
             workspace_id,
             "userspace.runtime_pty",
         )
-        user_id = str(claims.get("sub") or "").strip()
     except HTTPException:
         await websocket.close(code=4401)
         return
@@ -704,12 +711,11 @@ async def runtime_pty(workspace_id: str, websocket: WebSocket):
 async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSocket):
     token = _extract_capability_token_from_websocket(websocket)
     try:
-        claims, user_id = _require_workspace_capability(
+        _, user_id = _require_workspace_capability(
             token,
             workspace_id,
             "userspace.collab_connect",
         )
-        user_id = str(claims.get("sub") or "").strip()
     except HTTPException:
         await websocket.close(code=4401)
         return

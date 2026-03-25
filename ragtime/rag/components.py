@@ -107,6 +107,12 @@ logger = get_logger(__name__)
 # AI can request up to this limit; configured per-tool timeout is the default
 MAX_TOOL_TIMEOUT_SECONDS = 300
 
+# Shared FAISS/MMR search tuning constants.
+SEARCH_RESULTS_K_MAX = 50
+SEARCH_MAX_CHARS_PER_RESULT = 10_000
+MMR_FETCH_K_MULTIPLIER = 4
+MMR_MIN_FETCH_K = 20
+
 # Maximum idle time (seconds) to wait between streamed chunks from the LLM.
 # httpx interprets a flat float as per-operation timeout (connect, read, write, pool),
 # NOT as a total request duration.  During streaming, "read=300" means we timeout only
@@ -147,6 +153,13 @@ def resolve_effective_timeout(requested_timeout: int, timeout_max_seconds: int) 
     if max_timeout == 0:
         return requested
     return min(requested, max_timeout)
+
+
+def clamp_search_parameters(k: int, max_chars_per_result: int) -> tuple[int, int]:
+    """Clamp search parameters to safe limits."""
+    clamped_k = max(1, min(SEARCH_RESULTS_K_MAX, int(k)))
+    clamped_chars = max(0, min(SEARCH_MAX_CHARS_PER_RESULT, int(max_chars_per_result)))
+    return clamped_k, clamped_chars
 
 
 # =============================================================================
@@ -359,9 +372,6 @@ def get_process_memory_bytes() -> int:
     except Exception:
         return 0
 
-
-# Alias for backward compat — canonical registry lives in entrypoint_status.
-_FRAMEWORK_REQUIRED_PACKAGES = FRAMEWORK_REQUIRED_PACKAGES
 
 # Source file extensions eligible for hardcoded data pattern scanning.
 _HARDCODED_DATA_SOURCE_EXTENSIONS: tuple[str, ...] = (
@@ -1590,7 +1600,10 @@ class RAGComponents:
         if use_mmr:
             # MMR retriever: fetch_k gets more candidates, then MMR selects k diverse ones
             # fetch_k should be larger than k to give MMR choices to diversify from
-            fetch_k = max(search_k * 4, 20)  # At least 4x k or 20 candidates
+            fetch_k = max(
+                search_k * MMR_FETCH_K_MULTIPLIER,
+                MMR_MIN_FETCH_K,
+            )
             retriever = db.as_retriever(
                 search_type="mmr",
                 search_kwargs={
@@ -1611,6 +1624,89 @@ class RAGComponents:
             )
 
         return retriever
+
+    @staticmethod
+    def _add_timeout_field_to_schema(
+        schema_class: type[BaseModel],
+        default_timeout: int,
+        timeout_max_seconds: int,
+        timeout_label: str,
+    ) -> type[BaseModel]:
+        """Inject a standard timeout field into dynamic tool schemas."""
+        timeout_field: Any = Field(
+            default=default_timeout,
+            ge=0,
+            le=86400,
+            description=(
+                f"{timeout_label} timeout in seconds (default: {default_timeout}, "
+                f"max: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). "
+                "Use 0 for no timeout."
+            ),
+        )
+        schema_class.model_fields["timeout"] = timeout_field
+        schema_class.model_rebuild()
+        return schema_class
+
+    def _search_faiss_databases(
+        self,
+        *,
+        query: str,
+        dbs_to_search: dict[str, Any],
+        k: int,
+        max_chars_per_result: int,
+        use_mmr: bool,
+        mmr_lambda: float,
+        include_index_name: bool,
+        include_index_name_in_errors: bool = True,
+        ollama_error_message: str,
+    ) -> tuple[list[str], list[str]]:
+        """Search one or more FAISS indexes with shared formatting/error handling."""
+        results: list[str] = []
+        errors: list[str] = []
+        k, max_chars_per_result = clamp_search_parameters(k, max_chars_per_result)
+
+        for name, db in dbs_to_search.items():
+            try:
+                logger.debug(f"Searching index '{name}' with query: {query[:50]}..., k={k}")
+                if use_mmr:
+                    fetch_k = max(k * MMR_FETCH_K_MULTIPLIER, MMR_MIN_FETCH_K)
+                    docs = db.max_marginal_relevance_search(
+                        query,
+                        k=k,
+                        fetch_k=fetch_k,
+                        lambda_mult=mmr_lambda,
+                    )
+                else:
+                    docs = db.similarity_search(query, k=k)
+
+                logger.debug(f"Index '{name}' returned {len(docs)} documents")
+                for doc in docs:
+                    source = doc.metadata.get("source", "unknown")
+                    content = doc.page_content
+                    if max_chars_per_result > 0 and len(content) > max_chars_per_result:
+                        content = content[:max_chars_per_result] + "... (truncated)"
+                    if include_index_name:
+                        results.append(f"[{name}] {source}:\n{content}")
+                    else:
+                        results.append(f"{source}:\n{content}")
+            except Exception as e:
+                error_msg = str(e)
+                logger.warning(f"Error searching {name}: {e}", exc_info=True)
+                if (
+                    "ollama" in error_msg.lower()
+                    or "failed to connect" in error_msg.lower()
+                ):
+                    if include_index_name_in_errors:
+                        errors.append(f"[{name}] {ollama_error_message}")
+                    else:
+                        errors.append(ollama_error_message)
+                else:
+                    if include_index_name_in_errors:
+                        errors.append(f"[{name}] Search error: {error_msg}")
+                    else:
+                        errors.append(f"Search error: {error_msg}")
+
+        return results, errors
 
     async def _load_faiss_indexes(self, embedding_model):
         """Load FAISS indexes from database metadata (sequential, for backwards compat).
@@ -2351,6 +2447,18 @@ class RAGComponents:
             # Also add file access tools
             tools.extend(self._create_file_access_tools())
 
+        sql_tool_types = {"postgres", "mssql", "mysql"}
+        tool_builders = {
+            "postgres": self._create_postgres_tool,
+            "mssql": self._create_mssql_tool,
+            "mysql": self._create_mysql_tool,
+            "influxdb": self._create_influxdb_tool,
+            "odoo_shell": self._create_odoo_tool,
+            "ssh_shell": self._create_ssh_tool,
+            "filesystem_indexer": self._create_filesystem_tool,
+            "solidworks_pdm": self._create_pdm_search_tool,
+        }
+
         async def _build_single_tool(config: dict) -> List[Any]:
             """Build tool(s) from a single config entry with timeout."""
             tool_type = config.get("tool_type")
@@ -2360,44 +2468,21 @@ class RAGComponents:
             result_tools = []
 
             try:
-                if tool_type == "postgres":
-                    tool = await self._create_postgres_tool(config, tool_name, tool_id)
-                    schema_tool = await self._create_schema_search_tool(
-                        config, tool_name, tool_id
-                    )
-                    if schema_tool:
-                        result_tools.append(schema_tool)
-                elif tool_type == "mssql":
-                    tool = await self._create_mssql_tool(config, tool_name, tool_id)
-                    schema_tool = await self._create_schema_search_tool(
-                        config, tool_name, tool_id
-                    )
-                    if schema_tool:
-                        result_tools.append(schema_tool)
-                elif tool_type == "mysql":
-                    tool = await self._create_mysql_tool(config, tool_name, tool_id)
-                    schema_tool = await self._create_schema_search_tool(
-                        config, tool_name, tool_id
-                    )
-                    if schema_tool:
-                        result_tools.append(schema_tool)
-                elif tool_type == "influxdb":
-                    tool = await self._create_influxdb_tool(config, tool_name, tool_id)
-                elif tool_type == "odoo_shell":
-                    tool = await self._create_odoo_tool(config, tool_name, tool_id)
-                elif tool_type == "ssh_shell":
-                    tool = await self._create_ssh_tool(config, tool_name, tool_id)
-                elif tool_type == "filesystem_indexer":
-                    tool = await self._create_filesystem_tool(
-                        config, tool_name, tool_id
-                    )
-                elif tool_type == "solidworks_pdm":
-                    tool = await self._create_pdm_search_tool(
-                        config, tool_name, tool_id
-                    )
-                else:
+                builder = tool_builders.get(str(tool_type))
+                if not builder:
                     logger.warning(f"Unknown tool type: {tool_type}")
                     return []
+
+                tool = await builder(config, tool_name, tool_id)
+
+                if str(tool_type) in sql_tool_types:
+                    schema_tool = await self._create_schema_search_tool(
+                        config,
+                        tool_name,
+                        tool_id,
+                    )
+                    if schema_tool:
+                        result_tools.append(schema_tool)
 
                 if tool:
                     result_tools.insert(0, tool)
@@ -2549,12 +2634,7 @@ class RAGComponents:
             max_chars_per_result: int = 500,
         ) -> str:
             """Search indexed documentation for relevant information."""
-            results = []
-            errors = []
-
-            # Clamp parameters
-            k = max(1, min(50, k))
-            max_chars_per_result = max(0, min(10000, max_chars_per_result))
+            k, max_chars_per_result = clamp_search_parameters(k, max_chars_per_result)
 
             # Log the search attempt for debugging
             logger.debug(
@@ -2580,46 +2660,20 @@ class RAGComponents:
                 logger.warning("No FAISS dbs available for search_knowledge")
                 return "No knowledge indexes are currently loaded. Please index some documents first."
 
-            for name, db in dbs_to_search.items():
-                try:
-                    logger.debug(
-                        f"Searching index '{name}' with query: {query[:50]}..., k={k}"
-                    )
-                    # Use MMR or similarity search based on settings
-                    if use_mmr:
-                        fetch_k = max(k * 4, 20)  # Get more candidates for diversity
-                        docs = db.max_marginal_relevance_search(
-                            query, k=k, fetch_k=fetch_k, lambda_mult=mmr_lambda
-                        )
-                    else:
-                        docs = db.similarity_search(query, k=k)
-
-                    logger.debug(f"Index '{name}' returned {len(docs)} documents")
-                    for doc in docs:
-                        source = doc.metadata.get("source", "unknown")
-                        content = doc.page_content
-                        # Apply truncation if max_chars_per_result > 0
-                        if (
-                            max_chars_per_result > 0
-                            and len(content) > max_chars_per_result
-                        ):
-                            content = content[:max_chars_per_result] + "... (truncated)"
-                        results.append(f"[{name}] {source}:\n{content}")
-                except Exception as e:
-                    error_msg = str(e)
-                    logger.warning(f"Error searching {name}: {e}", exc_info=True)
-                    # Detect Ollama connectivity issues
-                    if (
-                        "ollama" in error_msg.lower()
-                        or "failed to connect" in error_msg.lower()
-                    ):
-                        errors.append(
-                            f"[{name}] Embedding service unavailable - Cannot connect to Ollama. "
-                            "Check that Ollama is running and the URL in Settings is accessible from the server "
-                            "(use 'host.docker.internal' instead of 'localhost' when running in Docker)."
-                        )
-                    else:
-                        errors.append(f"[{name}] Search error: {error_msg}")
+            results, errors = self._search_faiss_databases(
+                query=query,
+                dbs_to_search=dbs_to_search,
+                k=k,
+                max_chars_per_result=max_chars_per_result,
+                use_mmr=use_mmr,
+                mmr_lambda=mmr_lambda,
+                include_index_name=True,
+                ollama_error_message=(
+                    "Embedding service unavailable - Cannot connect to Ollama. "
+                    "Check that Ollama is running and the URL in Settings is accessible from the server "
+                    "(use 'host.docker.internal' instead of 'localhost' when running in Docker)."
+                ),
+            )
 
             if results:
                 logger.debug(f"search_knowledge found {len(results)} results")
@@ -3007,55 +3061,32 @@ class RAGComponents:
                     max_chars_per_result: int = 500,
                 ) -> str:
                     """Search this specific index for relevant information."""
-                    results = []
-
-                    # Clamp parameters
-                    k = max(1, min(50, k))
-                    max_chars_per_result = max(0, min(10000, max_chars_per_result))
+                    k, max_chars_per_result = clamp_search_parameters(
+                        k,
+                        max_chars_per_result,
+                    )
 
                     logger.debug(
                         f"search_{idx_name} called with query='{query[:50]}...', k={k}, max_chars={max_chars_per_result}"
                     )
 
-                    try:
-                        # Use MMR or similarity search based on settings
-                        if use_mmr_:
-                            fetch_k = max(k * 4, 20)
-                            docs = idx_db.max_marginal_relevance_search(
-                                query, k=k, fetch_k=fetch_k, lambda_mult=mmr_lambda_
-                            )
-                        else:
-                            docs = idx_db.similarity_search(query, k=k)
+                    results, errors = self._search_faiss_databases(
+                        query=query,
+                        dbs_to_search={idx_name: idx_db},
+                        k=k,
+                        max_chars_per_result=max_chars_per_result,
+                        use_mmr=use_mmr_,
+                        mmr_lambda=mmr_lambda_,
+                        include_index_name=False,
+                        include_index_name_in_errors=False,
+                        ollama_error_message=(
+                            "Embedding service unavailable - Cannot connect to Ollama. "
+                            "Check that Ollama is running and accessible."
+                        ),
+                    )
 
-                        logger.debug(
-                            f"Index '{idx_name}' returned {len(docs)} documents"
-                        )
-                        for doc in docs:
-                            source = doc.metadata.get("source", "unknown")
-                            content = doc.page_content
-                            # Apply truncation if max_chars_per_result > 0
-                            if (
-                                max_chars_per_result > 0
-                                and len(content) > max_chars_per_result
-                            ):
-                                content = (
-                                    content[:max_chars_per_result] + "... (truncated)"
-                                )
-                            results.append(f"{source}:\n{content}")
-                    except Exception as e:
-                        error_msg = str(e)
-                        logger.warning(
-                            f"Error searching {idx_name}: {e}", exc_info=True
-                        )
-                        if (
-                            "ollama" in error_msg.lower()
-                            or "failed to connect" in error_msg.lower()
-                        ):
-                            return (
-                                "Embedding service unavailable - Cannot connect to Ollama. "
-                                "Check that Ollama is running and accessible."
-                            )
-                        return f"Search error: {error_msg}"
+                    if errors:
+                        return errors[0]
 
                     if results:
                         return (
@@ -3164,18 +3195,12 @@ class RAGComponents:
                 default="", description="Brief description of what this query retrieves"
             )
 
-        # Add timeout field dynamically to avoid scope issues
-        PostgresInput.model_fields["timeout"] = Field(
-            default=_default_timeout,
-            ge=0,
-            le=86400,
-            description=(
-                f"Query timeout in seconds (default: {_default_timeout}, "
-                f"max: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). "
-                "Use 0 for no timeout."
-            ),
+        self._add_timeout_field_to_schema(
+            PostgresInput,
+            default_timeout=_default_timeout,
+            timeout_max_seconds=timeout_max_seconds,
+            timeout_label="Query",
         )
-        PostgresInput.model_rebuild()
 
         async def execute_query(
             query: str = "", reason: str = "", timeout: int = _default_timeout, **_: Any
@@ -3547,18 +3572,12 @@ class RAGComponents:
                 default="", description="Brief description of what this code does"
             )
 
-        # Add timeout field dynamically to avoid scope issues
-        OdooInput.model_fields["timeout"] = Field(
-            default=_default_timeout,
-            ge=0,
-            le=86400,
-            description=(
-                f"Execution timeout in seconds (default: {_default_timeout}, "
-                f"max: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). "
-                "Use 0 for no timeout."
-            ),
+        self._add_timeout_field_to_schema(
+            OdooInput,
+            default_timeout=_default_timeout,
+            timeout_max_seconds=timeout_max_seconds,
+            timeout_label="Execution",
         )
-        OdooInput.model_rebuild()
 
         def _build_docker_command(
             container: str, database: str, config_path: str
@@ -3753,18 +3772,12 @@ except Exception as e:
                 default="", description="Brief description of what this command does"
             )
 
-        # Add timeout field dynamically to avoid scope issues
-        SSHInput.model_fields["timeout"] = Field(
-            default=_default_timeout,
-            ge=0,
-            le=86400,
-            description=(
-                f"Command timeout in seconds (default: {_default_timeout}, "
-                f"max: {'unlimited' if timeout_max_seconds == 0 else timeout_max_seconds}). "
-                "Use 0 for no timeout."
-            ),
+        self._add_timeout_field_to_schema(
+            SSHInput,
+            default_timeout=_default_timeout,
+            timeout_max_seconds=timeout_max_seconds,
+            timeout_label="Command",
         )
-        SSHInput.model_rebuild()
 
         async def execute_ssh(
             command: str = "",
@@ -6962,7 +6975,7 @@ except Exception as e:
                             .strip()
                             .lower()
                         )
-                    dep_spec = _FRAMEWORK_REQUIRED_PACKAGES.get(entrypoint_framework)
+                    dep_spec = FRAMEWORK_REQUIRED_PACKAGES.get(entrypoint_framework)
                     if dep_spec is not None:
                         manifest_name, required_pkgs = dep_spec
                         manifest_file = await get_file(manifest_name)
