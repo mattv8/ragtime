@@ -26,13 +26,8 @@ from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain.agents.output_parsers.tools import ToolsAgentOutputParser
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (
-    AIMessage,
-    BaseMessage,
-    HumanMessage,
-    SystemMessage,
-    ToolMessage,
-)
+from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
+                                     SystemMessage, ToolMessage)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_core.tools import StructuredTool, ToolException
@@ -45,95 +40,64 @@ from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.copilot_auth import ensure_copilot_token_fresh
 from ragtime.core.entrypoint_status import FRAMEWORK_REQUIRED_PACKAGES
-from ragtime.core.file_constants import (
-    USERSPACE_MODULE_SOURCE_EXTENSIONS,
-    USERSPACE_STRICT_FRONTEND_EXTENSIONS,
-    USERSPACE_THEME_AUDIT_EXTENSIONS,
-    USERSPACE_TYPESCRIPT_EXTENSIONS,
-)
+from ragtime.core.file_constants import (USERSPACE_MODULE_SOURCE_EXTENSIONS,
+                                         USERSPACE_STRICT_FRONTEND_EXTENSIONS,
+                                         USERSPACE_THEME_AUDIT_EXTENSIONS,
+                                         USERSPACE_TYPESCRIPT_EXTENSIONS)
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (
-    get_context_limit,
-    get_output_limit,
-    register_model_supported_endpoints,
-    requires_responses_api,
-    supports_reasoning,
-    supports_thinking_budget,
-)
-from ragtime.core.ollama import (
-    DEFAULT_WARMUP_TIMEOUT_SECONDS,
-    KEEP_ALIVE,
-    NUM_GPU,
-    get_model_context_length,
-    get_model_details,
-    has_capability,
-    warmup_embedding_model,
-    warmup_model,
-)
-from ragtime.core.security import (
-    _SSH_ENV_VAR_RE,
-    sanitize_output,
-    validate_odoo_code,
-    validate_sql_query,
-    validate_ssh_command,
-)
+from ragtime.core.model_limits import (get_context_limit, get_output_limit,
+                                       register_model_supported_endpoints,
+                                       requires_responses_api,
+                                       supports_reasoning,
+                                       supports_thinking_budget)
+from ragtime.core.ollama import (DEFAULT_WARMUP_TIMEOUT_SECONDS, KEEP_ALIVE,
+                                 NUM_GPU, get_model_context_length,
+                                 get_model_details, has_capability,
+                                 warmup_embedding_model, warmup_model)
+from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
+                                   validate_odoo_code, validate_sql_query,
+                                   validate_ssh_command)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (
-    SSHConfig,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    execute_ssh_command,
-    expand_env_vars_via_ssh,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
+                              execute_ssh_command, expand_env_vars_via_ssh,
+                              ssh_tunnel_config_from_dict)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
-from ragtime.rag.prompts import (
-    BASE_CHAT_SYSTEM_PROMPT,
-    BASE_USERSPACE_SYSTEM_PROMPT,
-    SQLITE_INCLUDE_MODE_HINT,
-    TOOL_OUTPUT_VISIBILITY_PROMPT,
-    TOOL_USAGE_REMINDER,
-    UI_VISUALIZATION_CHAT_PROMPT,
-    UI_VISUALIZATION_COMMON_PROMPT,
-    UI_VISUALIZATION_USERSPACE_PROMPT,
-    build_index_system_prompt,
-    build_tool_system_prompt,
-    build_userspace_entrypoint_nudge,
-    build_userspace_mode_prompt_addition,
-    build_userspace_turn_reminder,
-    build_workspace_continuity_context,
-)
+from ragtime.rag.prompts import (BASE_CHAT_SYSTEM_PROMPT,
+                                 BASE_USERSPACE_SYSTEM_PROMPT,
+                                 SQLITE_INCLUDE_MODE_HINT,
+                                 TOOL_OUTPUT_VISIBILITY_PROMPT,
+                                 TOOL_USAGE_REMINDER,
+                                 UI_VISUALIZATION_CHAT_PROMPT,
+                                 UI_VISUALIZATION_COMMON_PROMPT,
+                                 UI_VISUALIZATION_USERSPACE_PROMPT,
+                                 build_index_system_prompt,
+                                 build_tool_system_prompt,
+                                 build_userspace_entrypoint_nudge,
+                                 build_userspace_mode_prompt_addition,
+                                 build_userspace_turn_reminder,
+                                 build_workspace_continuity_context)
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (
-    CHAT_CHART_DESCRIPTION_SUFFIX,
-    USERSPACE_CHART_DESCRIPTION_SUFFIX,
-    create_chart_tool,
-)
-from ragtime.tools.datatable import (
-    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-    create_datatable_tool,
-)
+from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
+                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
+                                 create_chart_tool)
+from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+                                     create_datatable_tool)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (
-    _is_shallow_repository,
-    create_aggregate_git_history_tool,
-    create_per_index_git_history_tool,
-)
+from ragtime.tools.git_history import (_is_shallow_repository,
+                                       create_aggregate_git_history_tool,
+                                       create_per_index_git_history_tool)
 from ragtime.tools.influxdb import create_influxdb_tool
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (
-    ArtifactType,
-    UpsertWorkspaceFileRequest,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-)
+from ragtime.userspace.models import (ArtifactType, UpsertWorkspaceFileRequest,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -849,12 +813,39 @@ class _CopilotChatOpenAI(ChatOpenAI):
     @staticmethod
     def _is_unsupported_api_error(exc: Exception) -> bool:
         """Return True if *exc* is an OpenAI ``unsupported_api_for_model`` error."""
+        msg = str(exc).lower()
+
         body = getattr(exc, "body", None)
         if isinstance(body, dict):
-            code = body.get("error", {}).get("code", "")
+            error_obj = body.get("error", {})
+            code = str(error_obj.get("code", "") or "")
             if code == "unsupported_api_for_model":
                 return True
-        return "unsupported_api_for_model" in str(exc)
+
+            # TODO: Replace message-phrase heuristics with capability-driven
+            # endpoint selection (supportedEndpoints from provider /models),
+            # and persist normalized provider::model IDs at settings-save time
+            # so request routing does not depend on runtime alias recovery.
+            # Some Copilot/OpenAI-compatible responses omit ``code`` and only
+            # provide a human-readable message like:
+            # "This model is only supported in v1/responses ..."
+            message = str(error_obj.get("message", "") or "").lower()
+            if "only supported in v1/responses" in message:
+                return True
+            if "not in v1/chat/completions" in message:
+                return True
+            if "not a chat model" in message and "v1/completions" in message:
+                return True
+
+        if "unsupported_api_for_model" in msg:
+            return True
+        if "only supported in v1/responses" in msg:
+            return True
+        if "not in v1/chat/completions" in msg:
+            return True
+        if "not a chat model" in msg and "v1/completions" in msg:
+            return True
+        return False
 
     def _switch_to_responses_api(self) -> None:
         """Flip this instance (and cache) to use the Responses API."""
@@ -8101,6 +8092,17 @@ except Exception as e:
             return self.llm
 
         provider = provider_override or configured_provider
+
+        # Backward-compatible provider alias handling for provider-scoped
+        # conversation/default models. GitHub Copilot serves OpenAI-family
+        # model IDs, so legacy values like "openai::gpt-5.1-codex-mini"
+        # should still route through the configured Copilot provider.
+        if (
+            provider_override == "openai"
+            and configured_provider in {"github_copilot", "github_models"}
+        ):
+            provider = configured_provider
+
         max_tokens = await self._resolve_chat_request_max_tokens(provider, model_id)
         return await self._build_llm(provider, model_id, max_tokens)
 

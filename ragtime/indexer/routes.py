@@ -24,8 +24,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, List, Optional
 
 import httpx
-from fastapi import (APIRouter, Body, Depends, File, Form, HTTPException,
-                     Query, UploadFile)
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+)
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from prisma import Prisma
@@ -34,83 +42,118 @@ from starlette.responses import StreamingResponse
 
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.container_capabilities import get_container_capabilities
-from ragtime.core.copilot_auth import (ensure_copilot_token_fresh,
-                                       exchange_github_token_for_copilot_token,
-                                       is_copilot_token_refresh_in_progress)
-from ragtime.core.embedding_models import (OPENAI_EMBEDDING_PRIORITY,
-                                           get_embedding_models)
+from ragtime.core.copilot_auth import (
+    ensure_copilot_token_fresh,
+    exchange_github_token_for_copilot_token,
+    is_copilot_token_refresh_in_progress,
+)
+from ragtime.core.embedding_models import (
+    OPENAI_EMBEDDING_PRIORITY,
+    get_embedding_models,
+)
 from ragtime.core.encryption import decrypt_secret
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (MODEL_FAMILY_PATTERNS,
-                                       get_context_limit, get_output_limit,
-                                       register_model_supported_endpoints,
-                                       supports_function_calling,
-                                       update_model_function_calling,
-                                       update_model_limit)
-from ragtime.core.ollama import (extract_effective_context_length,
-                                 get_model_details, is_embedding_capable,
-                                 is_reachable)
+from ragtime.core.model_limits import (
+    MODEL_FAMILY_PATTERNS,
+    get_context_limit,
+    get_output_limit,
+    register_model_supported_endpoints,
+    supports_function_calling,
+    update_model_function_calling,
+    update_model_limit,
+)
+from ragtime.core.ollama import (
+    extract_effective_context_length,
+    get_model_details,
+    is_embedding_capable,
+    is_reachable,
+)
 from ragtime.core.ollama import list_models
 from ragtime.core.ollama import list_models as ollama_list_models
 from ragtime.core.security import get_current_user, require_admin
-from ragtime.core.sql_utils import (MssqlConnectionError, MysqlConnectionError,
-                                    mssql_connect, mysql_connect,
-                                    normalize_mssql_error_message)
-from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
-                              execute_ssh_command, ssh_tunnel_config_from_dict,
-                              test_ssh_connection)
+from ragtime.core.sql_utils import (
+    MssqlConnectionError,
+    MysqlConnectionError,
+    mssql_connect,
+    mysql_connect,
+    normalize_mssql_error_message,
+)
+from ragtime.core.ssh import (
+    SSHConfig,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    ssh_tunnel_config_from_dict,
+    test_ssh_connection,
+)
 from ragtime.core.tokenization import count_tokens
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.core.vision_models import list_vision_models
 from ragtime.indexer.background_tasks import background_task_service
 from ragtime.indexer.filesystem_service import filesystem_indexer
-from ragtime.indexer.models import (AnalyzeIndexRequest, AppSettings,
-                                    ChatMessage, ChatTaskResponse,
-                                    ChatTaskStatus, CheckRepoVisibilityRequest,
-                                    ConfigurationWarning, Conversation,
-                                    ConversationResponse,
-                                    CreateConversationRequest,
-                                    CreateIndexRequest,
-                                    CreateToolConfigRequest,
-                                    CreateToolGroupRequest,
-                                    DatabaseDiscoverOption, EmbeddingStatus,
-                                    FetchBranchesRequest,
-                                    FetchBranchesResponse,
-                                    FilesystemAnalysisJobResponse,
-                                    FilesystemConnectionConfig,
-                                    FilesystemIndexJobResponse,
-                                    IndexAnalysisResult, IndexConfig,
-                                    IndexInfo, IndexJobResponse, IndexStatus,
-                                    InfluxdbDiscoverRequest,
-                                    InfluxdbDiscoverResponse,
-                                    MssqlDiscoverRequest,
-                                    MssqlDiscoverResponse,
-                                    MysqlDiscoverRequest,
-                                    MysqlDiscoverResponse, OcrMode,
-                                    PdmDiscoverRequest, PdmDiscoverResponse,
-                                    PdmIndexJobResponse,
-                                    PostgresDiscoverRequest,
-                                    PostgresDiscoverResponse,
-                                    ProviderPromptDebugListResponse,
-                                    ProviderPromptDebugRecord,
-                                    RepoVisibilityResponse,
-                                    RetryVisualizationRequest,
-                                    RetryVisualizationResponse,
-                                    SchemaIndexJobResponse, SendMessageRequest,
-                                    ToolConfig, ToolGroup, ToolTestRequest,
-                                    ToolType, TriggerFilesystemIndexRequest,
-                                    TriggerPdmIndexRequest,
-                                    TriggerSchemaIndexRequest,
-                                    UpdateSettingsRequest,
-                                    UpdateToolConfigRequest,
-                                    UpdateToolGroupRequest, VectorStoreType)
+from ragtime.indexer.models import (
+    AnalyzeIndexRequest,
+    AppSettings,
+    ChatMessage,
+    ChatTaskResponse,
+    ChatTaskStatus,
+    CheckRepoVisibilityRequest,
+    ConfigurationWarning,
+    Conversation,
+    ConversationResponse,
+    CreateConversationRequest,
+    CreateIndexRequest,
+    CreateToolConfigRequest,
+    CreateToolGroupRequest,
+    DatabaseDiscoverOption,
+    EmbeddingStatus,
+    FetchBranchesRequest,
+    FetchBranchesResponse,
+    FilesystemAnalysisJobResponse,
+    FilesystemConnectionConfig,
+    FilesystemIndexJobResponse,
+    IndexAnalysisResult,
+    IndexConfig,
+    IndexInfo,
+    IndexJobResponse,
+    IndexStatus,
+    InfluxdbDiscoverRequest,
+    InfluxdbDiscoverResponse,
+    MssqlDiscoverRequest,
+    MssqlDiscoverResponse,
+    MysqlDiscoverRequest,
+    MysqlDiscoverResponse,
+    OcrMode,
+    PdmDiscoverRequest,
+    PdmDiscoverResponse,
+    PdmIndexJobResponse,
+    PostgresDiscoverRequest,
+    PostgresDiscoverResponse,
+    ProviderPromptDebugListResponse,
+    ProviderPromptDebugRecord,
+    RepoVisibilityResponse,
+    RetryVisualizationRequest,
+    RetryVisualizationResponse,
+    SchemaIndexJobResponse,
+    SendMessageRequest,
+    ToolConfig,
+    ToolGroup,
+    ToolTestRequest,
+    ToolType,
+    TriggerFilesystemIndexRequest,
+    TriggerPdmIndexRequest,
+    TriggerSchemaIndexRequest,
+    UpdateSettingsRequest,
+    UpdateToolConfigRequest,
+    UpdateToolGroupRequest,
+    VectorStoreType,
+)
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import repository
-from ragtime.indexer.schema_service import (SCHEMA_INDEXER_CAPABLE_TYPES,
-                                            schema_indexer)
+from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
 from ragtime.indexer.service import indexer
 from ragtime.indexer.title_generation import schedule_title_generation
 from ragtime.indexer.utils import safe_tool_name
@@ -1825,8 +1868,7 @@ async def update_tool_config(
 
                 # Check for name conflicts with existing indexes
                 if is_faiss and new_index_name != old_index_name:
-                    from ragtime.indexer.vector_backends import \
-                        FAISS_INDEX_BASE_PATH
+                    from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 
                     new_path = FAISS_INDEX_BASE_PATH / new_index_name
                     if new_path.exists():
@@ -1847,8 +1889,7 @@ async def update_tool_config(
             # For FAISS filesystem indexes, rename using the backend
             if is_faiss and old_index_name and new_index_name:
                 if old_index_name != new_index_name:
-                    from ragtime.indexer.vector_backends import \
-                        get_faiss_backend
+                    from ragtime.indexer.vector_backends import get_faiss_backend
 
                     faiss_backend = get_faiss_backend()
                     success = await faiss_backend.rename_index(
@@ -2822,8 +2863,7 @@ async def discover_influxdb_buckets(
 
     def discover_buckets(effective_url: str) -> tuple[bool, list[str], str | None]:
         try:
-            from influxdb_client import \
-                InfluxDBClient  # type: ignore[import-untyped]
+            from influxdb_client import InfluxDBClient  # type: ignore[import-untyped]
         except ImportError:
             return False, [], "influxdb-client package not installed"
 
@@ -6450,10 +6490,22 @@ ANTHROPIC_DEFAULT_MODEL = ""
 
 
 def _providers_equivalent(selected: str, actual: str) -> bool:
-    """Check provider equivalence, treating github_models/github_copilot as aliases."""
+    """Check provider equivalence, treating github_models/github_copilot as aliases.
+
+    Also treats openai as equivalent to github_copilot/github_models because
+    GitHub Copilot proxies OpenAI models, so a model registered in
+    allowedChatModels as 'openai::gpt-5.x-codex' should still match when the
+    model is served by the github_copilot provider.
+    """
     if selected == actual:
         return True
-    return {selected, actual} <= {"github_copilot", "github_models"}
+    if {selected, actual} <= {"github_copilot", "github_models"}:
+        return True
+    # GitHub Copilot proxies OpenAI models; allow openai-registered models to
+    # match when served by github_copilot or github_models.
+    if {selected, actual} <= {"openai", "github_copilot", "github_models"}:
+        return True
+    return False
 
 
 def _normalize_provider_alias(provider: Optional[str]) -> str:
@@ -7901,10 +7953,7 @@ async def get_available_chat_models():
                 _fetch_github_pat_task(github_models_token, "github_models")
             )
         )
-    elif (
-        github_auth_mode == "oauth"
-        and (github_copilot_token or github_refresh_token)
-    ):
+    elif github_auth_mode == "oauth" and (github_copilot_token or github_refresh_token):
         provider_states["github_copilot"].configured = True
         provider_states["github_copilot"].connected = bool(
             github_copilot_token and len(github_copilot_token) > 10
@@ -8073,7 +8122,12 @@ async def get_available_chat_models():
     # When a configured provider never fetched (e.g. temporary auth mismatch),
     # keep availability false and attach a stable generic message.
     for state in provider_states.values():
-        if state.configured and not state.available and not state.loading and not state.error:
+        if (
+            state.configured
+            and not state.available
+            and not state.loading
+            and not state.error
+        ):
             state.error = "No models available from provider."
 
     return AvailableModelsResponse(

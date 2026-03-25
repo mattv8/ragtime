@@ -47,6 +47,8 @@ MODEL_FAMILY_PATTERNS = {
         # GPT-4o/turbo aliases should stay explicit before numeric captures.
         (r"^gpt-4o", "GPT-4o"),
         (r"^gpt-4-turbo", "GPT-4 Turbo"),
+        # Codex family must come before generic numeric captures.
+        (r"^gpt-\d+(?:\.\d+)?-codex", "Codex"),
         # Numeric GPT families are captured dynamically (e.g. 5.4 -> GPT-5.4).
         (r"^gpt-(\d+\.\d+)(?:$|[-_])", None),
         (r"^gpt-(\d+)(?:$|[-_])", None),
@@ -72,6 +74,8 @@ MODEL_FAMILY_PATTERNS = {
     "github_copilot": [
         # GitHub-hosted OpenAI families
         (r"^(openai/)?gpt-4o", "GPT-4o"),
+        # Codex family must come before generic numeric captures.
+        (r"^(?:openai/)?gpt-\d+(?:\.\d+)?-codex", "Codex"),
         (r"^(?:openai/)?gpt-(\d+\.\d+)(?:$|[-_])", None),
         (r"^(?:openai/)?gpt-(\d+)(?:$|[-_])", None),
         # Claude families (supports both prefixed and unprefixed ids)
@@ -98,6 +102,8 @@ MODEL_FAMILY_PATTERNS = {
         (r"o\d", "O-Series"),
     ],
     "github_models": [
+        # Codex family must come before generic numeric captures.
+        (r"^openai/gpt-\d+(?:\.\d+)?-codex", "Codex"),
         (r"^openai/gpt-(\d+\.\d+)(?:$|[-_])", None),
         (r"^openai/gpt-(\d+)(?:$|[-_])", None),
         (r"^anthropic/claude-haiku-4-5", "Haiku"),
