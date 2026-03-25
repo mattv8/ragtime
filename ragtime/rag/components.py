@@ -17,6 +17,7 @@ import subprocess
 import time
 from pathlib import Path, PurePosixPath
 from typing import Any, List, Optional, Union
+from urllib.parse import quote
 
 import httpx
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -5458,7 +5459,24 @@ except Exception as e:
                 default="body",
                 description=(
                     "Selector that should be visible before capture. "
-                    "Use a stable app-root selector when possible."
+                    "When capture_element is true, this selector is also used as the "
+                    "element clipping target and must match exactly one visible element."
+                ),
+            )
+            capture_element: bool = Field(
+                default=False,
+                description=(
+                    "When true, clip screenshot to the unique visible element matched by "
+                    "wait_for_selector. Capture fails if selector is missing or ambiguous."
+                ),
+            )
+            clip_padding_px: int = Field(
+                default=16,
+                ge=0,
+                le=256,
+                description=(
+                    "Optional padding around the captured element clip, in pixels. "
+                    "Applies only when capture_element is true."
                 ),
             )
             wait_after_load_ms: int = Field(
@@ -7238,9 +7256,10 @@ except Exception as e:
             full_page: bool = True,
             timeout_ms: int = 25000,
             wait_for_selector: str = "body",
+            capture_element: bool = False,
+            clip_padding_px: int = 16,
             wait_after_load_ms: int = 1800,
             refresh_before_capture: bool = True,
-            filename: str | None = None,
             reason: str = "",
             **_: Any,
         ) -> str:
@@ -7256,9 +7275,10 @@ except Exception as e:
                         full_page=full_page,
                         timeout_ms=timeout_ms,
                         wait_for_selector=wait_for_selector,
+                        capture_element=capture_element,
+                        clip_padding_px=clip_padding_px,
                         wait_after_load_ms=wait_after_load_ms,
                         refresh_before_capture=refresh_before_capture,
-                        filename=filename,
                     )
                 )
             except HTTPException as exc:
@@ -7266,6 +7286,20 @@ except Exception as e:
                 raise ToolException(
                     f"Runtime screenshot capture failed: {detail_text}"
                 ) from exc
+            except Exception as exc:
+                raise ToolException(
+                    f"Screenshot capture failed unexpectedly: {exc}"
+                ) from exc
+
+            screenshot_path = str(response_payload.get("screenshot_path") or "").strip()
+            if screenshot_path:
+                screenshot_name = Path(screenshot_path).name
+                if screenshot_name:
+                    image_url = (
+                        f"/indexes/userspace/runtime/workspaces/{workspace_id}/"
+                        f"screenshots/{quote(screenshot_name)}"
+                    )
+                    response_payload["preview_image_url"] = image_url
             return json.dumps(response_payload, indent=2)
 
         async def run_terminal_command(

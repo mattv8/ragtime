@@ -8,9 +8,11 @@ const viewportHeight = Number(process.argv[4] || 900);
 const captureFullPage = (process.argv[5] || 'true') === 'true';
 const timeoutMs = Number(process.argv[6] || 25000);
 const waitForSelector = process.argv[7] || '';
-const waitAfterLoadMs = Number(process.argv[8] || 1800);
-const refreshBeforeCapture = (process.argv[9] || 'true') === 'true';
-const maxPixels = Number(process.argv[10] || 1440000);
+const captureElement = (process.argv[8] || 'false') === 'true';
+const clipPaddingPx = Number(process.argv[9] || 16);
+const waitAfterLoadMs = Number(process.argv[10] || 1800);
+const refreshBeforeCapture = (process.argv[11] || 'true') === 'true';
+const maxPixels = Number(process.argv[12] || 1440000);
 
 let playwright;
 try {
@@ -124,8 +126,111 @@ async function run() {
         let effectiveWidth = viewportWidth;
         let effectiveHeight = viewportHeight;
         let effectiveFullPage = captureFullPage;
+        let elementMatchCount = 0;
+        let elementVisibleCount = 0;
+        let elementClipUsed = false;
+        let elementBounds = null;
 
-        if (captureFullPage) {
+        if (captureElement) {
+            if (!waitForSelector) {
+                throw new Error('capture_element=true requires wait_for_selector');
+            }
+
+            const matches = page.locator(waitForSelector);
+            elementMatchCount = await matches.count();
+            if (elementMatchCount < 1) {
+                throw new Error(
+                    `Element capture selector matched no elements: ${waitForSelector}`
+                );
+            }
+
+            const visibleIndexes = [];
+            for (let i = 0; i < elementMatchCount; i += 1) {
+                const candidate = matches.nth(i);
+                const isVisible = await candidate.isVisible().catch(() => false);
+                if (isVisible) {
+                    visibleIndexes.push(i);
+                }
+            }
+
+            elementVisibleCount = visibleIndexes.length;
+            if (elementVisibleCount !== 1) {
+                throw new Error(
+                    `Element capture selector must match exactly one visible element: ${waitForSelector} (visible=${elementVisibleCount}, total=${elementMatchCount})`
+                );
+            }
+
+            const target = matches.nth(visibleIndexes[0]);
+            await target.scrollIntoViewIfNeeded().catch(() => null);
+            const rawBounds = await target.boundingBox();
+            if (!rawBounds || rawBounds.width <= 0 || rawBounds.height <= 0) {
+                throw new Error(
+                    `Element capture target has invalid bounds: ${waitForSelector}`
+                );
+            }
+
+            const pad = Math.max(0, Math.floor(Number(clipPaddingPx) || 0));
+            const pageMetrics = await page.evaluate(() => {
+                const body = document.body;
+                const doc = document.documentElement;
+                const pageWidth = Math.max(
+                    body ? body.scrollWidth : 0,
+                    doc ? doc.scrollWidth : 0,
+                    window.innerWidth || 0
+                );
+                const pageHeight = Math.max(
+                    body ? body.scrollHeight : 0,
+                    doc ? doc.scrollHeight : 0,
+                    window.innerHeight || 0
+                );
+                return { pageWidth, pageHeight };
+            });
+
+            const maxPageWidth = Math.max(1, Number(pageMetrics.pageWidth) || viewportWidth);
+            const maxPageHeight = Math.max(1, Number(pageMetrics.pageHeight) || viewportHeight);
+
+            let clipX = Math.max(0, Math.floor(rawBounds.x - pad));
+            let clipY = Math.max(0, Math.floor(rawBounds.y - pad));
+            let clipRight = Math.min(maxPageWidth, Math.ceil(rawBounds.x + rawBounds.width + pad));
+            let clipBottom = Math.min(maxPageHeight, Math.ceil(rawBounds.y + rawBounds.height + pad));
+
+            if (clipRight <= clipX) {
+                clipRight = Math.min(maxPageWidth, clipX + 1);
+            }
+            if (clipBottom <= clipY) {
+                clipBottom = Math.min(maxPageHeight, clipY + 1);
+            }
+
+            let clipWidth = Math.max(1, clipRight - clipX);
+            let clipHeight = Math.max(1, clipBottom - clipY);
+
+            if (clipWidth * clipHeight > maxPixels) {
+                const scale = Math.sqrt(maxPixels / (clipWidth * clipHeight));
+                clipWidth = Math.max(1, Math.floor(clipWidth * scale));
+                clipHeight = Math.max(1, Math.floor(clipHeight * scale));
+            }
+
+            screenshotOptions.clip = {
+                x: clipX,
+                y: clipY,
+                width: clipWidth,
+                height: clipHeight,
+            };
+            elementClipUsed = true;
+            effectiveWidth = clipWidth;
+            effectiveHeight = clipHeight;
+            effectiveFullPage = false;
+            elementBounds = {
+                x: rawBounds.x,
+                y: rawBounds.y,
+                width: rawBounds.width,
+                height: rawBounds.height,
+                clip: screenshotOptions.clip,
+                padding_px: Math.max(0, Math.floor(Number(clipPaddingPx) || 0)),
+            };
+        }
+
+        if (!captureElement && captureFullPage) {
             const fullHeight = await page.evaluate(() => {
                 const bodyHeight = document.body ? document.body.scrollHeight : 0;
                 const docHeight = document.documentElement
@@ -148,7 +253,7 @@ async function run() {
                 };
                 effectiveHeight = clipHeight;
             }
-        } else if (viewportWidth * viewportHeight > maxPixels) {
+        } else if (!captureElement && viewportWidth * viewportHeight > maxPixels) {
             const scale = Math.sqrt(maxPixels / (viewportWidth * viewportHeight));
             const clipWidth = Math.max(320, Math.floor(viewportWidth * scale));
             const clipHeight = Math.max(240, Math.floor(viewportHeight * scale));
@@ -182,6 +287,12 @@ async function run() {
             effective_full_page: effectiveFullPage,
             wait_after_load_ms: waitAfterLoadMs,
             effective_wait_after_load_ms: settleWaitMs,
+            capture_element: captureElement,
+            element_selector: waitForSelector || null,
+            element_match_count: elementMatchCount,
+            element_visible_count: elementVisibleCount,
+            element_clip_used: elementClipUsed,
+            element_bounds: elementBounds,
         };
         process.stdout.write(JSON.stringify(output));
     } finally {

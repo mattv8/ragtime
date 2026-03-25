@@ -9,6 +9,7 @@ import shutil
 import signal
 import socket
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -1236,15 +1237,17 @@ class WorkerService:
             requested_width = max(320, int(payload.width))
             requested_height = max(240, int(payload.height))
             requested_wait_after_load_ms = max(0, int(payload.wait_after_load_ms))
-            wait_after_load_floor_ms = (
-                _SCREENSHOT_WAIT_AFTER_LOAD_HMR_FLOOR_MS
-                if bool(payload.refresh_before_capture)
-                else _SCREENSHOT_WAIT_AFTER_LOAD_FLOOR_MS
-            )
-            effective_wait_after_load_ms = max(
-                requested_wait_after_load_ms,
-                wait_after_load_floor_ms,
-            )
+            requested_clip_padding_px = min(max(0, int(payload.clip_padding_px)), 256)
+            capture_element = bool(payload.capture_element)
+            wait_selector = str(payload.wait_for_selector or "").strip()
+            if capture_element and not wait_selector:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "capture_element=true requires wait_for_selector to target "
+                        "a unique visible element"
+                    ),
+                )
             width = min(requested_width, MAX_USERSPACE_SCREENSHOT_WIDTH)
             height = min(requested_height, MAX_USERSPACE_SCREENSHOT_HEIGHT)
             requested_pixels = width * height
@@ -1273,23 +1276,7 @@ class WorkerService:
             output_dir = index_data_root / "_tmp" / session.workspace_id
             output_dir.mkdir(parents=True, exist_ok=True)
 
-            timestamp = int(time.time() * 1000)
-            if payload.filename and str(payload.filename).strip():
-                candidate = (
-                    str(payload.filename).strip().replace("\\", "/").split("/")[-1]
-                )
-            else:
-                path_slug = (
-                    normalized_preview_path.replace("/", "_").replace(" ", "_")
-                    or "root"
-                )
-                candidate = f"preview_{path_slug}_{timestamp}.png"
-
-            safe_candidate = re.sub(r"[^A-Za-z0-9._-]", "_", candidate)[:200]
-            if not safe_candidate:
-                safe_candidate = f"preview_{timestamp}.png"
-            if not safe_candidate.lower().endswith(".png"):
-                safe_candidate += ".png"
+            safe_candidate = f"{uuid.uuid4().hex}.png"
 
             output_path = output_dir / safe_candidate
 
@@ -1316,8 +1303,10 @@ class WorkerService:
             str(height),
             "true" if payload.full_page else "false",
             str(payload.timeout_ms),
-            str(payload.wait_for_selector or "").strip(),
-            str(effective_wait_after_load_ms),
+            wait_selector,
+            "true" if capture_element else "false",
+            str(requested_clip_padding_px),
+            str(requested_wait_after_load_ms),
             "true" if payload.refresh_before_capture else "false",
             str(MAX_USERSPACE_SCREENSHOT_PIXELS),
             stdout=asyncio.subprocess.PIPE,
@@ -1364,10 +1353,13 @@ class WorkerService:
                 "height": height,
                 "full_page": bool(payload.full_page),
                 "max_pixels": MAX_USERSPACE_SCREENSHOT_PIXELS,
-                "wait_for_selector": str(payload.wait_for_selector or "").strip()
-                or None,
+                "wait_for_selector": wait_selector or None,
+                "capture_element": capture_element,
+                "clip_padding_px": requested_clip_padding_px,
                 "wait_after_load_ms": requested_wait_after_load_ms,
-                "effective_wait_after_load_ms": effective_wait_after_load_ms,
+                "effective_wait_after_load_ms": int(
+                    (probe.get("effective_wait_after_load_ms") or requested_wait_after_load_ms)
+                ),
                 "refresh_before_capture": bool(payload.refresh_before_capture),
             },
             probe=probe if isinstance(probe, dict) else {},

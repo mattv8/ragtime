@@ -4,14 +4,16 @@ import asyncio
 import contextlib
 import importlib
 import json
+import os
 import re
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from fastapi import (APIRouter, Depends, Header, HTTPException, Request,
                      WebSocket, WebSocketDisconnect)
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from ragtime.config.settings import settings
 from ragtime.core.auth import validate_session
@@ -30,6 +32,7 @@ router = APIRouter(prefix="/indexes/userspace", tags=["User Space Runtime"])
 
 
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+_SCREENSHOT_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,220}$")
 
 
 async def _safe_close_websocket(websocket: WebSocket, code: int) -> None:
@@ -439,6 +442,43 @@ async def restart_devserver(
     user: Any = Depends(get_current_user),
 ):
     return await userspace_runtime_service.restart_devserver(workspace_id, user.id)
+
+
+@router.get("/runtime/workspaces/{workspace_id}/screenshots/{filename}")
+async def get_runtime_screenshot(
+    workspace_id: str,
+    filename: str,
+    user: Any = Depends(get_current_user),
+):
+    await userspace_service.enforce_workspace_role(workspace_id, user.id, "viewer")
+
+    normalized_name = (filename or "").strip().replace("\\", "/")
+    basename = Path(normalized_name).name
+    if (
+        not basename
+        or basename != normalized_name
+        or not _SCREENSHOT_NAME_RE.fullmatch(basename)
+        or not basename.lower().endswith(".png")
+    ):
+        raise HTTPException(status_code=400, detail="Invalid screenshot filename")
+
+    index_data_root = Path(os.getenv("INDEX_DATA_PATH", "/data"))
+    screenshot_dir = (index_data_root / "_tmp" / workspace_id).resolve()
+    screenshot_path = (screenshot_dir / basename).resolve()
+
+    try:
+        screenshot_path.relative_to(screenshot_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid screenshot path") from exc
+
+    if not screenshot_path.exists() or not screenshot_path.is_file():
+        raise HTTPException(status_code=404, detail="Screenshot not found")
+
+    return FileResponse(
+        path=str(screenshot_path),
+        media_type="image/png",
+        filename=basename,
+    )
 
 
 @router.post(

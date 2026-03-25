@@ -672,6 +672,15 @@ interface ToolCallDisplayProps {
   onRetrySuccess?: (newOutput: string) => void;
 }
 
+interface ScreenshotToolOutput {
+  preview_image_url?: string;
+  render?: {
+    width?: number;
+    height?: number;
+    effective_wait_after_load_ms?: number;
+  };
+}
+
 const ToolCallDisplay = memo(function ToolCallDisplay({
   toolCall,
   defaultExpanded = false,
@@ -685,6 +694,7 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
   const [isRetrying, setIsRetrying] = useState(false);
   const [retryOutput, setRetryOutput] = useState<string | null>(null);
   const [retryError, setRetryError] = useState<string | null>(null);
+  const [zoomedImage, setZoomedImage] = useState<string | null>(null);
 
   // Check if this is a visualization tool that can be retried
   const isVisualizationTool = toolCall.tool === 'create_chart' || toolCall.tool === 'create_datatable';
@@ -726,6 +736,28 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
 
   // Effective output (use retry output if available)
   const effectiveOutput = retryOutput || toolCall.output;
+
+  const screenshotPreview = useMemo(() => {
+    if (toolCall.tool !== 'capture_userspace_screenshot' || !effectiveOutput) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(effectiveOutput) as ScreenshotToolOutput;
+      const url = typeof parsed.preview_image_url === 'string' ? parsed.preview_image_url.trim() : '';
+      if (!url) return null;
+      const width = Number(parsed.render?.width || 0);
+      const height = Number(parsed.render?.height || 0);
+      const effectiveWait = Number(parsed.render?.effective_wait_after_load_ms || 0);
+      return {
+        imageUrl: url,
+        width: Number.isFinite(width) && width > 0 ? width : null,
+        height: Number.isFinite(height) && height > 0 ? height : null,
+        effectiveWait: Number.isFinite(effectiveWait) && effectiveWait > 0 ? effectiveWait : null,
+      };
+    } catch {
+      return null;
+    }
+  }, [effectiveOutput, toolCall.tool]);
 
   // Check if this is a chart tool
   const chartData = useMemo(() => {
@@ -894,6 +926,7 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
   const statusIcon = getStatusIcon();
 
   return (
+  <>
     <div className={`tool-call tool-call-${toolCall.status}${isFailed ? ' tool-call-failed' : ''}`}>
       <div className="tool-call-header-row">
         <button
@@ -953,27 +986,70 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
             </div>
           )}
           {toolCall.output && (
-            <div className="tool-call-section">
-              <div className="tool-call-section-header">
-                <span className="tool-call-section-label">Result:</span>
-                <button
-                  className="tool-call-copy-btn"
-                  onClick={() => copyToClipboard(displayText || toolCall.output!, 'result')}
-                  title="Copy result"
-                >
-                  {copiedResult ? <Check size={12} /> : <Copy size={12} />}
-                </button>
+            screenshotPreview && !hasErrorInOutput ? (
+              <div className="tool-call-section">
+                <div className="tool-call-screenshot-meta">
+                  {screenshotPreview.width && screenshotPreview.height
+                    ? `${screenshotPreview.width}\u00d7${screenshotPreview.height}`
+                    : 'Screenshot'}
+                  {screenshotPreview.effectiveWait
+                    ? ` | settled ${screenshotPreview.effectiveWait}ms`
+                    : ''}
+                </div>
+                <img
+                  src={screenshotPreview.imageUrl}
+                  alt="Captured User Space screenshot"
+                  className="tool-call-screenshot-image"
+                  loading="lazy"
+                  onClick={() => setZoomedImage(screenshotPreview.imageUrl)}
+                  style={{ cursor: 'zoom-in' }}
+                />
               </div>
-              {tableData ? (
-                <DataTable data={tableData} />
-              ) : (
-                <pre className="tool-call-code">{displayText}</pre>
-              )}
-            </div>
+            ) : (
+              <div className="tool-call-section">
+                <div className="tool-call-section-header">
+                  <span className="tool-call-section-label">Result:</span>
+                  <button
+                    className="tool-call-copy-btn"
+                    onClick={() => copyToClipboard(displayText || toolCall.output!, 'result')}
+                    title="Copy result"
+                  >
+                    {copiedResult ? <Check size={12} /> : <Copy size={12} />}
+                  </button>
+                </div>
+                {tableData ? (
+                  <DataTable data={tableData} />
+                ) : (
+                  <pre className="tool-call-code">{displayText}</pre>
+                )}
+              </div>
+            )
           )}
         </div>
       )}
     </div>
+    {zoomedImage && (
+      <div
+        className="image-modal-overlay"
+        onClick={() => setZoomedImage(null)}
+        onKeyDown={(e) => e.key === 'Escape' && setZoomedImage(null)}
+        role="dialog"
+        aria-modal="true"
+        tabIndex={-1}
+      >
+        <div className="image-modal-content" onClick={(e) => e.stopPropagation()}>
+          <button
+            className="image-modal-close"
+            onClick={() => setZoomedImage(null)}
+            title="Close"
+          >
+            <X size={24} />
+          </button>
+          <img src={zoomedImage!} alt="Screenshot full view" />
+        </div>
+      </div>
+    )}
+  </>
   );
 })
 

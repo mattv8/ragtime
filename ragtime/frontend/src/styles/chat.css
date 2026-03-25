@@ -1788,6 +1788,22 @@
   padding: 0;
   border: none;
 }
+
+.tool-call-screenshot-meta {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  margin: 0 0 var(--space-xs) 0;
+}
+
+.tool-call-screenshot-image {
+  display: block;
+  width: 100%;
+  max-width: 720px;
+  height: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
 /* =============================================================================
    MARKDOWN CONTENT
    ============================================================================= */

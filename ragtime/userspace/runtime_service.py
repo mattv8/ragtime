@@ -1796,9 +1796,10 @@ class UserSpaceRuntimeService:
         full_page: bool = True,
         timeout_ms: int = 25000,
         wait_for_selector: str = "body",
+        capture_element: bool = False,
+        clip_padding_px: int = 16,
         wait_after_load_ms: int = 1800,
         refresh_before_capture: bool = True,
-        filename: str | None = None,
     ) -> dict[str, Any]:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
         session = await self.ensure_workspace_preview_session(workspace_id, user_id)
@@ -1809,9 +1810,10 @@ class UserSpaceRuntimeService:
             "full_page": bool(full_page),
             "timeout_ms": int(timeout_ms),
             "wait_for_selector": str(wait_for_selector or ""),
+            "capture_element": bool(capture_element),
+            "clip_padding_px": int(clip_padding_px),
             "wait_after_load_ms": int(wait_after_load_ms),
             "refresh_before_capture": bool(refresh_before_capture),
-            "filename": filename,
         }
         return await self._runtime_provider_capture_screenshot(
             session.provider_session_id,

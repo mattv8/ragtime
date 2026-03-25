@@ -164,6 +164,19 @@ class RuntimeScreenshotRequest(BaseModel):
         default="body",
         description="Optional selector to wait for before capture",
     )
+    capture_element: bool = Field(
+        default=False,
+        description=(
+            "Capture the unique visible element matched by wait_for_selector. "
+            "Fails when selector is missing or ambiguous."
+        ),
+    )
+    clip_padding_px: int = Field(
+        default=16,
+        ge=0,
+        le=256,
+        description="Optional padding around element clip in pixels",
+    )
     wait_after_load_ms: int = Field(
         default=1800,
         description="Extra post-load settle wait before capture (helps absorb HMR reloads)",
@@ -171,10 +184,6 @@ class RuntimeScreenshotRequest(BaseModel):
     refresh_before_capture: bool = Field(
         default=True,
         description="Refresh the page once before screenshot capture",
-    )
-    filename: str | None = Field(
-        default=None,
-        description="Optional filename for saved screenshot",
     )
 
 
@@ -185,7 +194,12 @@ class RuntimeScreenshotResponse(BaseModel):
     screenshot_path: str = Field(description="Absolute screenshot file path")
     screenshot_size_bytes: int = Field(description="Screenshot file size in bytes")
     render: dict[str, Any] = Field(description="Capture/render settings metadata")
-    probe: dict[str, Any] = Field(description="Captured browser probe metadata")
+    probe: dict[str, Any] = Field(
+        description=(
+            "Captured browser probe metadata including optional element clipping "
+            "diagnostics"
+        )
+    )
 
 
 class RuntimeExecRequest(BaseModel):
