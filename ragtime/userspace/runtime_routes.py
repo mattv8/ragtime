@@ -12,22 +12,33 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
-from fastapi import (APIRouter, Depends, Header, HTTPException, Request,
-                     WebSocket, WebSocketDisconnect)
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from ragtime.config.settings import settings
 from ragtime.core.auth import validate_session
 from ragtime.core.database import get_db
 from ragtime.core.security import get_current_user, get_current_user_optional
-from ragtime.userspace.models import (UserSpaceCapabilityTokenResponse,
-                                      UserSpaceFileResponse,
-                                      UserSpaceRuntimeActionResponse,
-                                      UserSpaceRuntimeSessionResponse,
-                                      UserSpaceRuntimeStatusResponse)
-from ragtime.userspace.runtime_service import (RuntimeVersionConflictError,
-                                               userspace_runtime_service)
-from ragtime.userspace.service import userspace_service
+from ragtime.userspace.models import (
+    UserSpaceCapabilityTokenResponse,
+    UserSpaceFileResponse,
+    UserSpaceRuntimeActionResponse,
+    UserSpaceRuntimeSessionResponse,
+    UserSpaceRuntimeStatusResponse,
+)
+from ragtime.userspace.runtime_service import (
+    RuntimeVersionConflictError,
+    userspace_runtime_service,
+)
+from ragtime.userspace.service import _RUNTIME_BRIDGE_CONTENT, userspace_service
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space Runtime"])
 
@@ -370,7 +381,7 @@ _ROOT_REL_JS_URL_RE = re.compile(
 )
 
 
-_BRIDGE_SCRIPT_TAG = b'<script src=".ragtime/bridge.js"></script>'
+_BRIDGE_SCRIPT_TAG = b'<script src="/indexes/userspace/runtime-bridge.js"></script>'
 _BRIDGE_DETECT_RE = re.compile(rb"bridge\.js", re.IGNORECASE)
 _HEAD_CLOSE_RE = re.compile(rb"(</head\s*>)", re.IGNORECASE)
 _FIRST_SCRIPT_RE = re.compile(rb"(<script[\s>])", re.IGNORECASE)
@@ -393,6 +404,17 @@ def _inject_bridge_script(html: bytes) -> bytes:
     if m:
         return html[: m.start()] + tag + html[m.start() :]
     return html
+
+
+@router.get("/runtime-bridge.js", include_in_schema=False)
+async def runtime_bridge_script() -> Response:
+    return Response(
+        content=_RUNTIME_BRIDGE_CONTENT,
+        media_type="application/javascript",
+        headers={
+            "Cache-Control": "public, max-age=3600",
+        },
+    )
 
 
 def _rewrite_root_relative_urls(html: bytes, proxy_base_path: str) -> bytes:
@@ -1160,4 +1182,5 @@ async def shared_token_preview_proxy_websocket(
         path,
         query=websocket.url.query or None,
     )
+    await _proxy_websocket_request(websocket, _to_websocket_url(upstream_url))
     await _proxy_websocket_request(websocket, _to_websocket_url(upstream_url))
