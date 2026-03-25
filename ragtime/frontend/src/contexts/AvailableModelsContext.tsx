@@ -3,6 +3,8 @@ import type { AvailableModel, AvailableModelsResponse } from '@/types';
 
 /** How long to wait before aborting a model-fetch request. */
 const MODEL_FETCH_TIMEOUT_MS = 20_000;
+/** Poll cadence while backend reports model discovery/refresh still in progress. */
+const MODEL_REFRESH_POLL_MS = 1_500;
 
 interface AvailableModelsContextValue {
   /** Filtered models for chat (respects allowed_models). */
@@ -34,6 +36,15 @@ export function AvailableModelsProvider({ children }: { children: ReactNode }) {
   const inflightRef = useRef(false);
   // Flag any refresh() calls that arrived while a fetch was running.
   const pendingRefreshRef = useRef(false);
+  // Timer for follow-up polls while backend refresh/model discovery is in progress.
+  const pollTimeoutRef = useRef<number | null>(null);
+
+  const clearPollTimer = useCallback(() => {
+    if (pollTimeoutRef.current !== null) {
+      window.clearTimeout(pollTimeoutRef.current);
+      pollTimeoutRef.current = null;
+    }
+  }, []);
 
   const doFetch = useCallback(async () => {
     if (inflightRef.current) {
@@ -55,6 +66,7 @@ export function AvailableModelsProvider({ children }: { children: ReactNode }) {
       const response = await fetch('/indexes/chat/available-models', {
         credentials: 'include',
         signal: controller.signal,
+        cache: 'no-store',
       });
       if (!response.ok) {
         throw new Error(`Model fetch failed: ${response.status}`);
@@ -95,12 +107,29 @@ export function AvailableModelsProvider({ children }: { children: ReactNode }) {
     void doFetch();
   }, [doFetch]);
 
+  useEffect(() => {
+    clearPollTimer();
+    const shouldPoll = Boolean(
+      readiness?.models_loading || readiness?.copilot_refresh_in_progress,
+    );
+    if (!shouldPoll) {
+      return;
+    }
+
+    pollTimeoutRef.current = window.setTimeout(() => {
+      void doFetch();
+    }, MODEL_REFRESH_POLL_MS);
+
+    return clearPollTimer;
+  }, [clearPollTimer, doFetch, readiness?.copilot_refresh_in_progress, readiness?.models_loading]);
+
   // Abort on unmount.
   useEffect(() => {
     return () => {
       abortRef.current?.abort();
+      clearPollTimer();
     };
-  }, []);
+  }, [clearPollTimer]);
 
   return (
     <AvailableModelsContext.Provider value={{ models, loading, error, readiness, meta, refresh }}>

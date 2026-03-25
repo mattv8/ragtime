@@ -4155,7 +4155,14 @@ export function ChatPanel({
                 {error}
                 <div className="chat-error-actions">
                   {isConnectionError && lastSentMessage && (
-                    <button className="btn-resend" onClick={resendMessage}>Re-send</button>
+                    <button
+                      className="btn-resend"
+                      onClick={resendMessage}
+                      disabled={Boolean(sendReadinessBlockReason)}
+                      title={sendReadinessBlockReason || 'Re-send'}
+                    >
+                      Re-send
+                    </button>
                   )}
                   <button onClick={() => { setError(null); setIsConnectionError(false); }}>×</button>
                 </div>
