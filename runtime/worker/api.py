@@ -12,22 +12,35 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
-from fastapi import (APIRouter, FastAPI, HTTPException, Request, WebSocket,
-                     WebSocketDisconnect)
+from fastapi import (
+    APIRouter,
+    FastAPI,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import Response, StreamingResponse
 
 from runtime.auth import WorkerAuth
-from runtime.manager.models import (RuntimeContentProbeRequest,
-                                    RuntimeContentProbeResponse,
-                                    RuntimeExecRequest, RuntimeExecResponse,
-                                    RuntimeFileReadResponse,
-                                    RuntimeScreenshotRequest,
-                                    RuntimeScreenshotResponse,
-                                    WorkerHealthResponse,
-                                    WorkerSessionResponse,
-                                    WorkerStartSessionRequest)
-from runtime.worker.sandbox import (SandboxSpec, ensure_sandbox_ready,
-                                    make_sandbox_preexec, sandbox_env)
+from runtime.manager.models import (
+    RuntimeContentProbeRequest,
+    RuntimeContentProbeResponse,
+    RuntimeExecRequest,
+    RuntimeExecResponse,
+    RuntimeFileReadResponse,
+    RuntimeScreenshotRequest,
+    RuntimeScreenshotResponse,
+    WorkerHealthResponse,
+    WorkerSessionResponse,
+    WorkerStartSessionRequest,
+)
+from runtime.worker.sandbox import (
+    SandboxSpec,
+    ensure_sandbox_ready,
+    make_sandbox_preexec,
+    sandbox_env,
+)
 from runtime.worker.service import get_worker_service
 
 router = APIRouter(tags=["Runtime Worker"])
@@ -50,11 +63,17 @@ def _preview_request_headers(request: Request) -> dict[str, str]:
         "authorization",
         "cookie",
     }
-    return {
+    forwarded_headers = {
         key: value
         for key, value in request.headers.items()
         if key.lower() not in blocked
     }
+    forwarded_headers.setdefault("x-forwarded-proto", request.url.scheme)
+    forwarded_headers.setdefault("x-forwarded-host", request.headers.get("host", ""))
+    client_host = request.client.host if request.client else ""
+    if client_host:
+        forwarded_headers.setdefault("x-forwarded-for", client_host)
+    return forwarded_headers
 
 
 def _preview_response_headers(headers: httpx.Headers) -> dict[str, str]:
@@ -67,6 +86,7 @@ def _preview_response_headers(headers: httpx.Headers) -> dict[str, str]:
         "trailers",
         "transfer-encoding",
         "upgrade",
+        "set-cookie",
     }
     return {key: value for key, value in headers.items() if key.lower() not in blocked}
 
@@ -269,7 +289,9 @@ async def content_probe(
     service = get_worker_service()
     probe_method = getattr(service, "content_probe", None)
     if probe_method is None:
-        raise HTTPException(status_code=503, detail="Runtime content probe not available")
+        raise HTTPException(
+            status_code=503, detail="Runtime content probe not available"
+        )
     return await probe_method(worker_session_id, payload)
 
 
@@ -290,7 +312,9 @@ async def exec_command(
     )
 
 
-@router.api_route("/worker/sessions/{worker_session_id}/preview", methods=_PROXY_METHODS)
+@router.api_route(
+    "/worker/sessions/{worker_session_id}/preview", methods=_PROXY_METHODS
+)
 @router.api_route(
     "/worker/sessions/{worker_session_id}/preview/{path:path}", methods=_PROXY_METHODS
 )

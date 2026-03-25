@@ -160,7 +160,7 @@ export function UserSpaceArtifactPreview({
         key={`${previewInstanceKey ?? ''}:${runtimePreviewUrl ?? ''}`}
         title="Runtime preview"
         className="userspace-preview-frame"
-        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
+        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
         src={runtimePreviewUrl}
       />
     </div>

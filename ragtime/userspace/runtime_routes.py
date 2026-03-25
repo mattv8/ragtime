@@ -12,21 +12,32 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
-from fastapi import (APIRouter, Depends, Header, HTTPException, Request,
-                     WebSocket, WebSocketDisconnect)
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from ragtime.config.settings import settings
 from ragtime.core.auth import validate_session
 from ragtime.core.database import get_db
 from ragtime.core.security import get_current_user, get_current_user_optional
-from ragtime.userspace.models import (UserSpaceCapabilityTokenResponse,
-                                      UserSpaceFileResponse,
-                                      UserSpaceRuntimeActionResponse,
-                                      UserSpaceRuntimeSessionResponse,
-                                      UserSpaceRuntimeStatusResponse)
-from ragtime.userspace.runtime_service import (RuntimeVersionConflictError,
-                                               userspace_runtime_service)
+from ragtime.userspace.models import (
+    UserSpaceCapabilityTokenResponse,
+    UserSpaceFileResponse,
+    UserSpaceRuntimeActionResponse,
+    UserSpaceRuntimeSessionResponse,
+    UserSpaceRuntimeStatusResponse,
+)
+from ragtime.userspace.runtime_service import (
+    RuntimeVersionConflictError,
+    userspace_runtime_service,
+)
 from ragtime.userspace.service import userspace_service
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space Runtime"])
@@ -79,11 +90,18 @@ def _proxy_request_headers(request: Request) -> dict[str, str]:
         "x-api-key",
         "x-userspace-share-password",
     }
-    return {
+    forwarded_headers = {
         key: value
         for key, value in request.headers.items()
         if key.lower() not in _blocked
     }
+    # Preserve request context for framework URL generation and redirects.
+    forwarded_headers.setdefault("x-forwarded-proto", request.url.scheme)
+    forwarded_headers.setdefault("x-forwarded-host", request.headers.get("host", ""))
+    client_host = request.client.host if request.client else ""
+    if client_host:
+        forwarded_headers.setdefault("x-forwarded-for", client_host)
+    return forwarded_headers
 
 
 def _proxy_response_headers(headers: httpx.Headers) -> dict[str, str]:
@@ -96,6 +114,8 @@ def _proxy_response_headers(headers: httpx.Headers) -> dict[str, str]:
         "trailers",
         "transfer-encoding",
         "upgrade",
+        # Untrusted preview apps must not set first-party cookies on ragtime origin.
+        "set-cookie",
     }
     return {key: value for key, value in headers.items() if key.lower() not in blocked}
 
@@ -219,6 +239,8 @@ async def _proxy_http_request(
 
     body = await request.body()
     headers = _proxy_request_headers(request)
+    if proxy_base_path:
+        headers.setdefault("x-forwarded-prefix", proxy_base_path)
 
     # Inject runtime worker auth token for upstream worker requests
     worker_token = getattr(settings, "userspace_runtime_worker_auth_token", "") or ""
@@ -297,9 +319,9 @@ _ROOT_REL_JS_URL_RE = re.compile(
 
 
 _BRIDGE_SCRIPT_TAG = b'<script src=".ragtime/bridge.js"></script>'
-_BRIDGE_DETECT_RE = re.compile(rb'bridge\.js', re.IGNORECASE)
-_HEAD_CLOSE_RE = re.compile(rb'(</head\s*>)', re.IGNORECASE)
-_FIRST_SCRIPT_RE = re.compile(rb'(<script[\s>])', re.IGNORECASE)
+_BRIDGE_DETECT_RE = re.compile(rb"bridge\.js", re.IGNORECASE)
+_HEAD_CLOSE_RE = re.compile(rb"(</head\s*>)", re.IGNORECASE)
+_FIRST_SCRIPT_RE = re.compile(rb"(<script[\s>])", re.IGNORECASE)
 
 
 def _inject_bridge_script(html: bytes) -> bytes:
@@ -311,7 +333,7 @@ def _inject_bridge_script(html: bytes) -> bytes:
     """
     if _BRIDGE_DETECT_RE.search(html):
         return html
-    tag = _BRIDGE_SCRIPT_TAG + b'\n'
+    tag = _BRIDGE_SCRIPT_TAG + b"\n"
     m = _HEAD_CLOSE_RE.search(html)
     if m:
         return html[: m.start()] + tag + html[m.start() :]
