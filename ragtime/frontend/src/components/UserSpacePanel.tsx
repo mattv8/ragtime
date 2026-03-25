@@ -628,49 +628,97 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
     const branchIndexById = new Map<string, number>();
     const branchById = new Map<string, UserSpaceSnapshotBranch>();
-    const firstSnapshotIdByBranch = new Map<string, string>();
     const snapshotById = new Map<string, UserSpaceSnapshot>();
+    const rowIndexBySnapshotId = new Map<string, number>();
 
-    snapshotsByBranch.forEach(({ branch, snapshots: branchSnapshots }, index) => {
-      branchIndexById.set(branch.id, index);
-      branchById.set(branch.id, branch);
-
-      const sortedBranchSnapshots = [...branchSnapshots].sort((left, right) => {
-        const timeDiff = new Date(left.created_at).getTime() - new Date(right.created_at).getTime();
-        if (timeDiff !== 0) {
-          return timeDiff;
-        }
-        return left.id.localeCompare(right.id);
-      });
-
-      const firstSnapshot = sortedBranchSnapshots[0];
-      if (firstSnapshot) {
-        firstSnapshotIdByBranch.set(branch.id, firstSnapshot.id);
-      }
+    sortedSnapshots.forEach((snapshot, index) => {
+      snapshotById.set(snapshot.id, snapshot);
+      rowIndexBySnapshotId.set(snapshot.id, index);
     });
 
-    for (const snapshot of snapshots) {
-      snapshotById.set(snapshot.id, snapshot);
-    }
+    snapshotsByBranch.forEach(({ branch }, index) => {
+      branchIndexById.set(branch.id, index);
+      branchById.set(branch.id, branch);
+    });
 
-    return sortedSnapshots.map((snapshot) => {
-      const laneIndex = branchIndexById.get(snapshot.branch_id) ?? 0;
+    const laneMetaByBranchId = new Map<string, {
+      laneIndex: number;
+      startRow: number;
+      endRow: number;
+      forkRow: number | null;
+      forkFromLaneIndex: number | null;
+    }>();
+
+    snapshotsByBranch.forEach(({ branch, snapshots: branchSnapshots }, index) => {
+      const branchRows = branchSnapshots
+        .map((snapshot) => rowIndexBySnapshotId.get(snapshot.id))
+        .filter((rowIndex): rowIndex is number => typeof rowIndex === 'number')
+        .sort((left, right) => left - right);
+
+      if (branchRows.length === 0) {
+        return;
+      }
+
+      let startRow = branchRows[0];
+      let endRow = branchRows[branchRows.length - 1];
+      let forkRow: number | null = null;
       let forkFromLaneIndex: number | null = null;
 
-      const branch = branchById.get(snapshot.branch_id);
-      const firstSnapshotId = firstSnapshotIdByBranch.get(snapshot.branch_id);
-      if (branch?.branched_from_snapshot_id && firstSnapshotId === snapshot.id) {
+      if (branch.branched_from_snapshot_id) {
+        const parentRow = rowIndexBySnapshotId.get(branch.branched_from_snapshot_id);
         const parentSnapshot = snapshotById.get(branch.branched_from_snapshot_id);
         const parentLaneIndex = parentSnapshot ? branchIndexById.get(parentSnapshot.branch_id) : undefined;
-        if (parentLaneIndex !== undefined && parentLaneIndex !== laneIndex) {
+        if (typeof parentRow === 'number') {
+          endRow = Math.max(endRow, parentRow);
+          forkRow = parentRow;
+        }
+        if (typeof parentLaneIndex === 'number' && parentLaneIndex !== index) {
           forkFromLaneIndex = parentLaneIndex;
         }
       }
 
+      laneMetaByBranchId.set(branch.id, {
+        laneIndex: index,
+        startRow,
+        endRow,
+        forkRow,
+        forkFromLaneIndex,
+      });
+    });
+
+    return sortedSnapshots.map((snapshot, rowIndex) => {
+      const laneIndex = branchIndexById.get(snapshot.branch_id) ?? 0;
+      const laneStates = snapshotsByBranch.map(({ branch }, branchIndex) => {
+        const meta = laneMetaByBranchId.get(branch.id);
+        const isActive = !!meta && rowIndex >= meta.startRow && rowIndex <= meta.endRow;
+        return {
+          branchId: branch.id,
+          branchIndex,
+          isActive,
+          isStart: isActive && meta?.startRow === rowIndex,
+          isEnd: isActive && meta?.endRow === rowIndex,
+        };
+      });
+
+      const forkLinks = snapshotsByBranch
+        .map(({ branch }) => {
+          const meta = laneMetaByBranchId.get(branch.id);
+          if (!meta || meta.forkRow !== rowIndex || meta.forkFromLaneIndex === null) {
+            return null;
+          }
+          return {
+            branchId: branch.id,
+            fromLaneIndex: Math.min(meta.forkFromLaneIndex, meta.laneIndex),
+            toLaneIndex: Math.max(meta.forkFromLaneIndex, meta.laneIndex),
+          };
+        })
+        .filter((value): value is { branchId: string; fromLaneIndex: number; toLaneIndex: number } => value !== null);
+
       return {
         snapshot,
         laneIndex,
-        forkFromLaneIndex,
+        laneStates,
+        forkLinks,
       };
     });
   }, [snapshots, snapshotsByBranch]);
@@ -3635,15 +3683,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                       })}
                     </div>
 
-                    {snapshotTimelineRows.map(({ snapshot, laneIndex, forkFromLaneIndex }) => {
+                    {snapshotTimelineRows.map(({ snapshot, laneIndex, laneStates, forkLinks }) => {
                       const isCurrentSnapshot = snapshot.is_current || currentSnapshotId === snapshot.id;
                       const branchColor = snapshotBranchColorById.get(snapshot.branch_id);
-                      const forkStart = typeof forkFromLaneIndex === 'number'
-                        ? Math.min(forkFromLaneIndex, laneIndex)
-                        : null;
-                      const forkWidth = typeof forkFromLaneIndex === 'number'
-                        ? Math.abs(forkFromLaneIndex - laneIndex)
-                        : null;
 
                       return (
                         <div
@@ -3656,23 +3698,38 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                             style={{ gridTemplateColumns: `repeat(${snapshotsByBranch.length}, 18px)` }}
                             aria-hidden="true"
                           >
-                            {snapshotsByBranch.map(({ branch }, branchIndex) => (
+                            {snapshotsByBranch.map(({ branch }, branchIndex) => {
+                              const laneState = laneStates[branchIndex];
+                              const laneColor = snapshotBranchColorById.get(branch.id);
+                              return (
                               <div key={`${snapshot.id}-${branch.id}`} className="userspace-snapshot-lane-cell">
-                                <span className={`userspace-snapshot-lane-line ${branchIndex === laneIndex ? 'active' : ''}`} />
+                                <span
+                                  className={`userspace-snapshot-lane-line ${laneState?.isActive ? 'active' : ''} ${laneState?.isStart ? 'start' : ''} ${laneState?.isEnd ? 'end' : ''}`}
+                                  style={{ '--userspace-branch-color': laneColor } as CSSProperties}
+                                />
                                 {branchIndex === laneIndex && (
                                   <span className={`userspace-snapshot-node-dot ${isCurrentSnapshot ? 'current' : ''}`} />
                                 )}
                               </div>
-                            ))}
-                            {forkStart !== null && forkWidth !== null && forkWidth > 0 && (
+                              );
+                            })}
+                            {forkLinks.map((forkLink) => {
+                              const forkWidth = forkLink.toLaneIndex - forkLink.fromLaneIndex;
+                              if (forkWidth <= 0) {
+                                return null;
+                              }
+                              return (
                               <span
+                                key={`${snapshot.id}-${forkLink.branchId}`}
                                 className="userspace-snapshot-fork-link"
                                 style={{
-                                  left: `${forkStart * 18 + 9}px`,
+                                  left: `${forkLink.fromLaneIndex * 18 + 9}px`,
                                   width: `${forkWidth * 18}px`,
-                                }}
+                                  '--userspace-branch-color': snapshotBranchColorById.get(forkLink.branchId),
+                                } as CSSProperties}
                               />
-                            )}
+                              );
+                            })}
                           </div>
 
                           <div className="userspace-snapshot-row-main">

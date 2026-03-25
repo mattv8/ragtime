@@ -22,49 +22,39 @@ from ragtime.config import settings
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
-from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
+from ragtime.core.entrypoint_status import (EntrypointStatus,
+                                            parse_entrypoint_config)
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (
-    DB_TYPE_POSTGRES,
-    add_table_metadata_to_psql_output,
-    enforce_max_results,
-    format_query_result,
-    validate_sql_query,
-)
-from ragtime.core.ssh import (
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
+                                    add_table_metadata_to_psql_output,
+                                    enforce_max_results, format_query_result,
+                                    validate_sql_query)
+from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
+                              ssh_tunnel_config_from_dict)
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (
-    ArtifactType,
-    CreateWorkspaceRequest,
-    ExecuteComponentRequest,
-    ExecuteComponentResponse,
-    PaginatedWorkspacesResponse,
-    ShareAccessMode,
-    SqlitePersistenceMode,
-    SwitchSnapshotBranchRequest,
-    UpdateSnapshotRequest,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-    UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot,
-    UserSpaceSnapshotBranch,
-    UserSpaceSnapshotTimelineResponse,
-    UserSpaceWorkspace,
-    UserSpaceWorkspaceShareLink,
-    UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceMember,
-    WorkspaceShareSlugAvailabilityResponse,
-)
+from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
+                                      ExecuteComponentRequest,
+                                      ExecuteComponentResponse,
+                                      PaginatedWorkspacesResponse,
+                                      ShareAccessMode, SqlitePersistenceMode,
+                                      SwitchSnapshotBranchRequest,
+                                      UpdateSnapshotRequest,
+                                      UpdateWorkspaceMembersRequest,
+                                      UpdateWorkspaceRequest,
+                                      UpdateWorkspaceShareAccessRequest,
+                                      UpsertWorkspaceFileRequest,
+                                      UserSpaceFileInfo, UserSpaceFileResponse,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection,
+                                      UserSpaceSharedPreviewResponse,
+                                      UserSpaceSnapshot,
+                                      UserSpaceSnapshotBranch,
+                                      UserSpaceSnapshotTimelineResponse,
+                                      UserSpaceWorkspace,
+                                      UserSpaceWorkspaceShareLink,
+                                      UserSpaceWorkspaceShareLinkStatus,
+                                      WorkspaceMember,
+                                      WorkspaceShareSlugAvailabilityResponse)
 
 logger = get_logger(__name__)
 
@@ -2730,7 +2720,7 @@ class UserSpaceService:
                 else None
             ),
             is_current=snapshot_id == current_snapshot_id,
-            can_rename=snapshot_id in branch_tip_ids,
+            can_rename=True,
             git_commit_hash=(
                 str(row.get("git_commit_hash")) if row.get("git_commit_hash") else None
             ),
@@ -3068,7 +3058,14 @@ class UserSpaceService:
             f"""
             SELECT s.id, s.workspace_id, s.branch_id, s.git_commit_hash, s.message,
                    s.file_count, s.parent_snapshot_id, s.created_at,
-                   b.git_ref_name, b.name AS branch_name
+                                     b.git_ref_name, b.name AS branch_name,
+                                     NOT EXISTS (
+                                             SELECT 1
+                                             FROM userspace_snapshots child
+                                             WHERE child.workspace_id = s.workspace_id
+                                                 AND child.branch_id = s.branch_id
+                                                 AND child.parent_snapshot_id = s.id
+                                     ) AS is_branch_tip
             FROM userspace_snapshots s
             JOIN userspace_snapshot_branches b ON b.id = s.branch_id
             WHERE s.workspace_id = {self._sql_quote(workspace_id)}
@@ -3082,10 +3079,18 @@ class UserSpaceService:
         commit_hash = str(row.get("git_commit_hash") or "")
         branch_id = str(row.get("branch_id") or "")
         branch_ref_name = str(row.get("git_ref_name") or "")
+        is_branch_tip_raw = row.get("is_branch_tip")
+        is_branch_tip = is_branch_tip_raw is True or str(is_branch_tip_raw).lower() in {
+            "1",
+            "t",
+            "true",
+        }
 
         async with self._snapshot_operation_semaphore:
-            if branch_ref_name:
+            if branch_ref_name and is_branch_tip:
                 await self._run_git(workspace_id, ["checkout", branch_ref_name])
+            else:
+                await self._run_git(workspace_id, ["checkout", "--detach", commit_hash])
             await self._run_git(workspace_id, ["reset", "--hard", commit_hash])
             await self._run_git(workspace_id, ["clean", "-fd"])
             await self._activate_branch(workspace_id, branch_id)

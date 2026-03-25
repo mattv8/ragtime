@@ -1755,8 +1755,8 @@ textarea:focus {
 .userspace-snapshot-lane-line {
   position: absolute;
   left: 50%;
-  top: -2px;
-  bottom: -2px;
+  top: 0;
+  bottom: 0;
   width: 2px;
   transform: translateX(-50%);
   background: color-mix(in srgb, var(--color-border) 78%, transparent);
@@ -1764,6 +1764,14 @@ textarea:focus {
 
 .userspace-snapshot-lane-line.active {
   background: color-mix(in srgb, var(--userspace-branch-color, var(--color-accent, var(--color-primary))) 58%, transparent);
+}
+
+.userspace-snapshot-lane-line.start {
+  top: 50%;
+}
+
+.userspace-snapshot-lane-line.end {
+  bottom: 50%;
 }
 
 .userspace-snapshot-node-dot {
@@ -1790,6 +1798,7 @@ textarea:focus {
   transform: translateY(-50%);
   background: color-mix(in srgb, var(--userspace-branch-color, var(--color-accent, var(--color-primary))) 64%, transparent);
   pointer-events: none;
+  border-radius: 999px;
 }
 
 .userspace-snapshot-row-main {
