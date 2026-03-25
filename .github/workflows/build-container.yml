@@ -26,8 +26,8 @@ env:
   IMAGE_RUNTIME_NAME: library/runtime
 
 jobs:
-  build-and-push:
-    name: Build and Push Container Image
+  build-main:
+    name: Build Main Image
     runs-on: self-hosted
     permissions:
       contents: read
@@ -35,7 +35,7 @@ jobs:
     outputs:
       branch: ${{ steps.extract_branch.outputs.branch }}
       tags: ${{ steps.meta.outputs.tags }}
-      digest: ${{ steps.build-and-push.outputs.digest }}
+      digest: ${{ steps.build-main.outputs.digest }}
       image-name: ${{ steps.meta.outputs.image-name }}
       short-sha: ${{ steps.meta.outputs.short-sha }}
 
@@ -100,15 +100,19 @@ jobs:
           password: ${{ secrets.HARBOR_PASSWORD }}
 
       - name: Build and push Docker image
-        id: build-and-push
+        id: build-main
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./docker/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+            type=gha
+          cache-to: |
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max,oci-mediatypes=true,compression=zstd
+            type=gha,mode=max
 
       - name: Cleanup old Docker images
         uses: ./.github/actions/cleanup
@@ -174,8 +178,12 @@ jobs:
           file: ./docker/Dockerfile.runtime
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:buildcache
+            type=gha
+          cache-to: |
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:buildcache,mode=max,oci-mediatypes=true,compression=zstd
+            type=gha,mode=max
 
       - name: Cleanup old runtime Docker images
         uses: ./.github/actions/cleanup
@@ -188,7 +196,7 @@ jobs:
 
   # Build legacy image for older CPUs without X86_V2 support
   build-legacy:
-    name: Build Legacy CPU Image
+    name: Build Legacy Image
     runs-on: self-hosted
     # Only build legacy on main branch
     if: github.ref == 'refs/heads/main'
@@ -228,9 +236,8 @@ jobs:
   sign:
     name: Sign Container Images
     runs-on: self-hosted
-    needs: [build-and-push, build-legacy, build-runtime]
-    # Run even if legacy is skipped (non-main branches)
-    if: always() && needs.build-and-push.result == 'success'
+    needs: [build-main, build-runtime]
+    if: always() && needs.build-main.result == 'success' && needs.build-runtime.result == 'success'
     permissions:
       contents: read
       id-token: write
@@ -254,29 +261,14 @@ jobs:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
         run: |
           # Construct the full image reference from build outputs
-          IMAGE_DIGEST="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.digest }}"
+          IMAGE_DIGEST="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-main.outputs.digest }}"
 
           echo "Signing image: ${IMAGE_DIGEST}"
 
           # Sign using the full digest reference (registry/repo@sha256:...)
           cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${IMAGE_DIGEST}"
 
-      - name: Sign the legacy container image with Cosign
-        if: needs.build-legacy.result == 'success'
-        env:
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-        run: |
-          # Construct the full image reference from build outputs
-          IMAGE_DIGEST="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-legacy.outputs.digest }}"
-
-          echo "Signing legacy image: ${IMAGE_DIGEST}"
-
-          # Sign using the full digest reference (registry/repo@sha256:...)
-          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${IMAGE_DIGEST}"
-
       - name: Sign the runtime image with Cosign
-        if: needs.build-runtime.result == 'success'
         env:
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
@@ -285,10 +277,41 @@ jobs:
           echo "Signing runtime image: ${IMAGE_DIGEST}"
           cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${IMAGE_DIGEST}"
 
+  sign-legacy:
+    name: Sign Legacy Container Image
+    runs-on: self-hosted
+    needs: [build-legacy]
+    if: always() && needs.build-legacy.result == 'success'
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Log in to Harbor Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Sign the legacy container image with Cosign
+        env:
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+        run: |
+          IMAGE_DIGEST="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-legacy.outputs.digest }}"
+          echo "Signing legacy image: ${IMAGE_DIGEST}"
+          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${IMAGE_DIGEST}"
+
   sbom:
     name: Generate SBOM
     runs-on: self-hosted
-    needs: [build-and-push]
+    needs: [build-main, build-runtime]
     permissions:
       contents: read
 
@@ -303,21 +326,21 @@ jobs:
       - name: Generate SBOM
         uses: anchore/sbom-action@v0
         with:
-          image: ${{ needs.build-and-push.outputs.image-name }}
+          image: ${{ needs.build-main.outputs.image-name }}
           format: spdx-json
           output-file: sbom.spdx.json
 
       - name: Upload SBOM
         uses: actions/upload-artifact@v4
         with:
-          name: sbom-${{ needs.build-and-push.outputs.branch }}
+          name: sbom-${{ needs.build-main.outputs.branch }}
           path: sbom.spdx.json
           retention-days: 90
 
   sync-readme:
     name: Sync README
     runs-on: self-hosted
-    needs: [build-and-push]
+    needs: [build-main, build-runtime]
     permissions:
       contents: write
 
@@ -329,7 +352,7 @@ jobs:
 
       - name: Update docker-compose.yml with branch tag
         run: |
-          BRANCH="${{ needs.build-and-push.outputs.branch }}"
+          BRANCH="${{ needs.build-main.outputs.branch }}"
           echo "Updating docker-compose.yml image tags to: ${BRANCH}"
           sed -i "/^[[:space:]]*#/!s|^\([[:space:]]*\)image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:.*|\1image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${BRANCH}|" docker-compose.yml
           sed -i "/^[[:space:]]*#/!s|^\([[:space:]]*\)image: ${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:.*|\1image: ${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:${BRANCH}|" docker-compose.yml
@@ -348,13 +371,13 @@ jobs:
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add README.md docker-compose.yml
-          git commit -m "docs: auto-update README and docker-compose.yml for branch ${{ needs.build-and-push.outputs.branch }}"
+          git commit -m "docs: auto-update README and docker-compose.yml for branch ${{ needs.build-main.outputs.branch }}"
           git push
 
   summary:
     name: Build Summary
     runs-on: self-hosted
-    needs: [build-and-push, build-runtime, sign, sbom, build-legacy]
+    needs: [build-main, build-runtime, sign, sbom, sync-readme]
     if: always()
     permissions:
       contents: read
@@ -363,22 +386,22 @@ jobs:
       - name: Generate Summary
         run: |
           # Check job statuses
-          BUILD_PUSH_STATUS="${{ needs.build-and-push.result }}"
+          BUILD_PUSH_STATUS="${{ needs.build-main.result }}"
           SIGN_STATUS="${{ needs.sign.result }}"
           SBOM_STATUS="${{ needs.sbom.result }}"
-          LEGACY_STATUS="${{ needs.build-legacy.result }}"
           RUNTIME_STATUS="${{ needs.build-runtime.result }}"
+          SYNC_STATUS="${{ needs.sync-readme.result }}"
 
           echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Branch:** ${{ needs.build-and-push.outputs.branch }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Short SHA:** ${{ needs.build-and-push.outputs.short-sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ needs.build-main.outputs.branch }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Short SHA:** ${{ needs.build-main.outputs.short-sha }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           if [ "$BUILD_PUSH_STATUS" = "success" ]; then
             echo "### Pull Command" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-            echo "docker pull ${{ needs.build-and-push.outputs.image-name }}" >> $GITHUB_STEP_SUMMARY
+            echo "docker pull ${{ needs.build-main.outputs.image-name }}" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
           fi
@@ -386,12 +409,12 @@ jobs:
           if [ "$RUNTIME_STATUS" = "success" ]; then
             echo "### Runtime Pull Command" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-            echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:${{ needs.build-and-push.outputs.branch }}" >> $GITHUB_STEP_SUMMARY
+            echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:${{ needs.build-main.outputs.branch }}" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
           fi
 
-          echo "**Digest:** \`${{ needs.build-and-push.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Digest:** \`${{ needs.build-main.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           if [ "$SIGN_STATUS" = "success" ]; then
@@ -408,12 +431,17 @@ jobs:
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          if [ "$LEGACY_STATUS" = "success" ]; then
-            echo "**Legacy Image:** Built (\`:legacy\` tag for older CPUs)" >> $GITHUB_STEP_SUMMARY
-          elif [ "$LEGACY_STATUS" = "skipped" ]; then
-            echo "**Legacy Image:** Skipped (main branch only)" >> $GITHUB_STEP_SUMMARY
+          if [ "$SYNC_STATUS" = "success" ]; then
+            echo "**README Sync:** Completed" >> $GITHUB_STEP_SUMMARY
           else
-            echo "**Legacy Image:** Failed" >> $GITHUB_STEP_SUMMARY
+            echo "**README Sync:** Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            echo "**Legacy Image:** Building asynchronously in separate jobs (build-legacy -> sign-legacy)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Legacy Image:** Skipped (main branch only)" >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
