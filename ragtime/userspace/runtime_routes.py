@@ -12,32 +12,21 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
-from fastapi import (
-    APIRouter,
-    Depends,
-    Header,
-    HTTPException,
-    Request,
-    WebSocket,
-    WebSocketDisconnect,
-)
+from fastapi import (APIRouter, Depends, Header, HTTPException, Request,
+                     WebSocket, WebSocketDisconnect)
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from ragtime.config.settings import settings
 from ragtime.core.auth import validate_session
 from ragtime.core.database import get_db
 from ragtime.core.security import get_current_user, get_current_user_optional
-from ragtime.userspace.models import (
-    UserSpaceCapabilityTokenResponse,
-    UserSpaceFileResponse,
-    UserSpaceRuntimeActionResponse,
-    UserSpaceRuntimeSessionResponse,
-    UserSpaceRuntimeStatusResponse,
-)
-from ragtime.userspace.runtime_service import (
-    RuntimeVersionConflictError,
-    userspace_runtime_service,
-)
+from ragtime.userspace.models import (UserSpaceCapabilityTokenResponse,
+                                      UserSpaceFileResponse,
+                                      UserSpaceRuntimeActionResponse,
+                                      UserSpaceRuntimeSessionResponse,
+                                      UserSpaceRuntimeStatusResponse)
+from ragtime.userspace.runtime_service import (RuntimeVersionConflictError,
+                                               userspace_runtime_service)
 from ragtime.userspace.service import userspace_service
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space Runtime"])
@@ -45,6 +34,7 @@ router = APIRouter(prefix="/indexes/userspace", tags=["User Space Runtime"])
 
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 _SCREENSHOT_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,220}$")
+_PREVIEW_CAPABILITY_COOKIE = "userspace_preview_capability"
 
 
 async def _safe_close_websocket(websocket: WebSocket, code: int) -> None:
@@ -122,6 +112,56 @@ def _proxy_response_headers(headers: httpx.Headers) -> dict[str, str]:
 
 def _is_html_media_type(media_type: str) -> bool:
     return "text/html" in (media_type or "").lower()
+
+
+def _extract_capability_token_from_request(request: Request) -> str | None:
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+        if token:
+            return token
+    explicit = request.headers.get("x-userspace-capability-token", "").strip()
+    if explicit:
+        return explicit
+    query_token = request.query_params.get("cap_token", "").strip()
+    if query_token:
+        return query_token
+    cookie_token = request.cookies.get(_PREVIEW_CAPABILITY_COOKIE, "").strip()
+    return cookie_token or None
+
+
+def _extract_capability_token_from_websocket(websocket: WebSocket) -> str | None:
+    query_token = websocket.query_params.get("cap_token", "").strip()
+    if query_token:
+        return query_token
+    auth_header = websocket.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+        if token:
+            return token
+    explicit = websocket.headers.get("x-userspace-capability-token", "").strip()
+    if explicit:
+        return explicit
+    cookie_token = websocket.cookies.get(_PREVIEW_CAPABILITY_COOKIE, "").strip()
+    return cookie_token or None
+
+
+def _require_workspace_capability(
+    token: str | None,
+    workspace_id: str,
+    capability: str,
+) -> tuple[dict[str, Any], str]:
+    if not token:
+        raise HTTPException(status_code=401, detail="Capability token required")
+    claims = userspace_runtime_service.verify_capability_token(
+        token,
+        workspace_id,
+        capability,
+    )
+    user_id = str(claims.get("sub") or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Capability token missing user")
+    return claims, user_id
 
 
 def _to_websocket_url(http_url: str) -> str:
@@ -559,12 +599,18 @@ async def issue_capability_token(
 async def runtime_fs_read(
     workspace_id: str,
     file_path: str,
-    user: Any = Depends(get_current_user),
+    request: Request,
 ):
+    token = _extract_capability_token_from_request(request)
+    _, user_id = _require_workspace_capability(
+        token,
+        workspace_id,
+        "userspace.runtime_fs_read",
+    )
     return await userspace_runtime_service.runtime_fs_read(
         workspace_id,
         file_path,
-        user.id,
+        user_id,
     )
 
 
@@ -576,13 +622,19 @@ async def runtime_fs_write(
     workspace_id: str,
     file_path: str,
     payload: dict[str, Any],
-    user: Any = Depends(get_current_user),
+    request: Request,
 ):
+    token = _extract_capability_token_from_request(request)
+    _, user_id = _require_workspace_capability(
+        token,
+        workspace_id,
+        "userspace.runtime_fs_write",
+    )
     return await userspace_runtime_service.runtime_fs_write(
         workspace_id,
         file_path,
         str(payload.get("content", "")),
-        user.id,
+        user_id,
     )
 
 
@@ -590,38 +642,51 @@ async def runtime_fs_write(
 async def runtime_fs_delete(
     workspace_id: str,
     file_path: str,
-    user: Any = Depends(get_current_user),
+    request: Request,
 ):
+    token = _extract_capability_token_from_request(request)
+    _, user_id = _require_workspace_capability(
+        token,
+        workspace_id,
+        "userspace.runtime_fs_write",
+    )
     return await userspace_runtime_service.runtime_fs_delete(
         workspace_id,
         file_path,
-        user.id,
+        user_id,
     )
 
 
 @router.websocket("/runtime/workspaces/{workspace_id}/pty")
 async def runtime_pty(workspace_id: str, websocket: WebSocket):
-    user = await _websocket_user(websocket)
-    if not user:
+    token = _extract_capability_token_from_websocket(websocket)
+    try:
+        claims, user_id = _require_workspace_capability(
+            token,
+            workspace_id,
+            "userspace.runtime_pty",
+        )
+        user_id = str(claims.get("sub") or "").strip()
+    except HTTPException:
         await websocket.close(code=4401)
         return
 
     try:
-        await userspace_service.enforce_workspace_role(workspace_id, user.id, "viewer")
+        await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
     except HTTPException:
         await websocket.close(code=4403)
         return
 
     can_write = True
     try:
-        await userspace_service.enforce_workspace_role(workspace_id, user.id, "editor")
+        await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
     except HTTPException:
         can_write = False
 
     upstream_ws_url = (
         await userspace_runtime_service.build_workspace_pty_upstream_ws_url(
             workspace_id,
-            user.id,
+            user_id,
         )
     )
     if not can_write:
@@ -637,8 +702,15 @@ async def runtime_pty(workspace_id: str, websocket: WebSocket):
 
 @router.websocket("/collab/workspaces/{workspace_id}/files/{file_path:path}")
 async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSocket):
-    user = await _websocket_user(websocket)
-    if not user:
+    token = _extract_capability_token_from_websocket(websocket)
+    try:
+        claims, user_id = _require_workspace_capability(
+            token,
+            workspace_id,
+            "userspace.collab_connect",
+        )
+        user_id = str(claims.get("sub") or "").strip()
+    except HTTPException:
         await websocket.close(code=4401)
         return
 
@@ -646,7 +718,7 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
         snapshot = await userspace_runtime_service.get_collab_snapshot(
             workspace_id,
             file_path,
-            user.id,
+            user_id,
         )
     except HTTPException as exc:
         await websocket.close(code=4403 if exc.status_code == 403 else 4404)
@@ -656,14 +728,14 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
 
     await websocket.accept()
     await userspace_runtime_service.register_collab_client(
-        workspace_id, snapshot.file_path, websocket, user.id
+        workspace_id, snapshot.file_path, websocket, user_id
     )
 
     async def _cleanup_collab() -> None:
         users = await userspace_runtime_service.clear_collab_presence(
             workspace_id,
             snapshot.file_path,
-            user.id,
+            user_id,
         )
         await userspace_runtime_service.unregister_collab_client(
             workspace_id,
@@ -717,7 +789,7 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
                 users = await userspace_runtime_service.update_collab_presence(
                     workspace_id,
                     snapshot.file_path,
-                    user.id,
+                    user_id,
                     payload if isinstance(payload, dict) else {},
                 )
                 await _broadcast_collab_message(
@@ -755,14 +827,14 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
                     workspace_id,
                     snapshot.file_path,
                     content,
-                    user.id,
+                    user_id,
                     expected_version=client_version,
                 )
             except RuntimeVersionConflictError as conflict:
                 latest = await userspace_runtime_service.get_collab_snapshot(
                     workspace_id,
                     snapshot.file_path,
-                    user.id,
+                    user_id,
                 )
                 await websocket.send_text(
                     json.dumps(
@@ -811,14 +883,20 @@ async def collab_file_socket(workspace_id: str, file_path: str, websocket: WebSo
 async def collab_create_file(
     workspace_id: str,
     payload: dict[str, Any],
-    user: Any = Depends(get_current_user),
+    request: Request,
 ):
+    token = _extract_capability_token_from_request(request)
+    _, user_id = _require_workspace_capability(
+        token,
+        workspace_id,
+        "userspace.collab_mutate",
+    )
     file_path = str(payload.get("file_path", "")).strip()
     content = str(payload.get("content", ""))
     created = await userspace_runtime_service.create_collab_file(
         workspace_id,
         file_path,
-        user.id,
+        user_id,
         content=content,
     )
     await _broadcast_collab_message(
@@ -843,15 +921,21 @@ async def collab_create_file(
 async def collab_rename_file(
     workspace_id: str,
     payload: dict[str, Any],
-    user: Any = Depends(get_current_user),
+    request: Request,
 ):
+    token = _extract_capability_token_from_request(request)
+    _, user_id = _require_workspace_capability(
+        token,
+        workspace_id,
+        "userspace.collab_mutate",
+    )
     old_path = str(payload.get("old_path", "")).strip()
     new_path = str(payload.get("new_path", "")).strip()
     result = await userspace_runtime_service.rename_collab_file(
         workspace_id,
         old_path,
         new_path,
-        user.id,
+        user_id,
     )
     await _broadcast_collab_message(
         workspace_id,
@@ -870,13 +954,19 @@ async def collab_rename_file(
 async def collab_delete_file(
     workspace_id: str,
     payload: dict[str, Any],
-    user: Any = Depends(get_current_user),
+    request: Request,
 ):
+    token = _extract_capability_token_from_request(request)
+    _, user_id = _require_workspace_capability(
+        token,
+        workspace_id,
+        "userspace.collab_mutate",
+    )
     file_path = str(payload.get("file_path", "")).strip()
     result = await userspace_runtime_service.delete_collab_file(
         workspace_id,
         file_path,
-        user.id,
+        user_id,
     )
     return result
 
@@ -889,16 +979,32 @@ async def workspace_preview_proxy(
     workspace_id: str,
     request: Request,
     path: str = "",
-    user: Any = Depends(get_current_user),
 ):
+    token = _extract_capability_token_from_request(request)
+    _, user_id = _require_workspace_capability(
+        token,
+        workspace_id,
+        "userspace.preview_http",
+    )
+    capability_token = token or ""
     upstream_url = await userspace_runtime_service.build_workspace_preview_upstream_url(
         workspace_id,
-        user.id,
+        user_id,
         path,
         query=request.url.query or None,
     )
     base = f"/indexes/userspace/workspaces/{workspace_id}/preview"
-    return await _proxy_http_request(request, upstream_url, proxy_base_path=base)
+    response = await _proxy_http_request(request, upstream_url, proxy_base_path=base)
+    response.set_cookie(
+        key=_PREVIEW_CAPABILITY_COOKIE,
+        value=capability_token,
+        max_age=900,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="lax",
+        path=base,
+    )
+    return response
 
 
 @router.api_route(
@@ -965,20 +1071,26 @@ async def workspace_preview_proxy_websocket(
     websocket: WebSocket,
     path: str = "",
 ):
-    user = await _websocket_user(websocket)
-    if not user:
+    token = _extract_capability_token_from_websocket(websocket)
+    try:
+        _, user_id = _require_workspace_capability(
+            token,
+            workspace_id,
+            "userspace.preview_ws",
+        )
+    except HTTPException:
         await websocket.close(code=4401)
         return
 
     try:
-        await userspace_service.enforce_workspace_role(workspace_id, user.id, "viewer")
+        await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
     except HTTPException:
         await websocket.close(code=4403)
         return
 
     upstream_url = await userspace_runtime_service.build_workspace_preview_upstream_url(
         workspace_id,
-        user.id,
+        user_id,
         path,
         query=websocket.url.query or None,
     )

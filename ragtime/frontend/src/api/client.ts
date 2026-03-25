@@ -20,6 +20,14 @@ function withWorkspaceQuery(url: string, workspaceId?: string): string {
   return `${url}${separator}workspace_id=${encodeURIComponent(workspaceId)}`;
 }
 
+function withCapabilityToken(url: string, capabilityToken?: string): string {
+  if (!capabilityToken) {
+    return url;
+  }
+  const separator = url.includes('?') ? '&' : '?';
+  return `${url}${separator}cap_token=${encodeURIComponent(capabilityToken)}`;
+}
+
 class ApiError extends Error {
   constructor(
     message: string,
@@ -2092,49 +2100,64 @@ export const api = {
     return handleResponse<UserSpaceCapabilityTokenResponse>(response);
   },
 
-  getUserSpaceCollabWebSocketUrl(workspaceId: string, filePath: string): string {
+  getUserSpaceCollabWebSocketUrl(workspaceId: string, filePath: string, capabilityToken?: string): string {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const encodedPath = encodeFilePath(filePath);
-    return `${protocol}//${window.location.host}${API_BASE}/userspace/collab/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}`;
+    const base = `${protocol}//${window.location.host}${API_BASE}/userspace/collab/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}`;
+    return withCapabilityToken(base, capabilityToken);
   },
 
-  getUserSpaceRuntimePtyWebSocketUrl(workspaceId: string): string {
+  getUserSpaceRuntimePtyWebSocketUrl(workspaceId: string, capabilityToken?: string): string {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${protocol}//${window.location.host}${API_BASE}/userspace/runtime/workspaces/${encodeURIComponent(workspaceId)}/pty`;
+    const base = `${protocol}//${window.location.host}${API_BASE}/userspace/runtime/workspaces/${encodeURIComponent(workspaceId)}/pty`;
+    return withCapabilityToken(base, capabilityToken);
   },
 
   async createUserSpaceCollabFile(workspaceId: string, filePath: string, content: string = ''): Promise<{ success: boolean; workspace_id: string; file_path: string; version: number }> {
+    const capability = await this.issueUserSpaceCapabilityToken(workspaceId, ['userspace.collab_mutate']);
     const response = await apiFetch(`${API_BASE}/userspace/collab/workspaces/${workspaceId}/files/create`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${capability.token}`,
+      },
       body: JSON.stringify({ file_path: filePath, content }),
     });
     return handleResponse(response);
   },
 
   async renameUserSpaceCollabFile(workspaceId: string, oldPath: string, newPath: string): Promise<{ old_path: string; new_path: string; success: boolean }> {
+    const capability = await this.issueUserSpaceCapabilityToken(workspaceId, ['userspace.collab_mutate']);
     const response = await apiFetch(`${API_BASE}/userspace/collab/workspaces/${workspaceId}/files/rename`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${capability.token}`,
+      },
       body: JSON.stringify({ old_path: oldPath, new_path: newPath }),
     });
     return handleResponse(response);
   },
 
   async deleteUserSpaceCollabFile(workspaceId: string, filePath: string): Promise<{ file_path: string; success: boolean }> {
+    const capability = await this.issueUserSpaceCapabilityToken(workspaceId, ['userspace.collab_mutate']);
     const response = await apiFetch(`${API_BASE}/userspace/collab/workspaces/${workspaceId}/files/delete`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${capability.token}`,
+      },
       body: JSON.stringify({ file_path: filePath }),
     });
     return handleResponse(response);
   },
 
-  getUserSpaceRuntimePreviewUrl(workspaceId: string, path: string = ''): string {
+  getUserSpaceRuntimePreviewUrl(workspaceId: string, path: string = '', capabilityToken?: string): string {
     const normalized = path.replace(/^\/+/, '');
-    return normalized
+    const baseUrl = normalized
       ? `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/preview/${encodeFilePath(normalized)}`
       : `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/preview/`;
+    return withCapabilityToken(baseUrl, capabilityToken);
   },
 
   getUserSpaceSharedPreviewProxyUrl(ownerUsername: string, shareSlug: string, path: string = ''): string {

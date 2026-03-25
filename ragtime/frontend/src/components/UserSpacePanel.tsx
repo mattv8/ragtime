@@ -258,6 +258,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [previewLiveDataConnections, setPreviewLiveDataConnections] = useState<UserSpaceLiveDataConnection[]>([]);
   const [previewExecuting, setPreviewExecuting] = useState(false);
   const [previewRefreshCounter, setPreviewRefreshCounter] = useState(0);
+  const [previewCapabilityToken, setPreviewCapabilityToken] = useState<string | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<UserSpaceRuntimeStatusResponse | null>(null);
   const [runtimeBusy, setRuntimeBusy] = useState(false);
   const [activeRightTab, setActiveRightTab] = useState<'preview' | 'console'>('preview');
@@ -325,6 +326,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [showToolPicker, setShowToolPicker] = useState(false);
   const [showSnapshots, setShowSnapshots] = useState(false);
   const [snapshotsLoadedForWorkspace, setSnapshotsLoadedForWorkspace] = useState<string | null>(null);
+
+  const issueWorkspaceCapabilityToken = useCallback(async (workspaceId: string, capabilities: string[]): Promise<string> => {
+    const response = await api.issueUserSpaceCapabilityToken(workspaceId, capabilities);
+    return response.token;
+  }, []);
   const toolPickerRef = useRef<HTMLDivElement>(null);
   const workspaceDropdownRef = useRef<HTMLDivElement>(null);
   const selectedFilePathRef = useRef(selectedFilePath);
@@ -1796,6 +1802,33 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     return () => window.clearInterval(timer);
   }, [activeWorkspaceId, refreshRuntimeStatus, runtimeDisplayState]);
 
+  useEffect(() => {
+    if (!activeWorkspaceId) {
+      setPreviewCapabilityToken(null);
+      return;
+    }
+
+    let cancelled = false;
+    const loadPreviewCapability = async () => {
+      try {
+        const token = await issueWorkspaceCapabilityToken(activeWorkspaceId, ['userspace.preview_http', 'userspace.preview_ws']);
+        if (!cancelled) {
+          setPreviewCapabilityToken(token);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setPreviewCapabilityToken(null);
+          setError(err instanceof Error ? err.message : 'Failed to authorize preview access');
+        }
+      }
+    };
+
+    void loadPreviewCapability();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeWorkspaceId, issueWorkspaceCapabilityToken, previewRefreshCounter]);
+
   // Reset reconnect attempts when workspace or file changes (not on reconnect nonce)
   useEffect(() => {
     collabReconnectAttemptsRef.current = 0;
@@ -1834,97 +1867,116 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       }, delay);
     };
 
-    const socketUrl = api.getUserSpaceCollabWebSocketUrl(activeWorkspaceId, selectedFilePath);
-    const socket = new WebSocket(socketUrl);
-    collabSocketRef.current = socket;
+    let socket: WebSocket | null = null;
 
-    socket.onopen = () => {
-      setCollabConnected(true);
-      collabReconnectAttemptsRef.current = 0;
-      if (collabReconnectTimerRef.current !== null) {
-        window.clearTimeout(collabReconnectTimerRef.current);
-        collabReconnectTimerRef.current = null;
-      }
+    const connectCollab = async () => {
       try {
-        socket.send(JSON.stringify({ type: 'presence' }));
-      } catch {
-        // ignore
-      }
-    };
-
-    socket.onmessage = (event) => {
-      let payload: UserSpaceCollabMessage | null = null;
-      try {
-        payload = JSON.parse(event.data) as UserSpaceCollabMessage;
-      } catch {
-        return;
-      }
-
-      if (!payload) {
-        return;
-      }
-
-      if (payload.type === 'error') {
-        setError(payload.message || 'Collaboration error');
-        return;
-      }
-
-      if (payload.type === 'presence') {
-        setCollabPresenceCount(payload.users.length);
-        return;
-      }
-
-      if (payload.type === 'file_renamed') {
-        if (selectedFilePath === payload.old_path) {
-          setSelectedFilePath(payload.new_path);
+        const token = await issueWorkspaceCapabilityToken(activeWorkspaceId, ['userspace.collab_connect']);
+        if (!reconnectEnabled) {
+          return;
         }
-        return;
-      }
 
-      if (payload.type === 'file_created') {
-        void loadWorkspaceData(activeWorkspaceId);
-        return;
-      }
+        const socketUrl = api.getUserSpaceCollabWebSocketUrl(activeWorkspaceId, selectedFilePath, token);
+        socket = new WebSocket(socketUrl);
+        collabSocketRef.current = socket;
 
-      if (payload.file_path !== selectedFilePath) {
-        return;
-      }
+        socket.onopen = () => {
+          setCollabConnected(true);
+          collabReconnectAttemptsRef.current = 0;
+          if (collabReconnectTimerRef.current !== null) {
+            window.clearTimeout(collabReconnectTimerRef.current);
+            collabReconnectTimerRef.current = null;
+          }
+          try {
+            socket?.send(JSON.stringify({ type: 'presence' }));
+          } catch {
+            // ignore
+          }
+        };
 
-      if (payload.type === 'snapshot' || payload.type === 'update') {
-        collabSuppressNextSendRef.current = true;
-        setCollabVersion(payload.version);
-        setCollabReadOnly(payload.type === 'snapshot' ? payload.read_only : false);
-        setFileContent(payload.content);
-        setFileDirty(false);
-        setFileContentCache((current) => ({
-          ...current,
-          [selectedFilePath]: {
-            content: payload.content,
-            updatedAt: current[selectedFilePath]?.updatedAt ?? '',
-          },
-        }));
-      }
-      if (payload.type === 'ack') {
-        setCollabVersion(payload.version);
+        socket.onmessage = (event) => {
+          let payload: UserSpaceCollabMessage | null = null;
+          try {
+            payload = JSON.parse(event.data) as UserSpaceCollabMessage;
+          } catch {
+            return;
+          }
+
+          if (!payload) {
+            return;
+          }
+
+          if (payload.type === 'error') {
+            setError(payload.message || 'Collaboration error');
+            return;
+          }
+
+          if (payload.type === 'presence') {
+            setCollabPresenceCount(payload.users.length);
+            return;
+          }
+
+          if (payload.type === 'file_renamed') {
+            if (selectedFilePath === payload.old_path) {
+              setSelectedFilePath(payload.new_path);
+            }
+            return;
+          }
+
+          if (payload.type === 'file_created') {
+            void loadWorkspaceData(activeWorkspaceId);
+            return;
+          }
+
+          if (payload.file_path !== selectedFilePath) {
+            return;
+          }
+
+          if (payload.type === 'snapshot' || payload.type === 'update') {
+            collabSuppressNextSendRef.current = true;
+            setCollabVersion(payload.version);
+            setCollabReadOnly(payload.type === 'snapshot' ? payload.read_only : false);
+            setFileContent(payload.content);
+            setFileDirty(false);
+            setFileContentCache((current) => ({
+              ...current,
+              [selectedFilePath]: {
+                content: payload.content,
+                updatedAt: current[selectedFilePath]?.updatedAt ?? '',
+              },
+            }));
+          }
+          if (payload.type === 'ack') {
+            setCollabVersion(payload.version);
+          }
+        };
+
+        socket.onclose = (closeEvent) => {
+          setCollabConnected(false);
+          setCollabPresenceCount(0);
+
+          // Do not retry for intentional/auth/path failures.
+          if ([1000, 1001, 4401, 4403, 4404].includes(closeEvent.code)) {
+            return;
+          }
+          scheduleReconnect();
+        };
+
+        socket.onerror = () => {
+          setCollabConnected(false);
+          setCollabPresenceCount(0);
+          // onclose usually follows and controls reconnect behavior.
+        };
+      } catch (err) {
+        if (!reconnectEnabled) {
+          return;
+        }
+        setError(err instanceof Error ? err.message : 'Failed to authorize collaboration access');
+        scheduleReconnect();
       }
     };
 
-    socket.onclose = (closeEvent) => {
-      setCollabConnected(false);
-      setCollabPresenceCount(0);
-
-      // Do not retry for intentional/auth/path failures.
-      if ([1000, 1001, 4401, 4403, 4404].includes(closeEvent.code)) {
-        return;
-      }
-      scheduleReconnect();
-    };
-
-    socket.onerror = () => {
-      setCollabConnected(false);
-      setCollabPresenceCount(0);
-      // onclose usually follows and controls reconnect behavior.
-    };
+    void connectCollab();
 
     return () => {
       reconnectEnabled = false;
@@ -1932,12 +1984,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         window.clearTimeout(collabReconnectTimerRef.current);
         collabReconnectTimerRef.current = null;
       }
-      socket.close();
-      if (collabSocketRef.current === socket) {
+      socket?.close();
+      if (socket && collabSocketRef.current === socket) {
         collabSocketRef.current = null;
       }
     };
-  }, [activeWorkspaceId, loadWorkspaceData, selectedFilePath, collabReconnectNonce]);
+  }, [activeWorkspaceId, loadWorkspaceData, selectedFilePath, collabReconnectNonce, issueWorkspaceCapabilityToken]);
 
   useEffect(() => {
     if (terminalReconnectTimerRef.current !== null) {
@@ -2011,15 +2063,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     resizeObserver.observe(terminalContainer);
     terminalResizeObserverRef.current = resizeObserver;
 
-    const wsUrl = api.getUserSpaceRuntimePtyWebSocketUrl(activeWorkspaceId);
-    const socket = new WebSocket(wsUrl);
-    terminalSocketRef.current = socket;
+    let socket: WebSocket | null = null;
 
     const dataDisposable = terminal.onData((data) => {
       if (terminalReadOnlyRef.current) {
         return;
       }
-      if (socket.readyState !== WebSocket.OPEN) {
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
         return;
       }
       try {
@@ -2029,54 +2079,76 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       }
     });
 
-    socket.onopen = () => {
-      terminal.clear();
-      if (terminalReconnectTimerRef.current !== null) {
-        window.clearTimeout(terminalReconnectTimerRef.current);
-        terminalReconnectTimerRef.current = null;
-      }
+    const connectTerminal = async () => {
       try {
-        fitAddon.fit();
-      } catch {
-        // ignore
-      }
-    };
+        const token = await issueWorkspaceCapabilityToken(activeWorkspaceId, ['userspace.runtime_pty']);
+        if (!reconnectEnabled) {
+          return;
+        }
 
-    socket.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data) as { type?: string; data?: string; read_only?: boolean; message?: string };
-        if (payload.type === 'status') {
-          const isReadOnly = Boolean(payload.read_only);
-          terminalReadOnlyRef.current = isReadOnly;
-          setTerminalReadOnly(isReadOnly);
-          terminal.options.disableStdin = isReadOnly;
-          const statusMessage = typeof payload.message === 'string' ? payload.message.trim() : '';
-          if (statusMessage) {
-            terminal.writeln(`\r\n[status] ${statusMessage}\r\n`);
+        const wsUrl = api.getUserSpaceRuntimePtyWebSocketUrl(activeWorkspaceId, token);
+        socket = new WebSocket(wsUrl);
+        terminalSocketRef.current = socket;
+
+        socket.onopen = () => {
+          terminal.clear();
+          if (terminalReconnectTimerRef.current !== null) {
+            window.clearTimeout(terminalReconnectTimerRef.current);
+            terminalReconnectTimerRef.current = null;
           }
+          try {
+            fitAddon.fit();
+          } catch {
+            // ignore
+          }
+        };
+
+        socket.onmessage = (event) => {
+          try {
+            const payload = JSON.parse(event.data) as { type?: string; data?: string; read_only?: boolean; message?: string };
+            if (payload.type === 'status') {
+              const isReadOnly = Boolean(payload.read_only);
+              terminalReadOnlyRef.current = isReadOnly;
+              setTerminalReadOnly(isReadOnly);
+              terminal.options.disableStdin = isReadOnly;
+              const statusMessage = typeof payload.message === 'string' ? payload.message.trim() : '';
+              if (statusMessage) {
+                terminal.writeln(`\r\n[status] ${statusMessage}\r\n`);
+              }
+              return;
+            }
+            if (payload.type === 'output') {
+              const workspaceRoot = `/data/_userspace/workspaces/${activeWorkspaceId}/files`;
+              const output = (payload.data ?? '').split(workspaceRoot).join('<workspace>');
+              terminal.write(output);
+              return;
+            }
+          } catch {
+            terminal.write(String(event.data ?? ''));
+          }
+        };
+
+        socket.onclose = () => {
+          if (reconnectEnabled) {
+            terminal.writeln('\r\n[status] Terminal disconnected. Reconnecting...');
+          }
+          scheduleReconnect();
+        };
+
+        socket.onerror = () => {
+          // onclose always fires after onerror; reconnect is handled there
+        };
+      } catch (err) {
+        if (!reconnectEnabled) {
           return;
         }
-        if (payload.type === 'output') {
-          const workspaceRoot = `/data/_userspace/workspaces/${activeWorkspaceId}/files`;
-          const output = (payload.data ?? '').split(workspaceRoot).join('<workspace>');
-          terminal.write(output);
-          return;
-        }
-      } catch {
-        terminal.write(String(event.data ?? ''));
+        terminal.writeln('\r\n[status] Failed to authorize terminal access. Retrying...');
+        setError(err instanceof Error ? err.message : 'Failed to authorize terminal access');
+        scheduleReconnect();
       }
     };
 
-    socket.onclose = () => {
-      if (reconnectEnabled) {
-        terminal.writeln('\r\n[status] Terminal disconnected. Reconnecting...');
-      }
-      scheduleReconnect();
-    };
-
-    socket.onerror = () => {
-      // onclose always fires after onerror; reconnect is handled there
-    };
+    void connectTerminal();
 
     return () => {
       reconnectEnabled = false;
@@ -2085,8 +2157,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         terminalReconnectTimerRef.current = null;
       }
       dataDisposable.dispose();
-      socket.close();
-      if (terminalSocketRef.current === socket) {
+      socket?.close();
+      if (socket && terminalSocketRef.current === socket) {
         terminalSocketRef.current = null;
       }
       if (terminalResizeObserverRef.current) {
@@ -2097,7 +2169,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       terminalRef.current?.dispose();
       terminalRef.current = null;
     };
-  }, [activeRightTab, activeWorkspaceId, canEditWorkspace, runtimeDisplayState, terminalReconnectNonce]);
+  }, [activeRightTab, activeWorkspaceId, canEditWorkspace, runtimeDisplayState, terminalReconnectNonce, issueWorkspaceCapabilityToken]);
 
   useEffect(() => {
     const socket = collabSocketRef.current;
@@ -3589,8 +3661,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 workspaceFiles={previewWorkspaceFiles}
                 liveDataConnections={previewLiveDataConnections}
                 runtimePreviewUrl={
-                  activeWorkspaceId
-                    ? api.getUserSpaceRuntimePreviewUrl(activeWorkspaceId)
+                  activeWorkspaceId && previewCapabilityToken
+                    ? api.getUserSpaceRuntimePreviewUrl(activeWorkspaceId, '', previewCapabilityToken)
                     : undefined
                 }
                 runtimeAvailable={runtimeStatus?.devserver_running ?? false}
