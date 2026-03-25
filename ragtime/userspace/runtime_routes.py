@@ -12,33 +12,23 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
-from fastapi import (
-    APIRouter,
-    Depends,
-    Header,
-    HTTPException,
-    Request,
-    WebSocket,
-    WebSocketDisconnect,
-)
+from fastapi import (APIRouter, Depends, Header, HTTPException, Request,
+                     WebSocket, WebSocketDisconnect)
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from ragtime.config.settings import settings
 from ragtime.core.auth import validate_session
 from ragtime.core.database import get_db
 from ragtime.core.security import get_current_user, get_current_user_optional
-from ragtime.userspace.models import (
-    UserSpaceCapabilityTokenResponse,
-    UserSpaceFileResponse,
-    UserSpaceRuntimeActionResponse,
-    UserSpaceRuntimeSessionResponse,
-    UserSpaceRuntimeStatusResponse,
-)
-from ragtime.userspace.runtime_service import (
-    RuntimeVersionConflictError,
-    userspace_runtime_service,
-)
-from ragtime.userspace.service import _RUNTIME_BRIDGE_CONTENT, userspace_service
+from ragtime.userspace.models import (UserSpaceCapabilityTokenResponse,
+                                      UserSpaceFileResponse,
+                                      UserSpaceRuntimeActionResponse,
+                                      UserSpaceRuntimeSessionResponse,
+                                      UserSpaceRuntimeStatusResponse)
+from ragtime.userspace.runtime_service import (RuntimeVersionConflictError,
+                                               userspace_runtime_service)
+from ragtime.userspace.service import (_RUNTIME_BRIDGE_CONTENT,
+                                       userspace_service)
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space Runtime"])
 
@@ -390,9 +380,10 @@ _FIRST_SCRIPT_RE = re.compile(rb"(<script[\s>])", re.IGNORECASE)
 def _inject_bridge_script(html: bytes) -> bytes:
     """Inject the platform data-bridge script into HTML responses.
 
-    Inserts ``<script src=".ragtime/bridge.js">`` before ``</head>`` or
-    the first ``<script`` tag so ``window.__ragtime_context`` is available
-    to workspace code.  Skips injection if bridge.js is already referenced.
+    Inserts ``<script src="/indexes/userspace/runtime-bridge.js">`` before
+    ``</head>`` or the first ``<script`` tag so ``window.__ragtime_context``
+    and platform visualization libraries are available to workspace code.
+    Skips injection if bridge.js is already referenced.
     """
     if _BRIDGE_DETECT_RE.search(html):
         return html
@@ -1182,5 +1173,4 @@ async def shared_token_preview_proxy_websocket(
         path,
         query=websocket.url.query or None,
     )
-    await _proxy_websocket_request(websocket, _to_websocket_url(upstream_url))
     await _proxy_websocket_request(websocket, _to_websocket_url(upstream_url))

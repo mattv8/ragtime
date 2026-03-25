@@ -22,39 +22,49 @@ from ragtime.config import settings
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
-from ragtime.core.entrypoint_status import (EntrypointStatus,
-                                            parse_entrypoint_config)
+from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
-                                    add_table_metadata_to_psql_output,
-                                    enforce_max_results, format_query_result,
-                                    validate_sql_query)
-from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.sql_utils import (
+    DB_TYPE_POSTGRES,
+    add_table_metadata_to_psql_output,
+    enforce_max_results,
+    format_query_result,
+    validate_sql_query,
+)
+from ragtime.core.ssh import (
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
-                                      ExecuteComponentRequest,
-                                      ExecuteComponentResponse,
-                                      PaginatedWorkspacesResponse,
-                                      ShareAccessMode, SqlitePersistenceMode,
-                                      SwitchSnapshotBranchRequest,
-                                      UpdateSnapshotRequest,
-                                      UpdateWorkspaceMembersRequest,
-                                      UpdateWorkspaceRequest,
-                                      UpdateWorkspaceShareAccessRequest,
-                                      UpsertWorkspaceFileRequest,
-                                      UserSpaceFileInfo, UserSpaceFileResponse,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection,
-                                      UserSpaceSharedPreviewResponse,
-                                      UserSpaceSnapshot,
-                                      UserSpaceSnapshotBranch,
-                                      UserSpaceSnapshotTimelineResponse,
-                                      UserSpaceWorkspace,
-                                      UserSpaceWorkspaceShareLink,
-                                      UserSpaceWorkspaceShareLinkStatus,
-                                      WorkspaceMember,
-                                      WorkspaceShareSlugAvailabilityResponse)
+from ragtime.userspace.models import (
+    ArtifactType,
+    CreateWorkspaceRequest,
+    ExecuteComponentRequest,
+    ExecuteComponentResponse,
+    PaginatedWorkspacesResponse,
+    ShareAccessMode,
+    SqlitePersistenceMode,
+    SwitchSnapshotBranchRequest,
+    UpdateSnapshotRequest,
+    UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+    UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot,
+    UserSpaceSnapshotBranch,
+    UserSpaceSnapshotTimelineResponse,
+    UserSpaceWorkspace,
+    UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceMember,
+    WorkspaceShareSlugAvailabilityResponse,
+)
 
 logger = get_logger(__name__)
 
@@ -130,7 +140,7 @@ _MODULE_SOURCE_EXTENSIONS = (
 _RUNTIME_BOOTSTRAP_CONFIG_PATH = ".ragtime/runtime-bootstrap.json"
 _RUNTIME_BOOTSTRAP_TEMPLATE_VERSION = 5
 _RUNTIME_BRIDGE_PATH = ".ragtime/bridge.js"
-_RUNTIME_BRIDGE_VERSION = 4
+_RUNTIME_BRIDGE_VERSION = 5
 _RUNTIME_BRIDGE_VERSION_TAG = f"@ragtime/bridge v{_RUNTIME_BRIDGE_VERSION}"
 _RUNTIME_BRIDGE_CONTENT = (
     f"// {_RUNTIME_BRIDGE_VERSION_TAG} — platform-managed, do not edit\n"
@@ -139,6 +149,85 @@ _RUNTIME_BRIDGE_CONTENT = (
     "  var E = 'ragtime-execute';\n"
     "  var R = 'ragtime-execute-result';\n"
     "  var T = 60000;\n"
+    "  var CHART_URL = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js';\n"
+    "  var JQUERY_URL = 'https://code.jquery.com/jquery-3.7.1.min.js';\n"
+    "  var DATATABLES_JS_URL = 'https://cdn.datatables.net/1.13.8/js/dataTables.min.js';\n"
+    "  var DATATABLES_CSS_URL = 'https://cdn.datatables.net/1.13.8/css/dataTables.dataTables.min.css';\n"
+    "\n"
+    "  function hasDataTables() {\n"
+    "    return !!(window.jQuery && window.jQuery.fn && window.jQuery.fn.DataTable);\n"
+    "  }\n"
+    "\n"
+    "  function ensureStylesheet(href) {\n"
+    "    if (document.querySelector('link[href=\"' + href + '\"]')) return;\n"
+    "    var link = document.createElement('link');\n"
+    "    link.rel = 'stylesheet';\n"
+    "    link.href = href;\n"
+    "    document.head.appendChild(link);\n"
+    "  }\n"
+    "\n"
+    "  function loadScript(src) {\n"
+    "    return new Promise(function (resolve, reject) {\n"
+    "      var existing = document.querySelector('script[src=\"' + src + '\"]');\n"
+    "      if (existing) {\n"
+    "        if (existing.getAttribute('data-ragtime-loaded') === '1') {\n"
+    "          resolve();\n"
+    "          return;\n"
+    "        }\n"
+    "        existing.addEventListener('load', function () { resolve(); }, { once: true });\n"
+    "        existing.addEventListener('error', function () { reject(new Error('Failed to load ' + src)); }, { once: true });\n"
+    "        return;\n"
+    "      }\n"
+    "      var script = document.createElement('script');\n"
+    "      script.src = src;\n"
+    "      script.async = false;\n"
+    "      script.onload = function () {\n"
+    "        script.setAttribute('data-ragtime-loaded', '1');\n"
+    "        resolve();\n"
+    "      };\n"
+    "      script.onerror = function () { reject(new Error('Failed to load ' + src)); };\n"
+    "      document.head.appendChild(script);\n"
+    "    });\n"
+    "  }\n"
+    "\n"
+    "  function bootstrapVizLibs() {\n"
+    "    if (window.__ragtime_viz_bootstrap_promise) return window.__ragtime_viz_bootstrap_promise;\n"
+    "\n"
+    "    ensureStylesheet(DATATABLES_CSS_URL);\n"
+    "\n"
+    "    var canUseDocumentWrite = document.readyState === 'loading' && !!document.currentScript;\n"
+    "    if (canUseDocumentWrite) {\n"
+    "      if (!window.Chart) {\n"
+    "        document.write('<script src=\"' + CHART_URL + '\"><\\/script>');\n"
+    "      }\n"
+    "      if (!window.jQuery) {\n"
+    "        document.write('<script src=\"' + JQUERY_URL + '\"><\\/script>');\n"
+    "      }\n"
+    "      if (!hasDataTables()) {\n"
+    "        document.write('<script src=\"' + DATATABLES_JS_URL + '\"><\\/script>');\n"
+    "      }\n"
+    "      window.__ragtime_viz_bootstrap_promise = Promise.resolve();\n"
+    "      return window.__ragtime_viz_bootstrap_promise;\n"
+    "    }\n"
+    "\n"
+    "    var chain = Promise.resolve();\n"
+    "    if (!window.Chart) {\n"
+    "      chain = chain.then(function () { return loadScript(CHART_URL); });\n"
+    "    }\n"
+    "    if (!window.jQuery) {\n"
+    "      chain = chain.then(function () { return loadScript(JQUERY_URL); });\n"
+    "    }\n"
+    "    if (!hasDataTables()) {\n"
+    "      chain = chain.then(function () { return loadScript(DATATABLES_JS_URL); });\n"
+    "    }\n"
+    "\n"
+    "    window.__ragtime_viz_bootstrap_promise = chain.catch(function (error) {\n"
+    "      console.warn('[ragtime bridge] visualization bootstrap failed:', error);\n"
+    "    });\n"
+    "    return window.__ragtime_viz_bootstrap_promise;\n"
+    "  }\n"
+    "\n"
+    "  bootstrapVizLibs();\n"
     "\n"
     "  function getDirectExecuteUrl() {\n"
     "    var pathname = window.location && window.location.pathname ? window.location.pathname : '/';\n"
