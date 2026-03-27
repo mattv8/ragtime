@@ -235,7 +235,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
     bind_dn: '',
     bind_password: '',
     user_search_base: '',
-    user_search_filter: '(|(sAMAccountName={username})(uid={username}))',
+    user_search_filter: '(uid={username})',
     admin_group_dn: '',
     user_group_dn: '',
   });
@@ -948,7 +948,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           bind_dn: ldapData.bind_dn || '',
           bind_password: '', // Never returned from server
           user_search_base: ldapData.user_search_base || '',
-          user_search_filter: ldapData.user_search_filter || '(|(sAMAccountName={username})(uid={username}))',
+          user_search_filter: ldapData.user_search_filter || '(uid={username})',
           admin_group_dn: ldapData.admin_group_dn || '',
           user_group_dn: ldapData.user_group_dn || '',
         });
@@ -2969,7 +2969,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                     onChange={(e) =>
                       setLdapFormData({ ...ldapFormData, user_search_filter: e.target.value })
                     }
-                    placeholder="(|(sAMAccountName={username})(uid={username}))"
+                    placeholder="(uid={username})"
                   />
                   <p className="field-help">
                     LDAP filter to find users. Use {'{username}'} as placeholder.

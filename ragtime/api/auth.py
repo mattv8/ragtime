@@ -10,25 +10,28 @@ import time
 from typing import Optional
 from urllib.parse import urlparse
 
-from fastapi import (APIRouter, Depends, Form, HTTPException, Request,
-                     Response, status)
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
-from prisma import Json
 from prisma.enums import UserRole
 from prisma.models import User
 from pydantic import BaseModel, Field
 
+from prisma import Json
 from ragtime.config.settings import settings
-from ragtime.core.auth import (authenticate, create_access_token,
-                               create_session, discover_ldap_structure,
-                               get_ldap_config, invalidate_session,
-                               lookup_bind_dn)
+from ragtime.core.auth import (
+    authenticate,
+    create_access_token,
+    create_session,
+    discover_ldap_structure,
+    get_ldap_config,
+    invalidate_session,
+    lookup_bind_dn,
+)
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
 from ragtime.core.logging import get_logger
 from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, limiter
-from ragtime.core.security import (get_current_user, get_session_token,
-                                   require_admin)
+from ragtime.core.security import get_current_user, get_session_token, require_admin
 
 logger = get_logger(__name__)
 
@@ -128,7 +131,9 @@ class LoginRequest(BaseModel):
     """Login request body."""
 
     username: str = Field(
-        ..., min_length=1, description="Username (sAMAccountName, uid, or local admin)"
+        ...,
+        min_length=1,
+        description="Username (uid, email/UPN, sAMAccountName, or local admin)",
     )
     password: str = Field(..., min_length=1, description="Password")
 
@@ -163,7 +168,7 @@ class LdapConfigRequest(BaseModel):
         None, description="LDAP server URL (ldap://host:389 or ldaps://host:636)"
     )
     bind_dn: Optional[str] = Field(
-        None, description="Bind DN or sAMAccountName for service account"
+        None, description="Bind DN or bind username for service account"
     )
     bind_password: Optional[str] = Field(
         None, description="Bind password (leave empty to keep existing)"
@@ -200,7 +205,7 @@ class LdapDiscoverRequest(BaseModel):
     """Request to discover LDAP structure."""
 
     server_url: str = Field(..., description="LDAP server URL")
-    bind_dn: str = Field(..., description="Bind DN or sAMAccountName")
+    bind_dn: str = Field(..., description="Bind DN or bind username")
     bind_password: str = Field(..., description="Bind password")
     allow_self_signed: bool = Field(
         False, description="Allow self-signed SSL certificates"
@@ -221,7 +226,9 @@ class LdapBindDnLookupRequest(BaseModel):
     """Request to look up bind DN from username."""
 
     server_url: str = Field(..., description="LDAP server URL (ldap:// or ldaps://)")
-    username: str = Field(..., description="Username (sAMAccountName, uid, or UPN)")
+    username: str = Field(
+        ..., description="Username (uid, email/UPN, cn, or sAMAccountName)"
+    )
     password: str = Field(..., description="Password")
 
 
@@ -460,7 +467,6 @@ class OAuth2ErrorResponse(BaseModel):
     },
     tags=["OAuth2"],
 )
-
 @limiter.limit(LOGIN_RATE_LIMIT)
 async def oauth2_token(
     request: Request,
@@ -889,8 +895,7 @@ async def update_ldap_configuration(
                 "allowSelfSigned": allow_self_signed,
                 "baseDn": base_dn,
                 "userSearchBase": user_search_base or "",
-                "userSearchFilter": user_search_filter
-                or "(|(sAMAccountName={username})(uid={username}))",
+                "userSearchFilter": user_search_filter or "(uid={username})",
                 "adminGroupDn": admin_group_dn or "",
                 "userGroupDn": user_group_dn or "",
                 "discoveredOus": Json(discovered_ous),
@@ -903,8 +908,7 @@ async def update_ldap_configuration(
                 "allowSelfSigned": allow_self_signed,
                 "baseDn": base_dn,
                 "userSearchBase": user_search_base or "",
-                "userSearchFilter": user_search_filter
-                or "(|(sAMAccountName={username})(uid={username}))",
+                "userSearchFilter": user_search_filter or "(uid={username})",
                 "adminGroupDn": admin_group_dn or "",
                 "userGroupDn": user_group_dn or "",
                 "discoveredOus": Json(discovered_ous),

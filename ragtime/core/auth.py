@@ -14,15 +14,16 @@ import hashlib
 import re
 import ssl
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from jose import JWTError, jwt  # type: ignore[import-untyped]
-from ldap3 import ALL, AUTO_BIND_TLS_BEFORE_BIND, SUBTREE, Connection, Server, Tls
 from ldap3 import AUTO_BIND_NO_TLS  # type: ignore[import-untyped]
+from ldap3 import ALL, AUTO_BIND_TLS_BEFORE_BIND, SUBTREE, Connection, Server, Tls
 from ldap3.core.exceptions import (  # type: ignore[import-untyped]
     LDAPBindError,
     LDAPException,
 )
+from ldap3.utils.conv import escape_filter_chars  # type: ignore[import-untyped]
 from prisma.enums import AuthProvider, UserRole
 from pydantic import BaseModel
 
@@ -173,6 +174,106 @@ def _get_ldap_connection(
             continue
 
     logger.error(f"LDAP connection failed after {max_retries} attempts: {last_error}")
+    return None
+
+
+def _is_invalid_attribute_error(error: LDAPException) -> bool:
+    """Return True when an LDAP error indicates an unsupported attribute."""
+    error_text = str(error).lower()
+    return (
+        "invalid attribute type" in error_text
+        or "undefined attribute type" in error_text
+    )
+
+
+def _split_username_variants(username: str) -> tuple[str, str]:
+    """Return full and short username variants for directory searches."""
+    full_username = username.strip()
+    normalized = full_username
+
+    if "\\" in normalized:
+        normalized = normalized.split("\\", 1)[1]
+
+    short_username = normalized.split("@", 1)[0].strip()
+    return full_username, short_username
+
+
+def _build_default_user_search_filters(username: str) -> list[str]:
+    """Build broad LDAP/AD-compatible filter candidates for a username."""
+    full_username, short_username = _split_username_variants(username)
+    filters: list[str] = []
+
+    def add_filter(attr_name: str, value: str) -> None:
+        if not value:
+            return
+        filter_value = f"({attr_name}={escape_filter_chars(value)})"
+        if filter_value not in filters:
+            filters.append(filter_value)
+
+    # LDAP-first attributes, followed by AD-specific attributes.
+    add_filter("uid", short_username)
+    add_filter("mail", full_username)
+    add_filter("cn", short_username)
+    add_filter("sAMAccountName", short_username)
+    add_filter("userPrincipalName", full_username)
+    return filters
+
+
+def _build_user_search_filters(configured_filter: str, username: str) -> list[str]:
+    """Build ordered filter candidates from configured filter + safe fallbacks."""
+    filters: list[str] = []
+
+    if configured_filter:
+        full_username, short_username = _split_username_variants(username)
+        rendered_full = configured_filter.replace(
+            "{username}", escape_filter_chars(full_username)
+        )
+        filters.append(rendered_full)
+
+        if "{username}" in configured_filter and short_username != full_username:
+            rendered_short = configured_filter.replace(
+                "{username}", escape_filter_chars(short_username)
+            )
+            if rendered_short not in filters:
+                filters.append(rendered_short)
+
+    for fallback_filter in _build_default_user_search_filters(username):
+        if fallback_filter not in filters:
+            filters.append(fallback_filter)
+
+    return filters
+
+
+def _search_first_matching_entry(
+    conn: Connection,
+    search_base: str,
+    search_filters: list[str],
+    attributes: list[str],
+    context: str,
+) -> Optional[Any]:
+    """Try search filters in order and return first matching LDAP entry."""
+    for search_filter in search_filters:
+        try:
+            conn.search(
+                search_base=search_base,
+                search_filter=search_filter,
+                search_scope=SUBTREE,
+                attributes=attributes,
+            )
+            if conn.entries:
+                return conn.entries[0]
+        except LDAPException as e:
+            if _is_invalid_attribute_error(e):
+                logger.debug(
+                    f"LDAP filter skipped in {context} due to unsupported attribute: "
+                    f"{search_filter} ({e})"
+                )
+                continue
+
+            logger.debug(
+                f"LDAP search failed in {context} for filter {search_filter}: {e}"
+            )
+
     return None
 
 
@@ -389,11 +490,11 @@ async def lookup_bind_dn(
     password: str,
 ) -> BindDnLookupResult:
     """
-    Look up the full DN for a user given their username (sAMAccountName or uid).
+    Look up the full DN for a user given their username.
 
-    This attempts to bind with the username directly (works for AD with
-    sAMAccountName@domain or domain\\username format), or if that fails,
-    tries anonymous/unauthenticated search to find the DN.
+    This attempts to bind with the username directly (works for AD UPN and
+    domain\\username formats), and then tries directory searches using
+    LDAP/AD-compatible filters.
     """
     try:
         # Parse server URL
@@ -422,15 +523,15 @@ async def lookup_bind_dn(
                     conn.unbind()
                     return BindDnLookupResult(success=True, bind_dn=bind_dn)
 
-            # Search for our own entry
-            conn.search(
+            # Search for our own entry with compatibility fallback filters.
+            entry = _search_first_matching_entry(
+                conn=conn,
                 search_base="",
-                search_filter=f"(|(sAMAccountName={username})(uid={username})(userPrincipalName={username}))",
-                search_scope=SUBTREE,
-                attributes=["distinguishedName", "displayName"],
+                search_filters=_build_user_search_filters("", username),
+                attributes=["*"],
+                context="bind DN lookup (direct bind)",
             )
-            if conn.entries:
-                entry = conn.entries[0]
+            if entry:
                 bind_dn = str(entry.entry_dn)
                 display_name = (
                     str(entry.displayName)
@@ -459,14 +560,14 @@ async def lookup_bind_dn(
             if base_dn:
                 # Now try to bind with username and search
                 conn.rebind(user=username, password=password)
-                conn.search(
+                entry = _search_first_matching_entry(
+                    conn=conn,
                     search_base=base_dn,
-                    search_filter=f"(|(sAMAccountName={username.split('@')[0]})(uid={username.split('@')[0]}))",
-                    search_scope=SUBTREE,
-                    attributes=["distinguishedName", "displayName"],
+                    search_filters=_build_user_search_filters("", username),
+                    attributes=["*"],
+                    context="bind DN lookup (base DN)",
                 )
-                if conn.entries:
-                    entry = conn.entries[0]
+                if entry:
                     bind_dn = str(entry.entry_dn)
                     display_name = (
                         str(entry.displayName)
@@ -497,7 +598,7 @@ async def authenticate_ldap(username: str, password: str) -> AuthResult:
 
     Steps:
     1. Bind with service account
-    2. Search for user by sAMAccountName or uid
+    2. Search for user by configured filter + LDAP/AD fallback attributes
     3. Attempt bind with user's credentials
     4. Check group membership for role assignment
     5. Sync user to database
@@ -526,27 +627,21 @@ async def authenticate_ldap(username: str, password: str) -> AuthResult:
         if not search_base:
             return AuthResult(success=False, error="LDAP search base not configured")
 
-        # Search for user
-        search_filter = ldap_config.userSearchFilter.replace("{username}", username)
-        conn.search(
+        search_filters = _build_user_search_filters(
+            ldap_config.userSearchFilter or "(uid={username})",
+            username,
+        )
+        user_entry = _search_first_matching_entry(
+            conn=conn,
             search_base=search_base,
-            search_filter=search_filter,
-            search_scope=SUBTREE,
-            attributes=[
-                "distinguishedName",
-                "sAMAccountName",
-                "uid",
-                "mail",
-                "displayName",
-                "memberOf",
-                "primaryGroupID",  # AD primary group (not in memberOf)
-            ],
+            search_filters=search_filters,
+            attributes=["*", "memberOf", "primaryGroupID"],
+            context="LDAP authentication",
         )
 
-        if not conn.entries:
+        if not user_entry:
             return AuthResult(success=False, error="User not found")
 
-        user_entry = conn.entries[0]
         user_dn = str(user_entry.entry_dn)
         user_mail = (
             str(user_entry.mail)

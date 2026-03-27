@@ -756,7 +756,7 @@ model LdapConfig {
   // Search configuration (auto-discovered or manually set)
   baseDn          String   @default("") @map("base_dn") // e.g., dc=example,dc=com
   userSearchBase  String   @default("") @map("user_search_base") // e.g., ou=Users,dc=example,dc=com
-  userSearchFilter String  @default("(|(sAMAccountName={username})(uid={username}))") @map("user_search_filter")
+  userSearchFilter String  @default("(uid={username})") @map("user_search_filter")
 
   // Group-based ACL
   adminGroupDn    String   @default("") @map("admin_group_dn") // Members get admin role
