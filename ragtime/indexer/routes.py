@@ -36,10 +36,10 @@ from fastapi import (
 )
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from prisma import Prisma
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
+from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.container_capabilities import get_container_capabilities
 from ragtime.core.copilot_auth import (
@@ -7519,6 +7519,83 @@ async def _fetch_ollama_llm_models(base_url: str) -> LLMModelsResponse:
         )
 
 
+def _extract_context_limit_from_model_row(row: dict[str, Any]) -> int | None:
+    """Extract input/context token limit from provider model metadata payloads."""
+
+    def _coerce_int(value: Any) -> int | None:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value if value > 0 else None
+        if isinstance(value, float):
+            coerced = int(value)
+            return coerced if coerced > 0 else None
+        if isinstance(value, str):
+            value = value.strip()
+            if value.isdigit():
+                parsed = int(value)
+                return parsed if parsed > 0 else None
+        return None
+
+    candidate_keys = [
+        "context_limit",
+        "context_window",
+        "context_window_tokens",
+        "context_length",
+        "max_context_tokens",
+        "max_context_window_tokens",
+        "max_input_tokens",
+        "max_prompt_tokens",
+        "input_tokens",
+    ]
+
+    # Prefer prompt/input limits for chat context budgeting.
+    # For Copilot /models payloads, these are typically nested under:
+    #   capabilities.limits.max_prompt_tokens
+    # while max_context_window_tokens may include completion budget.
+    preferred_input_keys = [
+        "max_prompt_tokens",
+        "max_input_tokens",
+        "input_tokens",
+    ]
+
+    capabilities_obj = row.get("capabilities")
+    if isinstance(capabilities_obj, dict):
+        capabilities_limits = capabilities_obj.get("limits")
+        if isinstance(capabilities_limits, dict):
+            for key in preferred_input_keys:
+                parsed = _coerce_int(capabilities_limits.get(key))
+                if parsed is not None:
+                    return parsed
+            for key in candidate_keys:
+                parsed = _coerce_int(capabilities_limits.get(key))
+                if parsed is not None:
+                    return parsed
+
+    limits_obj = row.get("limits")
+    if isinstance(limits_obj, dict):
+        for key in preferred_input_keys:
+            parsed = _coerce_int(limits_obj.get(key))
+            if parsed is not None:
+                return parsed
+        for key in candidate_keys:
+            parsed = _coerce_int(limits_obj.get(key))
+            if parsed is not None:
+                return parsed
+
+    for key in preferred_input_keys:
+        parsed = _coerce_int(row.get(key))
+        if parsed is not None:
+            return parsed
+
+    for key in candidate_keys:
+        parsed = _coerce_int(row.get(key))
+        if parsed is not None:
+            return parsed
+
+    return None
+
+
 async def _fetch_github_copilot_models(
     access_token: str,
     base_url: str = COPILOT_DEFAULT_BASE_URL,
@@ -7636,8 +7713,13 @@ async def _fetch_github_copilot_models(
                             if isinstance(row.get("limits"), dict)
                             else None
                         )
+                        context_limit = _extract_context_limit_from_model_row(row)
                         if not isinstance(output_limit, int):
                             output_limit = await get_output_limit(model_id)
+                        if isinstance(context_limit, int):
+                            update_model_limit(model_id, context_limit)
+                        else:
+                            context_limit = await get_context_limit(model_id)
 
                         existing = models_by_id.get(model_id)
                         created = (
@@ -7650,6 +7732,7 @@ async def _fetch_github_copilot_models(
                             name=model_name,
                             created=created,
                             max_output_tokens=output_limit,
+                            context_limit=context_limit,
                         )
 
                         # Cache supported API endpoints so the LLM builder
@@ -7744,9 +7827,15 @@ async def _fetch_github_models_catalog(github_token: str) -> LLMModelsResponse:
                 if isinstance(row.get("limits"), dict)
                 else None
             )
+            context_limit = _extract_context_limit_from_model_row(row)
             if not isinstance(output_limit, int):
                 short_id = model_id.split("/", 1)[1] if "/" in model_id else model_id
                 output_limit = await get_output_limit(short_id)
+            short_id = model_id.split("/", 1)[1] if "/" in model_id else model_id
+            if isinstance(context_limit, int):
+                update_model_limit(short_id, context_limit)
+            else:
+                context_limit = await get_context_limit(short_id)
 
             models.append(
                 LLMModel(
@@ -7758,6 +7847,7 @@ async def _fetch_github_models_catalog(github_token: str) -> LLMModelsResponse:
                         else None
                     ),
                     max_output_tokens=output_limit,
+                    context_limit=context_limit,
                 )
             )
 
@@ -8013,6 +8103,9 @@ async def get_available_chat_models():
                 context_model_id = m.id
 
             all_models.append(
+                # Prefer provider-reported limits when available.
+                # For Ollama, the model detail endpoint remains the source of truth.
+                # For other providers, fall back to shared model-limits lookup.
                 AvailableModel(
                     id=m.id,
                     name=m.name,
@@ -8020,7 +8113,11 @@ async def get_available_chat_models():
                     context_limit=(
                         m.context_limit or 8192
                         if provider_key == "ollama"
-                        else await get_context_limit(context_model_id)
+                        else (
+                            m.context_limit
+                            if isinstance(m.context_limit, int) and m.context_limit > 0
+                            else await get_context_limit(context_model_id)
+                        )
                     ),
                     max_output_tokens=m.max_output_tokens,
                     created=m.created,
@@ -8288,7 +8385,11 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
                     context_limit=(
                         m.context_limit or 8192
                         if provider_key == "ollama"
-                        else await get_context_limit(context_model_id)
+                        else (
+                            m.context_limit
+                            if isinstance(m.context_limit, int) and m.context_limit > 0
+                            else await get_context_limit(context_model_id)
+                        )
                     ),
                     max_output_tokens=m.max_output_tokens,
                     created=m.created,
