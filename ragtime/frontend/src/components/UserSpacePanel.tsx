@@ -696,8 +696,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     sidebarWidth,
     userSpaceLayoutCookieName,
   ]);
-  const [editingName, setEditingName] = useState(false);
-  const [draftName, setDraftName] = useState('');
+  const [editingWorkspaceNameId, setEditingWorkspaceNameId] = useState<string | null>(null);
+  const [workspaceNameDraft, setWorkspaceNameDraft] = useState('');
 
   const activeWorkspace = useMemo(
     () => workspaces.find((workspace) => workspace.id === activeWorkspaceId) ?? null,
@@ -1759,6 +1759,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
     function handleEscape(event: KeyboardEvent) {
       if (event.key === 'Escape') {
+        if (editingWorkspaceNameId) {
+          setEditingWorkspaceNameId(null);
+          setWorkspaceNameDraft('');
+          return;
+        }
         setIsWorkspaceMenuOpen(false);
       }
     }
@@ -1769,11 +1774,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       document.removeEventListener('mousedown', handleClickOutside);
       document.removeEventListener('keydown', handleEscape);
     };
-  }, [isWorkspaceMenuOpen]);
+  }, [isWorkspaceMenuOpen, editingWorkspaceNameId]);
 
   useEffect(() => {
     if (!isWorkspaceMenuOpen) {
       setDeleteConfirmWorkspaceId(null);
+      setEditingWorkspaceNameId(null);
+      setWorkspaceNameDraft('');
     }
   }, [isWorkspaceMenuOpen]);
 
@@ -3063,11 +3070,17 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, [activeWorkspaceId, isOwner]);
 
-  const handleStartEditName = useCallback(() => {
-    if (!activeWorkspace || !canEditWorkspace) return;
-    setDraftName(activeWorkspace.name);
-    setEditingName(true);
-  }, [activeWorkspace, canEditWorkspace]);
+  const handleStartWorkspaceRename = useCallback((workspace: UserSpaceWorkspace) => {
+    setDeleteConfirmWorkspaceId(null);
+    setEditingWorkspaceNameId(workspace.id);
+    setWorkspaceNameDraft(workspace.name);
+    setError(null);
+  }, []);
+
+  const handleCancelWorkspaceRename = useCallback(() => {
+    setEditingWorkspaceNameId(null);
+    setWorkspaceNameDraft('');
+  }, []);
 
   const loadShareLinkStatus = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) {
@@ -3427,16 +3440,19 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     showShareModal,
   ]);
 
-  const handleSaveName = useCallback(async () => {
-    if (!activeWorkspace || !canEditWorkspace || !draftName.trim()) return;
+  const handleSaveWorkspaceRename = useCallback(async (workspace: UserSpaceWorkspace) => {
+    const nextName = workspaceNameDraft.trim();
+    if (!nextName) return;
+
     try {
-      const updated = await api.updateUserSpaceWorkspace(activeWorkspace.id, { name: draftName.trim() });
+      const updated = await api.updateUserSpaceWorkspace(workspace.id, { name: nextName });
       setWorkspaces((current) => current.map((ws) => ws.id === updated.id ? updated : ws));
-      setEditingName(false);
+      setEditingWorkspaceNameId(null);
+      setWorkspaceNameDraft('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to rename workspace');
     }
-  }, [activeWorkspace, canEditWorkspace, draftName]);
+  }, [workspaceNameDraft]);
 
   const renderTreeNodes = useCallback((nodes: ReturnType<typeof buildUserSpaceTree>, depth = 0) => {
     return nodes.flatMap((node) => {
@@ -3706,34 +3722,92 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 <div className="model-selector-dropdown-inner" role="listbox" aria-label="Workspace list">
                   {workspaces.map((ws) => {
                     const canDeleteWorkspace = ws.owner_user_id === currentUser.id;
+                    const canRenameWorkspace = currentUser.role === 'admin'
+                      || ws.owner_user_id === currentUser.id
+                      || ws.members.some((member) => (
+                        member.user_id === currentUser.id && (member.role === 'owner' || member.role === 'editor')
+                      ));
                     const isConfirmingDelete = deleteConfirmWorkspaceId === ws.id;
                     const isDeletingWorkspace = deletingWorkspaceId === ws.id;
+                    const isRenamingWorkspace = editingWorkspaceNameId === ws.id;
                     return (
                       <div
                         key={ws.id}
                         className={`model-selector-item userspace-workspace-item ${ws.id === activeWorkspaceId ? 'is-selected' : ''} ${!canDeleteWorkspace ? 'is-shared' : ''}`}
                       >
-                        <button
-                          type="button"
-                          role="option"
-                          aria-selected={ws.id === activeWorkspaceId}
-                          className="userspace-workspace-select-btn"
-                          disabled={Boolean(deletingWorkspaceId)}
-                          onClick={() => {
-                            if (ws.id !== activeWorkspaceId) {
-                                setRuntimeStatus(null);
-                            }
-                            setActiveWorkspaceId(ws.id);
-                            setIsWorkspaceMenuOpen(false);
-                            setDeleteConfirmWorkspaceId(null);
-                          }}
-                        >
-                          <span className="model-selector-item-name">{ws.name}</span>
-                        </button>
+                        {isRenamingWorkspace ? (
+                          <div className="userspace-workspace-inline-edit">
+                            <input
+                              type="text"
+                              className="userspace-workspace-rename-input"
+                              value={workspaceNameDraft}
+                              onChange={(event) => setWorkspaceNameDraft(event.target.value)}
+                              onClick={(event) => event.stopPropagation()}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  void handleSaveWorkspaceRename(ws);
+                                }
+                                if (event.key === 'Escape') {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  handleCancelWorkspaceRename();
+                                }
+                              }}
+                              autoFocus
+                            />
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            role="option"
+                            aria-selected={ws.id === activeWorkspaceId}
+                            className="userspace-workspace-select-btn"
+                            disabled={Boolean(deletingWorkspaceId)}
+                            onClick={() => {
+                              if (ws.id !== activeWorkspaceId) {
+                                  setRuntimeStatus(null);
+                              }
+                              setActiveWorkspaceId(ws.id);
+                              setIsWorkspaceMenuOpen(false);
+                              setDeleteConfirmWorkspaceId(null);
+                            }}
+                          >
+                            <span className="model-selector-item-name">{ws.name}</span>
+                          </button>
+                        )}
 
-                        {canDeleteWorkspace && (
+                        {(canDeleteWorkspace || canRenameWorkspace || isRenamingWorkspace) && (
                           <div className="userspace-workspace-item-actions">
-                            {isConfirmingDelete ? (
+                            {isRenamingWorkspace ? (
+                              <>
+                                <button
+                                  type="button"
+                                  className="chat-action-btn confirm-delete"
+                                  disabled={Boolean(deletingWorkspaceId)}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    void handleSaveWorkspaceRename(ws);
+                                  }}
+                                  title="Save workspace name"
+                                >
+                                  <Check size={12} />
+                                </button>
+                                <button
+                                  type="button"
+                                  className="chat-action-btn cancel-delete"
+                                  disabled={Boolean(deletingWorkspaceId)}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    handleCancelWorkspaceRename();
+                                  }}
+                                  title="Cancel rename"
+                                >
+                                  <X size={12} />
+                                </button>
+                              </>
+                            ) : isConfirmingDelete ? (
                               <>
                                 <button
                                   type="button"
@@ -3761,18 +3835,36 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                 </button>
                               </>
                             ) : (
-                              <button
-                                type="button"
-                                className="chat-action-btn"
-                                disabled={Boolean(deletingWorkspaceId)}
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  setDeleteConfirmWorkspaceId(ws.id);
-                                }}
-                                title="Delete workspace"
-                              >
-                                {isDeletingWorkspace ? <Loader2 size={12} className="userspace-icon-spin" /> : <Trash2 size={12} />}
-                              </button>
+                              <>
+                                {canRenameWorkspace && (
+                                  <button
+                                    type="button"
+                                    className="chat-action-btn"
+                                    disabled={Boolean(deletingWorkspaceId)}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      handleStartWorkspaceRename(ws);
+                                    }}
+                                    title="Rename workspace"
+                                  >
+                                    <Pencil size={12} />
+                                  </button>
+                                )}
+                                {canDeleteWorkspace && (
+                                  <button
+                                    type="button"
+                                    className="chat-action-btn"
+                                    disabled={Boolean(deletingWorkspaceId)}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setDeleteConfirmWorkspaceId(ws.id);
+                                    }}
+                                    title="Delete workspace"
+                                  >
+                                    {isDeletingWorkspace ? <Loader2 size={12} className="userspace-icon-spin" /> : <Trash2 size={12} />}
+                                  </button>
+                                )}
+                              </>
                             )}
                           </div>
                         )}
@@ -3809,13 +3901,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
               </button>
               <button className="btn btn-secondary btn-sm" onClick={handleOpenEnvVarsModal} title="Environment variables">
                 <KeyRound size={14} />
-              </button>
-            </>
-          )}
-          {canEditWorkspace && activeWorkspace && (
-            <>
-              <button className="btn btn-secondary btn-sm" onClick={handleStartEditName} title="Rename workspace">
-                <Pencil size={14} />
               </button>
             </>
           )}
@@ -4020,21 +4105,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           {formattedError && !creatingWorkspace && !deletingWorkspaceId && (
             <p className="userspace-error userspace-status userspace-status-overlay-item">{formattedError}</p>
           )}
-        </div>
-      )}
-
-      {/* === Rename inline editor === */}
-      {editingName && activeWorkspace && (
-        <div className="userspace-inline-edit">
-          <label>Rename:</label>
-          <input
-            value={draftName}
-            onChange={(e) => setDraftName(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') handleSaveName(); if (e.key === 'Escape') setEditingName(false); }}
-            autoFocus
-          />
-          <button className="btn btn-primary btn-sm" onClick={handleSaveName}><Check size={14} /></button>
-          <button className="btn btn-secondary btn-sm" onClick={() => setEditingName(false)}><X size={14} /></button>
         </div>
       )}
 

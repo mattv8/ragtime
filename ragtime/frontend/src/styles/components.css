@@ -391,7 +391,7 @@ textarea:focus {
 
 .userspace-workspace-picker {
   min-width: 180px;
-  max-width: 260px;
+  max-width: 310px;
 }
 
 .userspace-workspace-trigger {
@@ -404,39 +404,92 @@ textarea:focus {
 }
 
 .userspace-workspace-dropdown {
+  width: max(100%, 370px);
   min-width: 100%;
-  max-width: 320px;
+  max-width: min(370px, calc(100vw - 24px));
 }
 
 .userspace-workspace-item {
   gap: var(--space-xxs, 2px);
-  padding: 4px 6px 4px 10px;
+  padding: 3px 6px 3px 8px;
+  height: 30px;
+  box-sizing: border-box;
+}
+
+.userspace-workspace-item.is-selected {
+  background: color-mix(in srgb, var(--color-primary-soft) 72%, var(--color-surface));
+  border: 1px solid var(--color-primary-border);
+  border-radius: var(--radius-sm);
+  box-shadow: inset 3px 0 0 var(--color-primary);
+}
+
+.userspace-workspace-item.is-selected .userspace-workspace-select-btn {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.userspace-workspace-item.is-selected:hover {
+  background: color-mix(in srgb, var(--color-primary-soft) 82%, var(--color-surface-hover));
+  border-color: color-mix(in srgb, var(--color-primary-border) 85%, var(--color-primary));
 }
 
 .userspace-workspace-select-btn {
+  display: flex;
+  align-items: center;
   flex: 1;
   min-width: 0;
+  height: 24px;
   background: none;
   border: none;
   color: inherit;
   font: inherit;
   text-align: left;
   cursor: pointer;
-  padding: 4px 2px;
+  padding: 2px;
+}
+
+.userspace-workspace-inline-edit {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0;
+}
+
+.userspace-workspace-rename-input {
+  width: 100%;
+  min-width: 0;
+  height: 24px;
+  line-height: 24px;
+  padding: 0 8px;
+  box-sizing: border-box;
+  font-size: var(--text-sm);
 }
 
 .userspace-workspace-item-actions {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  flex-shrink: 0;
+  margin-left: 4px;
+  gap: 1px;
 }
 
 .userspace-workspace-item .chat-action-btn {
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.userspace-workspace-item:hover .chat-action-btn,
+.userspace-workspace-item:focus-within .chat-action-btn {
+  opacity: 0.85;
+  pointer-events: auto;
 }
 
 .userspace-workspace-item .chat-action-btn:hover {
+  opacity: 1;
   background: var(--color-surface-active);
 }
 
