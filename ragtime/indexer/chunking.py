@@ -223,13 +223,32 @@ _treesitter_langs_cache: set[str] | None = None
 
 
 def _get_treesitter_langs() -> set[str]:
-    """Get the set of supported tree-sitter language names."""
+    """Get the set of supported tree-sitter language names.
+
+    Handles both old Literal[...] unions and newer type definitions by
+    attempting __args__ access and gracefully degrading if unavailable.
+    If the exact list can't be determined, returns empty set — Magika's
+    auto-detection and fallback to RecursiveChunker handle unknown languages.
+    """
     global _treesitter_langs_cache
     if _treesitter_langs_cache is None:
         try:
             from tree_sitter_language_pack import SupportedLanguage
 
-            _treesitter_langs_cache = set(SupportedLanguage.__args__)
+            # Try __args__ for Literal union types (pre-2024 versions)
+            try:
+                _treesitter_langs_cache = set(SupportedLanguage.__args__)
+            except AttributeError:
+                # Newer versions: fall back to an empty set.
+                # This is safe because:
+                # 1. LANG_MAPPING covers common extensions
+                # 2. Magika auto-detects code languages
+                # 3. We fall back to RecursiveChunker if CodeChunker fails
+                logger.debug(
+                    "Could not determine SupportedLanguage set; "
+                    "relying on LANG_MAPPING and recursive fallback"
+                )
+                _treesitter_langs_cache = set()
         except ImportError:
             _treesitter_langs_cache = set()
     return _treesitter_langs_cache
