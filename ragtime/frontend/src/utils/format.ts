@@ -85,16 +85,28 @@ export function formatElapsedTime(milliseconds: number): string {
  * @returns Formatted timestamp for chat UI
  */
 export function formatChatTimestamp(dateStr: string): string {
-  const date = new Date(dateStr);
+  const normalized = dateStr.trim();
+  const hasExplicitTimezone = /(?:Z|[+-]\d{2}:\d{2})$/i.test(normalized);
+  const date = new Date(hasExplicitTimezone ? normalized : `${normalized}Z`);
   if (Number.isNaN(date.getTime())) {
     return dateStr;
   }
 
-  const diffMs = Math.max(0, Date.now() - date.getTime());
+  const diffMs = Date.now() - date.getTime();
+  if (diffMs < 0) {
+    return date.toLocaleString([], {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  }
+
   const diffMins = Math.floor(diffMs / 60000);
   const diffHours = Math.floor(diffMs / 3600000);
 
-  if (diffMins < 1) return 'Just now';
+  if (diffMs <= 60000) return 'Just now';
   if (diffHours < 12) {
     if (diffMins < 60) return `${diffMins}m ago`;
     return `${diffHours}h ago`;
