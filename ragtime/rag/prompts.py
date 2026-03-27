@@ -507,6 +507,7 @@ USERSPACE_ENTRYPOINT_SETUP_PROMPT = """
   - FastAPI: `{"command": "python3 -m uvicorn main:app --host 0.0.0.0 --port $PORT", "cwd": ".", "framework": "fastapi"}`
 - Never hard-code port numbers in the entrypoint command; always use `$PORT`.
 - Always bind to `0.0.0.0` (not `127.0.0.1` or `localhost`) so the runtime proxy can reach the devserver.
+- Prefer a single long-running devserver command over chained `build && serve` wrappers when the tool supports it (for example, `esbuild --serve`, framework dev servers, or one explicit app server process).
 - When `package.json` has a `dev` script, mirror its intent in `runtime-entrypoint.json` with proper `$PORT` and `--bind 0.0.0.0` handling rather than relying on `npm run dev` with port appending, which breaks for non-standard scripts.
 - Update `runtime-entrypoint.json` whenever the launch mechanism changes (e.g., switching from static to esbuild, adding a Python backend).
 
@@ -529,7 +530,8 @@ USERSPACE_ENTRYPOINT_SETUP_PROMPT = """
 
 #### Dependencies and tooling
 
-- npm dependencies are allowed when explicitly declared in `package.json`; do not assume globally preloaded libraries.
+- Declare every non-stdlib runtime/build dependency in `package.json` or `requirements.txt` before referencing it in code or `.ragtime/runtime-entrypoint.json`.
+- Runtime bootstrap installs declared dependencies only; it does not infer tools like `esbuild`, `vite`, or framework CLIs from the entrypoint command.
 - Node workspaces include managed Tailwind tooling bootstrap (`tailwindcss` + `@tailwindcss/cli`) when `package.json` is present, so you may use Tailwind utility classes when they improve implementation speed.
 - Tailwind is optional. Keep styling flexible and prompt-driven; use plain CSS tokens when that is a better fit for the request.
 - Do not import from `tailwindcss` directly inside `dashboard/*.ts` module files. Wire Tailwind through workspace CSS/build entrypoints (`index.html`, bundler CSS entry, or generated stylesheet) and keep module logic focused on app behavior.

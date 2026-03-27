@@ -684,7 +684,7 @@ class WorkerService:
                 command=[
                     "sh",
                     "-lc",
-                    f"cd {_sandbox_cwd} && export PATH=./node_modules/.bin:$PATH && PORT={effective_port} {final_command}",
+                    f"cd {_sandbox_cwd} && export PATH=./node_modules/.bin:$PATH PORT={effective_port} && {final_command}",
                 ],
                 framework=config_framework,
                 cwd=config_cwd,
