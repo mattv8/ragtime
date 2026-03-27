@@ -1646,6 +1646,26 @@ export interface UpdateUserSpaceWorkspaceMembersRequest {
   members: UserSpaceWorkspaceMember[];
 }
 
+export interface UserSpaceWorkspaceEnvVar {
+  key: string;
+  has_value: boolean;
+  description?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UpsertUserSpaceWorkspaceEnvVarRequest {
+  key: string;
+  value?: string;
+  new_key?: string;
+  description?: string;
+}
+
+export interface DeleteUserSpaceWorkspaceEnvVarResponse {
+  success: boolean;
+  key: string;
+}
+
 export interface UserSpaceFileInfo {
   path: string;
   size_bytes: number;

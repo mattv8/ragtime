@@ -17,6 +17,7 @@ from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import HTTPException
+from prisma import fields as prisma_fields
 
 from ragtime.config import settings
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
@@ -40,6 +41,7 @@ from ragtime.indexer.repository import repository
 from ragtime.userspace.models import (
     ArtifactType,
     CreateWorkspaceRequest,
+    DeleteWorkspaceEnvVarResponse,
     ExecuteComponentRequest,
     ExecuteComponentResponse,
     PaginatedWorkspacesResponse,
@@ -50,6 +52,7 @@ from ragtime.userspace.models import (
     UpdateWorkspaceMembersRequest,
     UpdateWorkspaceRequest,
     UpdateWorkspaceShareAccessRequest,
+    UpsertWorkspaceEnvVarRequest,
     UpsertWorkspaceFileRequest,
     UserSpaceFileInfo,
     UserSpaceFileResponse,
@@ -60,6 +63,7 @@ from ragtime.userspace.models import (
     UserSpaceSnapshotBranch,
     UserSpaceSnapshotTimelineResponse,
     UserSpaceWorkspace,
+    UserSpaceWorkspaceEnvVar,
     UserSpaceWorkspaceShareLink,
     UserSpaceWorkspaceShareLinkStatus,
     WorkspaceMember,
@@ -126,6 +130,8 @@ _SQLITE_EXCLUDE_GLOBS = (
     "*.db",
     "*.db3",
 )
+_WORKSPACE_ENV_VAR_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_WORKSPACE_ENV_VAR_MAX_COUNT = 200
 
 _MODULE_SOURCE_EXTENSIONS = (
     ".ts",
@@ -644,6 +650,92 @@ class UserSpaceService:
 
     def _workspace_files_dir(self, workspace_id: str) -> Path:
         return self._workspace_dir(workspace_id) / "files"
+
+    @staticmethod
+    def _normalize_workspace_env_var_key(raw_key: str) -> str:
+        key = (raw_key or "").strip()
+        if not key:
+            raise HTTPException(
+                status_code=400, detail="Environment variable key is required"
+            )
+        if len(key) > 128:
+            raise HTTPException(
+                status_code=400,
+                detail="Environment variable key must be 128 characters or fewer",
+            )
+        if not _WORKSPACE_ENV_VAR_KEY_PATTERN.fullmatch(key):
+            raise HTTPException(
+                status_code=400,
+                detail=("Environment variable key must match [A-Za-z_][A-Za-z0-9_]*"),
+            )
+        return key
+
+    @staticmethod
+    def _workspace_env_var_model(db: Any) -> Any:
+        return getattr(db, "workspaceenvironmentvariable")
+
+    @staticmethod
+    def _runtime_audit_model(db: Any) -> Any:
+        return getattr(db, "userspaceruntimeauditevent")
+
+    @staticmethod
+    def _workspace_env_var_from_record(record: Any) -> UserSpaceWorkspaceEnvVar:
+        description = getattr(record, "description", None)
+        return UserSpaceWorkspaceEnvVar(
+            key=str(getattr(record, "key", "") or ""),
+            has_value=bool(str(getattr(record, "value", "") or "")),
+            description=str(description) if description is not None else None,
+            created_at=getattr(record, "createdAt"),
+            updated_at=getattr(record, "updatedAt"),
+        )
+
+    async def _audit_workspace_env_var_event(
+        self,
+        workspace_id: str,
+        user_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        db = await get_db()
+        model = self._runtime_audit_model(db)
+        payload_json = prisma_fields.Json(json.loads(json.dumps(payload, default=str)))
+        now = _utc_now()
+        shapes: list[dict[str, Any]] = [
+            {
+                "workspaceId": workspace_id,
+                "userId": user_id,
+                "eventType": event_type,
+                "eventPayload": payload_json,
+                "createdAt": now,
+            },
+            {
+                "workspace_id": workspace_id,
+                "user_id": user_id,
+                "event_type": event_type,
+                "event_payload": payload_json,
+                "created_at": now,
+            },
+        ]
+        for data in shapes:
+            try:
+                await model.create(data=data)
+                return
+            except Exception:
+                continue
+        logger.debug(
+            "Failed to persist env-var audit event for workspace %s", workspace_id
+        )
+
+    @staticmethod
+    def _sanitize_workspace_env_map(raw_items: list[Any]) -> dict[str, str]:
+        resolved: dict[str, str] = {}
+        for item in raw_items:
+            key = str(getattr(item, "key", "") or "").strip()
+            encrypted_value = str(getattr(item, "value", "") or "")
+            if not key or not encrypted_value:
+                continue
+            resolved[key] = decrypt_secret(encrypted_value)
+        return resolved
 
     @staticmethod
     def _default_runtime_bootstrap_config() -> dict[str, Any]:
@@ -2259,6 +2351,213 @@ class UserSpaceService:
             raise HTTPException(status_code=404, detail="Workspace not found")
 
         return self._workspace_from_record(refreshed)
+
+    async def list_workspace_env_vars(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> list[UserSpaceWorkspaceEnvVar]:
+        await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="owner",
+        )
+        db = await get_db()
+        rows = await self._workspace_env_var_model(db).find_many(
+            where={"workspaceId": workspace_id},
+            order={"key": "asc"},
+        )
+        return [self._workspace_env_var_from_record(row) for row in rows]
+
+    async def list_workspace_env_var_summaries(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> list[UserSpaceWorkspaceEnvVar]:
+        """List env-var metadata (keys + has_value) for any workspace member.
+
+        Values are never returned by this method. It is safe to use for
+        prompt/reminder context and agent guidance.
+        """
+
+        await self._enforce_workspace_access(workspace_id, user_id)
+        db = await get_db()
+        rows = await self._workspace_env_var_model(db).find_many(
+            where={"workspaceId": workspace_id},
+            order={"key": "asc"},
+        )
+        return [self._workspace_env_var_from_record(row) for row in rows]
+
+    async def upsert_workspace_env_var(
+        self,
+        workspace_id: str,
+        user_id: str,
+        request: UpsertWorkspaceEnvVarRequest,
+    ) -> UserSpaceWorkspaceEnvVar:
+        await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="owner",
+        )
+        db = await get_db()
+        model = self._workspace_env_var_model(db)
+
+        key = self._normalize_workspace_env_var_key(request.key)
+        target_key = self._normalize_workspace_env_var_key(request.new_key or key)
+        description = request.description
+        now = _utc_now()
+
+        existing = await model.find_first(
+            where={"workspaceId": workspace_id, "key": key}
+        )
+
+        if existing is None:
+            count = await model.count(where={"workspaceId": workspace_id})
+            if count >= _WORKSPACE_ENV_VAR_MAX_COUNT:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Workspace environment variable limit reached ({_WORKSPACE_ENV_VAR_MAX_COUNT})"
+                    ),
+                )
+
+            conflict = await model.find_first(
+                where={"workspaceId": workspace_id, "key": target_key}
+            )
+            if conflict is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Environment variable '{target_key}' already exists",
+                )
+
+            created = await model.create(
+                data={
+                    "id": str(uuid4()),
+                    "workspaceId": workspace_id,
+                    "key": target_key,
+                    # Empty string means "placeholder key" (no secret set yet).
+                    "value": (
+                        encrypt_secret(request.value)
+                        if request.value is not None
+                        else ""
+                    ),
+                    "description": description,
+                    "createdAt": now,
+                    "updatedAt": now,
+                }
+            )
+            await db.workspace.update(
+                where={"id": workspace_id},
+                data={"updatedAt": now},
+            )
+            await self._audit_workspace_env_var_event(
+                workspace_id,
+                user_id,
+                "env_var_created",
+                payload={"key": target_key},
+            )
+            return self._workspace_env_var_from_record(created)
+
+        if target_key != key:
+            conflict = await model.find_first(
+                where={
+                    "workspaceId": workspace_id,
+                    "key": target_key,
+                    "NOT": {"id": str(getattr(existing, "id", "") or "")},
+                }
+            )
+            if conflict is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Environment variable '{target_key}' already exists",
+                )
+
+        encrypted_value = getattr(existing, "value", "")
+        if request.value is not None:
+            encrypted_value = encrypt_secret(request.value)
+
+        next_description = (
+            str(getattr(existing, "description", "") or "")
+            if description is None
+            else description
+        )
+
+        updated = await model.update(
+            where={"id": str(getattr(existing, "id", "") or "")},
+            data={
+                "key": target_key,
+                "value": encrypted_value,
+                "description": next_description,
+                "updatedAt": now,
+            },
+        )
+        await db.workspace.update(
+            where={"id": workspace_id},
+            data={"updatedAt": now},
+        )
+
+        event_type = "env_var_updated"
+        payload: dict[str, Any] = {"key": key}
+        if target_key != key:
+            event_type = "env_var_renamed"
+            payload["new_key"] = target_key
+        if request.value is not None:
+            payload["value_replaced"] = True
+        await self._audit_workspace_env_var_event(
+            workspace_id,
+            user_id,
+            event_type,
+            payload=payload,
+        )
+
+        return self._workspace_env_var_from_record(updated)
+
+    async def delete_workspace_env_var(
+        self,
+        workspace_id: str,
+        user_id: str,
+        key: str,
+    ) -> DeleteWorkspaceEnvVarResponse:
+        await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="owner",
+        )
+        normalized_key = self._normalize_workspace_env_var_key(key)
+        db = await get_db()
+        model = self._workspace_env_var_model(db)
+        existing = await model.find_first(
+            where={"workspaceId": workspace_id, "key": normalized_key}
+        )
+        if existing is None:
+            raise HTTPException(
+                status_code=404, detail="Environment variable not found"
+            )
+
+        now = _utc_now()
+        await model.delete(where={"id": str(getattr(existing, "id", "") or "")})
+        await db.workspace.update(
+            where={"id": workspace_id},
+            data={"updatedAt": now},
+        )
+        await self._audit_workspace_env_var_event(
+            workspace_id,
+            user_id,
+            "env_var_deleted",
+            payload={"key": normalized_key},
+        )
+        return DeleteWorkspaceEnvVarResponse(success=True, key=normalized_key)
+
+    async def get_workspace_runtime_environment(
+        self,
+        workspace_id: str,
+    ) -> dict[str, str]:
+        db = await get_db()
+        rows = await self._workspace_env_var_model(db).find_many(
+            where={"workspaceId": workspace_id},
+            order={"key": "asc"},
+        )
+        return self._sanitize_workspace_env_map(list(rows))
 
     def invalidate_file_list_cache(self, workspace_id: str) -> None:
         self._file_list_cache.pop(workspace_id, None)

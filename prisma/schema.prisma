@@ -867,6 +867,7 @@ model Workspace {
   conversations   Conversation[]
   runtimeSessions UserSpaceRuntimeSession[]
   runtimeAuditEvents UserSpaceRuntimeAuditEvent[]
+  environmentVariables WorkspaceEnvironmentVariable[]
   collabDocs UserSpaceCollabDoc[]
   changedFileAcknowledgements UserSpaceChangedFileAcknowledgement[]
   snapshotBranches UserSpaceSnapshotBranch[]
@@ -877,6 +878,24 @@ model Workspace {
   @@unique([ownerUserId, shareSlug])
   @@index([updatedAt])
   @@map("workspaces")
+}
+
+/// Workspace-scoped environment variables (value encrypted at rest).
+model WorkspaceEnvironmentVariable {
+  id          String   @id @default(uuid())
+  workspaceId String   @map("workspace_id")
+  key         String
+  value       String
+  description String?  @default("")
+
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, key])
+  @@index([workspaceId, updatedAt])
+  @@map("workspace_environment_variables")
 }
 
 model UserSpaceSnapshotBranch {

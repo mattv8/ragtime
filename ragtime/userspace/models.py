@@ -87,6 +87,44 @@ class UpdateWorkspaceRequest(BaseModel):
     selected_tool_group_ids: list[str] | None = None
 
 
+class UserSpaceWorkspaceEnvVar(BaseModel):
+    key: str = Field(min_length=1, max_length=128)
+    has_value: bool = Field(
+        default=True,
+        description="True when an encrypted value exists for this key",
+    )
+    description: str | None = Field(default=None, max_length=1000)
+    created_at: datetime
+    updated_at: datetime
+
+
+class UpsertWorkspaceEnvVarRequest(BaseModel):
+    key: str = Field(
+        min_length=1,
+        max_length=128,
+        description="Current environment variable key",
+    )
+    value: str | None = Field(
+        default=None,
+        max_length=10000,
+        description=(
+            "Replacement value. Required for create, optional for rename-only updates."
+        ),
+    )
+    new_key: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        description="Optional new key name for rename",
+    )
+    description: str | None = Field(default=None, max_length=1000)
+
+
+class DeleteWorkspaceEnvVarResponse(BaseModel):
+    success: bool = True
+    key: str
+
+
 class UpdateWorkspaceMembersRequest(BaseModel):
     members: list[WorkspaceMember] = Field(default_factory=list)
 

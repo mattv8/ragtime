@@ -2,7 +2,7 @@
  * API client for Ragtime Indexer
  */
 
-import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, GetSettingsResponse, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, OllamaVisionModelsRequest, OllamaVisionModelsResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, ToolGroup, CreateToolGroupRequest, UpdateToolGroupRequest, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, MysqlDiscoverRequest, MysqlDiscoverResponse, InfluxdbDiscoverRequest, InfluxdbDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse, McpRouteConfig, CreateMcpRouteRequest, UpdateMcpRouteRequest, McpRouteListResponse, HealthResponse, UserSpaceWorkspace, CreateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceMembersRequest, UserSpaceFileInfo, UserSpaceFile, UpsertUserSpaceFileRequest, UserSpaceSnapshot, UserSpaceSnapshotTimeline, CreateUserSpaceSnapshotRequest, UpdateUserSpaceSnapshotRequest, SwitchUserSpaceSnapshotBranchRequest, RestoreUserSpaceSnapshotResponse, UserSpaceAvailableTool, PaginatedWorkspacesResponse, ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus, UserSpaceSharedPreviewResponse, WorkspaceShareSlugAvailabilityResponse, UpdateUserSpaceWorkspaceShareAccessRequest, ConversationMember, UpdateConversationMembersRequest, UpdateConversationToolsRequest, UserSpaceRuntimeSessionResponse, UserSpaceRuntimeStatusResponse, UserSpaceRuntimeActionResponse, UserSpaceCapabilityTokenResponse, ProviderPromptDebugListResponse, ProviderPromptDebugRecord, CopilotAuthStatusResponse, CopilotDevicePollRequest, CopilotDevicePollResponse, CopilotDeviceStartRequest, CopilotDeviceStartResponse, LlmProviderWire, UserSpaceAcknowledgeChangedFilePathRequest, UserSpaceChangedFileState } from '@/types';
+import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, GetSettingsResponse, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, OllamaVisionModelsRequest, OllamaVisionModelsResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, ToolGroup, CreateToolGroupRequest, UpdateToolGroupRequest, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, MysqlDiscoverRequest, MysqlDiscoverResponse, InfluxdbDiscoverRequest, InfluxdbDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse, McpRouteConfig, CreateMcpRouteRequest, UpdateMcpRouteRequest, McpRouteListResponse, HealthResponse, UserSpaceWorkspace, CreateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceMembersRequest, UserSpaceWorkspaceEnvVar, UpsertUserSpaceWorkspaceEnvVarRequest, DeleteUserSpaceWorkspaceEnvVarResponse, UserSpaceFileInfo, UserSpaceFile, UpsertUserSpaceFileRequest, UserSpaceSnapshot, UserSpaceSnapshotTimeline, CreateUserSpaceSnapshotRequest, UpdateUserSpaceSnapshotRequest, SwitchUserSpaceSnapshotBranchRequest, RestoreUserSpaceSnapshotResponse, UserSpaceAvailableTool, PaginatedWorkspacesResponse, ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus, UserSpaceSharedPreviewResponse, WorkspaceShareSlugAvailabilityResponse, UpdateUserSpaceWorkspaceShareAccessRequest, ConversationMember, UpdateConversationMembersRequest, UpdateConversationToolsRequest, UserSpaceRuntimeSessionResponse, UserSpaceRuntimeStatusResponse, UserSpaceRuntimeActionResponse, UserSpaceCapabilityTokenResponse, ProviderPromptDebugListResponse, ProviderPromptDebugRecord, CopilotAuthStatusResponse, CopilotDevicePollRequest, CopilotDevicePollResponse, CopilotDeviceStartRequest, CopilotDeviceStartResponse, LlmProviderWire, UserSpaceAcknowledgeChangedFilePathRequest, UserSpaceChangedFileState } from '@/types';
 
 const API_BASE = '/indexes';
 const AUTH_BASE = '/auth';
@@ -1806,6 +1806,27 @@ export const api = {
       body: JSON.stringify(request),
     });
     return handleResponse<UserSpaceWorkspace>(response);
+  },
+
+  async listUserSpaceWorkspaceEnvVars(workspaceId: string): Promise<UserSpaceWorkspaceEnvVar[]> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/env-vars`);
+    return handleResponse<UserSpaceWorkspaceEnvVar[]>(response);
+  },
+
+  async upsertUserSpaceWorkspaceEnvVar(workspaceId: string, request: UpsertUserSpaceWorkspaceEnvVarRequest): Promise<UserSpaceWorkspaceEnvVar> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/env-vars`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<UserSpaceWorkspaceEnvVar>(response);
+  },
+
+  async deleteUserSpaceWorkspaceEnvVar(workspaceId: string, key: string): Promise<DeleteUserSpaceWorkspaceEnvVarResponse> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/env-vars/${encodeURIComponent(key)}`, {
+      method: 'DELETE',
+    });
+    return handleResponse<DeleteUserSpaceWorkspaceEnvVarResponse>(response);
   },
 
   _fileListEtags: {} as Record<string, { etag: string; data: UserSpaceFileInfo[] }>,

@@ -27,8 +27,13 @@ from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain.agents.output_parsers.tools import ToolsAgentOutputParser
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
-                                     SystemMessage, ToolMessage)
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_core.tools import StructuredTool, ToolException
@@ -40,64 +45,97 @@ from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.copilot_auth import ensure_copilot_token_fresh
 from ragtime.core.entrypoint_status import FRAMEWORK_REQUIRED_PACKAGES
-from ragtime.core.file_constants import (USERSPACE_MODULE_SOURCE_EXTENSIONS,
-                                         USERSPACE_STRICT_FRONTEND_EXTENSIONS,
-                                         USERSPACE_THEME_AUDIT_EXTENSIONS,
-                                         USERSPACE_TYPESCRIPT_EXTENSIONS)
+from ragtime.core.file_constants import (
+    USERSPACE_MODULE_SOURCE_EXTENSIONS,
+    USERSPACE_STRICT_FRONTEND_EXTENSIONS,
+    USERSPACE_THEME_AUDIT_EXTENSIONS,
+    USERSPACE_TYPESCRIPT_EXTENSIONS,
+)
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (get_context_limit, get_output_limit,
-                                       register_model_supported_endpoints,
-                                       requires_responses_api,
-                                       supports_reasoning,
-                                       supports_thinking_budget)
-from ragtime.core.ollama import (DEFAULT_WARMUP_TIMEOUT_SECONDS, KEEP_ALIVE,
-                                 NUM_GPU, get_model_context_length,
-                                 get_model_details, has_capability,
-                                 warmup_embedding_model, warmup_model)
-from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
-                                   validate_odoo_code, validate_sql_query,
-                                   validate_ssh_command)
+from ragtime.core.model_limits import (
+    get_context_limit,
+    get_output_limit,
+    register_model_supported_endpoints,
+    requires_responses_api,
+    supports_reasoning,
+    supports_thinking_budget,
+)
+from ragtime.core.ollama import (
+    DEFAULT_WARMUP_TIMEOUT_SECONDS,
+    KEEP_ALIVE,
+    NUM_GPU,
+    get_model_context_length,
+    get_model_details,
+    has_capability,
+    warmup_embedding_model,
+    warmup_model,
+)
+from ragtime.core.security import (
+    _SSH_ENV_VAR_RE,
+    sanitize_output,
+    validate_odoo_code,
+    validate_sql_query,
+    validate_ssh_command,
+)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
-                              execute_ssh_command, expand_env_vars_via_ssh,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.ssh import (
+    SSHConfig,
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    execute_ssh_command,
+    expand_env_vars_via_ssh,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
-from ragtime.rag.prompts import (BASE_CHAT_SYSTEM_PROMPT,
-                                 BASE_USERSPACE_SYSTEM_PROMPT,
-                                 SQLITE_INCLUDE_MODE_HINT,
-                                 TOOL_OUTPUT_VISIBILITY_PROMPT,
-                                 TOOL_USAGE_REMINDER,
-                                 UI_VISUALIZATION_CHAT_PROMPT,
-                                 UI_VISUALIZATION_COMMON_PROMPT,
-                                 UI_VISUALIZATION_USERSPACE_PROMPT,
-                                 build_index_system_prompt,
-                                 build_tool_system_prompt,
-                                 build_userspace_entrypoint_nudge,
-                                 build_userspace_mode_prompt_addition,
-                                 build_userspace_turn_reminder,
-                                 build_workspace_continuity_context)
+from ragtime.rag.prompts import (
+    BASE_CHAT_SYSTEM_PROMPT,
+    BASE_USERSPACE_SYSTEM_PROMPT,
+    SQLITE_INCLUDE_MODE_HINT,
+    TOOL_OUTPUT_VISIBILITY_PROMPT,
+    TOOL_USAGE_REMINDER,
+    UI_VISUALIZATION_CHAT_PROMPT,
+    UI_VISUALIZATION_COMMON_PROMPT,
+    UI_VISUALIZATION_USERSPACE_PROMPT,
+    build_index_system_prompt,
+    build_tool_system_prompt,
+    build_userspace_entrypoint_nudge,
+    build_userspace_mode_prompt_addition,
+    build_userspace_turn_reminder,
+    build_userspace_turn_reminder_with_env_vars,
+    build_workspace_continuity_context,
+)
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
-                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
-                                 create_chart_tool)
-from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-                                     create_datatable_tool)
+from ragtime.tools.chart import (
+    CHAT_CHART_DESCRIPTION_SUFFIX,
+    USERSPACE_CHART_DESCRIPTION_SUFFIX,
+    create_chart_tool,
+)
+from ragtime.tools.datatable import (
+    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+    create_datatable_tool,
+)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (_is_shallow_repository,
-                                       create_aggregate_git_history_tool,
-                                       create_per_index_git_history_tool)
+from ragtime.tools.git_history import (
+    _is_shallow_repository,
+    create_aggregate_git_history_tool,
+    create_per_index_git_history_tool,
+)
 from ragtime.tools.influxdb import create_influxdb_tool
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (ArtifactType, UpsertWorkspaceFileRequest,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection)
+from ragtime.userspace.models import (
+    ArtifactType,
+    UpsertWorkspaceEnvVarRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -1667,7 +1705,9 @@ class RAGComponents:
 
         for name, db in dbs_to_search.items():
             try:
-                logger.debug(f"Searching index '{name}' with query: {query[:50]}..., k={k}")
+                logger.debug(
+                    f"Searching index '{name}' with query: {query[:50]}..., k={k}"
+                )
                 if use_mmr:
                     fetch_k = max(k * MMR_FETCH_K_MULTIPLIER, MMR_MIN_FETCH_K)
                     docs = db.max_marginal_relevance_search(
@@ -4087,14 +4127,73 @@ except Exception as e:
         mode: str,
         *,
         include_sqlite_persistence: bool = False,
+        userspace_env_var_turn_hint: str = "",
     ) -> str:
         """Build per-turn reminder text prepended to user input."""
         reminder_text = TOOL_USAGE_REMINDER
         if mode == "userspace":
-            reminder_text += build_userspace_turn_reminder(
-                include_sqlite_persistence=include_sqlite_persistence,
-            )
+            if userspace_env_var_turn_hint:
+                reminder_text += build_userspace_turn_reminder_with_env_vars(
+                    include_sqlite_persistence=include_sqlite_persistence,
+                    env_var_reminder_line=userspace_env_var_turn_hint,
+                )
+            else:
+                reminder_text += build_userspace_turn_reminder(
+                    include_sqlite_persistence=include_sqlite_persistence,
+                )
         return reminder_text
+
+    @staticmethod
+    def _build_userspace_env_var_prompt_fragment(env_vars: list[Any]) -> str:
+        """Render a safe env-var inventory section (keys + set/missing, never values)."""
+        if not env_vars:
+            return (
+                "\n### Configured workspace environment variables\n\n"
+                "- None configured yet. If code needs secrets, create placeholder keys first and ask the user to fill values in the Environment Variables modal.\n"
+            )
+
+        max_items = 40
+        lines: list[str] = []
+        for item in env_vars[:max_items]:
+            key = str(getattr(item, "key", "") or "").strip()
+            if not key:
+                continue
+            has_value = bool(getattr(item, "has_value", False))
+            status = "set" if has_value else "placeholder (value missing)"
+            lines.append(f"- `{key}`: {status}")
+
+        omitted = max(0, len(env_vars) - max_items)
+        if omitted > 0:
+            lines.append(f"- ...and {omitted} more")
+
+        body = "\n".join(lines) if lines else "- None configured yet."
+        return "\n### Configured workspace environment variables\n\n" + body + "\n"
+
+    @staticmethod
+    def _build_userspace_env_var_turn_hint(env_vars: list[Any]) -> str:
+        """Build a short env-var line for the per-turn checklist."""
+        if not env_vars:
+            return (
+                "- No workspace env vars are configured. If the implementation needs secrets, "
+                "create placeholder keys and instruct the user to fill values in Environment Variables.\n"
+            )
+
+        max_items = 10
+        parts: list[str] = []
+        for item in env_vars[:max_items]:
+            key = str(getattr(item, "key", "") or "").strip()
+            if not key:
+                continue
+            has_value = bool(getattr(item, "has_value", False))
+            parts.append(f"{key}({'set' if has_value else 'missing'})")
+
+        if not parts:
+            return ""
+
+        suffix = (
+            "" if len(env_vars) <= max_items else f", +{len(env_vars) - max_items} more"
+        )
+        return "- Workspace env vars (keys only): " + ", ".join(parts) + suffix + ".\n"
 
     @staticmethod
     def _serialize_prompt_content(content: Any) -> Any:
@@ -5119,6 +5218,35 @@ except Exception as e:
                 description="Brief description of why files are being listed",
             )
 
+        class ListUserSpaceEnvVarsInput(BaseModel):
+            reason: str = Field(
+                default="",
+                description="Brief description of why env vars are being listed",
+            )
+
+        class UpsertUserSpaceEnvVarInput(BaseModel):
+            key: str = Field(
+                description=(
+                    "Environment variable key (for example: OPENAI_API_KEY). "
+                    "Must match [A-Za-z_][A-Za-z0-9_]*."
+                ),
+            )
+            value: str | None = Field(
+                default=None,
+                description=(
+                    "Optional secret value. Omit to create/update placeholder keys "
+                    "that users can fill in the Environment Variables modal."
+                ),
+            )
+            description: str | None = Field(
+                default=None,
+                description="Optional human-readable description shown in the UI.",
+            )
+            reason: str = Field(
+                default="",
+                description="Brief description of why this env var is needed",
+            )
+
         class AssayUserSpaceCodeInput(BaseModel):
             max_files: int = Field(
                 default=12,
@@ -5530,6 +5658,35 @@ except Exception as e:
                 workspace_id, user_id, include_dirs=True
             )
             return json.dumps([f.model_dump(mode="json") for f in files], indent=2)
+
+        async def list_userspace_env_vars(reason: str = "", **_: Any) -> str:
+            del reason
+            env_vars = await userspace_service.list_workspace_env_var_summaries(
+                workspace_id,
+                user_id,
+            )
+            return json.dumps(
+                [item.model_dump(mode="json") for item in env_vars], indent=2
+            )
+
+        async def upsert_userspace_env_var(
+            key: str,
+            value: str | None = None,
+            description: str | None = None,
+            reason: str = "",
+            **_: Any,
+        ) -> str:
+            del reason
+            updated = await userspace_service.upsert_workspace_env_var(
+                workspace_id,
+                user_id,
+                UpsertWorkspaceEnvVarRequest(
+                    key=key,
+                    value=value,
+                    description=description,
+                ),
+            )
+            return json.dumps(updated.model_dump(mode="json"), indent=2)
 
         def _compute_authoritative_entrypoint(
             file_paths: set[str],  # noqa: ARG001 – kept for call-site compat
@@ -7346,6 +7503,24 @@ except Exception as e:
                 args_schema=ListUserSpaceFilesInput,
             ),
             _create_userspace_tool(
+                coroutine=list_userspace_env_vars,
+                name="list_userspace_env_vars",
+                description=(
+                    "List configured workspace environment variable keys and has_value status (never returns secret values). "
+                    "Use this to understand which keys are already configured or still placeholders."
+                ),
+                args_schema=ListUserSpaceEnvVarsInput,
+            ),
+            _create_userspace_tool(
+                coroutine=upsert_userspace_env_var,
+                name="upsert_userspace_env_var",
+                description=(
+                    "Create or update a workspace environment variable key. "
+                    "Provide value to set a secret, or omit value to create a placeholder key that users can populate in the Environment Variables modal."
+                ),
+                args_schema=UpsertUserSpaceEnvVarInput,
+            ),
+            _create_userspace_tool(
                 coroutine=read_userspace_file,
                 name="read_userspace_file",
                 description=(
@@ -7587,6 +7762,7 @@ except Exception as e:
         allowed_tool_config_ids: list[str] | None = None
         prompt_additions = ""
         include_sqlite_persistence = False
+        userspace_env_var_turn_hint = ""
 
         workspace_id = (workspace_context or {}).get("workspace_id", "").strip()
         user_id = (workspace_context or {}).get("user_id", "").strip()
@@ -7598,9 +7774,7 @@ except Exception as e:
 
             # Expand group selections: add all enabled tools from selected groups
             if workspace.selected_tool_group_ids:
-                from ragtime.indexer.repository import repository as _repo
-
-                group_tool_ids = await _repo.get_tool_ids_for_groups(
+                group_tool_ids = await repository.get_tool_ids_for_groups(
                     workspace.selected_tool_group_ids
                 )
                 existing = set(allowed_tool_config_ids)
@@ -7610,6 +7784,19 @@ except Exception as e:
                         existing.add(tid)
 
             include_sqlite_persistence = workspace.sqlite_persistence_mode == "include"
+
+            env_var_summaries = (
+                await userspace_service.list_workspace_env_var_summaries(
+                    workspace_id,
+                    user_id,
+                )
+            )
+            prompt_additions += self._build_userspace_env_var_prompt_fragment(
+                env_var_summaries
+            )
+            userspace_env_var_turn_hint = self._build_userspace_env_var_turn_hint(
+                env_var_summaries
+            )
 
             userspace_tools = await self._create_userspace_file_tools(
                 workspace_id,
@@ -7704,6 +7891,7 @@ except Exception as e:
             "runtime_tools": runtime_tools,
             "prompt_additions": prompt_additions,
             "include_sqlite_persistence": include_sqlite_persistence,
+            "userspace_env_var_turn_hint": userspace_env_var_turn_hint,
         }
 
     def _build_request_system_prompt(
@@ -8110,10 +8298,10 @@ except Exception as e:
         # conversation/default models. GitHub Copilot serves OpenAI-family
         # model IDs, so legacy values like "openai::gpt-5.1-codex-mini"
         # should still route through the configured Copilot provider.
-        if (
-            provider_override == "openai"
-            and configured_provider in {"github_copilot", "github_models"}
-        ):
+        if provider_override == "openai" and configured_provider in {
+            "github_copilot",
+            "github_models",
+        }:
             provider = configured_provider
 
         max_tokens = await self._resolve_chat_request_max_tokens(provider, model_id)
@@ -8263,6 +8451,9 @@ except Exception as e:
                 request_context["mode"],
                 include_sqlite_persistence=request_context[
                     "include_sqlite_persistence"
+                ],
+                userspace_env_var_turn_hint=request_context[
+                    "userspace_env_var_turn_hint"
                 ],
             )
             turn_system_content += await self._build_context_headroom_prompt(
@@ -8479,6 +8670,7 @@ except Exception as e:
         turn_system_content = self._build_turn_reminder_text(
             request_context["mode"],
             include_sqlite_persistence=request_context["include_sqlite_persistence"],
+            userspace_env_var_turn_hint=request_context["userspace_env_var_turn_hint"],
         )
         turn_system_content += await self._build_context_headroom_prompt(
             chat_history=chat_history,
@@ -8869,4 +9061,5 @@ except Exception as e:
 
 
 # Global RAG components instance
+rag = RAGComponents()
 rag = RAGComponents()

@@ -40,6 +40,13 @@ class StartSessionRequest(BaseModel):
         default=None,
         description="Optional provider session id for idempotent resume",
     )
+    workspace_env: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Workspace environment variables resolved by control plane. "
+            "Values are injected server-side into devserver runtime only."
+        ),
+    )
 
 
 class _BaseSessionFields(BaseModel):
@@ -97,6 +104,10 @@ class WorkerStartSessionRequest(BaseModel):
     workspace_id: str = Field(description="Workspace ID")
     provider_session_id: str = Field(description="Manager provider session identifier")
     pty_access_token: str = Field(description="Manager-issued PTY access token")
+    workspace_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Workspace env map for devserver injection",
+    )
 
 
 class WorkerSessionResponse(_BaseSessionFields):
@@ -199,6 +210,13 @@ class RuntimeScreenshotResponse(BaseModel):
             "Captured browser probe metadata including optional element clipping "
             "diagnostics"
         )
+    )
+
+
+class RuntimeRestartRequest(BaseModel):
+    workspace_env: dict[str, str] | None = Field(
+        default=None,
+        description="If provided, update workspace environment variables before restart",
     )
 
 

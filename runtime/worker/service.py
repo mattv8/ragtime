@@ -19,23 +19,34 @@ from typing import Any
 import httpx
 from fastapi import HTTPException
 
-from runtime.manager.models import (RuntimeContentProbeRequest,
-                                    RuntimeContentProbeResponse,
-                                    RuntimeExecResponse,
-                                    RuntimeFileReadResponse,
-                                    RuntimeScreenshotRequest,
-                                    RuntimeScreenshotResponse,
-                                    WorkerHealthResponse,
-                                    WorkerSessionResponse,
-                                    WorkerStartSessionRequest)
-from runtime.shared import (RUNTIME_BOOTSTRAP_CONFIG_PATH,
-                            RUNTIME_BOOTSTRAP_STAMP_PATH, EntrypointStatus,
-                            RuntimeSessionState, normalize_file_path,
-                            parse_entrypoint_config)
-from runtime.worker.sandbox import (SANDBOX_WORKSPACE_MOUNT, SandboxSpec,
-                                    cleanup_sandbox, ensure_sandbox_ready,
-                                    get_sandbox_spec, sandbox_diagnostics,
-                                    spawn_sandboxed)
+from runtime.manager.models import (
+    RuntimeContentProbeRequest,
+    RuntimeContentProbeResponse,
+    RuntimeExecResponse,
+    RuntimeFileReadResponse,
+    RuntimeScreenshotRequest,
+    RuntimeScreenshotResponse,
+    WorkerHealthResponse,
+    WorkerSessionResponse,
+    WorkerStartSessionRequest,
+)
+from runtime.shared import (
+    RUNTIME_BOOTSTRAP_CONFIG_PATH,
+    RUNTIME_BOOTSTRAP_STAMP_PATH,
+    EntrypointStatus,
+    RuntimeSessionState,
+    normalize_file_path,
+    parse_entrypoint_config,
+)
+from runtime.worker.sandbox import (
+    SANDBOX_WORKSPACE_MOUNT,
+    SandboxSpec,
+    cleanup_sandbox,
+    ensure_sandbox_ready,
+    get_sandbox_spec,
+    sandbox_diagnostics,
+    spawn_sandboxed,
+)
 
 _PORT_PATTERNS = (
     re.compile(r"(?:^|\s)--port(?:=|\s+)(\d{2,5})(?:\s|$)"),
@@ -112,6 +123,7 @@ class WorkerSession:
     workspace_files_path: Path
     sandbox_spec: SandboxSpec
     pty_access_token: str
+    workspace_env: dict[str, str]
     state: RuntimeSessionState
     devserver_running: bool
     devserver_port: int | None
@@ -894,6 +906,7 @@ class WorkerService:
                             session.sandbox_spec,
                             resolution.command,
                             cwd=self._resolve_launch_cwd(session),
+                            env=session.workspace_env,
                             stdout=log_handle,
                             stderr=asyncio.subprocess.STDOUT,
                             start_new_session=True,
@@ -997,6 +1010,11 @@ class WorkerService:
             if existing_session_id and existing_session_id in self._sessions:
                 session = self._sessions[existing_session_id]
                 session.pty_access_token = request.pty_access_token
+                session.workspace_env = {
+                    str(key): str(value)
+                    for key, value in (request.workspace_env or {}).items()
+                    if str(key).strip()
+                }
                 self._schedule_startup_locked(session)
                 session.updated_at = self._utc_now()
                 return self._session_response(session)
@@ -1013,6 +1031,11 @@ class WorkerService:
                 workspace_files_path=workspace_files,
                 sandbox_spec=sandbox_spec,
                 pty_access_token=request.pty_access_token,
+                workspace_env={
+                    str(key): str(value)
+                    for key, value in (request.workspace_env or {}).items()
+                    if str(key).strip()
+                },
                 state="running",
                 devserver_running=False,
                 devserver_port=None,
@@ -1057,11 +1080,21 @@ class WorkerService:
             session.updated_at = self._utc_now()
             return self._session_response(session)
 
-    async def restart_session(self, worker_session_id: str) -> WorkerSessionResponse:
+    async def restart_session(
+        self,
+        worker_session_id: str,
+        workspace_env: dict[str, str] | None = None,
+    ) -> WorkerSessionResponse:
         async with self._lock:
             session = self._sessions.get(worker_session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Worker session not found")
+            if workspace_env is not None:
+                session.workspace_env = {
+                    str(key): str(value)
+                    for key, value in workspace_env.items()
+                    if str(key).strip()
+                }
             # Pick a fresh port to avoid TIME_WAIT "address already in use"
             session.devserver_port = self._pick_free_port()
             self._schedule_startup_locked(session)
@@ -1358,7 +1391,10 @@ class WorkerService:
                 "clip_padding_px": requested_clip_padding_px,
                 "wait_after_load_ms": requested_wait_after_load_ms,
                 "effective_wait_after_load_ms": int(
-                    (probe.get("effective_wait_after_load_ms") or requested_wait_after_load_ms)
+                    (
+                        probe.get("effective_wait_after_load_ms")
+                        or requested_wait_after_load_ms
+                    )
                 ),
                 "refresh_before_capture": bool(payload.refresh_before_capture),
             },

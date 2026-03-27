@@ -10,16 +10,20 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
-from runtime.manager.models import (ManagerSession, RuntimeContentProbeRequest,
-                                    RuntimeContentProbeResponse,
-                                    RuntimeExecResponse,
-                                    RuntimeFileReadResponse,
-                                    RuntimePtyUrlResponse,
-                                    RuntimeScreenshotRequest,
-                                    RuntimeScreenshotResponse,
-                                    RuntimeSessionResponse,
-                                    StartSessionRequest, WorkerSessionResponse,
-                                    WorkerStartSessionRequest)
+from runtime.manager.models import (
+    ManagerSession,
+    RuntimeContentProbeRequest,
+    RuntimeContentProbeResponse,
+    RuntimeExecResponse,
+    RuntimeFileReadResponse,
+    RuntimePtyUrlResponse,
+    RuntimeScreenshotRequest,
+    RuntimeScreenshotResponse,
+    RuntimeSessionResponse,
+    StartSessionRequest,
+    WorkerSessionResponse,
+    WorkerStartSessionRequest,
+)
 from runtime.worker.service import get_worker_service
 
 
@@ -236,6 +240,7 @@ class SessionManager:
                         workspace_id=request.workspace_id,
                         provider_session_id=provider_session_id,
                         pty_access_token=pty_access_token,
+                        workspace_env=request.workspace_env,
                     )
                     worker_session = await asyncio.wait_for(
                         self._worker_service.start_session(worker_request),
@@ -291,13 +296,17 @@ class SessionManager:
     async def restart_devserver(
         self,
         provider_session_id: str,
+        workspace_env: dict[str, str] | None = None,
     ) -> RuntimeSessionResponse:
         async with self._lock:
             session = self._sessions.get(provider_session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Runtime session not found")
             worker_data = await asyncio.wait_for(
-                self._worker_service.restart_session(session.worker_session_id),
+                self._worker_service.restart_session(
+                    session.worker_session_id,
+                    workspace_env=workspace_env,
+                ),
                 timeout=self._worker_call_timeout,
             )
             self._apply_worker_state(session, worker_data)

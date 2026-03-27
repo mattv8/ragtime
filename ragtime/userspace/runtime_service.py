@@ -474,9 +474,13 @@ class UserSpaceRuntimeService:
     ) -> dict[str, Any]:
         self._require_runtime_manager()
 
+        workspace_env = await userspace_service.get_workspace_runtime_environment(
+            workspace_id
+        )
         payload: dict[str, Any] = {
             "workspace_id": workspace_id,
             "leased_by_user_id": leased_by_user_id,
+            "workspace_env": workspace_env,
         }
         if existing_provider_session_id:
             payload["provider_session_id"] = existing_provider_session_id
@@ -519,13 +523,18 @@ class UserSpaceRuntimeService:
     async def _runtime_provider_restart_devserver(
         self,
         provider_session_id: str | None,
+        workspace_env: dict[str, str] | None = None,
     ) -> dict[str, Any] | None:
         if not provider_session_id:
             return None
         self._require_runtime_manager()
+        json_payload: dict[str, Any] | None = None
+        if workspace_env is not None:
+            json_payload = {"workspace_env": workspace_env}
         return await self._runtime_manager_request(
             "POST",
             f"/sessions/{provider_session_id}/restart",
+            json_payload=json_payload,
         )
 
     async def _runtime_provider_get_pty_ws_url(
@@ -1230,6 +1239,26 @@ class UserSpaceRuntimeService:
             runtime_operation_phase=operation_phase,
             runtime_operation_started_at=operation_started_at,
             runtime_operation_updated_at=operation_updated_at,
+        )
+
+    async def refresh_runtime_env_vars(self, workspace_id: str) -> None:
+        """Hot-apply workspace environment variable changes to a running session.
+
+        Reads the current env vars from DB, then restarts the devserver with
+        the updated environment.  No-op if no active runtime session exists.
+        """
+        active = await self._get_active_session_row(workspace_id)
+        if not active:
+            return
+        session = self._to_runtime_session(active)
+        if session.state not in {"running", "starting"}:
+            return
+        workspace_env = await userspace_service.get_workspace_runtime_environment(
+            workspace_id
+        )
+        await self._runtime_provider_restart_devserver(
+            session.provider_session_id,
+            workspace_env=workspace_env,
         )
 
     async def issue_capability_token(

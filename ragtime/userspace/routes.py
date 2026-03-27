@@ -9,6 +9,7 @@ from ragtime.indexer.repository import repository
 from ragtime.userspace.models import (
     CreateSnapshotRequest,
     CreateWorkspaceRequest,
+    DeleteWorkspaceEnvVarResponse,
     ExecuteComponentRequest,
     ExecuteComponentResponse,
     PaginatedWorkspacesResponse,
@@ -19,6 +20,7 @@ from ragtime.userspace.models import (
     UpdateWorkspaceRequest,
     UpdateWorkspaceShareAccessRequest,
     UpdateWorkspaceShareSlugRequest,
+    UpsertWorkspaceEnvVarRequest,
     UpsertWorkspaceFileRequest,
     UserSpaceAcknowledgeChangedFilePathRequest,
     UserSpaceAvailableTool,
@@ -29,6 +31,7 @@ from ragtime.userspace.models import (
     UserSpaceSnapshot,
     UserSpaceSnapshotTimelineResponse,
     UserSpaceWorkspace,
+    UserSpaceWorkspaceEnvVar,
     UserSpaceWorkspaceShareLink,
     UserSpaceWorkspaceShareLinkStatus,
     WorkspaceShareSlugAvailabilityResponse,
@@ -150,6 +153,53 @@ async def update_workspace_members(
     return await userspace_service.update_workspace_members(
         workspace_id, request, user.id
     )
+
+
+@router.get(
+    "/workspaces/{workspace_id}/env-vars",
+    response_model=list[UserSpaceWorkspaceEnvVar],
+)
+async def list_workspace_env_vars(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.list_workspace_env_vars(workspace_id, user.id)
+
+
+@router.put(
+    "/workspaces/{workspace_id}/env-vars",
+    response_model=UserSpaceWorkspaceEnvVar,
+)
+async def upsert_workspace_env_var(
+    workspace_id: str,
+    request: UpsertWorkspaceEnvVarRequest,
+    user: Any = Depends(get_current_user),
+):
+    result = await userspace_service.upsert_workspace_env_var(
+        workspace_id,
+        user.id,
+        request,
+    )
+    await userspace_runtime_service.refresh_runtime_env_vars(workspace_id)
+    return result
+
+
+@router.delete(
+    "/workspaces/{workspace_id}/env-vars/{env_key}",
+    response_model=DeleteWorkspaceEnvVarResponse,
+)
+async def delete_workspace_env_var(
+    workspace_id: str,
+    env_key: str,
+    user: Any = Depends(get_current_user),
+):
+    result = await userspace_service.delete_workspace_env_var(
+        workspace_id,
+        user.id,
+        env_key,
+    )
+    await userspace_runtime_service.refresh_runtime_env_vars(workspace_id)
+    return result
 
 
 @router.get("/workspaces/{workspace_id}/files", response_model=list[UserSpaceFileInfo])

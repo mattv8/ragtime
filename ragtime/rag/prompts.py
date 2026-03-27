@@ -97,7 +97,7 @@ _USERSPACE_TURN_REMINDER_BASE = """[USER SPACE TURN CHECKLIST
     (do NOT re-send the full file content).
 - Never use hardcoded/mock/sample/static data in entrypoint files (dashboard/main.ts, app.py, etc.)
     when the workspace has selected tools; wire live data instead.
-{sqlite_reminder_line}- Prefer incremental edits: use patch_userspace_file or targeted upsert_userspace_file calls to extend existing code rather than regenerating entire files.
+{sqlite_reminder_line}{env_var_reminder_line}- Prefer incremental edits: use patch_userspace_file or targeted upsert_userspace_file calls to extend existing code rather than regenerating entire files.
 - After validation passes with no errors, call create_userspace_snapshot with a concise completion message.
 - Never skip validation or snapshot.
 - Finalization sequence: validate -> fix errors -> validate again -> snapshot.
@@ -117,6 +117,22 @@ def build_userspace_turn_reminder(*, include_sqlite_persistence: bool) -> str:
         sqlite_reminder_line=(
             _SQLITE_TURN_REMINDER_LINE if include_sqlite_persistence else ""
         ),
+        env_var_reminder_line="",
+    )
+
+
+def build_userspace_turn_reminder_with_env_vars(
+    *,
+    include_sqlite_persistence: bool,
+    env_var_reminder_line: str,
+) -> str:
+    """Build turn reminder with optional workspace env-var inventory hint."""
+
+    return _USERSPACE_TURN_REMINDER_BASE.format(
+        sqlite_reminder_line=(
+            _SQLITE_TURN_REMINDER_LINE if include_sqlite_persistence else ""
+        ),
+        env_var_reminder_line=env_var_reminder_line,
     )
 
 
@@ -350,6 +366,13 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - Before declaring "done" or finalizing, you MUST run `validate_userspace_code` on EVERY changed source file (`.ts`/`.tsx`, `.py`, `.js`, `.html`, and the entrypoint) and fix all reported errors first.
 - After validation passes, call `create_userspace_snapshot` immediately with a concise completion message.
 - Never skip validation or snapshot. The correct finalization sequence is always: validate -> fix errors -> validate again (if fixes were needed) -> snapshot.
+
+### Workspace environment variables
+
+- Workspace owners manage encrypted key/value vars in the **Environment Variables** toolbar dialog; vars are injected into the devserver at runtime startup.
+- In code, always reference env vars (`process.env.KEY_NAME` for Node/TypeScript, `os.environ["KEY_NAME"]` for Python); never hardcode secrets, API keys, or credentials.
+- If required keys are missing, call `upsert_userspace_env_var` with `value` omitted to create placeholders, then instruct the user to fill values in the Environment Variables dialog.
+- Treat missing vars as undefined at runtime: use defensive fallbacks (for example, `process.env.KEY ?? ''`) and show clear user-facing error states when values are absent.
 
 ### Theme + CSS rules
 

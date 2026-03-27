@@ -6,17 +6,21 @@ from typing import Any
 from fastapi import FastAPI
 
 from runtime.auth import ManagerAuth
-from runtime.manager.models import (RuntimeContentProbeRequest,
-                                    RuntimeContentProbeResponse,
-                                    RuntimeExecRequest, RuntimeExecResponse,
-                                    RuntimeFileReadResponse,
-                                    RuntimeFileWriteRequest,
-                                    RuntimeManagerHealthResponse,
-                                    RuntimePtyUrlResponse,
-                                    RuntimeScreenshotRequest,
-                                    RuntimeScreenshotResponse,
-                                    RuntimeSessionResponse,
-                                    StartSessionRequest)
+from runtime.manager.models import (
+    RuntimeContentProbeRequest,
+    RuntimeContentProbeResponse,
+    RuntimeExecRequest,
+    RuntimeExecResponse,
+    RuntimeFileReadResponse,
+    RuntimeFileWriteRequest,
+    RuntimeManagerHealthResponse,
+    RuntimePtyUrlResponse,
+    RuntimeRestartRequest,
+    RuntimeScreenshotRequest,
+    RuntimeScreenshotResponse,
+    RuntimeSessionResponse,
+    StartSessionRequest,
+)
 from runtime.manager.service import SessionManager
 
 
@@ -88,9 +92,13 @@ def create_app() -> FastAPI:
     )
     async def restart_session(
         provider_session_id: str,
+        payload: RuntimeRestartRequest | None = None,
         _auth: None = ManagerAuth,
     ) -> RuntimeSessionResponse:
-        return await manager.restart_devserver(provider_session_id)
+        return await manager.restart_devserver(
+            provider_session_id,
+            workspace_env=payload.workspace_env if payload else None,
+        )
 
     @application.get(
         "/sessions/{provider_session_id}/pty/ws-url",

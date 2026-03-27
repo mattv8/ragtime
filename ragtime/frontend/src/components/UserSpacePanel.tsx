@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { Check, ChevronDown, ChevronRight, Database, ExternalLink, File, History, Link2, Loader2, Maximize2, Minimize2, Pencil, Play, Plus, RotateCw, Save, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Copy, Database, ExternalLink, File, History, KeyRound, Link2, Loader2, Maximize2, Minimize2, Pencil, Play, Plus, RotateCw, Save, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { keymap } from '@codemirror/view';
@@ -11,7 +11,7 @@ import '@xterm/xterm/css/xterm.css';
 import { api } from '@/api';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
-import type { User, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceWorkspace, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus } from '@/types';
+import type { User, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceWorkspace, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { ChatPanel } from './ChatPanel';
 import { LdapGroupSelect } from './LdapGroupSelect';
@@ -323,6 +323,18 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [pendingMembers, setPendingMembers] = useState<UserSpaceWorkspaceMember[]>([]);
   const [savingMembers, setSavingMembers] = useState(false);
+  const [showEnvVarsModal, setShowEnvVarsModal] = useState(false);
+  const [envVars, setEnvVars] = useState<UserSpaceWorkspaceEnvVar[]>([]);
+  const [envVarsLoading, setEnvVarsLoading] = useState(false);
+  const [draftEnvKey, setDraftEnvKey] = useState('');
+  const [draftEnvValue, setDraftEnvValue] = useState('');
+  const [draftEnvDescription, setDraftEnvDescription] = useState('');
+  const [editingEnvKey, setEditingEnvKey] = useState<string | null>(null);
+  const [editingEnvDescKey, setEditingEnvDescKey] = useState<string | null>(null);
+  const [savingEnvVar, setSavingEnvVar] = useState(false);
+  const [deletingEnvKey, setDeletingEnvKey] = useState<string | null>(null);
+  const [confirmDeleteEnvKey, setConfirmDeleteEnvKey] = useState<string | null>(null);
+  const [copiedEnvKey, setCopiedEnvKey] = useState<string | null>(null);
   const [showToolPicker, setShowToolPicker] = useState(false);
   const [showSnapshots, setShowSnapshots] = useState(false);
   const [snapshotsLoadedForWorkspace, setSnapshotsLoadedForWorkspace] = useState<string | null>(null);
@@ -2555,6 +2567,89 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, [activeWorkspace, isOwner]);
 
+  const handleOpenEnvVarsModal = useCallback(async () => {
+    if (!activeWorkspaceId || !isOwner) return;
+    setShowEnvVarsModal(true);
+    setEnvVarsLoading(true);
+    setDraftEnvKey('');
+    setDraftEnvValue('');
+    setDraftEnvDescription('');
+    setEditingEnvKey(null);
+    setEditingEnvDescKey(null);
+    setConfirmDeleteEnvKey(null);
+    try {
+      const vars = await api.listUserSpaceWorkspaceEnvVars(activeWorkspaceId);
+      setEnvVars(vars);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load environment variables');
+    } finally {
+      setEnvVarsLoading(false);
+    }
+  }, [activeWorkspaceId, isOwner]);
+
+  const handleSaveEnvVar = useCallback(async () => {
+    if (!activeWorkspaceId || !isOwner) return;
+    const key = editingEnvKey ?? draftEnvKey.trim().toUpperCase();
+    const value = draftEnvValue;
+    const description = draftEnvDescription.trim();
+    if (!key) return;
+    setSavingEnvVar(true);
+    try {
+      const upserted = await api.upsertUserSpaceWorkspaceEnvVar(activeWorkspaceId, {
+        key,
+        value: value || undefined,
+        description: description || undefined,
+      });
+      setEnvVars((current) => {
+        const next = current.filter((v) => v.key !== key);
+        return [...next, upserted].sort((a, b) => a.key.localeCompare(b.key));
+      });
+      setDraftEnvKey('');
+      setDraftEnvValue('');
+      setDraftEnvDescription('');
+      setEditingEnvKey(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save environment variable');
+    } finally {
+      setSavingEnvVar(false);
+    }
+  }, [activeWorkspaceId, draftEnvDescription, draftEnvKey, draftEnvValue, editingEnvKey, isOwner]);
+
+  const handleSaveEnvDesc = useCallback(async () => {
+    if (!activeWorkspaceId || !isOwner || !editingEnvDescKey) return;
+    setSavingEnvVar(true);
+    try {
+      const upserted = await api.upsertUserSpaceWorkspaceEnvVar(activeWorkspaceId, {
+        key: editingEnvDescKey,
+        description: draftEnvDescription.trim() || undefined,
+      });
+      setEnvVars((current) => {
+        const next = current.filter((v) => v.key !== editingEnvDescKey);
+        return [...next, upserted].sort((a, b) => a.key.localeCompare(b.key));
+      });
+      setEditingEnvDescKey(null);
+      setDraftEnvDescription('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save description');
+    } finally {
+      setSavingEnvVar(false);
+    }
+  }, [activeWorkspaceId, draftEnvDescription, editingEnvDescKey, isOwner]);
+
+  const handleDeleteEnvVar = useCallback(async (key: string) => {
+    if (!activeWorkspaceId || !isOwner) return;
+    setDeletingEnvKey(key);
+    try {
+      await api.deleteUserSpaceWorkspaceEnvVar(activeWorkspaceId, key);
+      setEnvVars((current) => current.filter((v) => v.key !== key));
+      setConfirmDeleteEnvKey(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete environment variable');
+    } finally {
+      setDeletingEnvKey(null);
+    }
+  }, [activeWorkspaceId, isOwner]);
+
   const handleStartEditName = useCallback(() => {
     if (!activeWorkspace || !canEditWorkspace) return;
     setDraftName(activeWorkspace.name);
@@ -3299,6 +3394,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
               <button className="btn btn-secondary btn-sm" onClick={handleOpenMembersModal} title="Manage members">
                 <Users size={14} />
               </button>
+              <button className="btn btn-secondary btn-sm" onClick={handleOpenEnvVarsModal} title="Environment variables">
+                <KeyRound size={14} />
+              </button>
             </>
           )}
           {canEditWorkspace && activeWorkspace && (
@@ -3878,6 +3976,224 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         </div>
         )}
       </div>
+
+      {/* === Env vars modal === */}
+      {showEnvVarsModal && activeWorkspaceId && (
+        <div className="modal-overlay" onClick={() => setShowEnvVarsModal(false)}>
+          <div className="modal-content modal-medium" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Environment Variables</h3>
+              <button className="modal-close" onClick={() => setShowEnvVarsModal(false)}>&times;</button>
+            </div>
+            <div className="modal-body">
+              <p className="userspace-muted" style={{ marginBottom: 12 }}>
+                Variables are encrypted at rest and injected into the devserver at runtime startup.
+                Reference them as <code>process.env.KEY</code> (Node.js) or <code>os.environ[&quot;KEY&quot;]</code> (Python).
+              </p>
+              {envVarsLoading ? (
+                <p className="userspace-muted">Loading...</p>
+              ) : (
+                <>
+                  {envVars.length > 0 && (
+                    <div className="userspace-env-var-list">
+                      {envVars.map((envVar) => (
+                        <div key={envVar.key} className="userspace-env-var-row">
+                          {/* Primary row: key, value (or value input), actions */}
+                          <div className="userspace-env-var-primary">
+                            <span className="userspace-env-var-key">
+                              {envVar.key}
+                              <button
+                                className="userspace-env-var-copy-btn"
+                                title="Copy key"
+                                onClick={async () => {
+                                  await navigator.clipboard.writeText(envVar.key);
+                                  setCopiedEnvKey(envVar.key);
+                                  setTimeout(() => setCopiedEnvKey((c) => c === envVar.key ? null : c), 1500);
+                                }}
+                              >
+                                {copiedEnvKey === envVar.key ? <Check size={13} /> : <Copy size={13} />}
+                              </button>
+                            </span>
+                            {editingEnvKey === envVar.key ? (
+                              <>
+                                <input
+                                  type="password"
+                                  className="form-input userspace-env-var-value-input"
+                                  placeholder="New value (leave blank to keep current)"
+                                  value={draftEnvValue}
+                                  onChange={(e) => setDraftEnvValue(e.target.value)}
+                                  onKeyDown={(e) => { if (e.key === 'Enter') handleSaveEnvVar(); if (e.key === 'Escape') { setEditingEnvKey(null); setDraftEnvValue(''); } }}
+                                  autoFocus
+                                />
+                                <div className="userspace-env-var-actions">
+                                  <button
+                                    className="btn btn-primary btn-sm"
+                                    onClick={handleSaveEnvVar}
+                                    disabled={savingEnvVar}
+                                    title="Save"
+                                  >
+                                    {savingEnvVar && editingEnvKey === envVar.key ? <Loader2 size={12} className="userspace-icon-spin" /> : <Check size={12} />}
+                                  </button>
+                                  <button
+                                    className="btn btn-secondary btn-sm"
+                                    onClick={() => { setEditingEnvKey(null); setDraftEnvValue(''); }}
+                                    title="Cancel"
+                                  >
+                                    <X size={12} />
+                                  </button>
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <span className="userspace-env-var-value">
+                                  {envVar.has_value ? '••••••' : <em>not set</em>}
+                                </span>
+                                <div className="userspace-env-var-actions">
+                                  {confirmDeleteEnvKey === envVar.key ? (
+                                    <>
+                                      <button
+                                        className="btn btn-danger btn-sm"
+                                        onClick={() => handleDeleteEnvVar(envVar.key)}
+                                        disabled={deletingEnvKey === envVar.key}
+                                        title="Confirm delete"
+                                      >
+                                        {deletingEnvKey === envVar.key ? <Loader2 size={12} className="userspace-icon-spin" /> : <Check size={12} />}
+                                      </button>
+                                      <button
+                                        className="btn btn-secondary btn-sm"
+                                        onClick={() => setConfirmDeleteEnvKey(null)}
+                                        title="Cancel"
+                                      >
+                                        <X size={12} />
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <button
+                                        className="btn btn-secondary btn-sm"
+                                        onClick={() => {
+                                          setEditingEnvKey(envVar.key);
+                                          setDraftEnvValue('');
+                                        }}
+                                        title="Edit value"
+                                      >
+                                        <Pencil size={12} />
+                                      </button>
+                                      <button
+                                        className="btn btn-secondary btn-sm"
+                                        onClick={() => setConfirmDeleteEnvKey(envVar.key)}
+                                        title="Delete"
+                                      >
+                                        <Trash2 size={12} />
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                              </>
+                            )}
+                          </div>
+                          {/* Description sub-row with hover pencil */}
+                          <div className="userspace-env-var-desc-row">
+                            {editingEnvDescKey === envVar.key ? (
+                              <div className="userspace-env-var-desc-edit">
+                                <input
+                                  type="text"
+                                  className="form-input userspace-env-var-desc-input"
+                                  placeholder="Description (optional)"
+                                  value={draftEnvDescription}
+                                  onChange={(e) => setDraftEnvDescription(e.target.value)}
+                                  onKeyDown={(e) => { if (e.key === 'Enter') handleSaveEnvDesc(); if (e.key === 'Escape') { setEditingEnvDescKey(null); setDraftEnvDescription(''); } }}
+                                  autoFocus
+                                />
+                                <button
+                                  className="btn btn-primary btn-sm"
+                                  onClick={handleSaveEnvDesc}
+                                  disabled={savingEnvVar}
+                                  title="Save description"
+                                >
+                                  {savingEnvVar && editingEnvDescKey === envVar.key ? <Loader2 size={12} className="userspace-icon-spin" /> : <Check size={12} />}
+                                </button>
+                                <button
+                                  className="btn btn-secondary btn-sm"
+                                  onClick={() => { setEditingEnvDescKey(null); setDraftEnvDescription(''); }}
+                                  title="Cancel"
+                                >
+                                  <X size={12} />
+                                </button>
+                              </div>
+                            ) : (
+                              <div
+                                className="userspace-env-var-desc-display"
+                                onClick={() => {
+                                  setEditingEnvDescKey(envVar.key);
+                                  setDraftEnvDescription(envVar.description ?? '');
+                                }}
+                              >
+                                <span className="userspace-env-var-desc">
+                                  {envVar.description || <em>No description</em>}
+                                </span>
+                                <button
+                                  className="inline-edit-btn userspace-env-var-desc-edit-btn"
+                                  title="Edit description"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setEditingEnvDescKey(envVar.key);
+                                    setDraftEnvDescription(envVar.description ?? '');
+                                  }}
+                                >
+                                  <Pencil size={11} />
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="userspace-env-var-form">
+                    <strong className="userspace-env-var-form-title">Add variable</strong>
+                    <div className="userspace-env-var-primary-row">
+                      <input
+                        type="text"
+                        className="form-input userspace-env-var-key-input"
+                        placeholder="KEY_NAME"
+                        value={draftEnvKey}
+                        onChange={(e) => setDraftEnvKey(e.target.value.toUpperCase())}
+                        onBlur={() => setDraftEnvKey((k) => k.replace(/[^A-Z0-9_]/g, '_').replace(/^[0-9]/, '_$&').replace(/_+/g, '_'))}
+                      />
+                      <input
+                        className="form-input"
+                        placeholder="Value (optional, leave blank for placeholder)"
+                        type="password"
+                        value={draftEnvValue}
+                        onChange={(e) => setDraftEnvValue(e.target.value)}
+                      />
+                    </div>
+                    <input
+                      type="text"
+                      className="form-input"
+                      placeholder="Description (optional)"
+                      value={draftEnvDescription}
+                      onChange={(e) => setDraftEnvDescription(e.target.value)}
+                    />
+                    <div className="userspace-env-var-form-actions">
+                      <button
+                        className="btn btn-primary btn-sm"
+                        onClick={handleSaveEnvVar}
+                        disabled={savingEnvVar || !draftEnvKey.trim()}
+                      >
+                        {savingEnvVar && !editingEnvKey ? <Loader2 size={14} className="userspace-icon-spin" /> : <Check size={14} />}
+                        Add
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* === Members modal === */}
       {showMembersModal && activeWorkspace && (
