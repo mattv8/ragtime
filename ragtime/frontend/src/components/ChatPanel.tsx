@@ -8,6 +8,7 @@ import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from '
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
 import { calculateConversationContextUsage, parseStoredModelIdentifier } from '@/utils/contextUsage';
+import { formatChatTimestamp } from '@/utils';
 import { ContextUsagePie } from './shared/ContextUsagePie';
 import { MemberManagementModal } from './shared/MemberManagementModal';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
@@ -1385,22 +1386,6 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
 
 // Default context limit fallback when model not found in API response
 const DEFAULT_CONTEXT_LIMIT = 8192;
-
-// Format relative time
-function formatRelativeTime(dateStr: string): string {
-  const date = new Date(dateStr);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMs / 3600000);
-  const diffDays = Math.floor(diffMs / 86400000);
-
-  if (diffMins < 1) return 'Just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
-}
 
 // Helper to extract text and attachments from message content
 function parseMessageContent(content: string | ContentPart[]): { text: string; attachments: ContentPart[] } {
@@ -3529,7 +3514,7 @@ export function ChatPanel({
     && !readOnly;
 
   const renderConversationItem = (conv: Conversation) => {
-    const metaText = `${conv.messages.length} messages | ${formatRelativeTime(conv.updated_at)}`;
+    const metaText = `${conv.messages.length} messages | ${formatChatTimestamp(conv.updated_at)}`;
     const isActive = activeConversation?.id === conv.id;
 
     return (
@@ -4043,7 +4028,7 @@ export function ChatPanel({
                             )}
                             <div className="chat-message-footer">
                               <span className="chat-message-time">
-                                {formatRelativeTime(msg.timestamp)}
+                                {formatChatTimestamp(msg.timestamp)}
                               </span>
                               {msg.role === 'assistant' && showPromptDebugButton && (
                                 <button

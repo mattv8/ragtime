@@ -230,8 +230,31 @@ function clearCookieValue(name: string): void {
   document.cookie = `${name}=; path=/; max-age=0; samesite=lax`;
 }
 
+function parseUtcTimestamp(value: string): Date | null {
+  const normalized = value.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const hasExplicitTimezone = /(?:Z|[+-]\d{2}:\d{2})$/i.test(normalized);
+  const parsed = new Date(hasExplicitTimezone ? normalized : `${normalized}Z`);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function parseUtcTimestampMs(value: string): number {
+  return parseUtcTimestamp(value)?.getTime() ?? 0;
+}
+
 function formatSnapshotTimestamp(value: string): string {
-  const date = new Date(value);
+  const date = parseUtcTimestamp(value);
+  if (!date) {
+    return value;
+  }
+
   return date.toLocaleString([], {
     month: 'short',
     day: 'numeric',
@@ -771,7 +794,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       grouped.set(snapshot.branch_id, current);
     }
     for (const list of grouped.values()) {
-      list.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      list.sort((a, b) => parseUtcTimestampMs(b.created_at) - parseUtcTimestampMs(a.created_at));
     }
 
     return snapshotBranches
@@ -784,7 +807,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
   const snapshotTimelineRows = useMemo(() => {
     const sortedSnapshots = [...snapshots].sort((left, right) => {
-      const timeDiff = new Date(right.created_at).getTime() - new Date(left.created_at).getTime();
+      const timeDiff = parseUtcTimestampMs(right.created_at) - parseUtcTimestampMs(left.created_at);
       if (timeDiff !== 0) {
         return timeDiff;
       }
@@ -4915,7 +4938,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                         <label htmlFor="userspace-share-url" className="userspace-share-label">Active share URL</label>
                         <input id="userspace-share-url" value={shareLinkStatus.share_url} readOnly />
                         <div className="userspace-share-meta">
-                          {shareLinkStatus.created_at ? `Created ${new Date(shareLinkStatus.created_at).toLocaleString()}` : 'Share link active'}
+                          {shareLinkStatus.created_at ? `Created ${formatSnapshotTimestamp(shareLinkStatus.created_at)}` : 'Share link active'}
                         </div>
                       </>
                     ) : (

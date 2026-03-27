@@ -71,3 +71,40 @@ export function formatElapsedTime(milliseconds: number): string {
 
   return `${minutes}m ${seconds}s`;
 }
+
+/**
+ * Formats chat timestamps as relative text for recent activity and
+ * a human-readable date/time for older messages.
+ *
+ * Rules:
+ * - < 1m: "Just now"
+ * - < 12h: "Xm ago" or "Xh ago"
+ * - >= 12h: localized date/time string
+ *
+ * @param dateStr - ISO date string
+ * @returns Formatted timestamp for chat UI
+ */
+export function formatChatTimestamp(dateStr: string): string {
+  const date = new Date(dateStr);
+  if (Number.isNaN(date.getTime())) {
+    return dateStr;
+  }
+
+  const diffMs = Math.max(0, Date.now() - date.getTime());
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+
+  if (diffMins < 1) return 'Just now';
+  if (diffHours < 12) {
+    if (diffMins < 60) return `${diffMins}m ago`;
+    return `${diffHours}h ago`;
+  }
+
+  return date.toLocaleString([], {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
