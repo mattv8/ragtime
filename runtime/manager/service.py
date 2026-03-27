@@ -189,6 +189,13 @@ class SessionManager:
                 session.updated_at = now
 
             if session.state in {"stopped", "error"}:
+                # Keep "error" sessions briefly so the control plane can read
+                # last_error before the session is purged.
+                if (
+                    session.state == "error"
+                    and (now - session.updated_at).total_seconds() < 60
+                ):
+                    continue
                 workspace_provider_session = self._workspace_index.get(
                     session.workspace_id
                 )

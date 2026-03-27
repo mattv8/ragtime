@@ -453,6 +453,19 @@ class WorkerService:
                 continue
             if unless_exists and unless_path is not None and unless_path.exists():
                 continue
+            # Also check the rootfs workspace dir — the sandbox may already
+            # have the artifact (e.g. node_modules) from a prior session's
+            # copytree even though the canonical ``files/`` tree lacks it.
+            if unless_exists:
+                rootfs_ws = (
+                    session.sandbox_spec.rootfs_path
+                    / SANDBOX_WORKSPACE_MOUNT.lstrip("/")
+                )
+                rootfs_unless = self._resolve_bootstrap_relative_path(
+                    rootfs_ws, unless_exists
+                )
+                if rootfs_unless is not None and rootfs_unless.exists():
+                    continue
 
             try:
                 # Resolve cwd relative to sandbox workspace mount

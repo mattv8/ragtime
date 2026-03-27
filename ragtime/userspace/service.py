@@ -17,51 +17,61 @@ from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import HTTPException
-from prisma import fields as prisma_fields
 
+from prisma import fields as prisma_fields
 from ragtime.config import settings
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
-from ragtime.core.entrypoint_status import (EntrypointStatus,
-                                            parse_entrypoint_config)
+from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
-                                    add_table_metadata_to_psql_output,
-                                    enforce_max_results, format_query_result,
-                                    validate_sql_query)
-from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.sql_utils import (
+    DB_TYPE_POSTGRES,
+    add_table_metadata_to_psql_output,
+    enforce_max_results,
+    format_query_result,
+    validate_sql_query,
+)
+from ragtime.core.ssh import (
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
-                                      DeleteWorkspaceEnvVarResponse,
-                                      ExecuteComponentRequest,
-                                      ExecuteComponentResponse,
-                                      PaginatedWorkspacesResponse,
-                                      ShareAccessMode, SqlitePersistenceMode,
-                                      SwitchSnapshotBranchRequest,
-                                      UpdateSnapshotRequest,
-                                      UpdateWorkspaceMembersRequest,
-                                      UpdateWorkspaceRequest,
-                                      UpdateWorkspaceShareAccessRequest,
-                                      UpsertWorkspaceEnvVarRequest,
-                                      UpsertWorkspaceFileRequest,
-                                      UserSpaceFileInfo, UserSpaceFileResponse,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection,
-                                      UserSpaceSharedPreviewResponse,
-                                      UserSpaceSnapshot,
-                                      UserSpaceSnapshotBranch,
-                                      UserSpaceSnapshotDiffFileSummary,
-                                      UserSpaceSnapshotDiffSummaryResponse,
-                                      UserSpaceSnapshotFileDiffResponse,
-                                      UserSpaceSnapshotTimelineResponse,
-                                      UserSpaceWorkspace,
-                                      UserSpaceWorkspaceEnvVar,
-                                      UserSpaceWorkspaceShareLink,
-                                      UserSpaceWorkspaceShareLinkStatus,
-                                      WorkspaceMember,
-                                      WorkspaceShareSlugAvailabilityResponse)
+from ragtime.userspace.models import (
+    ArtifactType,
+    CreateWorkspaceRequest,
+    DeleteWorkspaceEnvVarResponse,
+    ExecuteComponentRequest,
+    ExecuteComponentResponse,
+    PaginatedWorkspacesResponse,
+    ShareAccessMode,
+    SqlitePersistenceMode,
+    SwitchSnapshotBranchRequest,
+    UpdateSnapshotRequest,
+    UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest,
+    UpsertWorkspaceEnvVarRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+    UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot,
+    UserSpaceSnapshotBranch,
+    UserSpaceSnapshotDiffFileSummary,
+    UserSpaceSnapshotDiffSummaryResponse,
+    UserSpaceSnapshotFileDiffResponse,
+    UserSpaceSnapshotTimelineResponse,
+    UserSpaceWorkspace,
+    UserSpaceWorkspaceEnvVar,
+    UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceMember,
+    WorkspaceShareSlugAvailabilityResponse,
+)
 
 logger = get_logger(__name__)
 
@@ -149,7 +159,7 @@ _MODULE_SOURCE_EXTENSIONS = (
 _RUNTIME_BOOTSTRAP_CONFIG_PATH = ".ragtime/runtime-bootstrap.json"
 _RUNTIME_BOOTSTRAP_TEMPLATE_VERSION = 5
 _RUNTIME_BRIDGE_PATH = ".ragtime/bridge.js"
-_RUNTIME_BRIDGE_VERSION = 5
+_RUNTIME_BRIDGE_VERSION = 6
 _RUNTIME_BRIDGE_VERSION_TAG = f"@ragtime/bridge v{_RUNTIME_BRIDGE_VERSION}"
 _RUNTIME_BRIDGE_CONTENT = (
     f"// {_RUNTIME_BRIDGE_VERSION_TAG} — platform-managed, do not edit\n"
@@ -374,6 +384,7 @@ _RUNTIME_BRIDGE_CONTENT = (
     "  window.__ragtime_context = Object.freeze({\n"
     "    components: Object.freeze(componentsProxy),\n"
     "  });\n"
+    "  if (!window.context) { window.context = window.__ragtime_context; }\n"
     "})();\n"
 )
 _SQLITE_MANAGED_DIR_PREFIX = ".ragtime/db/"
@@ -4424,6 +4435,32 @@ class UserSpaceService:
             return str(value or "")
         return ""
 
+    async def _lookup_sidecar_query(
+        self,
+        workspace_id: str,
+        component_id: str,
+    ) -> str:
+        """Look up the default query for a component from the sidecar metadata."""
+        entry_file = (
+            self._workspace_files_dir(workspace_id) / _USERSPACE_PREVIEW_ENTRY_PATH
+        )
+        try:
+            _, connections, _ = await asyncio.to_thread(
+                self._read_artifact_sidecar, entry_file
+            )
+        except Exception:
+            return ""
+        if not connections:
+            return ""
+        cid_lower = component_id.strip().lower()
+        for conn in connections:
+            if conn.component_id.strip().lower() == cid_lower:
+                return str(conn.request or "")
+            cname = str(getattr(conn, "component_name", "") or "").strip()
+            if cname.lower().replace(" ", "_") == cid_lower.replace(" ", "_"):
+                return str(conn.request or "")
+        return ""
+
     async def _load_workspace_for_component_execution(
         self,
         workspace_id: str,
@@ -4518,6 +4555,19 @@ class UserSpaceService:
 
         query = self._extract_query_text(request.request)
         if not query.strip():
+            # Fallback: look up default query from live_data_connections sidecar.
+            # Try the resolved tool config ID first, then the original component_id.
+            resolved_tool_id = str(getattr(tool_config, "id", "") or "").strip()
+            sidecar_query = await self._lookup_sidecar_query(
+                workspace.id, resolved_tool_id
+            )
+            if not sidecar_query and resolved_tool_id != request.component_id:
+                sidecar_query = await self._lookup_sidecar_query(
+                    workspace.id, request.component_id
+                )
+            if sidecar_query:
+                query = sidecar_query
+        if not query.strip():
             raise HTTPException(
                 status_code=400,
                 detail="No query/command found in request payload.",
@@ -4567,15 +4617,24 @@ class UserSpaceService:
         workspace: UserSpaceWorkspace,
         component_id: str,
     ) -> tuple[str, dict[str, Any], Any]:
-        if component_id not in workspace.selected_tool_ids:
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    f"Component {component_id} is not selected " "for this workspace."
-                ),
-            )
+        resolved_id = component_id
 
-        tool_config = await repository.get_tool_config(component_id)
+        if resolved_id not in workspace.selected_tool_ids:
+            # Fallback: try to match by tool name among selected tools.
+            matched_id = await self._resolve_component_id_by_name(
+                workspace, component_id
+            )
+            if matched_id is None:
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        f"Component {component_id} is not selected "
+                        "for this workspace."
+                    ),
+                )
+            resolved_id = matched_id
+
+        tool_config = await repository.get_tool_config(resolved_id)
         if tool_config is None or not tool_config.enabled:
             raise HTTPException(
                 status_code=404,
@@ -4594,6 +4653,27 @@ class UserSpaceService:
 
         conn_config = tool_config.connection_config or {}
         return tool_type, conn_config, tool_config
+
+    @staticmethod
+    async def _resolve_component_id_by_name(
+        workspace: UserSpaceWorkspace,
+        name: str,
+    ) -> str | None:
+        """Try to find a tool config by name among the workspace's selected tools."""
+        name_lower = name.strip().lower().replace(" ", "_")
+        if not name_lower:
+            return None
+        for tool_id in workspace.selected_tool_ids:
+            try:
+                tool_config = await repository.get_tool_config(tool_id)
+            except Exception:
+                continue
+            if tool_config is None or not tool_config.enabled:
+                continue
+            tool_name = str(getattr(tool_config, "name", "") or "").strip()
+            if tool_name.lower().replace(" ", "_") == name_lower:
+                return tool_id
+        return None
 
     def _build_execute_component_response(
         self,
