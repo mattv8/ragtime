@@ -54,6 +54,8 @@ class UserSpaceWorkspace(BaseModel):
     description: str | None = None
     sqlite_persistence_mode: SqlitePersistenceMode = "exclude"
     owner_user_id: str
+    owner_username: str | None = None
+    owner_display_name: str | None = None
     selected_tool_ids: list[str] = Field(default_factory=list)
     selected_tool_group_ids: list[str] = Field(default_factory=list)
     conversation_ids: list[str] = Field(default_factory=list)
@@ -85,6 +87,7 @@ class UpdateWorkspaceRequest(BaseModel):
     sqlite_persistence_mode: SqlitePersistenceMode | None = None
     selected_tool_ids: list[str] | None = None
     selected_tool_group_ids: list[str] | None = None
+    owner_user_id: str | None = Field(default=None, description="Transfer ownership to this user (admin only)")
 
 
 class UserSpaceWorkspaceEnvVar(BaseModel):

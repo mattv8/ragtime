@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { Check, ChevronDown, ChevronRight, Copy, Database, ExternalLink, File, History, KeyRound, Link2, Loader2, Maximize2, Minimize2, Pencil, Play, Plus, RotateCw, Save, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Copy, Database, ExternalLink, File, History, KeyRound, Link2, Loader2, Maximize2, Minimize2, Pencil, Play, Plus, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { keymap } from '@codemirror/view';
@@ -9,6 +9,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 
 import { api } from '@/api';
+import { AdminWorkspaceModal } from './shared/AdminWorkspaceModal';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
 import type { User, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceWorkspace, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus } from '@/types';
@@ -320,6 +321,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [deleteConfirmWorkspaceId, setDeleteConfirmWorkspaceId] = useState<string | null>(null);
   const [isWorkspaceMenuOpen, setIsWorkspaceMenuOpen] = useState(false);
   const [showMembersModal, setShowMembersModal] = useState(false);
+  const [showAdminWorkspacesModal, setShowAdminWorkspacesModal] = useState(false);
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [pendingMembers, setPendingMembers] = useState<UserSpaceWorkspaceMember[]>([]);
   const [savingMembers, setSavingMembers] = useState(false);
@@ -610,11 +612,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const activeWorkspaceRole = useMemo(() => {
     if (!activeWorkspace) return 'viewer';
     if (activeWorkspace.owner_user_id === currentUser.id) return 'owner';
+    if (currentUser.role === 'admin') return 'owner';
     return activeWorkspace.members.find((member) => member.user_id === currentUser.id)?.role ?? 'viewer';
-  }, [activeWorkspace, currentUser.id]);
+  }, [activeWorkspace, currentUser.id, currentUser.role]);
 
   const canEditWorkspace = activeWorkspaceRole === 'owner' || activeWorkspaceRole === 'editor';
   const isOwner = activeWorkspaceRole === 'owner';
+  const isAdminImpersonating = currentUser.role === 'admin' && activeWorkspace != null && activeWorkspace.owner_user_id !== currentUser.id;
 
   const snapshotsByBranch = useMemo(() => {
     const grouped = new Map<string, UserSpaceSnapshot[]>();
@@ -3406,6 +3410,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
               </button>
             </>
           )}
+          {currentUser.role === 'admin' && (
+            <button className="btn btn-secondary btn-sm" onClick={() => setShowAdminWorkspacesModal(true)} title="Manage all workspaces (Admin)">
+              <Shield size={14} />
+            </button>
+          )}
         </div>
 
         <div className="userspace-toolbar-group userspace-toolbar-group-right">
@@ -3416,9 +3425,17 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 Connecting data...
               </span>
             )}
-            {activeWorkspace && (
+            {activeWorkspace && !isAdminImpersonating && (
               <span className="userspace-status-pill userspace-status-pill-info">
                 {activeWorkspaceRole}{!canEditWorkspace ? ' (read-only)' : ''}
+              </span>
+            )}
+            {isAdminImpersonating && (
+              <span
+                className="userspace-status-pill userspace-status-pill-warning"
+                title={`Viewing as admin (owner: ${activeWorkspace?.owner_display_name || activeWorkspace?.owner_username || 'unknown'})`}
+              >
+                {activeWorkspace?.owner_display_name || activeWorkspace?.owner_username || 'unknown'}
               </span>
             )}
             {activeWorkspaceId && (
@@ -3426,7 +3443,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 className={`userspace-status-pill ${collabConnected ? 'userspace-status-pill-success' : 'userspace-status-pill-muted'}`}
                 title="Collaborative editor connection state"
               >
-                {collabConnected ? `collab (${collabPresenceCount})` : 'collab offline'}
+                {collabConnected ? `collab (${collabPresenceCount})` : 'offline'}
               </span>
             )}
             {runtimeStatus && (
@@ -4193,6 +4210,30 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
             </div>
           </div>
         </div>
+      )}
+
+      {/* === Admin workspaces modal === */}
+      {showAdminWorkspacesModal && (
+        <AdminWorkspaceModal
+          isOpen={showAdminWorkspacesModal}
+          onClose={() => setShowAdminWorkspacesModal(false)}
+          currentUser={currentUser}
+          onSelectWorkspace={(ws) => {
+            setWorkspaces((prev) => {
+              if (prev.some((w) => w.id === ws.id)) return prev;
+              return [...prev, ws];
+            });
+            setActiveWorkspaceId(ws.id);
+            setRuntimeStatus(null);
+          }}
+          onWorkspaceDeleted={(wsId) => {
+            setWorkspaces((prev) => prev.filter((w) => w.id !== wsId));
+            setWorkspacesTotal((prev) => Math.max(0, prev - 1));
+            if (activeWorkspaceId === wsId) {
+              setActiveWorkspaceId(workspaces.find((w) => w.id !== wsId)?.id ?? null);
+            }
+          }}
+        />
       )}
 
       {/* === Members modal === */}

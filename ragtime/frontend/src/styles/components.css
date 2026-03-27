@@ -453,6 +453,158 @@ textarea:focus {
   letter-spacing: 0.04em;
 }
 
+/* --- Admin workspace management modal --- */
+.admin-ws-error {
+  padding: var(--space-sm);
+  margin-bottom: var(--space-sm);
+  color: var(--color-danger);
+  font-size: var(--text-sm);
+  background: var(--color-danger-bg, rgba(220, 53, 69, 0.08));
+  border-radius: var(--radius-sm);
+}
+
+.admin-ws-loading,
+.admin-ws-empty {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-md);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.admin-ws-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.admin-ws-group {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.admin-ws-group-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  width: 100%;
+  padding: 6px 10px;
+  background: var(--color-surface-hover);
+  border: none;
+  cursor: pointer;
+  font-size: var(--text-xs);
+  color: var(--color-text);
+}
+
+.admin-ws-group-header:hover {
+  background: var(--color-surface-active);
+}
+
+.admin-ws-group-name {
+  font-weight: 600;
+  flex: 1;
+  text-align: left;
+}
+
+.admin-ws-group-count {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.admin-ws-group-list {
+  padding: 4px 6px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.admin-ws-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  border-radius: var(--radius-sm);
+}
+
+.admin-ws-item:hover {
+  background: var(--color-surface-hover);
+}
+
+.admin-ws-item-select {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 4px 8px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: var(--text-sm);
+  color: var(--color-text);
+  text-align: left;
+}
+
+.admin-ws-item-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-ws-badge-own {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  background: var(--color-primary-bg, rgba(59, 130, 246, 0.12));
+  color: var(--color-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+.admin-ws-item-date {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.admin-ws-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 4px;
+}
+
+.admin-ws-load-more {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-sm) 0;
+}
+
+.admin-ws-item-wrapper {
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-ws-transfer-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 4px 8px 6px;
+}
+
+.admin-ws-transfer-select {
+  flex: 1;
+  font-size: var(--text-sm);
+  padding: 3px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
 .userspace-filepath-input {
   min-width: 180px;
   max-width: 280px;

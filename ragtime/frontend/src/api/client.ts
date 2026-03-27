@@ -1751,8 +1751,10 @@ export const api = {
   // User Space API
   // =========================================================================
 
-  async listUserSpaceWorkspaces(offset = 0, limit = 50): Promise<PaginatedWorkspacesResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces?offset=${offset}&limit=${limit}`);
+  async listUserSpaceWorkspaces(offset = 0, limit = 50, includeAll = false): Promise<PaginatedWorkspacesResponse> {
+    const params = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+    if (includeAll) params.set('include_all', 'true');
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces?${params}`);
     return handleResponse<PaginatedWorkspacesResponse>(response);
   },
 

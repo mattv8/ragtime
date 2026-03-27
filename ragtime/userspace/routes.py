@@ -4,6 +4,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 
+from ragtime.core.logging import get_logger
 from ragtime.core.security import get_current_user, get_current_user_optional
 from ragtime.indexer.repository import repository
 from ragtime.userspace.models import (
@@ -38,6 +39,8 @@ from ragtime.userspace.models import (
 )
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space"])
 
@@ -94,9 +97,13 @@ async def list_userspace_tool_groups(user: Any = Depends(get_current_user)):
 async def list_workspaces(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
+    include_all: bool = Query(default=False),
     user: Any = Depends(get_current_user),
 ):
-    return await userspace_service.list_workspaces(user.id, offset=offset, limit=limit)
+    is_admin = user.role == "admin" and include_all
+    return await userspace_service.list_workspaces(
+        user.id, offset=offset, limit=limit, is_admin=is_admin
+    )
 
 
 @router.post("/workspaces", response_model=UserSpaceWorkspace)
@@ -125,7 +132,18 @@ async def update_workspace(
     request.selected_tool_ids = await _normalize_selected_tool_ids(
         request.selected_tool_ids
     )
-    return await userspace_service.update_workspace(workspace_id, request, user.id)
+    is_admin = user.role == "admin"
+    result = await userspace_service.update_workspace(
+        workspace_id, request, user.id, is_admin=is_admin
+    )
+    if is_admin and result.owner_user_id != user.id:
+        logger.info(
+            "Admin '%s' updated workspace '%s' (owner: %s)",
+            user.username,
+            workspace_id,
+            result.owner_user_id,
+        )
+    return result
 
 
 @router.delete("/workspaces/{workspace_id}")
@@ -133,14 +151,24 @@ async def delete_workspace(
     workspace_id: str,
     user: Any = Depends(get_current_user),
 ):
-    await userspace_service.enforce_workspace_role(workspace_id, user.id, "owner")
+    is_admin = user.role == "admin"
+    ws = await userspace_service.enforce_workspace_role(
+        workspace_id, user.id, "owner", is_admin=is_admin
+    )
+    if is_admin and ws.owner_user_id != user.id:
+        logger.info(
+            "Admin '%s' deleted workspace '%s' (owner: %s)",
+            user.username,
+            workspace_id,
+            ws.owner_user_id,
+        )
     try:
         await userspace_runtime_service.stop_runtime_session(workspace_id, user.id)
     except HTTPException as exc:
         if exc.status_code != 404:
             raise
     await repository.delete_workspace_conversations(workspace_id)
-    await userspace_service.delete_workspace(workspace_id, user.id)
+    await userspace_service.delete_workspace(workspace_id, user.id, is_admin=is_admin)
     return {"success": True}
 
 

@@ -17,58 +17,48 @@ from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import HTTPException
-from prisma import fields as prisma_fields
 
+from prisma import fields as prisma_fields
 from ragtime.config import settings
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
-from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
+from ragtime.core.entrypoint_status import (EntrypointStatus,
+                                            parse_entrypoint_config)
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (
-    DB_TYPE_POSTGRES,
-    add_table_metadata_to_psql_output,
-    enforce_max_results,
-    format_query_result,
-    validate_sql_query,
-)
-from ragtime.core.ssh import (
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
+                                    add_table_metadata_to_psql_output,
+                                    enforce_max_results, format_query_result,
+                                    validate_sql_query)
+from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
+                              ssh_tunnel_config_from_dict)
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (
-    ArtifactType,
-    CreateWorkspaceRequest,
-    DeleteWorkspaceEnvVarResponse,
-    ExecuteComponentRequest,
-    ExecuteComponentResponse,
-    PaginatedWorkspacesResponse,
-    ShareAccessMode,
-    SqlitePersistenceMode,
-    SwitchSnapshotBranchRequest,
-    UpdateSnapshotRequest,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest,
-    UpsertWorkspaceEnvVarRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-    UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot,
-    UserSpaceSnapshotBranch,
-    UserSpaceSnapshotTimelineResponse,
-    UserSpaceWorkspace,
-    UserSpaceWorkspaceEnvVar,
-    UserSpaceWorkspaceShareLink,
-    UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceMember,
-    WorkspaceShareSlugAvailabilityResponse,
-)
+from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
+                                      DeleteWorkspaceEnvVarResponse,
+                                      ExecuteComponentRequest,
+                                      ExecuteComponentResponse,
+                                      PaginatedWorkspacesResponse,
+                                      ShareAccessMode, SqlitePersistenceMode,
+                                      SwitchSnapshotBranchRequest,
+                                      UpdateSnapshotRequest,
+                                      UpdateWorkspaceMembersRequest,
+                                      UpdateWorkspaceRequest,
+                                      UpdateWorkspaceShareAccessRequest,
+                                      UpsertWorkspaceEnvVarRequest,
+                                      UpsertWorkspaceFileRequest,
+                                      UserSpaceFileInfo, UserSpaceFileResponse,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection,
+                                      UserSpaceSharedPreviewResponse,
+                                      UserSpaceSnapshot,
+                                      UserSpaceSnapshotBranch,
+                                      UserSpaceSnapshotTimelineResponse,
+                                      UserSpaceWorkspace,
+                                      UserSpaceWorkspaceEnvVar,
+                                      UserSpaceWorkspaceShareLink,
+                                      UserSpaceWorkspaceShareLinkStatus,
+                                      WorkspaceMember,
+                                      WorkspaceShareSlugAvailabilityResponse)
 
 logger = get_logger(__name__)
 
@@ -1546,6 +1536,13 @@ class UserSpaceService:
             if getattr(row, "toolGroupId", None)
         ]
 
+        owner_obj = getattr(record, "owner", None)
+        owner_username: str | None = None
+        owner_display_name: str | None = None
+        if owner_obj is not None:
+            owner_username = getattr(owner_obj, "username", None)
+            owner_display_name = getattr(owner_obj, "displayName", None)
+
         return UserSpaceWorkspace(
             id=record.id,
             name=record.name,
@@ -1559,6 +1556,8 @@ class UserSpaceService:
                 ),
             ),
             owner_user_id=record.ownerUserId,
+            owner_username=owner_username,
+            owner_display_name=owner_display_name,
             selected_tool_ids=selected_tool_ids,
             selected_tool_group_ids=selected_tool_group_ids,
             conversation_ids=[],
@@ -1572,6 +1571,7 @@ class UserSpaceService:
         workspace_id: str,
         user_id: str,
         required_role: str | None = None,
+        is_admin: bool = False,
     ) -> UserSpaceWorkspace:
         db = await get_db()
 
@@ -1581,10 +1581,16 @@ class UserSpaceService:
                 "members": True,
                 "toolSelections": True,
                 "toolGroupSelections": True,
+                "owner": True,
             },
         )
         if not workspace:
             raise HTTPException(status_code=404, detail="Workspace not found")
+
+        if is_admin:
+            self._sync_runtime_bootstrap_config(workspace_id)
+            self._sync_runtime_bridge_script(workspace_id)
+            return self._workspace_from_record(workspace)
 
         user_role: str | None = None
         if workspace.ownerUserId == user_id:
@@ -1602,6 +1608,12 @@ class UserSpaceService:
                 break
 
         if user_role is None:
+            # Check if user is an admin — admins get owner-level access to all workspaces
+            user_record = await db.user.find_unique(where={"id": user_id})
+            if user_record and getattr(user_record, "role", None) == "admin":
+                self._sync_runtime_bootstrap_config(workspace_id)
+                self._sync_runtime_bridge_script(workspace_id)
+                return self._workspace_from_record(workspace)
             raise HTTPException(status_code=404, detail="Workspace not found")
 
         if required_role == "editor" and user_role not in {"owner", "editor"}:
@@ -1621,6 +1633,7 @@ class UserSpaceService:
                 "members": True,
                 "toolSelections": True,
                 "toolGroupSelections": True,
+                "owner": True,
             },
         )
 
@@ -1629,15 +1642,18 @@ class UserSpaceService:
         user_id: str,
         offset: int = 0,
         limit: int = 50,
+        is_admin: bool = False,
     ) -> PaginatedWorkspacesResponse:
         db = await get_db()
 
-        where_clause: dict[str, Any] = {
-            "OR": [
-                {"ownerUserId": user_id},
-                {"members": {"some": {"userId": user_id}}},
-            ]
-        }
+        where_clause: dict[str, Any] = {}
+        if not is_admin:
+            where_clause = {
+                "OR": [
+                    {"ownerUserId": user_id},
+                    {"members": {"some": {"userId": user_id}}},
+                ]
+            }
 
         rows = await db.workspace.find_many(
             where=where_clause,
@@ -1645,6 +1661,7 @@ class UserSpaceService:
                 "members": True,
                 "toolSelections": True,
                 "toolGroupSelections": True,
+                "owner": True,
             },
             order={"updatedAt": "desc"},
             skip=offset,
@@ -1752,6 +1769,7 @@ class UserSpaceService:
                 "members": True,
                 "toolSelections": True,
                 "toolGroupSelections": True,
+                "owner": True,
             },
         )
         if not refreshed:
@@ -2190,9 +2208,11 @@ class UserSpaceService:
             live_data_connections=live_data_connections,
         )
 
-    async def delete_workspace(self, workspace_id: str, user_id: str) -> None:
+    async def delete_workspace(
+        self, workspace_id: str, user_id: str, is_admin: bool = False
+    ) -> None:
         await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="owner"
+            workspace_id, user_id, required_role="owner", is_admin=is_admin
         )
         db = await get_db()
         try:
@@ -2209,11 +2229,13 @@ class UserSpaceService:
         workspace_id: str,
         user_id: str,
         required_role: str,
+        is_admin: bool = False,
     ) -> UserSpaceWorkspace:
         return await self._enforce_workspace_access(
             workspace_id,
             user_id,
             required_role=required_role,
+            is_admin=is_admin,
         )
 
     async def update_workspace(
@@ -2221,13 +2243,53 @@ class UserSpaceService:
         workspace_id: str,
         request: UpdateWorkspaceRequest,
         user_id: str,
+        is_admin: bool = False,
     ) -> UserSpaceWorkspace:
-        await self._enforce_workspace_access(
-            workspace_id, user_id, required_role="editor"
+        current_ws = await self._enforce_workspace_access(
+            workspace_id, user_id, required_role="editor", is_admin=is_admin
         )
         db = await get_db()
 
         update_data: dict[str, Any] = {"updatedAt": _utc_now()}
+
+        if request.owner_user_id is not None:
+            if not is_admin:
+                raise HTTPException(
+                    status_code=403, detail="Only admins can transfer workspace ownership"
+                )
+            new_owner = await db.user.find_unique(where={"id": request.owner_user_id})
+            if not new_owner:
+                raise HTTPException(status_code=404, detail="Target user not found")
+            update_data["ownerUserId"] = request.owner_user_id
+            # Ensure new owner is a member with owner role
+            existing_member = await db.workspacemember.find_first(
+                where={"workspaceId": workspace_id, "userId": request.owner_user_id}
+            )
+            if existing_member:
+                await db.workspacemember.update(
+                    where={"id": existing_member.id},
+                    data={"role": "owner"},
+                )
+            else:
+                await db.workspacemember.create(
+                    data={
+                        "workspaceId": workspace_id,
+                        "userId": request.owner_user_id,
+                        "role": "owner",
+                    }
+                )
+            # Downgrade previous owner to editor in members
+            old_owner_id = current_ws.owner_user_id
+            if old_owner_id != request.owner_user_id:
+                old_owner_member = await db.workspacemember.find_first(
+                    where={"workspaceId": workspace_id, "userId": old_owner_id}
+                )
+                if old_owner_member:
+                    await db.workspacemember.update(
+                        where={"id": old_owner_member.id},
+                        data={"role": "editor"},
+                    )
+
         if request.name is not None:
             normalized_name = _normalize_workspace_name_for_uniqueness(request.name)
             if not normalized_name:
@@ -2289,6 +2351,7 @@ class UserSpaceService:
                 "members": True,
                 "toolSelections": True,
                 "toolGroupSelections": True,
+                "owner": True,
             },
         )
         if not refreshed:
@@ -2345,6 +2408,7 @@ class UserSpaceService:
                 "members": True,
                 "toolSelections": True,
                 "toolGroupSelections": True,
+                "owner": True,
             },
         )
         if not refreshed:

@@ -1609,6 +1609,8 @@ export interface UserSpaceWorkspace {
   description?: string | null;
   sqlite_persistence_mode: SqlitePersistenceMode;
   owner_user_id: string;
+  owner_username?: string | null;
+  owner_display_name?: string | null;
   selected_tool_ids: string[];
   selected_tool_group_ids: string[];
   conversation_ids: string[];
@@ -1640,6 +1642,7 @@ export interface UpdateUserSpaceWorkspaceRequest {
   sqlite_persistence_mode?: SqlitePersistenceMode;
   selected_tool_ids?: string[];
   selected_tool_group_ids?: string[];
+  owner_user_id?: string;
 }
 
 export interface UpdateUserSpaceWorkspaceMembersRequest {
