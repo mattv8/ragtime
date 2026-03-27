@@ -270,7 +270,9 @@ export function AdminWorkspaceModal({
                                       .filter((u) => u.id !== ws.owner_user_id)
                                       .map((u) => (
                                         <option key={u.id} value={u.id}>
-                                          {u.display_name || u.username}
+                                          {u.display_name && u.display_name !== u.username
+                                            ? `${u.display_name} (@${u.username})`
+                                            : `@${u.username}`}
                                         </option>
                                       ))}
                                   </select>
