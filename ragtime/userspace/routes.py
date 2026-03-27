@@ -30,6 +30,8 @@ from ragtime.userspace.models import (
     UserSpaceFileResponse,
     UserSpaceSharedPreviewResponse,
     UserSpaceSnapshot,
+    UserSpaceSnapshotDiffSummaryResponse,
+    UserSpaceSnapshotFileDiffResponse,
     UserSpaceSnapshotTimelineResponse,
     UserSpaceWorkspace,
     UserSpaceWorkspaceEnvVar,
@@ -625,6 +627,40 @@ async def get_snapshot_timeline(
     user: Any = Depends(get_current_user),
 ):
     return await userspace_service.get_snapshot_timeline(workspace_id, user.id)
+
+
+@router.get(
+    "/workspaces/{workspace_id}/snapshots/{snapshot_id}/diff-summary",
+    response_model=UserSpaceSnapshotDiffSummaryResponse,
+)
+async def get_snapshot_diff_summary(
+    workspace_id: str,
+    snapshot_id: str,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.get_snapshot_diff_summary(
+        workspace_id,
+        snapshot_id,
+        user.id,
+    )
+
+
+@router.get(
+    "/workspaces/{workspace_id}/snapshots/{snapshot_id}/file-diff",
+    response_model=UserSpaceSnapshotFileDiffResponse,
+)
+async def get_snapshot_file_diff(
+    workspace_id: str,
+    snapshot_id: str,
+    file_path: str = Query(min_length=1),
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.get_snapshot_file_diff(
+        workspace_id,
+        snapshot_id,
+        file_path,
+        user.id,
+    )
 
 
 @router.post("/workspaces/{workspace_id}/snapshots", response_model=UserSpaceSnapshot)

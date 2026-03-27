@@ -1736,6 +1736,42 @@ export interface UserSpaceSnapshot {
   file_count: number;
 }
 
+export type UserSpaceSnapshotDiffStatus = 'A' | 'D' | 'M' | 'R';
+
+export interface UserSpaceSnapshotDiffFileSummary {
+  path: string;
+  status: UserSpaceSnapshotDiffStatus;
+  old_path?: string | null;
+  additions: number;
+  deletions: number;
+  is_binary: boolean;
+}
+
+export interface UserSpaceSnapshotDiffSummary {
+  workspace_id: string;
+  snapshot_id: string;
+  snapshot_commit_hash?: string | null;
+  files: UserSpaceSnapshotDiffFileSummary[];
+}
+
+export interface UserSpaceSnapshotFileDiff {
+  workspace_id: string;
+  snapshot_id: string;
+  path: string;
+  status: UserSpaceSnapshotDiffStatus;
+  old_path?: string | null;
+  before_path?: string | null;
+  after_path?: string | null;
+  before_content: string;
+  after_content: string;
+  additions: number;
+  deletions: number;
+  is_binary: boolean;
+  is_deleted_in_current: boolean;
+  is_untracked_in_current: boolean;
+  message?: string | null;
+}
+
 export interface UserSpaceSnapshotBranch {
   id: string;
   workspace_id: string;

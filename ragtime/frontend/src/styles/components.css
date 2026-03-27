@@ -1881,6 +1881,7 @@ textarea:focus {
   min-height: 26px;
   border-radius: 0;
   margin: 0;
+  cursor: pointer;
 }
 
 .userspace-snapshot-graph-row:hover {
@@ -1960,6 +1961,407 @@ textarea:focus {
   flex: 1;
   min-width: 0;
   overflow: hidden;
+}
+
+.userspace-snapshot-row-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.userspace-snapshot-expand-chevron {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+  transition: transform var(--transition-fast);
+}
+
+.userspace-snapshot-expand-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.userspace-snapshot-expanded-panel {
+  margin: 0 4px 4px 32px;
+  padding: 4px 0 2px;
+}
+
+.userspace-snapshot-expanded-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+
+.userspace-snapshot-diff-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.userspace-snapshot-diff-file-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  text-align: left;
+  font-size: 12px;
+  transition: background var(--transition-fast);
+}
+
+.userspace-snapshot-diff-file-row:hover,
+.userspace-snapshot-diff-file-row.active {
+  background: color-mix(in srgb, var(--color-accent, var(--color-primary)) 10%, transparent);
+}
+
+.userspace-snapshot-diff-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-sm);
+  font-size: 9px;
+  font-weight: 700;
+  flex-shrink: 0;
+  border: none;
+}
+
+.userspace-snapshot-diff-status-a {
+  color: var(--color-success);
+  background: var(--color-success-light);
+}
+
+.userspace-snapshot-diff-status-d {
+  color: var(--color-error);
+  background: var(--color-error-light);
+}
+
+.userspace-snapshot-diff-status-m {
+  color: var(--color-warning);
+  background: var(--color-warning-light);
+}
+
+.userspace-snapshot-diff-status-r {
+  color: var(--color-info);
+  background: var(--color-info-light);
+}
+
+.userspace-snapshot-diff-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  flex: 1;
+}
+
+.userspace-snapshot-diff-old-path {
+  color: var(--color-text-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.userspace-snapshot-diff-counts {
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-family: var(--font-mono, monospace);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* --- Snapshot diff overlay (side-by-side popup) --- */
+
+.userspace-snapshot-diff-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1190;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--color-bg-primary) 40%, transparent);
+}
+
+.userspace-snapshot-diff-overlay {
+  position: relative;
+  z-index: 1200;
+  width: min(1080px, calc(100vw - 32px));
+  height: min(70vh, 720px);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid color-mix(in srgb, var(--color-accent, var(--color-primary)) 18%, var(--color-border));
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--color-bg-primary) 88%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-border) 40%, transparent),
+    0 24px 48px -8px rgba(0, 0, 0, 0.35),
+    0 8px 16px -4px rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(16px) saturate(1.1);
+  animation: snapshot-diff-enter 0.15s ease-out;
+}
+
+@keyframes snapshot-diff-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.userspace-snapshot-diff-overlay-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.userspace-snapshot-diff-overlay-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.userspace-snapshot-diff-overlay-subtitle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+
+.userspace-snapshot-diff-overlay-subtitle span {
+  display: inline-flex;
+  align-items: center;
+}
+
+.userspace-snapshot-diff-overlay-subtitle span + span::before {
+  content: '\00b7';
+  margin-right: 8px;
+  color: var(--color-text-muted);
+}
+
+.userspace-snapshot-diff-overlay-body {
+  flex: 1;
+  min-height: 0;
+  padding: 8px;
+  overflow: hidden;
+}
+
+.userspace-snapshot-diff-overlay-loading {
+  justify-content: center;
+  height: 100%;
+}
+
+.userspace-snapshot-diff-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--color-border);
+}
+
+.userspace-snapshot-diff-column {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border: none;
+  border-radius: 0;
+  overflow: hidden;
+  background: var(--color-bg-primary);
+}
+
+.userspace-snapshot-diff-column-current {
+  border-color: transparent;
+}
+
+.userspace-snapshot-diff-column-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-surface-hover) 60%, var(--color-bg-primary));
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.userspace-snapshot-diff-column-header code {
+  max-width: 65%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 400;
+}
+
+.userspace-snapshot-diff-editor-wrap {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Match app theme — same pattern as .userspace-code-editor overrides */
+.userspace-snapshot-diff-editor-wrap,
+.userspace-snapshot-diff-editor-wrap > div,
+.userspace-snapshot-diff-editor-wrap .cm-editor {
+  background-color: var(--color-bg-primary) !important;
+}
+
+.userspace-snapshot-diff-editor-wrap > div {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.userspace-snapshot-diff-editor-wrap .cm-editor {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--color-text-primary);
+}
+
+.userspace-snapshot-diff-editor-wrap .cm-editor .cm-content {
+  color: var(--color-text-primary);
+  caret-color: var(--color-text-primary);
+}
+
+.userspace-snapshot-diff-editor-wrap .cm-scroller {
+  overflow: auto !important;
+}
+
+.userspace-snapshot-diff-editor-wrap .cm-line {
+  white-space: pre !important;
+  word-break: normal !important;
+  overflow-wrap: normal !important;
+}
+
+.userspace-snapshot-diff-editor-wrap .cm-editor .cm-gutters {
+  background-color: color-mix(in srgb, var(--color-surface-hover) 40%, var(--color-bg-primary)) !important;
+  border-right: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+}
+
+.userspace-snapshot-diff-editor-wrap .cm-lineNumbers .cm-gutterElement {
+  color: var(--color-text-muted);
+  font-size: 10px;
+  padding: 0 6px 0 4px;
+  min-width: 28px;
+}
+
+.userspace-snapshot-diff-editor-wrap .cm-editor .cm-selectionBackground,
+.userspace-snapshot-diff-editor-wrap .cm-editor .cm-content ::selection {
+  background-color: var(--color-primary-light) !important;
+}
+
+.userspace-snapshot-diff-editor-wrap .cm-editor .cm-activeLine {
+  background-color: transparent !important;
+}
+
+/* Diff line change highlighting */
+.cm-diff-line-deleted {
+  background-color: rgba(239, 68, 68, 0.15) !important;
+}
+
+.cm-diff-line-added {
+  background-color: rgba(34, 197, 94, 0.18) !important;
+}
+
+/* Padding lines (blank filler opposite added/deleted hunks) */
+.cm-diff-line-padding {
+  background-color: rgba(128, 128, 128, 0.06) !important;
+}
+
+/* Hide gutter numbers on padding lines */
+.cm-diff-line-padding .cm-lineNumbers .cm-gutterElement {
+  visibility: hidden;
+}
+
+[data-theme="light"] .cm-diff-line-deleted {
+  background-color: rgba(220, 38, 38, 0.10) !important;
+}
+
+[data-theme="light"] .cm-diff-line-added {
+  background-color: rgba(22, 163, 74, 0.12) !important;
+}
+
+[data-theme="light"] .cm-diff-line-padding {
+  background-color: rgba(0, 0, 0, 0.03) !important;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .cm-diff-line-deleted {
+    background-color: rgba(220, 38, 38, 0.10) !important;
+  }
+  :root:not([data-theme="dark"]) .cm-diff-line-added {
+    background-color: rgba(22, 163, 74, 0.12) !important;
+  }
+  :root:not([data-theme="dark"]) .cm-diff-line-padding {
+    background-color: rgba(0, 0, 0, 0.03) !important;
+  }
+}
+
+/* Light mode overrides for diff overlay */
+[data-theme="light"] .userspace-snapshot-diff-overlay {
+  background: color-mix(in srgb, var(--color-bg-primary) 92%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-border) 50%, transparent),
+    0 24px 48px -8px rgba(0, 0, 0, 0.12),
+    0 8px 16px -4px rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="light"] .userspace-snapshot-diff-backdrop {
+  background: color-mix(in srgb, white 24%, transparent);
+}
+
+[data-theme="light"] .userspace-snapshot-diff-columns {
+  background: var(--color-border-strong);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .userspace-snapshot-diff-backdrop {
+    background: color-mix(in srgb, white 24%, transparent);
+  }
+
+  :root:not([data-theme="dark"]) .userspace-snapshot-diff-overlay {
+    background: color-mix(in srgb, var(--color-bg-primary) 92%, transparent);
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--color-border) 50%, transparent),
+      0 24px 48px -8px rgba(0, 0, 0, 0.12),
+      0 8px 16px -4px rgba(0, 0, 0, 0.06);
+  }
+
+  :root:not([data-theme="dark"]) .userspace-snapshot-diff-columns {
+    background: var(--color-border-strong);
+  }
 }
 
 .userspace-snapshot-hash {

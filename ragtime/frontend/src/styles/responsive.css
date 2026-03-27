@@ -565,6 +565,36 @@
     max-height: 160px;
   }
 
+  .userspace-snapshot-expanded-panel {
+    margin-left: 8px;
+    margin-right: 2px;
+  }
+
+  .userspace-snapshot-diff-file-row {
+    gap: 4px;
+    padding: 3px 4px;
+  }
+
+  .userspace-snapshot-diff-old-path {
+    display: none;
+  }
+
+  .userspace-snapshot-diff-backdrop {
+    padding: 8px;
+    align-items: flex-start;
+    padding-top: 60px;
+  }
+
+  .userspace-snapshot-diff-overlay {
+    width: calc(100vw - 16px);
+    height: calc(100vh - 68px);
+    border-radius: var(--radius-md);
+  }
+
+  .userspace-snapshot-diff-columns {
+    grid-template-columns: 1fr;
+  }
+
   /* Settings */
   fieldset {
     padding: var(--space-sm);

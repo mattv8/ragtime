@@ -12,13 +12,13 @@ import subprocess
 import time as _time
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, cast
+from typing import Any, Literal, TypedDict, cast
 from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import HTTPException
-
 from prisma import fields as prisma_fields
+
 from ragtime.config import settings
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
@@ -52,6 +52,9 @@ from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
                                       UserSpaceSharedPreviewResponse,
                                       UserSpaceSnapshot,
                                       UserSpaceSnapshotBranch,
+                                      UserSpaceSnapshotDiffFileSummary,
+                                      UserSpaceSnapshotDiffSummaryResponse,
+                                      UserSpaceSnapshotFileDiffResponse,
                                       UserSpaceSnapshotTimelineResponse,
                                       UserSpaceWorkspace,
                                       UserSpaceWorkspaceEnvVar,
@@ -104,6 +107,16 @@ class _NonUtf8WorkspaceFileError(Exception):
     def __init__(self, file_path: Path) -> None:
         self.file_path = file_path
         super().__init__(f"Non-UTF8 workspace file: {file_path}")
+
+
+class _WorkspaceSnapshotFileDiff(TypedDict):
+    path: str
+    status: Literal["A", "D", "M", "R"]
+    old_path: str | None
+    additions: int
+    deletions: int
+    is_binary: bool
+    is_untracked_in_current: bool
 
 
 _EXECUTION_PROOF_MAX_AGE_SECONDS = 3600  # 1 hour
@@ -928,12 +941,12 @@ class UserSpaceService:
     def _workspace_git_dir(self, workspace_id: str) -> Path:
         return self._workspace_files_dir(workspace_id) / ".git"
 
-    async def _run_git(
+    async def _run_git_raw(
         self,
         workspace_id: str,
         args: list[str],
         check: bool = True,
-    ) -> _GitCommandResult:
+    ) -> tuple[int, bytes, bytes]:
         files_dir = self._workspace_files_dir(workspace_id)
         try:
             process = await asyncio.create_subprocess_exec(
@@ -944,23 +957,44 @@ class UserSpaceService:
                 stderr=subprocess.PIPE,
             )
             stdout_bytes, stderr_bytes = await process.communicate()
-            result = _GitCommandResult(
-                returncode=process.returncode if process.returncode is not None else 1,
-                stdout=stdout_bytes.decode("utf-8", errors="replace"),
-                stderr=stderr_bytes.decode("utf-8", errors="replace"),
-            )
-            if check and result.returncode != 0:
-                stderr = (result.stderr or "").strip()
+            returncode = process.returncode if process.returncode is not None else 1
+            if check and returncode != 0:
+                stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
                 raise HTTPException(
                     status_code=500,
                     detail=f"Git snapshot operation failed: {stderr or 'unknown error'}",
                 )
-            return result
+            return returncode, stdout_bytes, stderr_bytes
         except FileNotFoundError as exc:
             raise HTTPException(
                 status_code=500,
                 detail="Git binary not available for User Space snapshots",
             ) from exc
+
+    async def _run_git(
+        self,
+        workspace_id: str,
+        args: list[str],
+        check: bool = True,
+    ) -> _GitCommandResult:
+        returncode, stdout_bytes, stderr_bytes = await self._run_git_raw(
+            workspace_id,
+            args,
+            check=check,
+        )
+        return _GitCommandResult(
+            returncode=returncode,
+            stdout=stdout_bytes.decode("utf-8", errors="replace"),
+            stderr=stderr_bytes.decode("utf-8", errors="replace"),
+        )
+
+    async def _run_git_bytes(
+        self,
+        workspace_id: str,
+        args: list[str],
+        check: bool = True,
+    ) -> tuple[int, bytes, bytes]:
+        return await self._run_git_raw(workspace_id, args, check=check)
 
     async def _ensure_workspace_git_repo(self, workspace_id: str) -> None:
         files_dir = self._workspace_files_dir(workspace_id)
@@ -1081,6 +1115,387 @@ class UserSpaceService:
 
     def is_reserved_internal_path(self, relative_path: str) -> bool:
         return self._is_reserved_internal_path(relative_path)
+
+    async def _get_snapshot_record(
+        self,
+        workspace_id: str,
+        snapshot_id: str,
+    ) -> dict[str, Any]:
+        db = await get_db()
+        rows = await db.query_raw(
+            f"""
+            SELECT s.id, s.workspace_id, s.branch_id, s.git_commit_hash, s.message,
+                   s.file_count, s.parent_snapshot_id, s.created_at,
+                   b.name AS branch_name
+            FROM userspace_snapshots s
+            JOIN userspace_snapshot_branches b ON b.id = s.branch_id
+            WHERE s.workspace_id = {self._sql_quote(workspace_id)}
+              AND s.id = {self._sql_quote(snapshot_id)}
+            LIMIT 1
+            """
+        )
+        if not rows:
+            raise HTTPException(status_code=404, detail="Snapshot not found")
+        return rows[0]
+
+    @staticmethod
+    def _decode_optional_text_content(content: bytes) -> str | None:
+        if not content:
+            return ""
+        if b"\x00" in content:
+            return None
+        try:
+            return content.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+
+    @staticmethod
+    def _count_text_lines(content: str) -> int:
+        if not content:
+            return 0
+        return content.count("\n") + (0 if content.endswith("\n") else 1)
+
+    async def _read_git_text_content(
+        self,
+        workspace_id: str,
+        git_object: str,
+    ) -> tuple[str, bool]:
+        returncode, stdout_bytes, _ = await self._run_git_bytes(
+            workspace_id,
+            ["show", git_object],
+            check=False,
+        )
+        if returncode != 0:
+            return "", False
+
+        decoded = self._decode_optional_text_content(stdout_bytes)
+        if decoded is None:
+            return "", True
+        return decoded, False
+
+    async def _read_workspace_text_content(self, file_path: Path) -> tuple[str, bool]:
+        file_bytes = await asyncio.to_thread(file_path.read_bytes)
+        decoded = self._decode_optional_text_content(file_bytes)
+        if decoded is None:
+            return "", True
+        return decoded, False
+
+    def _parse_name_status_line(
+        self,
+        raw_line: str,
+    ) -> tuple[str, str | None, str | None]:
+        parts = raw_line.split("\t")
+        if len(parts) < 2:
+            raise ValueError("Invalid git name-status line")
+        status_token = parts[0].strip().upper()
+        status = status_token[:1]
+        if status not in {"A", "D", "M", "R"}:
+            status = "M"
+        if status == "R" and len(parts) >= 3:
+            return status, parts[2], parts[1]
+        return status, parts[1], None
+
+    async def _build_snapshot_diff_summary_map(
+        self,
+        workspace_id: str,
+        snapshot_commit_hash: str,
+    ) -> dict[str, _WorkspaceSnapshotFileDiff]:
+        summary_by_path: dict[str, _WorkspaceSnapshotFileDiff] = {}
+        diff_result = await self._run_git(
+            workspace_id,
+            ["diff", "--find-renames", "--name-status", snapshot_commit_hash, "--"],
+            check=False,
+        )
+        if diff_result.returncode != 0:
+            stderr = (diff_result.stderr or "").strip()
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to compute snapshot diff summary: {stderr or 'git diff failed'}",
+            )
+
+        for line in diff_result.stdout.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                parsed_status, candidate_path, old_path = self._parse_name_status_line(
+                    stripped
+                )
+            except ValueError:
+                continue
+
+            normalized_path = self._normalize_workspace_relative_path(
+                candidate_path or ""
+            )
+            normalized_old_path = (
+                self._normalize_workspace_relative_path(old_path or "") or None
+            )
+            if not normalized_path or self._is_reserved_internal_path(normalized_path):
+                continue
+            if normalized_old_path and self._is_reserved_internal_path(
+                normalized_old_path
+            ):
+                normalized_old_path = None
+            summary_by_path[normalized_path] = cast(
+                _WorkspaceSnapshotFileDiff,
+                {
+                    "path": normalized_path,
+                    "status": cast(Literal["A", "D", "M", "R"], parsed_status),
+                    "old_path": normalized_old_path,
+                    "additions": 0,
+                    "deletions": 0,
+                    "is_binary": False,
+                    "is_untracked_in_current": False,
+                },
+            )
+
+        for summary in list(summary_by_path.values()):
+            diff_path = summary["path"]
+            if summary["status"] == "R" and summary["old_path"]:
+                diff_path = summary["old_path"] or diff_path
+            numstat_result = await self._run_git(
+                workspace_id,
+                [
+                    "diff",
+                    "--find-renames",
+                    "--numstat",
+                    snapshot_commit_hash,
+                    "--",
+                    diff_path,
+                ],
+                check=False,
+            )
+            if numstat_result.returncode != 0:
+                continue
+            for raw_line in numstat_result.stdout.splitlines():
+                parts = raw_line.split("\t")
+                if len(parts) < 3:
+                    continue
+                add_token, delete_token = parts[0].strip(), parts[1].strip()
+                if add_token == "-" or delete_token == "-":
+                    summary["is_binary"] = True
+                    summary["additions"] = 0
+                    summary["deletions"] = 0
+                    break
+                try:
+                    summary["additions"] = int(add_token)
+                    summary["deletions"] = int(delete_token)
+                except ValueError:
+                    continue
+                break
+
+        async with self._git_status_semaphore:
+            status_result = await self._run_git(
+                workspace_id,
+                ["status", "--porcelain=1", "-z", "--untracked-files=all"],
+                check=False,
+            )
+        if status_result.returncode != 0:
+            return summary_by_path
+
+        tokens = status_result.stdout.split("\x00")
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if not token or len(token) < 3:
+                index += 1
+                continue
+            status_token = token[:2]
+            candidate_path = token[3:]
+            previous_path: str | None = None
+            if (
+                status_token
+                and status_token[0] in {"R", "C"}
+                and (index + 1) < len(tokens)
+            ):
+                next_token = tokens[index + 1]
+                if next_token:
+                    previous_path = candidate_path
+                    candidate_path = next_token
+                index += 1
+
+            normalized_path = self._normalize_workspace_relative_path(candidate_path)
+            normalized_previous_path = (
+                self._normalize_workspace_relative_path(previous_path or "") or None
+            )
+            if not normalized_path or self._is_reserved_internal_path(normalized_path):
+                index += 1
+                continue
+
+            entry = summary_by_path.get(normalized_path)
+            if status_token == "??":
+                file_path = self._resolve_workspace_file_path(
+                    workspace_id, normalized_path
+                )
+                if file_path.exists() and file_path.is_file():
+                    raw_content = await asyncio.to_thread(file_path.read_bytes)
+                    decoded = self._decode_optional_text_content(raw_content)
+                    summary_by_path[normalized_path] = cast(
+                        _WorkspaceSnapshotFileDiff,
+                        {
+                            "path": normalized_path,
+                            "status": "A",
+                            "old_path": None,
+                            "additions": (
+                                0
+                                if decoded is None
+                                else self._count_text_lines(decoded)
+                            ),
+                            "deletions": 0,
+                            "is_binary": decoded is None,
+                            "is_untracked_in_current": True,
+                        },
+                    )
+                index += 1
+                continue
+
+            if entry is None:
+                derived_status = "M"
+                if "A" in status_token:
+                    derived_status = "A"
+                elif "D" in status_token:
+                    derived_status = "D"
+                elif "R" in status_token:
+                    derived_status = "R"
+                summary_by_path[normalized_path] = cast(
+                    _WorkspaceSnapshotFileDiff,
+                    {
+                        "path": normalized_path,
+                        "status": cast(Literal["A", "D", "M", "R"], derived_status),
+                        "old_path": normalized_previous_path,
+                        "additions": 0,
+                        "deletions": 0,
+                        "is_binary": False,
+                        "is_untracked_in_current": False,
+                    },
+                )
+            index += 1
+
+        return summary_by_path
+
+    async def _prepare_snapshot_diff_context(
+        self,
+        workspace_id: str,
+        snapshot_id: str,
+        user_id: str,
+    ) -> tuple[str, dict[str, _WorkspaceSnapshotFileDiff]]:
+        await self._enforce_workspace_access(workspace_id, user_id)
+        await self._ensure_workspace_git_repo(workspace_id)
+
+        snapshot_row = await self._get_snapshot_record(workspace_id, snapshot_id)
+        snapshot_commit_hash = str(snapshot_row.get("git_commit_hash") or "")
+        summary_map = await self._build_snapshot_diff_summary_map(
+            workspace_id,
+            snapshot_commit_hash,
+        )
+        return snapshot_commit_hash, summary_map
+
+    async def get_snapshot_diff_summary(
+        self,
+        workspace_id: str,
+        snapshot_id: str,
+        user_id: str,
+    ) -> UserSpaceSnapshotDiffSummaryResponse:
+        snapshot_commit_hash, summary_map = await self._prepare_snapshot_diff_context(
+            workspace_id,
+            snapshot_id,
+            user_id,
+        )
+        files = [
+            UserSpaceSnapshotDiffFileSummary(
+                path=item["path"],
+                status=item["status"],
+                old_path=item["old_path"],
+                additions=item["additions"],
+                deletions=item["deletions"],
+                is_binary=item["is_binary"],
+            )
+            for item in sorted(summary_map.values(), key=lambda value: value["path"])
+        ]
+        return UserSpaceSnapshotDiffSummaryResponse(
+            workspace_id=workspace_id,
+            snapshot_id=snapshot_id,
+            snapshot_commit_hash=snapshot_commit_hash or None,
+            files=files,
+        )
+
+    async def get_snapshot_file_diff(
+        self,
+        workspace_id: str,
+        snapshot_id: str,
+        relative_path: str,
+        user_id: str,
+    ) -> UserSpaceSnapshotFileDiffResponse:
+        normalized_path = self._normalize_workspace_relative_path(relative_path)
+        if not normalized_path or self._is_reserved_internal_path(normalized_path):
+            raise HTTPException(status_code=400, detail="Invalid file path")
+
+        snapshot_commit_hash, summary_map = await self._prepare_snapshot_diff_context(
+            workspace_id,
+            snapshot_id,
+            user_id,
+        )
+        file_summary = summary_map.get(normalized_path)
+        if file_summary is None:
+            raise HTTPException(status_code=404, detail="Snapshot diff file not found")
+
+        before_path = file_summary["old_path"] or normalized_path
+        after_path = normalized_path
+        before_content = ""
+        after_content = ""
+        is_binary = bool(file_summary["is_binary"])
+        is_deleted_in_current = file_summary["status"] == "D"
+        is_untracked_in_current = bool(file_summary["is_untracked_in_current"])
+
+        if file_summary["status"] != "A":
+            before_content, before_is_binary = await self._read_git_text_content(
+                workspace_id,
+                f"{snapshot_commit_hash}:{before_path}",
+            )
+            is_binary = is_binary or before_is_binary
+
+        current_file_path = self._resolve_workspace_file_path(workspace_id, after_path)
+        if (
+            not is_deleted_in_current
+            and current_file_path.exists()
+            and current_file_path.is_file()
+        ):
+            after_content, after_is_binary = await self._read_workspace_text_content(
+                current_file_path
+            )
+            is_binary = is_binary or after_is_binary
+
+        message: str | None = None
+        if is_binary:
+            message = (
+                "Binary or non-UTF-8 content cannot be rendered in the diff viewer."
+            )
+            before_content = ""
+            after_content = ""
+        elif file_summary["status"] == "D":
+            message = (
+                "File exists in the snapshot but is deleted in the current workspace."
+            )
+        elif is_untracked_in_current:
+            message = "File is untracked in the current workspace."
+
+        return UserSpaceSnapshotFileDiffResponse(
+            workspace_id=workspace_id,
+            snapshot_id=snapshot_id,
+            path=normalized_path,
+            status=file_summary["status"],
+            old_path=file_summary["old_path"],
+            before_path=before_path,
+            after_path=after_path,
+            before_content=before_content,
+            after_content=after_content,
+            additions=file_summary["additions"],
+            deletions=file_summary["deletions"],
+            is_binary=is_binary,
+            is_deleted_in_current=is_deleted_in_current,
+            is_untracked_in_current=is_untracked_in_current,
+            message=message,
+        )
 
     @staticmethod
     def _generate_share_token() -> str:
@@ -2255,7 +2670,8 @@ class UserSpaceService:
         if request.owner_user_id is not None:
             if not is_admin:
                 raise HTTPException(
-                    status_code=403, detail="Only admins can transfer workspace ownership"
+                    status_code=403,
+                    detail="Only admins can transfer workspace ownership",
                 )
             new_owner = await db.user.find_unique(where={"id": request.owner_user_id})
             if not new_owner:
@@ -3155,7 +3571,6 @@ class UserSpaceService:
         row: dict[str, Any],
         current_snapshot_id: str | None,
         branch_name_by_id: dict[str, str],
-        branch_tip_ids: set[str],
     ) -> UserSpaceSnapshot:
         created_at_raw = row.get("created_at")
         created_at = _coerce_utc_datetime(created_at_raw)
@@ -3409,24 +3824,6 @@ class UserSpaceService:
                 )
             )
 
-        tip_rows = await db.query_raw(
-            f"""
-            SELECT s.id, s.branch_id
-            FROM userspace_snapshots s
-            WHERE s.workspace_id = {self._sql_quote(workspace_id)}
-              AND NOT EXISTS (
-                SELECT 1
-                FROM userspace_snapshots child
-                WHERE child.workspace_id = s.workspace_id
-                  AND child.branch_id = s.branch_id
-                  AND child.parent_snapshot_id = s.id
-              )
-            """
-        )
-        branch_tip_ids = {
-            str(row.get("id")) for row in tip_rows if row.get("id") is not None
-        }
-
         snapshot_rows = await db.query_raw(
             f"""
             SELECT id, workspace_id, branch_id, git_commit_hash, message,
@@ -3441,7 +3838,6 @@ class UserSpaceService:
                 row,
                 current_snapshot_id,
                 branch_name_by_id,
-                branch_tip_ids,
             )
             for row in snapshot_rows
         ]
@@ -4788,5 +5184,4 @@ class UserSpaceService:
         return workspace_files
 
 
-userspace_service = UserSpaceService()
 userspace_service = UserSpaceService()

@@ -87,7 +87,9 @@ class UpdateWorkspaceRequest(BaseModel):
     sqlite_persistence_mode: SqlitePersistenceMode | None = None
     selected_tool_ids: list[str] | None = None
     selected_tool_group_ids: list[str] | None = None
-    owner_user_id: str | None = Field(default=None, description="Transfer ownership to this user (admin only)")
+    owner_user_id: str | None = Field(
+        default=None, description="Transfer ownership to this user (admin only)"
+    )
 
 
 class UserSpaceWorkspaceEnvVar(BaseModel):
@@ -262,6 +264,40 @@ class UserSpaceSnapshot(BaseModel):
     message: str | None = None
     created_at: datetime
     file_count: int
+
+
+class UserSpaceSnapshotDiffFileSummary(BaseModel):
+    path: str
+    status: Literal["A", "D", "M", "R"]
+    old_path: str | None = None
+    additions: int = 0
+    deletions: int = 0
+    is_binary: bool = False
+
+
+class UserSpaceSnapshotDiffSummaryResponse(BaseModel):
+    workspace_id: str
+    snapshot_id: str
+    snapshot_commit_hash: str | None = None
+    files: list[UserSpaceSnapshotDiffFileSummary] = Field(default_factory=list)
+
+
+class UserSpaceSnapshotFileDiffResponse(BaseModel):
+    workspace_id: str
+    snapshot_id: str
+    path: str
+    status: Literal["A", "D", "M", "R"]
+    old_path: str | None = None
+    before_path: str | None = None
+    after_path: str | None = None
+    before_content: str = ""
+    after_content: str = ""
+    additions: int = 0
+    deletions: int = 0
+    is_binary: bool = False
+    is_deleted_in_current: bool = False
+    is_untracked_in_current: bool = False
+    message: str | None = None
 
 
 class UserSpaceSnapshotBranch(BaseModel):
