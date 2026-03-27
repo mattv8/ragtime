@@ -280,6 +280,7 @@ class UserSpaceSnapshotDiffSummaryResponse(BaseModel):
     snapshot_id: str
     snapshot_commit_hash: str | None = None
     files: list[UserSpaceSnapshotDiffFileSummary] = Field(default_factory=list)
+    is_snapshot_own_diff: bool = False
 
 
 class UserSpaceSnapshotFileDiffResponse(BaseModel):
@@ -297,6 +298,7 @@ class UserSpaceSnapshotFileDiffResponse(BaseModel):
     is_binary: bool = False
     is_deleted_in_current: bool = False
     is_untracked_in_current: bool = False
+    is_snapshot_own_diff: bool = False
     message: str | None = None
 
 

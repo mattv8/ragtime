@@ -1752,6 +1752,7 @@ export interface UserSpaceSnapshotDiffSummary {
   snapshot_id: string;
   snapshot_commit_hash?: string | null;
   files: UserSpaceSnapshotDiffFileSummary[];
+  is_snapshot_own_diff?: boolean;
 }
 
 export interface UserSpaceSnapshotFileDiff {
@@ -1769,6 +1770,7 @@ export interface UserSpaceSnapshotFileDiff {
   is_binary: boolean;
   is_deleted_in_current: boolean;
   is_untracked_in_current: boolean;
+  is_snapshot_own_diff?: boolean;
   message?: string | null;
 }
 

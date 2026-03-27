@@ -23,55 +23,45 @@ from ragtime.config import settings
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
-from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
+from ragtime.core.entrypoint_status import (EntrypointStatus,
+                                            parse_entrypoint_config)
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (
-    DB_TYPE_POSTGRES,
-    add_table_metadata_to_psql_output,
-    enforce_max_results,
-    format_query_result,
-    validate_sql_query,
-)
-from ragtime.core.ssh import (
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
+                                    add_table_metadata_to_psql_output,
+                                    enforce_max_results, format_query_result,
+                                    validate_sql_query)
+from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
+                              ssh_tunnel_config_from_dict)
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (
-    ArtifactType,
-    CreateWorkspaceRequest,
-    DeleteWorkspaceEnvVarResponse,
-    ExecuteComponentRequest,
-    ExecuteComponentResponse,
-    PaginatedWorkspacesResponse,
-    ShareAccessMode,
-    SqlitePersistenceMode,
-    SwitchSnapshotBranchRequest,
-    UpdateSnapshotRequest,
-    UpdateWorkspaceMembersRequest,
-    UpdateWorkspaceRequest,
-    UpdateWorkspaceShareAccessRequest,
-    UpsertWorkspaceEnvVarRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceFileInfo,
-    UserSpaceFileResponse,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-    UserSpaceSharedPreviewResponse,
-    UserSpaceSnapshot,
-    UserSpaceSnapshotBranch,
-    UserSpaceSnapshotDiffFileSummary,
-    UserSpaceSnapshotDiffSummaryResponse,
-    UserSpaceSnapshotFileDiffResponse,
-    UserSpaceSnapshotTimelineResponse,
-    UserSpaceWorkspace,
-    UserSpaceWorkspaceEnvVar,
-    UserSpaceWorkspaceShareLink,
-    UserSpaceWorkspaceShareLinkStatus,
-    WorkspaceMember,
-    WorkspaceShareSlugAvailabilityResponse,
-)
+from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
+                                      DeleteWorkspaceEnvVarResponse,
+                                      ExecuteComponentRequest,
+                                      ExecuteComponentResponse,
+                                      PaginatedWorkspacesResponse,
+                                      ShareAccessMode, SqlitePersistenceMode,
+                                      SwitchSnapshotBranchRequest,
+                                      UpdateSnapshotRequest,
+                                      UpdateWorkspaceMembersRequest,
+                                      UpdateWorkspaceRequest,
+                                      UpdateWorkspaceShareAccessRequest,
+                                      UpsertWorkspaceEnvVarRequest,
+                                      UpsertWorkspaceFileRequest,
+                                      UserSpaceFileInfo, UserSpaceFileResponse,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection,
+                                      UserSpaceSharedPreviewResponse,
+                                      UserSpaceSnapshot,
+                                      UserSpaceSnapshotBranch,
+                                      UserSpaceSnapshotDiffFileSummary,
+                                      UserSpaceSnapshotDiffSummaryResponse,
+                                      UserSpaceSnapshotFileDiffResponse,
+                                      UserSpaceSnapshotTimelineResponse,
+                                      UserSpaceWorkspace,
+                                      UserSpaceWorkspaceEnvVar,
+                                      UserSpaceWorkspaceShareLink,
+                                      UserSpaceWorkspaceShareLinkStatus,
+                                      WorkspaceMember,
+                                      WorkspaceShareSlugAvailabilityResponse)
 
 logger = get_logger(__name__)
 
@@ -131,6 +121,7 @@ class _WorkspaceSnapshotFileDiff(TypedDict):
 
 _EXECUTION_PROOF_MAX_AGE_SECONDS = 3600  # 1 hour
 _SNAPSHOT_BRANCH_REF_PREFIX = "userspace/"
+_GIT_EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf899d8e13f7beb2c"
 
 _USPACE_EXEC_SUPPORTED_SQL_TOOLS = {"postgres", "mysql", "mssql", "influxdb"}
 _USERSPACE_PREVIEW_ENTRY_PATH = "dashboard/main.ts"
@@ -1206,6 +1197,124 @@ class UserSpaceService:
             return status, parts[2], parts[1]
         return status, parts[1], None
 
+    async def _resolve_snapshot_parent_ref(
+        self,
+        workspace_id: str,
+        snapshot_commit_hash: str,
+    ) -> str:
+        """Return the parent commit hash, or the empty-tree hash for root commits."""
+        result = await self._run_git(
+            workspace_id,
+            ["rev-parse", "--verify", f"{snapshot_commit_hash}^"],
+            check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+        empty_tree = await self._run_git(
+            workspace_id,
+            ["hash-object", "-t", "tree", "/dev/null"],
+            check=False,
+        )
+        if empty_tree.returncode == 0 and empty_tree.stdout.strip():
+            return empty_tree.stdout.strip()
+        return _GIT_EMPTY_TREE_HASH
+
+    async def _build_snapshot_own_diff_summary_map(
+        self,
+        workspace_id: str,
+        snapshot_commit_hash: str,
+        parent_ref: str,
+    ) -> dict[str, _WorkspaceSnapshotFileDiff]:
+        """Diff parent (or empty tree) -> snapshot to show what the snapshot itself contains."""
+        summary_by_path: dict[str, _WorkspaceSnapshotFileDiff] = {}
+        diff_result = await self._run_git(
+            workspace_id,
+            [
+                "diff",
+                "--find-renames",
+                "--name-status",
+                parent_ref,
+                snapshot_commit_hash,
+            ],
+            check=False,
+        )
+        if diff_result.returncode != 0:
+            return summary_by_path
+
+        for line in diff_result.stdout.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                parsed_status, candidate_path, old_path = self._parse_name_status_line(
+                    stripped
+                )
+            except ValueError:
+                continue
+
+            normalized_path = self._normalize_workspace_relative_path(
+                candidate_path or ""
+            )
+            normalized_old_path = (
+                self._normalize_workspace_relative_path(old_path or "") or None
+            )
+            if not normalized_path or self._is_reserved_internal_path(normalized_path):
+                continue
+            if normalized_old_path and self._is_reserved_internal_path(
+                normalized_old_path
+            ):
+                normalized_old_path = None
+            summary_by_path[normalized_path] = cast(
+                _WorkspaceSnapshotFileDiff,
+                {
+                    "path": normalized_path,
+                    "status": cast(Literal["A", "D", "M", "R"], parsed_status),
+                    "old_path": normalized_old_path,
+                    "additions": 0,
+                    "deletions": 0,
+                    "is_binary": False,
+                    "is_untracked_in_current": False,
+                },
+            )
+
+        for summary in list(summary_by_path.values()):
+            diff_path = summary["path"]
+            if summary["status"] == "R" and summary["old_path"]:
+                diff_path = summary["old_path"] or diff_path
+            numstat_result = await self._run_git(
+                workspace_id,
+                [
+                    "diff",
+                    "--find-renames",
+                    "--numstat",
+                    parent_ref,
+                    snapshot_commit_hash,
+                    "--",
+                    diff_path,
+                ],
+                check=False,
+            )
+            if numstat_result.returncode != 0:
+                continue
+            for raw_line in numstat_result.stdout.splitlines():
+                parts = raw_line.split("\t")
+                if len(parts) < 3:
+                    continue
+                add_token, delete_token = parts[0].strip(), parts[1].strip()
+                if add_token == "-" or delete_token == "-":
+                    summary["is_binary"] = True
+                    summary["additions"] = 0
+                    summary["deletions"] = 0
+                    break
+                try:
+                    summary["additions"] = int(add_token)
+                    summary["deletions"] = int(delete_token)
+                except ValueError:
+                    continue
+                break
+
+        return summary_by_path
+
     async def _build_snapshot_diff_summary_map(
         self,
         workspace_id: str,
@@ -1389,7 +1498,7 @@ class UserSpaceService:
         workspace_id: str,
         snapshot_id: str,
         user_id: str,
-    ) -> tuple[str, dict[str, _WorkspaceSnapshotFileDiff]]:
+    ) -> tuple[str, dict[str, _WorkspaceSnapshotFileDiff], bool]:
         await self._enforce_workspace_access(workspace_id, user_id)
         await self._ensure_workspace_git_repo(workspace_id)
 
@@ -1399,7 +1508,20 @@ class UserSpaceService:
             workspace_id,
             snapshot_commit_hash,
         )
-        return snapshot_commit_hash, summary_map
+
+        is_snapshot_own_diff = False
+        if not summary_map and snapshot_commit_hash:
+            parent_ref = await self._resolve_snapshot_parent_ref(
+                workspace_id, snapshot_commit_hash
+            )
+            own_diff_map = await self._build_snapshot_own_diff_summary_map(
+                workspace_id, snapshot_commit_hash, parent_ref
+            )
+            if own_diff_map:
+                summary_map = own_diff_map
+                is_snapshot_own_diff = True
+
+        return snapshot_commit_hash, summary_map, is_snapshot_own_diff
 
     async def get_snapshot_diff_summary(
         self,
@@ -1407,10 +1529,12 @@ class UserSpaceService:
         snapshot_id: str,
         user_id: str,
     ) -> UserSpaceSnapshotDiffSummaryResponse:
-        snapshot_commit_hash, summary_map = await self._prepare_snapshot_diff_context(
-            workspace_id,
-            snapshot_id,
-            user_id,
+        snapshot_commit_hash, summary_map, is_snapshot_own_diff = (
+            await self._prepare_snapshot_diff_context(
+                workspace_id,
+                snapshot_id,
+                user_id,
+            )
         )
         files = [
             UserSpaceSnapshotDiffFileSummary(
@@ -1428,6 +1552,7 @@ class UserSpaceService:
             snapshot_id=snapshot_id,
             snapshot_commit_hash=snapshot_commit_hash or None,
             files=files,
+            is_snapshot_own_diff=is_snapshot_own_diff,
         )
 
     async def get_snapshot_file_diff(
@@ -1441,10 +1566,12 @@ class UserSpaceService:
         if not normalized_path or self._is_reserved_internal_path(normalized_path):
             raise HTTPException(status_code=400, detail="Invalid file path")
 
-        snapshot_commit_hash, summary_map = await self._prepare_snapshot_diff_context(
-            workspace_id,
-            snapshot_id,
-            user_id,
+        snapshot_commit_hash, summary_map, is_snapshot_own_diff = (
+            await self._prepare_snapshot_diff_context(
+                workspace_id,
+                snapshot_id,
+                user_id,
+            )
         )
         file_summary = summary_map.get(normalized_path)
         if file_summary is None:
@@ -1458,23 +1585,41 @@ class UserSpaceService:
         is_deleted_in_current = file_summary["status"] == "D"
         is_untracked_in_current = bool(file_summary["is_untracked_in_current"])
 
-        if file_summary["status"] != "A":
-            before_content, before_is_binary = await self._read_git_text_content(
-                workspace_id,
-                f"{snapshot_commit_hash}:{before_path}",
+        if is_snapshot_own_diff:
+            parent_ref = await self._resolve_snapshot_parent_ref(
+                workspace_id, snapshot_commit_hash
             )
-            is_binary = is_binary or before_is_binary
-
-        current_file_path = self._resolve_workspace_file_path(workspace_id, after_path)
-        if (
-            not is_deleted_in_current
-            and current_file_path.exists()
-            and current_file_path.is_file()
-        ):
-            after_content, after_is_binary = await self._read_workspace_text_content(
-                current_file_path
+            if file_summary["status"] != "A":
+                before_content, before_is_binary = await self._read_git_text_content(
+                    workspace_id,
+                    f"{parent_ref}:{before_path}",
+                )
+                is_binary = is_binary or before_is_binary
+            after_content, after_is_binary = await self._read_git_text_content(
+                workspace_id,
+                f"{snapshot_commit_hash}:{after_path}",
             )
             is_binary = is_binary or after_is_binary
+        else:
+            if file_summary["status"] != "A":
+                before_content, before_is_binary = await self._read_git_text_content(
+                    workspace_id,
+                    f"{snapshot_commit_hash}:{before_path}",
+                )
+                is_binary = is_binary or before_is_binary
+
+            current_file_path = self._resolve_workspace_file_path(
+                workspace_id, after_path
+            )
+            if (
+                not is_deleted_in_current
+                and current_file_path.exists()
+                and current_file_path.is_file()
+            ):
+                after_content, after_is_binary = (
+                    await self._read_workspace_text_content(current_file_path)
+                )
+                is_binary = is_binary or after_is_binary
 
         message: str | None = None
         if is_binary:
@@ -1505,6 +1650,7 @@ class UserSpaceService:
             is_binary=is_binary,
             is_deleted_in_current=is_deleted_in_current,
             is_untracked_in_current=is_untracked_in_current,
+            is_snapshot_own_diff=is_snapshot_own_diff,
             message=message,
         )
 

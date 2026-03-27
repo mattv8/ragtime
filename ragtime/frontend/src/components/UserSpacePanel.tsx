@@ -4517,8 +4517,18 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                 <div className="userspace-snapshot-expanded-panel">
                                   <p className="userspace-muted userspace-error">{formatUserSpaceErrorMessage(diffSummaryError)}</p>
                                 </div>
-                              ) : diffSummary && diffSummary.files.length > 0 ? (
+                              ) : !diffSummary ? (
+                                <div className="userspace-snapshot-expanded-panel">
+                                  <div className="userspace-snapshot-expanded-status">
+                                    <Loader2 size={12} className="spinning" />
+                                    <span>Loading changed files...</span>
+                                  </div>
+                                </div>
+                              ) : diffSummary.files.length > 0 ? (
                                 <div className="userspace-snapshot-diff-file-list">
+                                  {diffSummary.is_snapshot_own_diff && (
+                                    <div className="userspace-snapshot-diff-own-label userspace-muted">Snapshot contents (no changes to current workspace)</div>
+                                  )}
                                   {diffSummary.files.map((file) => {
                                     const fileKey = getSnapshotDiffFileKey(snapshot.id, file.path);
                                     return (
@@ -4614,7 +4624,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 <div className="userspace-snapshot-diff-columns">
                   <div className="userspace-snapshot-diff-column">
                     <div className="userspace-snapshot-diff-column-header">
-                      <span>Snapshot</span>
+                      <span>{activeSnapshotFileDiff.is_snapshot_own_diff ? 'Previous' : 'Snapshot'}</span>
                       <code>{activeSnapshotFileDiff.before_path ?? activeSnapshotFileDiff.path}</code>
                     </div>
                     <div className="userspace-snapshot-diff-editor-wrap" ref={snapshotDiffBeforeWrapRef}>
@@ -4629,7 +4639,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                   </div>
                   <div className="userspace-snapshot-diff-column userspace-snapshot-diff-column-current">
                     <div className="userspace-snapshot-diff-column-header">
-                      <span>Current Workspace</span>
+                      <span>{activeSnapshotFileDiff.is_snapshot_own_diff ? 'Snapshot' : 'Current Workspace'}</span>
                       <code>{activeSnapshotFileDiff.after_path ?? activeSnapshotFileDiff.path}</code>
                     </div>
                     <div className="userspace-snapshot-diff-editor-wrap" ref={snapshotDiffAfterWrapRef}>

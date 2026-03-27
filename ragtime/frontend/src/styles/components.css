@@ -2051,6 +2051,11 @@ textarea:focus {
   gap: 1px;
 }
 
+.userspace-snapshot-diff-own-label {
+  font-size: 11px;
+  padding: 2px 6px 4px;
+}
+
 .userspace-snapshot-diff-file-row {
   display: flex;
   align-items: center;
