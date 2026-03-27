@@ -515,6 +515,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const snapshotFileDiffHoverTimerRef = useRef<number | null>(null);
   const snapshotFileDiffDismissTimerRef = useRef<number | null>(null);
   const snapshotFileDiffPinnedRef = useRef(false);
+  const snapshotFileDiffEnteredOverlayRef = useRef(false);
   const snapshotDiffBeforeWrapRef = useRef<HTMLDivElement | null>(null);
   const snapshotDiffAfterWrapRef = useRef<HTMLDivElement | null>(null);
   const snapshotDiffScrollSyncingRef = useRef(false);
@@ -1274,6 +1275,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
   const dismissSnapshotFileDiffOverlay = useCallback(() => {
     snapshotFileDiffPinnedRef.current = false;
+    snapshotFileDiffEnteredOverlayRef.current = false;
     if (snapshotFileDiffHoverTimerRef.current !== null) {
       window.clearTimeout(snapshotFileDiffHoverTimerRef.current);
       snapshotFileDiffHoverTimerRef.current = null;
@@ -1367,6 +1369,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       window.clearTimeout(snapshotFileDiffDismissTimerRef.current);
       snapshotFileDiffDismissTimerRef.current = null;
     }
+    snapshotFileDiffEnteredOverlayRef.current = false;
 
     const cached = snapshotFileDiffCache[cacheKey];
     setActiveSnapshotFileDiffKey(cacheKey);
@@ -1436,7 +1439,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       window.clearTimeout(snapshotFileDiffHoverTimerRef.current);
       snapshotFileDiffHoverTimerRef.current = null;
     }
-    scheduleSnapshotFileDiffDismiss();
+    if (snapshotFileDiffEnteredOverlayRef.current) {
+      scheduleSnapshotFileDiffDismiss();
+    }
   }, [scheduleSnapshotFileDiffDismiss]);
 
   const debouncedLoadWorkspaceData = useCallback((workspaceId: string) => {
@@ -4567,6 +4572,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
               snapshotFileDiffPinnedRef.current = true;
             }}
             onMouseEnter={() => {
+              snapshotFileDiffEnteredOverlayRef.current = true;
               if (snapshotFileDiffDismissTimerRef.current !== null) {
                 window.clearTimeout(snapshotFileDiffDismissTimerRef.current);
                 snapshotFileDiffDismissTimerRef.current = null;
