@@ -5,6 +5,8 @@ import type { AvailableModel, AvailableModelsResponse } from '@/types';
 const MODEL_FETCH_TIMEOUT_MS = 20_000;
 /** Poll cadence while backend reports model discovery/refresh still in progress. */
 const MODEL_REFRESH_POLL_MS = 1_500;
+/** Minimum gap between manual refresh requests to avoid back-to-back duplicates. */
+const MODEL_MANUAL_REFRESH_COOLDOWN_MS = 1_000;
 
 interface AvailableModelsContextValue {
   /** Filtered models for chat (respects allowed_models). */
@@ -38,6 +40,8 @@ export function AvailableModelsProvider({ children }: { children: ReactNode }) {
   const pendingRefreshRef = useRef(false);
   // Timer for follow-up polls while backend refresh/model discovery is in progress.
   const pollTimeoutRef = useRef<number | null>(null);
+  // Last successful fetch timestamp (used to coalesce rapid manual refresh calls).
+  const lastSuccessfulFetchAtRef = useRef<number>(0);
 
   const clearPollTimer = useCallback(() => {
     if (pollTimeoutRef.current !== null) {
@@ -46,11 +50,21 @@ export function AvailableModelsProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const doFetch = useCallback(async () => {
+  const doFetch = useCallback(async (reason: 'manual' | 'poll' = 'manual') => {
     if (inflightRef.current) {
       pendingRefreshRef.current = true;
       return;
     }
+
+    // Coalesce rapid manual refresh calls (e.g. StrictMode mount + immediate UI-triggered refresh).
+    if (
+      reason === 'manual'
+      && models.length > 0
+      && Date.now() - lastSuccessfulFetchAtRef.current < MODEL_MANUAL_REFRESH_COOLDOWN_MS
+    ) {
+      return;
+    }
+
     inflightRef.current = true;
     pendingRefreshRef.current = false;
 
@@ -84,6 +98,7 @@ export function AvailableModelsProvider({ children }: { children: ReactNode }) {
         current_model: data.current_model,
         allowed_models: data.allowed_models,
       });
+      lastSuccessfulFetchAtRef.current = Date.now();
     } catch (err) {
       if ((err as Error).name !== 'AbortError') {
         const errorMessage = err instanceof Error ? err.message : 'Failed to load available models';
@@ -98,13 +113,13 @@ export function AvailableModelsProvider({ children }: { children: ReactNode }) {
       // If another refresh was requested while we were fetching, run it now.
       if (pendingRefreshRef.current) {
         pendingRefreshRef.current = false;
-        void doFetch();
+        void doFetch('manual');
       }
     }
-  }, []);
+  }, [models.length]);
 
   const refresh = useCallback(() => {
-    void doFetch();
+    void doFetch('manual');
   }, [doFetch]);
 
   useEffect(() => {
@@ -117,7 +132,7 @@ export function AvailableModelsProvider({ children }: { children: ReactNode }) {
     }
 
     pollTimeoutRef.current = window.setTimeout(() => {
-      void doFetch();
+      void doFetch('poll');
     }, MODEL_REFRESH_POLL_MS);
 
     return clearPollTimer;

@@ -27,6 +27,9 @@ function getInitialHighlight(): string | null {
   return params.get('highlight');
 }
 
+const INDEXER_ACTIVE_POLL_MS = 2000;
+const INDEXER_IDLE_POLL_MS = 5000;
+
 /**
  * Check if URL contains OAuth authorization parameters.
  * Returns OAuthParams if this is an OAuth flow, null otherwise.
@@ -277,6 +280,7 @@ export function App() {
 
   const isChatView = activeView === 'chat' || (!isAdmin && activeView !== 'userspace');
   const isUserspaceView = activeView === 'userspace';
+  const isIndexerView = activeView === 'indexer';
   const lockViewportLayout = isChatView || isUserspaceView;
   const hideChrome = (isUserspaceView && userspaceFullscreen) || (isChatView && chatFullscreen);
 
@@ -400,76 +404,76 @@ export function App() {
     await loadPdmJobs();
   }, [loadPdmJobs]);
 
-  // Initial load (only when authenticated and admin for indexer data)
+  // Initial load for indexer data: only when indexer view is visible.
   useEffect(() => {
-    if (currentUser && isAdmin) {
+    if (currentUser && isAdmin && isIndexerView) {
       loadJobs();
       loadIndexes();
       loadFilesystemJobs();
       loadSchemaJobs();
       loadPdmJobs();
     }
-  }, [currentUser, isAdmin, loadJobs, loadIndexes, loadFilesystemJobs, loadSchemaJobs, loadPdmJobs]);
+  }, [currentUser, isAdmin, isIndexerView, loadJobs, loadIndexes, loadFilesystemJobs, loadSchemaJobs, loadPdmJobs]);
 
   // Auto-refresh: fast polling when filesystem jobs are active, slow background refresh otherwise
   useEffect(() => {
-    if (!currentUser || !isAdmin) return;
+    if (!currentUser || !isAdmin || !isIndexerView) return;
 
     const hasActiveFilesystemJob = filesystemJobs.some(
       j => j.status === 'pending' || j.status === 'indexing'
     );
 
-    const pollInterval = hasActiveFilesystemJob ? 2000 : 30000;
+    const pollInterval = hasActiveFilesystemJob ? INDEXER_ACTIVE_POLL_MS : INDEXER_IDLE_POLL_MS;
 
     const interval = setInterval(() => {
       loadFilesystemJobs();
     }, pollInterval);
 
     return () => clearInterval(interval);
-  }, [currentUser, isAdmin, filesystemJobs, loadFilesystemJobs]);
+  }, [currentUser, isAdmin, isIndexerView, filesystemJobs, loadFilesystemJobs]);
 
   // Auto-refresh: fast polling when schema jobs are active, slow background refresh otherwise
   useEffect(() => {
-    if (!currentUser || !isAdmin) return;
+    if (!currentUser || !isAdmin || !isIndexerView) return;
 
     const hasActiveSchemaJob = schemaJobs.some(
       j => j.status === 'pending' || j.status === 'indexing'
     );
 
-    const pollInterval = hasActiveSchemaJob ? 2000 : 30000;
+    const pollInterval = hasActiveSchemaJob ? INDEXER_ACTIVE_POLL_MS : INDEXER_IDLE_POLL_MS;
 
     const interval = setInterval(() => {
       loadSchemaJobs();
     }, pollInterval);
 
     return () => clearInterval(interval);
-  }, [currentUser, isAdmin, schemaJobs, loadSchemaJobs]);
+  }, [currentUser, isAdmin, isIndexerView, schemaJobs, loadSchemaJobs]);
 
   // Auto-refresh: fast polling when PDM jobs are active, slow background refresh otherwise
   useEffect(() => {
-    if (!currentUser || !isAdmin) return;
+    if (!currentUser || !isAdmin || !isIndexerView) return;
 
     const hasActivePdmJob = pdmJobs.some(
       j => j.status === 'pending' || j.status === 'indexing'
     );
 
-    const pollInterval = hasActivePdmJob ? 2000 : 30000;
+    const pollInterval = hasActivePdmJob ? INDEXER_ACTIVE_POLL_MS : INDEXER_IDLE_POLL_MS;
 
     const interval = setInterval(() => {
       loadPdmJobs();
     }, pollInterval);
 
     return () => clearInterval(interval);
-  }, [currentUser, isAdmin, pdmJobs, loadPdmJobs]);
+  }, [currentUser, isAdmin, isIndexerView, pdmJobs, loadPdmJobs]);
 
   // Auto-refresh: fast polling when jobs are active, slow background refresh otherwise
   useEffect(() => {
-    if (!currentUser || !isAdmin) return;
+    if (!currentUser || !isAdmin || !isIndexerView) return;
 
     const hasActiveJobs = jobs.some((j) => j.status === 'pending' || j.status === 'processing');
 
-    // Fast polling (2s) when jobs are active, slow polling (30s) for background updates
-    const pollInterval = hasActiveJobs ? 2000 : 30000;
+    // Fast polling (2s) when jobs are active, regular polling (5s) while indexer is visible.
+    const pollInterval = hasActiveJobs ? INDEXER_ACTIVE_POLL_MS : INDEXER_IDLE_POLL_MS;
 
     const interval = setInterval(() => {
       loadJobs();
@@ -479,7 +483,7 @@ export function App() {
     }, pollInterval);
 
     return () => clearInterval(interval);
-  }, [currentUser, isAdmin, jobs, loadJobs, loadIndexes]);
+  }, [currentUser, isAdmin, isIndexerView, jobs, loadJobs, loadIndexes]);
 
   // Show loading state while checking auth
   if (authLoading) {
@@ -572,7 +576,7 @@ export function App() {
           )}
         </div>
         <div className="topnav-actions">
-          <MemoryStatus />
+          {isAdmin && isIndexerView ? <MemoryStatus /> : null}
           <UserMenu user={currentUser} onLogout={handleLogout} />
         </div>
       </nav>
