@@ -822,7 +822,7 @@ class WorkerService:
             session = self._sessions.get(session_id)
             if not session or session.runtime_operation_id != operation_id:
                 return
-            session.state = "error"
+            session.state = "running"
             session.devserver_running = False
             session.last_error = error
             self._set_operation_phase(session, "failed")
@@ -890,7 +890,7 @@ class WorkerService:
                         session.devserver_port = resolution.port
                         session.devserver_command = None
                         error = resolution.error or "Invalid runtime entrypoint"
-                        session.state = "error"
+                        session.state = "running"
                         session.devserver_running = False
                         session.last_error = error
                         self._set_operation_phase(session, "failed")
@@ -903,7 +903,7 @@ class WorkerService:
                     try:
                         log_handle = open(log_path, "wb", buffering=0)
                     except Exception as exc:
-                        session.state = "error"
+                        session.state = "running"
                         session.devserver_running = False
                         session.last_error = (
                             f"Failed to initialize devserver log file: {exc}"
@@ -930,7 +930,7 @@ class WorkerService:
                         except Exception:
                             pass
                         self._devserver_log_handles.pop(session.id, None)
-                        session.state = "error"
+                        session.state = "running"
                         session.devserver_running = False
                         session.last_error = (
                             "Dev server command not found: "
@@ -947,7 +947,7 @@ class WorkerService:
                         except Exception:
                             pass
                         self._devserver_log_handles.pop(session.id, None)
-                        session.state = "error"
+                        session.state = "running"
                         session.devserver_running = False
                         session.last_error = f"Failed to launch dev server: {exc}"
                         self._set_operation_phase(session, "failed")
@@ -968,7 +968,7 @@ class WorkerService:
                             return
                         await self._sync_devserver_state_locked(session)
                         await self._terminate_devserver_locked(session.id)
-                        session.state = "error"
+                        session.state = "running"
                         session.devserver_running = False
                         if not session.last_error:
                             session.last_error = (
