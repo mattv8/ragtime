@@ -144,8 +144,6 @@ def _should_rewrite_proxy_content(media_type: str) -> bool:
         t in mt
         for t in (
             "text/html",
-            "text/javascript",
-            "application/javascript",
             "text/css",
         )
     )
