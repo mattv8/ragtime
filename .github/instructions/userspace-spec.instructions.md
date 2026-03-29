@@ -94,10 +94,12 @@ Last updated: 2026-03-03 (codebase-scanned; concise agent-focused)
 - Keep role enforcement strict on runtime/collab mutations: viewer is read-only; editor/owner can mutate.
 - Never forward ragtime session credentials to user devservers: preserve blocked header behavior in `_proxy_request_headers`.
 - Keep hop-by-hop header filtering in proxy request/response paths.
-- Preview proxy performs two regex-based HTML rewrites (no DOM parsing):
-  1. Root-relative URL prefixing (`src="/"`, `href="/"`, `action="/"`) via `_rewrite_root_relative_urls`.
-  2. Live data bridge injection — `_inject_bridge_script` inserts `<script src=".ragtime/bridge.js"></script>` before `</head>` or before the first `<script` tag (skipped if already present).
-  Both are in `runtime_routes.py` and applied only to `text/html` responses.
+- Preview proxy performs text-content rewrites (no DOM parsing):
+  1. Root-relative URL prefixing — `_rewrite_root_relative_urls` matches *any* quoted root-relative string literal (`"/"`, `'/'`, backtick) in HTML, JavaScript, and CSS responses and rewrites it to the proxy base path. A negative-lookahead prevents double-rewriting of already-proxied paths. This covers HTML attributes, ES module imports, `fetch()`, CSS `url()`, and any other context.
+  2. Live data bridge injection — `_inject_bridge_script` inserts `<script src=".ragtime/bridge.js"></script>` before `</head>` or before the first `<script` tag (skipped if already present). Applied only to `text/html` responses.
+  Both are in `runtime_routes.py`.
+- Proxy response strips `X-Frame-Options`, `Content-Security-Policy`, and `Content-Security-Policy-Report-Only` headers from devserver responses to prevent iframe-blocking policies from reaching the browser (the iframe `sandbox` attribute is the real security boundary).
+- Root-relative `Location` headers in redirect responses are rewritten to include the proxy base path.
 - Keep path normalization/traversal protections (`normalize_file_path` and reserved-path checks) intact.
 
 ## Sandbox + Process Conventions

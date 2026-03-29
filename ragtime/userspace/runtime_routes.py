@@ -94,7 +94,11 @@ def _proxy_request_headers(request: Request) -> dict[str, str]:
     return forwarded_headers
 
 
-def _proxy_response_headers(headers: httpx.Headers) -> dict[str, str]:
+def _proxy_response_headers(
+    headers: httpx.Headers,
+    *,
+    proxy_base_path: str | None = None,
+) -> dict[str, str]:
     blocked = {
         "connection",
         "keep-alive",
@@ -106,12 +110,45 @@ def _proxy_response_headers(headers: httpx.Headers) -> dict[str, str]:
         "upgrade",
         # Untrusted preview apps must not set first-party cookies on ragtime origin.
         "set-cookie",
+        # Devserver frameworks (Express+helmet, Django, etc.) may emit these
+        # headers which prevent the content from rendering inside the platform
+        # iframe.  The iframe sandbox attribute is the real security boundary;
+        # devserver-originated policies are not trustworthy anyway.
+        "x-frame-options",
+        "content-security-policy",
+        "content-security-policy-report-only",
     }
-    return {key: value for key, value in headers.items() if key.lower() not in blocked}
+    out = {
+        key: value
+        for key, value in headers.items()
+        if key.lower() not in blocked
+    }
+    # Rewrite root-relative Location headers so browser redirects stay inside
+    # the proxy chain instead of escaping to the outer Ragtime origin.
+    if proxy_base_path:
+        location = out.get("location") or out.get("Location") or ""
+        if location.startswith("/") and not location.startswith("//"):
+            base = proxy_base_path.rstrip("/")
+            out["location"] = base + location
+    return out
 
 
 def _is_html_media_type(media_type: str) -> bool:
     return "text/html" in (media_type or "").lower()
+
+
+def _should_rewrite_proxy_content(media_type: str) -> bool:
+    """Return True for response content-types that may contain root-relative URLs."""
+    mt = (media_type or "").lower()
+    return any(
+        t in mt
+        for t in (
+            "text/html",
+            "text/javascript",
+            "application/javascript",
+            "text/css",
+        )
+    )
 
 
 def _extract_capability_token_from_request(request: Request) -> str | None:
@@ -318,21 +355,25 @@ async def _proxy_http_request(
         ) from exc
 
     media_type = upstream_response.headers.get("content-type", "")
-    resp_headers = _proxy_response_headers(upstream_response.headers)
+    resp_headers = _proxy_response_headers(
+        upstream_response.headers, proxy_base_path=proxy_base_path
+    )
 
-    if _is_html_media_type(media_type):
+    rewrite = proxy_base_path and _should_rewrite_proxy_content(media_type)
+    if rewrite:
+        base_path: str = proxy_base_path  # type: ignore[assignment]
         try:
             content = await upstream_response.aread()
         finally:
             await upstream_response.aclose()
             await client.aclose()
 
-        if proxy_base_path:
-            content = _rewrite_root_relative_urls(content, proxy_base_path)
+        content = _rewrite_root_relative_urls(content, base_path)
+        if _is_html_media_type(media_type):
             content = _inject_bridge_script(content)
-            # Content length changed after rewriting; drop stale header so
-            # Starlette re-calculates it from the actual body.
-            resp_headers.pop("content-length", None)
+        # Content length changed after rewriting; drop stale header so
+        # Starlette re-calculates it from the actual body.
+        resp_headers.pop("content-length", None)
 
         return Response(
             content=content,
@@ -355,20 +396,6 @@ async def _proxy_http_request(
         headers=resp_headers,
         media_type=media_type or None,
     )
-
-
-# Regex: match src="/...", href="/...", action="/..." but NOT protocol-relative "//..."
-_ROOT_REL_ATTR_RE = re.compile(
-    rb"""((?:src|href|action)\s*=\s*(?P<q>["']))(/(?!/))""",
-    re.IGNORECASE,
-)
-
-# Match common JS root-relative request patterns in inline scripts:
-# fetch('/...'), new WebSocket('/...'), new EventSource('/...').
-_ROOT_REL_JS_URL_RE = re.compile(
-    rb"""((?:fetch\s*\(|new\s+WebSocket\s*\(|new\s+EventSource\s*\()\s*(?P<q>["']))(/(?!/))""",
-    re.IGNORECASE,
-)
 
 
 _BRIDGE_SCRIPT_TAG = b'<script src="/indexes/userspace/runtime-bridge.js"></script>'
@@ -408,17 +435,29 @@ async def runtime_bridge_script() -> Response:
     )
 
 
-def _rewrite_root_relative_urls(html: bytes, proxy_base_path: str) -> bytes:
-    """Rewrite root-relative URLs (``/path``) in HTML so they route through the
-    preview proxy.  Protocol-relative (``//``) and absolute URLs are untouched.
+def _rewrite_root_relative_urls(content: bytes, proxy_base_path: str) -> bytes:
+    """Rewrite root-relative URLs in text content so they route through the
+    preview proxy.
+
+    Matches *any* single-quoted, double-quoted, or backtick-quoted string
+    literal that begins with ``/`` (excluding protocol-relative ``//``).
+    This covers HTML attributes (``src``, ``href``, …), ES module ``import``
+    statements, CSS ``url()`` references, ``fetch()`` calls, and every other
+    context where a root-relative path appears as a string literal.
+
+    A negative-lookahead prevents double-rewriting when the path already
+    starts with the proxy base prefix.
     """
     base = proxy_base_path.rstrip("/").encode()
+    base_no_leading_slash = proxy_base_path.lstrip("/").rstrip("/").encode()
+    pattern = re.compile(
+        rb'(["' + rb"'`" + rb'])(/)(?!/)(?!' + re.escape(base_no_leading_slash) + rb')'
+    )
 
     def _replace(m: re.Match[bytes]) -> bytes:
-        return m.group(1) + base + m.group(3)
+        return m.group(1) + base + m.group(2)
 
-    rewritten = _ROOT_REL_ATTR_RE.sub(_replace, html)
-    return _ROOT_REL_JS_URL_RE.sub(_replace, rewritten)
+    return pattern.sub(_replace, content)
 
 
 async def _websocket_user(websocket: WebSocket) -> Any | None:

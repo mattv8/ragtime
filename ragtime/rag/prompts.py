@@ -507,16 +507,18 @@ USERSPACE_ENTRYPOINT_SETUP_PROMPT = """
   - FastAPI: `{"command": "python3 -m uvicorn main:app --host 0.0.0.0 --port $PORT", "cwd": ".", "framework": "fastapi"}`
 - Never hard-code port numbers in the entrypoint command; always use `$PORT`.
 - Always bind to `0.0.0.0` (not `127.0.0.1` or `localhost`) so the runtime proxy can reach the devserver.
-- Prefer a single long-running devserver command over chained `build && serve` wrappers when the tool supports it (for example, `esbuild --serve`, framework dev servers, or one explicit app server process).
+- **Always use a single long-running devserver command** — never chain `build && serve` in the entrypoint. Use tools with built-in serve+watch (`esbuild --serve --watch=forever`, framework dev servers, `uvicorn --reload`). If a build step is needed before serving, add it to `.ragtime/runtime-bootstrap.json` instead.
+- **Do NOT create custom HTTP server files** (e.g., `serve.cjs`, `server.js`, `server.py`) that generate HTML inline or serve hand-crafted index pages. The platform preview proxy rewrites root-relative URLs and injects the live data bridge into HTML responses from the devserver. Custom servers that embed HTML in code strings bypass the proxy's HTML processing pipeline, causing broken asset paths and missing bridge injection (white screens). Instead, use a static `index.html` file served by a standard devserver (`esbuild --servedir`, `python3 -m http.server`, framework dev server).
 - When `package.json` has a `dev` script, mirror its intent in `runtime-entrypoint.json` with proper `$PORT` and `--bind 0.0.0.0` handling rather than relying on `npm run dev` with port appending, which breaks for non-standard scripts.
 - Update `runtime-entrypoint.json` whenever the launch mechanism changes (e.g., switching from static to esbuild, adding a Python backend).
+- For Python backends (Flask, FastAPI, Django): always read the port from the `PORT` environment variable (e.g., `int(os.environ.get('PORT', 8000))`) and use `$PORT` in the entrypoint command. The runtime exports `PORT=<assigned_port>` before launching.
 
 #### Module dashboard mode
 
 - For module-style dashboard artifacts, keep `dashboard/main.ts` present as the thin composition entrypoint for dashboard modules.
 - In `module_dashboard` mode, runtime stabilization means fixing `dashboard/*` code first. If the runtime needs an HTML entry point (e.g., for esbuild `--servedir`), create `index.html` or `public/index.html` with minimal scaffolding that loads the bundled output.
 - When using esbuild with `--bundle`, always add `--format=esm` to produce ES module output. In `index.html`, load the bundle with `<script type="module">` and use `import { render } from './dist/main.js'` to call the entry render function. Never rely on `window.render` or other global-scope assumptions; esbuild IIFE format wraps exports in a closure where they are inaccessible from inline scripts.
-- The platform automatically injects a live data bridge (`window.__ragtime_context`) into every preview page. You do NOT need to add a `<script src=".ragtime/bridge.js">` tag — it is injected by the platform proxy.
+- The platform preview proxy automatically injects the live data bridge (`window.__ragtime_context`) into every **HTML response** from the devserver. You MUST NOT add a `<script src=".ragtime/bridge.js">` tag manually — it is injected by the proxy. If you create custom server code that embeds HTML in a string and serves it directly, the proxy cannot inject the bridge and `window.__ragtime_context` will be `undefined`. Always serve HTML from static files so the proxy can process them.
 - In `index.html`, pass `window.__ragtime_context` as the context argument when calling the module's render function:
   ```html
   <script type="module">
@@ -552,6 +554,7 @@ _USERSPACE_ENTRYPOINT_LOCKED_TEMPLATE = """
 - cwd: `{cwd}`
 - Update `.ragtime/runtime-entrypoint.json` only if the launch mechanism fundamentally changes. Do not re-explain setup steps already completed.
 - Always use `$PORT` for port binding and `0.0.0.0` for host binding.
+- Do not create custom HTTP server files with inline HTML — serve static `index.html` via the devserver instead.
 """
 
 # Nudge for missing/default entrypoint – lightweight suggestion style.
