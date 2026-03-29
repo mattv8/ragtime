@@ -2905,16 +2905,78 @@ textarea:focus {
   align-items: center;
 }
 
+.userspace-share-url-copy-wrap {
+  position: relative;
+  width: 100%;
+}
+
+.userspace-share-url-copy-wrap input[readonly] {
+  width: 100%;
+  box-sizing: border-box;
+  padding-right: 38px;
+}
+
+.userspace-share-inline-copy {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  background: var(--color-bg-primary);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
+}
+
+.userspace-share-url-copy-wrap:hover .userspace-share-inline-copy,
+.userspace-share-url-copy-wrap:focus-within .userspace-share-inline-copy {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.userspace-share-inline-copy:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
 .userspace-share-meta {
   font-size: var(--text-xs);
   color: var(--color-text-muted);
+}
+
+.userspace-share-link-type-toggle {
+  display: flex;
+  gap: var(--space-md);
+  align-items: center;
+  margin-top: var(--space-xs);
+}
+
+.userspace-share-radio-option {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.userspace-share-radio-option input[type="radio"] {
+  margin: 0;
+  cursor: pointer;
 }
 
 .userspace-share-controls {
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
-  border-top: 1px solid var(--color-border);
   padding-top: var(--space-sm);
 }
 

@@ -1704,7 +1704,7 @@ class UserSpaceService:
             candidate_usernames.append(f"local:{normalized_owner}")
 
         users = await db.user.find_many(
-            where={"username": {"in": candidate_usernames}},
+            where={"username": {"in": candidate_usernames, "mode": "insensitive"}},
             take=5,
         )
         owner_ids = [

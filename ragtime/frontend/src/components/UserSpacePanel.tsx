@@ -426,6 +426,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [deletingWorkspaceStatus, setDeletingWorkspaceStatus] = useState<string | null>(null);
   const [sharingWorkspace, setSharingWorkspace] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
+  const [shareLinkType, setShareLinkType] = useState<'named' | 'anonymous'>('named');
   const [showShareModal, setShowShareModal] = useState(false);
   const [shareLinkStatus, setShareLinkStatus] = useState<UserSpaceWorkspaceShareLinkStatus | null>(null);
   const [loadingShareStatus, setLoadingShareStatus] = useState(false);
@@ -3252,12 +3253,22 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     handleEnsureShareLink,
   ]);
 
-  const handleCopyShareLink = useCallback(async () => {
-    let url = shareLinkStatus?.share_url ?? null;
-    if (!url) {
-      const created = await handleEnsureShareLink(false);
-      url = created?.share_url ?? null;
+  const effectiveShareUrl = useMemo(() => {
+    if (!shareLinkStatus?.has_share_link) return null;
+    if (shareLinkType === 'anonymous' && shareLinkStatus.share_token) {
+      const base = shareLinkStatus.share_url
+        ? new URL(shareLinkStatus.share_url, window.location.origin).origin
+        : window.location.origin;
+      return `${base}/shared/${encodeURIComponent(shareLinkStatus.share_token)}`;
     }
+    return shareLinkStatus.share_url ?? null;
+  }, [shareLinkStatus, shareLinkType]);
+
+  const handleCopyShareLink = useCallback(async () => {
+    if (!shareLinkStatus?.has_share_link) {
+      await handleEnsureShareLink(false);
+    }
+    const url = effectiveShareUrl;
     if (!url) return;
 
     try {
@@ -3268,18 +3279,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to copy share link');
     }
-  }, [handleEnsureShareLink, shareLinkStatus?.share_url]);
+  }, [effectiveShareUrl, handleEnsureShareLink, shareLinkStatus?.has_share_link]);
 
   const handleOpenFullPreview = useCallback(async () => {
-    let url = shareLinkStatus?.share_url ?? null;
-    if (!url) {
-      const created = await handleEnsureShareLink(false);
-      url = created?.share_url ?? null;
+    if (!shareLinkStatus?.has_share_link) {
+      await handleEnsureShareLink(false);
     }
-
+    const url = effectiveShareUrl;
     if (!url) return;
     window.open(url, '_blank', 'noopener,noreferrer');
-  }, [handleEnsureShareLink, shareLinkStatus?.share_url]);
+  }, [effectiveShareUrl, handleEnsureShareLink, shareLinkStatus?.has_share_link]);
 
   const handleRotateShareLink = useCallback(async () => {
     await handleEnsureShareLink(true);
@@ -4949,10 +4958,46 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                       </div>
                     )}
 
-                    {shareLinkStatus?.has_share_link && shareLinkStatus.share_url ? (
+                    {shareLinkStatus?.has_share_link && (
+                      <div className="userspace-share-link-type-toggle">
+                        <label className="userspace-share-radio-option">
+                          <input
+                            type="radio"
+                            name="shareLinkType"
+                            value="named"
+                            checked={shareLinkType === 'named'}
+                            onChange={() => setShareLinkType('named')}
+                          />
+                          Named
+                        </label>
+                        <label className="userspace-share-radio-option">
+                          <input
+                            type="radio"
+                            name="shareLinkType"
+                            value="anonymous"
+                            checked={shareLinkType === 'anonymous'}
+                            onChange={() => setShareLinkType('anonymous')}
+                          />
+                          Anonymous
+                        </label>
+                      </div>
+                    )}
+
+                    {shareLinkStatus?.has_share_link && effectiveShareUrl ? (
                       <>
                         <label htmlFor="userspace-share-url" className="userspace-share-label">Active share URL</label>
-                        <input id="userspace-share-url" value={shareLinkStatus.share_url} readOnly />
+                        <div className="userspace-share-url-copy-wrap">
+                          <input id="userspace-share-url" value={effectiveShareUrl} readOnly />
+                          <button
+                            type="button"
+                            className="userspace-share-inline-copy"
+                            onClick={handleCopyShareLink}
+                            title="Copy share URL"
+                            aria-label="Copy share URL"
+                          >
+                            {shareCopied ? <Check size={12} /> : <Copy size={12} />}
+                          </button>
+                        </div>
                         <div className="userspace-share-meta">
                           {shareLinkStatus.created_at ? `Created ${formatSnapshotTimestamp(shareLinkStatus.created_at)}` : 'Share link active'}
                         </div>
