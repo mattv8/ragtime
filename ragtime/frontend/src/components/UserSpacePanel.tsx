@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { Check, ChevronDown, ChevronRight, Copy, Database, ExternalLink, File, History, KeyRound, Link2, Loader2, Maximize2, Minimize2, Pencil, Play, Plus, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Copy, Database, ExternalLink, File, History, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { python } from '@codemirror/lang-python';
@@ -21,6 +21,7 @@ import '@xterm/xterm/css/xterm.css';
 import { api } from '@/api';
 import { AdminWorkspaceModal } from './shared/AdminWorkspaceModal';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
+import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
 import type { User, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceWorkspace, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
@@ -3856,7 +3857,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                   }}
                                   title="Confirm delete workspace"
                                 >
-                                  {isDeletingWorkspace ? <Loader2 size={12} className="userspace-icon-spin" /> : <Check size={12} />}
+                                  {isDeletingWorkspace ? <MiniLoadingSpinner variant="icon" size={12} /> : <Check size={12} />}
                                 </button>
                                 <button
                                   type="button"
@@ -3898,7 +3899,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                     }}
                                     title="Delete workspace"
                                   >
-                                    {isDeletingWorkspace ? <Loader2 size={12} className="userspace-icon-spin" /> : <Trash2 size={12} />}
+                                    {isDeletingWorkspace ? <MiniLoadingSpinner variant="icon" size={12} /> : <Trash2 size={12} />}
                                   </button>
                                 )}
                               </>
@@ -3929,7 +3930,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
             disabled={creatingWorkspace}
             title={creatingWorkspace ? (creatingWorkspaceStatus || 'Bootstrapping workspace...') : 'New workspace'}
           >
-            {creatingWorkspace ? <Loader2 size={14} className="userspace-icon-spin" /> : <Plus size={14} />}
+            {creatingWorkspace ? <MiniLoadingSpinner variant="icon" size={14} /> : <Plus size={14} />}
           </button>
           {isOwner && (
             <>
@@ -3952,7 +3953,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           <div className="userspace-toolbar-status-group">
             {previewExecuting && (
               <span className="userspace-toolbar-live-status" title="Live data connection in progress">
-                <span className="userspace-toolbar-live-spinner" aria-hidden="true" />
+                <MiniLoadingSpinner ariaHidden />
                 Connecting data...
               </span>
             )}
@@ -4024,17 +4025,17 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
             <div className="userspace-toolbar-runtime-controls">
               {showStartRuntimeButton && (
                 <button className="btn btn-secondary btn-sm btn-icon" onClick={handleStartRuntime} disabled={runtimeBusy} title="Start runtime">
-                  {runtimeBusy ? <Loader2 size={14} className="userspace-icon-spin" /> : <Play size={14} />}
+                  {runtimeBusy ? <MiniLoadingSpinner variant="icon" size={14} /> : <Play size={14} />}
                 </button>
               )}
               {showRestartRuntimeButton && (
                 <button className="btn btn-secondary btn-sm btn-icon" onClick={handleRestartRuntime} disabled={runtimeBusy} title="Restart runtime">
-                  {runtimeBusy ? <Loader2 size={14} className="userspace-icon-spin" /> : <RotateCw size={14} />}
+                  {runtimeBusy ? <MiniLoadingSpinner variant="icon" size={14} /> : <RotateCw size={14} />}
                 </button>
               )}
               {showStopRuntimeButton && (
                 <button className="btn btn-secondary btn-sm btn-icon" onClick={handleStopRuntime} disabled={runtimeBusy} title="Stop runtime">
-                  {runtimeBusy ? <Loader2 size={14} className="userspace-icon-spin" /> : <Square size={14} />}
+                  {runtimeBusy ? <MiniLoadingSpinner variant="icon" size={14} /> : <Square size={14} />}
                 </button>
               )}
             </div>
@@ -4131,12 +4132,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           {loading && <p className="userspace-status userspace-status-overlay-item">Loading workspaces...</p>}
           {creatingWorkspace && (
             <p className="userspace-status userspace-status-overlay-item">
-              <Loader2 size={14} className="userspace-icon-spin" /> {creatingWorkspaceStatus || 'Bootstrapping workspace...'}
+              <MiniLoadingSpinner variant="icon" size={14} /> {creatingWorkspaceStatus || 'Bootstrapping workspace...'}
             </p>
           )}
           {deletingWorkspaceId && (
             <p className="userspace-status userspace-status-overlay-item">
-              <Loader2 size={14} className="userspace-icon-spin" /> {deletingWorkspaceStatus || 'Deleting workspace...'}
+              <MiniLoadingSpinner variant="icon" size={14} /> {deletingWorkspaceStatus || 'Deleting workspace...'}
             </p>
           )}
           {formattedError && !creatingWorkspace && !deletingWorkspaceId && (
@@ -4518,7 +4519,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                               {diffSummaryLoading ? (
                                 <div className="userspace-snapshot-expanded-panel">
                                   <div className="userspace-snapshot-expanded-status">
-                                    <Loader2 size={12} className="spinning" />
+                                    <MiniLoadingSpinner variant="icon" size={12} />
                                     <span>Loading changed files...</span>
                                   </div>
                                 </div>
@@ -4529,7 +4530,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                               ) : !diffSummary ? (
                                 <div className="userspace-snapshot-expanded-panel">
                                   <div className="userspace-snapshot-expanded-status">
-                                    <Loader2 size={12} className="spinning" />
+                                    <MiniLoadingSpinner variant="icon" size={12} />
                                     <span>Loading changed files...</span>
                                   </div>
                                 </div>
@@ -4616,7 +4617,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
             {activeSnapshotFileDiffLoading ? (
               <div className="userspace-snapshot-diff-overlay-body">
                 <div className="userspace-snapshot-expanded-status userspace-snapshot-diff-overlay-loading">
-                  <Loader2 size={14} className="spinning" />
+                  <MiniLoadingSpinner variant="icon" size={14} />
                   <span>Loading file diff...</span>
                 </div>
               </div>
@@ -4723,7 +4724,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                     disabled={savingEnvVar}
                                     title="Save"
                                   >
-                                    {savingEnvVar && editingEnvKey === envVar.key ? <Loader2 size={12} className="userspace-icon-spin" /> : <Check size={12} />}
+                                    {savingEnvVar && editingEnvKey === envVar.key ? <MiniLoadingSpinner variant="icon" size={12} /> : <Check size={12} />}
                                   </button>
                                   <button
                                     className="btn btn-secondary btn-sm"
@@ -4748,7 +4749,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                         disabled={deletingEnvKey === envVar.key}
                                         title="Confirm delete"
                                       >
-                                        {deletingEnvKey === envVar.key ? <Loader2 size={12} className="userspace-icon-spin" /> : <Check size={12} />}
+                                        {deletingEnvKey === envVar.key ? <MiniLoadingSpinner variant="icon" size={12} /> : <Check size={12} />}
                                       </button>
                                       <button
                                         className="btn btn-secondary btn-sm"
@@ -4802,7 +4803,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                   disabled={savingEnvVar}
                                   title="Save description"
                                 >
-                                  {savingEnvVar && editingEnvDescKey === envVar.key ? <Loader2 size={12} className="userspace-icon-spin" /> : <Check size={12} />}
+                                  {savingEnvVar && editingEnvDescKey === envVar.key ? <MiniLoadingSpinner variant="icon" size={12} /> : <Check size={12} />}
                                 </button>
                                 <button
                                   className="btn btn-secondary btn-sm"
@@ -4874,7 +4875,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                         onClick={handleSaveEnvVar}
                         disabled={savingEnvVar || !draftEnvKey.trim()}
                       >
-                        {savingEnvVar && !editingEnvKey ? <Loader2 size={14} className="userspace-icon-spin" /> : <Check size={14} />}
+                        {savingEnvVar && !editingEnvKey ? <MiniLoadingSpinner variant="icon" size={14} /> : <Check size={14} />}
                         Add
                       </button>
                     </div>

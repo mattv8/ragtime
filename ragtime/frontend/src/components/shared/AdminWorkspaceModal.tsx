@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, Loader2, Repeat, Trash2, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Repeat, Trash2, X } from 'lucide-react';
+import { MiniLoadingSpinner } from './MiniLoadingSpinner';
 import { api } from '@/api';
 import type { User, UserSpaceWorkspace } from '@/types';
 
@@ -164,7 +165,7 @@ export function AdminWorkspaceModal({
 
           {loading ? (
             <div className="admin-ws-loading">
-              <Loader2 size={20} className="userspace-icon-spin" />
+              <MiniLoadingSpinner variant="icon" size={20} />
               <span>Loading workspaces...</span>
             </div>
           ) : workspaces.length === 0 ? (
@@ -232,7 +233,7 @@ export function AdminWorkspaceModal({
                                       onClick={(e) => { e.stopPropagation(); void handleDelete(ws.id); }}
                                       title="Confirm delete"
                                     >
-                                      {isDeleting ? <Loader2 size={12} className="userspace-icon-spin" /> : <Check size={12} />}
+                                      {isDeleting ? <MiniLoadingSpinner variant="icon" size={12} /> : <Check size={12} />}
                                     </button>
                                     <button
                                       type="button"
@@ -285,7 +286,7 @@ export function AdminWorkspaceModal({
                                       if (transferTargetUserId) void handleTransfer(ws.id, transferTargetUserId);
                                     }}
                                   >
-                                    {transferSaving ? <Loader2 size={12} className="userspace-icon-spin" /> : 'Transfer'}
+                                    {transferSaving ? <MiniLoadingSpinner variant="icon" size={12} /> : 'Transfer'}
                                   </button>
                                   <button
                                     type="button"

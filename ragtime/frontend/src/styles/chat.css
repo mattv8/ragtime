@@ -223,6 +223,54 @@
 .chat-workspace-conversation-dropdown .model-selector-item-name {
   font-size: var(--text-xs);
 }
+.chat-workspace-conversation-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  width: 100%;
+}
+.chat-workspace-conversation-content {
+  flex: 1;
+  min-width: 0;
+}
+.chat-workspace-conversation-item-name {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-workspace-conversation-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+.chat-workspace-conversation-item:hover .chat-workspace-conversation-actions,
+.chat-workspace-conversation-item:focus-within .chat-workspace-conversation-actions,
+.chat-workspace-conversation-item.is-selected .chat-workspace-conversation-actions {
+  opacity: 1;
+}
+.chat-workspace-conversation-item.is-selected {
+  background: color-mix(in srgb, var(--color-primary-soft) 72%, var(--color-surface));
+  border: 1px solid var(--color-primary-border);
+  border-radius: var(--radius-sm);
+  box-shadow: inset 3px 0 0 var(--color-primary);
+}
+.chat-workspace-conversation-item.is-selected .chat-workspace-conversation-item-name {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.chat-workspace-conversation-interrupted {
+  color: var(--color-warning);
+  flex-shrink: 0;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+.chat-workspace-conversation-title-input {
+  margin: 0;
+  height: 24px;
+}
 .chat-empty-state {
   text-align: center;
   padding: var(--space-lg);
@@ -307,9 +355,9 @@
 }
 .chat-workspace-conversation-picker {
   position: relative;
-  min-width: 220px;
-  max-width: 420px;
-  flex: 0 1 420px;
+  min-width: 180px;
+  max-width: 310px;
+  flex: 0 1 310px;
 }
 .chat-workspace-conversation-trigger {
   width: 100%;
@@ -324,8 +372,9 @@
   flex-shrink: 0;
 }
 .chat-workspace-conversation-dropdown {
+  width: max(100%, 370px);
   min-width: 100%;
-  max-width: 420px;
+  max-width: min(370px, calc(100vw - 24px));
 }
 .chat-workspace-conversation-item {
   font-size: var(--text-sm);

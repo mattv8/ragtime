@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo, isValidElement, type ReactNode, type CSSProperties } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Copy, Check, Loader2, Pencil, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock } from 'lucide-react';
+import { Copy, Check, Pencil, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock } from 'lucide-react';
 import { api } from '@/api';
 import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ToolCallRecord, ProviderModelState } from '@/types';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
@@ -11,6 +11,7 @@ import { calculateConversationContextUsage, parseStoredModelIdentifier } from '@
 import { formatChatTimestamp } from '@/utils';
 import { ContextUsagePie } from './shared/ContextUsagePie';
 import { MemberManagementModal } from './shared/MemberManagementModal';
+import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 
@@ -916,7 +917,7 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
   // Determine the status icon
   const getStatusIcon = () => {
     if (toolCall.status === 'running') {
-      return <Loader2 size={14} className="spinning" />;
+      return <MiniLoadingSpinner variant="icon" size={14} />;
     }
     if (isFailed && isVisualizationTool) {
       return <AlertCircle size={14} className="tool-call-error-icon" />;
@@ -956,7 +957,7 @@ const ToolCallDisplay = memo(function ToolCallDisplay({
         )}
         {isRetrying && (
           <span className="tool-call-retrying">
-            <Loader2 size={12} className="spinning" />
+            <MiniLoadingSpinner variant="icon" size={12} />
             <span>Retrying...</span>
           </span>
         )}
@@ -1115,7 +1116,7 @@ const ReasoningToolCallCard = memo(function ReasoningToolCallCard({
         onClick={() => setExpanded(!expanded)}
       >
         {isRunning ? (
-          <Loader2 size={12} className="spinning reasoning-tool-call-status" />
+          <MiniLoadingSpinner variant="icon" size={12} className="reasoning-tool-call-status" />
         ) : hasOutput ? (
           <ChevronRight size={12} className={`reasoning-tool-call-chevron ${expanded ? 'expanded' : ''}`} />
         ) : null}
@@ -3542,7 +3543,7 @@ export function ChatPanel({
             <div className="chat-conversation-title">
               {conv.active_task_id && (
                 <span className="chat-task-indicator" title="Processing in background">
-                  <Loader2 size={12} className="spinning" />
+                  <MiniLoadingSpinner variant="icon" size={12} />
                 </span>
               )}
               <ChatTitle title={conv.title} />
@@ -3609,7 +3610,7 @@ export function ChatPanel({
             <h3>Conversations</h3>
             {conversations.some(c => c.active_task_id) && (
               <span title="Processing in background">
-                <Loader2 size={14} className="spinning" />
+                <MiniLoadingSpinner variant="icon" size={14} />
               </span>
             )}
           </div>
@@ -3695,21 +3696,120 @@ export function ChatPanel({
                     {isWorkspaceConversationMenuOpen && (
                       <div className="model-selector-dropdown chat-workspace-conversation-dropdown">
                         <div className="model-selector-dropdown-inner" role="listbox" aria-label="Workspace chats">
-                          {workspaceConversationOptions.map((conversation) => (
-                            <button
-                              key={conversation.id}
-                              type="button"
-                              role="option"
-                              aria-selected={conversation.id === activeConversation.id}
-                              className={`model-selector-item chat-workspace-conversation-item ${conversation.id === activeConversation.id ? 'is-selected' : ''}`}
-                              onClick={() => {
-                                setIsWorkspaceConversationMenuOpen(false);
-                                void selectConversation(conversation);
-                              }}
-                            >
-                              <span className="model-selector-item-name">{conversation.title || 'Untitled Chat'}</span>
-                            </button>
-                          ))}
+                          {workspaceConversationOptions.map((conversation) => {
+                            const isSelected = conversation.id === activeConversation.id;
+                            const isEditing = editingTitle === conversation.id;
+                            const isInterrupted = isSelected && Boolean(interruptedTask);
+                            const isLive = !isInterrupted && Boolean(conversation.active_task_id);
+
+                            return (
+                              <div
+                                key={conversation.id}
+                                role="option"
+                                tabIndex={0}
+                                aria-selected={isSelected}
+                                className={`model-selector-item chat-workspace-conversation-item ${isSelected ? 'is-selected' : ''}`}
+                                onClick={() => {
+                                  setIsWorkspaceConversationMenuOpen(false);
+                                  void selectConversation(conversation);
+                                }}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter' || event.key === ' ') {
+                                    event.preventDefault();
+                                    setIsWorkspaceConversationMenuOpen(false);
+                                    void selectConversation(conversation);
+                                  }
+                                }}
+                              >
+                                <div className="chat-workspace-conversation-content">
+                                  {isEditing ? (
+                                    <input
+                                      type="text"
+                                      value={titleInput}
+                                      onChange={(e) => setTitleInput(e.target.value)}
+                                      onBlur={() => void saveTitle(conversation.id)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                          e.preventDefault();
+                                          void saveTitle(conversation.id);
+                                        }
+                                        if (e.key === 'Escape') {
+                                          e.preventDefault();
+                                          setEditingTitle(null);
+                                        }
+                                      }}
+                                      onClick={(e) => e.stopPropagation()}
+                                      autoFocus
+                                      className="chat-title-input chat-workspace-conversation-title-input"
+                                    />
+                                  ) : (
+                                    <span className="model-selector-item-name chat-workspace-conversation-item-name">
+                                      {conversation.title || 'Untitled Chat'}
+                                    </span>
+                                  )}
+                                </div>
+
+                                {!isEditing && (
+                                  <div
+                                    className="chat-workspace-conversation-actions"
+                                    onClick={(event) => event.stopPropagation()}
+                                  >
+                                    {deleteConfirmId === conversation.id ? (
+                                      <>
+                                        <button
+                                          type="button"
+                                          className="chat-action-btn confirm-delete"
+                                          onClick={(e) => void confirmDeleteConversation(conversation.id, e)}
+                                          title="Confirm delete"
+                                        >
+                                          <Check size={14} />
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="chat-action-btn cancel-delete"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setDeleteConfirmId(null);
+                                          }}
+                                          title="Cancel"
+                                        >
+                                          <X size={14} />
+                                        </button>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <button
+                                          type="button"
+                                          className="chat-action-btn"
+                                          onClick={(e) => startEditingTitle(conversation, e)}
+                                          title="Rename"
+                                        >
+                                          <Pencil size={14} />
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="chat-action-btn"
+                                          onClick={(e) => void deleteConversation(conversation.id, e)}
+                                          title="Delete"
+                                        >
+                                          <Trash2 size={14} />
+                                        </button>
+                                      </>
+                                    )}
+                                  </div>
+                                )}
+
+                                {isInterrupted && (
+                                  <span title="Conversation interrupted — click to continue" aria-label="Interrupted">
+                                    <AlertCircle size={12} className="chat-workspace-conversation-interrupted" />
+                                  </span>
+                                )}
+                                {isLive && (
+                                  <MiniLoadingSpinner title="Processing in background" ariaHidden />
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
                     )}
