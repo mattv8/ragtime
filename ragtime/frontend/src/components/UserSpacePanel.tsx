@@ -497,7 +497,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [draftEnvValue, setDraftEnvValue] = useState('');
   const [draftEnvDescription, setDraftEnvDescription] = useState('');
   const [editingEnvKey, setEditingEnvKey] = useState<string | null>(null);
+  const [editingEnvValueDraft, setEditingEnvValueDraft] = useState('');
   const [editingEnvDescKey, setEditingEnvDescKey] = useState<string | null>(null);
+  const [editingEnvDescriptionDraft, setEditingEnvDescriptionDraft] = useState('');
   const [savingEnvVar, setSavingEnvVar] = useState(false);
   const [deletingEnvKey, setDeletingEnvKey] = useState<string | null>(null);
   const [confirmDeleteEnvKey, setConfirmDeleteEnvKey] = useState<string | null>(null);
@@ -3150,7 +3152,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     setDraftEnvValue('');
     setDraftEnvDescription('');
     setEditingEnvKey(null);
+    setEditingEnvValueDraft('');
     setEditingEnvDescKey(null);
+    setEditingEnvDescriptionDraft('');
     setConfirmDeleteEnvKey(null);
     try {
       const vars = await api.listUserSpaceWorkspaceEnvVars(activeWorkspaceId);
@@ -3164,7 +3168,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
   const handleSaveEnvVar = useCallback(async () => {
     if (!activeWorkspaceId || !isOwner) return;
-    const key = editingEnvKey ?? draftEnvKey.trim().toUpperCase();
+    const key = draftEnvKey.trim().toUpperCase();
     const value = draftEnvValue;
     const description = draftEnvDescription.trim();
     if (!key) return;
@@ -3182,13 +3186,34 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       setDraftEnvKey('');
       setDraftEnvValue('');
       setDraftEnvDescription('');
-      setEditingEnvKey(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save environment variable');
     } finally {
       setSavingEnvVar(false);
     }
-  }, [activeWorkspaceId, draftEnvDescription, draftEnvKey, draftEnvValue, editingEnvKey, isOwner]);
+  }, [activeWorkspaceId, draftEnvDescription, draftEnvKey, draftEnvValue, isOwner]);
+
+  const handleSaveEnvValue = useCallback(async () => {
+    if (!activeWorkspaceId || !isOwner || !editingEnvKey) return;
+    setSavingEnvVar(true);
+    try {
+      const upserted = await api.upsertUserSpaceWorkspaceEnvVar(activeWorkspaceId, {
+        key: editingEnvKey,
+        value: editingEnvValueDraft || undefined,
+      });
+      setEnvVars((current) => {
+        const next = current.filter((v) => v.key !== editingEnvKey);
+        return [...next, upserted].sort((a, b) => a.key.localeCompare(b.key));
+      });
+      setEditingEnvKey(null);
+      setEditingEnvValueDraft('');
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save environment variable value');
+    } finally {
+      setSavingEnvVar(false);
+    }
+  }, [activeWorkspaceId, editingEnvKey, editingEnvValueDraft, isOwner]);
 
   const handleSaveEnvDesc = useCallback(async () => {
     if (!activeWorkspaceId || !isOwner || !editingEnvDescKey) return;
@@ -3196,20 +3221,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     try {
       const upserted = await api.upsertUserSpaceWorkspaceEnvVar(activeWorkspaceId, {
         key: editingEnvDescKey,
-        description: draftEnvDescription.trim() || undefined,
+        description: editingEnvDescriptionDraft.trim() || undefined,
       });
       setEnvVars((current) => {
         const next = current.filter((v) => v.key !== editingEnvDescKey);
         return [...next, upserted].sort((a, b) => a.key.localeCompare(b.key));
       });
       setEditingEnvDescKey(null);
-      setDraftEnvDescription('');
+      setEditingEnvDescriptionDraft('');
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save description');
     } finally {
       setSavingEnvVar(false);
     }
-  }, [activeWorkspaceId, draftEnvDescription, editingEnvDescKey, isOwner]);
+  }, [activeWorkspaceId, editingEnvDescKey, editingEnvDescriptionDraft, isOwner]);
 
   const handleDeleteEnvVar = useCallback(async (key: string) => {
     if (!activeWorkspaceId || !isOwner) return;
@@ -4856,15 +4882,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                   type="password"
                                   className="form-input userspace-env-var-value-input"
                                   placeholder="New value (leave blank to keep current)"
-                                  value={draftEnvValue}
-                                  onChange={(e) => setDraftEnvValue(e.target.value)}
-                                  onKeyDown={(e) => { if (e.key === 'Enter') handleSaveEnvVar(); if (e.key === 'Escape') { setEditingEnvKey(null); setDraftEnvValue(''); } }}
+                                  value={editingEnvValueDraft}
+                                  onChange={(e) => setEditingEnvValueDraft(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') handleSaveEnvValue();
+                                    if (e.key === 'Escape') {
+                                      setEditingEnvKey(null);
+                                      setEditingEnvValueDraft('');
+                                    }
+                                  }}
                                   autoFocus
                                 />
                                 <div className="userspace-env-var-actions">
                                   <button
                                     className="btn btn-primary btn-sm"
-                                    onClick={handleSaveEnvVar}
+                                    onClick={handleSaveEnvValue}
                                     disabled={savingEnvVar}
                                     title="Save"
                                   >
@@ -4872,7 +4904,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                   </button>
                                   <button
                                     className="btn btn-secondary btn-sm"
-                                    onClick={() => { setEditingEnvKey(null); setDraftEnvValue(''); }}
+                                    onClick={() => {
+                                      setEditingEnvKey(null);
+                                      setEditingEnvValueDraft('');
+                                    }}
                                     title="Cancel"
                                   >
                                     <X size={12} />
@@ -4909,7 +4944,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                         className="btn btn-secondary btn-sm"
                                         onClick={() => {
                                           setEditingEnvKey(envVar.key);
-                                          setDraftEnvValue('');
+                                          setEditingEnvValueDraft('');
                                         }}
                                         title="Edit value"
                                       >
@@ -4936,9 +4971,15 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                   type="text"
                                   className="form-input userspace-env-var-desc-input"
                                   placeholder="Description (optional)"
-                                  value={draftEnvDescription}
-                                  onChange={(e) => setDraftEnvDescription(e.target.value)}
-                                  onKeyDown={(e) => { if (e.key === 'Enter') handleSaveEnvDesc(); if (e.key === 'Escape') { setEditingEnvDescKey(null); setDraftEnvDescription(''); } }}
+                                  value={editingEnvDescriptionDraft}
+                                  onChange={(e) => setEditingEnvDescriptionDraft(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') handleSaveEnvDesc();
+                                    if (e.key === 'Escape') {
+                                      setEditingEnvDescKey(null);
+                                      setEditingEnvDescriptionDraft('');
+                                    }
+                                  }}
                                   autoFocus
                                 />
                                 <button
@@ -4951,7 +4992,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                 </button>
                                 <button
                                   className="btn btn-secondary btn-sm"
-                                  onClick={() => { setEditingEnvDescKey(null); setDraftEnvDescription(''); }}
+                                  onClick={() => {
+                                    setEditingEnvDescKey(null);
+                                    setEditingEnvDescriptionDraft('');
+                                  }}
                                   title="Cancel"
                                 >
                                   <X size={12} />
@@ -4962,7 +5006,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                 className="userspace-env-var-desc-display"
                                 onClick={() => {
                                   setEditingEnvDescKey(envVar.key);
-                                  setDraftEnvDescription(envVar.description ?? '');
+                                  setEditingEnvDescriptionDraft(envVar.description ?? '');
                                 }}
                               >
                                 <span className="userspace-env-var-desc">
@@ -4974,7 +5018,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     setEditingEnvDescKey(envVar.key);
-                                    setDraftEnvDescription(envVar.description ?? '');
+                                    setEditingEnvDescriptionDraft(envVar.description ?? '');
                                   }}
                                 >
                                   <Pencil size={11} />
