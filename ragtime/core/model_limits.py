@@ -28,6 +28,8 @@ _model_supports_reasoning: dict[str, bool] = {}
 _model_supports_thinking_budget: dict[str, bool] = {}
 # Cache for models requiring Responses API (populated from Copilot /models)
 _model_requires_responses_api: dict[str, bool] = {}
+# Cache for models that support Responses API (including dual-endpoint models)
+_model_supports_responses_api: dict[str, bool] = {}
 _cache_lock = asyncio.Lock()
 _cache_loaded = False
 
@@ -592,11 +594,44 @@ def register_model_supported_endpoints(
         "/responses" in supported_endpoints
         and "/chat/completions" not in supported_endpoints
     )
-    _model_requires_responses_api[model_id] = needs_responses
-    # Also register models that support BOTH endpoints so we can prefer
-    # Responses API for them when available.
-    if "/responses" in supported_endpoints:
-        _model_requires_responses_api[model_id] = needs_responses
+    supports_responses = "/responses" in supported_endpoints
+
+    key_variants = {str(model_id).strip()}
+    if "/" in model_id:
+        _, _, short_id = model_id.partition("/")
+        if short_id:
+            key_variants.add(short_id)
+
+    for key in key_variants:
+        _model_requires_responses_api[key] = needs_responses
+        _model_supports_responses_api[key] = supports_responses
+
+
+def register_model_reasoning_capabilities(
+    model_id: str,
+    *,
+    reasoning_supported: bool = False,
+    thinking_budget_supported: bool = False,
+) -> None:
+    """Register reasoning-related capability flags from provider metadata.
+
+    This supplements models.dev-derived flags with provider-native capabilities
+    (for example Copilot ``/models`` payloads).
+    """
+    if not reasoning_supported and not thinking_budget_supported:
+        return
+
+    key_variants = {str(model_id).strip()}
+    if "/" in model_id:
+        _, _, short_id = model_id.partition("/")
+        if short_id:
+            key_variants.add(short_id)
+
+    for key in key_variants:
+        if reasoning_supported:
+            _model_supports_reasoning[key] = True
+        if thinking_budget_supported:
+            _model_supports_thinking_budget[key] = True
 
 
 async def requires_responses_api(model_id: str) -> bool:
@@ -615,6 +650,17 @@ async def requires_responses_api(model_id: str) -> bool:
     await _ensure_cache_loaded()
 
     matched = _best_match_flag(_model_requires_responses_api, model_id)
+    if matched is not None:
+        return matched
+
+    return False
+
+
+async def supports_responses_api(model_id: str) -> bool:
+    """Check if a model is known to support the Responses API endpoint."""
+    await _ensure_cache_loaded()
+
+    matched = _best_match_flag(_model_supports_responses_api, model_id)
     if matched is not None:
         return matched
 

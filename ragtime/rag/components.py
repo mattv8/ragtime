@@ -58,6 +58,7 @@ from ragtime.core.model_limits import (
     register_model_supported_endpoints,
     requires_responses_api,
     supports_reasoning,
+    supports_responses_api,
     supports_thinking_budget,
 )
 from ragtime.core.ollama import (
@@ -838,6 +839,10 @@ class _CopilotChatOpenAI(ChatOpenAI):
        instance flips ``use_responses_api=True`` and retries transparently.
        The result is cached in ``model_limits`` so future LLM builds pick the
        right endpoint immediately.
+
+     3. **Reasoning parameter downgrade** — If a model rejects strict reasoning
+         options (for example ``summary`` or high effort levels), retry once with
+         safer reasoning settings instead of failing the whole request.
     """
 
     def _convert_chunk_to_generation_chunk(
@@ -895,6 +900,24 @@ class _CopilotChatOpenAI(ChatOpenAI):
             return True
         return False
 
+    @staticmethod
+    def _looks_like_summary_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return (
+            "reasoning.summary" in msg
+            or "unsupported_reasoning_summary" in msg
+            or ("summary" in msg and "reasoning" in msg and "invalid" in msg)
+        )
+
+    @staticmethod
+    def _looks_like_effort_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return (
+            "reasoning.effort" in msg
+            or "invalid_reasoning_effort" in msg
+            or ("effort" in msg and "reasoning" in msg and "unsupported" in msg)
+        )
+
     def _switch_to_responses_api(self) -> None:
         """Flip this instance (and cache) to use the Responses API."""
         self.use_responses_api = True
@@ -905,16 +928,69 @@ class _CopilotChatOpenAI(ChatOpenAI):
             self.model_name,
         )
 
+    def _downgrade_reasoning_parameters(self, exc: Exception) -> bool:
+        """Relax reasoning options for provider/model compatibility.
+
+        Returns True when parameters were changed and a retry should be
+        attempted.
+        """
+        reasoning = getattr(self, "reasoning", None)
+        if not isinstance(reasoning, dict):
+            return False
+
+        changed = False
+        if self._looks_like_summary_error(exc) and "summary" in reasoning:
+            reasoning.pop("summary", None)
+            changed = True
+            logger.info(
+                "Model %s rejected reasoning summary; retrying without summary",
+                self.model_name,
+            )
+
+        if self._looks_like_effort_error(exc):
+            effort = str(reasoning.get("effort", "")).lower()
+            if effort in {"high", "xhigh"}:
+                reasoning["effort"] = "medium"
+                changed = True
+                logger.info(
+                    "Model %s rejected reasoning effort=%s; retrying with effort=medium",
+                    self.model_name,
+                    effort,
+                )
+
+        return changed
+
+    async def _retry_after_reasoning_downgrade(
+        self,
+        call,
+        *args,
+        **kwargs,
+    ):
+        try:
+            return await call(*args, **kwargs)
+        except Exception as exc:
+            if self.use_responses_api and self._downgrade_reasoning_parameters(exc):
+                return await call(*args, **kwargs)
+            raise
+
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
         try:
-            return await super()._agenerate(
-                messages, stop=stop, run_manager=run_manager, **kwargs
+            return await self._retry_after_reasoning_downgrade(
+                super()._agenerate,
+                messages,
+                stop=stop,
+                run_manager=run_manager,
+                **kwargs,
             )
         except Exception as exc:
             if not self.use_responses_api and self._is_unsupported_api_error(exc):
                 self._switch_to_responses_api()
-                return await super()._agenerate(
-                    messages, stop=stop, run_manager=run_manager, **kwargs
+                return await self._retry_after_reasoning_downgrade(
+                    super()._agenerate,
+                    messages,
+                    stop=stop,
+                    run_manager=run_manager,
+                    **kwargs,
                 )
             raise
 
@@ -923,10 +999,24 @@ class _CopilotChatOpenAI(ChatOpenAI):
             async for chunk in super()._astream(*args, **kwargs):
                 yield chunk
         except Exception as exc:
-            if not self.use_responses_api and self._is_unsupported_api_error(exc):
-                self._switch_to_responses_api()
+            if self.use_responses_api and self._downgrade_reasoning_parameters(exc):
                 async for chunk in super()._astream(*args, **kwargs):
                     yield chunk
+                return
+
+            if not self.use_responses_api and self._is_unsupported_api_error(exc):
+                self._switch_to_responses_api()
+                try:
+                    async for chunk in super()._astream(*args, **kwargs):
+                        yield chunk
+                except Exception as retry_exc:
+                    if self.use_responses_api and self._downgrade_reasoning_parameters(
+                        retry_exc
+                    ):
+                        async for chunk in super()._astream(*args, **kwargs):
+                            yield chunk
+                    else:
+                        raise
             else:
                 raise
 
@@ -1542,15 +1632,32 @@ class RAGComponents:
                 "default_headers": copilot_headers,
             }
 
-            # If we already know the model only supports /responses
-            # (from the models API or a previous runtime fallback), set
-            # it upfront to avoid a wasted round-trip.
-            if await requires_responses_api(model):
+            model_supports_reasoning = await supports_reasoning(model)
+            model_supports_responses = await supports_responses_api(model)
+            model_requires_responses = await requires_responses_api(model)
+
+            # Prefer Responses API for reasoning-capable models when supported.
+            # This improves reasoning quality and unlocks summary deltas.
+            use_responses_api = model_requires_responses or (
+                model_supports_reasoning and model_supports_responses
+            )
+
+            if use_responses_api:
                 copilot_kwargs["use_responses_api"] = True
-                copilot_kwargs["reasoning"] = {"effort": "medium"}
-                logger.info("Model %s uses Responses API (pre-detected)", model)
+                if model_supports_reasoning:
+                    copilot_kwargs["reasoning"] = {
+                        "effort": "high",
+                        "summary": "auto",
+                    }
+                if model_requires_responses:
+                    logger.info("Model %s requires Responses API (pre-detected)", model)
+                else:
+                    logger.info(
+                        "Model %s supports Responses API; preferring it for reasoning",
+                        model,
+                    )
             else:
-                if await supports_reasoning(model):
+                if model_supports_reasoning:
                     copilot_kwargs["reasoning_effort"] = "high"
                 if await supports_thinking_budget(model):
                     copilot_kwargs["extra_body"] = {"thinking_budget": 16384}
@@ -4749,6 +4856,49 @@ except Exception as e:
         return str(content)
 
     @staticmethod
+    def _extract_reasoning_text_from_content_list(content: Any) -> str:
+        """Extract reasoning text from content blocks across provider formats."""
+        if not isinstance(content, list):
+            return ""
+
+        reasoning_parts: list[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+
+            block_type = str(block.get("type", "")).lower()
+            if block_type not in {
+                "thinking",
+                "reasoning",
+                "reasoning_content",
+                "reasoning_summary",
+            }:
+                continue
+
+            text = (
+                block.get("text")
+                or block.get("thinking")
+                or block.get("reasoning_text")
+                or block.get("delta")
+                or ""
+            )
+            if text:
+                reasoning_parts.append(str(text))
+
+            summary = block.get("summary")
+            if isinstance(summary, list):
+                for part in summary:
+                    if not isinstance(part, dict):
+                        continue
+                    summary_text = part.get("text") or part.get("delta") or ""
+                    if summary_text:
+                        reasoning_parts.append(str(summary_text))
+            elif isinstance(summary, str) and summary:
+                reasoning_parts.append(summary)
+
+        return "".join(reasoning_parts)
+
+    @staticmethod
     def _extract_reasoning_from_stream_chunk(chunk: Any) -> str:
         """Extract reasoning/thinking text from a streamed model chunk.
 
@@ -4764,6 +4914,8 @@ except Exception as e:
             reasoning_text = str(
                 additional_kwargs.get("reasoning_content")
                 or additional_kwargs.get("reasoning_text")
+                or additional_kwargs.get("reasoning_summary")
+                or additional_kwargs.get("reasoning_summary_text")
                 or additional_kwargs.get("thinking")
                 or ""
             )
@@ -4771,18 +4923,11 @@ except Exception as e:
                 return reasoning_text
 
         content = getattr(chunk, "content", None)
-        if isinstance(content, list):
-            reasoning_parts: list[str] = []
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                block_type = str(block.get("type", "")).lower()
-                if block_type in {"thinking", "reasoning", "reasoning_content"}:
-                    text = block.get("text") or block.get("thinking") or ""
-                    if text:
-                        reasoning_parts.append(str(text))
-            if reasoning_parts:
-                return "".join(reasoning_parts)
+        reasoning_from_content = (
+            RAGComponents._extract_reasoning_text_from_content_list(content)
+        )
+        if reasoning_from_content:
+            return reasoning_from_content
 
         return ""
 
@@ -4849,6 +4994,8 @@ except Exception as e:
                 reasoning_text = str(
                     additional_kwargs.get("reasoning_content")
                     or additional_kwargs.get("reasoning_text")
+                    or additional_kwargs.get("reasoning_summary")
+                    or additional_kwargs.get("reasoning_summary_text")
                     or additional_kwargs.get("thinking")
                     or ""
                 )
@@ -4856,8 +5003,20 @@ except Exception as e:
                     return reasoning_text
 
         if isinstance(output, dict):
+            output_items = output.get("output")
+            reasoning_from_items = cls._extract_reasoning_text_from_content_list(
+                output_items
+            )
+            if reasoning_from_items:
+                return reasoning_from_items
+
             message = output.get("message")
             if isinstance(message, dict):
+                message_reasoning = cls._extract_reasoning_text_from_content_list(
+                    message.get("content")
+                )
+                if message_reasoning:
+                    return message_reasoning
                 thinking = message.get("thinking")
                 if thinking:
                     return str(thinking)
@@ -4871,6 +5030,13 @@ except Exception as e:
                 if isinstance(first_generation, dict):
                     message = first_generation.get("message")
                     if isinstance(message, dict):
+                        message_reasoning = (
+                            cls._extract_reasoning_text_from_content_list(
+                                message.get("content")
+                            )
+                        )
+                        if message_reasoning:
+                            return message_reasoning
                         thinking = message.get("thinking")
                         if thinking:
                             return str(thinking)
@@ -4880,20 +5046,41 @@ except Exception as e:
                             reasoning_text = str(
                                 message_kwargs.get("reasoning_content")
                                 or message_kwargs.get("reasoning_text")
+                                or message_kwargs.get("reasoning_summary")
+                                or message_kwargs.get("reasoning_summary_text")
                                 or message_kwargs.get("thinking")
                                 or ""
                             )
                             if reasoning_text:
                                 return reasoning_text
 
+                    if isinstance(message, dict):
+                        message_reasoning = (
+                            cls._extract_reasoning_text_from_content_list(
+                                message.get("content")
+                            )
+                        )
+                        if message_reasoning:
+                            return message_reasoning
+
                 if hasattr(first_generation, "message"):
                     message = first_generation.message
+                    if hasattr(message, "content"):
+                        message_reasoning = (
+                            cls._extract_reasoning_text_from_content_list(
+                                message.content
+                            )
+                        )
+                        if message_reasoning:
+                            return message_reasoning
                     if hasattr(message, "additional_kwargs"):
                         message_kwargs = getattr(message, "additional_kwargs", {}) or {}
                         if isinstance(message_kwargs, dict):
                             reasoning_text = str(
                                 message_kwargs.get("reasoning_content")
                                 or message_kwargs.get("reasoning_text")
+                                or message_kwargs.get("reasoning_summary")
+                                or message_kwargs.get("reasoning_summary_text")
                                 or message_kwargs.get("thinking")
                                 or ""
                             )
@@ -8171,6 +8358,8 @@ except Exception as e:
         # Gather thinking text from all known locations
         thinking = (
             message.additional_kwargs.get("reasoning_content", "")
+            or message.additional_kwargs.get("reasoning_text", "")
+            or message.additional_kwargs.get("reasoning_summary_text", "")
             or message.additional_kwargs.get("thinking", "")
             or ""
         )

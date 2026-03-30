@@ -60,6 +60,7 @@ from ragtime.core.model_limits import (
     MODEL_FAMILY_PATTERNS,
     get_context_limit,
     get_output_limit,
+    register_model_reasoning_capabilities,
     register_model_supported_endpoints,
     supports_function_calling,
     update_model_function_calling,
@@ -7777,6 +7778,35 @@ async def _fetch_github_copilot_models(
                         if isinstance(supported_endpoints, list):
                             register_model_supported_endpoints(
                                 model_id, supported_endpoints
+                            )
+
+                        # Cache reasoning capability hints from Copilot model metadata.
+                        capabilities = row.get("capabilities")
+                        supports_flags = []
+                        if isinstance(capabilities, dict):
+                            supports_obj = capabilities.get("supports")
+                            if isinstance(supports_obj, list):
+                                supports_flags = [
+                                    str(flag).lower() for flag in supports_obj
+                                ]
+                            elif isinstance(supports_obj, dict):
+                                supports_flags = [
+                                    str(flag).lower()
+                                    for flag, enabled in supports_obj.items()
+                                    if enabled
+                                ]
+
+                        if supports_flags:
+                            register_model_reasoning_capabilities(
+                                model_id,
+                                reasoning_supported=(
+                                    "reasoning_effort" in supports_flags
+                                    or "reasoning" in supports_flags
+                                ),
+                                thinking_budget_supported=(
+                                    "thinking_budget" in supports_flags
+                                    or "max_thinking_budget" in supports_flags
+                                ),
                             )
 
                         # Prefer entries that include richer token limit metadata.
