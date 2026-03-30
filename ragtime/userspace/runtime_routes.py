@@ -17,6 +17,7 @@ from fastapi import (APIRouter, Depends, Header, HTTPException, Request,
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from ragtime.config.settings import settings
+from ragtime.core.app_settings import get_app_settings
 from ragtime.core.auth import validate_session
 from ragtime.core.database import get_db
 from ragtime.core.security import get_current_user, get_current_user_optional
@@ -394,7 +395,15 @@ async def _proxy_http_request(
 
         content = _rewrite_root_relative_urls(content, base_path)
         if _is_html_media_type(media_type):
-            content = _inject_bridge_script(content)
+            sandbox_flags: list[str] | None = None
+            try:
+                app_settings = await get_app_settings()
+                sandbox_flags = list(
+                    app_settings.get("userspace_preview_sandbox_flags") or []
+                )
+            except Exception:
+                sandbox_flags = None
+            content = _inject_bridge_script(content, sandbox_flags)
         # Content length changed after rewriting; drop stale header so
         # Starlette re-calculates it from the actual body.
         resp_headers.pop("content-length", None)
@@ -423,12 +432,27 @@ async def _proxy_http_request(
 
 
 _BRIDGE_SCRIPT_TAG = b'<script src="/indexes/userspace/runtime-bridge.js"></script>'
+_BRIDGE_CONFIG_MARKER = b"__ragtime_preview_sandbox_flags"
 _BRIDGE_DETECT_RE = re.compile(rb"bridge\.js", re.IGNORECASE)
 _HEAD_CLOSE_RE = re.compile(rb"(</head\s*>)", re.IGNORECASE)
 _FIRST_SCRIPT_RE = re.compile(rb"(<script[\s>])", re.IGNORECASE)
 
 
-def _inject_bridge_script(html: bytes) -> bytes:
+def _build_bridge_config_tag(sandbox_flags: list[str]) -> bytes:
+    normalized_flags = [
+        flag.strip() for flag in sandbox_flags if isinstance(flag, str) and flag.strip()
+    ]
+    serialized_flags = json.dumps(normalized_flags).encode("utf-8")
+    return (
+        b"<script>window.__ragtime_preview_sandbox_flags="
+        + serialized_flags
+        + b";</script>"
+    )
+
+
+def _inject_bridge_script(
+    html: bytes, sandbox_flags: list[str] | None = None
+) -> bytes:
     """Inject the platform data-bridge script into HTML responses.
 
     Inserts ``<script src="/indexes/userspace/runtime-bridge.js">`` before
@@ -436,16 +460,20 @@ def _inject_bridge_script(html: bytes) -> bytes:
     and platform visualization libraries are available to workspace code.
     Skips injection if bridge.js is already referenced.
     """
-    if _BRIDGE_DETECT_RE.search(html):
+    injected = b""
+    if sandbox_flags is not None and _BRIDGE_CONFIG_MARKER not in html:
+        injected += _build_bridge_config_tag(sandbox_flags) + b"\n"
+    if not _BRIDGE_DETECT_RE.search(html):
+        injected += _BRIDGE_SCRIPT_TAG + b"\n"
+    if not injected:
         return html
-    tag = _BRIDGE_SCRIPT_TAG + b"\n"
     m = _HEAD_CLOSE_RE.search(html)
     if m:
-        return html[: m.start()] + tag + html[m.start() :]
+        return html[: m.start()] + injected + html[m.start() :]
     m = _FIRST_SCRIPT_RE.search(html)
     if m:
-        return html[: m.start()] + tag + html[m.start() :]
-    return html
+        return html[: m.start()] + injected + html[m.start() :]
+    return injected + html
 
 
 @router.get("/runtime-bridge.js", include_in_schema=False)

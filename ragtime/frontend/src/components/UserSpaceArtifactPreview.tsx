@@ -42,6 +42,7 @@ export function UserSpaceArtifactPreview({
   const [pendingExecutions, setPendingExecutions] = useState(0);
   const [sandboxFlags, setSandboxFlags] = useState<string[]>([]);
   const [sandboxSettingsStatus, setSandboxSettingsStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [sandboxBlockedMessage, setSandboxBlockedMessage] = useState<string | null>(null);
 
   const handleIframeMessage = useCallback(
     async (event: MessageEvent) => {
@@ -53,6 +54,16 @@ export function UserSpaceArtifactPreview({
       if (!isExpectedOrigin) return;
 
       if (!event.data || event.data.bridge !== USERSPACE_EXEC_BRIDGE) return;
+
+      if (event.data.type === USERSPACE_EXEC_MESSAGE_TYPES.SANDBOX_BLOCKED) {
+        const message = typeof event.data.message === 'string'
+          ? event.data.message.trim()
+          : '';
+        setSandboxBlockedMessage(
+          message || 'This action was blocked by the current preview sandbox policy.',
+        );
+        return;
+      }
 
       if (event.data.type === USERSPACE_EXEC_MESSAGE_TYPES.ERROR) {
         console.error('[UserSpacePreview] iframe execute error:', {
@@ -137,6 +148,7 @@ export function UserSpaceArtifactPreview({
 
   useEffect(() => {
     setPendingExecutions(0);
+    setSandboxBlockedMessage(null);
   }, [previewInstanceKey, runtimePreviewUrl]);
 
   useEffect(() => {
@@ -205,6 +217,11 @@ export function UserSpaceArtifactPreview({
 
   return (
     <div className="userspace-preview-frame-wrap">
+      {sandboxBlockedMessage ? (
+        <div className="userspace-preview-exec-error" role="alert">
+          {sandboxBlockedMessage}
+        </div>
+      ) : null}
       <iframe
         ref={iframeRef}
         key={`${previewInstanceKey ?? ''}:${runtimePreviewUrl ?? ''}`}

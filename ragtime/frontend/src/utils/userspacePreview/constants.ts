@@ -4,6 +4,7 @@ export const USERSPACE_EXEC_MESSAGE_TYPES = {
   EXECUTE: 'ragtime-execute',
   RESULT: 'ragtime-execute-result',
   ERROR: 'ragtime-execute-error',
+  SANDBOX_BLOCKED: 'ragtime-sandbox-blocked',
 } as const;
 
 export const USERSPACE_EXECUTE_TIMEOUT_MS = 60_000;
