@@ -3801,10 +3801,12 @@ export function ChatPanel({
                     className="chat-workspace-conversation-picker"
                     ref={workspaceConversationDropdownRef}
                   >
-                    <button
-                      type="button"
+                    <div
+                      role="button"
+                      tabIndex={0}
                       className="model-selector-trigger chat-workspace-conversation-trigger"
                       onClick={() => setIsWorkspaceConversationMenuOpen((open) => !open)}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setIsWorkspaceConversationMenuOpen((open) => !open); } }}
                       title="Select a workspace chat"
                       aria-haspopup="listbox"
                       aria-expanded={isWorkspaceConversationMenuOpen}
@@ -3827,7 +3829,7 @@ export function ChatPanel({
                         </button>
                       )}
                       <span className="model-selector-arrow chat-workspace-conversation-trigger-arrow">▾</span>
-                    </button>
+                    </div>
 
                     {isWorkspaceConversationMenuOpen && (
                       <div className="model-selector-dropdown chat-workspace-conversation-dropdown">
