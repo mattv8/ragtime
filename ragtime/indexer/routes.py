@@ -36,10 +36,10 @@ from fastapi import (
 )
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from prisma import Prisma
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
+from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.container_capabilities import get_container_capabilities
 from ragtime.core.copilot_auth import (
@@ -64,6 +64,7 @@ from ragtime.core.model_limits import (
     supports_function_calling,
     update_model_function_calling,
     update_model_limit,
+    update_model_output_limit,
 )
 from ragtime.core.ollama import (
     extract_effective_context_length,
@@ -7520,7 +7521,7 @@ async def _fetch_ollama_llm_models(base_url: str) -> LLMModelsResponse:
 
 
 def _extract_context_limit_from_model_row(row: dict[str, Any]) -> int | None:
-    """Extract input/context token limit from provider model metadata payloads."""
+    """Extract context-window token limit from provider model metadata payloads."""
 
     def _coerce_int(value: Any) -> int | None:
         if isinstance(value, bool):
@@ -7537,25 +7538,18 @@ def _extract_context_limit_from_model_row(row: dict[str, Any]) -> int | None:
                 return parsed if parsed > 0 else None
         return None
 
-    candidate_keys = [
+    context_window_keys = [
         "context_limit",
         "context_window",
         "context_window_tokens",
         "context_length",
         "max_context_tokens",
         "max_context_window_tokens",
-        "max_input_tokens",
-        "max_prompt_tokens",
-        "input_tokens",
     ]
 
-    # Prefer prompt/input limits for chat context budgeting.
-    # For Copilot /models payloads, these are typically nested under:
-    #   capabilities.limits.max_prompt_tokens
-    # while max_context_window_tokens may include completion budget.
-    preferred_input_keys = [
-        "max_prompt_tokens",
+    input_budget_keys = [
         "max_input_tokens",
+        "max_prompt_tokens",
         "input_tokens",
     ]
 
@@ -7563,32 +7557,76 @@ def _extract_context_limit_from_model_row(row: dict[str, Any]) -> int | None:
     if isinstance(capabilities_obj, dict):
         capabilities_limits = capabilities_obj.get("limits")
         if isinstance(capabilities_limits, dict):
-            for key in preferred_input_keys:
+            for key in context_window_keys:
                 parsed = _coerce_int(capabilities_limits.get(key))
                 if parsed is not None:
                     return parsed
-            for key in candidate_keys:
+            for key in input_budget_keys:
                 parsed = _coerce_int(capabilities_limits.get(key))
                 if parsed is not None:
                     return parsed
 
     limits_obj = row.get("limits")
     if isinstance(limits_obj, dict):
-        for key in preferred_input_keys:
+        for key in context_window_keys:
             parsed = _coerce_int(limits_obj.get(key))
             if parsed is not None:
                 return parsed
-        for key in candidate_keys:
+        for key in input_budget_keys:
             parsed = _coerce_int(limits_obj.get(key))
             if parsed is not None:
                 return parsed
 
-    for key in preferred_input_keys:
+    for key in context_window_keys:
         parsed = _coerce_int(row.get(key))
         if parsed is not None:
             return parsed
 
-    for key in candidate_keys:
+    for key in input_budget_keys:
+        parsed = _coerce_int(row.get(key))
+        if parsed is not None:
+            return parsed
+
+    return None
+
+
+def _extract_output_limit_from_model_row(row: dict[str, Any]) -> int | None:
+    """Extract output-token limit from provider model metadata payloads."""
+
+    def _coerce_int(value: Any) -> int | None:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value if value > 0 else None
+        if isinstance(value, float):
+            coerced = int(value)
+            return coerced if coerced > 0 else None
+        if isinstance(value, str):
+            value = value.strip()
+            if value.isdigit():
+                parsed = int(value)
+                return parsed if parsed > 0 else None
+        return None
+
+    keys = ["max_output_tokens", "output_tokens"]
+
+    capabilities_obj = row.get("capabilities")
+    if isinstance(capabilities_obj, dict):
+        capabilities_limits = capabilities_obj.get("limits")
+        if isinstance(capabilities_limits, dict):
+            for key in keys:
+                parsed = _coerce_int(capabilities_limits.get(key))
+                if parsed is not None:
+                    return parsed
+
+    limits_obj = row.get("limits")
+    if isinstance(limits_obj, dict):
+        for key in keys:
+            parsed = _coerce_int(limits_obj.get(key))
+            if parsed is not None:
+                return parsed
+
+    for key in keys:
         parsed = _coerce_int(row.get(key))
         if parsed is not None:
             return parsed
@@ -7708,14 +7746,12 @@ async def _fetch_github_copilot_models(
                                 continue
 
                         model_name = str(row.get("name") or model_id)
-                        output_limit = (
-                            row.get("limits", {}).get("max_output_tokens")
-                            if isinstance(row.get("limits"), dict)
-                            else None
-                        )
+                        output_limit = _extract_output_limit_from_model_row(row)
                         context_limit = _extract_context_limit_from_model_row(row)
                         if not isinstance(output_limit, int):
                             output_limit = await get_output_limit(model_id)
+                        else:
+                            update_model_output_limit(model_id, output_limit)
                         if isinstance(context_limit, int):
                             update_model_limit(model_id, context_limit)
                         else:
@@ -7822,15 +7858,14 @@ async def _fetch_github_models_catalog(github_token: str) -> LLMModelsResponse:
                     continue
 
             model_name = str(row.get("name") or model_id)
-            output_limit = (
-                row.get("limits", {}).get("max_output_tokens")
-                if isinstance(row.get("limits"), dict)
-                else None
-            )
+            output_limit = _extract_output_limit_from_model_row(row)
             context_limit = _extract_context_limit_from_model_row(row)
             if not isinstance(output_limit, int):
                 short_id = model_id.split("/", 1)[1] if "/" in model_id else model_id
                 output_limit = await get_output_limit(short_id)
+            else:
+                short_id = model_id.split("/", 1)[1] if "/" in model_id else model_id
+                update_model_output_limit(short_id, output_limit)
             short_id = model_id.split("/", 1)[1] if "/" in model_id else model_id
             if isinstance(context_limit, int):
                 update_model_limit(short_id, context_limit)

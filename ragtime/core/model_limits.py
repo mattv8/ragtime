@@ -462,6 +462,11 @@ def update_model_limit(model_id: str, limit: int) -> None:
     _model_limits_cache[model_id] = limit
 
 
+def update_model_output_limit(model_id: str, limit: int) -> None:
+    """Update the output limit for a model in the runtime cache."""
+    _model_output_limits_cache[model_id] = limit
+
+
 def update_model_function_calling(model_id: str, supports: bool) -> None:
     """Update function calling support for a model in the runtime cache."""
     _model_supports_function_calling[model_id] = supports
