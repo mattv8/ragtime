@@ -33,6 +33,10 @@ from ragtime.core.encryption import (
 )
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
+from ragtime.core.userspace_preview_sandbox import (
+    USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
+    normalize_userspace_preview_sandbox_flags,
+)
 from ragtime.indexer.models import (
     SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
     AppSettings,
@@ -699,6 +703,20 @@ class IndexerRepository:
         if mcp_password:
             mcp_password = decrypt_secret(mcp_password)
 
+        try:
+            userspace_preview_sandbox_flags = normalize_userspace_preview_sandbox_flags(
+                getattr(settings, "userspacePreviewSandboxFlags", None)
+            )
+        except ValueError as exc:
+            logger.warning(
+                "Invalid userspace preview sandbox flags in app settings; "
+                "falling back to defaults: %s",
+                exc,
+            )
+            userspace_preview_sandbox_flags = list(
+                USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS
+            )
+
         return AppSettings(
             id=settings.id,
             # Server branding
@@ -800,6 +818,7 @@ class IndexerRepository:
             ocr_concurrency_limit=getattr(settings, "ocrConcurrencyLimit", 1),
             # User Space configuration
             snapshot_retention_days=getattr(settings, "snapshotRetentionDays", 0),
+            userspace_preview_sandbox_flags=userspace_preview_sandbox_flags,
             updated_at=settings.updatedAt,
         )
 
@@ -885,6 +904,7 @@ class IndexerRepository:
             "ocr_concurrency_limit": "ocrConcurrencyLimit",
             # User Space configuration
             "snapshot_retention_days": "snapshotRetentionDays",
+            "userspace_preview_sandbox_flags": "userspacePreviewSandboxFlags",
         }
 
         # Build update data with only provided fields

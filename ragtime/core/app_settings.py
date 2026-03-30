@@ -8,9 +8,16 @@ replacing environment-based configuration for tool settings.
 from typing import List, Optional
 
 from ragtime.core.database import get_db
-from ragtime.core.encryption import (CONNECTION_CONFIG_PASSWORD_FIELDS,
-                                     decrypt_json_passwords, decrypt_secret)
+from ragtime.core.encryption import (
+    CONNECTION_CONFIG_PASSWORD_FIELDS,
+    decrypt_json_passwords,
+    decrypt_secret,
+)
 from ragtime.core.logging import get_logger
+from ragtime.core.userspace_preview_sandbox import (
+    USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
+    normalize_userspace_preview_sandbox_flags,
+)
 
 logger = get_logger(__name__)
 
@@ -88,6 +95,22 @@ class SettingsCache:
             # Note: mcp_default_route_password stays encrypted for auth verification
             # It's decrypted in the verification function
 
+            try:
+                userspace_preview_sandbox_flags = (
+                    normalize_userspace_preview_sandbox_flags(
+                        getattr(prisma_settings, "userspacePreviewSandboxFlags", None)
+                    )
+                )
+            except ValueError as exc:
+                logger.warning(
+                    "Invalid userspace preview sandbox flags in app settings cache; "
+                    "falling back to defaults: %s",
+                    exc,
+                )
+                userspace_preview_sandbox_flags = list(
+                    USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS
+                )
+
             self._settings = {
                 "server_name": prisma_settings.serverName,
                 "enabled_tools": prisma_settings.enabledTools,
@@ -160,7 +183,9 @@ class SettingsCache:
                     prisma_settings, "includeCopilotThirdPartyModels", False
                 ),
                 "allowed_chat_models": prisma_settings.allowedChatModels or [],
-                "default_chat_model": getattr(prisma_settings, "defaultChatModel", None),
+                "default_chat_model": getattr(
+                    prisma_settings, "defaultChatModel", None
+                ),
                 "allowed_openapi_models": getattr(
                     prisma_settings, "allowedOpenapiModels", None
                 )
@@ -187,6 +212,8 @@ class SettingsCache:
                 "default_ocr_vision_model": getattr(
                     prisma_settings, "defaultOcrVisionModel", None
                 ),
+                # User Space configuration
+                "userspace_preview_sandbox_flags": userspace_preview_sandbox_flags,
             }
             return self._settings
 
@@ -259,6 +286,10 @@ class SettingsCache:
                 # OCR settings
                 "default_ocr_mode": "disabled",
                 "default_ocr_vision_model": None,
+                # User Space configuration
+                "userspace_preview_sandbox_flags": list(
+                    USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS
+                ),
             }
 
     async def get_tool_configs(self) -> List[dict]:

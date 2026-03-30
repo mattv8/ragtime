@@ -6,6 +6,9 @@ import {
   USERSPACE_EXEC_BRIDGE,
   USERSPACE_EXEC_MESSAGE_TYPES,
 } from '@/utils/userspacePreview/constants';
+import {
+  buildUserSpacePreviewSandboxAttribute,
+} from '@/utils/userspacePreview/sandbox';
 
 interface UserSpaceArtifactPreviewProps {
   entryPath: string;
@@ -37,6 +40,8 @@ export function UserSpaceArtifactPreview({
 }: UserSpaceArtifactPreviewProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [pendingExecutions, setPendingExecutions] = useState(0);
+  const [sandboxFlags, setSandboxFlags] = useState<string[]>([]);
+  const [sandboxSettingsStatus, setSandboxSettingsStatus] = useState<'loading' | 'ready' | 'error'>('loading');
 
   const handleIframeMessage = useCallback(
     async (event: MessageEvent) => {
@@ -134,6 +139,28 @@ export function UserSpaceArtifactPreview({
     setPendingExecutions(0);
   }, [previewInstanceKey, runtimePreviewUrl]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    api.getUserSpacePreviewSettings()
+      .then((response) => {
+        if (!cancelled) {
+          setSandboxFlags(response.userspace_preview_sandbox_flags);
+          setSandboxSettingsStatus('ready');
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSandboxFlags([]);
+          setSandboxSettingsStatus('error');
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const unavailableMessage = useMemo(() => {
     if (runtimePreviewUrl) {
       if (runtimeAvailable === false) {
@@ -144,11 +171,34 @@ export function UserSpaceArtifactPreview({
     return 'Runtime preview is not available. Start or restart the workspace runtime and try again.';
   }, [runtimeError, runtimeAvailable, runtimePreviewUrl]);
 
+  const sandboxAttribute = useMemo(
+    () => buildUserSpacePreviewSandboxAttribute(sandboxFlags),
+    [sandboxFlags],
+  );
+
   if (unavailableMessage) {
     return (
       <div className="userspace-preview-card">
         <h4>Runtime preview unavailable</h4>
         <p>{unavailableMessage}</p>
+      </div>
+    );
+  }
+
+  if (sandboxSettingsStatus === 'loading') {
+    return (
+      <div className="userspace-preview-card">
+        <h4>Loading preview</h4>
+        <p>Loading preview sandbox configuration...</p>
+      </div>
+    );
+  }
+
+  if (sandboxSettingsStatus === 'error') {
+    return (
+      <div className="userspace-preview-card">
+        <h4>Runtime preview unavailable</h4>
+        <p>Preview sandbox configuration could not be loaded. Refresh and try again.</p>
       </div>
     );
   }
@@ -160,7 +210,7 @@ export function UserSpaceArtifactPreview({
         key={`${previewInstanceKey ?? ''}:${runtimePreviewUrl ?? ''}`}
         title="Runtime preview"
         className="userspace-preview-frame"
-        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
+        sandbox={sandboxAttribute}
         src={runtimePreviewUrl}
       />
     </div>

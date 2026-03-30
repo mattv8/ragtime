@@ -231,6 +231,7 @@ model AppSettings {
 
   // User Space Configuration
   snapshotRetentionDays    Int      @default(0) @map("snapshot_retention_days") // Snapshot retention in days (0 = unlimited)
+  userspacePreviewSandboxFlags String[] @default(["allow-scripts", "allow-same-origin", "allow-forms", "allow-popups", "allow-popups-to-escape-sandbox", "allow-modals", "allow-downloads"]) @map("userspace_preview_sandbox_flags") // Allowed iframe sandbox flags for User Space previews
 
   // Timestamps
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")

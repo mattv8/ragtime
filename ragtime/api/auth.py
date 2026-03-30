@@ -12,11 +12,11 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
+from prisma import Json
 from prisma.enums import UserRole
 from prisma.models import User
 from pydantic import BaseModel, Field
 
-from prisma import Json
 from ragtime.config.settings import settings
 from ragtime.core.auth import (
     authenticate,

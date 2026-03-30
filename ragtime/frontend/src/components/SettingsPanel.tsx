@@ -1,11 +1,16 @@
 import { LdapGroupSelect } from './LdapGroupSelect';
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Lock, LockOpen, Info, Search, Clipboard, ExternalLink, X } from 'lucide-react';
 import { api } from '@/api';
-import type { AppSettings, UpdateSettingsRequest, OllamaModel, OllamaVisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus, CopilotAuthStatusResponse } from '@/types';
+import type { AppSettings, UpdateSettingsRequest, OllamaModel, OllamaVisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus, CopilotAuthStatusResponse, UserSpacePreviewSettingsResponse } from '@/types';
 import { MCPRoutesPanel } from './MCPRoutesPanel';
 import { OllamaConnectionForm } from './OllamaConnectionForm';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
+import {
+  buildUserSpacePreviewSandboxAttribute,
+  getUserSpacePreviewSandboxFlagValues,
+  normalizeUserSpacePreviewSandboxFlags,
+} from '@/utils/userspacePreview/sandbox';
 
 /**
  * Format a DN for display like Active Directory tree view.
@@ -127,6 +132,7 @@ interface SettingsPanelProps {
 export function SettingsPanel({ onServerNameChange, highlightSetting, onHighlightComplete, authStatus }: SettingsPanelProps) {
   const { refresh: refreshModels } = useAvailableModels();
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [userspacePreviewSettings, setUserspacePreviewSettings] = useState<UserSpacePreviewSettingsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -797,8 +803,12 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   const loadSettings = useCallback(async () => {
     try {
       setLoading(true);
-      const { settings: data } = await api.getSettings();
+      const [{ settings: data }, previewSettings] = await Promise.all([
+        api.getSettings(),
+        api.getUserSpacePreviewSettings(),
+      ]);
       setSettings(data);
+      setUserspacePreviewSettings(previewSettings);
       const normalizedLlmProvider = data.llm_provider === 'github_models' ? 'github_copilot' : data.llm_provider;
       setFormData({
         // Server branding
@@ -854,6 +864,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         default_ocr_mode: data.default_ocr_mode,
         default_ocr_vision_model: data.default_ocr_vision_model,
         ocr_concurrency_limit: data.ocr_concurrency_limit,
+        userspace_preview_sandbox_flags: data.userspace_preview_sandbox_flags,
 
         // OpenAPI model settings
         openapi_sync_chat_models: data.openapi_sync_chat_models,
@@ -1355,6 +1366,8 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
 
   // OCR Configuration
   const [ocrSaving, setOcrSaving] = useState(false);
+  const [userspaceSaving, setUserspaceSaving] = useState(false);
+  const [showSandboxModal, setShowSandboxModal] = useState(false);
 
 
   const [visionModels, setVisionModels] = useState<OllamaVisionModel[]>([]);
@@ -1427,6 +1440,79 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       setOcrSaving(false);
     }
   };
+
+  const effectiveUserSpacePreviewSandboxFlags = useMemo(
+    () => {
+      const fallbackFlags = userspacePreviewSettings?.userspace_preview_sandbox_default_flags ?? [];
+      const allowedFlags = getUserSpacePreviewSandboxFlagValues(
+        userspacePreviewSettings?.userspace_preview_sandbox_flag_options ?? []
+      );
+      return normalizeUserSpacePreviewSandboxFlags(
+        formData.userspace_preview_sandbox_flags
+        ?? settings?.userspace_preview_sandbox_flags,
+        allowedFlags,
+        fallbackFlags,
+      );
+    },
+    [
+      formData.userspace_preview_sandbox_flags,
+      settings?.userspace_preview_sandbox_flags,
+      userspacePreviewSettings,
+    ]
+  );
+
+  const userspacePreviewSandboxAttribute = useMemo(
+    () => buildUserSpacePreviewSandboxAttribute(effectiveUserSpacePreviewSandboxFlags),
+    [effectiveUserSpacePreviewSandboxFlags]
+  );
+
+  const setUserSpacePreviewSandboxFlags = useCallback((flags: string[]) => {
+    const fallbackFlags = userspacePreviewSettings?.userspace_preview_sandbox_default_flags ?? [];
+    const allowedFlags = getUserSpacePreviewSandboxFlagValues(
+      userspacePreviewSettings?.userspace_preview_sandbox_flag_options ?? []
+    );
+    setFormData((prev) => ({
+      ...prev,
+      userspace_preview_sandbox_flags: normalizeUserSpacePreviewSandboxFlags(
+        flags,
+        allowedFlags,
+        fallbackFlags,
+      ),
+    }));
+  }, [userspacePreviewSettings]);
+
+  const handleToggleUserSpacePreviewSandboxFlag = useCallback((flag: string) => {
+    const selected = new Set(effectiveUserSpacePreviewSandboxFlags);
+    if (selected.has(flag)) {
+      selected.delete(flag);
+    } else {
+      selected.add(flag);
+    }
+    setUserSpacePreviewSandboxFlags(Array.from(selected));
+  }, [effectiveUserSpacePreviewSandboxFlags, setUserSpacePreviewSandboxFlags]);
+
+  const handleSaveUserSpacePreviewSandbox = useCallback(async () => {
+    setUserspaceSaving(true);
+    setSuccess(null);
+    setError(null);
+
+    try {
+      const updated = await api.updateSettings({
+        userspace_preview_sandbox_flags: effectiveUserSpacePreviewSandboxFlags,
+      });
+      setSettings(updated);
+      setFormData((prev) => ({
+        ...prev,
+        userspace_preview_sandbox_flags: updated.userspace_preview_sandbox_flags,
+      }));
+      setSuccess('User Space preview sandbox settings saved.');
+      setTimeout(() => setSuccess(null), 5000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save User Space preview sandbox settings');
+    } finally {
+      setUserspaceSaving(false);
+    }
+  }, [effectiveUserSpacePreviewSandboxFlags]);
 
 
   const getDisplayUrl = (path: string) => {
@@ -3656,6 +3742,28 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           </div>
         </fieldset>
 
+        <fieldset id="setting-userspace_preview_sandbox_flags">
+          <legend>User Space Preview Sandbox</legend>
+          <p className="fieldset-help">
+            Control which HTML iframe sandbox flags are granted to User Space previews.
+          </p>
+
+          <div className="form-group">
+            <p className="field-help">
+              <strong>{effectiveUserSpacePreviewSandboxFlags.length}</strong> of{' '}
+              {(userspacePreviewSettings?.userspace_preview_sandbox_flag_options ?? []).length} sandbox flags enabled.
+              Sandbox attribute: <code>{userspacePreviewSandboxAttribute || '(empty)'}</code>
+            </p>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setShowSandboxModal(true)}
+            >
+              Configure Sandbox Flags
+            </button>
+          </div>
+        </fieldset>
+
 
       </form>
 
@@ -3967,6 +4075,95 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                 disabled={openapiModelsLoading || openapiAvailableModels.length === 0}
               >
                 Save Filter
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* User Space Preview Sandbox Modal */}
+      {showSandboxModal && (
+        <div className="modal-overlay" onClick={() => setShowSandboxModal(false)}>
+          <div className="modal-content modal-medium" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>User Space Preview Sandbox</h3>
+              <button
+                className="modal-close"
+                onClick={() => setShowSandboxModal(false)}
+              >
+                &times;
+              </button>
+            </div>
+            <div className="modal-body">
+              <p className="field-help" style={{ margin: '0 0 0.75rem 0' }}>
+                Control which HTML iframe sandbox flags are granted to User Space previews. Broader navigation and origin-related flags reduce iframe isolation.
+              </p>
+              <div className="model-filter-actions">
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => setUserSpacePreviewSandboxFlags(userspacePreviewSettings?.userspace_preview_sandbox_default_flags ?? [])}
+                >
+                  Use Default
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => setUserSpacePreviewSandboxFlags(getUserSpacePreviewSandboxFlagValues(userspacePreviewSettings?.userspace_preview_sandbox_flag_options ?? []))}
+                >
+                  Allow All
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-secondary"
+                  onClick={() => setUserSpacePreviewSandboxFlags([])}
+                >
+                  Clear All
+                </button>
+                <span className="muted" style={{ marginLeft: 'auto' }}>
+                  {effectiveUserSpacePreviewSandboxFlags.length} of{' '}
+                  {(userspacePreviewSettings?.userspace_preview_sandbox_flag_options ?? []).length} enabled
+                </span>
+              </div>
+              <div className="model-filter-list">
+                {(userspacePreviewSettings?.userspace_preview_sandbox_flag_options ?? []).map((option) => {
+                  const checked = effectiveUserSpacePreviewSandboxFlags.includes(option.value);
+                  return (
+                    <label key={option.value} className="model-filter-item">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => handleToggleUserSpacePreviewSandboxFlag(option.value)}
+                      />
+                      <span className="model-filter-name">
+                        <strong>{option.value}</strong>
+                        <span style={{ display: 'block', fontWeight: 400, fontSize: '0.85em', color: 'var(--text-muted, #888)' }}>
+                          {option.description}
+                        </span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setShowSandboxModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={async () => {
+                  await handleSaveUserSpacePreviewSandbox();
+                  setShowSandboxModal(false);
+                }}
+                disabled={userspaceSaving}
+              >
+                {userspaceSaving ? 'Saving...' : 'Save'}
               </button>
             </div>
           </div>

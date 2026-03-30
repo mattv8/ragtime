@@ -446,6 +446,18 @@ export interface GetSettingsResponse {
   configuration_warnings: ConfigurationWarning[];
 }
 
+export interface UserSpacePreviewSettingsResponse {
+  userspace_preview_sandbox_flags: string[];
+  userspace_preview_sandbox_default_flags: string[];
+  userspace_preview_sandbox_flag_options: UserSpacePreviewSandboxFlagOption[];
+}
+
+export interface UserSpacePreviewSandboxFlagOption {
+  value: string;
+  label: string;
+  description: string;
+}
+
 // Canonical providers used by current UI flows.
 export type LlmProvider = 'openai' | 'anthropic' | 'ollama' | 'github_copilot';
 // Legacy wire compatibility for older persisted/provider values.
@@ -536,6 +548,7 @@ export interface AppSettings {
   query_timeout: number;
   enable_write_ops: boolean;
   snapshot_retention_days: number;
+  userspace_preview_sandbox_flags: string[];
   updated_at: string | null;
 }
 
@@ -616,6 +629,7 @@ export interface UpdateSettingsRequest {
   query_timeout?: number;
   enable_write_ops?: boolean;
   snapshot_retention_days?: number;
+  userspace_preview_sandbox_flags?: string[];
 }
 
 // Ollama Connection Testing

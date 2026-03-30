@@ -2,19 +2,24 @@
 Indexer data models and schemas.
 """
 
-
 import hashlib
 import json
 from datetime import datetime
 from enum import Enum
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ragtime.core.embedding_models import (
     get_embedding_models,
     get_model_dimensions_sync,
 )
+from ragtime.core.userspace_preview_sandbox import (
+    USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
+    USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS,
+    normalize_userspace_preview_sandbox_flags,
+)
+
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -768,8 +773,22 @@ class AppSettings(BaseModel):
         ge=0,
         description="Snapshot retention in days (0 = unlimited). Snapshots older than this are hidden and cannot be restored.",
     )
+    userspace_preview_sandbox_flags: List[str] = Field(
+        default_factory=lambda: list(USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS),
+        description=(
+            "Allowed iframe sandbox flags for User Space previews. "
+            "Defaults to the current preview capability set."
+        ),
+    )
 
     updated_at: Optional[datetime] = None
+
+    @field_validator("userspace_preview_sandbox_flags", mode="before")
+    @classmethod
+    def _normalize_userspace_preview_sandbox_flags(
+        cls, value: list[str] | tuple[str, ...] | None
+    ) -> list[str]:
+        return normalize_userspace_preview_sandbox_flags(value)
 
     def get_embedding_config_hash(self) -> str:
         """Generate a hash for current embedding provider+model+dimensions configuration."""
@@ -1041,6 +1060,52 @@ class UpdateSettingsRequest(BaseModel):
         default=None,
         ge=0,
         description="Snapshot retention in days (0 = unlimited).",
+    )
+    userspace_preview_sandbox_flags: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Allowed iframe sandbox flags for User Space previews. "
+            "Omit to keep the current setting."
+        ),
+    )
+
+    @field_validator("userspace_preview_sandbox_flags", mode="before")
+    @classmethod
+    def _validate_userspace_preview_sandbox_flags(
+        cls, value: list[str] | tuple[str, ...] | None
+    ) -> list[str] | None:
+        if value is None:
+            return None
+        return normalize_userspace_preview_sandbox_flags(value)
+
+
+class UserSpacePreviewSandboxFlagOptionResponse(BaseModel):
+    """Serialized sandbox capability metadata for the frontend."""
+
+    value: str
+    label: str
+    description: str
+
+
+class UserSpacePreviewSettingsResponse(BaseModel):
+    """Public preview sandbox configuration for User Space iframes."""
+
+    userspace_preview_sandbox_flags: List[str] = Field(
+        default_factory=lambda: list(USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS),
+        description="Allowed iframe sandbox flags for User Space previews.",
+    )
+    userspace_preview_sandbox_default_flags: List[str] = Field(
+        default_factory=lambda: list(USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS),
+        description="Default iframe sandbox flags for User Space previews.",
+    )
+    userspace_preview_sandbox_flag_options: List[
+        UserSpacePreviewSandboxFlagOptionResponse
+    ] = Field(
+        default_factory=lambda: [
+            UserSpacePreviewSandboxFlagOptionResponse(**option)
+            for option in USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS
+        ],
+        description="Canonical UI metadata for supported iframe sandbox flags.",
     )
 
 
