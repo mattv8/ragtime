@@ -8,7 +8,7 @@ import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from '
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
 import { calculateConversationContextUsage, parseStoredModelIdentifier } from '@/utils/contextUsage';
-import { formatChatTimestamp } from '@/utils';
+import { formatChatTimestamp, getCookieValue, setSessionCookieValue, setPersistentCookieValue, clearCookieValue, clampNumber, getInterruptDismissCookieName } from '@/utils';
 import { ContextUsagePie } from './shared/ContextUsagePie';
 import { MemberManagementModal } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
@@ -278,49 +278,9 @@ interface StoredChatLayout {
 }
 
 const CHAT_LAYOUT_COOKIE_PREFIX = 'chat_layout_';
-const INTERRUPT_DISMISS_COOKIE_PREFIX = 'userspace_interrupt_dismissed_';
 
 function getChatLayoutCookieName(userId: string): string {
   return `${CHAT_LAYOUT_COOKIE_PREFIX}${encodeURIComponent(userId)}`;
-}
-
-function getInterruptDismissCookieName(userId: string, workspaceId: string): string {
-  return `${INTERRUPT_DISMISS_COOKIE_PREFIX}${encodeURIComponent(userId)}_${encodeURIComponent(workspaceId)}`;
-}
-
-function getCookieValue(name: string): string | null {
-  if (typeof document === 'undefined') return null;
-  const entries = document.cookie ? document.cookie.split('; ') : [];
-  const prefix = `${name}=`;
-  for (const entry of entries) {
-    if (!entry.startsWith(prefix)) continue;
-    const raw = entry.slice(prefix.length);
-    try {
-      return decodeURIComponent(raw);
-    } catch {
-      return raw;
-    }
-  }
-  return null;
-}
-
-function setSessionCookieValue(name: string, value: string): void {
-  if (typeof document === 'undefined') return;
-  document.cookie = `${name}=${encodeURIComponent(value)}; path=/; samesite=lax`;
-}
-
-function setPersistentCookieValue(name: string, value: string): void {
-  if (typeof document === 'undefined') return;
-  document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`;
-}
-
-function clearCookieValue(name: string): void {
-  if (typeof document === 'undefined') return;
-  document.cookie = `${name}=; path=/; max-age=0; samesite=lax`;
-}
-
-function clampNumber(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
 }
 
 function readStoredChatLayout(cookieName: string): StoredChatLayout | null {
@@ -1584,6 +1544,7 @@ export function ChatPanel({
   // Background task state
   const [activeTask, setActiveTask] = useState<ChatTask | null>(null);
   const [interruptedTask, setInterruptedTask] = useState<ChatTask | null>(null);  // Last interrupted task for continue
+  const [interruptedConversationIds, setInterruptedConversationIds] = useState<Set<string>>(new Set());
   const [interruptDismissed, setInterruptDismissed] = useState(false);
   const prevHasInterruptedRef = useRef(false);
   const [_isPollingTask, setIsPollingTask] = useState(false);
@@ -1602,23 +1563,23 @@ export function ChatPanel({
   // Un-dismiss automatically when a fresh interruption fires.
   // Keep this independent from parent callbacks so dismissals never persist forever.
   useEffect(() => {
-    const rawInterrupted = Boolean(interruptedTask);
+    const rawInterrupted = Boolean(interruptedTask) || interruptedConversationIds.size > 0;
     if (rawInterrupted && !prevHasInterruptedRef.current && workspaceId) {
       setInterruptDismissed(false);
       clearCookieValue(getInterruptDismissCookieName(currentUser.id, workspaceId));
     }
     prevHasInterruptedRef.current = rawInterrupted;
-  }, [interruptedTask, workspaceId, currentUser.id]);
+  }, [interruptedTask, interruptedConversationIds, workspaceId, currentUser.id]);
 
   // Notify parent of live/interrupted conversation state for workspace picker indicators
   // Reports effective interrupted state (false when dismissed) so workspace picker reflects dismissals
   useEffect(() => {
     if (!onConversationStateChange) return;
-    const rawInterrupted = Boolean(interruptedTask);
+    const rawInterrupted = Boolean(interruptedTask) || interruptedConversationIds.size > 0;
     const hasLive = conversations.some(c => Boolean(c.active_task_id)) && !rawInterrupted;
     const hasInterrupted = rawInterrupted && !interruptDismissed;
     onConversationStateChange(hasLive, hasInterrupted);
-  }, [conversations, interruptedTask, interruptDismissed, onConversationStateChange]);
+  }, [conversations, interruptedTask, interruptedConversationIds, interruptDismissed, onConversationStateChange]);
 
   const lastSeenVersionRef = useRef<number>(0);  // Track last seen version for delta polling
   // Available models from shared context
@@ -2459,6 +2420,24 @@ export function ChatPanel({
           });
 
           return changed ? next : prev;
+        });
+
+        // Track interrupted tasks for all conversations so UI shows right badges
+        const nextInterruptedIds = new Set<string>();
+        await Promise.all(visibleConversations.map(async (c) => {
+          const task = await api.getConversationInterruptedTask(c.id, workspaceId).catch(() => null);
+          if (task) {
+            nextInterruptedIds.add(c.id);
+          }
+        }));
+        if (cancelled) return;
+
+        setInterruptedConversationIds((prev) => {
+          if (prev.size !== nextInterruptedIds.size) return nextInterruptedIds;
+          for (const id of nextInterruptedIds) {
+            if (!prev.has(id)) return nextInterruptedIds;
+          }
+          return prev;
         });
       } catch (err) {
         console.error('Failed to poll workspace conversation states:', err);
@@ -3813,7 +3792,7 @@ export function ChatPanel({
                     >
                       <MessageSquare size={14} className="chat-workspace-conversation-icon" aria-hidden="true" />
                       <span className="model-selector-text chat-workspace-conversation-trigger-label">{activeConversation.title || 'Untitled Chat'}</span>
-                      {Boolean(interruptedTask) && !interruptDismissed && (
+                      {(Boolean(interruptedTask) || interruptedConversationIds.size > 0) && !interruptDismissed && (
                         <button
                           type="button"
                           className="chat-workspace-interrupt-dismiss"
@@ -3837,7 +3816,7 @@ export function ChatPanel({
                           {workspaceConversationOptions.map((conversation) => {
                             const isSelected = conversation.id === activeConversation.id;
                             const isEditing = editingTitle === conversation.id;
-                            const isRawInterrupted = isSelected && Boolean(interruptedTask);
+                            const isRawInterrupted = isSelected ? Boolean(interruptedTask) : interruptedConversationIds.has(conversation.id);
                             const isInterrupted = isRawInterrupted && !interruptDismissed;
                             const isLive = !isRawInterrupted && Boolean(conversation.active_task_id);
 

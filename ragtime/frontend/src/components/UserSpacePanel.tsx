@@ -36,6 +36,13 @@ interface UserSpacePanelProps {
   onFullscreenChange?: (fullscreen: boolean) => void;
 }
 
+interface WorkspaceChatState {
+  hasLive: boolean;
+  hasInterrupted: boolean;
+}
+
+const DEFAULT_WORKSPACE_CHAT_STATE: WorkspaceChatState = { hasLive: false, hasInterrupted: false };
+
 function normalizeWorkspacePath(value: string): string {
   return value.trim().replace(/^\/+|\/+$/g, '').replace(/\/+/g, '/');
 }
@@ -182,6 +189,7 @@ function buildDiffHighlightExtension(lineNumbers: Set<number>, decoration: Decor
 const LAST_WORKSPACE_COOKIE_PREFIX = 'userspace_last_workspace_id_';
 const LAST_WORKSPACE_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
 const USERSPACE_LAYOUT_COOKIE_PREFIX = 'userspace_layout_';
+const INTERRUPT_DISMISS_COOKIE_PREFIX = 'userspace_interrupt_dismissed_';
 const USERSPACE_CODEMIRROR_BASIC_SETUP = {
   lineNumbers: true,
   foldGutter: true,
@@ -201,6 +209,10 @@ function getLastWorkspaceCookieName(userId: string): string {
 
 function getUserSpaceLayoutCookieName(userId: string): string {
   return `${USERSPACE_LAYOUT_COOKIE_PREFIX}${encodeURIComponent(userId)}`;
+}
+
+function getInterruptDismissCookieName(userId: string, workspaceId: string): string {
+  return `${INTERRUPT_DISMISS_COOKIE_PREFIX}${encodeURIComponent(userId)}_${encodeURIComponent(workspaceId)}`;
 }
 
 function getCookieValue(name: string): string | null {
@@ -389,7 +401,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [statusOverlayInteracting, setStatusOverlayInteracting] = useState(false);
 
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
-  const [workspaceChatState, setWorkspaceChatState] = useState<{ hasLive: boolean; hasInterrupted: boolean }>({ hasLive: false, hasInterrupted: false });
+  const [workspaceChatStates, setWorkspaceChatStates] = useState<Record<string, WorkspaceChatState>>({});
   const [fileBrowserEntries, setFileBrowserEntries] = useState<UserSpaceFileInfo[]>([]);
   const [files, setFiles] = useState<UserSpaceFileInfo[]>([]);
   const [snapshots, setSnapshots] = useState<UserSpaceSnapshot[]>([]);
@@ -732,6 +744,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const activeWorkspace = useMemo(
     () => workspaces.find((workspace) => workspace.id === activeWorkspaceId) ?? null,
     [workspaces, activeWorkspaceId]
+  );
+  const activeWorkspaceChatState = useMemo(
+    () => (activeWorkspaceId ? (workspaceChatStates[activeWorkspaceId] ?? DEFAULT_WORKSPACE_CHAT_STATE) : DEFAULT_WORKSPACE_CHAT_STATE),
+    [activeWorkspaceId, workspaceChatStates]
   );
 
   const previewWorkspaceFiles = useMemo(() => {
@@ -1085,14 +1101,99 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     setCookieValue(lastWorkspaceCookieName, activeWorkspaceId);
   }, [activeWorkspaceId, lastWorkspaceCookieName]);
 
-  // Reset workspace chat state when switching workspaces
-  useEffect(() => {
-    setWorkspaceChatState({ hasLive: false, hasInterrupted: false });
+  const handleConversationStateChange = useCallback((hasLive: boolean, _hasInterrupted: boolean) => {
+    if (!activeWorkspaceId) return;
+    // Only update hasLive from ChatPanel (more responsive for active workspace).
+    // hasInterrupted is driven by the all-conversations poller so that
+    // interrupted tasks in non-selected conversations are not missed.
+    setWorkspaceChatStates((prev) => ({
+      ...prev,
+      [activeWorkspaceId]: { ...DEFAULT_WORKSPACE_CHAT_STATE, ...prev[activeWorkspaceId], hasLive },
+    }));
   }, [activeWorkspaceId]);
 
-  const handleConversationStateChange = useCallback((hasLive: boolean, hasInterrupted: boolean) => {
-    setWorkspaceChatState({ hasLive, hasInterrupted });
-  }, []);
+  useEffect(() => {
+    if (workspaces.length === 0) {
+      setWorkspaceChatStates({});
+      return;
+    }
+
+    const validWorkspaceIds = new Set(workspaces.map((workspace) => workspace.id));
+    setWorkspaceChatStates((prev) => {
+      let changed = false;
+      const next: Record<string, WorkspaceChatState> = {};
+      for (const [workspaceId, state] of Object.entries(prev)) {
+        if (validWorkspaceIds.has(workspaceId)) {
+          next[workspaceId] = state;
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [workspaces]);
+
+  useEffect(() => {
+    if (workspaces.length === 0) return;
+
+    let cancelled = false;
+    let isPolling = false;
+
+    const pollWorkspaceConversationStates = async () => {
+      if (isPolling) return;
+      isPolling = true;
+      try {
+        const workspaceIds = workspaces.map((workspace) => workspace.id);
+
+        if (workspaceIds.length === 0) return;
+
+        const updates = await Promise.all(workspaceIds.map(async (workspaceId) => {
+          const conversations = await api.listConversations(workspaceId);
+          const hasLiveTask = conversations.some((conversation) => Boolean(conversation.active_task_id));
+
+          let rawInterrupted = false;
+          for (const conversation of conversations) {
+            // Any interrupted task in a workspace should surface the warning icon.
+            const interruptedTask = await api.getConversationInterruptedTask(conversation.id, workspaceId);
+            if (interruptedTask) {
+              rawInterrupted = true;
+              break;
+            }
+          }
+
+          const interruptDismissed = getCookieValue(getInterruptDismissCookieName(currentUser.id, workspaceId)) === '1';
+          const hasInterrupted = rawInterrupted && !interruptDismissed;
+          const hasLive = hasLiveTask && !rawInterrupted;
+
+          return [workspaceId, { hasLive, hasInterrupted }] as const;
+        }));
+
+        if (cancelled) return;
+
+        setWorkspaceChatStates((prev) => {
+          const next = { ...prev };
+          for (const [workspaceId, state] of updates) {
+            next[workspaceId] = state;
+          }
+          return next;
+        });
+      } catch {
+        // Keep existing state if a poll cycle fails; the next interval retries.
+      } finally {
+        isPolling = false;
+      }
+    };
+
+    void pollWorkspaceConversationStates();
+    const timer = window.setInterval(() => {
+      void pollWorkspaceConversationStates();
+    }, 1000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [workspaces, activeWorkspaceId, currentUser.id]);
 
   const loadWorkspaceData = useCallback(async (workspaceId: string) => {
     const requestId = ++loadWorkspaceDataRequestIdRef.current;
@@ -3772,12 +3873,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
               disabled={workspaces.length === 0}
             >
               <span className="model-selector-text">{activeWorkspace?.name ?? 'No workspaces'}</span>
-              {workspaceChatState.hasInterrupted && (
+              {activeWorkspaceChatState.hasInterrupted && (
                 <span className="userspace-workspace-trigger-state is-interrupted" title="A conversation was interrupted">
                   <AlertCircle size={13} />
                 </span>
               )}
-              {!workspaceChatState.hasInterrupted && workspaceChatState.hasLive && (
+              {!activeWorkspaceChatState.hasInterrupted && activeWorkspaceChatState.hasLive && (
                 <MiniLoadingSpinner title="Chat in progress" />
               )}
               <span className="model-selector-arrow">▾</span>
@@ -3787,6 +3888,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
               <div className="model-selector-dropdown userspace-workspace-dropdown">
                 <div className="model-selector-dropdown-inner" role="listbox" aria-label="Workspace list">
                   {workspaces.map((ws) => {
+                    const workspaceChatState = workspaceChatStates[ws.id] ?? DEFAULT_WORKSPACE_CHAT_STATE;
                     const canDeleteWorkspace = ws.owner_user_id === currentUser.id;
                     const canRenameWorkspace = currentUser.role === 'admin'
                       || ws.owner_user_id === currentUser.id
@@ -3935,12 +4037,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                           </div>
                         )}
 
-                        {ws.id === activeWorkspaceId && workspaceChatState.hasInterrupted && (
+                        {workspaceChatState.hasInterrupted && (
                           <span className="userspace-workspace-item-state is-interrupted" title="A conversation was interrupted">
                             <AlertCircle size={13} />
                           </span>
                         )}
-                        {ws.id === activeWorkspaceId && !workspaceChatState.hasInterrupted && workspaceChatState.hasLive && (
+                        {!workspaceChatState.hasInterrupted && workspaceChatState.hasLive && (
                           <MiniLoadingSpinner title="Chat in progress" />
                         )}
 
