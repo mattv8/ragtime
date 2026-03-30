@@ -2419,6 +2419,65 @@ export function ChatPanel({
     }
   };
 
+  // Poll workspace conversation summaries so live/attention indicators update without refresh
+  useEffect(() => {
+    if (!workspaceId) return;
+
+    let cancelled = false;
+    let pollInProgress = false;
+
+    const pollWorkspaceConversationStates = async () => {
+      if (pollInProgress) return;
+      pollInProgress = true;
+      try {
+        const data = await api.listConversations(workspaceId);
+        if (cancelled) return;
+
+        const visibleConversations = data.filter((conversation) => {
+          const camelWorkspaceId = (conversation as Conversation & { workspaceId?: string | null }).workspaceId;
+          const linkedWorkspaceId = conversation.workspace_id ?? camelWorkspaceId ?? null;
+          return linkedWorkspaceId === workspaceId;
+        });
+
+        setConversations((prev) => {
+          let changed = prev.length !== visibleConversations.length;
+
+          const prevById = new Map(prev.map((conversation) => [conversation.id, conversation]));
+          const next = visibleConversations.map((conversation) => {
+            const existing = prevById.get(conversation.id);
+            if (!existing) {
+              changed = true;
+              return conversation;
+            }
+
+            if (existing.active_task_id !== conversation.active_task_id || existing.title !== conversation.title) {
+              changed = true;
+              return { ...existing, ...conversation };
+            }
+
+            return existing;
+          });
+
+          return changed ? next : prev;
+        });
+      } catch (err) {
+        console.error('Failed to poll workspace conversation states:', err);
+      } finally {
+        pollInProgress = false;
+      }
+    };
+
+    void pollWorkspaceConversationStates();
+    const interval = setInterval(() => {
+      void pollWorkspaceConversationStates();
+    }, 1000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [workspaceId]);
+
   const fetchConversationMembers = useCallback(async (conversationId: string) => {
     try {
       const members = await api.getConversationMembers(conversationId);
@@ -3025,12 +3084,16 @@ export function ChatPanel({
 
   // Check for active/interrupted background task when conversation changes
   useEffect(() => {
+    let checkInProgress = false;
     const checkTasks = async () => {
+      if (checkInProgress) return;
+      checkInProgress = true;
       // If we are switching conversations, ensure we stop any previous stream
       if (!activeConversation) {
         stopTaskStreaming();
         setActiveTask(null);
         setInterruptedTask(null);
+        checkInProgress = false;
         return;
       }
 
@@ -3065,12 +3128,18 @@ export function ChatPanel({
         }
       } catch (err) {
          console.error('Failed to check tasks:', err);
+      } finally {
+        checkInProgress = false;
       }
     };
 
-    checkTasks();
+    void checkTasks();
+    const interval = setInterval(() => {
+      void checkTasks();
+    }, 1000);
 
     return () => {
+        clearInterval(interval);
         // Stop streaming when conversation ID changes (unmounting this effect instance)
         stopTaskStreaming();
     };
