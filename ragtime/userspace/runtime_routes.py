@@ -35,6 +35,26 @@ router = APIRouter(prefix="/indexes/userspace", tags=["User Space Runtime"])
 
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 _PREVIEW_CAPABILITY_COOKIE = "userspace_preview_capability"
+_PROXY_TIMEOUT_FLOOR = 300.0  # seconds — minimum proxy read/write timeout
+_PROXY_TIMEOUT_BUFFER = 20.0  # seconds — headroom above max tool timeout
+
+
+def _get_max_proxy_timeout() -> float:
+    """Return the proxy read/write timeout derived from max tool timeout_max_seconds."""
+    try:
+        from ragtime.core.app_settings import SettingsCache
+
+        cached_configs = SettingsCache.get_instance()._tool_configs
+        if cached_configs:
+            max_t = max(
+                (cfg.get("timeout_max_seconds", 300) or 300
+                 for cfg in cached_configs),
+                default=300,
+            )
+            return max(float(max_t), _PROXY_TIMEOUT_FLOOR) + _PROXY_TIMEOUT_BUFFER
+    except Exception:
+        pass
+    return _PROXY_TIMEOUT_FLOOR + _PROXY_TIMEOUT_BUFFER
 
 
 async def _safe_close_websocket(websocket: WebSocket, code: int) -> None:
@@ -335,7 +355,13 @@ async def _proxy_http_request(
     if worker_token:
         headers["authorization"] = f"Bearer {worker_token}"
 
-    timeout = httpx.Timeout(connect=2.0, read=30.0, write=30.0, pool=5.0)
+    # Derive proxy read/write timeout from the maximum tool timeout across
+    # all configured tools so the proxy never cuts off a legitimate query.
+    # Falls back to 320 s if no tools are configured.
+    proxy_read_timeout = _get_max_proxy_timeout()
+    timeout = httpx.Timeout(
+        connect=2.0, read=proxy_read_timeout, write=proxy_read_timeout, pool=5.0
+    )
     client = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
     try:
         upstream_request = client.build_request(

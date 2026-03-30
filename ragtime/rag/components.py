@@ -27,13 +27,8 @@ from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain.agents.output_parsers.tools import ToolsAgentOutputParser
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (
-    AIMessage,
-    BaseMessage,
-    HumanMessage,
-    SystemMessage,
-    ToolMessage,
-)
+from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
+                                     SystemMessage, ToolMessage)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_core.tools import StructuredTool, ToolException
@@ -45,97 +40,67 @@ from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.copilot_auth import ensure_copilot_token_fresh
 from ragtime.core.entrypoint_status import FRAMEWORK_REQUIRED_PACKAGES
-from ragtime.core.file_constants import (
-    USERSPACE_MODULE_SOURCE_EXTENSIONS,
-    USERSPACE_STRICT_FRONTEND_EXTENSIONS,
-    USERSPACE_THEME_AUDIT_EXTENSIONS,
-    USERSPACE_TYPESCRIPT_EXTENSIONS,
-)
+from ragtime.core.file_constants import (USERSPACE_MODULE_SOURCE_EXTENSIONS,
+                                         USERSPACE_STRICT_FRONTEND_EXTENSIONS,
+                                         USERSPACE_THEME_AUDIT_EXTENSIONS,
+                                         USERSPACE_TYPESCRIPT_EXTENSIONS)
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (
-    get_context_limit,
-    get_output_limit,
-    register_model_supported_endpoints,
-    requires_responses_api,
-    supports_reasoning,
-    supports_thinking_budget,
-)
-from ragtime.core.ollama import (
-    DEFAULT_WARMUP_TIMEOUT_SECONDS,
-    KEEP_ALIVE,
-    NUM_GPU,
-    get_model_context_length,
-    get_model_details,
-    has_capability,
-    warmup_embedding_model,
-    warmup_model,
-)
-from ragtime.core.security import (
-    _SSH_ENV_VAR_RE,
-    sanitize_output,
-    validate_odoo_code,
-    validate_sql_query,
-    validate_ssh_command,
-)
+from ragtime.core.model_limits import (get_context_limit, get_output_limit,
+                                       register_model_supported_endpoints,
+                                       requires_responses_api,
+                                       supports_reasoning,
+                                       supports_thinking_budget)
+from ragtime.core.ollama import (DEFAULT_WARMUP_TIMEOUT_SECONDS, KEEP_ALIVE,
+                                 NUM_GPU, get_model_context_length,
+                                 get_model_details, has_capability,
+                                 warmup_embedding_model, warmup_model)
+from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
+                                   validate_odoo_code, validate_sql_query,
+                                   validate_ssh_command)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (
-    SSHConfig,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    execute_ssh_command,
-    expand_env_vars_via_ssh,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
+                              execute_ssh_command, expand_env_vars_via_ssh,
+                              ssh_tunnel_config_from_dict)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
-from ragtime.rag.prompts import (
-    BASE_CHAT_SYSTEM_PROMPT,
-    BASE_USERSPACE_SYSTEM_PROMPT,
-    SQLITE_INCLUDE_MODE_HINT,
-    TOOL_OUTPUT_VISIBILITY_PROMPT,
-    TOOL_USAGE_REMINDER,
-    UI_VISUALIZATION_CHAT_PROMPT,
-    UI_VISUALIZATION_COMMON_PROMPT,
-    UI_VISUALIZATION_USERSPACE_PROMPT,
-    build_index_system_prompt,
-    build_tool_system_prompt,
-    build_userspace_entrypoint_nudge,
-    build_userspace_mode_prompt_addition,
-    build_userspace_turn_reminder,
-    build_userspace_turn_reminder_with_env_vars,
-    build_workspace_continuity_context,
-)
+from ragtime.rag.prompts import (BASE_CHAT_SYSTEM_PROMPT,
+                                 BASE_USERSPACE_SYSTEM_PROMPT,
+                                 SQLITE_INCLUDE_MODE_HINT,
+                                 TOOL_OUTPUT_VISIBILITY_PROMPT,
+                                 TOOL_USAGE_REMINDER,
+                                 UI_VISUALIZATION_CHAT_PROMPT,
+                                 UI_VISUALIZATION_COMMON_PROMPT,
+                                 UI_VISUALIZATION_USERSPACE_PROMPT,
+                                 build_index_system_prompt,
+                                 build_tool_system_prompt,
+                                 build_userspace_entrypoint_nudge,
+                                 build_userspace_mode_prompt_addition,
+                                 build_userspace_turn_reminder,
+                                 build_userspace_turn_reminder_with_env_vars,
+                                 build_workspace_continuity_context)
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (
-    CHAT_CHART_DESCRIPTION_SUFFIX,
-    USERSPACE_CHART_DESCRIPTION_SUFFIX,
-    create_chart_tool,
-)
-from ragtime.tools.datatable import (
-    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-    create_datatable_tool,
-)
+from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
+                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
+                                 create_chart_tool)
+from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+                                     create_datatable_tool)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (
-    _is_shallow_repository,
-    create_aggregate_git_history_tool,
-    create_per_index_git_history_tool,
-)
+from ragtime.tools.git_history import (_is_shallow_repository,
+                                       create_aggregate_git_history_tool,
+                                       create_per_index_git_history_tool)
 from ragtime.tools.influxdb import create_influxdb_tool
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (
-    ArtifactType,
-    UpsertWorkspaceEnvVarRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-)
+from ragtime.userspace.models import (ArtifactType,
+                                      UpsertWorkspaceEnvVarRequest,
+                                      UpsertWorkspaceFileRequest,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -4958,10 +4923,14 @@ except Exception as e:
                 tool_type = (config.get("tool_type") or "").strip()
                 if not tool_id:
                     return None
+                timeout = config.get("timeout") or 30
+                timeout_max = config.get("timeout_max_seconds") or 300
                 return {
                     "tool_config_id": tool_id,
                     "tool_config_name": tool_name,
                     "tool_type": tool_type,
+                    "timeout": str(timeout),
+                    "timeout_max_seconds": str(timeout_max),
                 }
         return None
 
@@ -4991,9 +4960,12 @@ except Exception as e:
                 # described in the system prompt and repeating them wastes tokens.
                 continue
 
+            timeout_str = connection_meta.get('timeout', '30')
+            timeout_max_str = connection_meta.get('timeout_max_seconds', '300')
             line = (
                 f"- `{tool_name}` -> {connection_meta.get('tool_config_name') or tool_name} "
-                f"(id={connection_meta.get('tool_config_id')}, type={connection_meta.get('tool_type')})"
+                f"(id={connection_meta.get('tool_config_id')}, type={connection_meta.get('tool_type')}, "
+                f"timeout={timeout_str}s, max_timeout={timeout_max_str}s)"
             )
             lines.append(line)
 
@@ -5005,7 +4977,11 @@ except Exception as e:
             + "Use only these active tool connections in this request context.\n"
         )
         if mode == "userspace":
-            prompt += "When creating reusable dashboards/charts/tables, preserve the tool name and input as the stable data connection reference.\n"
+            prompt += (
+                "When creating reusable dashboards/charts/tables, preserve the tool name and input as the stable data connection reference.\n"
+                "Dashboard component execution via `context.components[id].execute()` shares the tool's configured timeout. "
+                "If a complex query risks exceeding the timeout, optimize the query or advise the user to ask an admin to increase the tool timeout in Settings > Tools.\n"
+            )
 
         return prompt + "\n" + "\n".join(lines)
 

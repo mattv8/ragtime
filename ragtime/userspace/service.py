@@ -20,6 +20,7 @@ from fastapi import HTTPException
 
 from prisma import fields as prisma_fields
 from ragtime.config import settings
+from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
@@ -150,15 +151,22 @@ _MODULE_SOURCE_EXTENSIONS = (
 _RUNTIME_BOOTSTRAP_CONFIG_PATH = ".ragtime/runtime-bootstrap.json"
 _RUNTIME_BOOTSTRAP_TEMPLATE_VERSION = 5
 _RUNTIME_BRIDGE_PATH = ".ragtime/bridge.js"
-_RUNTIME_BRIDGE_VERSION = 6
+_RUNTIME_BRIDGE_VERSION = 7
 _RUNTIME_BRIDGE_VERSION_TAG = f"@ragtime/bridge v{_RUNTIME_BRIDGE_VERSION}"
-_RUNTIME_BRIDGE_CONTENT = (
-    f"// {_RUNTIME_BRIDGE_VERSION_TAG} — platform-managed, do not edit\n"
-    "(function () {\n"
-    "  var B = 'userspace-exec-v1';\n"
-    "  var E = 'ragtime-execute';\n"
-    "  var R = 'ragtime-execute-result';\n"
-    "  var T = 60000;\n"
+_RUNTIME_BRIDGE_DEFAULT_TIMEOUT_MS = 310_000  # 300s + 10s buffer
+
+
+def _build_bridge_content(timeout_ms: int = _RUNTIME_BRIDGE_DEFAULT_TIMEOUT_MS) -> str:
+    """Build the bridge.js content with a workspace-specific timeout."""
+    timeout_seconds = max(timeout_ms // 1000, 60)
+    return (
+        f"// {_RUNTIME_BRIDGE_VERSION_TAG} — platform-managed, do not edit\n"
+        "(function () {\n"
+        "  var B = 'userspace-exec-v1';\n"
+        "  var E = 'ragtime-execute';\n"
+        "  var R = 'ragtime-execute-result';\n"
+        f"  var T = {timeout_ms};\n"
+        f"  var T_LABEL = '{timeout_seconds}s';\n"
     "  var CHART_URL = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js';\n"
     "  var JQUERY_URL = 'https://code.jquery.com/jquery-3.7.1.min.js';\n"
     "  var DATATABLES_JS_URL = 'https://cdn.datatables.net/1.13.8/js/dataTables.min.js';\n"
@@ -340,7 +348,7 @@ _RUNTIME_BRIDGE_CONTENT = (
     "\n"
     "        var timer = setTimeout(function () {\n"
     "          window.removeEventListener('message', handler);\n"
-    "          resolve({ rows: [], columns: [], row_count: 0, error: 'Execute timed out after 60s' });\n"
+    "          resolve({ rows: [], columns: [], row_count: 0, error: 'Execute timed out after ' + T_LABEL + '. An admin can increase the tool timeout in Settings > Tools.' });\n"
     "        }, T);\n"
     "        function handler(event) {\n"
     "          if (event.source !== window.parent) return;\n"
@@ -377,7 +385,12 @@ _RUNTIME_BRIDGE_CONTENT = (
     "  });\n"
     "  if (!window.context) { window.context = window.__ragtime_context; }\n"
     "})();\n"
-)
+    )
+
+
+# Keep a static reference for the runtime-bridge.js endpoint (no workspace
+# context available there, so use the default timeout).
+_RUNTIME_BRIDGE_CONTENT = _build_bridge_content()
 _SQLITE_MANAGED_DIR_PREFIX = ".ragtime/db/"
 _SQLITE_FILE_EXTENSIONS = frozenset({".sqlite", ".sqlite3", ".db", ".db3"})
 
@@ -840,25 +853,65 @@ class UserSpaceService:
         self._sync_runtime_bootstrap_config(workspace_id)
         self._sync_runtime_bridge_script(workspace_id)
 
-    def _sync_runtime_bridge_script(self, workspace_id: str) -> None:
+    def _sync_runtime_bridge_script(
+        self,
+        workspace_id: str,
+        selected_tool_ids: list[str] | None = None,
+    ) -> None:
         """Write or update the platform-managed ``.ragtime/bridge.js`` file.
 
         The bridge provides ``window.__ragtime_context`` with a
         ``components[id].execute()`` data bridge using ``postMessage``
         to the parent preview host.
+
+        The bridge timeout is derived from the workspace's selected tool
+        configs so that complex dashboard queries are not prematurely
+        cancelled by the client-side timeout.
         """
         files_dir = self._workspace_files_dir(workspace_id)
         bridge_path = files_dir / _RUNTIME_BRIDGE_PATH
 
+        # Compute per-workspace timeout from selected tool configs.
+        timeout_ms = self._compute_bridge_timeout_ms(selected_tool_ids)
+
+        # Re-generate if version changed OR if timeout changed.
         if bridge_path.exists():
             try:
                 existing = bridge_path.read_text(encoding="utf-8")
             except Exception:
                 existing = ""
             if _RUNTIME_BRIDGE_VERSION_TAG in existing:
-                return
+                # Check if the timeout value embedded in the file matches.
+                if f"var T = {timeout_ms};" in existing:
+                    return
         bridge_path.parent.mkdir(parents=True, exist_ok=True)
-        bridge_path.write_text(_RUNTIME_BRIDGE_CONTENT, encoding="utf-8")
+        bridge_path.write_text(
+            _build_bridge_content(timeout_ms), encoding="utf-8"
+        )
+
+    @staticmethod
+    def _compute_bridge_timeout_ms(
+        selected_tool_ids: list[str] | None = None,
+    ) -> int:
+        """Derive the bridge postMessage timeout from workspace tool configs.
+
+        Uses the maximum ``timeout_max_seconds`` across the workspace's
+        selected tools (with a 300 s floor) plus a 10 s buffer, converted
+        to milliseconds.
+        """
+        if not selected_tool_ids:
+            return _RUNTIME_BRIDGE_DEFAULT_TIMEOUT_MS
+
+        max_timeout = 300
+        cached_configs = SettingsCache.get_instance()._tool_configs
+        if cached_configs:
+            id_set = set(selected_tool_ids)
+            for cfg in cached_configs:
+                if cfg.get("id") in id_set:
+                    t = cfg.get("timeout_max_seconds", 300) or 300
+                    if t > max_timeout:
+                        max_timeout = t
+        return (max(max_timeout, 300) + 10) * 1000
 
     @staticmethod
     def _default_runtime_entrypoint_config() -> dict[str, str]:
@@ -2159,9 +2212,18 @@ class UserSpaceService:
         if not workspace:
             raise HTTPException(status_code=404, detail="Workspace not found")
 
+        # Extract selected tool IDs early so we can pass them to the bridge
+        # sync for per-workspace timeout computation.
+        tool_rows = list(getattr(workspace, "toolSelections", []) or [])
+        _selected_tool_ids = [
+            getattr(tr, "toolConfigId", "")
+            for tr in tool_rows
+            if getattr(tr, "toolConfigId", None)
+        ]
+
         if is_admin:
             self._sync_runtime_bootstrap_config(workspace_id)
-            self._sync_runtime_bridge_script(workspace_id)
+            self._sync_runtime_bridge_script(workspace_id, _selected_tool_ids)
             return self._workspace_from_record(workspace)
 
         user_role: str | None = None
@@ -2184,7 +2246,7 @@ class UserSpaceService:
             user_record = await db.user.find_unique(where={"id": user_id})
             if user_record and getattr(user_record, "role", None) == "admin":
                 self._sync_runtime_bootstrap_config(workspace_id)
-                self._sync_runtime_bridge_script(workspace_id)
+                self._sync_runtime_bridge_script(workspace_id, _selected_tool_ids)
                 return self._workspace_from_record(workspace)
             raise HTTPException(status_code=404, detail="Workspace not found")
 
@@ -2194,7 +2256,7 @@ class UserSpaceService:
             raise HTTPException(status_code=403, detail="Owner access required")
 
         self._sync_runtime_bootstrap_config(workspace_id)
-        self._sync_runtime_bridge_script(workspace_id)
+        self._sync_runtime_bridge_script(workspace_id, _selected_tool_ids)
         return self._workspace_from_record(workspace)
 
     async def _get_workspace_record(self, workspace_id: str) -> Any:
@@ -2705,7 +2767,9 @@ class UserSpaceService:
         if not workspace_record:
             raise HTTPException(status_code=404, detail="Shared workspace not found")
         await self._enforce_share_access(workspace_record, current_user, password)
-        self._sync_runtime_bridge_script(workspace_id)
+        _tool_rows = list(getattr(workspace_record, "toolSelections", []) or [])
+        _tool_ids = [getattr(r, "toolConfigId", "") for r in _tool_rows if getattr(r, "toolConfigId", None)]
+        self._sync_runtime_bridge_script(workspace_id, _tool_ids)
         return workspace_id
 
     async def get_shared_preview_by_slug(
@@ -2740,7 +2804,9 @@ class UserSpaceService:
         if not workspace_record:
             raise HTTPException(status_code=404, detail="Shared workspace not found")
         await self._enforce_share_access(workspace_record, current_user, password)
-        self._sync_runtime_bridge_script(workspace_id)
+        _tool_rows = list(getattr(workspace_record, "toolSelections", []) or [])
+        _tool_ids = [getattr(r, "toolConfigId", "") for r in _tool_rows if getattr(r, "toolConfigId", None)]
+        self._sync_runtime_bridge_script(workspace_id, _tool_ids)
         return workspace_id
 
     async def _build_shared_preview_response(
@@ -2754,7 +2820,9 @@ class UserSpaceService:
         if not workspace_record:
             raise HTTPException(status_code=404, detail="Shared workspace not found")
         await self._enforce_share_access(workspace_record, current_user, password)
-        self._sync_runtime_bridge_script(workspace_id)
+        _tool_rows = list(getattr(workspace_record, "toolSelections", []) or [])
+        _tool_ids = [getattr(r, "toolConfigId", "") for r in _tool_rows if getattr(r, "toolConfigId", None)]
+        self._sync_runtime_bridge_script(workspace_id, _tool_ids)
 
         files_dir = self._workspace_files_dir(workspace_id)
         if not files_dir.exists() or not files_dir.is_dir():
@@ -5077,7 +5145,11 @@ class UserSpaceService:
                 except asyncio.TimeoutError:
                     process.kill()
                     await process.communicate()
-                    return f"Error: Query timed out after {timeout}s"
+                    return (
+                        f"Error: Query timed out after {timeout}s. "
+                        "An admin can increase the tool timeout in "
+                        "Settings > Tools."
+                    )
             else:
                 stdout, stderr = await process.communicate()
 
@@ -5090,7 +5162,11 @@ class UserSpaceService:
 
             return add_table_metadata_to_psql_output(output, include_metadata=True)
         except asyncio.TimeoutError:
-            return f"Error: Query timed out after {timeout}s"
+            return (
+                f"Error: Query timed out after {timeout}s. "
+                "An admin can increase the tool timeout in "
+                "Settings > Tools."
+            )
         except Exception as e:
             return f"Error: {e}"
 
