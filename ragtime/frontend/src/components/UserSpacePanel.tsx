@@ -1149,21 +1149,25 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
         const updates = await Promise.all(workspaceIds.map(async (workspaceId) => {
           const conversations = await api.listConversations(workspaceId);
-          const hasLiveTask = conversations.some((conversation) => Boolean(conversation.active_task_id));
-
+          const interruptDismissed = getCookieValue(getInterruptDismissCookieName(currentUser.id, workspaceId)) === '1';
           let rawInterrupted = false;
+          let hasLiveTask = false;
+
           for (const conversation of conversations) {
-            // Any interrupted task in a workspace should surface the warning icon.
-            const interruptedTask = await api.getConversationInterruptedTask(conversation.id, workspaceId);
+            // If we found an interrupted task and we aren't dismissed, we can stop looking
+            // for more interrupted tasks and skip looking for live tasks (since it won't show).
+            if (rawInterrupted && !interruptDismissed) break;
+
+            const interruptedTask = await api.getConversationInterruptedTask(conversation.id, workspaceId).catch(() => null);
             if (interruptedTask) {
               rawInterrupted = true;
-              break;
+            } else if (conversation.active_task_id) {
+              hasLiveTask = true;
             }
           }
 
-          const interruptDismissed = getCookieValue(getInterruptDismissCookieName(currentUser.id, workspaceId)) === '1';
           const hasInterrupted = rawInterrupted && !interruptDismissed;
-          const hasLive = hasLiveTask && !rawInterrupted;
+          const hasLive = hasLiveTask && !hasInterrupted;
 
           return [workspaceId, { hasLive, hasInterrupted }] as const;
         }));

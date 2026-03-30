@@ -15,7 +15,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, cast
 
-from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexStatus as PrismaIndexStatus
 from prisma.enums import ToolType as PrismaToolType
@@ -23,6 +22,7 @@ from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
+from prisma import Json, Prisma
 from ragtime.core.database import get_db
 from ragtime.core.encryption import (
     CONNECTION_CONFIG_PASSWORD_FIELDS,
@@ -2015,6 +2015,24 @@ class IndexerRepository:
             prisma_task = await db.chattask.update(
                 where={"id": task_id}, data=update_data  # type: ignore[arg-type]
             )
+
+            # Clear active task from conversation for terminal states
+            if (
+                status
+                in (
+                    ChatTaskStatus.completed,
+                    ChatTaskStatus.failed,
+                    ChatTaskStatus.cancelled,
+                    ChatTaskStatus.interrupted,
+                )
+                and prisma_task
+                and prisma_task.conversationId
+            ):
+                await db.conversation.update(
+                    where={"id": prisma_task.conversationId},
+                    data={"activeTaskId": None},
+                )
+
             return self._prisma_task_to_model(prisma_task)
         except Exception as e:
             logger.warning(f"Failed to update chat task status: {e}")

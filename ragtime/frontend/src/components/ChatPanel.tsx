@@ -1576,8 +1576,10 @@ export function ChatPanel({
   useEffect(() => {
     if (!onConversationStateChange) return;
     const rawInterrupted = Boolean(interruptedTask) || interruptedConversationIds.size > 0;
-    const hasLive = conversations.some(c => Boolean(c.active_task_id)) && !rawInterrupted;
     const hasInterrupted = rawInterrupted && !interruptDismissed;
+    // Don't count conversations with stale active_task_ids as live
+    const hasLiveTask = conversations.some(c => Boolean(c.active_task_id) && (!interruptedTask || interruptedTask.conversation_id !== c.id) && !interruptedConversationIds.has(c.id));
+    const hasLive = hasLiveTask && !hasInterrupted;
     onConversationStateChange(hasLive, hasInterrupted);
   }, [conversations, interruptedTask, interruptedConversationIds, interruptDismissed, onConversationStateChange]);
 
@@ -2425,6 +2427,7 @@ export function ChatPanel({
         // Track interrupted tasks for all conversations so UI shows right badges
         const nextInterruptedIds = new Set<string>();
         await Promise.all(visibleConversations.map(async (c) => {
+          // Check even if active_task_id is present to recover from stale references
           const task = await api.getConversationInterruptedTask(c.id, workspaceId).catch(() => null);
           if (task) {
             nextInterruptedIds.add(c.id);
@@ -3816,9 +3819,11 @@ export function ChatPanel({
                           {workspaceConversationOptions.map((conversation) => {
                             const isSelected = conversation.id === activeConversation.id;
                             const isEditing = editingTitle === conversation.id;
-                            const isRawInterrupted = isSelected ? Boolean(interruptedTask) : interruptedConversationIds.has(conversation.id);
+                            const isInterruptedTask = isSelected ? Boolean(interruptedTask) : interruptedConversationIds.has(conversation.id);
+                            // If it has an interrupted task, it is not live (handles stale active_task_id refs)
+                            const isLive = !isInterruptedTask && (Boolean(conversation.active_task_id) || (isSelected && Boolean(activeTask)));
+                            const isRawInterrupted = isInterruptedTask;
                             const isInterrupted = isRawInterrupted && !interruptDismissed;
-                            const isLive = !isRawInterrupted && Boolean(conversation.active_task_id);
 
                             return (
                               <div
