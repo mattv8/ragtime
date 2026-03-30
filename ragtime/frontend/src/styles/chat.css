@@ -267,6 +267,36 @@
   flex-shrink: 0;
   animation: pulse 1.5s ease-in-out infinite;
 }
+
+/* Dismissible interrupt alert button — in trigger label and in dropdown rows */
+.chat-workspace-interrupt-dismiss {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  position: relative;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--color-warning, #d97706);
+  margin-right: 4px;
+}
+.chat-workspace-interrupt-dismiss.is-inline {
+  margin-right: 0;
+  margin-left: 2px;
+}
+.chat-workspace-interrupt-dismiss .dismiss-icon {
+  display: none;
+  position: absolute;
+  inset: 0;
+  margin: auto;
+}
+.chat-workspace-interrupt-dismiss:hover .alert-icon {
+  opacity: 0.35;
+}
+.chat-workspace-interrupt-dismiss:hover .dismiss-icon {
+  display: block;
+}
 .chat-workspace-conversation-title-input {
   margin: 0;
   height: 24px;

@@ -408,6 +408,10 @@ textarea:focus {
   font-size: var(--text-sm);
 }
 
+.userspace-workspace-trigger .model-selector-text {
+  flex: 1;
+}
+
 .userspace-workspace-dropdown {
   width: max(100%, 370px);
   min-width: 100%;
@@ -451,6 +455,33 @@ textarea:focus {
   text-align: left;
   cursor: pointer;
   padding: 2px;
+}
+
+/* Live/interrupted state indicators inside workspace trigger and dropdown rows */
+.userspace-workspace-trigger-state {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-right: 4px;
+  color: var(--color-text-muted);
+}
+
+.userspace-workspace-trigger-state svg,
+.userspace-workspace-item-state svg {
+  display: block;
+}
+
+.userspace-workspace-item-state {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-left: 4px;
+  color: var(--color-text-muted);
+}
+
+.userspace-workspace-trigger-state.is-interrupted,
+.userspace-workspace-item-state.is-interrupted {
+  color: var(--color-warning, #d97706);
 }
 
 .userspace-workspace-inline-edit {

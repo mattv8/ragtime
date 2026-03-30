@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { Check, ChevronDown, ChevronRight, Copy, Database, ExternalLink, File, History, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
+import { AlertCircle, Check, ChevronDown, ChevronRight, Copy, Database, ExternalLink, File, History, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { python } from '@codemirror/lang-python';
@@ -388,6 +388,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [statusOverlayInteracting, setStatusOverlayInteracting] = useState(false);
 
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
+  const [workspaceChatState, setWorkspaceChatState] = useState<{ hasLive: boolean; hasInterrupted: boolean }>({ hasLive: false, hasInterrupted: false });
   const [fileBrowserEntries, setFileBrowserEntries] = useState<UserSpaceFileInfo[]>([]);
   const [files, setFiles] = useState<UserSpaceFileInfo[]>([]);
   const [snapshots, setSnapshots] = useState<UserSpaceSnapshot[]>([]);
@@ -1080,6 +1081,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     if (!activeWorkspaceId) return;
     setCookieValue(lastWorkspaceCookieName, activeWorkspaceId);
   }, [activeWorkspaceId, lastWorkspaceCookieName]);
+
+  // Reset workspace chat state when switching workspaces
+  useEffect(() => {
+    setWorkspaceChatState({ hasLive: false, hasInterrupted: false });
+  }, [activeWorkspaceId]);
 
   const loadWorkspaceData = useCallback(async (workspaceId: string) => {
     const requestId = ++loadWorkspaceDataRequestIdRef.current;
@@ -3752,6 +3758,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
               disabled={workspaces.length === 0}
             >
               <span className="model-selector-text">{activeWorkspace?.name ?? 'No workspaces'}</span>
+              {workspaceChatState.hasInterrupted && (
+                <span className="userspace-workspace-trigger-state is-interrupted" title="A conversation was interrupted">
+                  <AlertCircle size={13} />
+                </span>
+              )}
+              {!workspaceChatState.hasInterrupted && workspaceChatState.hasLive && (
+                <MiniLoadingSpinner title="Chat in progress" />
+              )}
               <span className="model-selector-arrow">▾</span>
             </button>
 
@@ -3905,6 +3919,15 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                               </>
                             )}
                           </div>
+                        )}
+
+                        {ws.id === activeWorkspaceId && workspaceChatState.hasInterrupted && (
+                          <span className="userspace-workspace-item-state is-interrupted" title="A conversation was interrupted">
+                            <AlertCircle size={13} />
+                          </span>
+                        )}
+                        {ws.id === activeWorkspaceId && !workspaceChatState.hasInterrupted && workspaceChatState.hasLive && (
+                          <MiniLoadingSpinner title="Chat in progress" />
                         )}
 
                         {!canDeleteWorkspace && (
@@ -4268,6 +4291,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 workspaceToolGroups={toolGroups}
                 workspaceSavingTools={savingWorkspaceTools}
                 onUserMessageSubmitted={canEditWorkspace ? handleUserMessageSubmitted : undefined}
+                onConversationStateChange={(hasLive, hasInterrupted) => setWorkspaceChatState({ hasLive, hasInterrupted })}
                 embedded
                 readOnly={!canEditWorkspace}
                 readOnlyMessage="Workspace is read-only for viewers. You can review chat and files, but only owners/editors can send prompts."

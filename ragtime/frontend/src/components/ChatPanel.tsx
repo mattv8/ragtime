@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo, isValidElement, type ReactNode, type CSSProperties } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Copy, Check, Pencil, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock } from 'lucide-react';
+import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, Users, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock } from 'lucide-react';
 import { api } from '@/api';
 import type { Conversation, ChatMessage, ChatTask, User, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, ToolCallRecord, ProviderModelState } from '@/types';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
@@ -278,9 +278,14 @@ interface StoredChatLayout {
 }
 
 const CHAT_LAYOUT_COOKIE_PREFIX = 'chat_layout_';
+const INTERRUPT_DISMISS_COOKIE_PREFIX = 'userspace_interrupt_dismissed_';
 
 function getChatLayoutCookieName(userId: string): string {
   return `${CHAT_LAYOUT_COOKIE_PREFIX}${encodeURIComponent(userId)}`;
+}
+
+function getInterruptDismissCookieName(userId: string, workspaceId: string): string {
+  return `${INTERRUPT_DISMISS_COOKIE_PREFIX}${encodeURIComponent(userId)}_${encodeURIComponent(workspaceId)}`;
 }
 
 function getCookieValue(name: string): string | null {
@@ -302,6 +307,16 @@ function getCookieValue(name: string): string | null {
 function setSessionCookieValue(name: string, value: string): void {
   if (typeof document === 'undefined') return;
   document.cookie = `${name}=${encodeURIComponent(value)}; path=/; samesite=lax`;
+}
+
+function setPersistentCookieValue(name: string, value: string): void {
+  if (typeof document === 'undefined') return;
+  document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`;
+}
+
+function clearCookieValue(name: string): void {
+  if (typeof document === 'undefined') return;
+  document.cookie = `${name}=; path=/; max-age=0; samesite=lax`;
 }
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -1498,6 +1513,7 @@ interface ChatPanelProps {
   workspaceSavingTools?: boolean;
   onUserMessageSubmitted?: (message: string) => void | Promise<void>;
   onTaskComplete?: () => void;
+  onConversationStateChange?: (hasLive: boolean, hasInterrupted: boolean) => void;
   onFullscreenChange?: (fullscreen: boolean) => void;
   embedded?: boolean;
   readOnly?: boolean;
@@ -1517,6 +1533,7 @@ export function ChatPanel({
   workspaceSavingTools = false,
   onUserMessageSubmitted,
   onTaskComplete,
+  onConversationStateChange,
   onFullscreenChange,
   embedded = false,
   readOnly = false,
@@ -1567,7 +1584,42 @@ export function ChatPanel({
   // Background task state
   const [activeTask, setActiveTask] = useState<ChatTask | null>(null);
   const [interruptedTask, setInterruptedTask] = useState<ChatTask | null>(null);  // Last interrupted task for continue
+  const [interruptDismissed, setInterruptDismissed] = useState(false);
+  const prevHasInterruptedRef = useRef(false);
   const [_isPollingTask, setIsPollingTask] = useState(false);
+
+  // Read/reset dismiss cookie when workspaceId changes
+  useEffect(() => {
+    prevHasInterruptedRef.current = false;
+    if (workspaceId) {
+      const dismissed = getCookieValue(getInterruptDismissCookieName(currentUser.id, workspaceId));
+      setInterruptDismissed(dismissed === '1');
+    } else {
+      setInterruptDismissed(false);
+    }
+  }, [workspaceId, currentUser.id]);
+
+  // Un-dismiss automatically when a fresh interruption fires.
+  // Keep this independent from parent callbacks so dismissals never persist forever.
+  useEffect(() => {
+    const rawInterrupted = Boolean(interruptedTask);
+    if (rawInterrupted && !prevHasInterruptedRef.current && workspaceId) {
+      setInterruptDismissed(false);
+      clearCookieValue(getInterruptDismissCookieName(currentUser.id, workspaceId));
+    }
+    prevHasInterruptedRef.current = rawInterrupted;
+  }, [interruptedTask, workspaceId, currentUser.id]);
+
+  // Notify parent of live/interrupted conversation state for workspace picker indicators
+  // Reports effective interrupted state (false when dismissed) so workspace picker reflects dismissals
+  useEffect(() => {
+    if (!onConversationStateChange) return;
+    const rawInterrupted = Boolean(interruptedTask);
+    const hasLive = conversations.some(c => Boolean(c.active_task_id)) && !rawInterrupted;
+    const hasInterrupted = rawInterrupted && !interruptDismissed;
+    onConversationStateChange(hasLive, hasInterrupted);
+  }, [conversations, interruptedTask, interruptDismissed, onConversationStateChange]);
+
   const lastSeenVersionRef = useRef<number>(0);  // Track last seen version for delta polling
   // Available models from shared context
   const {
@@ -3690,6 +3742,21 @@ export function ChatPanel({
                     >
                       <MessageSquare size={14} className="chat-workspace-conversation-icon" aria-hidden="true" />
                       <span className="model-selector-text chat-workspace-conversation-trigger-label">{activeConversation.title || 'Untitled Chat'}</span>
+                      {Boolean(interruptedTask) && !interruptDismissed && (
+                        <button
+                          type="button"
+                          className="chat-workspace-interrupt-dismiss"
+                          title="A conversation was interrupted — click to dismiss"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (workspaceId) setPersistentCookieValue(getInterruptDismissCookieName(currentUser.id, workspaceId), '1');
+                            setInterruptDismissed(true);
+                          }}
+                        >
+                          <AlertCircle size={13} className="alert-icon" />
+                          <Slash size={13} className="dismiss-icon" aria-hidden />
+                        </button>
+                      )}
                       <span className="model-selector-arrow chat-workspace-conversation-trigger-arrow">▾</span>
                     </button>
 
@@ -3699,8 +3766,9 @@ export function ChatPanel({
                           {workspaceConversationOptions.map((conversation) => {
                             const isSelected = conversation.id === activeConversation.id;
                             const isEditing = editingTitle === conversation.id;
-                            const isInterrupted = isSelected && Boolean(interruptedTask);
-                            const isLive = !isInterrupted && Boolean(conversation.active_task_id);
+                            const isRawInterrupted = isSelected && Boolean(interruptedTask);
+                            const isInterrupted = isRawInterrupted && !interruptDismissed;
+                            const isLive = !isRawInterrupted && Boolean(conversation.active_task_id);
 
                             return (
                               <div
@@ -3800,9 +3868,19 @@ export function ChatPanel({
                                 )}
 
                                 {isInterrupted && (
-                                  <span title="Conversation interrupted — click to continue" aria-label="Interrupted">
-                                    <AlertCircle size={12} className="chat-workspace-conversation-interrupted" />
-                                  </span>
+                                  <button
+                                    type="button"
+                                    className="chat-workspace-interrupt-dismiss is-inline"
+                                    title="Conversation interrupted — click to dismiss"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (workspaceId) setPersistentCookieValue(getInterruptDismissCookieName(currentUser.id, workspaceId), '1');
+                                      setInterruptDismissed(true);
+                                    }}
+                                  >
+                                    <AlertCircle size={12} className="alert-icon chat-workspace-conversation-interrupted" />
+                                    <Slash size={12} className="dismiss-icon" aria-hidden />
+                                  </button>
                                 )}
                                 {isLive && (
                                   <MiniLoadingSpinner title="Processing in background" ariaHidden />
