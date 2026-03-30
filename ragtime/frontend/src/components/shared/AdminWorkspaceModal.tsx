@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, Repeat, Trash2, X } from 'lucide-react';
+import { AlertCircle, Check, ChevronDown, ChevronRight, Repeat, Trash2, X } from 'lucide-react';
 import { MiniLoadingSpinner } from './MiniLoadingSpinner';
 import { api } from '@/api';
 import type { User, UserSpaceWorkspace } from '@/types';
+import { getCookieValue, getInterruptDismissCookieName } from '@/utils';
 
 interface AdminWorkspaceModalProps {
   isOpen: boolean;
@@ -39,6 +40,69 @@ export function AdminWorkspaceModal({
   const [transferTargetUserId, setTransferTargetUserId] = useState<string | null>(null);
   const [transferSaving, setTransferSaving] = useState(false);
   const [allUsers, setAllUsers] = useState<User[]>([]);
+  const [workspaceChatStates, setWorkspaceChatStates] = useState<Record<string, { hasLive: boolean; hasInterrupted: boolean }>>({});
+
+  useEffect(() => {
+    if (!isOpen || workspaces.length === 0) return;
+
+    let cancelled = false;
+    let isPolling = false;
+
+    const pollWorkspaceConversationStates = async () => {
+      if (isPolling) return;
+      isPolling = true;
+      try {
+        const workspaceIds = workspaces.map((workspace) => workspace.id);
+        const updates = await Promise.all(workspaceIds.map(async (workspaceId) => {
+          const conversations = await api.listConversations(workspaceId);
+          const interruptDismissed = getCookieValue(getInterruptDismissCookieName(currentUser.id, workspaceId)) === '1';
+          let rawInterrupted = false;
+          let hasLiveTask = false;
+
+          for (const conversation of conversations) {
+            if (rawInterrupted && !interruptDismissed) break;
+
+            const interruptedTask = await api.getConversationInterruptedTask(conversation.id, workspaceId).catch(() => null);
+            if (interruptedTask) {
+              rawInterrupted = true;
+            } else if (conversation.active_task_id) {
+              hasLiveTask = true;
+            }
+          }
+
+          const hasInterrupted = rawInterrupted && !interruptDismissed;
+          const hasLive = hasLiveTask && !hasInterrupted;
+
+          return [workspaceId, { hasLive, hasInterrupted }] as const;
+        }));
+
+        if (cancelled) return;
+
+        setWorkspaceChatStates((prev) => {
+          const next = { ...prev };
+          for (const [workspaceId, state] of updates) {
+            next[workspaceId] = state;
+          }
+          return next;
+        });
+      } catch {
+        // Keep existing state if a poll cycle fails; the next interval retries.
+      } finally {
+        isPolling = false;
+      }
+    };
+
+    void pollWorkspaceConversationStates();
+    // Poll less frequently in admin modal due to the potentially high number of workspaces
+    const timer = window.setInterval(() => {
+      void pollWorkspaceConversationStates();
+    }, 5000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [isOpen, workspaces, currentUser.id]);
 
   const loadWorkspaces = useCallback(async (append = false) => {
     if (append) {
@@ -200,6 +264,14 @@ export function AdminWorkspaceModal({
                                 >
                                   <span className="admin-ws-item-name">{ws.name}</span>
                                   {isOwn && <span className="admin-ws-badge-own">You</span>}
+                                  {workspaceChatStates[ws.id]?.hasInterrupted && (
+                                    <span className="userspace-workspace-item-state is-interrupted" title="A conversation was interrupted">
+                                      <AlertCircle size={13} />
+                                    </span>
+                                  )}
+                                  {!workspaceChatStates[ws.id]?.hasInterrupted && workspaceChatStates[ws.id]?.hasLive && (
+                                    <MiniLoadingSpinner title="Chat in progress" />
+                                  )}
                                   <span className="admin-ws-item-date">
                                     {new Date(ws.updated_at).toLocaleDateString()}
                                   </span>
