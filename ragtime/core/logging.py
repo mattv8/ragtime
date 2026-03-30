@@ -138,6 +138,7 @@ class UvicornAccessFilter(logging.Filter):
         "/events",  # SSE event streams
         "/task",  # Task status polling
         "/interrupted-task",  # Interrupted task polling
+        "/interrupted-conversation-ids",  # Batch interrupted task polling
     }
 
     def filter(self, record: logging.LogRecord) -> bool:

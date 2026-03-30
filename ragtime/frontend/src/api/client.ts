@@ -1684,6 +1684,14 @@ export const api = {
   },
 
   /**
+   * Get conversation IDs that have interrupted tasks in a workspace (batch).
+   */
+  async getWorkspaceInterruptedConversationIds(workspaceId: string): Promise<string[]> {
+    const response = await apiFetch(`${API_BASE}/conversations/workspace/${workspaceId}/interrupted-conversation-ids`);
+    return handleResponse<string[]>(response);
+  },
+
+  /**
    * Get a chat task by ID.
    * Use this to poll for task status and streaming state.
    * @param taskId The task ID to fetch

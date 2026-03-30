@@ -2008,6 +2008,25 @@ class IndexerRepository:
 
         return self._prisma_task_to_model(prisma_task)
 
+    async def get_interrupted_conversation_ids_for_workspace(
+        self, workspace_id: str
+    ) -> list[str]:
+        """Return conversation IDs that have at least one interrupted task in a workspace."""
+        db = await self._get_db()
+
+        tasks = await db.chattask.find_many(
+            where=cast(
+                Any,
+                {
+                    "status": PrismaChatTaskStatus.interrupted,
+                    "conversation": {"workspaceId": workspace_id},
+                },
+            ),
+            distinct=["conversationId"],
+        )  # type: ignore[arg-type]
+
+        return [t.conversationId for t in tasks]
+
     async def update_chat_task_status(
         self, task_id: str, status: ChatTaskStatus, error_message: Optional[str] = None
     ) -> Optional[ChatTask]:

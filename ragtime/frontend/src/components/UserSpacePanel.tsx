@@ -1103,14 +1103,19 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     setCookieValue(lastWorkspaceCookieName, activeWorkspaceId);
   }, [activeWorkspaceId, lastWorkspaceCookieName]);
 
-  const handleConversationStateChange = useCallback((hasLive: boolean, _hasInterrupted: boolean) => {
+  const handleConversationStateChange = useCallback((hasLive: boolean, hasInterrupted: boolean) => {
     if (!activeWorkspaceId) return;
-    // Only update hasLive from ChatPanel (more responsive for active workspace).
-    // hasInterrupted is driven by the all-conversations poller so that
-    // interrupted tasks in non-selected conversations are not missed.
+    // The active workspace should reflect the live chat state from ChatPanel
+    // immediately. If a task is running, live state takes precedence over any
+    // stale interrupted badge for this workspace.
     setWorkspaceChatStates((prev) => ({
       ...prev,
-      [activeWorkspaceId]: { ...DEFAULT_WORKSPACE_CHAT_STATE, ...prev[activeWorkspaceId], hasLive },
+      [activeWorkspaceId]: {
+        ...DEFAULT_WORKSPACE_CHAT_STATE,
+        ...prev[activeWorkspaceId],
+        hasInterrupted,
+        hasLive,
+      },
     }));
   }, [activeWorkspaceId]);
 
@@ -1145,28 +1150,26 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       if (isPolling) return;
       isPolling = true;
       try {
-        const workspaceIds = workspaces.map((workspace) => workspace.id);
+        // Skip the active workspace — ChatPanel's own poller handles it
+        // and reports state via onConversationStateChange.
+        const workspaceIds = workspaces
+          .map((workspace) => workspace.id)
+          .filter((id) => id !== activeWorkspaceId);
 
-        if (workspaceIds.length === 0) return;
+        if (workspaceIds.length === 0) {
+          isPolling = false;
+          return;
+        }
 
         const updates = await Promise.all(workspaceIds.map(async (workspaceId) => {
-          const conversations = await api.listConversations(workspaceId);
+          const [conversations, interruptedConvIds] = await Promise.all([
+            api.listConversations(workspaceId),
+            api.getWorkspaceInterruptedConversationIds(workspaceId).catch(() => [] as string[]),
+          ]);
           const interruptDismissed = getCookieValue(getInterruptDismissCookieName(currentUser.id, workspaceId)) === '1';
-          let rawInterrupted = false;
-          let hasLiveTask = false;
-
-          for (const conversation of conversations) {
-            // If we found an interrupted task and we aren't dismissed, we can stop looking
-            // for more interrupted tasks and skip looking for live tasks (since it won't show).
-            if (rawInterrupted && !interruptDismissed) break;
-
-            const interruptedTask = await api.getConversationInterruptedTask(conversation.id, workspaceId).catch(() => null);
-            if (interruptedTask) {
-              rawInterrupted = true;
-            } else if (conversation.active_task_id) {
-              hasLiveTask = true;
-            }
-          }
+          const interruptedSet = new Set(interruptedConvIds);
+          const rawInterrupted = interruptedConvIds.length > 0;
+          const hasLiveTask = conversations.some(c => Boolean(c.active_task_id) && !interruptedSet.has(c.id));
 
           const hasInterrupted = rawInterrupted && !interruptDismissed;
           const hasLive = hasLiveTask && !hasInterrupted;
@@ -1191,9 +1194,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     };
 
     void pollWorkspaceConversationStates();
+    // Non-active workspace badges are secondary indicators; poll at a relaxed cadence
     const timer = window.setInterval(() => {
       void pollWorkspaceConversationStates();
-    }, 1000);
+    }, 5000);
 
     return () => {
       cancelled = true;
@@ -3903,13 +3907,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
               disabled={workspaces.length === 0}
             >
               <span className="model-selector-text">{activeWorkspace?.name ?? 'No workspaces'}</span>
-              {activeWorkspaceChatState.hasInterrupted && (
+              {activeWorkspaceChatState.hasLive && (
+                <MiniLoadingSpinner title="Chat in progress" />
+              )}
+              {!activeWorkspaceChatState.hasLive && activeWorkspaceChatState.hasInterrupted && (
                 <span className="userspace-workspace-trigger-state is-interrupted" title="A conversation was interrupted">
                   <AlertCircle size={13} />
                 </span>
-              )}
-              {!activeWorkspaceChatState.hasInterrupted && activeWorkspaceChatState.hasLive && (
-                <MiniLoadingSpinner title="Chat in progress" />
               )}
               <span className="model-selector-arrow">▾</span>
             </button>
@@ -4067,13 +4071,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                           </div>
                         )}
 
-                        {workspaceChatState.hasInterrupted && (
+                        {workspaceChatState.hasLive && (
+                          <MiniLoadingSpinner title="Chat in progress" />
+                        )}
+                        {!workspaceChatState.hasLive && workspaceChatState.hasInterrupted && (
                           <span className="userspace-workspace-item-state is-interrupted" title="A conversation was interrupted">
                             <AlertCircle size={13} />
                           </span>
-                        )}
-                        {!workspaceChatState.hasInterrupted && workspaceChatState.hasLive && (
-                          <MiniLoadingSpinner title="Chat in progress" />
                         )}
 
                         {!canDeleteWorkspace && (

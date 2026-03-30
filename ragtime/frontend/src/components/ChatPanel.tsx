@@ -1549,6 +1549,19 @@ export function ChatPanel({
   const prevHasInterruptedRef = useRef(false);
   const [_isPollingTask, setIsPollingTask] = useState(false);
 
+  const syncConversationActiveTaskId = useCallback((conversationId: string, taskId: string | null) => {
+    setConversations((prev) => prev.map((conversation) => {
+      if (conversation.id !== conversationId) return conversation;
+      if ((conversation.active_task_id ?? null) === taskId) return conversation;
+      return { ...conversation, active_task_id: taskId };
+    }));
+    setActiveConversation((prev) => {
+      if (!prev || prev.id !== conversationId) return prev;
+      if ((prev.active_task_id ?? null) === taskId) return prev;
+      return { ...prev, active_task_id: taskId };
+    });
+  }, []);
+
   // Read/reset dismiss cookie when workspaceId changes
   useEffect(() => {
     prevHasInterruptedRef.current = false;
@@ -1578,10 +1591,11 @@ export function ChatPanel({
     const rawInterrupted = Boolean(interruptedTask) || interruptedConversationIds.size > 0;
     const hasInterrupted = rawInterrupted && !interruptDismissed;
     // Don't count conversations with stale active_task_ids as live
-    const hasLiveTask = conversations.some(c => Boolean(c.active_task_id) && (!interruptedTask || interruptedTask.conversation_id !== c.id) && !interruptedConversationIds.has(c.id));
+    const hasLiveTask = Boolean(activeTask)
+      || conversations.some(c => Boolean(c.active_task_id) && (!interruptedTask || interruptedTask.conversation_id !== c.id) && !interruptedConversationIds.has(c.id));
     const hasLive = hasLiveTask && !hasInterrupted;
     onConversationStateChange(hasLive, hasInterrupted);
-  }, [conversations, interruptedTask, interruptedConversationIds, interruptDismissed, onConversationStateChange]);
+  }, [activeTask, conversations, interruptedTask, interruptedConversationIds, interruptDismissed, onConversationStateChange]);
 
   const lastSeenVersionRef = useRef<number>(0);  // Track last seen version for delta polling
   // Available models from shared context
@@ -2425,15 +2439,11 @@ export function ChatPanel({
         });
 
         // Track interrupted tasks for all conversations so UI shows right badges
-        const nextInterruptedIds = new Set<string>();
-        await Promise.all(visibleConversations.map(async (c) => {
-          // Check even if active_task_id is present to recover from stale references
-          const task = await api.getConversationInterruptedTask(c.id, workspaceId).catch(() => null);
-          if (task) {
-            nextInterruptedIds.add(c.id);
-          }
-        }));
+        const interruptedIds = workspaceId
+          ? await api.getWorkspaceInterruptedConversationIds(workspaceId).catch(() => [] as string[])
+          : [];
         if (cancelled) return;
+        const nextInterruptedIds = new Set<string>(interruptedIds);
 
         setInterruptedConversationIds((prev) => {
           if (prev.size !== nextInterruptedIds.size) return nextInterruptedIds;
@@ -2452,7 +2462,7 @@ export function ChatPanel({
     void pollWorkspaceConversationStates();
     const interval = setInterval(() => {
       void pollWorkspaceConversationStates();
-    }, 1000);
+    }, 3000);
 
     return () => {
       cancelled = true;
@@ -3000,6 +3010,7 @@ export function ChatPanel({
             // the persisted assistant message is rendered.
             const currentConversation = activeConversationRef.current;
             if (currentConversation) {
+              syncConversationActiveTaskId(currentConversation.id, null);
               try {
                 const updated = await api.getConversation(currentConversation.id, workspaceId);
                 const resolved = applyFallbackAssistantIfNeeded(updated);
@@ -3020,7 +3031,7 @@ export function ChatPanel({
             }
         }
     }
-  }, [applyFallbackAssistantIfNeeded, onTaskComplete, workspaceId]);
+  }, [applyFallbackAssistantIfNeeded, onTaskComplete, syncConversationActiveTaskId, workspaceId]);
 
   const startTaskAndStream = useCallback(async (conversationId: string, message: string) => {
     // 1. Optimistic update (User message)
@@ -3054,6 +3065,7 @@ export function ChatPanel({
         const task = await api.sendMessageBackground(conversationId, message, workspaceId);
         setActiveTask(task);
         setInterruptedTask(null);
+      syncConversationActiveTaskId(conversationId, task.id);
 
         // 3. Connect to stream
         await connectTaskStream(task.id);
@@ -3091,6 +3103,7 @@ export function ChatPanel({
         if (activeT && (activeT.status === 'pending' || activeT.status === 'running')) {
             setActiveTask(activeT);
             setInterruptedTask(null);
+            syncConversationActiveTaskId(activeConversation.id, activeT.id);
 
             // Connect to stream if not already processing this task
             connectTaskStream(activeT.id);
@@ -3103,9 +3116,7 @@ export function ChatPanel({
             // If we were processing a task that just finished, connectTaskStream finally block clears it.
             if (!activeT) {
                  setActiveTask(null);
-                 // Only verify interrupted if no active task
-                 const interruptedT = await api.getConversationInterruptedTask(activeConversation.id, workspaceId);
-                 setInterruptedTask(interruptedT);
+                syncConversationActiveTaskId(activeConversation.id, null);
             }
         }
       } catch (err) {
@@ -3118,14 +3129,51 @@ export function ChatPanel({
     void checkTasks();
     const interval = setInterval(() => {
       void checkTasks();
-    }, 1000);
+    }, 3000);
 
     return () => {
         clearInterval(interval);
         // Stop streaming when conversation ID changes (unmounting this effect instance)
         stopTaskStreaming();
     };
-  }, [activeConversation?.id, connectTaskStream, stopTaskStreaming, workspaceId]);
+  }, [activeConversation?.id, connectTaskStream, stopTaskStreaming, syncConversationActiveTaskId, workspaceId]);
+
+  // Poll interrupted-task for the active conversation separately so there is
+  // a single predictable request for continue-state recovery.
+  useEffect(() => {
+    let cancelled = false;
+    let pollInProgress = false;
+
+    const pollInterruptedTask = async () => {
+      if (!activeConversation || pollInProgress) return;
+      pollInProgress = true;
+      try {
+        const interruptedT = await api.getConversationInterruptedTask(activeConversation.id, workspaceId);
+        if (!cancelled) {
+          setInterruptedTask(interruptedT);
+        }
+      } catch (err) {
+        console.error('Failed to poll interrupted task:', err);
+      } finally {
+        pollInProgress = false;
+      }
+    };
+
+    if (!activeConversation) {
+      setInterruptedTask(null);
+      return;
+    }
+
+    void pollInterruptedTask();
+    const interval = setInterval(() => {
+      void pollInterruptedTask();
+    }, 3000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [activeConversation?.id, workspaceId]);
 
   // Cleanup on component unmount
   useEffect(() => {
@@ -3268,6 +3316,9 @@ export function ChatPanel({
     stopTaskStreaming();
     setActiveTask(null);
     setInterruptedTask(null);
+    if (activeConversationRef.current) {
+      syncConversationActiveTaskId(activeConversationRef.current.id, null);
+    }
     // Don't modify isStreaming yet to avoid UI flash/loss of content during refresh
 
     // Refresh conversation to get current state (including partial messages)
@@ -3565,6 +3616,7 @@ export function ChatPanel({
       const task = await api.sendMessageBackground(truncated.id, messageToSend, workspaceId);
       setActiveTask(task);
       setInterruptedTask(null);
+      syncConversationActiveTaskId(truncated.id, task.id);
 
       // 4. Connect to stream
       await connectTaskStream(task.id);
@@ -3795,7 +3847,10 @@ export function ChatPanel({
                     >
                       <MessageSquare size={14} className="chat-workspace-conversation-icon" aria-hidden="true" />
                       <span className="model-selector-text chat-workspace-conversation-trigger-label">{activeConversation.title || 'Untitled Chat'}</span>
-                      {(Boolean(interruptedTask) || interruptedConversationIds.size > 0) && !interruptDismissed && (
+                      {(Boolean(activeTask) || Boolean(activeConversation.active_task_id)) && (
+                        <MiniLoadingSpinner title="Processing in background" ariaHidden />
+                      )}
+                      {!(Boolean(activeTask) || Boolean(activeConversation.active_task_id)) && (Boolean(interruptedTask) || interruptedConversationIds.size > 0) && !interruptDismissed && (
                         <button
                           type="button"
                           className="chat-workspace-interrupt-dismiss"
@@ -3819,9 +3874,8 @@ export function ChatPanel({
                           {workspaceConversationOptions.map((conversation) => {
                             const isSelected = conversation.id === activeConversation.id;
                             const isEditing = editingTitle === conversation.id;
-                            const isInterruptedTask = isSelected ? Boolean(interruptedTask) : interruptedConversationIds.has(conversation.id);
-                            // If it has an interrupted task, it is not live (handles stale active_task_id refs)
-                            const isLive = !isInterruptedTask && (Boolean(conversation.active_task_id) || (isSelected && Boolean(activeTask)));
+                            const isLive = Boolean(conversation.active_task_id) || (isSelected && Boolean(activeTask));
+                            const isInterruptedTask = !isLive && (isSelected ? Boolean(interruptedTask) : interruptedConversationIds.has(conversation.id));
                             const isRawInterrupted = isInterruptedTask;
                             const isInterrupted = isRawInterrupted && !interruptDismissed;
 
