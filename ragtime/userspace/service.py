@@ -129,6 +129,7 @@ _USERSPACE_PREVIEW_ENTRY_PATH = "dashboard/main.ts"
 _DEFAULT_SHARE_SLUG_PREFIX = "share"
 _USERSPACE_PREVIEW_MAX_FILES = 200
 _USERSPACE_PREVIEW_MAX_BYTES = 3_000_000
+_SNAPSHOT_DIFF_MAX_FILE_BYTES = 1_048_576  # 1 MiB per side
 _SQLITE_EXCLUDE_GLOBS = (
     "*.sqlite",
     "*.sqlite3",
@@ -167,224 +168,224 @@ def _build_bridge_content(timeout_ms: int = _RUNTIME_BRIDGE_DEFAULT_TIMEOUT_MS) 
         "  var R = 'ragtime-execute-result';\n"
         f"  var T = {timeout_ms};\n"
         f"  var T_LABEL = '{timeout_seconds}s';\n"
-    "  var CHART_URL = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js';\n"
-    "  var JQUERY_URL = 'https://code.jquery.com/jquery-3.7.1.min.js';\n"
-    "  var DATATABLES_JS_URL = 'https://cdn.datatables.net/1.13.8/js/dataTables.min.js';\n"
-    "  var DATATABLES_CSS_URL = 'https://cdn.datatables.net/1.13.8/css/dataTables.dataTables.min.css';\n"
-    "\n"
-    "  function hasDataTables() {\n"
-    "    return !!(window.jQuery && window.jQuery.fn && window.jQuery.fn.DataTable);\n"
-    "  }\n"
-    "\n"
-    "  function ensureStylesheet(href) {\n"
-    "    if (document.querySelector('link[href=\"' + href + '\"]')) return;\n"
-    "    var link = document.createElement('link');\n"
-    "    link.rel = 'stylesheet';\n"
-    "    link.href = href;\n"
-    "    document.head.appendChild(link);\n"
-    "  }\n"
-    "\n"
-    "  function loadScript(src) {\n"
-    "    return new Promise(function (resolve, reject) {\n"
-    "      var existing = document.querySelector('script[src=\"' + src + '\"]');\n"
-    "      if (existing) {\n"
-    "        if (existing.getAttribute('data-ragtime-loaded') === '1') {\n"
-    "          resolve();\n"
-    "          return;\n"
-    "        }\n"
-    "        existing.addEventListener('load', function () { resolve(); }, { once: true });\n"
-    "        existing.addEventListener('error', function () { reject(new Error('Failed to load ' + src)); }, { once: true });\n"
-    "        return;\n"
-    "      }\n"
-    "      var script = document.createElement('script');\n"
-    "      script.src = src;\n"
-    "      script.async = false;\n"
-    "      script.onload = function () {\n"
-    "        script.setAttribute('data-ragtime-loaded', '1');\n"
-    "        resolve();\n"
-    "      };\n"
-    "      script.onerror = function () { reject(new Error('Failed to load ' + src)); };\n"
-    "      document.head.appendChild(script);\n"
-    "    });\n"
-    "  }\n"
-    "\n"
-    "  function bootstrapVizLibs() {\n"
-    "    if (window.__ragtime_viz_bootstrap_promise) return window.__ragtime_viz_bootstrap_promise;\n"
-    "\n"
-    "    ensureStylesheet(DATATABLES_CSS_URL);\n"
-    "\n"
-    "    var canUseDocumentWrite = document.readyState === 'loading' && !!document.currentScript;\n"
-    "    if (canUseDocumentWrite) {\n"
-    "      if (!window.Chart) {\n"
-    "        document.write('<script src=\"' + CHART_URL + '\"><\\/script>');\n"
-    "      }\n"
-    "      if (!window.jQuery) {\n"
-    "        document.write('<script src=\"' + JQUERY_URL + '\"><\\/script>');\n"
-    "      }\n"
-    "      if (!hasDataTables()) {\n"
-    "        document.write('<script src=\"' + DATATABLES_JS_URL + '\"><\\/script>');\n"
-    "      }\n"
-    "      window.__ragtime_viz_bootstrap_promise = Promise.resolve();\n"
-    "      return window.__ragtime_viz_bootstrap_promise;\n"
-    "    }\n"
-    "\n"
-    "    var chain = Promise.resolve();\n"
-    "    if (!window.Chart) {\n"
-    "      chain = chain.then(function () { return loadScript(CHART_URL); });\n"
-    "    }\n"
-    "    if (!window.jQuery) {\n"
-    "      chain = chain.then(function () { return loadScript(JQUERY_URL); });\n"
-    "    }\n"
-    "    if (!hasDataTables()) {\n"
-    "      chain = chain.then(function () { return loadScript(DATATABLES_JS_URL); });\n"
-    "    }\n"
-    "\n"
-    "    window.__ragtime_viz_bootstrap_promise = chain.catch(function (error) {\n"
-    "      console.warn('[ragtime bridge] visualization bootstrap failed:', error);\n"
-    "    });\n"
-    "    return window.__ragtime_viz_bootstrap_promise;\n"
-    "  }\n"
-    "\n"
-    "  bootstrapVizLibs();\n"
-    "\n"
-    "  function getDirectExecuteUrl() {\n"
-    "    var pathname = window.location && window.location.pathname ? window.location.pathname : '/';\n"
-    "    var parts = pathname.split('/').filter(Boolean);\n"
-    "\n"
-    "    if (parts.length >= 6 &&\n"
-    "        parts[0] === 'indexes' &&\n"
-    "        parts[1] === 'userspace' &&\n"
-    "        parts[2] === 'shared' &&\n"
-    "        parts[5] === 'preview') {\n"
-    "      return '/indexes/userspace/shared/' +\n"
-    "        encodeURIComponent(parts[3]) + '/' +\n"
-    "        encodeURIComponent(parts[4]) +\n"
-    "        '/execute-component';\n"
-    "    }\n"
-    "\n"
-    "    if (parts.length >= 5 &&\n"
-    "        parts[0] === 'indexes' &&\n"
-    "        parts[1] === 'userspace' &&\n"
-    "        parts[2] === 'shared' &&\n"
-    "        parts[4] === 'preview') {\n"
-    "      return '/indexes/userspace/shared/' +\n"
-    "        encodeURIComponent(parts[3]) +\n"
-    "        '/execute-component';\n"
-    "    }\n"
-    "\n"
-    "    var reserved = {\n"
-    "      auth: true,\n"
-    "      authorize: true,\n"
-    "      docs: true,\n"
-    "      health: true,\n"
-    "      indexes: true,\n"
-    "      mcp: true,\n"
-    "      openapi: true,\n"
-    "      shared: true,\n"
-    "      v1: true\n"
-    "    };\n"
-    "\n"
-    "    if (parts.length >= 2 && !reserved[parts[0]]) {\n"
-    "      return '/indexes/userspace/shared/' +\n"
-    "        encodeURIComponent(parts[0]) + '/' +\n"
-    "        encodeURIComponent(parts[1]) +\n"
-    "        '/execute-component';\n"
-    "    }\n"
-    "\n"
-    "    return null;\n"
-    "  }\n"
-    "\n"
-    "  function executeDirect(componentId, request, resolve) {\n"
-    "    var executeUrl = getDirectExecuteUrl();\n"
-    "    if (!executeUrl) {\n"
-    "      resolve({ rows: [], columns: [], row_count: 0, error: 'Live data host unavailable in this context' });\n"
-    "      return;\n"
-    "    }\n"
-    "\n"
-    "    fetch(executeUrl, {\n"
-    "      method: 'POST',\n"
-    "      credentials: 'include',\n"
-    "      headers: { 'Content-Type': 'application/json' },\n"
-    "      body: JSON.stringify({ component_id: componentId, request: request || {} }),\n"
-    "    })\n"
-    "      .then(function (response) {\n"
-    "        return response\n"
-    "          .json()\n"
-    "          .catch(function () { return {}; })\n"
-    "          .then(function (payload) { return { ok: response.ok, payload: payload }; });\n"
-    "      })\n"
-    "      .then(function (result) {\n"
-    "        if (result.ok) {\n"
-    "          resolve(result.payload || { rows: [], columns: [], row_count: 0 });\n"
-    "          return;\n"
-    "        }\n"
-    "        var detail = result.payload && (result.payload.detail || result.payload.error);\n"
-    "        resolve({\n"
-    "          rows: [],\n"
-    "          columns: [],\n"
-    "          row_count: 0,\n"
-    "          error: detail || 'Failed to execute live data component',\n"
-    "        });\n"
-    "      })\n"
-    "      .catch(function (error) {\n"
-    "        resolve({\n"
-    "          rows: [],\n"
-    "          columns: [],\n"
-    "          row_count: 0,\n"
-    "          error: error && error.message ? error.message : String(error),\n"
-    "        });\n"
-    "      });\n"
-    "  }\n"
-    "\n"
-    "  function makeExecute(componentId) {\n"
-    "    return function execute(request) {\n"
-    "      var hasParentHost = !!(window.parent && window.parent !== window);\n"
-    "      var callId = '__exec_' + Math.random().toString(36).slice(2) + '_' + Date.now();\n"
-    "      return new Promise(function (resolve) {\n"
-    "        if (!hasParentHost) {\n"
-    "          executeDirect(componentId, request, resolve);\n"
-    "          return;\n"
-    "        }\n"
-    "\n"
-    "        var timer = setTimeout(function () {\n"
-    "          window.removeEventListener('message', handler);\n"
-    "          resolve({ rows: [], columns: [], row_count: 0, error: 'Execute timed out after ' + T_LABEL + '. An admin can increase the tool timeout in Settings > Tools.' });\n"
-    "        }, T);\n"
-    "        function handler(event) {\n"
-    "          if (event.source !== window.parent) return;\n"
-    "          if (\n"
-    "            event.data &&\n"
-    "            event.data.bridge === B &&\n"
-    "            event.data.type === R &&\n"
-    "            event.data.callId === callId\n"
-    "          ) {\n"
-    "            window.removeEventListener('message', handler);\n"
-    "            clearTimeout(timer);\n"
-    "            resolve(event.data.result || { rows: [], columns: [], row_count: 0, error: 'Empty response' });\n"
-    "          }\n"
-    "        }\n"
-    "        window.addEventListener('message', handler);\n"
-    "        window.parent.postMessage(\n"
-    "          { bridge: B, type: E, callId: callId, component_id: componentId, request: request || {} },\n"
-    "          '*'\n"
-    "        );\n"
-    "      });\n"
-    "    };\n"
-    "  }\n"
-    "\n"
-    "  var componentsProxy = new Proxy({}, {\n"
-    "    get: function (_, prop) {\n"
-    "      if (typeof prop !== 'string') return undefined;\n"
-    "      return Object.freeze({ component_id: prop, execute: makeExecute(prop) });\n"
-    "    },\n"
-    "    has: function () { return true; },\n"
-    "  });\n"
-    "\n"
-    "  window.__ragtime_context = Object.freeze({\n"
-    "    components: Object.freeze(componentsProxy),\n"
-    "  });\n"
-    "  if (!window.context) { window.context = window.__ragtime_context; }\n"
-    "})();\n"
+        "  var CHART_URL = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js';\n"
+        "  var JQUERY_URL = 'https://code.jquery.com/jquery-3.7.1.min.js';\n"
+        "  var DATATABLES_JS_URL = 'https://cdn.datatables.net/1.13.8/js/dataTables.min.js';\n"
+        "  var DATATABLES_CSS_URL = 'https://cdn.datatables.net/1.13.8/css/dataTables.dataTables.min.css';\n"
+        "\n"
+        "  function hasDataTables() {\n"
+        "    return !!(window.jQuery && window.jQuery.fn && window.jQuery.fn.DataTable);\n"
+        "  }\n"
+        "\n"
+        "  function ensureStylesheet(href) {\n"
+        "    if (document.querySelector('link[href=\"' + href + '\"]')) return;\n"
+        "    var link = document.createElement('link');\n"
+        "    link.rel = 'stylesheet';\n"
+        "    link.href = href;\n"
+        "    document.head.appendChild(link);\n"
+        "  }\n"
+        "\n"
+        "  function loadScript(src) {\n"
+        "    return new Promise(function (resolve, reject) {\n"
+        "      var existing = document.querySelector('script[src=\"' + src + '\"]');\n"
+        "      if (existing) {\n"
+        "        if (existing.getAttribute('data-ragtime-loaded') === '1') {\n"
+        "          resolve();\n"
+        "          return;\n"
+        "        }\n"
+        "        existing.addEventListener('load', function () { resolve(); }, { once: true });\n"
+        "        existing.addEventListener('error', function () { reject(new Error('Failed to load ' + src)); }, { once: true });\n"
+        "        return;\n"
+        "      }\n"
+        "      var script = document.createElement('script');\n"
+        "      script.src = src;\n"
+        "      script.async = false;\n"
+        "      script.onload = function () {\n"
+        "        script.setAttribute('data-ragtime-loaded', '1');\n"
+        "        resolve();\n"
+        "      };\n"
+        "      script.onerror = function () { reject(new Error('Failed to load ' + src)); };\n"
+        "      document.head.appendChild(script);\n"
+        "    });\n"
+        "  }\n"
+        "\n"
+        "  function bootstrapVizLibs() {\n"
+        "    if (window.__ragtime_viz_bootstrap_promise) return window.__ragtime_viz_bootstrap_promise;\n"
+        "\n"
+        "    ensureStylesheet(DATATABLES_CSS_URL);\n"
+        "\n"
+        "    var canUseDocumentWrite = document.readyState === 'loading' && !!document.currentScript;\n"
+        "    if (canUseDocumentWrite) {\n"
+        "      if (!window.Chart) {\n"
+        "        document.write('<script src=\"' + CHART_URL + '\"><\\/script>');\n"
+        "      }\n"
+        "      if (!window.jQuery) {\n"
+        "        document.write('<script src=\"' + JQUERY_URL + '\"><\\/script>');\n"
+        "      }\n"
+        "      if (!hasDataTables()) {\n"
+        "        document.write('<script src=\"' + DATATABLES_JS_URL + '\"><\\/script>');\n"
+        "      }\n"
+        "      window.__ragtime_viz_bootstrap_promise = Promise.resolve();\n"
+        "      return window.__ragtime_viz_bootstrap_promise;\n"
+        "    }\n"
+        "\n"
+        "    var chain = Promise.resolve();\n"
+        "    if (!window.Chart) {\n"
+        "      chain = chain.then(function () { return loadScript(CHART_URL); });\n"
+        "    }\n"
+        "    if (!window.jQuery) {\n"
+        "      chain = chain.then(function () { return loadScript(JQUERY_URL); });\n"
+        "    }\n"
+        "    if (!hasDataTables()) {\n"
+        "      chain = chain.then(function () { return loadScript(DATATABLES_JS_URL); });\n"
+        "    }\n"
+        "\n"
+        "    window.__ragtime_viz_bootstrap_promise = chain.catch(function (error) {\n"
+        "      console.warn('[ragtime bridge] visualization bootstrap failed:', error);\n"
+        "    });\n"
+        "    return window.__ragtime_viz_bootstrap_promise;\n"
+        "  }\n"
+        "\n"
+        "  bootstrapVizLibs();\n"
+        "\n"
+        "  function getDirectExecuteUrl() {\n"
+        "    var pathname = window.location && window.location.pathname ? window.location.pathname : '/';\n"
+        "    var parts = pathname.split('/').filter(Boolean);\n"
+        "\n"
+        "    if (parts.length >= 6 &&\n"
+        "        parts[0] === 'indexes' &&\n"
+        "        parts[1] === 'userspace' &&\n"
+        "        parts[2] === 'shared' &&\n"
+        "        parts[5] === 'preview') {\n"
+        "      return '/indexes/userspace/shared/' +\n"
+        "        encodeURIComponent(parts[3]) + '/' +\n"
+        "        encodeURIComponent(parts[4]) +\n"
+        "        '/execute-component';\n"
+        "    }\n"
+        "\n"
+        "    if (parts.length >= 5 &&\n"
+        "        parts[0] === 'indexes' &&\n"
+        "        parts[1] === 'userspace' &&\n"
+        "        parts[2] === 'shared' &&\n"
+        "        parts[4] === 'preview') {\n"
+        "      return '/indexes/userspace/shared/' +\n"
+        "        encodeURIComponent(parts[3]) +\n"
+        "        '/execute-component';\n"
+        "    }\n"
+        "\n"
+        "    var reserved = {\n"
+        "      auth: true,\n"
+        "      authorize: true,\n"
+        "      docs: true,\n"
+        "      health: true,\n"
+        "      indexes: true,\n"
+        "      mcp: true,\n"
+        "      openapi: true,\n"
+        "      shared: true,\n"
+        "      v1: true\n"
+        "    };\n"
+        "\n"
+        "    if (parts.length >= 2 && !reserved[parts[0]]) {\n"
+        "      return '/indexes/userspace/shared/' +\n"
+        "        encodeURIComponent(parts[0]) + '/' +\n"
+        "        encodeURIComponent(parts[1]) +\n"
+        "        '/execute-component';\n"
+        "    }\n"
+        "\n"
+        "    return null;\n"
+        "  }\n"
+        "\n"
+        "  function executeDirect(componentId, request, resolve) {\n"
+        "    var executeUrl = getDirectExecuteUrl();\n"
+        "    if (!executeUrl) {\n"
+        "      resolve({ rows: [], columns: [], row_count: 0, error: 'Live data host unavailable in this context' });\n"
+        "      return;\n"
+        "    }\n"
+        "\n"
+        "    fetch(executeUrl, {\n"
+        "      method: 'POST',\n"
+        "      credentials: 'include',\n"
+        "      headers: { 'Content-Type': 'application/json' },\n"
+        "      body: JSON.stringify({ component_id: componentId, request: request || {} }),\n"
+        "    })\n"
+        "      .then(function (response) {\n"
+        "        return response\n"
+        "          .json()\n"
+        "          .catch(function () { return {}; })\n"
+        "          .then(function (payload) { return { ok: response.ok, payload: payload }; });\n"
+        "      })\n"
+        "      .then(function (result) {\n"
+        "        if (result.ok) {\n"
+        "          resolve(result.payload || { rows: [], columns: [], row_count: 0 });\n"
+        "          return;\n"
+        "        }\n"
+        "        var detail = result.payload && (result.payload.detail || result.payload.error);\n"
+        "        resolve({\n"
+        "          rows: [],\n"
+        "          columns: [],\n"
+        "          row_count: 0,\n"
+        "          error: detail || 'Failed to execute live data component',\n"
+        "        });\n"
+        "      })\n"
+        "      .catch(function (error) {\n"
+        "        resolve({\n"
+        "          rows: [],\n"
+        "          columns: [],\n"
+        "          row_count: 0,\n"
+        "          error: error && error.message ? error.message : String(error),\n"
+        "        });\n"
+        "      });\n"
+        "  }\n"
+        "\n"
+        "  function makeExecute(componentId) {\n"
+        "    return function execute(request) {\n"
+        "      var hasParentHost = !!(window.parent && window.parent !== window);\n"
+        "      var callId = '__exec_' + Math.random().toString(36).slice(2) + '_' + Date.now();\n"
+        "      return new Promise(function (resolve) {\n"
+        "        if (!hasParentHost) {\n"
+        "          executeDirect(componentId, request, resolve);\n"
+        "          return;\n"
+        "        }\n"
+        "\n"
+        "        var timer = setTimeout(function () {\n"
+        "          window.removeEventListener('message', handler);\n"
+        "          resolve({ rows: [], columns: [], row_count: 0, error: 'Execute timed out after ' + T_LABEL + '. An admin can increase the tool timeout in Settings > Tools.' });\n"
+        "        }, T);\n"
+        "        function handler(event) {\n"
+        "          if (event.source !== window.parent) return;\n"
+        "          if (\n"
+        "            event.data &&\n"
+        "            event.data.bridge === B &&\n"
+        "            event.data.type === R &&\n"
+        "            event.data.callId === callId\n"
+        "          ) {\n"
+        "            window.removeEventListener('message', handler);\n"
+        "            clearTimeout(timer);\n"
+        "            resolve(event.data.result || { rows: [], columns: [], row_count: 0, error: 'Empty response' });\n"
+        "          }\n"
+        "        }\n"
+        "        window.addEventListener('message', handler);\n"
+        "        window.parent.postMessage(\n"
+        "          { bridge: B, type: E, callId: callId, component_id: componentId, request: request || {} },\n"
+        "          '*'\n"
+        "        );\n"
+        "      });\n"
+        "    };\n"
+        "  }\n"
+        "\n"
+        "  var componentsProxy = new Proxy({}, {\n"
+        "    get: function (_, prop) {\n"
+        "      if (typeof prop !== 'string') return undefined;\n"
+        "      return Object.freeze({ component_id: prop, execute: makeExecute(prop) });\n"
+        "    },\n"
+        "    has: function () { return true; },\n"
+        "  });\n"
+        "\n"
+        "  window.__ragtime_context = Object.freeze({\n"
+        "    components: Object.freeze(componentsProxy),\n"
+        "  });\n"
+        "  if (!window.context) { window.context = window.__ragtime_context; }\n"
+        "})();\n"
     )
 
 
@@ -885,9 +886,7 @@ class UserSpaceService:
                 if f"var T = {timeout_ms};" in existing:
                     return
         bridge_path.parent.mkdir(parents=True, exist_ok=True)
-        bridge_path.write_text(
-            _build_bridge_content(timeout_ms), encoding="utf-8"
-        )
+        bridge_path.write_text(_build_bridge_content(timeout_ms), encoding="utf-8")
 
     @staticmethod
     def _compute_bridge_timeout_ms(
@@ -1250,6 +1249,56 @@ class UserSpaceService:
             return status, parts[2], parts[1]
         return status, parts[1], None
 
+    async def _apply_numstat_batch(
+        self,
+        workspace_id: str,
+        git_refs: list[str],
+        summary_by_path: dict[str, _WorkspaceSnapshotFileDiff],
+    ) -> None:
+        """Run a single git diff --numstat and apply additions/deletions/is_binary to all summaries."""
+        numstat_result = await self._run_git(
+            workspace_id,
+            ["diff", "--find-renames", "--numstat", *git_refs, "--"],
+            check=False,
+        )
+        if numstat_result.returncode != 0:
+            return
+        # Build a reverse lookup: old_path -> summary for renames
+        old_path_lookup: dict[str, _WorkspaceSnapshotFileDiff] = {}
+        for summary in summary_by_path.values():
+            if summary["status"] == "R" and summary["old_path"]:
+                old_path_lookup[summary["old_path"]] = summary
+        for raw_line in numstat_result.stdout.splitlines():
+            parts = raw_line.split("\t")
+            if len(parts) < 3:
+                continue
+            add_token, delete_token = parts[0].strip(), parts[1].strip()
+            numstat_path = parts[2].strip()
+            # For renames, numstat shows the new path with --find-renames
+            # but may use {old => new} notation — try the raw path, then old_path lookup
+            matched: _WorkspaceSnapshotFileDiff | None = (
+                summary_by_path.get(numstat_path) or old_path_lookup.get(numstat_path)
+            )
+            if matched is None:
+                # Try normalizing in case of path format differences
+                normalized = self._normalize_workspace_relative_path(numstat_path)
+                if normalized:
+                    matched = summary_by_path.get(
+                        normalized
+                    ) or old_path_lookup.get(normalized)
+            if matched is None:
+                continue
+            if add_token == "-" or delete_token == "-":
+                matched["is_binary"] = True
+                matched["additions"] = 0
+                matched["deletions"] = 0
+            else:
+                try:
+                    matched["additions"] = int(add_token)
+                    matched["deletions"] = int(delete_token)
+                except ValueError:
+                    pass
+
     async def _resolve_snapshot_parent_ref(
         self,
         workspace_id: str,
@@ -1330,41 +1379,9 @@ class UserSpaceService:
                 },
             )
 
-        for summary in list(summary_by_path.values()):
-            diff_path = summary["path"]
-            if summary["status"] == "R" and summary["old_path"]:
-                diff_path = summary["old_path"] or diff_path
-            numstat_result = await self._run_git(
-                workspace_id,
-                [
-                    "diff",
-                    "--find-renames",
-                    "--numstat",
-                    parent_ref,
-                    snapshot_commit_hash,
-                    "--",
-                    diff_path,
-                ],
-                check=False,
-            )
-            if numstat_result.returncode != 0:
-                continue
-            for raw_line in numstat_result.stdout.splitlines():
-                parts = raw_line.split("\t")
-                if len(parts) < 3:
-                    continue
-                add_token, delete_token = parts[0].strip(), parts[1].strip()
-                if add_token == "-" or delete_token == "-":
-                    summary["is_binary"] = True
-                    summary["additions"] = 0
-                    summary["deletions"] = 0
-                    break
-                try:
-                    summary["additions"] = int(add_token)
-                    summary["deletions"] = int(delete_token)
-                except ValueError:
-                    continue
-                break
+        await self._apply_numstat_batch(
+            workspace_id, [parent_ref, snapshot_commit_hash], summary_by_path
+        )
 
         return summary_by_path
 
@@ -1422,40 +1439,9 @@ class UserSpaceService:
                 },
             )
 
-        for summary in list(summary_by_path.values()):
-            diff_path = summary["path"]
-            if summary["status"] == "R" and summary["old_path"]:
-                diff_path = summary["old_path"] or diff_path
-            numstat_result = await self._run_git(
-                workspace_id,
-                [
-                    "diff",
-                    "--find-renames",
-                    "--numstat",
-                    snapshot_commit_hash,
-                    "--",
-                    diff_path,
-                ],
-                check=False,
-            )
-            if numstat_result.returncode != 0:
-                continue
-            for raw_line in numstat_result.stdout.splitlines():
-                parts = raw_line.split("\t")
-                if len(parts) < 3:
-                    continue
-                add_token, delete_token = parts[0].strip(), parts[1].strip()
-                if add_token == "-" or delete_token == "-":
-                    summary["is_binary"] = True
-                    summary["additions"] = 0
-                    summary["deletions"] = 0
-                    break
-                try:
-                    summary["additions"] = int(add_token)
-                    summary["deletions"] = int(delete_token)
-                except ValueError:
-                    continue
-                break
+        await self._apply_numstat_batch(
+            workspace_id, [snapshot_commit_hash], summary_by_path
+        )
 
         async with self._git_status_semaphore:
             status_result = await self._run_git(
@@ -1608,6 +1594,182 @@ class UserSpaceService:
             is_snapshot_own_diff=is_snapshot_own_diff,
         )
 
+    async def _lookup_single_file_diff_entry(
+        self,
+        workspace_id: str,
+        snapshot_commit_hash: str,
+        normalized_path: str,
+    ) -> tuple[_WorkspaceSnapshotFileDiff | None, bool]:
+        """Lightweight lookup for a single file's diff metadata without rebuilding the full summary map.
+
+        Returns (file_entry, is_snapshot_own_diff).
+        """
+        # Try working-tree vs snapshot first (the common case)
+        name_status = await self._run_git(
+            workspace_id,
+            [
+                "diff",
+                "--find-renames",
+                "--name-status",
+                snapshot_commit_hash,
+                "--",
+                normalized_path,
+            ],
+            check=False,
+        )
+        entry: _WorkspaceSnapshotFileDiff | None = None
+        is_snapshot_own_diff = False
+
+        if name_status.returncode == 0:
+            for line in name_status.stdout.splitlines():
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    parsed_status, candidate_path, old_path = (
+                        self._parse_name_status_line(stripped)
+                    )
+                except ValueError:
+                    continue
+                np = self._normalize_workspace_relative_path(candidate_path or "")
+                if np == normalized_path:
+                    nop = (
+                        self._normalize_workspace_relative_path(old_path or "") or None
+                    )
+                    entry = cast(
+                        _WorkspaceSnapshotFileDiff,
+                        {
+                            "path": normalized_path,
+                            "status": cast(
+                                Literal["A", "D", "M", "R"], parsed_status
+                            ),
+                            "old_path": nop,
+                            "additions": 0,
+                            "deletions": 0,
+                            "is_binary": False,
+                            "is_untracked_in_current": False,
+                        },
+                    )
+                    break
+
+        # Also check renames where normalized_path is the old name
+        if entry is None and name_status.returncode == 0:
+            rename_check = await self._run_git(
+                workspace_id,
+                [
+                    "diff",
+                    "--find-renames",
+                    "--name-status",
+                    snapshot_commit_hash,
+                    "--",
+                ],
+                check=False,
+            )
+            if rename_check.returncode == 0:
+                for line in rename_check.stdout.splitlines():
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    try:
+                        parsed_status, candidate_path, old_path = (
+                            self._parse_name_status_line(stripped)
+                        )
+                    except ValueError:
+                        continue
+                    np = self._normalize_workspace_relative_path(
+                        candidate_path or ""
+                    )
+                    if np == normalized_path:
+                        nop = (
+                            self._normalize_workspace_relative_path(old_path or "")
+                            or None
+                        )
+                        entry = cast(
+                            _WorkspaceSnapshotFileDiff,
+                            {
+                                "path": normalized_path,
+                                "status": cast(
+                                    Literal["A", "D", "M", "R"], parsed_status
+                                ),
+                                "old_path": nop,
+                                "additions": 0,
+                                "deletions": 0,
+                                "is_binary": False,
+                                "is_untracked_in_current": False,
+                            },
+                        )
+                        break
+
+        # Fallback: try snapshot's own diff (parent -> snapshot)
+        if entry is None and snapshot_commit_hash:
+            parent_ref = await self._resolve_snapshot_parent_ref(
+                workspace_id, snapshot_commit_hash
+            )
+            own_status = await self._run_git(
+                workspace_id,
+                [
+                    "diff",
+                    "--find-renames",
+                    "--name-status",
+                    parent_ref,
+                    snapshot_commit_hash,
+                    "--",
+                ],
+                check=False,
+            )
+            if own_status.returncode == 0:
+                for line in own_status.stdout.splitlines():
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    try:
+                        parsed_status, candidate_path, old_path = (
+                            self._parse_name_status_line(stripped)
+                        )
+                    except ValueError:
+                        continue
+                    np = self._normalize_workspace_relative_path(
+                        candidate_path or ""
+                    )
+                    if np == normalized_path:
+                        nop = (
+                            self._normalize_workspace_relative_path(old_path or "")
+                            or None
+                        )
+                        entry = cast(
+                            _WorkspaceSnapshotFileDiff,
+                            {
+                                "path": normalized_path,
+                                "status": cast(
+                                    Literal["A", "D", "M", "R"], parsed_status
+                                ),
+                                "old_path": nop,
+                                "additions": 0,
+                                "deletions": 0,
+                                "is_binary": False,
+                                "is_untracked_in_current": False,
+                            },
+                        )
+                        is_snapshot_own_diff = True
+                        break
+
+        # Apply numstat for the single file
+        if entry is not None:
+            single_map = {normalized_path: entry}
+            if is_snapshot_own_diff:
+                parent_ref = await self._resolve_snapshot_parent_ref(
+                    workspace_id, snapshot_commit_hash
+                )
+                await self._apply_numstat_batch(
+                    workspace_id, [parent_ref, snapshot_commit_hash], single_map
+                )
+            else:
+                await self._apply_numstat_batch(
+                    workspace_id, [snapshot_commit_hash], single_map
+                )
+
+        return entry, is_snapshot_own_diff
+
     async def get_snapshot_file_diff(
         self,
         workspace_id: str,
@@ -1619,14 +1781,15 @@ class UserSpaceService:
         if not normalized_path or self._is_reserved_internal_path(normalized_path):
             raise HTTPException(status_code=400, detail="Invalid file path")
 
-        snapshot_commit_hash, summary_map, is_snapshot_own_diff = (
-            await self._prepare_snapshot_diff_context(
-                workspace_id,
-                snapshot_id,
-                user_id,
-            )
+        await self._enforce_workspace_access(workspace_id, user_id)
+        await self._ensure_workspace_git_repo(workspace_id)
+
+        snapshot_row = await self._get_snapshot_record(workspace_id, snapshot_id)
+        snapshot_commit_hash = str(snapshot_row.get("git_commit_hash") or "")
+
+        file_summary, is_snapshot_own_diff = await self._lookup_single_file_diff_entry(
+            workspace_id, snapshot_commit_hash, normalized_path
         )
-        file_summary = summary_map.get(normalized_path)
         if file_summary is None:
             raise HTTPException(status_code=404, detail="Snapshot diff file not found")
 
@@ -1674,6 +1837,16 @@ class UserSpaceService:
                 )
                 is_binary = is_binary or after_is_binary
 
+        is_truncated = False
+        if not is_binary:
+            content_size = len(before_content.encode("utf-8", errors="replace")) + len(
+                after_content.encode("utf-8", errors="replace")
+            )
+            if content_size > _SNAPSHOT_DIFF_MAX_FILE_BYTES:
+                is_truncated = True
+                before_content = ""
+                after_content = ""
+
         message: str | None = None
         if is_binary:
             message = (
@@ -1681,6 +1854,8 @@ class UserSpaceService:
             )
             before_content = ""
             after_content = ""
+        elif is_truncated:
+            message = "File content is too large to display in the diff viewer."
         elif file_summary["status"] == "D":
             message = (
                 "File exists in the snapshot but is deleted in the current workspace."
@@ -1704,6 +1879,7 @@ class UserSpaceService:
             is_deleted_in_current=is_deleted_in_current,
             is_untracked_in_current=is_untracked_in_current,
             is_snapshot_own_diff=is_snapshot_own_diff,
+            is_truncated=is_truncated,
             message=message,
         )
 
@@ -2191,6 +2367,15 @@ class UserSpaceService:
             updated_at=record.updatedAt,
         )
 
+    @staticmethod
+    def _selected_tool_ids_from_workspace_record(workspace_record: Any) -> list[str]:
+        tool_rows = list(getattr(workspace_record, "toolSelections", []) or [])
+        return [
+            getattr(row, "toolConfigId", "")
+            for row in tool_rows
+            if getattr(row, "toolConfigId", None)
+        ]
+
     async def _enforce_workspace_access(
         self,
         workspace_id: str,
@@ -2214,12 +2399,7 @@ class UserSpaceService:
 
         # Extract selected tool IDs early so we can pass them to the bridge
         # sync for per-workspace timeout computation.
-        tool_rows = list(getattr(workspace, "toolSelections", []) or [])
-        _selected_tool_ids = [
-            getattr(tr, "toolConfigId", "")
-            for tr in tool_rows
-            if getattr(tr, "toolConfigId", None)
-        ]
+        _selected_tool_ids = self._selected_tool_ids_from_workspace_record(workspace)
 
         if is_admin:
             self._sync_runtime_bootstrap_config(workspace_id)
@@ -2756,6 +2936,21 @@ class UserSpaceService:
             password=password,
         )
 
+    async def _get_authorized_shared_workspace_record(
+        self,
+        workspace_id: str,
+        *,
+        current_user: Any | None = None,
+        password: str | None = None,
+    ) -> Any:
+        workspace_record = await self._get_workspace_record(workspace_id)
+        if not workspace_record:
+            raise HTTPException(status_code=404, detail="Shared workspace not found")
+        await self._enforce_share_access(workspace_record, current_user, password)
+        tool_ids = self._selected_tool_ids_from_workspace_record(workspace_record)
+        self._sync_runtime_bridge_script(workspace_id, tool_ids)
+        return workspace_record
+
     async def resolve_shared_workspace_id(
         self,
         share_token: str,
@@ -2763,13 +2958,11 @@ class UserSpaceService:
         password: str | None = None,
     ) -> str:
         workspace_id = await self._resolve_workspace_id_from_share_token(share_token)
-        workspace_record = await self._get_workspace_record(workspace_id)
-        if not workspace_record:
-            raise HTTPException(status_code=404, detail="Shared workspace not found")
-        await self._enforce_share_access(workspace_record, current_user, password)
-        _tool_rows = list(getattr(workspace_record, "toolSelections", []) or [])
-        _tool_ids = [getattr(r, "toolConfigId", "") for r in _tool_rows if getattr(r, "toolConfigId", None)]
-        self._sync_runtime_bridge_script(workspace_id, _tool_ids)
+        await self._get_authorized_shared_workspace_record(
+            workspace_id,
+            current_user=current_user,
+            password=password,
+        )
         return workspace_id
 
     async def get_shared_preview_by_slug(
@@ -2800,13 +2993,11 @@ class UserSpaceService:
             owner_username,
             share_slug,
         )
-        workspace_record = await self._get_workspace_record(workspace_id)
-        if not workspace_record:
-            raise HTTPException(status_code=404, detail="Shared workspace not found")
-        await self._enforce_share_access(workspace_record, current_user, password)
-        _tool_rows = list(getattr(workspace_record, "toolSelections", []) or [])
-        _tool_ids = [getattr(r, "toolConfigId", "") for r in _tool_rows if getattr(r, "toolConfigId", None)]
-        self._sync_runtime_bridge_script(workspace_id, _tool_ids)
+        await self._get_authorized_shared_workspace_record(
+            workspace_id,
+            current_user=current_user,
+            password=password,
+        )
         return workspace_id
 
     async def _build_shared_preview_response(
@@ -2816,13 +3007,11 @@ class UserSpaceService:
         current_user: Any | None = None,
         password: str | None = None,
     ) -> UserSpaceSharedPreviewResponse:
-        workspace_record = await self._get_workspace_record(workspace_id)
-        if not workspace_record:
-            raise HTTPException(status_code=404, detail="Shared workspace not found")
-        await self._enforce_share_access(workspace_record, current_user, password)
-        _tool_rows = list(getattr(workspace_record, "toolSelections", []) or [])
-        _tool_ids = [getattr(r, "toolConfigId", "") for r in _tool_rows if getattr(r, "toolConfigId", None)]
-        self._sync_runtime_bridge_script(workspace_id, _tool_ids)
+        workspace_record = await self._get_authorized_shared_workspace_record(
+            workspace_id,
+            current_user=current_user,
+            password=password,
+        )
 
         files_dir = self._workspace_files_dir(workspace_id)
         if not files_dir.exists() or not files_dir.is_dir():
@@ -4718,16 +4907,11 @@ class UserSpaceService:
         password: str | None = None,
     ) -> ExecuteComponentResponse:
         workspace_id = await self._resolve_workspace_id_from_share_token(share_token)
-        workspace_record = await self._get_workspace_record(workspace_id)
-        if not workspace_record:
-            raise HTTPException(status_code=404, detail="Shared workspace not found")
-        await self._enforce_share_access(workspace_record, current_user, password)
-        workspace = await self._load_workspace_for_component_execution(workspace_id)
-
-        return await self._execute_component_for_workspace(
-            workspace,
+        return await self._execute_shared_component_for_workspace_id(
+            workspace_id,
             request,
-            error_log_prefix="Shared component execution failed",
+            current_user=current_user,
+            password=password,
         )
 
     async def execute_shared_component_by_slug(
@@ -4742,10 +4926,26 @@ class UserSpaceService:
             owner_username,
             share_slug,
         )
-        workspace_record = await self._get_workspace_record(workspace_id)
-        if not workspace_record:
-            raise HTTPException(status_code=404, detail="Shared workspace not found")
-        await self._enforce_share_access(workspace_record, current_user, password)
+        return await self._execute_shared_component_for_workspace_id(
+            workspace_id,
+            request,
+            current_user=current_user,
+            password=password,
+        )
+
+    async def _execute_shared_component_for_workspace_id(
+        self,
+        workspace_id: str,
+        request: ExecuteComponentRequest,
+        *,
+        current_user: Any | None = None,
+        password: str | None = None,
+    ) -> ExecuteComponentResponse:
+        await self._get_authorized_shared_workspace_record(
+            workspace_id,
+            current_user=current_user,
+            password=password,
+        )
         workspace = await self._load_workspace_for_component_execution(workspace_id)
 
         return await self._execute_component_for_workspace(

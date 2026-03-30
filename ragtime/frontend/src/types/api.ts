@@ -1771,6 +1771,7 @@ export interface UserSpaceSnapshotFileDiff {
   is_deleted_in_current: boolean;
   is_untracked_in_current: boolean;
   is_snapshot_own_diff?: boolean;
+  is_truncated?: boolean;
   message?: string | null;
 }
 

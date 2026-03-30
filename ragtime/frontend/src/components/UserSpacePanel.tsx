@@ -193,6 +193,7 @@ const USERSPACE_CODEMIRROR_BASIC_SETUP = {
   tabSize: 2,
 };
 const USERSPACE_CHANGED_FILE_STATE_MIN_INTERVAL_MS = 1000;
+const SNAPSHOT_FILE_DIFF_CACHE_MAX_ENTRIES = 20;
 
 function getLastWorkspaceCookieName(userId: string): string {
   return `${LAST_WORKSPACE_COOKIE_PREFIX}${encodeURIComponent(userId)}`;
@@ -494,9 +495,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [snapshotsLoadedForWorkspace, setSnapshotsLoadedForWorkspace] = useState<string | null>(null);
   const [expandedSnapshotIds, setExpandedSnapshotIds] = useState<Set<string>>(new Set());
   const [snapshotDiffSummaries, setSnapshotDiffSummaries] = useState<Record<string, UserSpaceSnapshotDiffSummary>>({});
+  const snapshotDiffSummariesRef = useRef(snapshotDiffSummaries);
+  snapshotDiffSummariesRef.current = snapshotDiffSummaries;
   const [loadingSnapshotDiffSummaryIds, setLoadingSnapshotDiffSummaryIds] = useState<Record<string, boolean>>({});
   const [snapshotDiffSummaryErrors, setSnapshotDiffSummaryErrors] = useState<Record<string, string>>({});
-  const [snapshotFileDiffCache, setSnapshotFileDiffCache] = useState<Record<string, UserSpaceSnapshotFileDiff>>({});
+  const snapshotFileDiffCacheRef = useRef<Map<string, UserSpaceSnapshotFileDiff>>(new Map());
   const [activeSnapshotFileDiff, setActiveSnapshotFileDiff] = useState<UserSpaceSnapshotFileDiff | null>(null);
   const [activeSnapshotFileDiffKey, setActiveSnapshotFileDiffKey] = useState<string | null>(null);
   const [activeSnapshotFileDiffLoading, setActiveSnapshotFileDiffLoading] = useState(false);
@@ -1087,6 +1090,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     setWorkspaceChatState({ hasLive: false, hasInterrupted: false });
   }, [activeWorkspaceId]);
 
+  const handleConversationStateChange = useCallback((hasLive: boolean, hasInterrupted: boolean) => {
+    setWorkspaceChatState({ hasLive, hasInterrupted });
+  }, []);
+
   const loadWorkspaceData = useCallback(async (workspaceId: string) => {
     const requestId = ++loadWorkspaceDataRequestIdRef.current;
 
@@ -1243,8 +1250,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   }, []);
 
   const loadSnapshotDiffSummary = useCallback(async (workspaceId: string, snapshotId: string) => {
-    if (snapshotDiffSummaries[snapshotId]) {
-      return snapshotDiffSummaries[snapshotId];
+    if (snapshotDiffSummariesRef.current[snapshotId]) {
+      return snapshotDiffSummariesRef.current[snapshotId];
     }
 
     const requestId = (snapshotDiffSummaryRequestIdsRef.current[snapshotId] ?? 0) + 1;
@@ -1279,7 +1286,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         setLoadingSnapshotDiffSummaryIds((current) => ({ ...current, [snapshotId]: false }));
       }
     }
-  }, [snapshotDiffSummaries]);
+  }, []);
 
   const dismissSnapshotFileDiffOverlay = useCallback(() => {
     snapshotFileDiffPinnedRef.current = false;
@@ -1379,7 +1386,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
     snapshotFileDiffEnteredOverlayRef.current = false;
 
-    const cached = snapshotFileDiffCache[cacheKey];
+    const cached = snapshotFileDiffCacheRef.current.get(cacheKey);
     setActiveSnapshotFileDiffKey(cacheKey);
     setActiveSnapshotFileDiffError(null);
     if (cached) {
@@ -1397,7 +1404,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       if (requestId !== snapshotFileDiffRequestIdRef.current) {
         return null;
       }
-      setSnapshotFileDiffCache((current) => ({ ...current, [cacheKey]: diff }));
+      const cache = snapshotFileDiffCacheRef.current;
+      cache.delete(cacheKey);
+      cache.set(cacheKey, diff);
+      while (cache.size > SNAPSHOT_FILE_DIFF_CACHE_MAX_ENTRIES) {
+        const oldest = cache.keys().next().value;
+        if (oldest !== undefined) cache.delete(oldest);
+        else break;
+      }
       setActiveSnapshotFileDiff(diff);
       return diff;
     } catch (err) {
@@ -1410,7 +1424,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         setActiveSnapshotFileDiffLoading(false);
       }
     }
-  }, [snapshotFileDiffCache]);
+  }, []);
 
   const handleToggleSnapshotExpanded = useCallback((snapshotId: string) => {
     setExpandedSnapshotIds((current) => {
@@ -1533,7 +1547,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     setSnapshotDiffSummaries({});
     setLoadingSnapshotDiffSummaryIds({});
     setSnapshotDiffSummaryErrors({});
-    setSnapshotFileDiffCache({});
+    snapshotFileDiffCacheRef.current.clear();
     dismissSnapshotFileDiffOverlay();
     setChangedFiles(new Set());
     setAcknowledgedFiles(new Set());
@@ -4291,7 +4305,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 workspaceToolGroups={toolGroups}
                 workspaceSavingTools={savingWorkspaceTools}
                 onUserMessageSubmitted={canEditWorkspace ? handleUserMessageSubmitted : undefined}
-                onConversationStateChange={(hasLive, hasInterrupted) => setWorkspaceChatState({ hasLive, hasInterrupted })}
+                onConversationStateChange={handleConversationStateChange}
                 embedded
                 readOnly={!canEditWorkspace}
                 readOnlyMessage="Workspace is read-only for viewers. You can review chat and files, but only owners/editors can send prompts."
@@ -4650,9 +4664,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 <p className="userspace-muted userspace-error">{formatUserSpaceErrorMessage(activeSnapshotFileDiffError)}</p>
               </div>
             ) : activeSnapshotFileDiff ? (
-              activeSnapshotFileDiff.is_binary ? (
+              activeSnapshotFileDiff.is_binary || activeSnapshotFileDiff.is_truncated ? (
                 <div className="userspace-snapshot-diff-overlay-body">
-                  <p className="userspace-muted">{activeSnapshotFileDiff.message ?? 'Binary content cannot be rendered.'}</p>
+                  <p className="userspace-muted">{activeSnapshotFileDiff.message ?? 'Content cannot be rendered.'}</p>
                 </div>
               ) : (
                 <div className="userspace-snapshot-diff-columns">

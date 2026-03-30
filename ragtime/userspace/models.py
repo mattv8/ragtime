@@ -299,6 +299,7 @@ class UserSpaceSnapshotFileDiffResponse(BaseModel):
     is_deleted_in_current: bool = False
     is_untracked_in_current: bool = False
     is_snapshot_own_diff: bool = False
+    is_truncated: bool = False
     message: str | None = None
 
 

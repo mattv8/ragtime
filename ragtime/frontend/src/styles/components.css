@@ -372,6 +372,7 @@ textarea:focus {
 }
 
 .userspace-toolbar-live-spinner {
+  display: inline-block;
   width: 12px;
   height: 12px;
   border: 2px solid var(--color-border-strong);
