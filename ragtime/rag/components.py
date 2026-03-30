@@ -26,18 +26,15 @@ from langchain.agents.format_scratchpad.tools import format_to_tool_messages
 from langchain.agents.output_parsers.tools import ToolsAgentOutputParser
 from langchain_anthropic import ChatAnthropic
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import (
-    AIMessage,
-    BaseMessage,
-    HumanMessage,
-    SystemMessage,
-    ToolMessage,
-)
+from langchain_core.messages import (AIMessage, BaseMessage, HumanMessage,
+                                     SystemMessage, ToolMessage)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_core.tools import StructuredTool, ToolException
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai.chat_models.base import (
+    _construct_responses_api_payload, _get_last_messages)
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field, field_validator
 
@@ -45,98 +42,68 @@ from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.copilot_auth import ensure_copilot_token_fresh
 from ragtime.core.entrypoint_status import FRAMEWORK_REQUIRED_PACKAGES
-from ragtime.core.file_constants import (
-    USERSPACE_MODULE_SOURCE_EXTENSIONS,
-    USERSPACE_STRICT_FRONTEND_EXTENSIONS,
-    USERSPACE_THEME_AUDIT_EXTENSIONS,
-    USERSPACE_TYPESCRIPT_EXTENSIONS,
-)
+from ragtime.core.file_constants import (USERSPACE_MODULE_SOURCE_EXTENSIONS,
+                                         USERSPACE_STRICT_FRONTEND_EXTENSIONS,
+                                         USERSPACE_THEME_AUDIT_EXTENSIONS,
+                                         USERSPACE_TYPESCRIPT_EXTENSIONS)
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import (
-    get_context_limit,
-    get_output_limit,
-    register_model_supported_endpoints,
-    requires_responses_api,
-    supports_reasoning,
-    supports_responses_api,
-    supports_thinking_budget,
-)
-from ragtime.core.ollama import (
-    DEFAULT_WARMUP_TIMEOUT_SECONDS,
-    KEEP_ALIVE,
-    NUM_GPU,
-    get_model_context_length,
-    get_model_details,
-    has_capability,
-    warmup_embedding_model,
-    warmup_model,
-)
-from ragtime.core.security import (
-    _SSH_ENV_VAR_RE,
-    sanitize_output,
-    validate_odoo_code,
-    validate_sql_query,
-    validate_ssh_command,
-)
+from ragtime.core.model_limits import (get_context_limit, get_output_limit,
+                                       register_model_supported_endpoints,
+                                       requires_responses_api,
+                                       supports_reasoning,
+                                       supports_responses_api,
+                                       supports_thinking_budget)
+from ragtime.core.ollama import (DEFAULT_WARMUP_TIMEOUT_SECONDS, KEEP_ALIVE,
+                                 NUM_GPU, get_model_context_length,
+                                 get_model_details, has_capability,
+                                 warmup_embedding_model, warmup_model)
+from ragtime.core.security import (_SSH_ENV_VAR_RE, sanitize_output,
+                                   validate_odoo_code, validate_sql_query,
+                                   validate_ssh_command)
 from ragtime.core.sql_utils import add_table_metadata_to_psql_output
-from ragtime.core.ssh import (
-    SSHConfig,
-    SSHTunnel,
-    build_ssh_tunnel_config,
-    execute_ssh_command,
-    expand_env_vars_via_ssh,
-    ssh_tunnel_config_from_dict,
-)
+from ragtime.core.ssh import (SSHConfig, SSHTunnel, build_ssh_tunnel_config,
+                              execute_ssh_command, expand_env_vars_via_ssh,
+                              ssh_tunnel_config_from_dict)
 from ragtime.core.tokenization import truncate_to_token_budget
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
-from ragtime.rag.prompts import (
-    BASE_CHAT_SYSTEM_PROMPT,
-    BASE_USERSPACE_SYSTEM_PROMPT,
-    SQLITE_INCLUDE_MODE_HINT,
-    TOOL_OUTPUT_VISIBILITY_PROMPT,
-    TOOL_USAGE_REMINDER,
-    UI_VISUALIZATION_CHAT_PROMPT,
-    UI_VISUALIZATION_COMMON_PROMPT,
-    UI_VISUALIZATION_USERSPACE_PROMPT,
-    build_index_system_prompt,
-    build_tool_system_prompt,
-    build_userspace_entrypoint_nudge,
-    build_userspace_mode_prompt_addition,
-    build_userspace_turn_reminder,
-    build_userspace_turn_reminder_with_env_vars,
-    build_workspace_continuity_context,
-)
+from ragtime.rag.prompts import (BASE_CHAT_SYSTEM_PROMPT,
+                                 BASE_USERSPACE_SYSTEM_PROMPT,
+                                 SQLITE_INCLUDE_MODE_HINT,
+                                 TOOL_OUTPUT_VISIBILITY_PROMPT,
+                                 TOOL_USAGE_REMINDER,
+                                 UI_VISUALIZATION_CHAT_PROMPT,
+                                 UI_VISUALIZATION_COMMON_PROMPT,
+                                 UI_VISUALIZATION_USERSPACE_PROMPT,
+                                 build_index_system_prompt,
+                                 build_tool_system_prompt,
+                                 build_userspace_entrypoint_nudge,
+                                 build_userspace_mode_prompt_addition,
+                                 build_userspace_turn_reminder,
+                                 build_userspace_turn_reminder_with_env_vars,
+                                 build_workspace_continuity_context)
 from ragtime.tools import get_all_tools, get_enabled_tools
-from ragtime.tools.chart import (
-    CHAT_CHART_DESCRIPTION_SUFFIX,
-    USERSPACE_CHART_DESCRIPTION_SUFFIX,
-    create_chart_tool,
-)
-from ragtime.tools.datatable import (
-    CHAT_DATATABLE_DESCRIPTION_SUFFIX,
-    USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
-    create_datatable_tool,
-)
+from ragtime.tools.chart import (CHAT_CHART_DESCRIPTION_SUFFIX,
+                                 USERSPACE_CHART_DESCRIPTION_SUFFIX,
+                                 create_chart_tool)
+from ragtime.tools.datatable import (CHAT_DATATABLE_DESCRIPTION_SUFFIX,
+                                     USERSPACE_DATATABLE_DESCRIPTION_SUFFIX,
+                                     create_datatable_tool)
 from ragtime.tools.filesystem_indexer import search_filesystem_index
-from ragtime.tools.git_history import (
-    _is_shallow_repository,
-    create_aggregate_git_history_tool,
-    create_per_index_git_history_tool,
-)
+from ragtime.tools.git_history import (_is_shallow_repository,
+                                       create_aggregate_git_history_tool,
+                                       create_per_index_git_history_tool)
 from ragtime.tools.influxdb import create_influxdb_tool
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
 from ragtime.tools.odoo_shell import filter_odoo_output
-from ragtime.userspace.models import (
-    ArtifactType,
-    UpsertWorkspaceEnvVarRequest,
-    UpsertWorkspaceFileRequest,
-    UserSpaceLiveDataCheck,
-    UserSpaceLiveDataConnection,
-)
+from ragtime.userspace.models import (ArtifactType,
+                                      UpsertWorkspaceEnvVarRequest,
+                                      UpsertWorkspaceFileRequest,
+                                      UserSpaceLiveDataCheck,
+                                      UserSpaceLiveDataConnection)
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 
@@ -864,6 +831,77 @@ class _CopilotChatOpenAI(ChatOpenAI):
         return result
 
     @staticmethod
+    def _message_content_to_text(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            text_parts: list[str] = []
+            for block in content:
+                if isinstance(block, dict):
+                    text = block.get("text")
+                    if text:
+                        text_parts.append(str(text))
+                else:
+                    text_parts.append(str(block))
+            return "\n".join(part for part in text_parts if part)
+        if content is None:
+            return ""
+        return str(content)
+
+    def _get_request_payload(
+        self,
+        input_,
+        *,
+        stop=None,
+        **kwargs,
+    ) -> dict:
+        """Build Responses payloads with system prompts lifted into instructions.
+
+        Copilot/OpenAI reasoning models can suppress reasoning summaries when the
+        request includes a system message alongside tool schemas. Translating
+        leading system messages into the Responses API ``instructions`` field
+        preserves equivalent guidance while restoring reasoning summary events.
+        """
+        messages = self._convert_input(input_).to_messages()
+        if stop is not None:
+            kwargs["stop"] = stop
+
+        payload = {**self._default_params, **kwargs}
+        if not self._use_responses_api(payload):
+            return super()._get_request_payload(input_, stop=stop, **kwargs)
+
+        leading_system_messages: list[SystemMessage] = []
+        remaining_messages = list(messages)
+        while remaining_messages and isinstance(remaining_messages[0], SystemMessage):
+            leading_system_messages.append(remaining_messages.pop(0))
+
+        if leading_system_messages:
+            instructions_text = "\n\n".join(
+                text
+                for text in (
+                    self._message_content_to_text(message.content)
+                    for message in leading_system_messages
+                )
+                if text
+            )
+            if instructions_text:
+                existing_instructions = payload.get("instructions")
+                if existing_instructions:
+                    instructions_text = (
+                        f"{existing_instructions}\n\n{instructions_text}"
+                    )
+                payload["instructions"] = instructions_text
+
+        if self.use_previous_response_id:
+            last_messages, previous_response_id = _get_last_messages(remaining_messages)
+            payload_to_use = last_messages if previous_response_id else remaining_messages
+            if previous_response_id:
+                payload["previous_response_id"] = previous_response_id
+            return _construct_responses_api_payload(payload_to_use, payload)
+
+        return _construct_responses_api_payload(remaining_messages, payload)
+
+    @staticmethod
     def _is_unsupported_api_error(exc: Exception) -> bool:
         """Return True if *exc* is an OpenAI ``unsupported_api_for_model`` error."""
         msg = str(exc).lower()
@@ -921,6 +959,7 @@ class _CopilotChatOpenAI(ChatOpenAI):
     def _switch_to_responses_api(self) -> None:
         """Flip this instance (and cache) to use the Responses API."""
         self.use_responses_api = True
+        self.output_version = "responses/v1"
         register_model_supported_endpoints(self.model_name, ["/responses"])
         logger.info(
             "Model %s does not support /chat/completions — "
@@ -937,10 +976,11 @@ class _CopilotChatOpenAI(ChatOpenAI):
         reasoning = getattr(self, "reasoning", None)
         if not isinstance(reasoning, dict):
             return False
+        reasoning_payload: dict[str, Any] = reasoning
 
         changed = False
-        if self._looks_like_summary_error(exc) and "summary" in reasoning:
-            reasoning.pop("summary", None)
+        if self._looks_like_summary_error(exc) and "summary" in reasoning_payload:
+            reasoning_payload.pop("summary", None)
             changed = True
             logger.info(
                 "Model %s rejected reasoning summary; retrying without summary",
@@ -948,9 +988,9 @@ class _CopilotChatOpenAI(ChatOpenAI):
             )
 
         if self._looks_like_effort_error(exc):
-            effort = str(reasoning.get("effort", "")).lower()
+            effort = str(reasoning_payload.get("effort", "")).lower()
             if effort in {"high", "xhigh"}:
-                reasoning["effort"] = "medium"
+                reasoning_payload["effort"] = "medium"
                 changed = True
                 logger.info(
                     "Model %s rejected reasoning effort=%s; retrying with effort=medium",
@@ -1644,6 +1684,10 @@ class RAGComponents:
 
             if use_responses_api:
                 copilot_kwargs["use_responses_api"] = True
+                # LangChain's legacy Responses v0 adapter can drop GPT reasoning
+                # summary deltas once tools are bound. responses/v1 preserves
+                # reasoning items in streamed content blocks.
+                copilot_kwargs["output_version"] = "responses/v1"
                 if model_supports_reasoning:
                     copilot_kwargs["reasoning"] = {
                         "effort": "high",
@@ -4855,8 +4899,8 @@ except Exception as e:
 
         return str(content)
 
-    @staticmethod
-    def _extract_reasoning_text_from_content_list(content: Any) -> str:
+    @classmethod
+    def _extract_reasoning_text_from_content_list(cls, content: Any) -> str:
         """Extract reasoning text from content blocks across provider formats."""
         if not isinstance(content, list):
             return ""
@@ -4867,39 +4911,114 @@ except Exception as e:
                 continue
 
             block_type = str(block.get("type", "")).lower()
-            if block_type not in {
-                "thinking",
-                "reasoning",
-                "reasoning_content",
-                "reasoning_summary",
-            }:
+            if (
+                block_type
+                not in {
+                    "thinking",
+                    "reasoning",
+                    "reasoning_content",
+                    "reasoning_summary",
+                    "redacted_thinking",
+                }
+                and block.get("thought") is not True
+                and not any(
+                    key in block
+                    for key in (
+                        "reasoning_text",
+                        "reasoning_summary_text",
+                        "cot_summary",
+                    )
+                )
+            ):
                 continue
 
-            text = (
-                block.get("text")
+            text = cls._extract_reasoning_text_from_payload(
+                block.get("cot_summary")
+                or block.get("text")
                 or block.get("thinking")
+                or block.get("reasoning")
                 or block.get("reasoning_text")
+                or block.get("reasoning_summary_text")
                 or block.get("delta")
-                or ""
             )
             if text:
-                reasoning_parts.append(str(text))
+                reasoning_parts.append(text)
 
             summary = block.get("summary")
             if isinstance(summary, list):
                 for part in summary:
-                    if not isinstance(part, dict):
-                        continue
-                    summary_text = part.get("text") or part.get("delta") or ""
+                    summary_text = cls._extract_reasoning_text_from_payload(part)
                     if summary_text:
-                        reasoning_parts.append(str(summary_text))
+                        reasoning_parts.append(summary_text)
             elif isinstance(summary, str) and summary:
                 reasoning_parts.append(summary)
 
         return "".join(reasoning_parts)
 
-    @staticmethod
-    def _extract_reasoning_from_stream_chunk(chunk: Any) -> str:
+    @classmethod
+    def _extract_reasoning_text_from_payload(cls, payload: Any) -> str:
+        """Extract reasoning text from provider-specific structured payloads."""
+        if not payload:
+            return ""
+
+        if isinstance(payload, str):
+            return payload
+
+        if isinstance(payload, list):
+            return cls._extract_reasoning_text_from_content_list(payload)
+
+        if not isinstance(payload, dict):
+            return str(payload)
+
+        reasoning_parts: list[str] = []
+        seen_parts: set[str] = set()
+
+        def append_reasoning_text(value: Any) -> None:
+            if not value:
+                return
+
+            if isinstance(value, dict):
+                text = cls._extract_reasoning_text_from_payload(value)
+            elif isinstance(value, list):
+                text = cls._extract_reasoning_text_from_content_list(value)
+            else:
+                text = str(value)
+
+            if text and text not in seen_parts:
+                seen_parts.add(text)
+                reasoning_parts.append(text)
+
+        if payload.get("thought") is True:
+            append_reasoning_text(payload.get("text"))
+
+        for key in (
+            "cot_summary",
+            "text",
+            "delta",
+            "summary_text",
+            "thinking",
+            "reasoning",
+            "reasoning_text",
+            "reasoning_content",
+            "reasoning_summary",
+            "reasoning_summary_text",
+        ):
+            append_reasoning_text(payload.get(key))
+
+        summary = payload.get("summary")
+        if isinstance(summary, list):
+            for part in summary:
+                append_reasoning_text(part)
+        else:
+            append_reasoning_text(summary)
+
+        content = payload.get("content")
+        append_reasoning_text(content)
+
+        return "".join(reasoning_parts)
+
+    @classmethod
+    def _extract_reasoning_from_stream_chunk(cls, chunk: Any) -> str:
         """Extract reasoning/thinking text from a streamed model chunk.
 
         Ollama thinking models stream tokens in `message.thinking` at the API
@@ -4911,13 +5030,13 @@ except Exception as e:
 
         additional_kwargs = getattr(chunk, "additional_kwargs", {}) or {}
         if isinstance(additional_kwargs, dict):
-            reasoning_text = str(
-                additional_kwargs.get("reasoning_content")
+            reasoning_text = cls._extract_reasoning_text_from_payload(
+                additional_kwargs.get("reasoning")
+                or additional_kwargs.get("reasoning_content")
                 or additional_kwargs.get("reasoning_text")
                 or additional_kwargs.get("reasoning_summary")
                 or additional_kwargs.get("reasoning_summary_text")
                 or additional_kwargs.get("thinking")
-                or ""
             )
             if reasoning_text:
                 return reasoning_text
@@ -4991,13 +5110,13 @@ except Exception as e:
         if hasattr(output, "additional_kwargs"):
             additional_kwargs = getattr(output, "additional_kwargs", {}) or {}
             if isinstance(additional_kwargs, dict):
-                reasoning_text = str(
-                    additional_kwargs.get("reasoning_content")
+                reasoning_text = cls._extract_reasoning_text_from_payload(
+                    additional_kwargs.get("reasoning")
+                    or additional_kwargs.get("reasoning_content")
                     or additional_kwargs.get("reasoning_text")
                     or additional_kwargs.get("reasoning_summary")
                     or additional_kwargs.get("reasoning_summary_text")
                     or additional_kwargs.get("thinking")
-                    or ""
                 )
                 if reasoning_text:
                     return reasoning_text
@@ -5043,13 +5162,13 @@ except Exception as e:
                     elif message is not None and hasattr(message, "additional_kwargs"):
                         message_kwargs = getattr(message, "additional_kwargs", {}) or {}
                         if isinstance(message_kwargs, dict):
-                            reasoning_text = str(
-                                message_kwargs.get("reasoning_content")
+                            reasoning_text = cls._extract_reasoning_text_from_payload(
+                                message_kwargs.get("reasoning")
+                                or message_kwargs.get("reasoning_content")
                                 or message_kwargs.get("reasoning_text")
                                 or message_kwargs.get("reasoning_summary")
                                 or message_kwargs.get("reasoning_summary_text")
                                 or message_kwargs.get("thinking")
-                                or ""
                             )
                             if reasoning_text:
                                 return reasoning_text
@@ -5076,13 +5195,13 @@ except Exception as e:
                     if hasattr(message, "additional_kwargs"):
                         message_kwargs = getattr(message, "additional_kwargs", {}) or {}
                         if isinstance(message_kwargs, dict):
-                            reasoning_text = str(
-                                message_kwargs.get("reasoning_content")
+                            reasoning_text = cls._extract_reasoning_text_from_payload(
+                                message_kwargs.get("reasoning")
+                                or message_kwargs.get("reasoning_content")
                                 or message_kwargs.get("reasoning_text")
                                 or message_kwargs.get("reasoning_summary")
                                 or message_kwargs.get("reasoning_summary_text")
                                 or message_kwargs.get("thinking")
-                                or ""
                             )
                             if reasoning_text:
                                 return reasoning_text
@@ -8236,11 +8355,17 @@ except Exception as e:
         if runtime_llm is None or not tools:
             return None
 
+        prompt_system = system_prompt
+        include_ai_turn_reminder = bool(turn_system_content)
+        if turn_system_content and self._uses_copilot_responses_instructions(runtime_llm):
+            prompt_system = f"{system_prompt}\n\n{turn_system_content}"
+            include_ai_turn_reminder = False
+
         messages: list[Any] = [
-            ("system", escape_prompt_template_braces(system_prompt)),
+            ("system", escape_prompt_template_braces(prompt_system)),
             MessagesPlaceholder(variable_name="chat_history", optional=True),
         ]
-        if turn_system_content:
+        if include_ai_turn_reminder:
             messages.append(("ai", escape_prompt_template_braces(turn_system_content)))
         messages.extend(
             [
@@ -8280,6 +8405,18 @@ except Exception as e:
     def _is_thinking_ollama(self, llm: Any) -> bool:
         """Return True when *llm* is a ChatOllama instance with thinking/reasoning enabled."""
         return isinstance(llm, ChatOllama) and getattr(llm, "reasoning", None) is True
+
+    @staticmethod
+    def _uses_copilot_responses_instructions(llm: Any) -> bool:
+        """Return True for Copilot models using the Responses API path.
+
+        GPT-5.4 reasoning summaries are suppressed when per-turn reminders are
+        sent as assistant turns. For this path, we fold those reminders into the
+        system/instructions channel instead.
+        """
+        return isinstance(llm, _CopilotChatOpenAI) and bool(
+            getattr(llm, "use_responses_api", False)
+        )
 
     @staticmethod
     def _parse_tool_calls_from_thinking(thinking_text: str) -> list[dict]:
@@ -8357,7 +8494,10 @@ except Exception as e:
 
         # Gather thinking text from all known locations
         thinking = (
-            message.additional_kwargs.get("reasoning_content", "")
+            RAGComponents._extract_reasoning_text_from_payload(
+                message.additional_kwargs.get("reasoning")
+            )
+            or message.additional_kwargs.get("reasoning_content", "")
             or message.additional_kwargs.get("reasoning_text", "")
             or message.additional_kwargs.get("reasoning_summary_text", "")
             or message.additional_kwargs.get("thinking", "")
@@ -8815,9 +8955,20 @@ except Exception as e:
                         "Error: No LLM configured. Please configure an LLM in Settings."
                     )
 
-                messages: List[BaseMessage] = [SystemMessage(content=system_prompt)]
+                direct_system_prompt = system_prompt
+                include_ai_turn_reminder = True
+                if self._uses_copilot_responses_instructions(request_llm):
+                    direct_system_prompt = (
+                        f"{system_prompt}\n\n{turn_system_content}"
+                    )
+                    include_ai_turn_reminder = False
+
+                messages: List[BaseMessage] = [
+                    SystemMessage(content=direct_system_prompt)
+                ]
                 messages.extend(chat_history)
-                messages.append(AIMessage(content=turn_system_content))
+                if include_ai_turn_reminder:
+                    messages.append(AIMessage(content=turn_system_content))
                 messages.append(HumanMessage(content=langchain_content))
                 provider_name = (
                     self._parse_provider_scoped_model(conversation_model)[0]
@@ -9258,9 +9409,20 @@ except Exception as e:
                     yield "Error: No LLM configured. Please configure an LLM in Settings."
                     return
 
-                messages: List[BaseMessage] = [SystemMessage(content=system_prompt)]
+                direct_system_prompt = system_prompt
+                include_ai_turn_reminder = True
+                if self._uses_copilot_responses_instructions(request_llm):
+                    direct_system_prompt = (
+                        f"{system_prompt}\n\n{turn_system_content}"
+                    )
+                    include_ai_turn_reminder = False
+
+                messages: List[BaseMessage] = [
+                    SystemMessage(content=direct_system_prompt)
+                ]
                 messages.extend(chat_history)
-                messages.append(AIMessage(content=turn_system_content))
+                if include_ai_turn_reminder:
+                    messages.append(AIMessage(content=turn_system_content))
                 messages.append(HumanMessage(content=langchain_content))
 
                 provider_name = (
