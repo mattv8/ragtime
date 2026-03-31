@@ -1161,21 +1161,20 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           return;
         }
 
-        const updates = await Promise.all(workspaceIds.map(async (workspaceId) => {
-          const [conversations, interruptedConvIds] = await Promise.all([
-            api.listConversations(workspaceId),
-            api.getWorkspaceInterruptedConversationIds(workspaceId).catch(() => [] as string[]),
-          ]);
+        const summaries = await api.getWorkspacesConversationStateSummary(workspaceIds);
+        const summaryByWorkspaceId = new Map(summaries.map((summary) => [summary.workspace_id, summary]));
+
+        const updates = workspaceIds.map((workspaceId) => {
+          const summary = summaryByWorkspaceId.get(workspaceId);
           const interruptDismissed = getCookieValue(getInterruptDismissCookieName(currentUser.id, workspaceId)) === '1';
-          const interruptedSet = new Set(interruptedConvIds);
-          const rawInterrupted = interruptedConvIds.length > 0;
-          const hasLiveTask = conversations.some(c => Boolean(c.active_task_id) && !interruptedSet.has(c.id));
+          const rawInterrupted = Boolean(summary?.has_interrupted_task);
+          const hasLiveTask = Boolean(summary?.has_live_task);
 
           const hasInterrupted = rawInterrupted && !interruptDismissed;
-          const hasLive = hasLiveTask && !hasInterrupted;
+          const hasLive = hasLiveTask;
 
           return [workspaceId, { hasLive, hasInterrupted }] as const;
-        }));
+        });
 
         if (cancelled) return;
 
@@ -3908,7 +3907,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
             >
               <span className="model-selector-text">{activeWorkspace?.name ?? 'No workspaces'}</span>
               {activeWorkspaceChatState.hasLive && (
-                <MiniLoadingSpinner title="Chat in progress" />
+                <MiniLoadingSpinner variant="icon" size={14} title="Chat in progress" />
               )}
               {!activeWorkspaceChatState.hasLive && activeWorkspaceChatState.hasInterrupted && (
                 <span className="userspace-workspace-trigger-state is-interrupted" title="A conversation was interrupted">
@@ -3977,6 +3976,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                             }}
                           >
                             <span className="model-selector-item-name">{ws.name}</span>
+                            {workspaceChatState.hasLive && (
+                              <MiniLoadingSpinner variant="icon" size={14} title="Chat in progress" />
+                            )}
+                            {!workspaceChatState.hasLive && workspaceChatState.hasInterrupted && (
+                              <span className="userspace-workspace-item-state is-interrupted" title="A conversation was interrupted">
+                                <AlertCircle size={13} />
+                              </span>
+                            )}
                           </button>
                         )}
 
@@ -4071,15 +4078,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                           </div>
                         )}
 
-                        {workspaceChatState.hasLive && (
-                          <MiniLoadingSpinner title="Chat in progress" />
-                        )}
-                        {!workspaceChatState.hasLive && workspaceChatState.hasInterrupted && (
-                          <span className="userspace-workspace-item-state is-interrupted" title="A conversation was interrupted">
-                            <AlertCircle size={13} />
-                          </span>
-                        )}
-
                         {!canDeleteWorkspace && (
                           <span className="userspace-workspace-owner-hint" title="Only workspace owners can delete workspaces">
                             Shared
@@ -4126,7 +4124,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           <div className="userspace-toolbar-status-group">
             {previewExecuting && (
               <span className="userspace-toolbar-live-status" title="Live data connection in progress">
-                <MiniLoadingSpinner ariaHidden />
+                <MiniLoadingSpinner variant="icon" size={14} ariaHidden />
                 Connecting data...
               </span>
             )}

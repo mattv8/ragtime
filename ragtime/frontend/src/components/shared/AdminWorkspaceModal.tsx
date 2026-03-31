@@ -53,21 +53,20 @@ export function AdminWorkspaceModal({
       isPolling = true;
       try {
         const workspaceIds = workspaces.map((workspace) => workspace.id);
-        const updates = await Promise.all(workspaceIds.map(async (workspaceId) => {
-          const [conversations, interruptedConvIds] = await Promise.all([
-            api.listConversations(workspaceId),
-            api.getWorkspaceInterruptedConversationIds(workspaceId).catch(() => [] as string[]),
-          ]);
+        const summaries = await api.getWorkspacesConversationStateSummary(workspaceIds);
+        const summaryByWorkspaceId = new Map(summaries.map((summary) => [summary.workspace_id, summary]));
+
+        const updates = workspaceIds.map((workspaceId) => {
+          const summary = summaryByWorkspaceId.get(workspaceId);
           const interruptDismissed = getCookieValue(getInterruptDismissCookieName(currentUser.id, workspaceId)) === '1';
-          const interruptedSet = new Set(interruptedConvIds);
-          const rawInterrupted = interruptedConvIds.length > 0;
-          const hasLiveTask = conversations.some(c => Boolean(c.active_task_id) && !interruptedSet.has(c.id));
+          const rawInterrupted = Boolean(summary?.has_interrupted_task);
+          const hasLiveTask = Boolean(summary?.has_live_task);
 
           const hasInterrupted = rawInterrupted && !interruptDismissed;
           const hasLive = hasLiveTask;
 
           return [workspaceId, { hasLive, hasInterrupted }] as const;
-        }));
+        });
 
         if (cancelled) return;
 
@@ -258,7 +257,7 @@ export function AdminWorkspaceModal({
                                   <span className="admin-ws-item-name">{ws.name}</span>
                                   {isOwn && <span className="admin-ws-badge-own">You</span>}
                                   {workspaceChatStates[ws.id]?.hasLive && (
-                                    <MiniLoadingSpinner title="Chat in progress" />
+                                    <MiniLoadingSpinner variant="icon" size={14} title="Chat in progress" />
                                   )}
                                   {!workspaceChatStates[ws.id]?.hasLive && workspaceChatStates[ws.id]?.hasInterrupted && (
                                     <span className="userspace-workspace-item-state is-interrupted" title="A conversation was interrupted">

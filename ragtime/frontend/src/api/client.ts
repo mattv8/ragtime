@@ -1366,6 +1366,26 @@ export const api = {
   },
 
   /**
+   * Get combined workspace conversation polling state.
+   */
+  async getWorkspaceConversationState(workspaceId: string): Promise<import('@/types').ConversationWorkspaceStateResponse> {
+    const response = await apiFetch(`${API_BASE}/conversations/workspace/${workspaceId}/conversation-state`);
+    return handleResponse<import('@/types').ConversationWorkspaceStateResponse>(response);
+  },
+
+  /**
+   * Get live/interrupted summary for multiple workspaces in one request.
+   */
+  async getWorkspacesConversationStateSummary(workspaceIds: string[]): Promise<import('@/types').WorkspaceConversationStateSummaryItem[]> {
+    const response = await apiFetch(`${API_BASE}/conversations/workspaces/state-summary`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspace_ids: workspaceIds }),
+    });
+    return handleResponse<import('@/types').WorkspaceConversationStateSummaryItem[]>(response);
+  },
+
+  /**
    * Create a new conversation
    */
   async createConversation(request?: CreateConversationRequest, workspaceId?: string): Promise<Conversation> {
@@ -1668,6 +1688,14 @@ export const api = {
     }
     const data = await handleResponse<import('@/types').ChatTask | null>(response);
     return data;
+  },
+
+  /**
+   * Get combined active/interrupted task state for a conversation.
+   */
+  async getConversationTaskState(conversationId: string, workspaceId?: string): Promise<import('@/types').ConversationTaskStateResponse> {
+    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/task-state`, workspaceId));
+    return handleResponse<import('@/types').ConversationTaskStateResponse>(response);
   },
 
   /**

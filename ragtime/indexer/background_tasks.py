@@ -321,7 +321,7 @@ class BackgroundTaskService:
         while not self._shutdown:
             try:
                 await asyncio.sleep(300)  # Every 5 minutes
-                await repository.cleanup_stale_tasks(max_age_seconds=3600)
+                await repository.cleanup_stale_tasks(max_age_seconds=600)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -722,7 +722,16 @@ class BackgroundTaskService:
                 # Use UI agent (with chart tool and enhanced prompt)
                 # Parse user message in case it's a JSON-encoded multimodal array
                 parsed_user_message = parse_message_content(user_message)
-                async for event in rag.process_query_stream(
+
+                # Inactivity timeout: if the LLM/agent stream yields no
+                # events for this many seconds the task is considered stuck
+                # (e.g. hung LLM API call during heavy server load).
+                # Must exceed the maximum tool timeout (default 300s) since
+                # tool execution blocks the event stream between tool_start
+                # and tool_end.
+                _STREAM_INACTIVITY_TIMEOUT = 600  # 10 minutes
+
+                _stream = rag.process_query_stream(
                     parsed_user_message,
                     chat_history,
                     is_ui=True,
@@ -733,7 +742,22 @@ class BackgroundTaskService:
                     user_id=conv.user_id,
                     chat_task_id=task_id,
                     message_index=len(conv.messages),
-                ):
+                )
+                _stream_iter = _stream.__aiter__()
+                while True:
+                    try:
+                        event = await asyncio.wait_for(
+                            _stream_iter.__anext__(),
+                            timeout=_STREAM_INACTIVITY_TIMEOUT,
+                        )
+                    except StopAsyncIteration:
+                        break
+                    except asyncio.TimeoutError as exc:
+                        raise TimeoutError(
+                            f"LLM/agent stream produced no output for "
+                            f"{_STREAM_INACTIVITY_TIMEOUT}s — possible hung API call"
+                        ) from exc
+
                     if self._shutdown:
                         await repository.cancel_chat_task(task_id)
                         return

@@ -8519,12 +8519,71 @@ def _to_conversation_response(conv: Conversation) -> ConversationResponse:
     )
 
 
+class WorkspaceConversationStateResponse(BaseModel):
+    conversations: List[ConversationResponse] = Field(
+        default_factory=list,
+        description="Conversation summaries for a workspace.",
+    )
+    interrupted_conversation_ids: List[str] = Field(
+        default_factory=list,
+        description="Conversation IDs that currently have interrupted tasks.",
+    )
+
+
+class ConversationTaskStateResponse(BaseModel):
+    active_task: Optional[ChatTaskResponse] = Field(
+        default=None,
+        description="Current pending or running task for the conversation, if any.",
+    )
+    interrupted_task: Optional[ChatTaskResponse] = Field(
+        default=None,
+        description="Most recent interrupted task for the conversation when there is no active task.",
+    )
+
+
+class WorkspaceConversationStateSummaryRequest(BaseModel):
+    workspace_ids: List[str] = Field(
+        default_factory=list,
+        description="Workspace IDs to summarize.",
+    )
+
+
+class WorkspaceConversationStateSummaryItem(BaseModel):
+    workspace_id: str = Field(description="Workspace ID.")
+    has_live_task: bool = Field(
+        default=False,
+        description="True when any conversation has a live task and is not interrupted.",
+    )
+    has_interrupted_task: bool = Field(
+        default=False,
+        description="True when any conversation has an interrupted task.",
+    )
+
+
+def _to_chat_task_response(task: Any) -> ChatTaskResponse:
+    return ChatTaskResponse(
+        id=task.id,
+        conversation_id=task.conversation_id,
+        status=task.status,
+        user_message=task.user_message,
+        streaming_state=task.streaming_state,
+        response_content=task.response_content,
+        error_message=task.error_message,
+        created_at=task.created_at,
+        started_at=task.started_at,
+        completed_at=task.completed_at,
+        last_update_at=task.last_update_at,
+    )
+
+
 async def _assert_workspace_access(
     workspace_id: Optional[str], user: User, required_role: str
 ) -> None:
     if not workspace_id:
         return
-    await userspace_service.enforce_workspace_role(workspace_id, user.id, required_role)
+    await userspace_service.enforce_workspace_role(
+        workspace_id, user.id, required_role, is_admin=user.role == "admin"
+    )
 
 
 async def _resolve_workspace_runtime_scope(
@@ -8604,6 +8663,74 @@ async def list_conversations(
         workspace_id=workspace_id,
     )
     return [_to_conversation_response(c) for c in convs]
+
+
+@router.get(
+    "/conversations/workspace/{workspace_id}/conversation-state",
+    response_model=WorkspaceConversationStateResponse,
+)
+async def get_workspace_conversation_state(
+    workspace_id: str,
+    user: User = Depends(get_current_user),
+):
+    """Return combined workspace conversation summaries and interrupted-task IDs."""
+    await _assert_workspace_access(workspace_id, user, "viewer")
+    is_admin = user.role == "admin"
+    convs = await repository.list_conversations(
+        user_id=user.id,
+        include_all=is_admin,
+        workspace_id=workspace_id,
+    )
+    interrupted_conversation_ids = (
+        await repository.get_interrupted_conversation_ids_for_workspace(workspace_id)
+    )
+    return WorkspaceConversationStateResponse(
+        conversations=[_to_conversation_response(c) for c in convs],
+        interrupted_conversation_ids=interrupted_conversation_ids,
+    )
+
+
+@router.post(
+    "/conversations/workspaces/state-summary",
+    response_model=List[WorkspaceConversationStateSummaryItem],
+)
+async def get_workspaces_conversation_state_summary(
+    request: WorkspaceConversationStateSummaryRequest,
+    user: User = Depends(get_current_user),
+):
+    """Return live/interrupted summary for multiple workspaces in one request."""
+    workspace_ids = [
+        wid.strip() for wid in request.workspace_ids if wid and wid.strip()
+    ]
+    if not workspace_ids:
+        return []
+
+    # Preserve order while deduplicating
+    deduped_workspace_ids = list(dict.fromkeys(workspace_ids))
+    is_admin = user.role == "admin"
+    results: list[WorkspaceConversationStateSummaryItem] = []
+
+    for workspace_id in deduped_workspace_ids:
+        await _assert_workspace_access(workspace_id, user, "viewer")
+        convs, interrupted_conversation_ids = await asyncio.gather(
+            repository.list_conversations(
+                user_id=user.id,
+                include_all=is_admin,
+                workspace_id=workspace_id,
+            ),
+            repository.get_interrupted_conversation_ids_for_workspace(workspace_id),
+        )
+        has_live_task = any(bool(conv.active_task_id) for conv in convs)
+        has_interrupted_task = len(interrupted_conversation_ids) > 0
+        results.append(
+            WorkspaceConversationStateSummaryItem(
+                workspace_id=workspace_id,
+                has_live_task=has_live_task,
+                has_interrupted_task=has_interrupted_task,
+            )
+        )
+
+    return results
 
 
 def _resolve_default_conversation_model(app_settings: Optional[AppSettings]) -> str:
@@ -9461,19 +9588,7 @@ async def send_message_background(
     existing_task = await repository.get_active_task_for_conversation(conversation_id)
     if existing_task:
         # Return the existing task instead of creating a new one
-        return ChatTaskResponse(
-            id=existing_task.id,
-            conversation_id=existing_task.conversation_id,
-            status=existing_task.status,
-            user_message=existing_task.user_message,
-            streaming_state=existing_task.streaming_state,
-            response_content=existing_task.response_content,
-            error_message=existing_task.error_message,
-            created_at=existing_task.created_at,
-            started_at=existing_task.started_at,
-            completed_at=existing_task.completed_at,
-            last_update_at=existing_task.last_update_at,
-        )
+        return _to_chat_task_response(existing_task)
 
     # Add user message to conversation first
     await repository.add_message(conversation_id, "user", user_message)
@@ -9492,19 +9607,7 @@ async def send_message_background(
     if not task:
         raise HTTPException(status_code=500, detail="Failed to create background task")
 
-    return ChatTaskResponse(
-        id=task.id,
-        conversation_id=task.conversation_id,
-        status=task.status,
-        user_message=task.user_message,
-        streaming_state=task.streaming_state,
-        response_content=task.response_content,
-        error_message=task.error_message,
-        created_at=task.created_at,
-        started_at=task.started_at,
-        completed_at=task.completed_at,
-        last_update_at=task.last_update_at,
-    )
+    return _to_chat_task_response(task)
 
 
 @router.get(
@@ -9534,19 +9637,7 @@ async def get_conversation_active_task(
     if not task:
         return None
 
-    return ChatTaskResponse(
-        id=task.id,
-        conversation_id=task.conversation_id,
-        status=task.status,
-        user_message=task.user_message,
-        streaming_state=task.streaming_state,
-        response_content=task.response_content,
-        error_message=task.error_message,
-        created_at=task.created_at,
-        started_at=task.started_at,
-        completed_at=task.completed_at,
-        last_update_at=task.last_update_at,
-    )
+    return _to_chat_task_response(task)
 
 
 @router.get(
@@ -9578,18 +9669,41 @@ async def get_conversation_interrupted_task(
     if not task:
         return None
 
-    return ChatTaskResponse(
-        id=task.id,
-        conversation_id=task.conversation_id,
-        status=task.status,
-        user_message=task.user_message,
-        streaming_state=task.streaming_state,
-        response_content=task.response_content,
-        error_message=task.error_message,
-        created_at=task.created_at,
-        started_at=task.started_at,
-        completed_at=task.completed_at,
-        last_update_at=task.last_update_at,
+    return _to_chat_task_response(task)
+
+
+@router.get(
+    "/conversations/{conversation_id}/task-state",
+    response_model=ConversationTaskStateResponse,
+)
+async def get_conversation_task_state(
+    conversation_id: str,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """Return combined active/interrupted task state for a conversation."""
+    await _assert_workspace_access(workspace_id, user, "viewer")
+    has_access = await repository.check_conversation_access(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    active_task = await repository.get_active_task_for_conversation(conversation_id)
+    interrupted_task = None
+    if not active_task:
+        interrupted_task = await repository.get_last_interrupted_task_for_conversation(
+            conversation_id
+        )
+
+    return ConversationTaskStateResponse(
+        active_task=_to_chat_task_response(active_task) if active_task else None,
+        interrupted_task=(
+            _to_chat_task_response(interrupted_task) if interrupted_task else None
+        ),
     )
 
 
@@ -9715,6 +9829,18 @@ async def stream_chat_task(
                     ):
                         yield f"data: {json.dumps({'type': 'completion', 'status': t.status.value})}\n\n"
                         break
+
+                    # Detect orphaned tasks: DB says running but the
+                    # asyncio task is no longer alive (silent crash,
+                    # unhandled edge-case, etc.).
+                    if t and t.status == ChatTaskStatus.running:
+                        if not background_task_service.is_task_running(task_id):
+                            _err = "Task processing stopped unexpectedly"
+                            await repository.update_chat_task_status(
+                                task_id, ChatTaskStatus.failed, _err
+                            )
+                            yield f"data: {json.dumps({'type': 'completion', 'status': 'failed', 'error': _err})}\n\n"
+                            break
 
         finally:
             task_event_bus.unsubscribe(task_id, queue)

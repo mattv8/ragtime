@@ -1574,6 +1574,21 @@ export interface Conversation {
   updated_at: string;
 }
 
+export interface ConversationWorkspaceStateResponse {
+  conversations: Conversation[];
+  interrupted_conversation_ids: string[];
+}
+
+export interface WorkspaceConversationStateSummaryRequest {
+  workspace_ids: string[];
+}
+
+export interface WorkspaceConversationStateSummaryItem {
+  workspace_id: string;
+  has_live_task: boolean;
+  has_interrupted_task: boolean;
+}
+
 export interface CreateConversationRequest {
   title?: string;
   model?: string;
@@ -2149,6 +2164,11 @@ export interface ChatTask {
   started_at: string | null;
   completed_at: string | null;
   last_update_at: string;
+}
+
+export interface ConversationTaskStateResponse {
+  active_task: ChatTask | null;
+  interrupted_task: ChatTask | null;
 }
 
 export interface ProviderPromptDebugRecord {

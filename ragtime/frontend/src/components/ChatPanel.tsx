@@ -1592,9 +1592,10 @@ export function ChatPanel({
     const hasInterrupted = rawInterrupted && !interruptDismissed;
     // Don't count conversations with stale active_task_ids as live
     const hasLiveTask = Boolean(activeTask)
-      || conversations.some(c => Boolean(c.active_task_id) && (!interruptedTask || interruptedTask.conversation_id !== c.id) && !interruptedConversationIds.has(c.id));
-    const hasLive = hasLiveTask && !hasInterrupted;
-    onConversationStateChange(hasLive, hasInterrupted);
+      || conversations.some(c => Boolean(c.active_task_id));
+    // Report live and interrupted independently so the workspace picker can
+    // show the spinner even when another conversation is interrupted.
+    onConversationStateChange(hasLiveTask, hasInterrupted);
   }, [activeTask, conversations, interruptedTask, interruptedConversationIds, interruptDismissed, onConversationStateChange]);
 
   const lastSeenVersionRef = useRef<number>(0);  // Track last seen version for delta polling
@@ -2327,7 +2328,9 @@ export function ChatPanel({
 
   // Load conversations and available models on mount
   useEffect(() => {
-    loadConversations();
+    if (!workspaceId) {
+      loadConversations();
+    }
     refreshModels();
   }, [workspaceId, refreshModels]);
 
@@ -2356,7 +2359,10 @@ export function ChatPanel({
 
   const loadConversations = async () => {
     try {
-      const data = await api.listConversations(workspaceId);
+      const workspaceState = workspaceId
+        ? await api.getWorkspaceConversationState(workspaceId)
+        : null;
+      const data = workspaceState?.conversations ?? await api.listConversations(workspaceId);
       let userspaceConversationIds = new Set<string>();
 
       const getLinkedWorkspaceId = (conversation: Conversation): string | null => {
@@ -2391,6 +2397,17 @@ export function ChatPanel({
         const matchingConversation = visibleConversations.find((conversation) => conversation.id === current.id);
         return matchingConversation ?? visibleConversations[0] ?? null;
       });
+
+      if (workspaceState) {
+        const nextInterruptedIds = new Set<string>(workspaceState.interrupted_conversation_ids);
+        setInterruptedConversationIds((prev) => {
+          if (prev.size !== nextInterruptedIds.size) return nextInterruptedIds;
+          for (const id of nextInterruptedIds) {
+            if (!prev.has(id)) return nextInterruptedIds;
+          }
+          return prev;
+        });
+      }
     } catch (err) {
       console.error('Failed to load conversations:', err);
     }
@@ -2407,14 +2424,10 @@ export function ChatPanel({
       if (pollInProgress) return;
       pollInProgress = true;
       try {
-        const data = await api.listConversations(workspaceId);
+        const workspaceState = await api.getWorkspaceConversationState(workspaceId);
         if (cancelled) return;
 
-        const visibleConversations = data.filter((conversation) => {
-          const camelWorkspaceId = (conversation as Conversation & { workspaceId?: string | null }).workspaceId;
-          const linkedWorkspaceId = conversation.workspace_id ?? camelWorkspaceId ?? null;
-          return linkedWorkspaceId === workspaceId;
-        });
+        const visibleConversations = workspaceState.conversations;
 
         setConversations((prev) => {
           let changed = prev.length !== visibleConversations.length;
@@ -2438,12 +2451,15 @@ export function ChatPanel({
           return changed ? next : prev;
         });
 
-        // Track interrupted tasks for all conversations so UI shows right badges
-        const interruptedIds = workspaceId
-          ? await api.getWorkspaceInterruptedConversationIds(workspaceId).catch(() => [] as string[])
-          : [];
-        if (cancelled) return;
-        const nextInterruptedIds = new Set<string>(interruptedIds);
+        setActiveConversation((current) => {
+          if (!current) {
+            return visibleConversations[0] ?? null;
+          }
+          const matchingConversation = visibleConversations.find((conversation) => conversation.id === current.id);
+          return matchingConversation ?? visibleConversations[0] ?? null;
+        });
+
+        const nextInterruptedIds = new Set<string>(workspaceState.interrupted_conversation_ids);
 
         setInterruptedConversationIds((prev) => {
           if (prev.size !== nextInterruptedIds.size) return nextInterruptedIds;
@@ -3097,7 +3113,9 @@ export function ChatPanel({
       // We should check API to be sure.
 
       try {
-        const activeT = await api.getConversationActiveTask(activeConversation.id, workspaceId);
+        const taskState = await api.getConversationTaskState(activeConversation.id, workspaceId);
+        const activeT = taskState.active_task;
+        const interruptedT = taskState.interrupted_task;
 
         // Use functional state update to avoid dependency issues if needed, but here simple set is fine
         if (activeT && (activeT.status === 'pending' || activeT.status === 'running')) {
@@ -3116,6 +3134,7 @@ export function ChatPanel({
             // If we were processing a task that just finished, connectTaskStream finally block clears it.
             if (!activeT) {
                  setActiveTask(null);
+                setInterruptedTask(interruptedT ?? null);
                 syncConversationActiveTaskId(activeConversation.id, null);
             }
         }
@@ -3137,43 +3156,6 @@ export function ChatPanel({
         stopTaskStreaming();
     };
   }, [activeConversation?.id, connectTaskStream, stopTaskStreaming, syncConversationActiveTaskId, workspaceId]);
-
-  // Poll interrupted-task for the active conversation separately so there is
-  // a single predictable request for continue-state recovery.
-  useEffect(() => {
-    let cancelled = false;
-    let pollInProgress = false;
-
-    const pollInterruptedTask = async () => {
-      if (!activeConversation || pollInProgress) return;
-      pollInProgress = true;
-      try {
-        const interruptedT = await api.getConversationInterruptedTask(activeConversation.id, workspaceId);
-        if (!cancelled) {
-          setInterruptedTask(interruptedT);
-        }
-      } catch (err) {
-        console.error('Failed to poll interrupted task:', err);
-      } finally {
-        pollInProgress = false;
-      }
-    };
-
-    if (!activeConversation) {
-      setInterruptedTask(null);
-      return;
-    }
-
-    void pollInterruptedTask();
-    const interval = setInterval(() => {
-      void pollInterruptedTask();
-    }, 3000);
-
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [activeConversation?.id, workspaceId]);
 
   // Cleanup on component unmount
   useEffect(() => {
@@ -3848,7 +3830,7 @@ export function ChatPanel({
                       <MessageSquare size={14} className="chat-workspace-conversation-icon" aria-hidden="true" />
                       <span className="model-selector-text chat-workspace-conversation-trigger-label">{activeConversation.title || 'Untitled Chat'}</span>
                       {(Boolean(activeTask) || Boolean(activeConversation.active_task_id)) && (
-                        <MiniLoadingSpinner title="Processing in background" ariaHidden />
+                        <MiniLoadingSpinner variant="icon" size={14} title="Processing in background" ariaHidden />
                       )}
                       {!(Boolean(activeTask) || Boolean(activeConversation.active_task_id)) && (Boolean(interruptedTask) || interruptedConversationIds.size > 0) && !interruptDismissed && (
                         <button
@@ -3992,7 +3974,7 @@ export function ChatPanel({
                                   </button>
                                 )}
                                 {isLive && (
-                                  <MiniLoadingSpinner title="Processing in background" ariaHidden />
+                                  <MiniLoadingSpinner variant="icon" size={14} title="Processing in background" ariaHidden />
                                 )}
                               </div>
                             );

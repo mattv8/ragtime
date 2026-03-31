@@ -137,8 +137,11 @@ class UvicornAccessFilter(logging.Filter):
         "/sessions/",  # Runtime session polling
         "/events",  # SSE event streams
         "/task",  # Task status polling
+        "/task-state",  # Combined task state polling
         "/interrupted-task",  # Interrupted task polling
         "/interrupted-conversation-ids",  # Batch interrupted task polling
+        "/conversation-state",  # Combined workspace conversation state polling
+        "/workspaces/state-summary",  # Batched workspace state summary polling
     }
 
     def filter(self, record: logging.LogRecord) -> bool:
