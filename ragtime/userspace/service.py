@@ -807,6 +807,8 @@ class UserSpaceService:
         self._git_status_semaphore = asyncio.Semaphore(8)
         # Serialize snapshot mutations to keep timeline metadata consistent.
         self._snapshot_operation_semaphore = asyncio.Semaphore(1)
+        # Startup drift reconciliation runs in a single background task.
+        self._git_drift_startup_task: asyncio.Task[Any] | None = None
 
     def record_execution_proof(
         self,
@@ -1276,6 +1278,78 @@ class UserSpaceService:
         )
 
         self._ensure_workspace_gitignore(files_dir)
+
+    async def _reconcile_workspace_git_drift(
+        self,
+        workspace_id: str,
+        reason: str,
+    ) -> None:
+        """Ensure the workspace Git policy includes platform-managed ignore rules."""
+        try:
+            await self._ensure_workspace_git_repo(workspace_id)
+            logger.debug(
+                "Completed userspace git drift reconciliation for %s (%s)",
+                workspace_id,
+                reason,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Skipped userspace git drift reconciliation for %s (%s): %s",
+                workspace_id,
+                reason,
+                exc,
+            )
+
+    def schedule_startup_git_drift_reconciliation(self) -> None:
+        """Start best-effort Git policy reconciliation for existing workspaces."""
+        if (
+            self._git_drift_startup_task is not None
+            and not self._git_drift_startup_task.done()
+        ):
+            return
+        self._git_drift_startup_task = asyncio.create_task(
+            self._startup_git_drift_reconciliation()
+        )
+
+    async def _startup_git_drift_reconciliation(self) -> None:
+        """Reconcile existing workspaces sequentially in one background task."""
+        try:
+            db = await get_db()
+            rows = await db.query_raw(
+                """
+                SELECT id
+                FROM workspaces
+                ORDER BY updated_at DESC
+                """
+            )
+            for row in rows:
+                workspace_id = str(row.get("id") or "").strip()
+                if not workspace_id:
+                    continue
+                try:
+                    await self._reconcile_workspace_git_drift(
+                        workspace_id, reason="startup"
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "Startup drift reconcile failed for %s: %s",
+                        workspace_id,
+                        exc,
+                    )
+                # Yield between workspaces so startup reconciliation stays low impact.
+                await asyncio.sleep(0)
+        except Exception as exc:
+            logger.debug("Skipped startup userspace git drift reconciliation: %s", exc)
+
+    async def shutdown_git_drift_reconciliation(self) -> None:
+        """Cancel the startup drift reconciliation task if it is still running."""
+        if self._git_drift_startup_task and not self._git_drift_startup_task.done():
+            self._git_drift_startup_task.cancel()
+            try:
+                await self._git_drift_startup_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._git_drift_startup_task = None
 
     def _resolve_workspace_file_path(
         self, workspace_id: str, relative_path: str
@@ -4513,6 +4587,7 @@ class UserSpaceService:
         user_id: str,
     ) -> UserSpaceSnapshot:
         await self._ensure_snapshot_timeline(workspace_id, user_id)
+        await self._ensure_workspace_git_repo(workspace_id)
         db = await get_db()
         rows = await db.query_raw(
             f"""
@@ -4547,8 +4622,8 @@ class UserSpaceService:
         }
 
         async with self._snapshot_operation_semaphore:
-            # Snapshot restore must be resilient to platform-managed file drift
-            # (for example .ragtime/bridge.js updates) in long-lived workspaces.
+            # Reset the worktree first so restore is resilient to platform-managed
+            # files being rewritten outside Git between snapshots.
             await self._run_git(workspace_id, ["reset", "--hard"], check=False)
             await self._run_git(workspace_id, ["clean", "-fd"], check=False)
             if branch_ref_name and is_branch_tip:
