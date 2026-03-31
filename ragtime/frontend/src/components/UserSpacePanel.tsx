@@ -4586,6 +4586,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                             role="button"
                             tabIndex={0}
                             onKeyDown={(event) => {
+                              if (event.target !== event.currentTarget) {
+                                return;
+                              }
                               if (event.key === 'Enter' || event.key === ' ') {
                                 event.preventDefault();
                                 handleToggleSnapshotExpanded(snapshot.id);
@@ -4642,6 +4645,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                   onBlur={() => void handleSaveSnapshotRename(snapshot.id)}
                                   onClick={(event) => event.stopPropagation()}
                                   onKeyDown={(event) => {
+                                    event.stopPropagation();
                                     if (event.key === 'Escape') {
                                       handleCancelSnapshotRename();
                                     }
