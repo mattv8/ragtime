@@ -19,7 +19,12 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 
 import { api } from '@/api';
-import { AdminWorkspaceModal } from './shared/AdminWorkspaceModal';
+import {
+  clearInterruptDismiss,
+  resolveWorkspaceInterruptStateFromSummary,
+} from '@/utils';
+import type { InterruptChatStateSnapshot } from '@/utils/cookies';
+import AdminWorkspaceModal from './shared/AdminWorkspaceModal';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
@@ -189,7 +194,6 @@ function buildDiffHighlightExtension(lineNumbers: Set<number>, decoration: Decor
 const LAST_WORKSPACE_COOKIE_PREFIX = 'userspace_last_workspace_id_';
 const LAST_WORKSPACE_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
 const USERSPACE_LAYOUT_COOKIE_PREFIX = 'userspace_layout_';
-const INTERRUPT_DISMISS_COOKIE_PREFIX = 'userspace_interrupt_dismissed_';
 const USERSPACE_CODEMIRROR_BASIC_SETUP = {
   lineNumbers: true,
   foldGutter: true,
@@ -209,10 +213,6 @@ function getLastWorkspaceCookieName(userId: string): string {
 
 function getUserSpaceLayoutCookieName(userId: string): string {
   return `${USERSPACE_LAYOUT_COOKIE_PREFIX}${encodeURIComponent(userId)}`;
-}
-
-function getInterruptDismissCookieName(userId: string, workspaceId: string): string {
-  return `${INTERRUPT_DISMISS_COOKIE_PREFIX}${encodeURIComponent(userId)}_${encodeURIComponent(workspaceId)}`;
 }
 
 function getCookieValue(name: string): string | null {
@@ -1140,6 +1140,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     });
   }, [workspaces]);
 
+  // Track previous raw interrupted state per workspace so we can detect
+  // false -> true transitions and clear stale dismiss cookies.
+  const prevChatStateRef = useRef<Record<string, InterruptChatStateSnapshot>>({});
+
   useEffect(() => {
     if (workspaces.length === 0) return;
 
@@ -1162,18 +1166,20 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         }
 
         const summaries = await api.getWorkspacesConversationStateSummary(workspaceIds);
-        const summaryByWorkspaceId = new Map(summaries.map((summary) => [summary.workspace_id, summary]));
 
-        const updates = workspaceIds.map((workspaceId) => {
-          const summary = summaryByWorkspaceId.get(workspaceId);
-          const interruptDismissed = getCookieValue(getInterruptDismissCookieName(currentUser.id, workspaceId)) === '1';
-          const rawInterrupted = Boolean(summary?.has_interrupted_task);
-          const hasLiveTask = Boolean(summary?.has_live_task);
+        const updates = summaries.map((summary) => {
+          const resolved = resolveWorkspaceInterruptStateFromSummary(
+            currentUser.id,
+            summary,
+            prevChatStateRef.current[summary.workspace_id],
+          );
 
-          const hasInterrupted = rawInterrupted && !interruptDismissed;
-          const hasLive = hasLiveTask;
+          if (resolved.transition.shouldClearDismiss) {
+            clearInterruptDismiss(currentUser.id, resolved.workspaceId);
+          }
+          prevChatStateRef.current[resolved.workspaceId] = resolved.transition.nextState;
 
-          return [workspaceId, { hasLive, hasInterrupted }] as const;
+          return [resolved.workspaceId, resolved.indicator] as const;
         });
 
         if (cancelled) return;
@@ -3408,22 +3414,25 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     handleEnsureShareLink,
   ]);
 
-  const effectiveShareUrl = useMemo(() => {
-    if (!shareLinkStatus?.has_share_link) return null;
-    if (shareLinkType === 'anonymous' && shareLinkStatus.share_token) {
-      const base = shareLinkStatus.share_url
-        ? new URL(shareLinkStatus.share_url, window.location.origin).origin
+  const resolveShareUrl = useCallback((status: UserSpaceWorkspaceShareLinkStatus | null | undefined): string | null => {
+    if (!status?.has_share_link) return null;
+    if (shareLinkType === 'anonymous' && status.share_token) {
+      const base = status.share_url
+        ? new URL(status.share_url, window.location.origin).origin
         : window.location.origin;
-      return `${base}/shared/${encodeURIComponent(shareLinkStatus.share_token)}`;
+      return `${base}/shared/${encodeURIComponent(status.share_token)}`;
     }
-    return shareLinkStatus.share_url ?? null;
-  }, [shareLinkStatus, shareLinkType]);
+    return status.share_url ?? null;
+  }, [shareLinkType]);
+
+  const effectiveShareUrl = useMemo(() => resolveShareUrl(shareLinkStatus), [resolveShareUrl, shareLinkStatus]);
 
   const handleCopyShareLink = useCallback(async () => {
+    let url = effectiveShareUrl;
     if (!shareLinkStatus?.has_share_link) {
-      await handleEnsureShareLink(false);
+      const created = await handleEnsureShareLink(false);
+      url = resolveShareUrl(created);
     }
-    const url = effectiveShareUrl;
     if (!url) return;
 
     try {
@@ -3434,16 +3443,17 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to copy share link');
     }
-  }, [effectiveShareUrl, handleEnsureShareLink, shareLinkStatus?.has_share_link]);
+  }, [effectiveShareUrl, handleEnsureShareLink, resolveShareUrl, shareLinkStatus?.has_share_link]);
 
   const handleOpenFullPreview = useCallback(async () => {
+    let url = effectiveShareUrl;
     if (!shareLinkStatus?.has_share_link) {
-      await handleEnsureShareLink(false);
+      const created = await handleEnsureShareLink(false);
+      url = resolveShareUrl(created);
     }
-    const url = effectiveShareUrl;
     if (!url) return;
     window.open(url, '_blank', 'noopener,noreferrer');
-  }, [effectiveShareUrl, handleEnsureShareLink, shareLinkStatus?.has_share_link]);
+  }, [effectiveShareUrl, handleEnsureShareLink, resolveShareUrl, shareLinkStatus?.has_share_link]);
 
   const handleRotateShareLink = useCallback(async () => {
     await handleEnsureShareLink(true);

@@ -8,7 +8,17 @@ import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from '
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
 import { calculateConversationContextUsage, parseStoredModelIdentifier } from '@/utils/contextUsage';
-import { formatChatTimestamp, getCookieValue, setSessionCookieValue, setPersistentCookieValue, clearCookieValue, clampNumber, getInterruptDismissCookieName } from '@/utils';
+import {
+  formatChatTimestamp,
+  getCookieValue,
+  setSessionCookieValue,
+  clampNumber,
+  isInterruptDismissed,
+  dismissInterruptAlert,
+  clearInterruptDismiss,
+  resolveInterruptDismissTransition,
+} from '@/utils';
+import type { InterruptChatStateSnapshot } from '@/utils/cookies';
 import { ContextUsagePie } from './shared/ContextUsagePie';
 import { MemberManagementModal } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
@@ -1546,7 +1556,7 @@ export function ChatPanel({
   const [interruptedTask, setInterruptedTask] = useState<ChatTask | null>(null);  // Last interrupted task for continue
   const [interruptedConversationIds, setInterruptedConversationIds] = useState<Set<string>>(new Set());
   const [interruptDismissed, setInterruptDismissed] = useState(false);
-  const prevHasInterruptedRef = useRef(false);
+  const prevChatStateRef = useRef<InterruptChatStateSnapshot | undefined>(undefined);
   const [_isPollingTask, setIsPollingTask] = useState(false);
 
   const syncConversationActiveTaskId = useCallback((conversationId: string, taskId: string | null) => {
@@ -1562,27 +1572,55 @@ export function ChatPanel({
     });
   }, []);
 
-  // Read/reset dismiss cookie when workspaceId changes
+  // Read/reset dismiss cookie when workspaceId changes.
+  // Seed prevHasInterruptedRef from the cookie: if the user already dismissed an
+  // interrupted alert, treat prior state as "interrupted" so the first poll that
+  // sees interrupted=true isn't mistaken for a fresh false -> true transition.
   useEffect(() => {
-    prevHasInterruptedRef.current = false;
     if (workspaceId) {
-      const dismissed = getCookieValue(getInterruptDismissCookieName(currentUser.id, workspaceId));
-      setInterruptDismissed(dismissed === '1');
+      const dismissed = isInterruptDismissed(currentUser.id, workspaceId);
+      setInterruptDismissed(dismissed);
+      prevChatStateRef.current = undefined;
     } else {
       setInterruptDismissed(false);
+      prevChatStateRef.current = undefined;
     }
   }, [workspaceId, currentUser.id]);
 
-  // Un-dismiss automatically when a fresh interruption fires.
-  // Keep this independent from parent callbacks so dismissals never persist forever.
+  // Un-dismiss automatically when a fresh interruption fires (false -> true transition).
+  // On the very first render prevHasInterruptedRef is null (unset), so we skip the
+  // transition check to avoid clearing a valid dismiss cookie on page refresh.
   useEffect(() => {
     const rawInterrupted = Boolean(interruptedTask) || interruptedConversationIds.size > 0;
-    if (rawInterrupted && !prevHasInterruptedRef.current && workspaceId) {
-      setInterruptDismissed(false);
-      clearCookieValue(getInterruptDismissCookieName(currentUser.id, workspaceId));
+    const hasLive = Boolean(activeTask)
+      || conversations.some(c => Boolean(c.active_task_id));
+    if (!workspaceId) {
+      prevChatStateRef.current = undefined;
+      return;
     }
-    prevHasInterruptedRef.current = rawInterrupted;
-  }, [interruptedTask, interruptedConversationIds, workspaceId, currentUser.id]);
+
+    const resolved = resolveInterruptDismissTransition(
+      prevChatStateRef.current,
+      rawInterrupted,
+      hasLive,
+      interruptDismissed,
+    );
+
+    if (resolved.shouldClearDismiss) {
+      clearInterruptDismiss(currentUser.id, workspaceId);
+      setInterruptDismissed(false);
+    }
+
+    prevChatStateRef.current = resolved.nextState;
+  }, [
+    interruptedTask,
+    interruptedConversationIds,
+    activeTask,
+    conversations,
+    workspaceId,
+    currentUser.id,
+    interruptDismissed,
+  ]);
 
   // Notify parent of live/interrupted conversation state for workspace picker indicators
   // Reports effective interrupted state (false when dismissed) so workspace picker reflects dismissals
@@ -3839,7 +3877,7 @@ export function ChatPanel({
                           title="A conversation was interrupted — click to dismiss"
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (workspaceId) setPersistentCookieValue(getInterruptDismissCookieName(currentUser.id, workspaceId), '1');
+                            if (workspaceId) dismissInterruptAlert(currentUser.id, workspaceId);
                             setInterruptDismissed(true);
                           }}
                         >
@@ -3965,7 +4003,7 @@ export function ChatPanel({
                                     title="Conversation interrupted — click to dismiss"
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      if (workspaceId) setPersistentCookieValue(getInterruptDismissCookieName(currentUser.id, workspaceId), '1');
+                                      if (workspaceId) dismissInterruptAlert(currentUser.id, workspaceId);
                                       setInterruptDismissed(true);
                                     }}
                                   >

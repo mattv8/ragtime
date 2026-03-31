@@ -7,5 +7,13 @@ export {
   clearCookieValue,
   clampNumber,
   INTERRUPT_DISMISS_COOKIE_PREFIX,
+  type InterruptChatStateSnapshot,
   getInterruptDismissCookieName,
+  isInterruptDismissed,
+  dismissInterruptAlert,
+  clearInterruptDismiss,
+  resolveInterruptDismissTransition,
+  type WorkspaceInterruptIndicatorState,
+  type WorkspaceInterruptResolutionResult,
+  resolveWorkspaceInterruptStateFromSummary,
 } from './cookies';

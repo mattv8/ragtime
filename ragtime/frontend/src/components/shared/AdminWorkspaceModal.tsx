@@ -1,9 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Check, ChevronDown, ChevronRight, Repeat, Trash2, X } from 'lucide-react';
 import { MiniLoadingSpinner } from './MiniLoadingSpinner';
 import { api } from '@/api';
 import type { User, UserSpaceWorkspace } from '@/types';
-import { getCookieValue, getInterruptDismissCookieName } from '@/utils';
+import {
+  clearInterruptDismiss,
+  resolveWorkspaceInterruptStateFromSummary,
+} from '@/utils';
+import type { InterruptChatStateSnapshot } from '@/utils/cookies';
 
 interface AdminWorkspaceModalProps {
   isOpen: boolean;
@@ -41,6 +45,9 @@ export function AdminWorkspaceModal({
   const [transferSaving, setTransferSaving] = useState(false);
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [workspaceChatStates, setWorkspaceChatStates] = useState<Record<string, { hasLive: boolean; hasInterrupted: boolean }>>({});
+  // Track previous raw interrupted state per workspace so we can detect
+  // false -> true transitions and clear stale dismiss cookies.
+  const prevChatStateRef = useRef<Record<string, InterruptChatStateSnapshot>>({});
 
   useEffect(() => {
     if (!isOpen || workspaces.length === 0) return;
@@ -54,18 +61,20 @@ export function AdminWorkspaceModal({
       try {
         const workspaceIds = workspaces.map((workspace) => workspace.id);
         const summaries = await api.getWorkspacesConversationStateSummary(workspaceIds);
-        const summaryByWorkspaceId = new Map(summaries.map((summary) => [summary.workspace_id, summary]));
 
-        const updates = workspaceIds.map((workspaceId) => {
-          const summary = summaryByWorkspaceId.get(workspaceId);
-          const interruptDismissed = getCookieValue(getInterruptDismissCookieName(currentUser.id, workspaceId)) === '1';
-          const rawInterrupted = Boolean(summary?.has_interrupted_task);
-          const hasLiveTask = Boolean(summary?.has_live_task);
+        const updates = summaries.map((summary) => {
+          const resolved = resolveWorkspaceInterruptStateFromSummary(
+            currentUser.id,
+            summary,
+            prevChatStateRef.current[summary.workspace_id],
+          );
 
-          const hasInterrupted = rawInterrupted && !interruptDismissed;
-          const hasLive = hasLiveTask;
+          if (resolved.transition.shouldClearDismiss) {
+            clearInterruptDismiss(currentUser.id, resolved.workspaceId);
+          }
+          prevChatStateRef.current[resolved.workspaceId] = resolved.transition.nextState;
 
-          return [workspaceId, { hasLive, hasInterrupted }] as const;
+          return [resolved.workspaceId, resolved.indicator] as const;
         });
 
         if (cancelled) return;
@@ -389,3 +398,5 @@ export function AdminWorkspaceModal({
     </div>
   );
 }
+
+export default AdminWorkspaceModal;
