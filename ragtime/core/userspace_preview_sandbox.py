@@ -1,7 +1,7 @@
 """Shared User Space preview iframe sandbox configuration helpers."""
 
-from typing import TypedDict
 
+from typing import TypedDict
 
 class UserSpacePreviewSandboxFlagOption(TypedDict):
     """Canonical metadata for a single iframe sandbox capability."""

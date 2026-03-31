@@ -9,15 +9,19 @@ from ragtime.core.security import get_current_user, get_current_user_optional
 from ragtime.indexer.repository import repository
 from ragtime.userspace.models import (
     CreateSnapshotRequest,
+    CreateWorkspaceMountRequest,
     CreateWorkspaceRequest,
     DeleteWorkspaceEnvVarResponse,
+    DeleteWorkspaceMountResponse,
     ExecuteComponentRequest,
     ExecuteComponentResponse,
+    MountableSource,
     PaginatedWorkspacesResponse,
     RestoreSnapshotResponse,
     SwitchSnapshotBranchRequest,
     UpdateSnapshotRequest,
     UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceMountRequest,
     UpdateWorkspaceRequest,
     UpdateWorkspaceShareAccessRequest,
     UpdateWorkspaceShareSlugRequest,
@@ -37,6 +41,10 @@ from ragtime.userspace.models import (
     UserSpaceWorkspaceEnvVar,
     UserSpaceWorkspaceShareLink,
     UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceMount,
+    WorkspaceMountBrowseRequest,
+    WorkspaceMountBrowseResponse,
+    WorkspaceMountSyncResponse,
     WorkspaceShareSlugAvailabilityResponse,
 )
 from ragtime.userspace.runtime_service import userspace_runtime_service
@@ -83,6 +91,8 @@ async def list_userspace_tools(user: Any = Depends(get_current_user)):
                 description=tool.description,
                 group_id=tool.group_id,
                 group_name=tool.group_name,
+                userspace_mounts_enabled=tool.userspace_mounts_enabled,
+                userspace_mount_paths=tool.userspace_mount_paths,
             )
         )
     return results
@@ -229,6 +239,129 @@ async def delete_workspace_env_var(
         env_key,
     )
     await userspace_runtime_service.refresh_runtime_env_vars(workspace_id)
+    return result
+
+
+# ── Workspace Mounts ─────────────────────────────────────────────────
+
+
+@router.get(
+    "/workspaces/{workspace_id}/mounts",
+    response_model=list[WorkspaceMount],
+)
+async def list_workspace_mounts(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.list_workspace_mounts(workspace_id, user.id)
+
+
+@router.get(
+    "/workspaces/{workspace_id}/mountable-sources",
+    response_model=list[MountableSource],
+)
+async def list_mountable_sources(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.list_mountable_sources(workspace_id, user.id)
+
+
+@router.post(
+    "/workspaces/{workspace_id}/mounts/browse",
+    response_model=WorkspaceMountBrowseResponse,
+)
+async def browse_workspace_mount_source(
+    workspace_id: str,
+    request: WorkspaceMountBrowseRequest,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.browse_workspace_mount_source(
+        workspace_id,
+        user.id,
+        request,
+    )
+
+
+@router.post(
+    "/workspaces/{workspace_id}/mounts",
+    response_model=WorkspaceMount,
+)
+async def create_workspace_mount(
+    workspace_id: str,
+    request: CreateWorkspaceMountRequest,
+    user: Any = Depends(get_current_user),
+):
+    result = await userspace_service.create_workspace_mount(
+        workspace_id, user.id, request
+    )
+    await userspace_runtime_service.bump_workspace_generation(
+        workspace_id,
+        "mount_create",
+    )
+    return result
+
+
+@router.put(
+    "/workspaces/{workspace_id}/mounts/{mount_id}",
+    response_model=WorkspaceMount,
+)
+async def update_workspace_mount(
+    workspace_id: str,
+    mount_id: str,
+    request: UpdateWorkspaceMountRequest,
+    user: Any = Depends(get_current_user),
+):
+    result = await userspace_service.update_workspace_mount(
+        workspace_id,
+        user.id,
+        mount_id,
+        request,
+    )
+    await userspace_runtime_service.bump_workspace_generation(
+        workspace_id,
+        "mount_update",
+    )
+    return result
+
+
+@router.delete(
+    "/workspaces/{workspace_id}/mounts/{mount_id}",
+    response_model=DeleteWorkspaceMountResponse,
+)
+async def delete_workspace_mount(
+    workspace_id: str,
+    mount_id: str,
+    user: Any = Depends(get_current_user),
+):
+    result = await userspace_service.delete_workspace_mount(
+        workspace_id, user.id, mount_id
+    )
+    await userspace_runtime_service.bump_workspace_generation(
+        workspace_id,
+        "mount_delete",
+    )
+    return result
+
+
+@router.post(
+    "/workspaces/{workspace_id}/mounts/{mount_id}/sync",
+    response_model=WorkspaceMountSyncResponse,
+)
+async def sync_workspace_mount(
+    workspace_id: str,
+    mount_id: str,
+    user: Any = Depends(get_current_user),
+):
+    result = await userspace_service.sync_workspace_mount(
+        workspace_id,
+        user.id,
+        mount_id,
+    )
+    await userspace_runtime_service.bump_workspace_generation(
+        workspace_id,
+        "mount_sync",
+    )
     return result
 
 

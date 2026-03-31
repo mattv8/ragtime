@@ -7,6 +7,7 @@ import os
 import posixpath
 import re
 import secrets
+import shlex
 import shutil
 import subprocess
 import time as _time
@@ -23,7 +24,12 @@ from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
-from ragtime.core.encryption import decrypt_secret, encrypt_secret
+from ragtime.core.encryption import (
+    CONNECTION_CONFIG_PASSWORD_FIELDS,
+    decrypt_json_passwords,
+    decrypt_secret,
+    encrypt_secret,
+)
 from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
 from ragtime.core.logging import get_logger
 from ragtime.core.sql_utils import (
@@ -34,23 +40,33 @@ from ragtime.core.sql_utils import (
     validate_sql_query,
 )
 from ragtime.core.ssh import (
+    SSHSyncResult,
     SSHTunnel,
+    USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
+    USERSPACE_MOUNT_WATCH_JITTER_SECONDS,
     build_ssh_tunnel_config,
+    execute_ssh_command,
+    ssh_config_from_dict,
     ssh_tunnel_config_from_dict,
+    sync_ssh_directory,
 )
 from ragtime.indexer.repository import repository
 from ragtime.userspace.models import (
     ArtifactType,
+    CreateWorkspaceMountRequest,
     CreateWorkspaceRequest,
     DeleteWorkspaceEnvVarResponse,
+    DeleteWorkspaceMountResponse,
     ExecuteComponentRequest,
     ExecuteComponentResponse,
+    MountableSource,
     PaginatedWorkspacesResponse,
     ShareAccessMode,
     SqlitePersistenceMode,
     SwitchSnapshotBranchRequest,
     UpdateSnapshotRequest,
     UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceMountRequest,
     UpdateWorkspaceRequest,
     UpdateWorkspaceShareAccessRequest,
     UpsertWorkspaceEnvVarRequest,
@@ -71,6 +87,11 @@ from ragtime.userspace.models import (
     UserSpaceWorkspaceShareLink,
     UserSpaceWorkspaceShareLinkStatus,
     WorkspaceMember,
+    WorkspaceMount,
+    WorkspaceMountBrowseRequest,
+    WorkspaceMountBrowseResponse,
+    WorkspaceMountDirectoryEntry,
+    WorkspaceMountSyncResponse,
     WorkspaceShareSlugAvailabilityResponse,
 )
 
@@ -805,10 +826,33 @@ class UserSpaceService:
         ] = {}
         # Limit concurrent git status requests to avoid overloading process slots.
         self._git_status_semaphore = asyncio.Semaphore(8)
+        # Limit concurrent SSH mount sync jobs; each uses blocking Paramiko I/O.
+        self._workspace_mount_sync_semaphore = asyncio.Semaphore(
+            self._positive_int_env("USERSPACE_MOUNT_SYNC_CONCURRENCY", 2)
+        )
+        self._workspace_mount_watch_interval_seconds = (
+            USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS
+        )
+        self._workspace_mount_watch_jitter_seconds = (
+            USERSPACE_MOUNT_WATCH_JITTER_SECONDS
+        )
+        self._workspace_mount_watch_task: asyncio.Task[Any] | None = None
+        self._workspace_mount_watch_task_lock = asyncio.Lock()
+        self._workspace_mount_watch_inflight: set[str] = set()
+        self._workspace_mount_watch_next_due_monotonic: dict[str, float] = {}
         # Serialize snapshot mutations to keep timeline metadata consistent.
         self._snapshot_operation_semaphore = asyncio.Semaphore(1)
         # Startup drift reconciliation runs in a single background task.
         self._git_drift_startup_task: asyncio.Task[Any] | None = None
+
+    @staticmethod
+    def _positive_int_env(name: str, default_value: int) -> int:
+        raw_value = os.getenv(name, str(default_value)).strip()
+        try:
+            parsed = int(raw_value)
+        except Exception:
+            return default_value
+        return parsed if parsed > 0 else default_value
 
     def record_execution_proof(
         self,
@@ -853,6 +897,9 @@ class UserSpaceService:
 
     def _workspace_files_dir(self, workspace_id: str) -> Path:
         return self._workspace_dir(workspace_id) / "files"
+
+    def _workspace_rootfs_dir(self, workspace_id: str) -> Path:
+        return self._workspace_dir(workspace_id) / "rootfs"
 
     @staticmethod
     def _normalize_workspace_env_var_key(raw_key: str) -> str:
@@ -1311,6 +1358,115 @@ class UserSpaceService:
             self._startup_git_drift_reconciliation()
         )
 
+    def schedule_workspace_mount_watch(self) -> None:
+        """Start optional background loop that auto-syncs watch-enabled SSH mounts."""
+        if (
+            self._workspace_mount_watch_task is not None
+            and not self._workspace_mount_watch_task.done()
+        ):
+            return
+        self._workspace_mount_watch_task = asyncio.create_task(
+            self._workspace_mount_watch_loop(),
+            name="userspace-mount-watch-loop",
+        )
+
+    async def _workspace_mount_watch_loop(self) -> None:
+        poll_seconds = max(1.0, min(5.0, self._workspace_mount_watch_interval_seconds / 3.0))
+        while True:
+            await asyncio.sleep(poll_seconds)
+            try:
+                await self._workspace_mount_watch_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("Workspace mount watch tick failed: %s", exc, exc_info=True)
+
+    def _workspace_mount_watch_stagger_seconds(self, mount_id: str) -> float:
+        if self._workspace_mount_watch_jitter_seconds <= 0:
+            return 0.0
+        # Deterministic per-mount jitter avoids bursty sync waves.
+        jitter_fraction = (abs(hash(mount_id)) % 1000) / 1000.0
+        return jitter_fraction * self._workspace_mount_watch_jitter_seconds
+
+    async def _workspace_mount_watch_tick(self) -> None:
+        db = await get_db()
+        mounts = await db.workspacemount.find_many(
+            where={"autoSyncEnabled": True},
+            include={"toolConfig": True},
+        )
+
+        active_mount_ids: set[str] = set()
+        now_monotonic = _time.monotonic()
+
+        for mount in mounts:
+            mount_id = str(getattr(mount, "id", "") or "")
+            workspace_id = str(getattr(mount, "workspaceId", "") or "")
+            if not mount_id or not workspace_id:
+                continue
+            active_mount_ids.add(mount_id)
+
+            tool_config = getattr(mount, "toolConfig", None)
+            if not tool_config:
+                continue
+            if str(getattr(tool_config, "toolType", "") or "") != "ssh_shell":
+                continue
+            if not bool(getattr(tool_config, "enabled", False)):
+                continue
+            if mount_id in self._workspace_mount_watch_inflight:
+                continue
+
+            due_at = self._workspace_mount_watch_next_due_monotonic.get(mount_id, 0.0)
+            if now_monotonic < due_at:
+                continue
+
+            self._workspace_mount_watch_inflight.add(mount_id)
+            self._workspace_mount_watch_next_due_monotonic[mount_id] = (
+                now_monotonic
+                + self._workspace_mount_watch_interval_seconds
+                + self._workspace_mount_watch_stagger_seconds(mount_id)
+            )
+            asyncio.create_task(
+                self._run_watched_workspace_mount_sync(workspace_id, mount_id),
+                name=f"userspace-mount-watch-sync:{workspace_id}:{mount_id}",
+            )
+
+        stale_mount_ids = set(self._workspace_mount_watch_next_due_monotonic) - active_mount_ids
+        for mount_id in stale_mount_ids:
+            self._workspace_mount_watch_next_due_monotonic.pop(mount_id, None)
+            self._workspace_mount_watch_inflight.discard(mount_id)
+
+    async def _run_watched_workspace_mount_sync(
+        self,
+        workspace_id: str,
+        mount_id: str,
+    ) -> None:
+        try:
+            db = await get_db()
+            mount = await db.workspacemount.find_first(
+                where={"id": mount_id, "workspaceId": workspace_id},
+                include={"toolConfig": True},
+            )
+            if not mount or not bool(getattr(mount, "autoSyncEnabled", False)):
+                return
+
+            tool_config = getattr(mount, "toolConfig", None)
+            if not tool_config or str(getattr(tool_config, "toolType", "") or "") != "ssh_shell":
+                return
+
+            await self._sync_workspace_mount_record(db, mount)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug(
+                "Auto-sync watch run failed for mount %s/%s: %s",
+                workspace_id,
+                mount_id,
+                exc,
+                exc_info=True,
+            )
+        finally:
+            self._workspace_mount_watch_inflight.discard(mount_id)
+
     async def _startup_git_drift_reconciliation(self) -> None:
         """Reconcile existing workspaces sequentially in one background task."""
         try:
@@ -1350,6 +1506,18 @@ class UserSpaceService:
             except (asyncio.CancelledError, Exception):
                 pass
         self._git_drift_startup_task = None
+
+    async def shutdown_workspace_mount_watch(self) -> None:
+        """Cancel the workspace mount watch task and clear watch state."""
+        if self._workspace_mount_watch_task and not self._workspace_mount_watch_task.done():
+            self._workspace_mount_watch_task.cancel()
+            try:
+                await self._workspace_mount_watch_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._workspace_mount_watch_task = None
+        self._workspace_mount_watch_inflight.clear()
+        self._workspace_mount_watch_next_due_monotonic.clear()
 
     def _resolve_workspace_file_path(
         self, workspace_id: str, relative_path: str
@@ -2542,28 +2710,114 @@ class UserSpaceService:
             return f"{trimmed}{suffix}" if trimmed else suffix
         return existing_content
 
-    async def _apply_snapshot_sqlite_policy(self, workspace_id: str) -> None:
+    @staticmethod
+    def _workspace_mount_target_repo_relative_path(target_path: str) -> str | None:
+        raw = (target_path or "").strip()
+        if not raw or "\x00" in raw:
+            return None
+        normalized_target = posixpath.normpath(raw)
+        if not normalized_target.startswith("/workspace/"):
+            return None
+        relative = normalized_target[len("/workspace/"):].strip("/")
+        if not relative or relative == ".":
+            return None
+        # Reject any traversal segments that survived normalization.
+        parts = relative.split("/")
+        if any(part in ("..", ".", "") for part in parts):
+            return None
+        return relative
+
+    @staticmethod
+    def _deduplicate_ancestor_paths(paths: list[str]) -> list[str]:
+        """Remove paths that are children of other paths in the list."""
+        if len(paths) <= 1:
+            return list(paths)
+        sorted_paths = sorted(paths)
+        result: list[str] = []
+        for path in sorted_paths:
+            if result and (path == result[-1] or path.startswith(result[-1] + "/")):
+                continue
+            result.append(path)
+        return result
+
+    async def _list_workspace_mount_target_repo_paths(
+        self,
+        workspace_id: str,
+    ) -> list[str]:
+        db = await get_db()
+        rows = await db.workspacemount.find_many(
+            where={"workspaceId": workspace_id},
+            order={"createdAt": "asc"},
+        )
+        paths: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
+            relative = self._workspace_mount_target_repo_relative_path(
+                str(getattr(row, "targetPath", "") or "")
+            )
+            if not relative or relative in seen:
+                continue
+            seen.add(relative)
+            paths.append(relative)
+        return self._deduplicate_ancestor_paths(paths)
+
+    async def _stage_workspace_snapshot_files(self, workspace_id: str) -> None:
+        """Stage all workspace files then purge paths that must not be snapshotted.
+
+        Excluded from the index in a single pass after ``git add -A``:
+        - Platform-managed files (bridge, bootstrap config/marker)
+        - Mount materialized directories (from DB workspace_mounts)
+        - SQLite databases (when workspace sqlite persistence mode is 'exclude')
+        """
+        # Collect all paths/patterns to purge from the index.
+        rm_cached_paths: list[str] = []
+        reset_patterns: list[str] = []
+
+        # Platform-managed files — always excluded.
+        rm_cached_paths.extend(_PLATFORM_MANAGED_GITIGNORE_PATTERNS)
+
+        # Mount targets — authoritative exclusion from DB records.
+        mount_paths = await self._list_workspace_mount_target_repo_paths(workspace_id)
+        if mount_paths:
+            rm_cached_paths.extend(mount_paths)
+            logger.debug(
+                "Excluding mount target paths from snapshot for %s: %s",
+                workspace_id,
+                mount_paths,
+            )
+
+        # SQLite exclusion policy.
         db = await get_db()
         workspace = await db.workspace.find_unique(where={"id": workspace_id})
-        mode = _normalize_sqlite_persistence_mode(
+        sqlite_mode = _normalize_sqlite_persistence_mode(
             str(getattr(workspace, "sqlitePersistenceMode", "exclude") or "exclude")
             if workspace
             else "exclude"
         )
-        if mode != "exclude":
-            return
-        for pattern in _SQLITE_EXCLUDE_GLOBS:
+        if sqlite_mode == "exclude":
+            reset_patterns.extend(_SQLITE_EXCLUDE_GLOBS)
+
+        # Stage everything first.
+        await self._run_git(workspace_id, ["add", "-A"])
+
+        # Purge excluded paths from the index.
+        if rm_cached_paths:
+            await self._run_git(
+                workspace_id,
+                [
+                    "rm",
+                    "-r",
+                    "--cached",
+                    "--ignore-unmatch",
+                    "--",
+                    *rm_cached_paths,
+                ],
+                check=False,
+            )
+        for pattern in reset_patterns:
             await self._run_git(
                 workspace_id,
                 ["reset", "--", pattern],
-                check=False,
-            )
-
-    async def _apply_snapshot_platform_file_policy(self, workspace_id: str) -> None:
-        for pattern in _PLATFORM_MANAGED_GITIGNORE_PATTERNS:
-            await self._run_git(
-                workspace_id,
-                ["rm", "--cached", "--ignore-unmatch", "--", pattern],
                 check=False,
             )
 
@@ -3725,8 +3979,999 @@ class UserSpaceService:
         )
         return self._sanitize_workspace_env_map(list(rows))
 
+    # ------------------------------------------------------------------
+    # Workspace Mounts
+    # ------------------------------------------------------------------
+
+    _WORKSPACE_MOUNT_MAX_COUNT = 50
+    _RESERVED_MOUNT_TARGETS = {
+        "/workspace",
+        "/proc",
+        "/dev",
+        "/sys",
+        "/run",
+        "/tmp",
+        "/bin",
+        "/sbin",
+        "/usr",
+        "/lib",
+        "/lib64",
+        "/etc",
+        "/var",
+    }
+
+    @staticmethod
+    def _workspace_mount_from_record(
+        record: Any,
+        tool_name: str | None = None,
+        tool_type: str | None = None,
+    ) -> WorkspaceMount:
+        return WorkspaceMount(
+            id=str(getattr(record, "id", "") or ""),
+            workspace_id=str(getattr(record, "workspaceId", "") or ""),
+            tool_config_id=str(getattr(record, "toolConfigId", "") or ""),
+            source_path=str(getattr(record, "sourcePath", "") or ""),
+            target_path=str(getattr(record, "targetPath", "") or ""),
+            description=str(getattr(record, "description", "") or "").strip() or None,
+            sync_status=str(getattr(record, "syncStatus", "pending") or "pending"),  # type: ignore[arg-type]
+            last_sync_at=getattr(record, "lastSyncAt", None),
+            last_sync_error=getattr(record, "lastSyncError", None),
+            auto_sync_enabled=bool(getattr(record, "autoSyncEnabled", False)),
+            tool_name=tool_name,
+            tool_type=tool_type,
+            created_at=getattr(record, "createdAt"),
+            updated_at=getattr(record, "updatedAt"),
+        )
+
+    async def _sync_workspace_mount_record(
+        self,
+        db: Any,
+        mount: Any,
+    ) -> WorkspaceMountSyncResponse:
+        tc_record = getattr(mount, "toolConfig", None)
+        tool_type = str(getattr(tc_record, "toolType", "") or "")
+        mount_id = str(getattr(mount, "id", "") or "")
+        workspace_id = str(getattr(mount, "workspaceId", "") or "")
+        if tool_type != "ssh_shell":
+            raise HTTPException(
+                status_code=400,
+                detail="Sync is only supported for SSH-backed mounts",
+            )
+
+        raw_config = getattr(tc_record, "connectionConfig", None)
+        if isinstance(raw_config, str):
+            raw_config = json.loads(raw_config)
+        if not isinstance(raw_config, dict):
+            raw_config = {}
+        connection_config = decrypt_json_passwords(
+            raw_config,
+            CONNECTION_CONFIG_PASSWORD_FIELDS,
+        )
+
+        ssh_config = ssh_config_from_dict(connection_config)
+        remote_path = self._resolve_ssh_mount_remote_path(
+            connection_config,
+            str(getattr(mount, "sourcePath", "") or ""),
+        )
+        cache_dir = self._base_dir / "mount_cache" / workspace_id / mount_id
+
+        try:
+            async with self._workspace_mount_sync_semaphore:
+                result: SSHSyncResult = await asyncio.to_thread(
+                    sync_ssh_directory,
+                    ssh_config,
+                    remote_path,
+                    str(cache_dir),
+                )
+            sync_status = "synced" if result.success else "error"
+            last_error = "; ".join(result.errors[:5]) if result.errors else None
+            now = _utc_now()
+
+            await db.workspacemount.update(
+                where={"id": mount_id},
+                data={
+                    "syncStatus": sync_status,
+                    "lastSyncAt": now,
+                    "lastSyncError": last_error,
+                    "updatedAt": now,
+                },
+            )
+            self.invalidate_file_list_cache(workspace_id)
+            return WorkspaceMountSyncResponse(
+                mount_id=mount_id,
+                sync_status=sync_status,  # type: ignore[arg-type]
+                files_synced=result.files_synced,
+                last_sync_error=last_error,
+            )
+        except Exception as exc:
+            logger.error("Mount sync failed for %s/%s: %s", workspace_id, mount_id, exc)
+            now = _utc_now()
+            await db.workspacemount.update(
+                where={"id": mount_id},
+                data={
+                    "syncStatus": "error",
+                    "lastSyncAt": now,
+                    "lastSyncError": str(exc)[:500],
+                    "updatedAt": now,
+                },
+            )
+            self.invalidate_file_list_cache(workspace_id)
+            return WorkspaceMountSyncResponse(
+                mount_id=mount_id,
+                sync_status="error",
+                files_synced=0,
+                last_sync_error=str(exc)[:500],
+            )
+
+    def _validate_mount_target_path(self, target_path: str) -> str:
+        target = target_path.strip()
+        if not target.startswith("/"):
+            target = f"/{target}"
+        target = posixpath.normpath(target)
+        if target in self._RESERVED_MOUNT_TARGETS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Target path '{target}' is reserved and cannot be used as a mount point",
+            )
+        for reserved in self._RESERVED_MOUNT_TARGETS:
+            if reserved == "/workspace":
+                # Mounts are allowed within the workspace tree, but not over the
+                # workspace root itself.
+                continue
+            if target.startswith(reserved + "/"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Target path '{target}' conflicts with reserved path '{reserved}'",
+                )
+        return target
+
+    @staticmethod
+    def _is_same_or_descendant_mount_path(path: str, candidate_ancestor: str) -> bool:
+        normalized_path = posixpath.normpath(path)
+        normalized_ancestor = posixpath.normpath(candidate_ancestor)
+        return normalized_path == normalized_ancestor or normalized_path.startswith(
+            normalized_ancestor + "/"
+        )
+
+    @staticmethod
+    def _normalize_mount_description(description: str | None) -> str | None:
+        if description is None:
+            return None
+        normalized = description.strip()
+        return normalized or None
+
+    @staticmethod
+    def _normalize_mount_source_path(source_path: str) -> str:
+        normalized = posixpath.normpath((source_path or "").strip().replace("\\", "/"))
+        if normalized in {"", "."}:
+            return "."
+        if (
+            normalized.startswith("/")
+            or normalized == ".."
+            or normalized.startswith("../")
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Approved mount paths must be relative to the tool root",
+            )
+        return normalized
+
+    @classmethod
+    def _normalize_mount_source_paths(cls, source_paths: list[str] | None) -> list[str]:
+        normalized_paths: list[str] = []
+        seen: set[str] = set()
+        for raw_path in source_paths or []:
+            normalized = cls._normalize_mount_source_path(raw_path)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            normalized_paths.append(normalized)
+        return normalized_paths
+
+    @staticmethod
+    def _normalize_mount_browser_path(path: str) -> str:
+        normalized_parts: list[str] = []
+        for part in (path or "/").replace("\\", "/").split("/"):
+            if not part or part == ".":
+                continue
+            if part == "..":
+                if normalized_parts:
+                    normalized_parts.pop()
+                continue
+            normalized_parts.append(part)
+        return "/" + "/".join(normalized_parts)
+
+    @classmethod
+    def _browser_path_to_mount_source_path(cls, path: str) -> str:
+        normalized = cls._normalize_mount_browser_path(path)
+        if normalized == "/":
+            return "."
+        return cls._normalize_mount_source_path(normalized.lstrip("/"))
+
+    @classmethod
+    def _is_mount_source_within_root(
+        cls, source_path: str, root_source_path: str
+    ) -> bool:
+        normalized_source = cls._normalize_mount_source_path(source_path)
+        normalized_root = cls._normalize_mount_source_path(root_source_path)
+        if normalized_root == ".":
+            return True
+        return normalized_source == normalized_root or normalized_source.startswith(
+            normalized_root + "/"
+        )
+
+    @classmethod
+    def _ensure_mount_source_within_approved_paths(
+        cls,
+        source_path: str,
+        approved_paths: list[str],
+    ) -> None:
+        normalized_source = cls._normalize_mount_source_path(source_path)
+        if any(
+            cls._is_mount_source_within_root(normalized_source, approved_path)
+            for approved_path in approved_paths
+        ):
+            return
+        raise HTTPException(
+            status_code=400,
+            detail="Source path is not within the tool's approved mount paths",
+        )
+
+    @classmethod
+    def _resolve_filesystem_mount_source_path(
+        cls,
+        connection_config: dict[str, Any],
+        source_path: str,
+    ) -> str:
+        normalized = cls._normalize_mount_source_path(source_path)
+        base_path = str(connection_config.get("base_path") or "").strip()
+        if not base_path:
+            raise HTTPException(
+                status_code=400,
+                detail="Filesystem mount source is unavailable because base_path is not configured",
+            )
+        if normalized == ".":
+            return str(Path(base_path))
+        return str(Path(base_path) / normalized)
+
+    @classmethod
+    def _resolve_ssh_mount_remote_path(
+        cls,
+        connection_config: dict[str, Any],
+        source_path: str,
+    ) -> str:
+        normalized = cls._normalize_mount_source_path(source_path)
+        working_directory = str(
+            connection_config.get("working_directory") or ""
+        ).strip()
+        if not working_directory:
+            return normalized
+        if normalized == ".":
+            return posixpath.normpath(working_directory)
+        return posixpath.normpath(posixpath.join(working_directory, normalized))
+
+    async def _create_workspace_mount_source_directory(
+        self,
+        *,
+        tool_type: str,
+        connection_config: dict[str, Any],
+        source_path: str,
+    ) -> None:
+        if tool_type == "filesystem_indexer":
+            resolved_path = Path(
+                self._resolve_filesystem_mount_source_path(
+                    connection_config,
+                    source_path,
+                )
+            )
+
+            def _mkdir() -> None:
+                resolved_path.mkdir(parents=True, exist_ok=True)
+
+            await asyncio.to_thread(_mkdir)
+            return
+
+        if tool_type == "ssh_shell":
+            ssh_config = ssh_config_from_dict(connection_config)
+            remote_path = self._resolve_ssh_mount_remote_path(
+                connection_config,
+                source_path,
+            )
+            command = f"mkdir -p -- {shlex.quote(remote_path)}"
+            result = await asyncio.to_thread(execute_ssh_command, ssh_config, command)
+            if not result.success:
+                error_msg = (
+                    result.stderr or result.stdout or "Failed to create source directory"
+                )
+                raise HTTPException(status_code=400, detail=error_msg)
+            return
+
+        raise HTTPException(
+            status_code=400,
+            detail="Creating source directories is only supported for SSH and Filesystem tools",
+        )
+
+    async def _create_workspace_mount_target_directory(
+        self,
+        workspace_id: str,
+        target_path: str,
+    ) -> None:
+        if not target_path.startswith("/workspace/"):
+            raise HTTPException(
+                status_code=400,
+                detail="Mount target directories can only be created under /workspace",
+            )
+
+        relative_path = self._normalize_workspace_relative_path(
+            target_path[len("/workspace/") :]
+        )
+        if not relative_path:
+            raise HTTPException(status_code=400, detail="Invalid mount target directory")
+
+        self._workspace_files_dir(workspace_id).mkdir(parents=True, exist_ok=True)
+        target_dir_path = self._resolve_workspace_file_path(workspace_id, relative_path)
+
+        def _mkdir() -> None:
+            target_dir_path.mkdir(parents=True, exist_ok=True)
+
+        await asyncio.to_thread(_mkdir)
+
+    async def list_workspace_mounts(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> list[WorkspaceMount]:
+        await self._enforce_workspace_access(workspace_id, user_id)
+        db = await get_db()
+        rows = await db.workspacemount.find_many(
+            where={"workspaceId": workspace_id},
+            order={"createdAt": "asc"},
+            include={"toolConfig": True},
+        )
+        results: list[WorkspaceMount] = []
+        for row in rows:
+            tc = getattr(row, "toolConfig", None)
+            tool_name = str(getattr(tc, "name", "") or "") if tc else None
+            tool_type = str(getattr(tc, "toolType", "") or "") if tc else None
+            results.append(self._workspace_mount_from_record(row, tool_name, tool_type))
+        return results
+
+    async def list_mountable_sources(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> list[MountableSource]:
+        workspace = await self._enforce_workspace_access(workspace_id, user_id)
+        selected_tool_ids = set(workspace.selected_tool_ids or [])
+        tool_configs = await repository.list_tool_configs(enabled_only=True)
+        sources: list[MountableSource] = []
+        for tc in tool_configs:
+            if not tc.id or tc.id not in selected_tool_ids:
+                continue
+            if not tc.userspace_mounts_enabled:
+                continue
+            for path in tc.userspace_mount_paths:
+                try:
+                    normalized_path = self._normalize_mount_source_path(path)
+                except HTTPException:
+                    logger.warning(
+                        "Skipping invalid userspace mount path %r on tool %s",
+                        path,
+                        tc.id,
+                    )
+                    continue
+                sources.append(
+                    MountableSource(
+                        tool_config_id=tc.id,
+                        tool_name=tc.name,
+                        tool_type=tc.tool_type.value,
+                        source_path=normalized_path,
+                    )
+                )
+        return sources
+
+    async def create_workspace_mount(
+        self,
+        workspace_id: str,
+        user_id: str,
+        request: CreateWorkspaceMountRequest,
+    ) -> WorkspaceMount:
+        workspace = await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="editor",
+        )
+        selected_tool_ids = set(workspace.selected_tool_ids or [])
+        if request.tool_config_id not in selected_tool_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="Tool is not selected on this workspace",
+            )
+
+        tool_config = await repository.get_tool_config(request.tool_config_id)
+        if not tool_config or not tool_config.userspace_mounts_enabled:
+            raise HTTPException(
+                status_code=400,
+                detail="Tool does not support userspace mounts",
+            )
+        normalized_source_path = self._normalize_mount_source_path(request.source_path)
+        approved_paths = self._normalize_mount_source_paths(
+            tool_config.userspace_mount_paths or []
+        )
+        self._ensure_mount_source_within_approved_paths(
+            normalized_source_path,
+            approved_paths,
+        )
+
+        target_path = self._validate_mount_target_path(request.target_path)
+        source_directory_to_create: str | None = None
+        if request.source_directory_to_create:
+            source_directory_to_create = self._normalize_mount_source_path(
+                request.source_directory_to_create
+            )
+            self._ensure_mount_source_within_approved_paths(
+                source_directory_to_create,
+                approved_paths,
+            )
+            if not self._is_mount_source_within_root(
+                normalized_source_path,
+                source_directory_to_create,
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Source directory to create must be the selected mount path or its parent",
+                )
+
+        target_directory_to_create: str | None = None
+        if request.target_directory_to_create:
+            target_directory_to_create = self._validate_mount_target_path(
+                request.target_directory_to_create
+            )
+            if not target_directory_to_create.startswith("/workspace/"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Target directory to create must be within /workspace",
+                )
+            if not self._is_same_or_descendant_mount_path(
+                target_path,
+                target_directory_to_create,
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Target directory to create must be the selected mount path or its parent",
+                )
+
+        db = await get_db()
+
+        count = await db.workspacemount.count(where={"workspaceId": workspace_id})
+        if count >= self._WORKSPACE_MOUNT_MAX_COUNT:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Workspace mount limit reached ({self._WORKSPACE_MOUNT_MAX_COUNT})",
+            )
+
+        connection_config: dict[str, Any] = {}
+        if source_directory_to_create:
+            raw_config = getattr(tool_config, "connection_config", None)
+            if isinstance(raw_config, str):
+                raw_config = json.loads(raw_config)
+            if isinstance(raw_config, dict):
+                connection_config = decrypt_json_passwords(
+                    raw_config,
+                    CONNECTION_CONFIG_PASSWORD_FIELDS,
+                )
+
+        if source_directory_to_create:
+            await self._create_workspace_mount_source_directory(
+                tool_type=tool_config.tool_type.value,
+                connection_config=connection_config,
+                source_path=source_directory_to_create,
+            )
+        if target_directory_to_create:
+            await self._create_workspace_mount_target_directory(
+                workspace_id,
+                target_directory_to_create,
+            )
+
+        now = _utc_now()
+        # Filesystem mounts are always live — no sync step is needed.
+        initial_sync_status = (
+            "synced"
+            if tool_config.tool_type.value == "filesystem_indexer"
+            else "pending"
+        )
+        created = await db.workspacemount.create(
+            data={
+                "id": str(uuid4()),
+                "workspaceId": workspace_id,
+                "toolConfigId": request.tool_config_id,
+                "sourcePath": normalized_source_path,
+                "targetPath": target_path,
+                "autoSyncEnabled": bool(request.auto_sync_enabled),
+                "description": self._normalize_mount_description(request.description),
+                "syncStatus": initial_sync_status,
+                "createdAt": now,
+                "updatedAt": now,
+            }
+        )
+        await db.workspace.update(
+            where={"id": workspace_id},
+            data={"updatedAt": now},
+        )
+        return self._workspace_mount_from_record(
+            created,
+            tool_name=tool_config.name,
+            tool_type=tool_config.tool_type.value,
+        )
+
+    async def update_workspace_mount(
+        self,
+        workspace_id: str,
+        user_id: str,
+        mount_id: str,
+        request: UpdateWorkspaceMountRequest,
+    ) -> WorkspaceMount:
+        await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="editor",
+        )
+        db = await get_db()
+        existing = await db.workspacemount.find_first(
+            where={"id": mount_id, "workspaceId": workspace_id},
+            include={"toolConfig": True},
+        )
+        if not existing:
+            raise HTTPException(status_code=404, detail="Mount not found")
+
+        update_data: dict[str, Any] = {"updatedAt": _utc_now()}
+        if request.target_path is not None:
+            validated_target_path = self._validate_mount_target_path(
+                request.target_path
+            )
+            update_data["targetPath"] = validated_target_path
+        if request.description is not None:
+            update_data["description"] = self._normalize_mount_description(
+                request.description
+            )
+        if request.auto_sync_enabled is not None:
+            update_data["autoSyncEnabled"] = bool(request.auto_sync_enabled)
+
+        updated = await db.workspacemount.update(
+            where={"id": mount_id},
+            data=update_data,
+        )
+        await db.workspace.update(
+            where={"id": workspace_id},
+            data={"updatedAt": update_data["updatedAt"]},
+        )
+
+        tc = getattr(existing, "toolConfig", None)
+        tool_name = str(getattr(tc, "name", "") or "") if tc else None
+        tool_type = str(getattr(tc, "toolType", "") or "") if tc else None
+        return self._workspace_mount_from_record(updated, tool_name, tool_type)
+
+    async def delete_workspace_mount(
+        self,
+        workspace_id: str,
+        user_id: str,
+        mount_id: str,
+    ) -> DeleteWorkspaceMountResponse:
+        await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="editor",
+        )
+        db = await get_db()
+        existing = await db.workspacemount.find_first(
+            where={"id": mount_id, "workspaceId": workspace_id},
+        )
+        if not existing:
+            raise HTTPException(status_code=404, detail="Mount not found")
+
+        now = _utc_now()
+        await db.workspacemount.delete(where={"id": mount_id})
+        await db.workspace.update(
+            where={"id": workspace_id},
+            data={"updatedAt": now},
+        )
+        return DeleteWorkspaceMountResponse(success=True, mount_id=mount_id)
+
+    async def sync_workspace_mount(
+        self,
+        workspace_id: str,
+        user_id: str,
+        mount_id: str,
+    ) -> WorkspaceMountSyncResponse:
+        await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="editor",
+        )
+        db = await get_db()
+        mount = await db.workspacemount.find_first(
+            where={"id": mount_id, "workspaceId": workspace_id},
+            include={"toolConfig": True},
+        )
+        if not mount:
+            raise HTTPException(status_code=404, detail="Mount not found")
+
+        tc_record = getattr(mount, "toolConfig", None)
+        return await self._sync_workspace_mount_record(db, mount)
+
+    async def browse_workspace_mount_source(
+        self,
+        workspace_id: str,
+        user_id: str,
+        request: WorkspaceMountBrowseRequest,
+    ) -> WorkspaceMountBrowseResponse:
+        workspace = await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="editor",
+        )
+        selected_tool_ids = set(workspace.selected_tool_ids or [])
+        if request.tool_config_id not in selected_tool_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="Tool is not selected on this workspace",
+            )
+
+        tool_config = await repository.get_tool_config(request.tool_config_id)
+        if not tool_config or not tool_config.userspace_mounts_enabled:
+            raise HTTPException(
+                status_code=400,
+                detail="Tool does not support userspace mounts",
+            )
+
+        approved_paths = self._normalize_mount_source_paths(
+            tool_config.userspace_mount_paths or []
+        )
+        root_source_path = self._normalize_mount_source_path(request.root_source_path)
+        if root_source_path not in approved_paths:
+            raise HTTPException(
+                status_code=400,
+                detail="Browse root is not one of the tool's approved mount paths",
+            )
+
+        browser_path = self._normalize_mount_browser_path(request.path)
+        source_path = self._browser_path_to_mount_source_path(browser_path)
+        if not self._is_mount_source_within_root(source_path, root_source_path):
+            raise HTTPException(
+                status_code=400,
+                detail="Browse path must stay within the approved mount root",
+            )
+
+        raw_config = tool_config.connection_config or {}
+        if isinstance(raw_config, str):
+            raw_config = json.loads(raw_config)
+        if not isinstance(raw_config, dict):
+            raw_config = {}
+        connection_config = decrypt_json_passwords(
+            raw_config,
+            CONNECTION_CONFIG_PASSWORD_FIELDS,
+        )
+
+        if tool_config.tool_type.value == "ssh_shell":
+            return await self._browse_ssh_workspace_mount_source(
+                connection_config=connection_config,
+                browser_path=browser_path,
+                source_path=source_path,
+            )
+
+        if tool_config.tool_type.value == "filesystem_indexer":
+            return await self._browse_filesystem_workspace_mount_source(
+                connection_config=connection_config,
+                browser_path=browser_path,
+                source_path=source_path,
+            )
+
+        raise HTTPException(
+            status_code=400,
+            detail="Browsing is only supported for SSH and Filesystem tools",
+        )
+
+    async def _browse_ssh_workspace_mount_source(
+        self,
+        *,
+        connection_config: dict[str, Any],
+        browser_path: str,
+        source_path: str,
+    ) -> WorkspaceMountBrowseResponse:
+        ssh_config = ssh_config_from_dict(connection_config)
+        remote_path = self._resolve_ssh_mount_remote_path(
+            connection_config, source_path
+        )
+        command = f"ls -p1a {shlex.quote(remote_path)}"
+
+        try:
+            result = await asyncio.to_thread(execute_ssh_command, ssh_config, command)
+        except Exception as exc:
+            return WorkspaceMountBrowseResponse(
+                path=browser_path, entries=[], error=str(exc)
+            )
+
+        if not result.success:
+            error_msg = result.stderr or result.stdout or "Failed to list directory"
+            return WorkspaceMountBrowseResponse(
+                path=browser_path,
+                entries=[],
+                error=error_msg,
+            )
+
+        entries: list[WorkspaceMountDirectoryEntry] = []
+        for line in result.stdout.splitlines():
+            name = line.strip()
+            if name in {".", "./", "..", "../"} or not name:
+                continue
+            if not name.endswith("/"):
+                continue
+            clean_name = name.rstrip("/")
+            child_browser_path = (
+                f"/{clean_name}"
+                if browser_path == "/"
+                else f"{browser_path.rstrip('/')}/{clean_name}"
+            )
+            entries.append(
+                WorkspaceMountDirectoryEntry(
+                    name=clean_name,
+                    path=child_browser_path,
+                    is_dir=True,
+                    size=None,
+                )
+            )
+
+        entries.sort(key=lambda entry: entry.name.lower())
+        return WorkspaceMountBrowseResponse(path=browser_path, entries=entries)
+
+    async def _browse_filesystem_workspace_mount_source(
+        self,
+        *,
+        connection_config: dict[str, Any],
+        browser_path: str,
+        source_path: str,
+    ) -> WorkspaceMountBrowseResponse:
+        resolved_path = Path(
+            self._resolve_filesystem_mount_source_path(connection_config, source_path)
+        )
+
+        def _browse() -> WorkspaceMountBrowseResponse:
+            if not resolved_path.exists():
+                return WorkspaceMountBrowseResponse(
+                    path=browser_path,
+                    entries=[],
+                    error=f"Path does not exist: {browser_path}",
+                )
+            if not resolved_path.is_dir():
+                return WorkspaceMountBrowseResponse(
+                    path=browser_path,
+                    entries=[],
+                    error=f"Not a directory: {browser_path}",
+                )
+
+            try:
+                entries: list[WorkspaceMountDirectoryEntry] = []
+                for entry in sorted(
+                    resolved_path.iterdir(),
+                    key=lambda item: (not item.is_dir(), item.name.lower()),
+                ):
+                    try:
+                        if not entry.is_dir():
+                            continue
+                    except (PermissionError, OSError):
+                        continue
+                    child_browser_path = (
+                        f"/{entry.name}"
+                        if browser_path == "/"
+                        else f"{browser_path.rstrip('/')}/{entry.name}"
+                    )
+                    entries.append(
+                        WorkspaceMountDirectoryEntry(
+                            name=entry.name,
+                            path=child_browser_path,
+                            is_dir=True,
+                            size=None,
+                        )
+                    )
+                return WorkspaceMountBrowseResponse(path=browser_path, entries=entries)
+            except PermissionError:
+                return WorkspaceMountBrowseResponse(
+                    path=browser_path,
+                    entries=[],
+                    error=f"Permission denied: {browser_path}",
+                )
+            except Exception as exc:
+                return WorkspaceMountBrowseResponse(
+                    path=browser_path,
+                    entries=[],
+                    error=str(exc),
+                )
+
+        return await asyncio.to_thread(_browse)
+
+    async def resolve_workspace_mounts_for_runtime(
+        self,
+        workspace_id: str,
+        mount_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Resolve persisted mounts into runtime-ready specs.
+
+        Returns a list of dicts with keys: source_local_path, target_path,
+        tool_type, read_only.  For SSH mounts the source_local_path points to
+        the sync cache.  For filesystem_indexer mounts it points to the resolved
+        host path from the tool's connection_config base_path + source_path.
+        """
+        db = await get_db()
+        rows = await db.workspacemount.find_many(
+            where={"workspaceId": workspace_id},
+            include={"toolConfig": True},
+        )
+        if not rows:
+            return []
+
+        specs: list[dict[str, Any]] = []
+        mount_id_filter = (
+            {str(mount_id).strip() for mount_id in mount_ids if str(mount_id).strip()}
+            if mount_ids is not None
+            else None
+        )
+        for row in rows:
+            mount_id = str(getattr(row, "id", "") or "")
+            if mount_id_filter is not None and mount_id not in mount_id_filter:
+                continue
+            tc = getattr(row, "toolConfig", None)
+            if not tc:
+                continue
+            tool_type = str(getattr(tc, "toolType", "") or "")
+            source_path = str(getattr(row, "sourcePath", "") or "")
+            target_path = str(getattr(row, "targetPath", "") or "")
+
+            if tool_type == "ssh_shell":
+                local_path = str(
+                    self._base_dir / "mount_cache" / workspace_id / mount_id
+                )
+                specs.append(
+                    {
+                        "source_local_path": local_path,
+                        "target_path": target_path,
+                        "tool_type": tool_type,
+                        "read_only": True,
+                    }
+                )
+            elif tool_type == "filesystem_indexer":
+                raw_config = getattr(tc, "connectionConfig", None)
+                if isinstance(raw_config, str):
+                    raw_config = json.loads(raw_config)
+                if not isinstance(raw_config, dict):
+                    raw_config = {}
+                connection_config = decrypt_json_passwords(
+                    raw_config,
+                    CONNECTION_CONFIG_PASSWORD_FIELDS,
+                )
+                try:
+                    resolved = self._resolve_filesystem_mount_source_path(
+                        connection_config,
+                        source_path,
+                    )
+                except HTTPException:
+                    logger.warning(
+                        "Skipping invalid filesystem userspace mount %s for tool %s",
+                        mount_id,
+                        getattr(tc, "id", None),
+                    )
+                    continue
+                specs.append(
+                    {
+                        "source_local_path": resolved,
+                        "target_path": target_path,
+                        "tool_type": tool_type,
+                        "read_only": True,
+                    }
+                )
+
+        return specs
+
     def invalidate_file_list_cache(self, workspace_id: str) -> None:
         self._file_list_cache.pop(workspace_id, None)
+
+    def _resolve_workspace_mount_runtime_target_dir(
+        self,
+        workspace_id: str,
+        target_path: str,
+    ) -> Path | None:
+        normalized = (target_path or "").strip().replace("\\", "/").lstrip("/")
+        if not normalized:
+            return None
+        rootfs_dir = self._workspace_rootfs_dir(workspace_id)
+        candidate = rootfs_dir / normalized
+        try:
+            candidate.relative_to(rootfs_dir)
+        except ValueError:
+            return None
+        return candidate
+
+    def _runtime_mount_content_signature_sync(
+        self,
+        workspace_id: str,
+        target_paths: list[str],
+    ) -> tuple[Any, ...]:
+        signatures: list[tuple[Any, ...]] = []
+        for target_path in sorted({path.strip() for path in target_paths if path.strip()}):
+            target_dir = self._resolve_workspace_mount_runtime_target_dir(
+                workspace_id,
+                target_path,
+            )
+            if target_dir is None or not target_dir.exists():
+                signatures.append((target_path, False, 0, 0, 0, ""))
+                continue
+
+            digest = hashlib.sha1()
+            entry_count = 0
+            total_size = 0
+            max_mtime_ns = 0
+
+            def _add_entry(path: Path, relative: str) -> None:
+                nonlocal entry_count, total_size, max_mtime_ns
+                try:
+                    stat = path.stat()
+                except OSError:
+                    return
+                is_file = path.is_file()
+                is_dir = path.is_dir()
+                if not is_file and not is_dir:
+                    return
+                entry_count += 1
+                size_bytes = stat.st_size if is_file else 0
+                total_size += size_bytes
+                max_mtime_ns = max(max_mtime_ns, int(stat.st_mtime_ns))
+                entry_kind = "d" if is_dir else "f"
+                digest.update(relative.encode("utf-8", errors="ignore"))
+                digest.update(b"\0")
+                digest.update(entry_kind.encode("ascii"))
+                digest.update(b"\0")
+                digest.update(str(size_bytes).encode("ascii"))
+                digest.update(b"\0")
+                digest.update(str(int(stat.st_mtime_ns)).encode("ascii"))
+                digest.update(b"\0")
+
+            _add_entry(target_dir, ".")
+            if target_dir.is_dir():
+                for root, dirnames, filenames in os.walk(target_dir):
+                    dirnames.sort()
+                    filenames.sort()
+                    root_path = Path(root)
+                    for dirname in dirnames:
+                        child = root_path / dirname
+                        relative = str(child.relative_to(target_dir))
+                        _add_entry(child, relative)
+                    for filename in filenames:
+                        child = root_path / filename
+                        relative = str(child.relative_to(target_dir))
+                        _add_entry(child, relative)
+
+            signatures.append(
+                (
+                    target_path,
+                    True,
+                    entry_count,
+                    total_size,
+                    max_mtime_ns,
+                    digest.hexdigest(),
+                )
+            )
+
+        return tuple(signatures)
+
+    async def get_runtime_mount_content_signature(
+        self,
+        workspace_id: str,
+        target_paths: list[str],
+    ) -> tuple[Any, ...]:
+        return await asyncio.to_thread(
+            self._runtime_mount_content_signature_sync,
+            workspace_id,
+            target_paths,
+        )
 
     async def list_workspace_changed_file_paths(
         self,
@@ -3929,11 +5174,33 @@ class UserSpaceService:
             ):
                 return cached_result
 
-        result = await asyncio.to_thread(
+        base_result = await asyncio.to_thread(
             self._list_workspace_files_sync, files_dir, include_dirs
         )
-        self._file_list_cache[workspace_id] = (result, include_dirs, _time.monotonic())
-        return result
+
+        # Augment with files from mount source directories so they appear in
+        # the file tree even though they live outside the workspace files dir.
+        mount_specs = await self.resolve_workspace_mounts_for_runtime(workspace_id)
+        if mount_specs:
+            existing_paths = {f.path for f in base_result}
+            mount_entries = await asyncio.to_thread(
+                self._list_mount_source_files_sync,
+                workspace_id,
+                mount_specs,
+                include_dirs,
+            )
+            for entry in mount_entries:
+                if entry.path not in existing_paths:
+                    base_result.append(entry)
+                    existing_paths.add(entry.path)
+            base_result.sort(key=lambda item: item.path)
+
+        self._file_list_cache[workspace_id] = (
+            base_result,
+            include_dirs,
+            _time.monotonic(),
+        )
+        return base_result
 
     async def upsert_workspace_file(
         self,
@@ -4798,9 +6065,7 @@ class UserSpaceService:
                 await self._activate_branch(workspace_id, new_branch_id)
                 current_branch_id = new_branch_id
 
-            await self._apply_snapshot_platform_file_policy(workspace_id)
-            await self._run_git(workspace_id, ["add", "-A"])
-            await self._apply_snapshot_sqlite_policy(workspace_id)
+            await self._stage_workspace_snapshot_files(workspace_id)
             await self._run_git(
                 workspace_id,
                 ["commit", "--allow-empty", "-m", commit_subject],
@@ -5779,6 +7044,91 @@ class UserSpaceService:
             )
         files.sort(key=lambda item: item.path)
         return files
+
+    def _list_mount_source_files_sync(
+        self,
+        workspace_id: str,
+        mount_specs: list[dict[str, Any]],
+        include_dirs: bool = False,
+    ) -> list[UserSpaceFileInfo]:
+        """Walk mount source directories and return entries mapped to their
+        workspace-relative target paths so they appear in the file tree."""
+        entries_by_path: dict[str, UserSpaceFileInfo] = {}
+        for spec in mount_specs:
+            source_local_path = spec.get("source_local_path", "")
+            target_path = spec.get("target_path", "")
+            tool_type = str(spec.get("tool_type", "") or "")
+            repo_rel = self._workspace_mount_target_repo_relative_path(target_path)
+            if not repo_rel:
+                continue
+
+            source_dirs: list[Path] = []
+            if source_local_path:
+                source_dir = Path(source_local_path)
+                if source_dir.is_dir():
+                    source_dirs.append(source_dir)
+
+            # SSH mounts can remain materialized in the runtime sandbox even if
+            # the latest sync failed. Mirror the runtime-visible directory into
+            # the tree so it matches `ls /workspace/...` in the console.
+            if tool_type == "ssh_shell":
+                runtime_mount_dir = self._resolve_workspace_mount_runtime_target_dir(
+                    workspace_id,
+                    target_path,
+                )
+                if (
+                    runtime_mount_dir is not None
+                    and runtime_mount_dir.is_dir()
+                    and runtime_mount_dir not in source_dirs
+                ):
+                    source_dirs.append(runtime_mount_dir)
+
+            if not source_dirs:
+                continue
+
+            if include_dirs:
+                for source_dir in source_dirs:
+                    try:
+                        stat = source_dir.stat()
+                        entries_by_path.setdefault(
+                            repo_rel,
+                            UserSpaceFileInfo(
+                                path=repo_rel,
+                                size_bytes=0,
+                                updated_at=datetime.fromtimestamp(
+                                    stat.st_mtime, tz=timezone.utc
+                                ),
+                                entry_type="directory",
+                            ),
+                        )
+                        break
+                    except OSError:
+                        continue
+
+            for source_dir in source_dirs:
+                for path in source_dir.rglob("*"):
+                    is_file = path.is_file()
+                    is_dir = path.is_dir()
+                    if not is_file and not (include_dirs and is_dir):
+                        continue
+                    try:
+                        relative = str(path.relative_to(source_dir))
+                        mapped_path = f"{repo_rel}/{relative}"
+                        stat = path.stat()
+                        entries_by_path.setdefault(
+                            mapped_path,
+                            UserSpaceFileInfo(
+                                path=mapped_path,
+                                size_bytes=stat.st_size if is_file else 0,
+                                updated_at=datetime.fromtimestamp(
+                                    stat.st_mtime, tz=timezone.utc
+                                ),
+                                entry_type="directory" if is_dir else "file",
+                            ),
+                        )
+                    except (OSError, ValueError):
+                        continue
+        return sorted(entries_by_path.values(), key=lambda item: item.path)
 
     def _write_workspace_file_sync(
         self,

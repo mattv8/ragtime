@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, cast
 
+from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexStatus as PrismaIndexStatus
 from prisma.enums import ToolType as PrismaToolType
@@ -22,7 +23,6 @@ from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
 from prisma.models import IndexMetadata as PrismaIndexMetadata
 
-from prisma import Json, Prisma
 from ragtime.core.database import get_db
 from ragtime.core.encryption import (
     CONNECTION_CONFIG_PASSWORD_FIELDS,
@@ -1056,6 +1056,8 @@ class IndexerRepository:
             "timeout": config.timeout,
             "timeoutMaxSeconds": config.timeout_max_seconds,
             "allowWrite": config.allow_write,
+            "userspaceMountsEnabled": config.userspace_mounts_enabled,
+            "userspaceMountPaths": Json(config.userspace_mount_paths),
         }
         if config.group_id:
             create_data["groupId"] = config.group_id
@@ -1144,6 +1146,8 @@ class IndexerRepository:
             "last_test_at": "lastTestAt",
             "last_test_result": "lastTestResult",
             "last_test_error": "lastTestError",
+            "userspace_mounts_enabled": "userspaceMountsEnabled",
+            "userspace_mount_paths": "userspaceMountPaths",
         }
 
         update_data = {}
@@ -1166,6 +1170,8 @@ class IndexerRepository:
                     value = encrypt_json_passwords(
                         value, CONNECTION_CONFIG_PASSWORD_FIELDS
                     )
+                    value = Json(value)
+                if snake_key == "userspace_mount_paths":
                     value = Json(value)
                 update_data[camel_key] = value
 
@@ -1389,6 +1395,12 @@ class IndexerRepository:
         if group_rel is not None:
             group_name = getattr(group_rel, "name", None)
 
+        # Resolve userspace mount paths
+        raw_mount_paths = getattr(prisma_config, "userspaceMountPaths", None)
+        mount_paths: list[str] = []
+        if isinstance(raw_mount_paths, list):
+            mount_paths = [str(p) for p in raw_mount_paths]
+
         return ToolConfig(
             id=prisma_config.id,
             name=prisma_config.name,
@@ -1400,6 +1412,10 @@ class IndexerRepository:
             timeout=prisma_config.timeout,
             timeout_max_seconds=getattr(prisma_config, "timeoutMaxSeconds", 300),
             allow_write=prisma_config.allowWrite,
+            userspace_mounts_enabled=bool(
+                getattr(prisma_config, "userspaceMountsEnabled", False)
+            ),
+            userspace_mount_paths=mount_paths,
             group_id=group_id,
             group_name=group_name,
             last_test_at=prisma_config.lastTestAt,

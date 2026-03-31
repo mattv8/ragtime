@@ -1448,6 +1448,22 @@ textarea:focus {
   margin-left: 2px;
 }
 
+/* Mount folder styling — symlink-like appearance */
+.userspace-tree-mount-icon {
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+  margin-right: 3px;
+}
+
+.userspace-tree-mount-label {
+  font-style: italic;
+  opacity: 0.85;
+}
+
+.userspace-tree-mount-folder:hover .userspace-tree-mount-icon {
+  color: var(--color-text-secondary);
+}
+
 /* Per-file save button in tree row — always visible when file is changed */
 .userspace-tree-save-btn {
   background: none;
@@ -2841,6 +2857,142 @@ textarea:focus {
   margin-top: var(--space-xs);
 }
 
+/* --- Mounts modal --- */
+
+.userspace-mount-list {
+  display: grid;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+}
+
+.userspace-mount-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+}
+
+.userspace-mount-primary-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-sm);
+  align-items: center;
+  min-width: 0;
+}
+
+.userspace-mount-path-flow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.userspace-mount-source-path,
+.userspace-mount-target-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: monospace;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.userspace-mount-target-icon {
+  flex-shrink: 0;
+}
+
+.userspace-mount-path-arrow {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.userspace-mount-tool-label {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.userspace-mount-sync-status {
+  display: inline-flex;
+  align-items: center;
+}
+
+.userspace-mount-actions {
+  display: flex;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+}
+
+.userspace-mount-controls {
+  display: inline-flex;
+  align-items: center;
+  justify-self: end;
+  gap: var(--space-xs);
+}
+
+.userspace-mount-desc-row {
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+}
+
+.userspace-mount-desc-display {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  cursor: pointer;
+  min-height: 24px;
+}
+
+.userspace-mount-desc-text {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.userspace-mount-desc-edit-btn {
+  opacity: 0;
+  transition: opacity 0.15s;
+  width: 20px;
+  height: 20px;
+}
+
+.userspace-mount-desc-display:hover .userspace-mount-desc-edit-btn {
+  opacity: 1;
+}
+
+.userspace-mount-desc-edit {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  width: 100%;
+}
+
+.userspace-mount-desc-input {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  height: 24px;
+  font-size: var(--text-xs);
+  box-sizing: border-box;
+  background: var(--color-input-bg);
+  border: 1px solid var(--color-input-border);
+  border-radius: var(--radius-md);
+}
+
+.userspace-mount-desc-input:focus {
+  background: var(--color-input-bg);
+}
+
 @media (max-width: 640px) {
   .userspace-env-var-primary-row {
     grid-template-columns: minmax(0, 1fr);
@@ -2858,6 +3010,34 @@ textarea:focus {
 
   .userspace-env-var-actions {
     margin-left: auto;
+  }
+
+  .userspace-mount-primary-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-xs);
+  }
+
+  .userspace-mount-path-flow {
+    flex-wrap: wrap;
+    white-space: normal;
+    row-gap: 2px;
+  }
+
+  .userspace-mount-source-path,
+  .userspace-mount-target-path {
+    max-width: 100%;
+  }
+
+  .userspace-mount-sync-status {
+    margin-right: 0;
+  }
+
+  .userspace-mount-actions {
+    justify-content: flex-end;
+  }
+
+  .userspace-mount-controls {
+    justify-self: end;
   }
 }
 

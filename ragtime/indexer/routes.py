@@ -9,6 +9,7 @@ import importlib
 import io
 import json
 import os
+import posixpath
 import re
 import secrets
 import shlex
@@ -36,10 +37,10 @@ from fastapi import (
 )
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from prisma import Prisma
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
-from prisma import Prisma
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.container_capabilities import get_container_capabilities
 from ragtime.core.copilot_auth import (
@@ -179,6 +180,62 @@ if TYPE_CHECKING:
     from prisma.models import User
 
 logger = get_logger(__name__)
+
+_USERSPACE_MOUNT_ELIGIBLE_TYPES = {ToolType.SSH_SHELL, ToolType.FILESYSTEM_INDEXER}
+
+
+def _normalize_userspace_mount_paths(paths: list[str] | None) -> list[str]:
+    normalized_paths: list[str] = []
+    seen: set[str] = set()
+    for raw_path in paths or []:
+        normalized = posixpath.normpath((raw_path or "").strip().replace("\\", "/"))
+        if normalized in {"", "."}:
+            normalized = "."
+        if (
+            normalized.startswith("/")
+            or normalized == ".."
+            or normalized.startswith("../")
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Userspace mount paths must be relative to the tool root",
+            )
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        normalized_paths.append(normalized)
+    return normalized_paths
+
+
+def _validate_userspace_mount_policy(
+    tool_type: ToolType,
+    connection_config: dict[str, Any],
+    *,
+    enabled: bool,
+    paths: list[str] | None,
+) -> list[str]:
+    normalized_paths = _normalize_userspace_mount_paths(paths)
+    if (
+        enabled or normalized_paths
+    ) and tool_type not in _USERSPACE_MOUNT_ELIGIBLE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail="Userspace mounts are only supported for ssh_shell and filesystem_indexer tools",
+        )
+    if enabled and not normalized_paths:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one approved mount path is required when userspace mounts are enabled",
+        )
+    if tool_type == ToolType.FILESYSTEM_INDEXER and (enabled or normalized_paths):
+        base_path = str((connection_config or {}).get("base_path") or "").strip()
+        if not base_path:
+            raise HTTPException(
+                status_code=400,
+                detail="Filesystem tools require base_path before enabling userspace mounts",
+            )
+    return normalized_paths
+
 
 # GitHub Copilot OAuth device flow
 # We must use VSCode's Client ID to get user subscribed models
@@ -1707,6 +1764,14 @@ async def create_tool_config(
                     detail=f"An index named '{sanitized_index_name}' already exists",
                 )
 
+    userspace_mounts_enabled = request.userspace_mounts_enabled
+    userspace_mount_paths = _validate_userspace_mount_policy(
+        request.tool_type,
+        connection_config,
+        enabled=userspace_mounts_enabled,
+        paths=request.userspace_mount_paths,
+    )
+
     config = ToolConfig(
         name=request.name,
         tool_type=request.tool_type,
@@ -1717,6 +1782,8 @@ async def create_tool_config(
         timeout_max_seconds=request.timeout_max_seconds,
         allow_write=request.allow_write,
         group_id=request.group_id,
+        userspace_mounts_enabled=userspace_mounts_enabled,
+        userspace_mount_paths=userspace_mount_paths,
     )
     result = await repository.create_tool_config(config)
 
@@ -1874,6 +1941,25 @@ async def update_tool_config(
     original_config = await repository.get_tool_config(tool_id)
     if original_config is None:
         raise HTTPException(status_code=404, detail="Tool configuration not found")
+
+    if "userspace_mounts_enabled" in updates or "userspace_mount_paths" in updates:
+        effective_connection_config = updates.get(
+            "connection_config", original_config.connection_config or {}
+        )
+        updates["userspace_mount_paths"] = _validate_userspace_mount_policy(
+            original_config.tool_type,
+            effective_connection_config,
+            enabled=bool(
+                updates.get(
+                    "userspace_mounts_enabled",
+                    original_config.userspace_mounts_enabled,
+                )
+            ),
+            paths=updates.get(
+                "userspace_mount_paths",
+                original_config.userspace_mount_paths,
+            ),
+        )
 
     # Check if name is being changed - if so, use rename_tool_config for consistency
     if "name" in updates and updates["name"] is not None:

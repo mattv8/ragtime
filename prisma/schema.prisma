@@ -318,6 +318,10 @@ model ToolConfig {
   // Security
   allowWrite  Boolean  @default(false) @map("allow_write")
 
+  // Userspace mount policy — admin-managed
+  userspaceMountsEnabled Boolean  @default(false) @map("userspace_mounts_enabled")
+  userspaceMountPaths    Json     @default("[]") @map("userspace_mount_paths") // JSON array of approved relative source paths
+
   // Connection test results
   lastTestAt     DateTime? @map("last_test_at")
   lastTestResult Boolean?  @map("last_test_result")
@@ -341,6 +345,9 @@ model ToolConfig {
 
   // Relation to conversation tool selections
   conversationSelections ConversationToolSelection[]
+
+  // Relation to workspace mount attachments
+  workspaceMounts WorkspaceMount[]
 
   @@index([groupId])
   @@map("tool_configs")
@@ -869,6 +876,7 @@ model Workspace {
   runtimeSessions UserSpaceRuntimeSession[]
   runtimeAuditEvents UserSpaceRuntimeAuditEvent[]
   environmentVariables WorkspaceEnvironmentVariable[]
+  mounts          WorkspaceMount[]
   collabDocs UserSpaceCollabDoc[]
   changedFileAcknowledgements UserSpaceChangedFileAcknowledgement[]
   snapshotBranches UserSpaceSnapshotBranch[]
@@ -897,6 +905,32 @@ model WorkspaceEnvironmentVariable {
   @@unique([workspaceId, key])
   @@index([workspaceId, updatedAt])
   @@map("workspace_environment_variables")
+}
+
+/// Workspace-scoped mount attachment linking a tool's approved source path
+/// to a user-chosen target path inside the runtime sandbox.
+model WorkspaceMount {
+  id           String   @id @default(uuid())
+  workspaceId  String   @map("workspace_id")
+  toolConfigId String   @map("tool_config_id")
+  sourcePath   String   @map("source_path")  // Admin-approved relative source path
+  targetPath   String   @map("target_path")  // User-chosen sandbox target path
+  description  String?  @map("description")
+  autoSyncEnabled Boolean @default(false) @map("auto_sync_enabled")
+  syncStatus   String   @default("pending") @map("sync_status") // pending | synced | error
+  lastSyncAt   DateTime? @map("last_sync_at")
+  lastSyncError String?  @map("last_sync_error")
+
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  workspace    Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  toolConfig   ToolConfig @relation(fields: [toolConfigId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, targetPath])
+  @@index([workspaceId])
+  @@index([toolConfigId])
+  @@map("workspace_mounts")
 }
 
 model UserSpaceSnapshotBranch {

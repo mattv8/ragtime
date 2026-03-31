@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { AlertCircle, Check, ChevronDown, ChevronRight, Copy, Database, ExternalLink, File, History, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
+import { AlertCircle, ArrowRight, Check, ChevronDown, ChevronRight, Copy, Database, ExternalLink, File, HardDrive, History, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { python } from '@codemirror/lang-python';
@@ -28,12 +28,13 @@ import AdminWorkspaceModal from './shared/AdminWorkspaceModal';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
-import type { User, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceWorkspace, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus } from '@/types';
+import type { BrowseResponse, DirectoryEntry, MountableSource, User, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceWorkspace, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, WorkspaceMount } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { ChatPanel } from './ChatPanel';
 import { LdapGroupSelect } from './LdapGroupSelect';
 import { ResizeHandle } from './ResizeHandle';
 import { UserSpaceArtifactPreview } from './UserSpaceArtifactPreview';
+import { ConstrainedPathBrowser } from './ConstrainedPathBrowser';
 
 interface UserSpacePanelProps {
   currentUser: User;
@@ -50,6 +51,61 @@ const DEFAULT_WORKSPACE_CHAT_STATE: WorkspaceChatState = { hasLive: false, hasIn
 
 function normalizeWorkspacePath(value: string): string {
   return value.trim().replace(/^\/+|\/+$/g, '').replace(/\/+/g, '/');
+}
+
+function normalizeMountBrowserPath(value: string): string {
+  const normalizedParts: string[] = [];
+  for (const part of (value || '/').replace(/\\/g, '/').split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      normalizedParts.pop();
+      continue;
+    }
+    normalizedParts.push(part);
+  }
+  return '/' + normalizedParts.join('/');
+}
+
+function sourcePathToBrowserPath(sourcePath: string): string {
+  const normalized = sourcePath.trim();
+  if (!normalized || normalized === '.') return '/';
+  return normalizeMountBrowserPath(`/${normalized}`);
+}
+
+function browserPathToSourcePath(browserPath: string): string {
+  const normalized = normalizeMountBrowserPath(browserPath);
+  return normalized === '/' ? '.' : normalized.slice(1);
+}
+
+function browserPathToWorkspaceMountTargetPath(browserPath: string): string {
+  const normalized = normalizeMountBrowserPath(browserPath);
+  return normalized === '/' ? '/workspace' : `/workspace${normalized}`;
+}
+
+function isMountBrowserPathEqualOrDescendant(path: string, candidateAncestorPath: string): boolean {
+  const normalizedPath = normalizeMountBrowserPath(path);
+  const normalizedAncestorPath = normalizeMountBrowserPath(candidateAncestorPath);
+  return normalizedPath === normalizedAncestorPath || normalizedPath.startsWith(`${normalizedAncestorPath}/`);
+}
+
+function resolveMountDirectoryToCreate(
+  selectedBrowserPath: string,
+  stagedBrowserPaths: string[],
+  toRequestPath: (browserPath: string) => string,
+): string | null {
+  if (!selectedBrowserPath || stagedBrowserPaths.length === 0) {
+    return null;
+  }
+
+  const normalizedSelectedPath = normalizeMountBrowserPath(selectedBrowserPath);
+  const requiresCreation = stagedBrowserPaths.some((stagedPath) =>
+    isMountBrowserPathEqualOrDescendant(normalizedSelectedPath, stagedPath)
+  );
+  return requiresCreation ? toRequestPath(normalizedSelectedPath) : null;
+}
+
+function getMountSourceBrowserStageKey(toolConfigId: string, rootSourcePath: string): string {
+  return `${toolConfigId}::${rootSourcePath}`;
 }
 
 function getExpandedFoldersStorageKey(workspaceId: string): string {
@@ -504,6 +560,28 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [deletingEnvKey, setDeletingEnvKey] = useState<string | null>(null);
   const [confirmDeleteEnvKey, setConfirmDeleteEnvKey] = useState<string | null>(null);
   const [copiedEnvKey, setCopiedEnvKey] = useState<string | null>(null);
+  const [showMountsModal, setShowMountsModal] = useState(false);
+  const [mounts, setMounts] = useState<WorkspaceMount[]>([]);
+  const [mountsLoading, setMountsLoading] = useState(false);
+  const [mountableSources, setMountableSources] = useState<MountableSource[]>([]);
+  const [createMountToolConfigId, setCreateMountToolConfigId] = useState('');
+  const [createMountSourcePath, setCreateMountSourcePath] = useState('');
+  const [createMountRootSourcePath, setCreateMountRootSourcePath] = useState('');
+  const [createMountBrowserPath, setCreateMountBrowserPath] = useState('');
+  const [createMountTargetBrowserPath, setCreateMountTargetBrowserPath] = useState('');
+  const [createMountTargetPath, setCreateMountTargetPath] = useState('');
+  const [createMountStagedSourceDirectories, setCreateMountStagedSourceDirectories] = useState<Record<string, string[]>>({});
+  const [createMountStagedTargetDirectories, setCreateMountStagedTargetDirectories] = useState<string[]>([]);
+  const [createMountAutoSyncEnabled, setCreateMountAutoSyncEnabled] = useState(false);
+  const [createMountDescription, setCreateMountDescription] = useState('');
+  const [savingMount, setSavingMount] = useState(false);
+  const [deletingMountId, setDeletingMountId] = useState<string | null>(null);
+  const [syncingMountId, setSyncingMountId] = useState<string | null>(null);
+  const [refreshingMountId, setRefreshingMountId] = useState<string | null>(null);
+  const [savingMountWatchId, setSavingMountWatchId] = useState<string | null>(null);
+  const [editingMountDescriptionId, setEditingMountDescriptionId] = useState<string | null>(null);
+  const [editingMountDescriptionDraft, setEditingMountDescriptionDraft] = useState('');
+  const [savingMountDescriptionId, setSavingMountDescriptionId] = useState<string | null>(null);
   const [showToolPicker, setShowToolPicker] = useState(false);
   const [showSnapshots, setShowSnapshots] = useState(false);
   const [snapshotsLoadedForWorkspace, setSnapshotsLoadedForWorkspace] = useState<string | null>(null);
@@ -788,6 +866,20 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   );
   const fileTree = useMemo(() => buildUserSpaceTree(fileBrowserEntries), [fileBrowserEntries]);
   const folderPaths = useMemo(() => listFolderPaths(fileBrowserEntries), [fileBrowserEntries]);
+
+  /** Repo-relative paths that are mount targets (e.g. "test" for target_path "/workspace/test"). */
+  const mountTargetPaths = useMemo(() => {
+    const paths = new Set<string>();
+    for (const mount of mounts) {
+      const target = mount.target_path?.replace(/^\/workspace\//, '')?.replace(/^\/+|\/+$/g, '');
+      if (target) paths.add(target);
+    }
+    return paths;
+  }, [mounts]);
+  const workspaceMountTargetBrowserCacheKey = useMemo(
+    () => `${activeWorkspaceId ?? 'no-workspace'}:${fileEntriesFingerprint(fileBrowserEntries)}`,
+    [activeWorkspaceId, fileBrowserEntries]
+  );
 
   // Files that are changed but not yet acknowledged via per-file Save.
   const changedFilePaths = useMemo(() => {
@@ -1670,6 +1762,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     void Promise.all([
       loadWorkspaceData(activeWorkspaceId),
       loadChangedFileState(activeWorkspaceId),
+      api.listWorkspaceMounts(activeWorkspaceId).then(setMounts).catch(() => setMounts([])),
     ]);
   }, [activeWorkspaceId, dismissSnapshotFileDiffOverlay, loadChangedFileState, loadWorkspaceData]);
 
@@ -3260,6 +3353,226 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, [activeWorkspaceId, isOwner]);
 
+  const handleOpenMountsModal = useCallback(async () => {
+    if (!activeWorkspaceId || !isOwner) return;
+    setShowMountsModal(true);
+    setMountsLoading(true);
+    setCreateMountToolConfigId('');
+    setCreateMountSourcePath('');
+    setCreateMountRootSourcePath('');
+    setCreateMountBrowserPath('');
+    setCreateMountTargetBrowserPath('');
+    setCreateMountTargetPath('');
+    setCreateMountStagedSourceDirectories({});
+    setCreateMountStagedTargetDirectories([]);
+    setCreateMountAutoSyncEnabled(false);
+    setCreateMountDescription('');
+    try {
+      const [mountList, sources] = await Promise.all([
+        api.listWorkspaceMounts(activeWorkspaceId),
+        api.listMountableSources(activeWorkspaceId),
+      ]);
+      setMounts(mountList);
+      setMountableSources(sources);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load mounts');
+    } finally {
+      setMountsLoading(false);
+    }
+  }, [activeWorkspaceId, isOwner]);
+
+  const createMountEffectiveSourcePath = useMemo(() => {
+    if (createMountSourcePath) {
+      return createMountSourcePath;
+    }
+    if (!createMountToolConfigId || !createMountBrowserPath) {
+      return '';
+    }
+    return browserPathToSourcePath(createMountBrowserPath);
+  }, [createMountBrowserPath, createMountSourcePath, createMountToolConfigId]);
+
+  const createMountEffectiveTargetPath = useMemo(() => {
+    const trimmedTargetPath = createMountTargetPath.trim();
+    if (trimmedTargetPath) {
+      return trimmedTargetPath;
+    }
+    if (!createMountTargetBrowserPath) {
+      return '';
+    }
+    return browserPathToWorkspaceMountTargetPath(createMountTargetBrowserPath);
+  }, [createMountTargetBrowserPath, createMountTargetPath]);
+
+  const isCreateMountDisabled = useMemo(() => (
+    savingMount
+    || !createMountToolConfigId
+    || !createMountEffectiveSourcePath
+    || !createMountEffectiveTargetPath
+    || createMountEffectiveTargetPath === '/workspace'
+  ), [createMountEffectiveSourcePath, createMountEffectiveTargetPath, createMountToolConfigId, savingMount]);
+
+  const handleCreateMount = useCallback(async () => {
+    if (
+      !activeWorkspaceId
+      || !isOwner
+      || !createMountToolConfigId
+      || !createMountEffectiveSourcePath
+      || !createMountEffectiveTargetPath
+    ) {
+      return;
+    }
+    setSavingMount(true);
+    const sourceStageKey = getMountSourceBrowserStageKey(createMountToolConfigId, createMountRootSourcePath);
+    const sourceDirectoryToCreate = resolveMountDirectoryToCreate(
+      createMountBrowserPath,
+      createMountStagedSourceDirectories[sourceStageKey] ?? [],
+      browserPathToSourcePath,
+    );
+    const targetDirectoryToCreate = resolveMountDirectoryToCreate(
+      createMountTargetBrowserPath,
+      createMountStagedTargetDirectories,
+      browserPathToWorkspaceMountTargetPath,
+    );
+    try {
+      const created = await api.createWorkspaceMount(activeWorkspaceId, {
+        tool_config_id: createMountToolConfigId,
+        source_path: createMountEffectiveSourcePath,
+        target_path: createMountEffectiveTargetPath,
+        source_directory_to_create: sourceDirectoryToCreate,
+        target_directory_to_create: targetDirectoryToCreate,
+        auto_sync_enabled: createMountAutoSyncEnabled,
+        description: createMountDescription.trim() || null,
+      });
+      setMounts((prev) => [...prev, created]);
+      setCreateMountToolConfigId('');
+      setCreateMountSourcePath('');
+      setCreateMountRootSourcePath('');
+      setCreateMountBrowserPath('');
+      setCreateMountTargetBrowserPath('');
+      setCreateMountTargetPath('');
+      setCreateMountStagedSourceDirectories({});
+      setCreateMountStagedTargetDirectories([]);
+      setCreateMountAutoSyncEnabled(false);
+      setCreateMountDescription('');
+      if (targetDirectoryToCreate) {
+        await loadWorkspaceData(activeWorkspaceId);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create mount');
+    } finally {
+      setSavingMount(false);
+    }
+  }, [activeWorkspaceId, createMountAutoSyncEnabled, createMountBrowserPath, createMountDescription, createMountEffectiveSourcePath, createMountEffectiveTargetPath, createMountRootSourcePath, createMountStagedSourceDirectories, createMountStagedTargetDirectories, createMountTargetBrowserPath, createMountToolConfigId, isOwner, loadWorkspaceData]);
+
+  const handleSaveMountDescription = useCallback(async () => {
+    if (!activeWorkspaceId || !isOwner || !editingMountDescriptionId) return;
+    setSavingMountDescriptionId(editingMountDescriptionId);
+    try {
+      const updated = await api.updateWorkspaceMount(activeWorkspaceId, editingMountDescriptionId, {
+        description: editingMountDescriptionDraft.trim() || null,
+      });
+      setMounts((prev) => prev.map((mount) => mount.id === updated.id ? updated : mount));
+      setEditingMountDescriptionId(null);
+      setEditingMountDescriptionDraft('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update mount description');
+    } finally {
+      setSavingMountDescriptionId(null);
+    }
+  }, [activeWorkspaceId, editingMountDescriptionDraft, editingMountDescriptionId, isOwner]);
+
+  const handleDeleteMount = useCallback(async (mountId: string) => {
+    if (!activeWorkspaceId || !isOwner) return;
+    setDeletingMountId(mountId);
+    try {
+      await api.deleteWorkspaceMount(activeWorkspaceId, mountId);
+      setMounts((prev) => prev.filter((m) => m.id !== mountId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete mount');
+    } finally {
+      setDeletingMountId(null);
+    }
+  }, [activeWorkspaceId, isOwner]);
+
+  const handleSyncMount = useCallback(async (mountId: string) => {
+    if (!activeWorkspaceId || !isOwner) return;
+    setSyncingMountId(mountId);
+    try {
+      const result = await api.syncWorkspaceMount(activeWorkspaceId, mountId);
+      setMounts((prev) => prev.map((m) => m.id === mountId ? { ...m, sync_status: result.sync_status, last_sync_error: result.last_sync_error } : m));
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to sync mount');
+    } finally {
+      setSyncingMountId(null);
+    }
+  }, [activeWorkspaceId, isOwner]);
+
+  const handleToggleMountAutoSync = useCallback(async (mountId: string, enabled: boolean) => {
+    if (!activeWorkspaceId || !isOwner) return;
+    setSavingMountWatchId(mountId);
+    try {
+      const updated = await api.updateWorkspaceMount(activeWorkspaceId, mountId, {
+        auto_sync_enabled: enabled,
+      });
+      setMounts((prev) => prev.map((m) => (m.id === mountId ? updated : m)));
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update mount watch mode');
+    } finally {
+      setSavingMountWatchId(null);
+    }
+  }, [activeWorkspaceId, isOwner]);
+
+  const handleRefreshMount = useCallback(async (mountId: string) => {
+    if (!activeWorkspaceId || !isOwner) return;
+    setRefreshingMountId(mountId);
+    try {
+      await api.refreshUserSpaceRuntimeMount(activeWorkspaceId, mountId);
+      await refreshRuntimeStatus();
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to refresh runtime mount');
+    } finally {
+      setRefreshingMountId(null);
+    }
+  }, [activeWorkspaceId, isOwner, refreshRuntimeStatus]);
+
+  const browseWorkspaceMountTargetPath = useCallback(async (browserPath: string): Promise<BrowseResponse> => {
+    const normalizedBrowserPath = normalizeMountBrowserPath(browserPath);
+    const relativePath = normalizedBrowserPath === '/' ? '' : normalizedBrowserPath.slice(1);
+
+    const entries: DirectoryEntry[] = fileBrowserEntries
+      .filter((entry) => {
+        const normalizedEntryPath = normalizeWorkspacePath(entry.path);
+        const entryParentPath = normalizedEntryPath.includes('/')
+          ? normalizedEntryPath.slice(0, normalizedEntryPath.lastIndexOf('/'))
+          : '';
+        return entryParentPath === relativePath;
+      })
+      .map((entry) => {
+        const normalizedEntryPath = normalizeWorkspacePath(entry.path);
+        const entryName = normalizedEntryPath.split('/').pop() || normalizedEntryPath;
+        return {
+          name: entryName,
+          path: sourcePathToBrowserPath(normalizedEntryPath),
+          is_dir: entry.entry_type === 'directory',
+          size: entry.size_bytes,
+        };
+      })
+      .sort((left, right) => {
+        if (left.is_dir !== right.is_dir) {
+          return left.is_dir ? -1 : 1;
+        }
+        return left.name.localeCompare(right.name);
+      });
+
+    return {
+      path: normalizedBrowserPath,
+      entries,
+      error: undefined,
+    };
+  }, [fileBrowserEntries]);
+
   const handleStartWorkspaceRename = useCallback((workspace: UserSpaceWorkspace) => {
     setDeleteConfirmWorkspaceId(null);
     setEditingWorkspaceNameId(workspace.id);
@@ -3691,17 +4004,19 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
             </div>
           );
         } else {
+          const isMount = mountTargetPaths.has(node.path);
           const hasChangedFileDescendant = !isExpanded && collectFilePaths(node).some((p) => changedFilePaths.has(p));
           rows.push(
-            <div key={node.path} className="userspace-file-item userspace-tree-row userspace-tree-folder-row">
+            <div key={node.path} className={`userspace-file-item userspace-tree-row userspace-tree-folder-row${isMount ? ' userspace-tree-mount-folder' : ''}`}>
               <button className="userspace-item-content userspace-tree-content" onClick={() => handleToggleFolder(node.path)} style={indentStyle}>
                 <span className="userspace-tree-chevron" aria-hidden="true">
                   {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                 </span>
-                <span className="userspace-folder-label">{node.name}</span>
+                {isMount && <Link2 size={12} className="userspace-tree-mount-icon" />}
+                <span className={`userspace-folder-label${isMount ? ' userspace-tree-mount-label' : ''}`}>{node.name}</span>
                 {hasChangedFileDescendant && <span className="userspace-tree-folder-changed-file-dot" title="Contains changed files" />}
               </button>
-              {canEditWorkspace && (
+              {canEditWorkspace && !isMount && (
                 <div className="userspace-item-actions">
                   {isConfirmingDelete ? (
                     <>
@@ -3814,7 +4129,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         </div>,
       ];
     });
-  }, [canEditWorkspace, changedFilePaths, deleteConfirmFileId, deleteConfirmFolderPath, expandedFolders, handleDeleteFile, handleDeleteFolder, handleRenameFile, handleRenameFolder, handleSaveTreeFile, handleSelectFile, handleStartCreateFile, handleToggleFolder, renameValue, renamingFilePath, renamingFolderPath, savingTreeFile, selectedFilePath]);
+  }, [canEditWorkspace, changedFilePaths, deleteConfirmFileId, deleteConfirmFolderPath, expandedFolders, handleDeleteFile, handleDeleteFolder, handleRenameFile, handleRenameFolder, handleSaveTreeFile, handleSelectFile, handleStartCreateFile, handleToggleFolder, mountTargetPaths, renameValue, renamingFilePath, renamingFolderPath, savingTreeFile, selectedFilePath]);
 
   const sqliteLiveDataOnlyMode = activeWorkspace?.sqlite_persistence_mode === 'exclude';
   const sqlitePersistenceModeTitle = sqliteLiveDataOnlyMode
@@ -4120,6 +4435,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
               </button>
               <button className="btn btn-secondary btn-sm" onClick={handleOpenEnvVarsModal} title="Environment variables">
                 <KeyRound size={14} />
+              </button>
+              <button className="btn btn-secondary btn-sm" onClick={handleOpenMountsModal} title="Filesystem mounts">
+                <HardDrive size={14} />
               </button>
             </>
           )}
@@ -5084,6 +5402,300 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                       </button>
                     </div>
                   </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* === Mounts modal === */}
+      {showMountsModal && activeWorkspaceId && (
+        <div className="modal-overlay" onClick={() => setShowMountsModal(false)}>
+          <div className="modal-content modal-large" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Filesystem Mounts</h3>
+              <button className="modal-close" onClick={() => setShowMountsModal(false)}>&times;</button>
+            </div>
+            <div className="modal-body">
+              <p className="userspace-muted" style={{ marginBottom: 12 }}>
+                Mount remote directories from configured tools into the runtime sandbox.
+                SSH mounts are synced on demand; synced SFTP mounts can then be refreshed into the running sandbox.
+              </p>
+              <p className="userspace-muted" style={{ marginBottom: 12, fontSize: 12 }}>
+                Mounted targets are runtime overlays. Files created by a running app inside a mounted folder may not appear in the workspace file tree until they are synced back from the source.
+                For mounts under /workspace, target folders are automatically added to .gitignore so snapshots do not capture mounted content by default.
+              </p>
+              {mountsLoading ? (
+                <p className="userspace-muted">Loading...</p>
+              ) : (
+                <>
+                  {mounts.length > 0 && (
+                    <div className="userspace-mount-list">
+                      {mounts.map((mount) => {
+                        const displaySourcePath = mount.source_path === '.'
+                          ? '/'
+                          : (mount.source_path.startsWith('/') ? mount.source_path : `/${mount.source_path}`);
+                        return (
+                        <div key={mount.id} className="userspace-mount-row">
+                          <div className="userspace-mount-primary-row">
+                            <span className="userspace-mount-path-flow">
+                              <HardDrive size={13} className="userspace-mount-target-icon" />
+                              <span className="userspace-mount-source-path">{displaySourcePath}</span>
+                              <ArrowRight size={12} className="userspace-mount-path-arrow" />
+                              <span className="userspace-mount-target-path">{mount.target_path}</span>
+                              <span className="userspace-mount-tool-label">({mount.tool_name ?? 'Unknown tool'})</span>
+                            </span>
+                            <div className="userspace-mount-controls">
+                              <span className="userspace-mount-sync-status">
+                                {mount.tool_type === 'ssh_shell' && mount.sync_status === 'synced' && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Synced</span>}
+                                {mount.tool_type === 'ssh_shell' && mount.sync_status === 'pending' && <span className="userspace-status-pill userspace-status-pill-info" style={{ fontSize: 11 }}>Pending</span>}
+                                {mount.tool_type === 'ssh_shell' && mount.sync_status === 'error' && (
+                                  <span className="userspace-status-pill userspace-status-pill-error" style={{ fontSize: 11 }} title={mount.last_sync_error ?? undefined}>Error</span>
+                                )}
+                                {mount.tool_type !== 'ssh_shell' && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Live</span>}
+                              </span>
+                              <div className="userspace-mount-actions">
+                                {mount.tool_type === 'ssh_shell' && (
+                                  <>
+                                    <button
+                                      className={`btn btn-sm ${mount.auto_sync_enabled ? 'btn-primary' : 'btn-secondary'}`}
+                                      onClick={() => handleToggleMountAutoSync(mount.id, !mount.auto_sync_enabled)}
+                                      disabled={savingMountWatchId === mount.id}
+                                      title={mount.auto_sync_enabled ? 'Disable auto-sync watch mode' : 'Enable auto-sync watch mode'}
+                                    >
+                                      {savingMountWatchId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : 'Auto'}
+                                    </button>
+                                    <button
+                                      className="btn btn-secondary btn-sm"
+                                      onClick={() => handleSyncMount(mount.id)}
+                                      disabled={syncingMountId === mount.id}
+                                      title="Sync SFTP mount"
+                                    >
+                                      {syncingMountId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <RefreshCw size={12} />}
+                                    </button>
+                                    <button
+                                      className="btn btn-secondary btn-sm"
+                                      onClick={() => handleRefreshMount(mount.id)}
+                                      disabled={
+                                        refreshingMountId === mount.id
+                                        || syncingMountId === mount.id
+                                        || mount.sync_status !== 'synced'
+                                        || !runtimeStatus
+                                        || (runtimeStatus.session_state !== 'running' && runtimeStatus.session_state !== 'starting')
+                                      }
+                                      title={
+                                        mount.sync_status !== 'synced'
+                                          ? 'Sync this SFTP mount before refreshing runtime'
+                                          : (!runtimeStatus || (runtimeStatus.session_state !== 'running' && runtimeStatus.session_state !== 'starting'))
+                                            ? 'Start the runtime before refreshing this mount'
+                                            : 'Refresh this SFTP mount in the running sandbox'
+                                      }
+                                    >
+                                      {refreshingMountId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <RotateCw size={12} />}
+                                    </button>
+                                  </>
+                                )}
+                                <button
+                                  className="btn btn-secondary btn-sm"
+                                  onClick={() => handleDeleteMount(mount.id)}
+                                  disabled={deletingMountId === mount.id}
+                                  title="Remove mount"
+                                >
+                                  {deletingMountId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <Trash2 size={12} />}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="userspace-mount-desc-row">
+                            {editingMountDescriptionId === mount.id ? (
+                              <div className="userspace-mount-desc-edit">
+                                <input
+                                  type="text"
+                                  className="form-input userspace-mount-desc-input"
+                                  placeholder="Description for agents (optional)"
+                                  value={editingMountDescriptionDraft}
+                                  onChange={(e) => setEditingMountDescriptionDraft(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') void handleSaveMountDescription();
+                                    if (e.key === 'Escape') {
+                                      setEditingMountDescriptionId(null);
+                                      setEditingMountDescriptionDraft('');
+                                    }
+                                  }}
+                                  autoFocus
+                                />
+                                <button
+                                  className="btn btn-primary btn-sm"
+                                  onClick={() => void handleSaveMountDescription()}
+                                  disabled={savingMountDescriptionId === mount.id}
+                                  title="Save description"
+                                >
+                                  {savingMountDescriptionId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <Check size={12} />}
+                                </button>
+                                <button
+                                  className="btn btn-secondary btn-sm"
+                                  onClick={() => {
+                                    setEditingMountDescriptionId(null);
+                                    setEditingMountDescriptionDraft('');
+                                  }}
+                                  title="Cancel"
+                                >
+                                  <X size={12} />
+                                </button>
+                              </div>
+                            ) : (
+                              <div
+                                className="userspace-mount-desc-display"
+                                onClick={() => {
+                                  setEditingMountDescriptionId(mount.id);
+                                  setEditingMountDescriptionDraft(mount.description ?? '');
+                                }}
+                              >
+                                <span className="userspace-mount-desc-text">
+                                  {mount.description || 'No description for agents'}
+                                </span>
+                                <button
+                                  className="inline-edit-btn userspace-mount-desc-edit-btn"
+                                  title="Edit description"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setEditingMountDescriptionId(mount.id);
+                                    setEditingMountDescriptionDraft(mount.description ?? '');
+                                  }}
+                                >
+                                  <Pencil size={11} />
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    </div>
+                  )}
+
+                  {mountableSources.length > 0 ? (
+                    <div className="userspace-env-var-form" style={{ marginTop: 12 }}>
+                      <strong className="userspace-env-var-form-title">Add mount</strong>
+                      <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', alignItems: 'start' }}>
+                        <div>
+                          <div className="userspace-muted" style={{ marginBottom: 6, fontSize: 12 }}>
+                            <strong>Source</strong>
+                          </div>
+                          <div style={{ display: 'grid', gap: 12 }}>
+                            {mountableSources.map((src) => {
+                              const browserRootPath = sourcePathToBrowserPath(src.source_path);
+                              const isSelectedSource = (
+                                src.tool_config_id === createMountToolConfigId
+                                && src.source_path === createMountRootSourcePath
+                                && !!createMountSourcePath
+                              );
+                              return (
+                                <div key={`${src.tool_config_id}::${src.source_path}`}>
+                                  <ConstrainedPathBrowser
+                                    currentPath={isSelectedSource ? createMountBrowserPath : ''}
+                                    rootPath={browserRootPath}
+                                    rootLabel={src.source_path === '.' ? '/' : `/${src.source_path}`}
+                                    defaultExpanded={isSelectedSource}
+                                    cacheKey={`${src.tool_config_id}:${src.source_path}`}
+                                    stagedDirectories={createMountStagedSourceDirectories[
+                                      getMountSourceBrowserStageKey(src.tool_config_id, src.source_path)
+                                    ] ?? []}
+                                    onStageDirectory={(path) => {
+                                      const stageKey = getMountSourceBrowserStageKey(src.tool_config_id, src.source_path);
+                                      const normalizedPath = normalizeMountBrowserPath(path);
+                                      setCreateMountStagedSourceDirectories((current) => {
+                                        const existingPaths = current[stageKey] ?? [];
+                                        if (existingPaths.includes(normalizedPath)) {
+                                          return current;
+                                        }
+                                        return {
+                                          ...current,
+                                          [stageKey]: [...existingPaths, normalizedPath].sort((left, right) => left.localeCompare(right)),
+                                        };
+                                      });
+                                    }}
+                                    onSelectPath={(selectedPath) => {
+                                      setCreateMountToolConfigId(src.tool_config_id);
+                                      setCreateMountRootSourcePath(src.source_path);
+                                      setCreateMountBrowserPath(normalizeMountBrowserPath(selectedPath));
+                                      setCreateMountSourcePath(browserPathToSourcePath(selectedPath));
+                                    }}
+                                    onBrowsePath={(path) => api.browseWorkspaceMountSource(activeWorkspaceId, {
+                                      tool_config_id: src.tool_config_id,
+                                      root_source_path: src.source_path,
+                                      path,
+                                    })}
+                                  />
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="userspace-muted" style={{ marginBottom: 6, fontSize: 12 }}>
+                            <strong>Target in workspace</strong>
+                          </div>
+                          <ConstrainedPathBrowser
+                            currentPath={createMountTargetBrowserPath}
+                            rootPath="/"
+                            rootLabel="/"
+                            defaultExpanded={false}
+                            cacheKey={workspaceMountTargetBrowserCacheKey}
+                            emptyMessage="Workspace directory is empty"
+                            canSelectPath={(path) => normalizeMountBrowserPath(path) !== '/'}
+                            cannotSelectPathMessage="Select or create a folder under /workspace"
+                            stagedDirectories={createMountStagedTargetDirectories}
+                            onStageDirectory={(path) => {
+                              const normalizedPath = normalizeMountBrowserPath(path);
+                              setCreateMountStagedTargetDirectories((current) => (
+                                current.includes(normalizedPath)
+                                  ? current
+                                  : [...current, normalizedPath].sort((left, right) => left.localeCompare(right))
+                              ));
+                            }}
+                            onSelectPath={(selectedPath) => {
+                              const normalizedPath = normalizeMountBrowserPath(selectedPath);
+                              setCreateMountTargetBrowserPath(normalizedPath);
+                              setCreateMountTargetPath(browserPathToWorkspaceMountTargetPath(normalizedPath));
+                            }}
+                            onBrowsePath={browseWorkspaceMountTargetPath}
+                          />
+                        </div>
+                      </div>
+                      <input
+                        type="text"
+                        className="form-input"
+                        placeholder="Description for agents (optional)"
+                        value={createMountDescription}
+                        onChange={(e) => setCreateMountDescription(e.target.value)}
+                      />
+                      <label className="userspace-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                        <input
+                          type="checkbox"
+                          checked={createMountAutoSyncEnabled}
+                          onChange={(e) => setCreateMountAutoSyncEnabled(e.target.checked)}
+                        />
+                        Enable auto-sync watch mode
+                      </label>
+                      <div className="userspace-env-var-form-actions">
+                        <button
+                          className="btn btn-primary btn-sm"
+                          onClick={handleCreateMount}
+                          disabled={isCreateMountDisabled}
+                          title={createMountEffectiveTargetPath === '/workspace' ? 'Select a folder under /workspace before adding the mount' : undefined}
+                        >
+                          {savingMount ? <MiniLoadingSpinner variant="icon" size={14} /> : <Plus size={14} />}
+                          Add
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="userspace-muted" style={{ marginTop: 12 }}>
+                      No tools with filesystem mounts enabled. Enable mounts on an SSH or Filesystem tool in Settings.
+                    </p>
+                  )}
                 </>
               )}
             </div>

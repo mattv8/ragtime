@@ -142,6 +142,41 @@ USERSPACE_TURN_REMINDER = build_userspace_turn_reminder(
 )
 
 
+def build_userspace_mounts_prompt_fragment(
+    *,
+    mounts_enabled: bool,
+    mounts: list[dict[str, str]] | None = None,
+) -> str:
+    """Build a safe workspace-mount context block for userspace mode."""
+    mount_items = mounts or []
+    if mount_items:
+        lines: list[str] = []
+        for mount in mount_items:
+            relative_path = mount.get("workspace_relative_path", "") or "."
+            target_path = mount.get("target_path", "") or "/"
+            source_path = mount.get("source_path", "") or "."
+            tool_name = mount.get("tool_name", "") or "Unknown tool"
+            sync_status = mount.get("sync_status", "") or "pending"
+            description = mount.get("description", "") or ""
+            description_suffix = f" [description: {description}]" if description else ""
+            lines.append(
+                "- `"
+                + relative_path
+                + "` from the workspace root"
+                + f" (absolute `{target_path}`) -> {tool_name} source `{source_path}` [status: {sync_status}]"
+                + description_suffix
+            )
+        return "\n### Workspace filesystem mounts\n\n" + "\n".join(lines) + "\n"
+
+    if mounts_enabled:
+        return (
+            "\n### Workspace filesystem mounts\n\n"
+            "- No workspace mounts are configured. If filesystem access outside the workspace is needed, ask an admin to set up a mount first.\n"
+        )
+
+    return ""
+
+
 # =============================================================================
 # VISUALIZATION PROMPTS
 # =============================================================================

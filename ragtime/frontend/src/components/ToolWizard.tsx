@@ -27,6 +27,7 @@ import { FileTypeStatsTable } from './FileTypeStatsTable';
 import { SuggestedExclusionsBanner } from './SuggestedExclusionsBanner';
 import { WarningsBanner } from './WarningsBanner';
 import { ReindexIntervalSelect } from './ReindexIntervalSelect';
+import { ConstrainedPathBrowser } from './ConstrainedPathBrowser';
 import { DirectoryBrowser } from './DirectoryBrowser';
 
 // System mounts to filter out from the "Available Mounts" display
@@ -411,15 +412,46 @@ interface SSHFilesystemBrowserProps {
   currentPath: string;
   onSelectPath: (path: string) => void;
   sshConfig: SSHShellConnectionConfig;
+  rootPath?: string;
 }
 
-function SSHFilesystemBrowser({ currentPath, onSelectPath, sshConfig }: SSHFilesystemBrowserProps) {
+function SSHFilesystemBrowser({ currentPath, onSelectPath, sshConfig, rootPath }: SSHFilesystemBrowserProps) {
+  const normalizePath = (value: string): string => {
+    const normalizedParts: string[] = [];
+    for (const part of (value || '/').replace(/\\/g, '/').split('/')) {
+      if (!part || part === '.') continue;
+      if (part === '..') {
+        normalizedParts.pop();
+        continue;
+      }
+      normalizedParts.push(part);
+    }
+    return '/' + normalizedParts.join('/');
+  };
+
+  const normalizedRootPath = rootPath ? normalizePath(rootPath) : null;
+  const isRestrictedToRoot = Boolean(normalizedRootPath && normalizedRootPath !== '/');
+  const clampToRootPath = (value: string): string => {
+    const normalized = normalizePath(value || normalizedRootPath || '/');
+    if (!normalizedRootPath || normalizedRootPath === '/') {
+      return normalized;
+    }
+    if (normalized === normalizedRootPath || normalized.startsWith(`${normalizedRootPath}/`)) {
+      return normalized;
+    }
+    return normalizedRootPath;
+  };
+
   const [entries, setEntries] = useState<DirectoryEntry[]>([]);
-  const [browsePath, setBrowsePath] = useState<string>(currentPath || '/');
+  const [browsePath, setBrowsePath] = useState<string>(clampToRootPath(currentPath || normalizedRootPath || '/'));
   const [pathInput, setPathInput] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isExpanded, setIsExpanded] = useState(!currentPath || currentPath === '/'); // Start expanded if no selection
+  const [isExpanded, setIsExpanded] = useState(!currentPath || currentPath === '/' || currentPath === normalizedRootPath); // Start expanded if no selection
+
+  useEffect(() => {
+    setBrowsePath(clampToRootPath(currentPath || normalizedRootPath || '/'));
+  }, [currentPath, normalizedRootPath]);
 
   const browseCurrent = useCallback(async () => {
     if (!browsePath) return;
@@ -445,16 +477,16 @@ function SSHFilesystemBrowser({ currentPath, onSelectPath, sshConfig }: SSHFiles
   }, [browseCurrent]);
 
   const handleNavigate = (path: string) => {
-    setBrowsePath(path || '/');
+    setBrowsePath(clampToRootPath(path || normalizedRootPath || '/'));
     setPathInput(''); // Clear filter when navigating
   };
 
   const handleGoUp = () => {
-    if (!browsePath || browsePath === '/') return;
+    if (!browsePath || browsePath === '/' || browsePath === normalizedRootPath) return;
     const parts = browsePath.split('/').filter(Boolean);
     parts.pop();
     const newPath = '/' + parts.join('/') || '/';
-    setBrowsePath(newPath);
+    setBrowsePath(clampToRootPath(newPath));
     setPathInput('');
   };
 
@@ -503,7 +535,11 @@ function SSHFilesystemBrowser({ currentPath, onSelectPath, sshConfig }: SSHFiles
   };
 
   // Get path segments for breadcrumbs
-  const segments = browsePath.split('/').filter(Boolean);
+  const relativeBrowsePath = isRestrictedToRoot
+    ? browsePath.slice((normalizedRootPath || '').length)
+    : browsePath;
+  const segments = relativeBrowsePath.split('/').filter(Boolean);
+  const breadcrumbRootLabel = normalizedRootPath || '/';
 
   // Display path for the accordion header
   const displayPath = currentPath && currentPath !== '/' ? currentPath : browsePath;
@@ -524,7 +560,7 @@ function SSHFilesystemBrowser({ currentPath, onSelectPath, sshConfig }: SSHFiles
           >
             <span className="mount-icon">{isExpanded ? '▼' : '▶'}</span>
             <span className="mount-path">{displayPath}</span>
-            {currentPath && currentPath !== '/' && (
+            {currentPath && (
               <span className="current-badge">Selected</span>
             )}
           </button>
@@ -537,19 +573,25 @@ function SSHFilesystemBrowser({ currentPath, onSelectPath, sshConfig }: SSHFiles
                   type="button"
                   className="btn btn-sm"
                   onClick={handleGoUp}
-                  disabled={browsePath === '/' || loading}
+                  disabled={browsePath === '/' || browsePath === normalizedRootPath || loading}
                 >
                   ..
                 </button>
                 <div className="browser-path-wrapper">
                   <span className="browser-path-breadcrumbs">
                     <span className="breadcrumb-segment">
-                      <button type="button" className="breadcrumb-btn" onClick={() => handleNavigate('/')}>
-                        /
+                      <button
+                        type="button"
+                        className="breadcrumb-btn"
+                        onClick={() => handleNavigate(normalizedRootPath || '/')}
+                      >
+                        {breadcrumbRootLabel}
                       </button>
                     </span>
                     {segments.map((segment, idx) => {
-                      const pathToSegment = '/' + segments.slice(0, idx + 1).join('/');
+                      const pathToSegment = isRestrictedToRoot
+                        ? `${normalizedRootPath}/${segments.slice(0, idx + 1).join('/')}`
+                        : '/' + segments.slice(0, idx + 1).join('/');
                       const isLast = idx === segments.length - 1;
                       return (
                         <span key={idx} className="breadcrumb-segment">
@@ -1677,12 +1719,12 @@ type WizardStep = 'type' | 'connection' | 'pdm_filtering' | 'execution_constrain
 // Base steps - pdm_filtering is dynamically inserted for solidworks_pdm tools
 const BASE_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'description', 'options', 'review'];
 const PDM_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'pdm_filtering', 'description', 'options', 'review'];
-// SSH tools combine options into the execution_constraints step
+// SSH tools surface userspace mount controls in the execution_constraints step
 const SSH_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'execution_constraints', 'description', 'review'];
 // Odoo tools show options before description for logical flow
 const ODOO_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'options', 'description', 'review'];
-// Filesystem indexers don't need execution options (read-only background job)
-const FILESYSTEM_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'description', 'review'];
+// Filesystem indexers use options for userspace mount controls.
+const FILESYSTEM_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'description', 'options', 'review'];
 
 function getStepTitle(step: WizardStep): string {
   switch (step) {
@@ -1751,6 +1793,11 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   const [timeoutValue, setTimeoutValue] = useState(existingTool?.timeout || 30);
   const [timeoutMaxSeconds, setTimeoutMaxSeconds] = useState(existingTool?.timeout_max_seconds ?? 300);
   const [allowWrite, setAllowWrite] = useState(existingTool?.allow_write || false);
+  const [userspaceMountsEnabled, setUserspaceMountsEnabled] = useState(existingTool?.userspace_mounts_enabled || false);
+  const [userspaceMountPaths, setUserspaceMountPaths] = useState<string[]>(existingTool?.userspace_mount_paths || []);
+  const [mountPathInput, setMountPathInput] = useState('');
+  const [mountPathBrowserSelection, setMountPathBrowserSelection] = useState('');
+  const [mountPathError, setMountPathError] = useState<string | null>(null);
 
   const parseNumberOrDefault = (value: string, defaultValue: number): number => {
     const parsed = Number.parseInt(value, 10);
@@ -1900,6 +1947,88 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
       last_indexed_at: null,
     };
   });
+
+  const normalizeAbsoluteBrowserPath = (value: string): string => {
+    const normalizedParts: string[] = [];
+    for (const part of (value || '/').replace(/\\/g, '/').split('/')) {
+      if (!part || part === '.') continue;
+      if (part === '..') {
+        normalizedParts.pop();
+        continue;
+      }
+      normalizedParts.push(part);
+    }
+    return '/' + normalizedParts.join('/');
+  };
+
+  const normalizeRelativeMountPath = (value: string): string | null => {
+    const normalizedParts: string[] = [];
+    for (const part of (value || '').replace(/\\/g, '/').split('/')) {
+      if (!part || part === '.') continue;
+      if (part === '..') {
+        return null;
+      }
+      normalizedParts.push(part);
+    }
+    return normalizedParts.length > 0 ? normalizedParts.join('/') : '.';
+  };
+
+  const getUserspaceMountRootPath = (): string | null => {
+    if (toolType === 'ssh_shell') {
+      return normalizeAbsoluteBrowserPath(sshConfig.working_directory || '/');
+    }
+    if (toolType === 'filesystem_indexer') {
+      if (!filesystemConfig.base_path) return null;
+      return normalizeAbsoluteBrowserPath(filesystemConfig.base_path);
+    }
+    return null;
+  };
+
+  const addUserspaceMountPath = useCallback((rawPath: string): boolean => {
+    const normalized = normalizeRelativeMountPath(rawPath);
+    if (!normalized) {
+      setMountPathError('Approved source paths must stay within the tool root.');
+      return false;
+    }
+    if (userspaceMountPaths.includes(normalized)) {
+      setMountPathError(null);
+      setMountPathInput('');
+      return false;
+    }
+    setUserspaceMountPaths((prev) => [...prev, normalized]);
+    setMountPathError(null);
+    setMountPathInput('');
+    return true;
+  }, [userspaceMountPaths]);
+
+  const convertAbsoluteMountSelectionToRelative = useCallback((selectedPath: string): string | null => {
+    const rootPath = getUserspaceMountRootPath();
+    if (!rootPath) return null;
+
+    const normalizedSelected = normalizeAbsoluteBrowserPath(selectedPath || rootPath);
+    if (rootPath === '/') {
+      return normalizeRelativeMountPath(normalizedSelected);
+    }
+    if (normalizedSelected === rootPath) {
+      return '.';
+    }
+
+    const rootPrefix = `${rootPath}/`;
+    if (!normalizedSelected.startsWith(rootPrefix)) {
+      return null;
+    }
+    return normalizeRelativeMountPath(normalizedSelected.slice(rootPrefix.length));
+  }, [toolType, sshConfig.working_directory, filesystemConfig.base_path]);
+
+  const handleUserspaceMountBrowserSelect = useCallback((selectedPath: string) => {
+    const relativePath = convertAbsoluteMountSelectionToRelative(selectedPath);
+    if (!relativePath) {
+      setMountPathError('Select a directory inside the configured tool root.');
+      return;
+    }
+    addUserspaceMountPath(relativePath);
+    setMountPathBrowserSelection(selectedPath);
+  }, [addUserspaceMountPath, convertAbsoluteMountSelectionToRelative]);
 
   // SolidWorks PDM config state
   const [pdmConfig, setPdmConfig] = useState<SolidworksPdmConnectionConfig>(
@@ -2524,6 +2653,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           timeout: timeoutValue,
           timeout_max_seconds: timeoutMaxSeconds,
           allow_write: allowWrite,
+          userspace_mounts_enabled: userspaceMountsEnabled,
+          userspace_mount_paths: userspaceMountPaths,
         });
       }
 
@@ -2571,6 +2702,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           timeout: timeoutValue,
           timeout_max_seconds: timeoutMaxSeconds,
           allow_write: allowWrite,
+          userspace_mounts_enabled: userspaceMountsEnabled,
+          userspace_mount_paths: userspaceMountPaths,
         });
       } else {
         // Auto-create the tool first
@@ -2583,6 +2716,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           timeout: timeoutValue,
           timeout_max_seconds: timeoutMaxSeconds,
           allow_write: allowWrite,
+          userspace_mounts_enabled: userspaceMountsEnabled,
+          userspace_mount_paths: userspaceMountPaths,
         };
         const created = await api.createToolConfig(request);
         toolId = created.id;
@@ -2658,6 +2793,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           timeout: timeoutValue,
           timeout_max_seconds: timeoutMaxSeconds,
           allow_write: allowWrite,
+          userspace_mounts_enabled: userspaceMountsEnabled,
+          userspace_mount_paths: userspaceMountPaths,
         });
       } else {
         const request: CreateToolConfigRequest = {
@@ -2669,6 +2806,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           timeout: timeoutValue,
           timeout_max_seconds: timeoutMaxSeconds,
           allow_write: allowWrite,
+          userspace_mounts_enabled: userspaceMountsEnabled,
+          userspace_mount_paths: userspaceMountPaths,
         };
         const created = await api.createToolConfig(request);
         savedToolId = created.id;
@@ -5041,6 +5180,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
               </>
            )}
         </div>
+
+            {renderUserspaceMounts()}
       </div>
     );
   };
@@ -5080,6 +5221,100 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
       </div>
     </div>
   );
+
+  const renderUserspaceMounts = () => {
+    if (!['ssh_shell', 'filesystem_indexer'].includes(toolType)) return null;
+
+    const mountRootPath = getUserspaceMountRootPath();
+    const canBrowseSshMounts = Boolean(
+      sshConfig.host && sshConfig.user && (sshConfig.password || sshConfig.key_content || sshConfig.key_path)
+    );
+    const browserCurrentPath = mountPathBrowserSelection || mountRootPath || '';
+
+    return (
+      <fieldset>
+        <legend>Userspace Mounts</legend>
+        <label className="checkbox-label">
+          <input
+            type="checkbox"
+            checked={userspaceMountsEnabled}
+            onChange={(e) => setUserspaceMountsEnabled(e.target.checked)}
+          />
+          Allow workspace users to mount approved paths into runtime
+        </label>
+        {userspaceMountsEnabled && (
+          <div style={{ marginTop: '8px' }}>
+            {toolType === 'ssh_shell' && canBrowseSshMounts && mountRootPath && (
+              <div style={{ marginTop: '8px' }}>
+                <ConstrainedPathBrowser
+                  currentPath={browserCurrentPath || '/'}
+                  rootPath={mountRootPath}
+                  onSelectPath={handleUserspaceMountBrowserSelect}
+                  onBrowsePath={(path) => api.browseSSHFilesystem(sshConfig, path)}
+                />
+                <p className="field-help">
+                  Select a directory to add it as an approved source path that users can mount within Userspaces.
+                </p>
+              </div>
+            )}
+            {toolType === 'filesystem_indexer' && mountRootPath && (
+              <div style={{ marginTop: '8px' }}>
+                <ConstrainedPathBrowser
+                  currentPath={browserCurrentPath}
+                  rootPath={mountRootPath}
+                  onSelectPath={handleUserspaceMountBrowserSelect}
+                  onBrowsePath={(path) => api.browseFilesystem(path)}
+                />
+                <p className="field-help">
+                  Select a directory under the configured base path to add it as an approved source path.
+                </p>
+              </div>
+            )}
+            {toolType === 'ssh_shell' && !canBrowseSshMounts && (
+              <>
+                <div style={{ display: 'flex', gap: '4px', marginTop: '4px' }}>
+                  <input
+                    type="text"
+                    value={mountPathInput}
+                    onChange={(e) => setMountPathInput(e.target.value)}
+                    placeholder="reports"
+                    style={{ flex: 1 }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        addUserspaceMountPath(mountPathInput.trim());
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={!mountPathInput.trim()}
+                    onClick={() => addUserspaceMountPath(mountPathInput.trim())}
+                  >
+                    Add
+                  </button>
+                </div>
+                <p className="field-help warning" style={{ color: '#f0ad4e' }}>
+                  Configure SSH authentication in the previous step to browse directories. Manual entry remains relative to the tool root.
+                </p>
+              </>
+            )}
+            {toolType === 'filesystem_indexer' && !mountRootPath && (
+              <p className="field-help warning" style={{ color: '#f0ad4e', marginTop: '8px' }}>
+                Configure the filesystem base path first to browse and add approved source paths.
+              </p>
+            )}
+            {mountPathError && (
+              <p className="warning-text" style={{ marginTop: '8px' }}>
+                {mountPathError}
+              </p>
+            )}
+          </div>
+        )}
+      </fieldset>
+    );
+  };
 
   const renderOptions = () => {
     // SQL-based tools need Max Results for query limiting
@@ -5161,6 +5396,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
             </p>
           )}
         </fieldset>
+
+        {renderUserspaceMounts()}
       </div>
     );
   };
@@ -5210,6 +5447,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
             <li>Timeout: {timeoutValue === 0 ? 'No timeout' : `${timeoutValue}s`}</li>
             <li>Max timeout: {timeoutMaxSeconds === 0 ? 'Unlimited' : `${timeoutMaxSeconds}s`}</li>
             <li>Write operations: {allowWrite ? 'Enabled' : 'Disabled'}</li>
+            {['ssh_shell', 'filesystem_indexer'].includes(toolType) && (
+              <li>Userspace mounts: {userspaceMountsEnabled ? `Enabled (${userspaceMountPaths.length} path${userspaceMountPaths.length !== 1 ? 's' : ''})` : 'Disabled'}</li>
+            )}
           </ul>
         </div>
       </div>

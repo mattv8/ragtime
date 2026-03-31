@@ -12,8 +12,15 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
-from fastapi import (APIRouter, Depends, Header, HTTPException, Request,
-                     WebSocket, WebSocketDisconnect)
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from ragtime.config.settings import settings
@@ -21,15 +28,18 @@ from ragtime.core.app_settings import get_app_settings
 from ragtime.core.auth import validate_session
 from ragtime.core.database import get_db
 from ragtime.core.security import get_current_user, get_current_user_optional
-from ragtime.userspace.models import (UserSpaceCapabilityTokenResponse,
-                                      UserSpaceFileResponse,
-                                      UserSpaceRuntimeActionResponse,
-                                      UserSpaceRuntimeSessionResponse,
-                                      UserSpaceRuntimeStatusResponse)
-from ragtime.userspace.runtime_service import (RuntimeVersionConflictError,
-                                               userspace_runtime_service)
-from ragtime.userspace.service import (_RUNTIME_BRIDGE_CONTENT,
-                                       userspace_service)
+from ragtime.userspace.models import (
+    UserSpaceCapabilityTokenResponse,
+    UserSpaceFileResponse,
+    UserSpaceRuntimeActionResponse,
+    UserSpaceRuntimeSessionResponse,
+    UserSpaceRuntimeStatusResponse,
+)
+from ragtime.userspace.runtime_service import (
+    RuntimeVersionConflictError,
+    userspace_runtime_service,
+)
+from ragtime.userspace.service import _RUNTIME_BRIDGE_CONTENT, userspace_service
 
 router = APIRouter(prefix="/indexes/userspace", tags=["User Space Runtime"])
 
@@ -48,8 +58,7 @@ def _get_max_proxy_timeout() -> float:
         cached_configs = SettingsCache.get_instance()._tool_configs
         if cached_configs:
             max_t = max(
-                (cfg.get("timeout_max_seconds", 300) or 300
-                 for cfg in cached_configs),
+                (cfg.get("timeout_max_seconds", 300) or 300 for cfg in cached_configs),
                 default=300,
             )
             return max(float(max_t), _PROXY_TIMEOUT_FLOOR) + _PROXY_TIMEOUT_BUFFER
@@ -139,11 +148,7 @@ def _proxy_response_headers(
         "content-security-policy",
         "content-security-policy-report-only",
     }
-    out = {
-        key: value
-        for key, value in headers.items()
-        if key.lower() not in blocked
-    }
+    out = {key: value for key, value in headers.items() if key.lower() not in blocked}
     # Rewrite root-relative Location headers so browser redirects stay inside
     # the proxy chain instead of escaping to the outer Ragtime origin.
     if proxy_base_path:
@@ -450,9 +455,7 @@ def _build_bridge_config_tag(sandbox_flags: list[str]) -> bytes:
     )
 
 
-def _inject_bridge_script(
-    html: bytes, sandbox_flags: list[str] | None = None
-) -> bytes:
+def _inject_bridge_script(html: bytes, sandbox_flags: list[str] | None = None) -> bytes:
     """Inject the platform data-bridge script into HTML responses.
 
     Inserts ``<script src="/indexes/userspace/runtime-bridge.js">`` before
@@ -503,7 +506,7 @@ def _rewrite_root_relative_urls(content: bytes, proxy_base_path: str) -> bytes:
     base = proxy_base_path.rstrip("/").encode()
     base_no_leading_slash = proxy_base_path.lstrip("/").rstrip("/").encode()
     pattern = re.compile(
-        rb'(["' + rb"'`" + rb'])(/)(?!/)(?!' + re.escape(base_no_leading_slash) + rb')'
+        rb'(["' + rb"'`" + rb"])(/)(?!/)(?!" + re.escape(base_no_leading_slash) + rb")"
     )
 
     def _replace(m: re.Match[bytes]) -> bytes:
@@ -647,6 +650,27 @@ async def restart_devserver(
     user: Any = Depends(get_current_user),
 ):
     return await userspace_runtime_service.restart_devserver(workspace_id, user.id)
+
+
+@router.post(
+    "/runtime/workspaces/{workspace_id}/mounts/{mount_id}/refresh",
+    response_model=UserSpaceRuntimeActionResponse,
+)
+async def refresh_runtime_mount(
+    workspace_id: str,
+    mount_id: str,
+    user: Any = Depends(get_current_user),
+):
+    result = await userspace_runtime_service.refresh_workspace_mount(
+        workspace_id,
+        user.id,
+        mount_id,
+    )
+    await userspace_runtime_service.bump_workspace_generation(
+        workspace_id,
+        "mount_refresh",
+    )
+    return result
 
 
 @router.get("/runtime/workspaces/{workspace_id}/screenshots/{filename}")

@@ -1493,6 +1493,7 @@ body {
   flex: 1;
   display: flex;
   align-items: center;
+  min-width: 0;
   background: var(--color-input-bg);
   border: 1px solid var(--color-input-border);
   border-radius: var(--radius-md);
@@ -1503,6 +1504,14 @@ body {
   display: flex;
   align-items: center;
   padding-left: var(--space-sm);
+  overflow-x: auto;
+  flex-shrink: 1;
+  min-width: 0;
+  scrollbar-width: none;
+}
+
+.browser-path-breadcrumbs::-webkit-scrollbar {
+  display: none;
 }
 
 .breadcrumb-btn {
@@ -1514,6 +1523,7 @@ body {
   color: var(--color-primary);
   cursor: pointer;
   border-radius: var(--radius-sm);
+  white-space: nowrap;
 }
 
 .breadcrumb-btn:hover {
@@ -1527,24 +1537,64 @@ body {
   padding: 0 2px;
 }
 
-.browser-path-input {
+.browser-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--color-surface-hover);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.browser-filter-input {
   flex: 1;
   font-family: var(--font-mono);
   font-size: var(--text-sm);
-  padding: var(--space-sm);
-  background: transparent;
-  border: none;
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--color-input-bg);
+  border: 1px solid var(--color-input-border);
+  border-radius: var(--radius-sm);
   color: var(--color-text-primary);
   min-width: 60px;
 }
 
-.browser-path-input:focus {
+.browser-filter-input:focus {
   outline: none;
+  border-color: var(--color-primary);
+}
+
+.browser-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
 }
 
 .browser-entries {
   max-height: 200px;
   overflow-y: auto;
+}
+
+.browser-create-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+}
+
+.browser-create-input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-secondary);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+}
+
+.browser-create-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
 }
 
 .browser-entry {
@@ -1566,6 +1616,10 @@ body {
   background: var(--color-surface-hover);
 }
 
+.browser-entry.pending {
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+}
+
 .browser-entry.file {
   cursor: default;
   color: var(--color-text-secondary);
@@ -1582,6 +1636,14 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.browser-entry-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-primary);
 }
 
 .browser-loading,

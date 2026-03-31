@@ -2,7 +2,7 @@
  * API client for Ragtime Indexer
  */
 
-import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, GetSettingsResponse, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, OllamaVisionModelsRequest, OllamaVisionModelsResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, ToolGroup, CreateToolGroupRequest, UpdateToolGroupRequest, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, MysqlDiscoverRequest, MysqlDiscoverResponse, InfluxdbDiscoverRequest, InfluxdbDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse, McpRouteConfig, CreateMcpRouteRequest, UpdateMcpRouteRequest, McpRouteListResponse, HealthResponse, UserSpaceWorkspace, CreateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceMembersRequest, UserSpaceWorkspaceEnvVar, UpsertUserSpaceWorkspaceEnvVarRequest, DeleteUserSpaceWorkspaceEnvVarResponse, UserSpaceFileInfo, UserSpaceFile, UpsertUserSpaceFileRequest, UserSpaceSnapshot, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, CreateUserSpaceSnapshotRequest, UpdateUserSpaceSnapshotRequest, SwitchUserSpaceSnapshotBranchRequest, RestoreUserSpaceSnapshotResponse, UserSpaceAvailableTool, PaginatedWorkspacesResponse, ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus, UserSpaceSharedPreviewResponse, WorkspaceShareSlugAvailabilityResponse, UpdateUserSpaceWorkspaceShareAccessRequest, ConversationMember, UpdateConversationMembersRequest, UpdateConversationToolsRequest, UserSpaceRuntimeSessionResponse, UserSpaceRuntimeStatusResponse, UserSpaceRuntimeActionResponse, UserSpaceCapabilityTokenResponse, ProviderPromptDebugListResponse, ProviderPromptDebugRecord, CopilotAuthStatusResponse, CopilotDevicePollRequest, CopilotDevicePollResponse, CopilotDeviceStartRequest, CopilotDeviceStartResponse, LlmProviderWire, UserSpaceAcknowledgeChangedFilePathRequest, UserSpaceChangedFileState, UserSpacePreviewSettingsResponse } from '@/types';
+import type { IndexJob, IndexInfo, CreateIndexRequest, AppSettings, GetSettingsResponse, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, OllamaVisionModelsRequest, OllamaVisionModelsResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ToolTestRequest, ToolTestResponse, ToolGroup, CreateToolGroupRequest, UpdateToolGroupRequest, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, MysqlDiscoverRequest, MysqlDiscoverResponse, InfluxdbDiscoverRequest, InfluxdbDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse, McpRouteConfig, CreateMcpRouteRequest, UpdateMcpRouteRequest, McpRouteListResponse, HealthResponse, UserSpaceWorkspace, CreateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceMembersRequest, UserSpaceWorkspaceEnvVar, UpsertUserSpaceWorkspaceEnvVarRequest, DeleteUserSpaceWorkspaceEnvVarResponse, WorkspaceMount, MountableSource, BrowseWorkspaceMountSourceRequest, BrowseResponse, CreateWorkspaceMountRequest, UpdateWorkspaceMountRequest, DeleteWorkspaceMountResponse, WorkspaceMountSyncResponse, UserSpaceFileInfo, UserSpaceFile, UpsertUserSpaceFileRequest, UserSpaceSnapshot, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, CreateUserSpaceSnapshotRequest, UpdateUserSpaceSnapshotRequest, SwitchUserSpaceSnapshotBranchRequest, RestoreUserSpaceSnapshotResponse, UserSpaceAvailableTool, PaginatedWorkspacesResponse, ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus, UserSpaceSharedPreviewResponse, WorkspaceShareSlugAvailabilityResponse, UpdateUserSpaceWorkspaceShareAccessRequest, ConversationMember, UpdateConversationMembersRequest, UpdateConversationToolsRequest, UserSpaceRuntimeSessionResponse, UserSpaceRuntimeStatusResponse, UserSpaceRuntimeActionResponse, UserSpaceCapabilityTokenResponse, ProviderPromptDebugListResponse, ProviderPromptDebugRecord, CopilotAuthStatusResponse, CopilotDevicePollRequest, CopilotDevicePollResponse, CopilotDeviceStartRequest, CopilotDeviceStartResponse, LlmProviderWire, UserSpaceAcknowledgeChangedFilePathRequest, UserSpaceChangedFileState, UserSpacePreviewSettingsResponse } from '@/types';
 
 const API_BASE = '/indexes';
 const AUTH_BASE = '/auth';
@@ -1875,6 +1875,66 @@ export const api = {
     return handleResponse<DeleteUserSpaceWorkspaceEnvVarResponse>(response);
   },
 
+  // ── Workspace Mounts ────────────────────────────────────────────────
+
+  async listWorkspaceMounts(workspaceId: string): Promise<WorkspaceMount[]> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/mounts`);
+    return handleResponse<WorkspaceMount[]>(response);
+  },
+
+  async listMountableSources(workspaceId: string): Promise<MountableSource[]> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/mountable-sources`);
+    return handleResponse<MountableSource[]>(response);
+  },
+
+  async browseWorkspaceMountSource(
+    workspaceId: string,
+    request: BrowseWorkspaceMountSourceRequest,
+  ): Promise<BrowseResponse> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/mounts/browse`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<BrowseResponse>(response);
+  },
+
+  async createWorkspaceMount(workspaceId: string, request: CreateWorkspaceMountRequest): Promise<WorkspaceMount> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/mounts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<WorkspaceMount>(response);
+  },
+
+  async updateWorkspaceMount(
+    workspaceId: string,
+    mountId: string,
+    request: UpdateWorkspaceMountRequest,
+  ): Promise<WorkspaceMount> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/mounts/${encodeURIComponent(mountId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<WorkspaceMount>(response);
+  },
+
+  async deleteWorkspaceMount(workspaceId: string, mountId: string): Promise<DeleteWorkspaceMountResponse> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/mounts/${encodeURIComponent(mountId)}`, {
+      method: 'DELETE',
+    });
+    return handleResponse<DeleteWorkspaceMountResponse>(response);
+  },
+
+  async syncWorkspaceMount(workspaceId: string, mountId: string): Promise<WorkspaceMountSyncResponse> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/mounts/${encodeURIComponent(mountId)}/sync`, {
+      method: 'POST',
+    });
+    return handleResponse<WorkspaceMountSyncResponse>(response);
+  },
+
   _fileListEtags: {} as Record<string, { etag: string; data: UserSpaceFileInfo[] }>,
 
   async listUserSpaceFiles(
@@ -2153,6 +2213,13 @@ export const api = {
 
   async restartUserSpaceRuntimeDevserver(workspaceId: string): Promise<UserSpaceRuntimeActionResponse> {
     const response = await apiFetch(`${API_BASE}/userspace/runtime/workspaces/${workspaceId}/devserver/restart`, {
+      method: 'POST',
+    });
+    return handleResponse<UserSpaceRuntimeActionResponse>(response);
+  },
+
+  async refreshUserSpaceRuntimeMount(workspaceId: string, mountId: string): Promise<UserSpaceRuntimeActionResponse> {
+    const response = await apiFetch(`${API_BASE}/userspace/runtime/workspaces/${workspaceId}/mounts/${mountId}/refresh`, {
       method: 'POST',
     });
     return handleResponse<UserSpaceRuntimeActionResponse>(response);

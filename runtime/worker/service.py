@@ -44,6 +44,7 @@ from runtime.worker.sandbox import (
     cleanup_sandbox,
     ensure_sandbox_ready,
     get_sandbox_spec,
+    materialize_mounts,
     sandbox_diagnostics,
     spawn_sandboxed,
 )
@@ -124,6 +125,8 @@ class WorkerSession:
     sandbox_spec: SandboxSpec
     pty_access_token: str
     workspace_env: dict[str, str]
+    workspace_mounts: list[dict[str, Any]]
+    mount_targets_to_clear: set[str]
     state: RuntimeSessionState
     devserver_running: bool
     devserver_port: int | None
@@ -167,6 +170,12 @@ class WorkerService:
         self._workspace_startup_locks: dict[str, asyncio.Lock] = {}
         self._startup_semaphore = asyncio.Semaphore(
             self._get_positive_int_env("RUNTIME_STARTUP_CONCURRENCY", 2)
+        )
+        self._mount_materialization_semaphore = asyncio.Semaphore(
+            self._get_positive_int_env(
+                "RUNTIME_MOUNT_MATERIALIZATION_CONCURRENCY",
+                2,
+            )
         )
 
     @staticmethod
@@ -229,6 +238,28 @@ class WorkerService:
         if normalized.is_absolute() or any(part == ".." for part in normalized.parts):
             return session.workspace_files_path
         return session.workspace_files_path / normalized
+
+    @staticmethod
+    def _mount_target_paths(mounts: list[dict[str, Any]]) -> set[str]:
+        target_paths: set[str] = set()
+        for mount in mounts:
+            target = str(mount.get("target_path") or "").strip()
+            if target:
+                target_paths.add(target)
+        return target_paths
+
+    async def _materialize_workspace_mounts(self, session: WorkerSession) -> None:
+        mounts = list(session.workspace_mounts or [])
+        clear_targets = sorted(session.mount_targets_to_clear)
+        if not mounts and not clear_targets:
+            return
+        async with self._mount_materialization_semaphore:
+            await asyncio.to_thread(
+                materialize_mounts,
+                session.sandbox_spec,
+                mounts,
+                clear_targets=clear_targets,
+            )
 
     def _session_response(self, session: WorkerSession) -> WorkerSessionResponse:
         return WorkerSessionResponse(
@@ -849,6 +880,23 @@ class WorkerService:
                     self._set_operation_phase(session, "bootstrapping")
                     session.updated_at = self._utc_now()
 
+                try:
+                    await self._materialize_workspace_mounts(session)
+                except Exception as exc:
+                    await self._mark_operation_failed(
+                        session_id,
+                        operation_id,
+                        f"Failed to materialize workspace mounts: {exc}",
+                    )
+                    return
+
+                async with self._lock:
+                    session = self._sessions.get(session_id)
+                    if not session or session.runtime_operation_id != operation_id:
+                        return
+                    session.mount_targets_to_clear = set()
+                    session.updated_at = self._utc_now()
+
                 bootstrap_error = await self._run_workspace_bootstrap_if_needed(session)
                 if bootstrap_error:
                     await self._mark_operation_failed(
@@ -874,6 +922,13 @@ class WorkerService:
                     )
                     return
 
+                # --- Part 1: prepare for spawn (inside lock) ---
+                # Resolve the command and set up the log file while holding the
+                # lock. Do NOT call spawn_sandboxed here: it invokes
+                # ensure_sandbox_ready() → provision_rootfs() →
+                # shutil.copytree(), which can block for 10+ seconds on large
+                # workspaces and starve every other coroutine waiting for
+                # self._lock (including the 10 s manager timeout).
                 async with self._lock:
                     session = self._sessions.get(session_id)
                     if not session or session.runtime_operation_id != operation_id:
@@ -914,48 +969,68 @@ class WorkerService:
 
                     self._devserver_log_paths[session.id] = log_path
                     self._devserver_log_handles[session.id] = log_handle
-                    try:
-                        process = await spawn_sandboxed(
-                            session.sandbox_spec,
-                            resolution.command,
-                            cwd=self._resolve_launch_cwd(session),
-                            env=session.workspace_env,
-                            stdout=log_handle,
-                            stderr=asyncio.subprocess.STDOUT,
-                            start_new_session=True,
-                        )
-                    except FileNotFoundError:
-                        try:
-                            log_handle.close()
-                        except Exception:
-                            pass
-                        self._devserver_log_handles.pop(session.id, None)
-                        session.state = "running"
-                        session.devserver_running = False
-                        session.last_error = (
-                            "Dev server command not found: "
-                            f"{resolution.command[0]}. Install the required runtime dependency or "
-                            "set .ragtime/runtime-entrypoint.json command to an available executable. "
-                            f"{_WORKSPACE_BOOTSTRAP_GUIDANCE}"
-                        )
-                        self._set_operation_phase(session, "failed")
-                        session.updated_at = self._utc_now()
-                        return
-                    except Exception as exc:
-                        try:
-                            log_handle.close()
-                        except Exception:
-                            pass
-                        self._devserver_log_handles.pop(session.id, None)
-                        session.state = "running"
-                        session.devserver_running = False
-                        session.last_error = f"Failed to launch dev server: {exc}"
-                        self._set_operation_phase(session, "failed")
-                        session.updated_at = self._utc_now()
-                        return
+                    # Capture everything spawn_sandboxed needs so we can
+                    # release the lock before the slow sandbox provisioning.
+                    _sandbox_spec = session.sandbox_spec
+                    _spawn_command = list(resolution.command)
+                    _launch_cwd = self._resolve_launch_cwd(session)
+                    _workspace_env = dict(session.workspace_env)
 
-                    self._devserver_processes[session.id] = process
-                    session.devserver_command = resolution.command
+                # --- Part 2: spawn sandbox OUTSIDE the lock ---
+                # ensure_sandbox_ready / shutil.copytree runs here without
+                # holding self._lock.
+                _process: asyncio.subprocess.Process | None = None
+                _spawn_error: str | None = None
+                try:
+                    _process = await spawn_sandboxed(
+                        _sandbox_spec,
+                        _spawn_command,
+                        cwd=_launch_cwd,
+                        env=_workspace_env,
+                        stdout=log_handle,
+                        stderr=asyncio.subprocess.STDOUT,
+                        start_new_session=True,
+                    )
+                except FileNotFoundError:
+                    try:
+                        log_handle.close()
+                    except Exception:
+                        pass
+                    _spawn_error = (
+                        "Dev server command not found: "
+                        f"{_spawn_command[0]}. Install the required runtime dependency or "
+                        "set .ragtime/runtime-entrypoint.json command to an available executable. "
+                        f"{_WORKSPACE_BOOTSTRAP_GUIDANCE}"
+                    )
+                except Exception as exc:
+                    try:
+                        log_handle.close()
+                    except Exception:
+                        pass
+                    _spawn_error = f"Failed to launch dev server: {exc}"
+
+                # --- Part 3: commit spawn result (inside lock) ---
+                async with self._lock:
+                    session = self._sessions.get(session_id)
+                    if not session or session.runtime_operation_id != operation_id:
+                        # Session was invalidated while we were spawning.
+                        if _process is not None:
+                            try:
+                                _process.kill()
+                            except Exception:
+                                pass
+                        self._devserver_log_handles.pop(session_id, None)
+                        return
+                    if _spawn_error or _process is None:
+                        self._devserver_log_handles.pop(session.id, None)
+                        session.state = "running"
+                        session.devserver_running = False
+                        session.last_error = _spawn_error or "Failed to launch dev server"
+                        self._set_operation_phase(session, "failed")
+                        session.updated_at = self._utc_now()
+                        return
+                    self._devserver_processes[session.id] = _process
+                    session.devserver_command = _spawn_command
                     self._set_operation_phase(session, "probing")
                     session.updated_at = self._utc_now()
                     target_port = session.devserver_port
@@ -1028,6 +1103,12 @@ class WorkerService:
                     for key, value in (request.workspace_env or {}).items()
                     if str(key).strip()
                 }
+                previous_targets = self._mount_target_paths(session.workspace_mounts)
+                session.workspace_mounts = list(request.workspace_mounts or [])
+                session.mount_targets_to_clear = (
+                    previous_targets
+                    | self._mount_target_paths(session.workspace_mounts)
+                )
                 self._schedule_startup_locked(session)
                 session.updated_at = self._utc_now()
                 return self._session_response(session)
@@ -1049,6 +1130,10 @@ class WorkerService:
                     for key, value in (request.workspace_env or {}).items()
                     if str(key).strip()
                 },
+                workspace_mounts=list(request.workspace_mounts or []),
+                mount_targets_to_clear=self._mount_target_paths(
+                    list(request.workspace_mounts or [])
+                ),
                 state="running",
                 devserver_running=False,
                 devserver_port=None,
@@ -1097,6 +1182,7 @@ class WorkerService:
         self,
         worker_session_id: str,
         workspace_env: dict[str, str] | None = None,
+        workspace_mounts: list[dict[str, Any]] | None = None,
     ) -> WorkerSessionResponse:
         async with self._lock:
             session = self._sessions.get(worker_session_id)
@@ -1108,11 +1194,87 @@ class WorkerService:
                     for key, value in workspace_env.items()
                     if str(key).strip()
                 }
+            previous_targets = self._mount_target_paths(session.workspace_mounts)
+            if workspace_mounts is not None:
+                session.workspace_mounts = list(workspace_mounts)
+            session.mount_targets_to_clear = (
+                previous_targets | self._mount_target_paths(session.workspace_mounts)
+            )
             # Pick a fresh port to avoid TIME_WAIT "address already in use"
             session.devserver_port = self._pick_free_port()
             self._schedule_startup_locked(session)
             session.updated_at = self._utc_now()
             return self._session_response(session)
+
+    async def refresh_mounts(
+        self,
+        worker_session_id: str,
+        workspace_mounts: list[dict[str, Any]],
+    ) -> WorkerSessionResponse:
+        mount_specs = []
+        target_paths: set[str] = set()
+        for mount in workspace_mounts:
+            target_path = str(mount.get("target_path") or "").strip()
+            if not target_path:
+                continue
+            mount_specs.append(dict(mount))
+            target_paths.add(target_path)
+        if not mount_specs:
+            raise HTTPException(
+                status_code=400,
+                detail="No workspace mounts were provided for refresh",
+            )
+
+        async with self._lock:
+            session = self._sessions.get(worker_session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Worker session not found")
+            if session.state not in {"running", "starting"}:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Runtime session is not active",
+                )
+            workspace_id = session.workspace_id
+            mounts_by_target: dict[str, dict[str, Any]] = {}
+            for existing_mount in session.workspace_mounts:
+                existing_target = str(existing_mount.get("target_path") or "").strip()
+                if existing_target:
+                    mounts_by_target[existing_target] = dict(existing_mount)
+            for mount in mount_specs:
+                mounts_by_target[str(mount.get("target_path") or "").strip()] = mount
+            session.workspace_mounts = list(mounts_by_target.values())
+            session.mount_targets_to_clear |= target_paths
+            session.updated_at = self._utc_now()
+
+        workspace_lock = self._workspace_startup_lock(workspace_id)
+        async with workspace_lock:
+            async with self._lock:
+                session = self._sessions.get(worker_session_id)
+                if not session:
+                    raise HTTPException(
+                        status_code=404, detail="Worker session not found"
+                    )
+            try:
+                await self._materialize_workspace_mounts(session)
+            except Exception as exc:
+                error_message = f"Failed to refresh workspace mounts: {exc}"
+                async with self._lock:
+                    current = self._sessions.get(worker_session_id)
+                    if current:
+                        current.last_error = error_message
+                        current.updated_at = self._utc_now()
+                raise HTTPException(status_code=500, detail=error_message) from exc
+
+            async with self._lock:
+                current = self._sessions.get(worker_session_id)
+                if not current:
+                    raise HTTPException(
+                        status_code=404, detail="Worker session not found"
+                    )
+                current.mount_targets_to_clear.difference_update(target_paths)
+                current.last_error = None
+                current.updated_at = self._utc_now()
+                return self._session_response(current)
 
     async def read_file(
         self,

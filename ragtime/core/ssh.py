@@ -8,11 +8,16 @@ Supports:
 """
 
 import io
+import os as _os
+import shutil
 import socket
+import stat
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path as _Path
 from typing import Optional
 
 import paramiko
@@ -20,6 +25,10 @@ import paramiko
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Default scheduler values for userspace SSH mount auto-sync watch mode.
+USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS = 5.0
+USERSPACE_MOUNT_WATCH_JITTER_SECONDS = 3.0
 
 # Common stderr noise patterns to filter out (shell initialization artifacts)
 # These occur when shell RC files run terminal commands without a TTY
@@ -607,6 +616,119 @@ class SSHTunnel:
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """Context manager exit."""
         self.stop()
+
+
+# =============================================================================
+# SSH File Sync (best-effort live sync for userspace mounts)
+# =============================================================================
+
+
+@dataclass
+class SSHSyncResult:
+    """Result of an SSH directory sync operation."""
+
+    files_synced: int
+    errors: list[str]
+    success: bool
+
+
+def sync_ssh_directory(
+    config: SSHConfig,
+    remote_path: str,
+    local_path: str,
+    *,
+    max_files: int = 5000,
+    max_file_size_bytes: int = 50 * 1024 * 1024,
+) -> SSHSyncResult:
+    """Sync a remote directory to a local path via SFTP.
+
+    Downloads files from ``remote_path`` into ``local_path`` using Paramiko
+    SFTP.  The sync is best-effort: individual file errors are collected but
+    do not abort the overall operation.
+
+    Args:
+        config: SSH connection configuration.
+        remote_path: Absolute path on the remote host.
+        local_path: Local destination directory (created if missing).
+        max_files: Safety cap on number of files to download.
+        max_file_size_bytes: Skip files larger than this.
+
+    Returns:
+        SSHSyncResult with counts and error list.
+    """
+    config.validate()
+    local_root = _Path(local_path)
+    local_root.parent.mkdir(parents=True, exist_ok=True)
+    temp_root = local_root.parent / (
+        f".{local_root.name}.sync-{_os.getpid()}-{threading.get_ident()}-{int(time.time() * 1000)}"
+    )
+    if temp_root.exists():
+        shutil.rmtree(temp_root, ignore_errors=True)
+    temp_root.mkdir(parents=True, exist_ok=True)
+    errors: list[str] = []
+    files_synced = 0
+    client: Optional[paramiko.SSHClient] = None
+
+    try:
+        client = _create_ssh_client(config)
+        sftp = client.open_sftp()
+
+        # Iterative BFS to avoid deep recursion
+        normalized_remote_root = remote_path.rstrip("/") or "/"
+        queue: deque[tuple[str, _Path]] = deque([(normalized_remote_root, temp_root)])
+        while queue and files_synced < max_files:
+            r_dir, l_dir = queue.popleft()
+            try:
+                entries = sftp.listdir_attr(r_dir)
+            except Exception as exc:
+                errors.append(f"listdir {r_dir}: {exc}")
+                continue
+
+            for entry in entries:
+                if entry.filename in (".", ".."):
+                    continue
+                r_entry = f"{r_dir}/{entry.filename}"
+                l_entry = l_dir / entry.filename
+
+                if stat.S_ISDIR(entry.st_mode or 0):
+                    l_entry.mkdir(parents=True, exist_ok=True)
+                    queue.append((r_entry, l_entry))
+                elif stat.S_ISREG(entry.st_mode or 0):
+                    if (entry.st_size or 0) > max_file_size_bytes:
+                        continue
+                    if files_synced >= max_files:
+                        break
+                    try:
+                        l_entry.parent.mkdir(parents=True, exist_ok=True)
+                        sftp.get(r_entry, str(l_entry))
+                        files_synced += 1
+                    except Exception as exc:
+                        errors.append(f"get {r_entry}: {exc}")
+
+        sftp.close()
+        try:
+            if local_root.is_symlink() or local_root.is_file():
+                local_root.unlink(missing_ok=True)
+            elif local_root.exists():
+                shutil.rmtree(local_root)
+            temp_root.replace(local_root)
+        except Exception as exc:
+            errors.append(f"finalize {local_root}: {exc}")
+    except paramiko.AuthenticationException as exc:
+        errors.append(f"SSH auth failed: {exc}")
+    except Exception as exc:
+        errors.append(f"SSH sync error: {exc}")
+    finally:
+        if client:
+            client.close()
+        if temp_root.exists():
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+    return SSHSyncResult(
+        files_synced=files_synced,
+        errors=errors,
+        success=len(errors) == 0,
+    )
 
 
 def ssh_tunnel_config_from_dict(

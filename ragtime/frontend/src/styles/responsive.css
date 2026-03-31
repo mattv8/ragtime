@@ -639,6 +639,10 @@
     padding: var(--space-sm);
   }
 
+  .browser-create-row {
+    flex-wrap: wrap;
+  }
+
   /* Empty state */
   .empty-state {
     padding: var(--space-lg) var(--space-md);

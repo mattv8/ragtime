@@ -14,6 +14,7 @@ from runtime.manager.models import (
     RuntimeFileReadResponse,
     RuntimeFileWriteRequest,
     RuntimeManagerHealthResponse,
+    RuntimeMountRefreshRequest,
     RuntimePtyUrlResponse,
     RuntimeRestartRequest,
     RuntimeScreenshotRequest,
@@ -98,6 +99,21 @@ def create_app() -> FastAPI:
         return await manager.restart_devserver(
             provider_session_id,
             workspace_env=payload.workspace_env if payload else None,
+            workspace_mounts=payload.workspace_mounts if payload else None,
+        )
+
+    @application.post(
+        "/sessions/{provider_session_id}/mounts/refresh",
+        response_model=RuntimeSessionResponse,
+    )
+    async def refresh_mounts(
+        provider_session_id: str,
+        payload: RuntimeMountRefreshRequest,
+        _auth: None = ManagerAuth,
+    ) -> RuntimeSessionResponse:
+        return await manager.refresh_mounts(
+            provider_session_id,
+            workspace_mounts=payload.workspace_mounts,
         )
 
     @application.get(

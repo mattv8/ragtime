@@ -248,6 +248,7 @@ class SessionManager:
                         provider_session_id=provider_session_id,
                         pty_access_token=pty_access_token,
                         workspace_env=request.workspace_env,
+                        workspace_mounts=request.workspace_mounts,
                     )
                     worker_session = await asyncio.wait_for(
                         self._worker_service.start_session(worker_request),
@@ -304,6 +305,7 @@ class SessionManager:
         self,
         provider_session_id: str,
         workspace_env: dict[str, str] | None = None,
+        workspace_mounts: list[dict[str, Any]] | None = None,
     ) -> RuntimeSessionResponse:
         async with self._lock:
             session = self._sessions.get(provider_session_id)
@@ -313,6 +315,29 @@ class SessionManager:
                 self._worker_service.restart_session(
                     session.worker_session_id,
                     workspace_env=workspace_env,
+                    workspace_mounts=workspace_mounts,
+                ),
+                timeout=self._worker_call_timeout,
+            )
+            self._apply_worker_state(session, worker_data)
+            now = self._utc_now()
+            session.updated_at = now
+            session.lease_expires_at = now + timedelta(seconds=self._lease_ttl_seconds)
+            return self._as_response(session)
+
+    async def refresh_mounts(
+        self,
+        provider_session_id: str,
+        workspace_mounts: list[dict[str, Any]],
+    ) -> RuntimeSessionResponse:
+        async with self._lock:
+            session = self._sessions.get(provider_session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Runtime session not found")
+            worker_data = await asyncio.wait_for(
+                self._worker_service.refresh_mounts(
+                    session.worker_session_id,
+                    workspace_mounts=workspace_mounts,
                 ),
                 timeout=self._worker_call_timeout,
             )

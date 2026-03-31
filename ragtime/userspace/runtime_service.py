@@ -477,10 +477,14 @@ class UserSpaceRuntimeService:
         workspace_env = await userspace_service.get_workspace_runtime_environment(
             workspace_id
         )
+        workspace_mounts = await userspace_service.resolve_workspace_mounts_for_runtime(
+            workspace_id
+        )
         payload: dict[str, Any] = {
             "workspace_id": workspace_id,
             "leased_by_user_id": leased_by_user_id,
             "workspace_env": workspace_env,
+            "workspace_mounts": workspace_mounts,
         }
         if existing_provider_session_id:
             payload["provider_session_id"] = existing_provider_session_id
@@ -524,17 +528,36 @@ class UserSpaceRuntimeService:
         self,
         provider_session_id: str | None,
         workspace_env: dict[str, str] | None = None,
+        workspace_mounts: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
         if not provider_session_id:
             return None
         self._require_runtime_manager()
         json_payload: dict[str, Any] | None = None
-        if workspace_env is not None:
-            json_payload = {"workspace_env": workspace_env}
+        if workspace_env is not None or workspace_mounts is not None:
+            json_payload = {}
+            if workspace_env is not None:
+                json_payload["workspace_env"] = workspace_env
+            if workspace_mounts is not None:
+                json_payload["workspace_mounts"] = workspace_mounts
         return await self._runtime_manager_request(
             "POST",
             f"/sessions/{provider_session_id}/restart",
             json_payload=json_payload,
+        )
+
+    async def _runtime_provider_refresh_mounts(
+        self,
+        provider_session_id: str | None,
+        workspace_mounts: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        if not provider_session_id:
+            return None
+        self._require_runtime_manager()
+        return await self._runtime_manager_request(
+            "POST",
+            f"/sessions/{provider_session_id}/mounts/refresh",
+            json_payload={"workspace_mounts": workspace_mounts},
         )
 
     async def _runtime_provider_get_pty_ws_url(
@@ -1186,8 +1209,18 @@ class UserSpaceRuntimeService:
         start = await self.start_runtime_session(workspace_id, user_id)
         if active:
             active_session = self._to_runtime_session(active)
+            workspace_env = await userspace_service.get_workspace_runtime_environment(
+                workspace_id
+            )
+            workspace_mounts = (
+                await userspace_service.resolve_workspace_mounts_for_runtime(
+                    workspace_id
+                )
+            )
             provider_restart = await self._runtime_provider_restart_devserver(
-                active_session.provider_session_id
+                active_session.provider_session_id,
+                workspace_env=workspace_env,
+                workspace_mounts=workspace_mounts,
             )
             if provider_restart:
                 delta = self._merge_provider_status(active_session, provider_restart)
@@ -1259,6 +1292,106 @@ class UserSpaceRuntimeService:
         await self._runtime_provider_restart_devserver(
             session.provider_session_id,
             workspace_env=workspace_env,
+        )
+
+    async def refresh_workspace_mount(
+        self,
+        workspace_id: str,
+        user_id: str,
+        mount_id: str,
+    ) -> UserSpaceRuntimeActionResponse:
+        await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
+
+        active = await self._get_active_session_row(workspace_id)
+        if not active:
+            raise HTTPException(status_code=409, detail="No active runtime session")
+
+        active_session = self._to_runtime_session(active)
+        if active_session.state not in {"running", "starting"}:
+            raise HTTPException(status_code=409, detail="Runtime session is not active")
+
+        workspace_mounts = await userspace_service.list_workspace_mounts(
+            workspace_id,
+            user_id,
+        )
+        mount = next((item for item in workspace_mounts if item.id == mount_id), None)
+        if not mount:
+            raise HTTPException(status_code=404, detail="Mount not found")
+        if mount.tool_type != "ssh_shell":
+            raise HTTPException(
+                status_code=400,
+                detail="Runtime mount refresh is only supported for SFTP-backed mounts",
+            )
+        if mount.sync_status != "synced":
+            raise HTTPException(
+                status_code=409,
+                detail="Sync the SFTP mount before refreshing the runtime sandbox",
+            )
+
+        resolved_mounts = await userspace_service.resolve_workspace_mounts_for_runtime(
+            workspace_id,
+            mount_ids=[mount_id],
+        )
+        if not resolved_mounts:
+            raise HTTPException(
+                status_code=400,
+                detail="Mount is not available for runtime refresh",
+            )
+
+        provider_status = await self._runtime_provider_refresh_mounts(
+            active_session.provider_session_id,
+            resolved_mounts,
+        )
+        if provider_status:
+            delta = self._merge_provider_status(active_session, provider_status)
+            delta.update(
+                {
+                    "state": delta.get(
+                        "state",
+                        str(provider_status.get("state") or active_session.state),
+                    ),
+                    "lastHeartbeatAt": self._utc_now(),
+                    "lastError": None,
+                }
+            )
+            db = await get_db()
+            model = self._runtime_session_model(db)
+            await self._runtime_session_update_row(
+                model,
+                active_session.id,
+                delta,
+            )
+            operation_id = provider_status.get("runtime_operation_id")
+            operation_phase = provider_status.get("runtime_operation_phase")
+            operation_started_at = provider_status.get("runtime_operation_started_at")
+            operation_updated_at = provider_status.get("runtime_operation_updated_at")
+            state = cast(
+                RuntimeSessionState,
+                provider_status.get("state") or active_session.state,
+            )
+        else:
+            operation_id = None
+            operation_phase = None
+            operation_started_at = None
+            operation_updated_at = None
+            state = active_session.state
+
+        await self._audit(
+            workspace_id,
+            "mount_refresh",
+            user_id=user_id,
+            session_id=active_session.id,
+            payload={"mount_id": mount_id},
+        )
+        return UserSpaceRuntimeActionResponse(
+            workspace_id=workspace_id,
+            session_id=active_session.id,
+            state=state,
+            success=True,
+            runtime_operation_id=operation_id,
+            runtime_operation_phase=operation_phase,
+            runtime_operation_started_at=operation_started_at,
+            runtime_operation_updated_at=operation_updated_at,
         )
 
     async def issue_capability_token(
@@ -2061,6 +2194,30 @@ class UserSpaceRuntimeService:
         if not provider_status:
             devserver_running = state == "running"
 
+        mount_rows: list[Any] = []
+        try:
+            db = await get_db()
+            mount_rows = await db.workspacemount.find_many(
+                where={"workspaceId": workspace_id},
+                order={"createdAt": "asc"},
+            )
+        except Exception:
+            logger.debug(
+                "Failed to load runtime mount rows for workspace %s",
+                workspace_id,
+                exc_info=True,
+            )
+
+        mount_target_paths = [
+            str(getattr(row, "targetPath", "") or "").strip()
+            for row in mount_rows
+            if str(getattr(row, "targetPath", "") or "").strip()
+        ]
+        mount_content_signature = await userspace_service.get_runtime_mount_content_signature(
+            workspace_id,
+            mount_target_paths,
+        )
+
         payload = {
             "runtime": {
                 "workspace_id": workspace_id,
@@ -2070,6 +2227,7 @@ class UserSpaceRuntimeService:
                 "runtime_operation_id": operation_id,
                 "runtime_operation_phase": operation_phase,
                 "last_error": last_error,
+                "mount_target_paths": mount_target_paths,
             }
         }
         signature = (
@@ -2079,6 +2237,7 @@ class UserSpaceRuntimeService:
             operation_phase,
             operation_id,
             last_error,
+            mount_content_signature,
         )
         return signature, payload
 
@@ -2087,10 +2246,15 @@ class UserSpaceRuntimeService:
         previous = self._runtime_watch_signatures.get(workspace_id)
         if previous == signature:
             return
+
+        mount_contents_changed = previous is None or previous[-1] != signature[-1]
         self._runtime_watch_signatures[workspace_id] = signature
+        if mount_contents_changed:
+            userspace_service.invalidate_file_list_cache(workspace_id)
+        event_type = "runtime_mount_contents" if previous and previous[:-1] == signature[:-1] else "runtime_phase"
         await self.bump_workspace_generation(
             workspace_id,
-            event_type="runtime_phase",
+            event_type=event_type,
             payload=payload,
         )
 

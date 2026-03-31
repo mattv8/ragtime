@@ -47,6 +47,13 @@ class StartSessionRequest(BaseModel):
             "Values are injected server-side into devserver runtime only."
         ),
     )
+    workspace_mounts: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Workspace mount specs resolved by control plane. "
+            "Each entry has source_local_path, target_path, tool_type, read_only."
+        ),
+    )
 
 
 class _BaseSessionFields(BaseModel):
@@ -107,6 +114,10 @@ class WorkerStartSessionRequest(BaseModel):
     workspace_env: dict[str, str] = Field(
         default_factory=dict,
         description="Workspace env map for devserver injection",
+    )
+    workspace_mounts: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Workspace mount specs for sandbox materialization",
     )
 
 
@@ -217,6 +228,17 @@ class RuntimeRestartRequest(BaseModel):
     workspace_env: dict[str, str] | None = Field(
         default=None,
         description="If provided, update workspace environment variables before restart",
+    )
+    workspace_mounts: list[dict[str, Any]] | None = Field(
+        default=None,
+        description="If provided, refresh workspace mounts before restart",
+    )
+
+
+class RuntimeMountRefreshRequest(BaseModel):
+    workspace_mounts: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Workspace mount specs to rematerialize into the active sandbox",
     )
 
 

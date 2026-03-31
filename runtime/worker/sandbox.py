@@ -257,6 +257,86 @@ def provision_rootfs(spec: SandboxSpec) -> None:
     root_home.mkdir(parents=True, exist_ok=True)
 
 
+def materialize_mounts(
+    spec: SandboxSpec,
+    mounts: list[dict[str, Any]],
+    *,
+    clear_targets: Sequence[str] | None = None,
+) -> None:
+    """Copy mount sources into the sandbox rootfs under their target paths.
+
+    Each mount dict must have ``source_local_path`` and ``target_path``.
+    Content is copied read-only (no bind mount syscalls needed).  This is
+    safe for both pivot_root and chroot modes and does not require
+    CAP_SYS_ADMIN.
+    """
+    rootfs = spec.rootfs_path
+
+    def resolve_target_path(target: str) -> Path | None:
+        normalized = (target or "").strip().replace("\\", "/").lstrip("/")
+        if not normalized:
+            return None
+        candidate = rootfs / normalized
+        try:
+            candidate.relative_to(rootfs)
+        except ValueError:
+            logger.warning(
+                "materialize_mounts: target %s escapes rootfs, skipping",
+                target,
+            )
+            return None
+        return candidate
+
+    for target in clear_targets or [
+        str(mount.get("target_path") or "") for mount in mounts
+    ]:
+        dest = resolve_target_path(str(target or ""))
+        if dest is None:
+            continue
+        try:
+            if dest.is_symlink() or dest.is_file():
+                dest.unlink(missing_ok=True)
+            elif dest.exists():
+                shutil.rmtree(dest)
+        except Exception as exc:
+            logger.warning(
+                "materialize_mounts: failed to clear %s before sync: %s",
+                dest,
+                exc,
+            )
+
+    for mount in mounts:
+        source = mount.get("source_local_path", "")
+        target = mount.get("target_path", "")
+        if not source or not target:
+            continue
+        source_path = Path(source)
+        if not source_path.is_dir():
+            logger.debug(
+                "materialize_mounts: source %s not a directory, skipping", source
+            )
+            continue
+        dest = resolve_target_path(str(target))
+        if dest is None:
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copytree(
+                str(source_path),
+                str(dest),
+                symlinks=True,
+                ignore_dangling_symlinks=True,
+                copy_function=_copy_file,
+            )
+        except Exception as exc:
+            logger.warning(
+                "materialize_mounts: failed to copy %s -> %s: %s",
+                source,
+                dest,
+                exc,
+            )
+
+
 def _provision_etc(rootfs: Path) -> None:
     """Ensure minimal /etc content exists in the sandbox rootfs."""
     etc = rootfs / "etc"
@@ -735,9 +815,7 @@ def _sync_system_dirs_for_chroot(spec: SandboxSpec) -> None:
             logger.warning("Failed to mirror workspace into rootfs: %s", exc)
 
 
-def _sync_usr_for_chroot(
-    src_usr: Path, dst_usr: Path, *, force: bool = False
-) -> None:
+def _sync_usr_for_chroot(src_usr: Path, dst_usr: Path, *, force: bool = False) -> None:
     """Sync a minimal, runtime-focused subset of /usr for chroot fallback.
 
     Copying all of /usr in no-mount chroot mode can create very large rootfs

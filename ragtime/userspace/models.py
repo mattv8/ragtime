@@ -46,6 +46,8 @@ class UserSpaceAvailableTool(BaseModel):
     description: str | None = None
     group_id: str | None = None
     group_name: str | None = None
+    userspace_mounts_enabled: bool = False
+    userspace_mount_paths: list[str] = Field(default_factory=list)
 
 
 class UserSpaceWorkspace(BaseModel):
@@ -421,3 +423,103 @@ class PaginatedWorkspacesResponse(BaseModel):
     total: int
     offset: int
     limit: int
+
+
+# -------------------------------------------------------------------------
+# Workspace Mount Models
+# -------------------------------------------------------------------------
+
+MountSyncStatus = Literal["pending", "synced", "error"]
+
+
+class WorkspaceMount(BaseModel):
+    id: str
+    workspace_id: str
+    tool_config_id: str
+    source_path: str
+    target_path: str
+    description: str | None = None
+    sync_status: MountSyncStatus = "pending"
+    last_sync_at: datetime | None = None
+    last_sync_error: str | None = None
+    auto_sync_enabled: bool = False
+    tool_name: str | None = None
+    tool_type: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class MountableSource(BaseModel):
+    tool_config_id: str
+    tool_name: str
+    tool_type: str
+    source_path: str
+
+
+class WorkspaceMountBrowseRequest(BaseModel):
+    tool_config_id: str = Field(min_length=1)
+    root_source_path: str = Field(
+        min_length=1,
+        description="Admin-approved source relpath that defines the browse root",
+    )
+    path: str = Field(
+        default="/",
+        description="Synthetic absolute path relative to the tool root",
+    )
+
+
+class WorkspaceMountDirectoryEntry(BaseModel):
+    name: str
+    path: str
+    is_dir: bool
+    size: int | None = None
+
+
+class WorkspaceMountBrowseResponse(BaseModel):
+    path: str
+    entries: list[WorkspaceMountDirectoryEntry] = Field(default_factory=list)
+    error: str | None = None
+
+
+class CreateWorkspaceMountRequest(BaseModel):
+    tool_config_id: str = Field(min_length=1)
+    source_path: str = Field(min_length=1, description="Admin-approved source relpath")
+    target_path: str = Field(
+        min_length=1,
+        max_length=200,
+        description="User-chosen sandbox target path (e.g. /mnt/data)",
+    )
+    source_directory_to_create: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Optional source directory to create before saving the mount",
+    )
+    target_directory_to_create: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+        description="Optional workspace target directory to create before saving the mount",
+    )
+    auto_sync_enabled: bool = Field(
+        default=False,
+        description="Enable background watch mode that periodically auto-syncs this mount",
+    )
+    description: str | None = Field(default=None, max_length=1000)
+
+
+class UpdateWorkspaceMountRequest(BaseModel):
+    target_path: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=1000)
+    auto_sync_enabled: bool | None = Field(default=None)
+
+
+class DeleteWorkspaceMountResponse(BaseModel):
+    success: bool = True
+    mount_id: str
+
+
+class WorkspaceMountSyncResponse(BaseModel):
+    mount_id: str
+    sync_status: MountSyncStatus
+    files_synced: int = 0
+    last_sync_error: str | None = None
