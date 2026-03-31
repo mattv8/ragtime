@@ -24,45 +24,55 @@ from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
-from ragtime.core.entrypoint_status import (EntrypointStatus,
-                                            parse_entrypoint_config)
+from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_config
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import (DB_TYPE_POSTGRES,
-                                    add_table_metadata_to_psql_output,
-                                    enforce_max_results, format_query_result,
-                                    validate_sql_query)
-from ragtime.core.ssh import (SSHTunnel, build_ssh_tunnel_config,
-                              ssh_tunnel_config_from_dict)
+from ragtime.core.sql_utils import (
+    DB_TYPE_POSTGRES,
+    add_table_metadata_to_psql_output,
+    enforce_max_results,
+    format_query_result,
+    validate_sql_query,
+)
+from ragtime.core.ssh import (
+    SSHTunnel,
+    build_ssh_tunnel_config,
+    ssh_tunnel_config_from_dict,
+)
 from ragtime.indexer.repository import repository
-from ragtime.userspace.models import (ArtifactType, CreateWorkspaceRequest,
-                                      DeleteWorkspaceEnvVarResponse,
-                                      ExecuteComponentRequest,
-                                      ExecuteComponentResponse,
-                                      PaginatedWorkspacesResponse,
-                                      ShareAccessMode, SqlitePersistenceMode,
-                                      SwitchSnapshotBranchRequest,
-                                      UpdateSnapshotRequest,
-                                      UpdateWorkspaceMembersRequest,
-                                      UpdateWorkspaceRequest,
-                                      UpdateWorkspaceShareAccessRequest,
-                                      UpsertWorkspaceEnvVarRequest,
-                                      UpsertWorkspaceFileRequest,
-                                      UserSpaceFileInfo, UserSpaceFileResponse,
-                                      UserSpaceLiveDataCheck,
-                                      UserSpaceLiveDataConnection,
-                                      UserSpaceSharedPreviewResponse,
-                                      UserSpaceSnapshot,
-                                      UserSpaceSnapshotBranch,
-                                      UserSpaceSnapshotDiffFileSummary,
-                                      UserSpaceSnapshotDiffSummaryResponse,
-                                      UserSpaceSnapshotFileDiffResponse,
-                                      UserSpaceSnapshotTimelineResponse,
-                                      UserSpaceWorkspace,
-                                      UserSpaceWorkspaceEnvVar,
-                                      UserSpaceWorkspaceShareLink,
-                                      UserSpaceWorkspaceShareLinkStatus,
-                                      WorkspaceMember,
-                                      WorkspaceShareSlugAvailabilityResponse)
+from ragtime.userspace.models import (
+    ArtifactType,
+    CreateWorkspaceRequest,
+    DeleteWorkspaceEnvVarResponse,
+    ExecuteComponentRequest,
+    ExecuteComponentResponse,
+    PaginatedWorkspacesResponse,
+    ShareAccessMode,
+    SqlitePersistenceMode,
+    SwitchSnapshotBranchRequest,
+    UpdateSnapshotRequest,
+    UpdateWorkspaceMembersRequest,
+    UpdateWorkspaceRequest,
+    UpdateWorkspaceShareAccessRequest,
+    UpsertWorkspaceEnvVarRequest,
+    UpsertWorkspaceFileRequest,
+    UserSpaceFileInfo,
+    UserSpaceFileResponse,
+    UserSpaceLiveDataCheck,
+    UserSpaceLiveDataConnection,
+    UserSpaceSharedPreviewResponse,
+    UserSpaceSnapshot,
+    UserSpaceSnapshotBranch,
+    UserSpaceSnapshotDiffFileSummary,
+    UserSpaceSnapshotDiffSummaryResponse,
+    UserSpaceSnapshotFileDiffResponse,
+    UserSpaceSnapshotTimelineResponse,
+    UserSpaceWorkspace,
+    UserSpaceWorkspaceEnvVar,
+    UserSpaceWorkspaceShareLink,
+    UserSpaceWorkspaceShareLinkStatus,
+    WorkspaceMember,
+    WorkspaceShareSlugAvailabilityResponse,
+)
 
 logger = get_logger(__name__)
 
@@ -135,6 +145,16 @@ _SQLITE_EXCLUDE_GLOBS = (
     "*.sqlite3",
     "*.db",
     "*.db3",
+)
+_WORKSPACE_DEFAULT_GITIGNORE_PATTERNS = (
+    "node_modules/",
+    "dist/",
+    "__pycache__/",
+)
+_PLATFORM_MANAGED_GITIGNORE_PATTERNS = (
+    ".ragtime/bridge.js",
+    ".ragtime/runtime-bootstrap.json",
+    ".ragtime/.runtime-bootstrap.done",
 )
 _WORKSPACE_ENV_VAR_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _WORKSPACE_ENV_VAR_MAX_COUNT = 200
@@ -1157,6 +1177,31 @@ class UserSpaceService:
     def _workspace_git_dir(self, workspace_id: str) -> Path:
         return self._workspace_files_dir(workspace_id) / ".git"
 
+    def _ensure_workspace_gitignore(self, files_dir: Path) -> None:
+        gitignore = files_dir / ".gitignore"
+        existing_lines: list[str] = []
+        if gitignore.exists():
+            try:
+                existing_lines = gitignore.read_text(encoding="utf-8").splitlines()
+            except Exception:
+                existing_lines = []
+
+        existing_set = {line.strip() for line in existing_lines if line.strip()}
+        required = (
+            *_WORKSPACE_DEFAULT_GITIGNORE_PATTERNS,
+            *_PLATFORM_MANAGED_GITIGNORE_PATTERNS,
+        )
+        missing = [pattern for pattern in required if pattern not in existing_set]
+        if not missing and gitignore.exists():
+            return
+
+        merged = list(existing_lines)
+        if merged and merged[-1].strip():
+            merged.append("")
+        merged.extend(missing)
+        content = "\n".join(merged).strip("\n") + "\n"
+        gitignore.write_text(content, encoding="utf-8")
+
     async def _run_git_raw(
         self,
         workspace_id: str,
@@ -1217,13 +1262,7 @@ class UserSpaceService:
         files_dir.mkdir(parents=True, exist_ok=True)
         git_dir = self._workspace_git_dir(workspace_id)
         if git_dir.exists() and git_dir.is_dir():
-            # Ensure .gitignore exists even for pre-existing repos
-            gitignore = files_dir / ".gitignore"
-            if not gitignore.exists():
-                gitignore.write_text(
-                    "node_modules/\ndist/\n__pycache__/\n",
-                    encoding="utf-8",
-                )
+            self._ensure_workspace_gitignore(files_dir)
             return
 
         await self._run_git(workspace_id, ["init"])
@@ -1236,12 +1275,7 @@ class UserSpaceService:
             ["config", "user.email", "userspace@ragtime.local"],
         )
 
-        gitignore = files_dir / ".gitignore"
-        if not gitignore.exists():
-            gitignore.write_text(
-                "node_modules/\ndist/\n__pycache__/\n",
-                encoding="utf-8",
-            )
+        self._ensure_workspace_gitignore(files_dir)
 
     def _resolve_workspace_file_path(
         self, workspace_id: str, relative_path: str
@@ -1438,16 +1472,16 @@ class UserSpaceService:
             numstat_path = parts[2].strip()
             # For renames, numstat shows the new path with --find-renames
             # but may use {old => new} notation — try the raw path, then old_path lookup
-            matched: _WorkspaceSnapshotFileDiff | None = (
-                summary_by_path.get(numstat_path) or old_path_lookup.get(numstat_path)
-            )
+            matched: _WorkspaceSnapshotFileDiff | None = summary_by_path.get(
+                numstat_path
+            ) or old_path_lookup.get(numstat_path)
             if matched is None:
                 # Try normalizing in case of path format differences
                 normalized = self._normalize_workspace_relative_path(numstat_path)
                 if normalized:
-                    matched = summary_by_path.get(
+                    matched = summary_by_path.get(normalized) or old_path_lookup.get(
                         normalized
-                    ) or old_path_lookup.get(normalized)
+                    )
             if matched is None:
                 continue
             if add_token == "-" or delete_token == "-":
@@ -1802,9 +1836,7 @@ class UserSpaceService:
                         _WorkspaceSnapshotFileDiff,
                         {
                             "path": normalized_path,
-                            "status": cast(
-                                Literal["A", "D", "M", "R"], parsed_status
-                            ),
+                            "status": cast(Literal["A", "D", "M", "R"], parsed_status),
                             "old_path": nop,
                             "additions": 0,
                             "deletions": 0,
@@ -1838,9 +1870,7 @@ class UserSpaceService:
                         )
                     except ValueError:
                         continue
-                    np = self._normalize_workspace_relative_path(
-                        candidate_path or ""
-                    )
+                    np = self._normalize_workspace_relative_path(candidate_path or "")
                     if np == normalized_path:
                         nop = (
                             self._normalize_workspace_relative_path(old_path or "")
@@ -1890,9 +1920,7 @@ class UserSpaceService:
                         )
                     except ValueError:
                         continue
-                    np = self._normalize_workspace_relative_path(
-                        candidate_path or ""
-                    )
+                    np = self._normalize_workspace_relative_path(candidate_path or "")
                     if np == normalized_path:
                         nop = (
                             self._normalize_workspace_relative_path(old_path or "")
@@ -2454,6 +2482,14 @@ class UserSpaceService:
             await self._run_git(
                 workspace_id,
                 ["reset", "--", pattern],
+                check=False,
+            )
+
+    async def _apply_snapshot_platform_file_policy(self, workspace_id: str) -> None:
+        for pattern in _PLATFORM_MANAGED_GITIGNORE_PATTERNS:
+            await self._run_git(
+                workspace_id,
+                ["rm", "--cached", "--ignore-unmatch", "--", pattern],
                 check=False,
             )
 
@@ -4511,8 +4547,21 @@ class UserSpaceService:
         }
 
         async with self._snapshot_operation_semaphore:
+            # Snapshot restore must be resilient to platform-managed file drift
+            # (for example .ragtime/bridge.js updates) in long-lived workspaces.
+            await self._run_git(workspace_id, ["reset", "--hard"], check=False)
+            await self._run_git(workspace_id, ["clean", "-fd"], check=False)
             if branch_ref_name and is_branch_tip:
-                await self._run_git(workspace_id, ["checkout", branch_ref_name])
+                checkout_result = await self._run_git(
+                    workspace_id,
+                    ["checkout", "-f", branch_ref_name],
+                    check=False,
+                )
+                if checkout_result.returncode != 0:
+                    await self._run_git(
+                        workspace_id,
+                        ["checkout", "--detach", commit_hash],
+                    )
             else:
                 await self._run_git(workspace_id, ["checkout", "--detach", commit_hash])
             await self._run_git(workspace_id, ["reset", "--hard", commit_hash])
@@ -4674,6 +4723,7 @@ class UserSpaceService:
                 await self._activate_branch(workspace_id, new_branch_id)
                 current_branch_id = new_branch_id
 
+            await self._apply_snapshot_platform_file_policy(workspace_id)
             await self._run_git(workspace_id, ["add", "-A"])
             await self._apply_snapshot_sqlite_policy(workspace_id)
             await self._run_git(
