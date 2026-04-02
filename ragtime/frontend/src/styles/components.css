@@ -1469,6 +1469,7 @@ textarea:focus {
   color: var(--color-text-muted);
   opacity: 0.8;
   flex-shrink: 0;
+  cursor: pointer;
 }
 
 .userspace-tree-mount-folder:hover .userspace-tree-mount-badge {
@@ -1478,6 +1479,19 @@ textarea:focus {
 .userspace-tree-mount-folder:hover .userspace-tree-mount-badge {
   border-color: var(--color-text-secondary);
   opacity: 1;
+}
+
+/* Disabled/unmounted mount folder */
+.userspace-tree-mount-disabled {
+  opacity: 0.45;
+  filter: grayscale(0.6);
+}
+
+.userspace-tree-mount-badge-disabled {
+  border-style: dotted;
+  color: var(--color-error, #e06c75);
+  border-color: var(--color-error, #e06c75);
+  opacity: 0.9;
 }
 
 /* Per-file save button in tree row — always visible when file is changed */
@@ -2920,6 +2934,14 @@ textarea:focus {
   color: var(--color-text-primary);
 }
 
+.mount-source-name-display svg {
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.mount-source-name-display:hover svg {
+  opacity: 0.6;
+}
+
 .userspace-mount-target-icon {
   flex-shrink: 0;
 }
@@ -2944,6 +2966,28 @@ textarea:focus {
   display: flex;
   gap: var(--space-xs);
   flex-shrink: 0;
+}
+
+.userspace-mount-toggle-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.userspace-mount-toggle-icon .userspace-mount-toggle-slash {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.7;
+  pointer-events: none;
+  color: var(--color-warning);
 }
 
 .userspace-mount-controls {

@@ -25,7 +25,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+from typing import Any, AsyncContextManager, AsyncIterator, Dict, List, Optional, Tuple
 
 from prisma.errors import TableNotFoundError
 
@@ -362,6 +362,11 @@ class FilesystemIndexerService:
             # Only cleanup on mount failure, not on job completion
             await asyncio.to_thread(shutil.rmtree, mount_point, True)
             raise
+
+    def filesystem_access(
+        self, config: FilesystemConnectionConfig, tool_config_id: str | None = None
+    ) -> AsyncContextManager[Path]:
+        return self._mount_filesystem(config, tool_config_id)
 
     async def unmount_tool(self, tool_config_id: str) -> bool:
         """

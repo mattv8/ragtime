@@ -158,14 +158,22 @@ def build_userspace_mounts_prompt_fragment(
             tool_name = mount.get("tool_name", "") or "Unknown tool"
             sync_status = mount.get("sync_status", "") or "pending"
             description = mount.get("description", "") or ""
+            enabled = mount.get("enabled", "true") == "true"
             description_suffix = f" [description: {description}]" if description else ""
-            lines.append(
-                "- `"
-                + relative_path
-                + "` from the workspace root"
-                + f" (absolute `{target_path}`) -> {tool_name} source `{source_path}` [status: {sync_status}]"
-                + description_suffix
-            )
+            if not enabled:
+                lines.append(
+                    "- `"
+                    + relative_path
+                    + "` — **UNMOUNTED** (files at this path are not available; do not read from or write to this directory)"
+                )
+            else:
+                lines.append(
+                    "- `"
+                    + relative_path
+                    + "` from the workspace root"
+                    + f" (absolute `{target_path}`) -> {tool_name} source `{source_path}` [status: {sync_status}]"
+                    + description_suffix
+                )
         return "\n### Workspace filesystem mounts\n\n" + "\n".join(lines) + "\n"
 
     if mounts_enabled:

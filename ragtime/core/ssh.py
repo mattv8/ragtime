@@ -639,6 +639,7 @@ def sync_ssh_directory(
     *,
     max_files: int = 5000,
     max_file_size_bytes: int = 50 * 1024 * 1024,
+    sync_deletes: bool = False,
 ) -> SSHSyncResult:
     """Sync a remote directory to a local path via SFTP.
 
@@ -652,6 +653,9 @@ def sync_ssh_directory(
         local_path: Local destination directory (created if missing).
         max_files: Safety cap on number of files to download.
         max_file_size_bytes: Skip files larger than this.
+        sync_deletes: When True, local files not present on the remote are
+            deleted (atomic swap).  When False, new/updated files are merged
+            into the existing local tree without removing anything.
 
     Returns:
         SSHSyncResult with counts and error list.
@@ -706,12 +710,29 @@ def sync_ssh_directory(
                         errors.append(f"get {r_entry}: {exc}")
 
         sftp.close()
+
+        # Finalize: either atomic swap (sync_deletes) or merge into existing.
         try:
-            if local_root.is_symlink() or local_root.is_file():
-                local_root.unlink(missing_ok=True)
-            elif local_root.exists():
-                shutil.rmtree(local_root)
-            temp_root.replace(local_root)
+            if sync_deletes:
+                # Atomic swap: replace entire local tree with the fresh download.
+                if local_root.is_symlink() or local_root.is_file():
+                    local_root.unlink(missing_ok=True)
+                elif local_root.exists():
+                    shutil.rmtree(local_root)
+                temp_root.replace(local_root)
+            else:
+                # Merge mode: copy downloaded files into the existing local tree
+                # without removing files that are absent from the remote.
+                local_root.mkdir(parents=True, exist_ok=True)
+                for root, dirnames, filenames in _os.walk(str(temp_root)):
+                    root_path = _Path(root)
+                    rel = root_path.relative_to(temp_root)
+                    dest_dir = local_root / rel
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    for fname in filenames:
+                        src_file = root_path / fname
+                        dst_file = dest_dir / fname
+                        shutil.copy2(str(src_file), str(dst_file))
         except Exception as exc:
             errors.append(f"finalize {local_root}: {exc}")
     except paramiko.AuthenticationException as exc:

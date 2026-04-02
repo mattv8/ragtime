@@ -27,7 +27,6 @@ import { FileTypeStatsTable } from './FileTypeStatsTable';
 import { SuggestedExclusionsBanner } from './SuggestedExclusionsBanner';
 import { WarningsBanner } from './WarningsBanner';
 import { ReindexIntervalSelect } from './ReindexIntervalSelect';
-import { ConstrainedPathBrowser } from './ConstrainedPathBrowser';
 import { DirectoryBrowser } from './DirectoryBrowser';
 
 // System mounts to filter out from the "Available Mounts" display
@@ -1712,6 +1711,8 @@ interface ToolWizardProps {
   defaultToolType?: ToolType;
   /** When true, renders without card wrapper and header (for embedding in other panels) */
   embedded?: boolean;
+  /** When true, creates a filesystem tool without indexing (mount-source-only). Hides analysis, OCR, and advanced indexing UI. */
+  mountOnly?: boolean;
 }
 
 type WizardStep = 'type' | 'connection' | 'pdm_filtering' | 'execution_constraints' | 'description' | 'options' | 'review';
@@ -1725,6 +1726,8 @@ const SSH_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'execution_constra
 const ODOO_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'options', 'description', 'review'];
 // Filesystem indexers use options for userspace mount controls.
 const FILESYSTEM_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'description', 'options', 'review'];
+// Filesystem mount-only: skip options (no indexing config needed).
+const FILESYSTEM_MOUNT_ONLY_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'description', 'review'];
 
 function getStepTitle(step: WizardStep): string {
   switch (step) {
@@ -1745,7 +1748,7 @@ function getStepTitle(step: WizardStep): string {
   }
 }
 
-export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, embedded = false }: ToolWizardProps) {
+export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, embedded = false, mountOnly = false }: ToolWizardProps) {
   const isEditing = existingTool !== null;
   const progressRef = useRef<HTMLDivElement>(null);
 
@@ -1758,14 +1761,14 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
     if (toolType === 'solidworks_pdm') steps = PDM_WIZARD_STEPS;
     else if (toolType === 'ssh_shell') steps = SSH_WIZARD_STEPS;
     else if (toolType === 'odoo_shell') steps = ODOO_WIZARD_STEPS;
-    else if (toolType === 'filesystem_indexer') steps = FILESYSTEM_WIZARD_STEPS;
+    else if (toolType === 'filesystem_indexer') steps = mountOnly ? FILESYSTEM_MOUNT_ONLY_WIZARD_STEPS : FILESYSTEM_WIZARD_STEPS;
 
     // Skip description step in edit mode (handled inline)
     if (isEditing) {
       return steps.filter(step => step !== 'description');
     }
     return steps;
-  }, [toolType, isEditing]);
+  }, [toolType, isEditing, mountOnly]);
 
   // Wizard state - skip type selection if defaultToolType is provided
   const skipTypeStep = !isEditing && defaultToolType !== undefined;
@@ -1793,11 +1796,6 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   const [timeoutValue, setTimeoutValue] = useState(existingTool?.timeout || 30);
   const [timeoutMaxSeconds, setTimeoutMaxSeconds] = useState(existingTool?.timeout_max_seconds ?? 300);
   const [allowWrite, setAllowWrite] = useState(existingTool?.allow_write || false);
-  const [userspaceMountsEnabled, setUserspaceMountsEnabled] = useState(existingTool?.userspace_mounts_enabled || false);
-  const [userspaceMountPaths, setUserspaceMountPaths] = useState<string[]>(existingTool?.userspace_mount_paths || []);
-  const [mountPathInput, setMountPathInput] = useState('');
-  const [mountPathBrowserSelection, setMountPathBrowserSelection] = useState('');
-  const [mountPathError, setMountPathError] = useState<string | null>(null);
 
   const parseNumberOrDefault = (value: string, defaultValue: number): number => {
     const parsed = Number.parseInt(value, 10);
@@ -1947,88 +1945,6 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
       last_indexed_at: null,
     };
   });
-
-  const normalizeAbsoluteBrowserPath = (value: string): string => {
-    const normalizedParts: string[] = [];
-    for (const part of (value || '/').replace(/\\/g, '/').split('/')) {
-      if (!part || part === '.') continue;
-      if (part === '..') {
-        normalizedParts.pop();
-        continue;
-      }
-      normalizedParts.push(part);
-    }
-    return '/' + normalizedParts.join('/');
-  };
-
-  const normalizeRelativeMountPath = (value: string): string | null => {
-    const normalizedParts: string[] = [];
-    for (const part of (value || '').replace(/\\/g, '/').split('/')) {
-      if (!part || part === '.') continue;
-      if (part === '..') {
-        return null;
-      }
-      normalizedParts.push(part);
-    }
-    return normalizedParts.length > 0 ? normalizedParts.join('/') : '.';
-  };
-
-  const getUserspaceMountRootPath = (): string | null => {
-    if (toolType === 'ssh_shell') {
-      return normalizeAbsoluteBrowserPath(sshConfig.working_directory || '/');
-    }
-    if (toolType === 'filesystem_indexer') {
-      if (!filesystemConfig.base_path) return null;
-      return normalizeAbsoluteBrowserPath(filesystemConfig.base_path);
-    }
-    return null;
-  };
-
-  const addUserspaceMountPath = useCallback((rawPath: string): boolean => {
-    const normalized = normalizeRelativeMountPath(rawPath);
-    if (!normalized) {
-      setMountPathError('Approved source paths must stay within the tool root.');
-      return false;
-    }
-    if (userspaceMountPaths.includes(normalized)) {
-      setMountPathError(null);
-      setMountPathInput('');
-      return false;
-    }
-    setUserspaceMountPaths((prev) => [...prev, normalized]);
-    setMountPathError(null);
-    setMountPathInput('');
-    return true;
-  }, [userspaceMountPaths]);
-
-  const convertAbsoluteMountSelectionToRelative = useCallback((selectedPath: string): string | null => {
-    const rootPath = getUserspaceMountRootPath();
-    if (!rootPath) return null;
-
-    const normalizedSelected = normalizeAbsoluteBrowserPath(selectedPath || rootPath);
-    if (rootPath === '/') {
-      return normalizeRelativeMountPath(normalizedSelected);
-    }
-    if (normalizedSelected === rootPath) {
-      return '.';
-    }
-
-    const rootPrefix = `${rootPath}/`;
-    if (!normalizedSelected.startsWith(rootPrefix)) {
-      return null;
-    }
-    return normalizeRelativeMountPath(normalizedSelected.slice(rootPrefix.length));
-  }, [toolType, sshConfig.working_directory, filesystemConfig.base_path]);
-
-  const handleUserspaceMountBrowserSelect = useCallback((selectedPath: string) => {
-    const relativePath = convertAbsoluteMountSelectionToRelative(selectedPath);
-    if (!relativePath) {
-      setMountPathError('Select a directory inside the configured tool root.');
-      return;
-    }
-    addUserspaceMountPath(relativePath);
-    setMountPathBrowserSelection(selectedPath);
-  }, [addUserspaceMountPath, convertAbsoluteMountSelectionToRelative]);
 
   // SolidWorks PDM config state
   const [pdmConfig, setPdmConfig] = useState<SolidworksPdmConnectionConfig>(
@@ -2653,8 +2569,6 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           timeout: timeoutValue,
           timeout_max_seconds: timeoutMaxSeconds,
           allow_write: allowWrite,
-          userspace_mounts_enabled: userspaceMountsEnabled,
-          userspace_mount_paths: userspaceMountPaths,
         });
       }
 
@@ -2702,8 +2616,6 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           timeout: timeoutValue,
           timeout_max_seconds: timeoutMaxSeconds,
           allow_write: allowWrite,
-          userspace_mounts_enabled: userspaceMountsEnabled,
-          userspace_mount_paths: userspaceMountPaths,
         });
       } else {
         // Auto-create the tool first
@@ -2716,8 +2628,6 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           timeout: timeoutValue,
           timeout_max_seconds: timeoutMaxSeconds,
           allow_write: allowWrite,
-          userspace_mounts_enabled: userspaceMountsEnabled,
-          userspace_mount_paths: userspaceMountPaths,
         };
         const created = await api.createToolConfig(request);
         toolId = created.id;
@@ -2793,8 +2703,6 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           timeout: timeoutValue,
           timeout_max_seconds: timeoutMaxSeconds,
           allow_write: allowWrite,
-          userspace_mounts_enabled: userspaceMountsEnabled,
-          userspace_mount_paths: userspaceMountPaths,
         });
       } else {
         const request: CreateToolConfigRequest = {
@@ -2806,8 +2714,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           timeout: timeoutValue,
           timeout_max_seconds: timeoutMaxSeconds,
           allow_write: allowWrite,
-          userspace_mounts_enabled: userspaceMountsEnabled,
-          userspace_mount_paths: userspaceMountPaths,
+          ...(mountOnly && { skip_indexing: true }),
         };
         const created = await api.createToolConfig(request);
         savedToolId = created.id;
@@ -4825,6 +4732,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
         </>
       )}
 
+      {!mountOnly && (
       <div className="analysis-section" style={{ marginTop: '1.5rem' }}>
         <h4 style={{ marginBottom: '1rem' }}>Pre-Index Analysis</h4>
 
@@ -5012,6 +4920,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
 
         </details>
       </div>
+      )}
     </div>
   );
   };
@@ -5180,8 +5089,6 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
               </>
            )}
         </div>
-
-            {renderUserspaceMounts()}
       </div>
     );
   };
@@ -5221,100 +5128,6 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
       </div>
     </div>
   );
-
-  const renderUserspaceMounts = () => {
-    if (!['ssh_shell', 'filesystem_indexer'].includes(toolType)) return null;
-
-    const mountRootPath = getUserspaceMountRootPath();
-    const canBrowseSshMounts = Boolean(
-      sshConfig.host && sshConfig.user && (sshConfig.password || sshConfig.key_content || sshConfig.key_path)
-    );
-    const browserCurrentPath = mountPathBrowserSelection || mountRootPath || '';
-
-    return (
-      <fieldset>
-        <legend>Userspace Mounts</legend>
-        <label className="checkbox-label">
-          <input
-            type="checkbox"
-            checked={userspaceMountsEnabled}
-            onChange={(e) => setUserspaceMountsEnabled(e.target.checked)}
-          />
-          Allow workspace users to mount approved paths into runtime
-        </label>
-        {userspaceMountsEnabled && (
-          <div style={{ marginTop: '8px' }}>
-            {toolType === 'ssh_shell' && canBrowseSshMounts && mountRootPath && (
-              <div style={{ marginTop: '8px' }}>
-                <ConstrainedPathBrowser
-                  currentPath={browserCurrentPath || '/'}
-                  rootPath={mountRootPath}
-                  onSelectPath={handleUserspaceMountBrowserSelect}
-                  onBrowsePath={(path) => api.browseSSHFilesystem(sshConfig, path)}
-                />
-                <p className="field-help">
-                  Select a directory to add it as an approved source path that users can mount within Userspaces.
-                </p>
-              </div>
-            )}
-            {toolType === 'filesystem_indexer' && mountRootPath && (
-              <div style={{ marginTop: '8px' }}>
-                <ConstrainedPathBrowser
-                  currentPath={browserCurrentPath}
-                  rootPath={mountRootPath}
-                  onSelectPath={handleUserspaceMountBrowserSelect}
-                  onBrowsePath={(path) => api.browseFilesystem(path)}
-                />
-                <p className="field-help">
-                  Select a directory under the configured base path to add it as an approved source path.
-                </p>
-              </div>
-            )}
-            {toolType === 'ssh_shell' && !canBrowseSshMounts && (
-              <>
-                <div style={{ display: 'flex', gap: '4px', marginTop: '4px' }}>
-                  <input
-                    type="text"
-                    value={mountPathInput}
-                    onChange={(e) => setMountPathInput(e.target.value)}
-                    placeholder="reports"
-                    style={{ flex: 1 }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        addUserspaceMountPath(mountPathInput.trim());
-                      }
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    disabled={!mountPathInput.trim()}
-                    onClick={() => addUserspaceMountPath(mountPathInput.trim())}
-                  >
-                    Add
-                  </button>
-                </div>
-                <p className="field-help warning" style={{ color: '#f0ad4e' }}>
-                  Configure SSH authentication in the previous step to browse directories. Manual entry remains relative to the tool root.
-                </p>
-              </>
-            )}
-            {toolType === 'filesystem_indexer' && !mountRootPath && (
-              <p className="field-help warning" style={{ color: '#f0ad4e', marginTop: '8px' }}>
-                Configure the filesystem base path first to browse and add approved source paths.
-              </p>
-            )}
-            {mountPathError && (
-              <p className="warning-text" style={{ marginTop: '8px' }}>
-                {mountPathError}
-              </p>
-            )}
-          </div>
-        )}
-      </fieldset>
-    );
-  };
 
   const renderOptions = () => {
     // SQL-based tools need Max Results for query limiting
@@ -5396,8 +5209,6 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
             </p>
           )}
         </fieldset>
-
-        {renderUserspaceMounts()}
       </div>
     );
   };
@@ -5447,9 +5258,6 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
             <li>Timeout: {timeoutValue === 0 ? 'No timeout' : `${timeoutValue}s`}</li>
             <li>Max timeout: {timeoutMaxSeconds === 0 ? 'Unlimited' : `${timeoutMaxSeconds}s`}</li>
             <li>Write operations: {allowWrite ? 'Enabled' : 'Disabled'}</li>
-            {['ssh_shell', 'filesystem_indexer'].includes(toolType) && (
-              <li>Userspace mounts: {userspaceMountsEnabled ? `Enabled (${userspaceMountPaths.length} path${userspaceMountPaths.length !== 1 ? 's' : ''})` : 'Disabled'}</li>
-            )}
           </ul>
         </div>
       </div>

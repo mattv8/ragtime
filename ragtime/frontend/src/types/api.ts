@@ -335,6 +335,11 @@ export interface CommitHistorySample {
   hash: string;
 }
 
+export interface DeleteUserspaceMountSourceResponse {
+  success: boolean;
+  mount_source_id: string;
+}
+
 export interface CommitHistoryInfo {
   total_commits: number;
   samples: CommitHistorySample[];
@@ -937,6 +942,8 @@ export interface SolidworksPdmConnectionConfig extends SSHTunnelConfig {
 }
 
 export type ConnectionConfig = PostgresConnectionConfig | MysqlConnectionConfig | MssqlConnectionConfig | InfluxdbConnectionConfig | OdooShellConnectionConfig | SSHShellConnectionConfig | FilesystemConnectionConfig | SolidworksPdmConnectionConfig;
+export type UserspaceMountSourceType = 'ssh' | 'filesystem';
+export type UserspaceMountBackend = 'ssh' | 'docker_volume' | 'smb' | 'nfs' | 'local';
 
 export interface ToolConfig {
   id: string;
@@ -949,8 +956,6 @@ export interface ToolConfig {
   timeout: number;
   timeout_max_seconds: number;
   allow_write: boolean;
-  userspace_mounts_enabled: boolean;
-  userspace_mount_paths: string[];
   group_id?: string | null;
   group_name?: string | null;
   disabled_reason?: string;
@@ -991,9 +996,8 @@ export interface CreateToolConfigRequest {
   timeout?: number;
   timeout_max_seconds?: number;
   allow_write?: boolean;
-  userspace_mounts_enabled?: boolean;
-  userspace_mount_paths?: string[];
   group_id?: string | null;
+  skip_indexing?: boolean;
 }
 
 export interface UpdateToolConfigRequest {
@@ -1005,8 +1009,6 @@ export interface UpdateToolConfigRequest {
   timeout?: number;
   timeout_max_seconds?: number;
   allow_write?: boolean;
-  userspace_mounts_enabled?: boolean;
-  userspace_mount_paths?: string[];
   group_id?: string | null;
 }
 
@@ -1661,8 +1663,6 @@ export interface UserSpaceAvailableTool {
   description?: string | null;
   group_id?: string | null;
   group_name?: string | null;
-  userspace_mounts_enabled: boolean;
-  userspace_mount_paths: string[];
 }
 
 export interface CreateUserSpaceWorkspaceRequest {
@@ -1710,55 +1710,128 @@ export interface DeleteUserSpaceWorkspaceEnvVarResponse {
 
 export type MountSyncStatus = 'pending' | 'synced' | 'error';
 
+export interface UserspaceMountSource {
+  id: string;
+  name: string;
+  description: string | null;
+  enabled: boolean;
+  source_type: UserspaceMountSourceType;
+  mount_backend: UserspaceMountBackend;
+  tool_config_id: string | null;
+  tool_name: string | null;
+  connection_config: ConnectionConfig;
+  approved_paths: string[];
+  usage_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateUserspaceMountSourceRequest {
+  name: string;
+  description?: string | null;
+  enabled?: boolean;
+  tool_config_id?: string;
+  source_type?: UserspaceMountSourceType;
+  connection_config?: ConnectionConfig;
+  approved_paths?: string[];
+}
+
+export interface UpdateUserspaceMountSourceRequest {
+  name?: string;
+  description?: string | null;
+  enabled?: boolean;
+  connection_config?: ConnectionConfig;
+  approved_paths?: string[];
+}
+
+export interface MountSourceAffectedWorkspace {
+  workspace_id: string;
+  workspace_name: string;
+  owner_user_id: string;
+  mount_count: number;
+}
+
+export interface MountSourceAffectedWorkspacesResponse {
+  mount_source_id: string;
+  mount_source_name: string;
+  source_type: UserspaceMountSourceType;
+  total_mounts: number;
+  workspaces: MountSourceAffectedWorkspace[];
+}
+
 export interface WorkspaceMount {
   id: string;
   workspace_id: string;
-  tool_config_id: string;
+  mount_source_id: string;
   source_path: string;
   target_path: string;
   description: string | null;
+  enabled: boolean;
+  sync_deletes: boolean;
   sync_status: MountSyncStatus;
   last_sync_at: string | null;
   last_sync_error: string | null;
   auto_sync_enabled: boolean;
-  tool_name: string | null;
-  tool_type: string | null;
+  source_name: string | null;
+  source_type: UserspaceMountSourceType | null;
+  mount_backend: UserspaceMountBackend | null;
   created_at: string;
   updated_at: string;
 }
 
 export interface MountableSource {
-  tool_config_id: string;
-  tool_name: string;
-  tool_type: string;
+  mount_source_id: string;
+  source_name: string;
+  source_type: UserspaceMountSourceType;
+  mount_backend: UserspaceMountBackend;
   source_path: string;
 }
 
+export interface BrowseUserspaceMountSourceRequest {
+  path: string;
+}
+
 export interface BrowseWorkspaceMountSourceRequest {
-  tool_config_id: string;
+  mount_source_id: string;
   root_source_path: string;
   path: string;
 }
 
 export interface CreateWorkspaceMountRequest {
-  tool_config_id: string;
+  mount_source_id: string;
   source_path: string;
   target_path: string;
   source_directory_to_create?: string | null;
   target_directory_to_create?: string | null;
   auto_sync_enabled?: boolean;
+  sync_deletes?: boolean;
   description?: string | null;
 }
 
 export interface UpdateWorkspaceMountRequest {
   target_path?: string;
   description?: string | null;
+  enabled?: boolean;
   auto_sync_enabled?: boolean;
+  sync_deletes?: boolean;
 }
 
 export interface DeleteWorkspaceMountResponse {
   success: boolean;
   mount_id: string;
+}
+
+export interface WorkspaceMountDirectoryEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  size?: number;
+}
+
+export interface WorkspaceMountBrowseResponse {
+  path: string;
+  entries: WorkspaceMountDirectoryEntry[];
+  error?: string;
 }
 
 export interface WorkspaceMountSyncResponse {

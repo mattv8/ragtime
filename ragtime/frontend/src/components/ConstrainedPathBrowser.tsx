@@ -18,6 +18,7 @@ interface ConstrainedPathBrowserProps {
   onStageDirectory?: (path: string) => void;
   canSelectPath?: (path: string) => boolean;
   cannotSelectPathMessage?: string;
+  isPathDisabled?: (path: string) => string | null;
 }
 
 interface BrowserDirectoryEntry extends DirectoryEntry {
@@ -68,6 +69,7 @@ export function ConstrainedPathBrowser({
   onStageDirectory,
   canSelectPath,
   cannotSelectPathMessage,
+  isPathDisabled,
 }: ConstrainedPathBrowserProps) {
   const normalizedRootPath = normalizeBrowserPath(rootPath || '/');
   const clampToRootPath = useCallback((value: string): string => {
@@ -365,7 +367,17 @@ export function ConstrainedPathBrowser({
             }}
           >
             <span className="mount-icon">{isExpanded ? '▼' : '▶'}</span>
-            <span className="mount-path">{displayPath}</span>
+            <span className="mount-path">
+              {(() => {
+                const pathSegments = displayPath.split('/').filter(Boolean);
+                if (pathSegments.length === 0) return '/';
+                return pathSegments.map((seg, i) => (
+                  <span key={i}>
+                    <span className="breadcrumb-sep">/</span>{seg}
+                  </span>
+                ));
+              })()}
+            </span>
             {currentPath && <span className="current-badge">Selected</span>}
           </button>
 
@@ -388,7 +400,15 @@ export function ConstrainedPathBrowser({
                         className="breadcrumb-btn"
                         onClick={() => handleNavigate(normalizedRootPath || '/')}
                       >
-                        {breadcrumbRootLabel}
+                        {(() => {
+                          const rootSegments = breadcrumbRootLabel.split('/').filter(Boolean);
+                          if (rootSegments.length === 0) return '/';
+                          return rootSegments.map((seg, i) => (
+                            <span key={i}>
+                              <span className="breadcrumb-sep">/</span>{seg}
+                            </span>
+                          ));
+                        })()}
                       </button>
                     </span>
                     {segments.length > 0 && !breadcrumbRootLabel.endsWith('/') && <span className="breadcrumb-sep">/</span>}
@@ -452,18 +472,24 @@ export function ConstrainedPathBrowser({
                 <div className="browser-loading">Loading...</div>
               ) : (
                 <div className="browser-entries">
-                  {filteredDirectoryEntries.map((entry) => (
-                    <button
-                      key={entry.path}
-                      type="button"
-                      className={`browser-entry${entry.isPending ? ' pending' : ''}`}
-                      onClick={() => handleNavigate(entry.path)}
-                    >
-                      <span className="entry-icon"><Icon name="folder" size={16} /></span>
-                      <span className="entry-name">{entry.name}</span>
-                      {entry.isPending && <span className="browser-entry-badge">New</span>}
-                    </button>
-                  ))}
+                  {filteredDirectoryEntries.map((entry) => {
+                    const disabledReason = isPathDisabled?.(entry.path) ?? null;
+                    return (
+                      <button
+                        key={entry.path}
+                        type="button"
+                        className={`browser-entry${entry.isPending ? ' pending' : ''}${disabledReason ? ' disabled' : ''}`}
+                        onClick={() => handleNavigate(entry.path)}
+                        style={disabledReason ? { opacity: 0.45, cursor: 'default' } : undefined}
+                        title={disabledReason || undefined}
+                      >
+                        <span className="entry-icon"><Icon name="folder" size={16} /></span>
+                        <span className="entry-name">{entry.name}</span>
+                        {disabledReason && <span className="browser-entry-badge" style={{ opacity: 0.7 }}>{disabledReason}</span>}
+                        {!disabledReason && entry.isPending && <span className="browser-entry-badge">New</span>}
+                      </button>
+                    );
+                  })}
                   {showFiles && filteredFileEntries.slice(0, 3).map((entry) => (
                     <div key={entry.path} className="browser-entry file">
                       <span className="entry-icon"><Icon name="file" size={16} /></span>

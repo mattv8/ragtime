@@ -284,6 +284,11 @@ enum FilesystemMountType {
   local          // Direct local path (container must have access)
 }
 
+enum UserspaceMountSourceType {
+  ssh
+  filesystem
+}
+
 /// Vector store type for indexes (document and filesystem)
 enum VectorStoreType {
   pgvector  // PostgreSQL pgvector - persistent, scalable
@@ -318,10 +323,6 @@ model ToolConfig {
   // Security
   allowWrite  Boolean  @default(false) @map("allow_write")
 
-  // Userspace mount policy — admin-managed
-  userspaceMountsEnabled Boolean  @default(false) @map("userspace_mounts_enabled")
-  userspaceMountPaths    Json     @default("[]") @map("userspace_mount_paths") // JSON array of approved relative source paths
-
   // Connection test results
   lastTestAt     DateTime? @map("last_test_at")
   lastTestResult Boolean?  @map("last_test_result")
@@ -346,8 +347,8 @@ model ToolConfig {
   // Relation to conversation tool selections
   conversationSelections ConversationToolSelection[]
 
-  // Relation to workspace mount attachments
-  workspaceMounts WorkspaceMount[]
+  // Relation to userspace mount sources backed by this tool
+  mountSources UserspaceMountSource[]
 
   @@index([groupId])
   @@map("tool_configs")
@@ -907,16 +908,40 @@ model WorkspaceEnvironmentVariable {
   @@map("workspace_environment_variables")
 }
 
-/// Workspace-scoped mount attachment linking a tool's approved source path
+/// Admin-managed reusable userspace mount source definitions.
+model UserspaceMountSource {
+  id           String   @id @default(uuid())
+  name         String
+  description  String?  @default("")
+  enabled      Boolean  @default(true)
+  sourceType   UserspaceMountSourceType @map("source_type")
+  toolConfigId String?  @map("tool_config_id")
+  toolConfig   ToolConfig? @relation(fields: [toolConfigId], references: [id], onDelete: Restrict)
+  connectionConfig Json @map("connection_config")
+  approvedPaths Json    @default("[]") @map("approved_paths")
+
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  workspaceMounts WorkspaceMount[]
+
+  @@index([enabled, sourceType])
+  @@index([toolConfigId])
+  @@map("userspace_mount_sources")
+}
+
+/// Workspace-scoped mount attachment linking an admin-managed approved source path
 /// to a user-chosen target path inside the runtime sandbox.
 model WorkspaceMount {
   id           String   @id @default(uuid())
   workspaceId  String   @map("workspace_id")
-  toolConfigId String   @map("tool_config_id")
+  mountSourceId String  @map("mount_source_id")
   sourcePath   String   @map("source_path")  // Admin-approved relative source path
   targetPath   String   @map("target_path")  // User-chosen sandbox target path
   description  String?  @map("description")
+  enabled      Boolean  @default(true) @map("enabled")
   autoSyncEnabled Boolean @default(false) @map("auto_sync_enabled")
+  syncDeletes  Boolean  @default(false) @map("sync_deletes")
   syncStatus   String   @default("pending") @map("sync_status") // pending | synced | error
   lastSyncAt   DateTime? @map("last_sync_at")
   lastSyncError String?  @map("last_sync_error")
@@ -925,11 +950,11 @@ model WorkspaceMount {
   updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
 
   workspace    Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  toolConfig   ToolConfig @relation(fields: [toolConfigId], references: [id], onDelete: Cascade)
+  mountSource  UserspaceMountSource @relation(fields: [mountSourceId], references: [id])
 
   @@unique([workspaceId, targetPath])
   @@index([workspaceId])
-  @@index([toolConfigId])
+  @@index([mountSourceId])
   @@map("workspace_mounts")
 }
 

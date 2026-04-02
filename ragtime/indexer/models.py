@@ -1713,16 +1713,6 @@ class ToolConfig(BaseModel):
     )
     allow_write: bool = Field(default=False, description="Allow write operations")
 
-    # Userspace mount policy
-    userspace_mounts_enabled: bool = Field(
-        default=False,
-        description="Whether this tool exposes approved source paths for userspace mounting",
-    )
-    userspace_mount_paths: list[str] = Field(
-        default_factory=list,
-        description="Admin-approved relative source paths available for userspace mounting",
-    )
-
     # Transient runtime status (not persisted)
     disabled_reason: Optional[str] = Field(
         default=None, description="Reason why the tool is disabled (runtime check)"
@@ -1749,8 +1739,10 @@ class CreateToolConfigRequest(BaseModel):
     timeout_max_seconds: int = Field(default=300, ge=0, le=86400)
     allow_write: bool = Field(default=False)
     group_id: Optional[str] = Field(default=None, description="Tool group ID")
-    userspace_mounts_enabled: bool = Field(default=False)
-    userspace_mount_paths: list[str] = Field(default_factory=list)
+    skip_indexing: bool = Field(
+        default=False,
+        description="Skip auto-indexing for filesystem tools (e.g. mount-only use)",
+    )
 
 
 class UpdateToolConfigRequest(BaseModel):
@@ -1767,8 +1759,6 @@ class UpdateToolConfigRequest(BaseModel):
     group_id: Optional[str] = Field(
         default=None, description="Tool group ID (use empty string to ungroup)"
     )
-    userspace_mounts_enabled: Optional[bool] = None
-    userspace_mount_paths: Optional[list[str]] = None
 
 
 class CreateToolGroupRequest(BaseModel):

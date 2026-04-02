@@ -1317,7 +1317,7 @@ class UserSpaceRuntimeService:
         mount = next((item for item in workspace_mounts if item.id == mount_id), None)
         if not mount:
             raise HTTPException(status_code=404, detail="Mount not found")
-        if mount.tool_type != "ssh_shell":
+        if mount.source_type != "ssh":
             raise HTTPException(
                 status_code=400,
                 detail="Runtime mount refresh is only supported for SFTP-backed mounts",
@@ -1467,6 +1467,12 @@ class UserSpaceRuntimeService:
         normalized_path: str,
         user_id: str,
     ) -> str:
+        normalized_path = (
+            await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+                workspace_id,
+                normalized_path,
+            )
+        )
         session = await self.ensure_workspace_preview_session(workspace_id, user_id)
         payload = await self._runtime_provider_read_file(
             session.provider_session_id,
@@ -1481,6 +1487,12 @@ class UserSpaceRuntimeService:
         content: str,
         user_id: str,
     ) -> None:
+        normalized_path = (
+            await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+                workspace_id,
+                normalized_path,
+            )
+        )
         session = await self.ensure_workspace_preview_session(workspace_id, user_id)
         await self._runtime_provider_write_file(
             session.provider_session_id,
@@ -1501,6 +1513,12 @@ class UserSpaceRuntimeService:
     ) -> UserSpaceFileResponse:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
         normalized_path = self._normalize_file_path(file_path)
+        normalized_path = (
+            await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+                workspace_id,
+                normalized_path,
+            )
+        )
         session = await self.ensure_workspace_preview_session(workspace_id, user_id)
         payload = await self._runtime_provider_read_file(
             session.provider_session_id,
@@ -1524,6 +1542,12 @@ class UserSpaceRuntimeService:
     ) -> UserSpaceFileResponse:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
         normalized_path = self._normalize_file_path(file_path)
+        normalized_path = (
+            await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+                workspace_id,
+                normalized_path,
+            )
+        )
         await self._persist_file_content(
             workspace_id,
             normalized_path,
@@ -1553,6 +1577,12 @@ class UserSpaceRuntimeService:
     ) -> dict[str, Any]:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
         normalized_path = self._normalize_file_path(file_path)
+        normalized_path = (
+            await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+                workspace_id,
+                normalized_path,
+            )
+        )
         session = await self.ensure_workspace_preview_session(workspace_id, user_id)
         await self._runtime_provider_delete_file(
             session.provider_session_id, normalized_path
@@ -1582,6 +1612,12 @@ class UserSpaceRuntimeService:
             can_edit = False
 
         normalized_path = self._normalize_file_path(file_path)
+        normalized_path = (
+            await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+                workspace_id,
+                normalized_path,
+            )
+        )
         key = (workspace_id, normalized_path)
 
         async with self._collab_lock:
@@ -1616,6 +1652,12 @@ class UserSpaceRuntimeService:
         user_id: str,
     ) -> UserSpaceCollabSnapshotResponse:
         normalized_path = self._normalize_file_path(file_path)
+        normalized_path = (
+            await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+                workspace_id,
+                normalized_path,
+            )
+        )
         key = (workspace_id, normalized_path)
         async with self._collab_lock:
             state = self._collab_docs.get(key)
@@ -1727,6 +1769,12 @@ class UserSpaceRuntimeService:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
 
         normalized_path = self._normalize_file_path(file_path)
+        normalized_path = (
+            await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+                workspace_id,
+                normalized_path,
+            )
+        )
         key = (workspace_id, normalized_path)
 
         async with self._collab_lock:
@@ -1808,6 +1856,12 @@ class UserSpaceRuntimeService:
     ) -> UserSpaceCollabSnapshotResponse:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
         normalized_path = self._normalize_file_path(file_path)
+        normalized_path = (
+            await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+                workspace_id,
+                normalized_path,
+            )
+        )
         await self._persist_file_content(
             workspace_id,
             normalized_path,
@@ -1849,6 +1903,18 @@ class UserSpaceRuntimeService:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
         normalized_old = self._normalize_file_path(old_path)
         normalized_new = self._normalize_file_path(new_path)
+        normalized_old = (
+            await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+                workspace_id,
+                normalized_old,
+            )
+        )
+        normalized_new = (
+            await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+                workspace_id,
+                normalized_new,
+            )
+        )
         session = await self.ensure_workspace_preview_session(workspace_id, user_id)
         source_payload = await self._runtime_provider_read_file(
             session.provider_session_id,
@@ -1916,6 +1982,12 @@ class UserSpaceRuntimeService:
     ) -> dict[str, Any]:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
         normalized_path = self._normalize_file_path(file_path)
+        normalized_path = (
+            await userspace_service.ensure_workspace_path_not_in_disabled_mount(
+                workspace_id,
+                normalized_path,
+            )
+        )
         session = await self.ensure_workspace_preview_session(workspace_id, user_id)
         source_payload = await self._runtime_provider_read_file(
             session.provider_session_id,
@@ -2124,7 +2196,7 @@ class UserSpaceRuntimeService:
     ) -> tuple[tuple[Any, ...], dict[str, Any]]:
         active = await self._get_active_session_row(workspace_id)
         if not active:
-            payload = {
+            payload: dict[str, Any] = {
                 "runtime": {
                     "workspace_id": workspace_id,
                     "session_id": None,
@@ -2213,9 +2285,11 @@ class UserSpaceRuntimeService:
             for row in mount_rows
             if str(getattr(row, "targetPath", "") or "").strip()
         ]
-        mount_content_signature = await userspace_service.get_runtime_mount_content_signature(
-            workspace_id,
-            mount_target_paths,
+        mount_content_signature = (
+            await userspace_service.get_runtime_mount_content_signature(
+                workspace_id,
+                mount_target_paths,
+            )
         )
 
         payload = {
@@ -2251,7 +2325,11 @@ class UserSpaceRuntimeService:
         self._runtime_watch_signatures[workspace_id] = signature
         if mount_contents_changed:
             userspace_service.invalidate_file_list_cache(workspace_id)
-        event_type = "runtime_mount_contents" if previous and previous[:-1] == signature[:-1] else "runtime_phase"
+        event_type = (
+            "runtime_mount_contents"
+            if previous and previous[:-1] == signature[:-1]
+            else "runtime_phase"
+        )
         await self.bump_workspace_generation(
             workspace_id,
             event_type=event_type,

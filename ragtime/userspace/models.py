@@ -32,6 +32,8 @@ RuntimeOperationPhase = Literal[
     "failed",
     "stopped",
 ]
+UserspaceMountSourceType = Literal["ssh", "filesystem"]
+UserspaceMountBackend = Literal["ssh", "docker_volume", "smb", "nfs", "local"]
 
 
 class WorkspaceMember(BaseModel):
@@ -46,8 +48,6 @@ class UserSpaceAvailableTool(BaseModel):
     description: str | None = None
     group_id: str | None = None
     group_name: str | None = None
-    userspace_mounts_enabled: bool = False
-    userspace_mount_paths: list[str] = Field(default_factory=list)
 
 
 class UserSpaceWorkspace(BaseModel):
@@ -432,32 +432,101 @@ class PaginatedWorkspacesResponse(BaseModel):
 MountSyncStatus = Literal["pending", "synced", "error"]
 
 
+class UserspaceMountSource(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    enabled: bool = True
+    source_type: UserspaceMountSourceType
+    mount_backend: UserspaceMountBackend
+    tool_config_id: str | None = None
+    tool_name: str | None = None
+    connection_config: dict[str, Any] = Field(default_factory=dict)
+    approved_paths: list[str] = Field(default_factory=list)
+    usage_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class CreateUserspaceMountSourceRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=1000)
+    enabled: bool = True
+    tool_config_id: str | None = Field(
+        default=None,
+        description="Backing tool config; when set, source_type and connection_config are derived from the tool",
+    )
+    source_type: UserspaceMountSourceType | None = Field(
+        default=None, description="Required only when tool_config_id is not provided"
+    )
+    connection_config: dict[str, Any] = Field(default_factory=dict)
+    approved_paths: list[str] = Field(default_factory=list)
+
+
+class UpdateUserspaceMountSourceRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=1000)
+    enabled: bool | None = None
+    connection_config: dict[str, Any] | None = None
+    approved_paths: list[str] | None = None
+
+
+class BrowseUserspaceMountSourceRequest(BaseModel):
+    path: str = Field(
+        default="/", description="Synthetic absolute path relative to the source root"
+    )
+
+
+class DeleteUserspaceMountSourceResponse(BaseModel):
+    success: bool
+    mount_source_id: str
+
+
+class MountSourceAffectedWorkspace(BaseModel):
+    workspace_id: str
+    workspace_name: str
+    owner_user_id: str
+    mount_count: int
+
+
+class MountSourceAffectedWorkspacesResponse(BaseModel):
+    mount_source_id: str
+    mount_source_name: str
+    source_type: UserspaceMountSourceType
+    total_mounts: int
+    workspaces: list[MountSourceAffectedWorkspace]
+
+
 class WorkspaceMount(BaseModel):
     id: str
     workspace_id: str
-    tool_config_id: str
+    mount_source_id: str
     source_path: str
     target_path: str
     description: str | None = None
+    enabled: bool = True
+    sync_deletes: bool = False
     sync_status: MountSyncStatus = "pending"
     last_sync_at: datetime | None = None
     last_sync_error: str | None = None
     auto_sync_enabled: bool = False
-    tool_name: str | None = None
-    tool_type: str | None = None
+    source_name: str | None = None
+    source_type: UserspaceMountSourceType | None = None
+    mount_backend: UserspaceMountBackend | None = None
     created_at: datetime
     updated_at: datetime
 
 
 class MountableSource(BaseModel):
-    tool_config_id: str
-    tool_name: str
-    tool_type: str
+    mount_source_id: str
+    source_name: str
+    source_type: UserspaceMountSourceType
+    mount_backend: UserspaceMountBackend
     source_path: str
 
 
 class WorkspaceMountBrowseRequest(BaseModel):
-    tool_config_id: str = Field(min_length=1)
+    mount_source_id: str = Field(min_length=1)
     root_source_path: str = Field(
         min_length=1,
         description="Admin-approved source relpath that defines the browse root",
@@ -482,7 +551,7 @@ class WorkspaceMountBrowseResponse(BaseModel):
 
 
 class CreateWorkspaceMountRequest(BaseModel):
-    tool_config_id: str = Field(min_length=1)
+    mount_source_id: str = Field(min_length=1)
     source_path: str = Field(min_length=1, description="Admin-approved source relpath")
     target_path: str = Field(
         min_length=1,
@@ -504,13 +573,22 @@ class CreateWorkspaceMountRequest(BaseModel):
         default=False,
         description="Enable background watch mode that periodically auto-syncs this mount",
     )
+    sync_deletes: bool = Field(
+        default=False,
+        description="When true, SSH sync removes local files that no longer exist on the remote source",
+    )
     description: str | None = Field(default=None, max_length=1000)
 
 
 class UpdateWorkspaceMountRequest(BaseModel):
     target_path: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=1000)
+    enabled: bool | None = Field(default=None)
     auto_sync_enabled: bool | None = Field(default=None)
+    sync_deletes: bool | None = Field(
+        default=None,
+        description="When true, SSH sync removes local files that no longer exist on the remote source",
+    )
 
 
 class DeleteWorkspaceMountResponse(BaseModel):

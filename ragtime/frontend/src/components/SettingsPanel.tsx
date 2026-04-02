@@ -1,10 +1,11 @@
 import { LdapGroupSelect } from './LdapGroupSelect';
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Lock, LockOpen, Info, Search, Clipboard, ExternalLink, X } from 'lucide-react';
+import { Lock, LockOpen, Info, Search, Clipboard, ExternalLink, HardDrive, Plus, Trash2, Pencil, X } from 'lucide-react';
 import { api } from '@/api';
-import type { AppSettings, UpdateSettingsRequest, OllamaModel, OllamaVisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus, CopilotAuthStatusResponse, UserSpacePreviewSettingsResponse } from '@/types';
+import type { AppSettings, UpdateSettingsRequest, OllamaModel, OllamaVisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus, CopilotAuthStatusResponse, UserSpacePreviewSettingsResponse, UserspaceMountSource, MountSourceAffectedWorkspacesResponse } from '@/types';
 import { MCPRoutesPanel } from './MCPRoutesPanel';
 import { OllamaConnectionForm } from './OllamaConnectionForm';
+import { MountSourceWizard } from './MountSourceWizard';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import {
   buildUserSpacePreviewSandboxAttribute,
@@ -803,12 +804,14 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   const loadSettings = useCallback(async () => {
     try {
       setLoading(true);
-      const [{ settings: data }, previewSettings] = await Promise.all([
+      const [{ settings: data }, previewSettings, sources] = await Promise.all([
         api.getSettings(),
         api.getUserSpacePreviewSettings(),
+        api.listUserspaceMountSources(),
       ]);
       setSettings(data);
       setUserspacePreviewSettings(previewSettings);
+      setMountSources(sources);
       const normalizedLlmProvider = data.llm_provider === 'github_models' ? 'github_copilot' : data.llm_provider;
       setFormData({
         // Server branding
@@ -1368,6 +1371,15 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
   const [ocrSaving, setOcrSaving] = useState(false);
   const [userspaceSaving, setUserspaceSaving] = useState(false);
   const [showSandboxModal, setShowSandboxModal] = useState(false);
+  const [mountSources, setMountSources] = useState<UserspaceMountSource[]>([]);
+  const [mountSourceDeletingId, setMountSourceDeletingId] = useState<string | null>(null);
+  const [showMountSourceWizard, setShowMountSourceWizard] = useState(false);
+  const [editingMountSource, setEditingMountSource] = useState<UserspaceMountSource | null>(null);
+  const [disableConfirmation, setDisableConfirmation] = useState<{
+    source: UserspaceMountSource;
+    affected: MountSourceAffectedWorkspacesResponse | null;
+    loading: boolean;
+  } | null>(null);
 
 
   const [visionModels, setVisionModels] = useState<OllamaVisionModel[]>([]);
@@ -1513,6 +1525,85 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
       setUserspaceSaving(false);
     }
   }, [effectiveUserSpacePreviewSandboxFlags]);
+
+  const handleMountSourceWizardSaved = useCallback((saved: UserspaceMountSource) => {
+    setMountSources((current) => {
+      const next = current.some((source) => source.id === saved.id)
+        ? current.map((source) => source.id === saved.id ? saved : source)
+        : [...current, saved];
+      return [...next].sort((left, right) => left.name.localeCompare(right.name));
+    });
+    setShowMountSourceWizard(false);
+    setEditingMountSource(null);
+    setSuccess(saved.id === editingMountSource?.id ? 'User Space mount source updated.' : 'User Space mount source created.');
+    setTimeout(() => setSuccess(null), 5000);
+  }, [editingMountSource]);
+
+  const handleDeleteMountSource = useCallback(async (mountSourceId: string) => {
+    setMountSourceDeletingId(mountSourceId);
+    setSuccess(null);
+    setError(null);
+
+    try {
+      await api.deleteUserspaceMountSource(mountSourceId);
+      setMountSources((current) => current.filter((source) => source.id !== mountSourceId));
+      setSuccess('User Space mount source deleted.');
+      setTimeout(() => setSuccess(null), 5000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete mount source');
+    } finally {
+      setMountSourceDeletingId(null);
+    }
+  }, []);
+
+  const handleToggleMountSourceEnabled = useCallback(async (source: UserspaceMountSource) => {
+    const nextEnabled = !source.enabled;
+
+    // When disabling a source that has active workspace mounts, show a confirmation modal
+    if (!nextEnabled && source.usage_count > 0) {
+      setDisableConfirmation({ source, affected: null, loading: true });
+      try {
+        const affected = await api.getMountSourceAffectedWorkspaces(source.id);
+        setDisableConfirmation({ source, affected, loading: false });
+      } catch {
+        setDisableConfirmation({ source, affected: null, loading: false });
+      }
+      return;
+    }
+
+    setMountSources((current) =>
+      current.map((s) => s.id === source.id ? { ...s, enabled: nextEnabled } : s)
+    );
+    try {
+      await api.updateUserspaceMountSource(source.id, { enabled: nextEnabled });
+    } catch (err) {
+      setMountSources((current) =>
+        current.map((s) => s.id === source.id ? { ...s, enabled: source.enabled } : s)
+      );
+      setError(err instanceof Error ? err.message : 'Failed to update mount source');
+    }
+  }, []);
+
+  const handleConfirmDisableMountSource = useCallback(async () => {
+    if (!disableConfirmation) return;
+    const { source } = disableConfirmation;
+    setDisableConfirmation(null);
+    setMountSources((current) =>
+      current.map((s) => s.id === source.id ? { ...s, enabled: false } : s)
+    );
+    try {
+      const updated = await api.updateUserspaceMountSource(source.id, { enabled: false });
+      // Refresh to get updated usage_count
+      setMountSources((current) =>
+        current.map((s) => s.id === source.id ? { ...updated, usage_count: s.usage_count } : s)
+      );
+    } catch (err) {
+      setMountSources((current) =>
+        current.map((s) => s.id === source.id ? { ...s, enabled: true } : s)
+      );
+      setError(err instanceof Error ? err.message : 'Failed to disable mount source');
+    }
+  }, [disableConfirmation]);
 
 
   const getDisplayUrl = (path: string) => {
@@ -3742,25 +3833,124 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
           </div>
         </fieldset>
 
-        <fieldset id="setting-userspace_preview_sandbox_flags">
-          <legend>User Space Preview Sandbox</legend>
-          <p className="fieldset-help">
-            Control which HTML iframe sandbox flags are granted to User Space previews.
-          </p>
+        <fieldset id="setting-userspace">
+          <legend>User Space</legend>
 
-          <div className="form-group">
-            <p className="field-help">
-              <strong>{effectiveUserSpacePreviewSandboxFlags.length}</strong> of{' '}
-              {(userspacePreviewSettings?.userspace_preview_sandbox_flag_options ?? []).length} sandbox flags enabled.
-              Sandbox attribute: <code>{userspacePreviewSandboxAttribute || '(empty)'}</code>
+          <div style={{ marginBottom: 24 }}>
+            <h4 style={{ margin: '0 0 8px' }}>Mount Sources</h4>
+            <p className="fieldset-help" style={{ marginBottom: 12 }}>
+              Define mount sources backed by existing SSH or filesystem tools. Workspaces attach these sources without duplicating connection credentials.
             </p>
+
+            <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))' }}>
+              {mountSources.length > 0 ? mountSources.map((source) => (
+                <div
+                  key={source.id}
+                  className="card"
+                  style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '12px 14px', opacity: source.enabled ? 1 : 0.6 }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
+                      <HardDrive size={14} style={{ flexShrink: 0 }} />
+                      <span style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{source.name}</span>
+                      <span className="muted" style={{ fontSize: '0.8rem', flexShrink: 0 }}>
+                        {source.source_type === 'ssh' ? 'SSH' : source.mount_backend.replace('_', ' ')}
+                      </span>
+                      {source.usage_count > 0 && (
+                        <span
+                          style={{
+                            fontSize: '0.7rem',
+                            fontWeight: 600,
+                            padding: '1px 6px',
+                            borderRadius: 8,
+                            background: 'var(--color-accent)',
+                            color: 'var(--color-bg)',
+                            flexShrink: 0,
+                          }}
+                          title={`Used by ${source.usage_count} workspace${source.usage_count !== 1 ? 's' : ''}`}
+                        >
+                          {source.usage_count}
+                        </span>
+                      )}
+                    </span>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => { setEditingMountSource(source); setShowMountSourceWizard(true); }}
+                      >
+                        <Pencil size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => void handleDeleteMountSource(source.id)}
+                        disabled={mountSourceDeletingId === source.id}
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                      <label className="toggle-switch" style={{ marginLeft: 2 }}>
+                        <input
+                          type="checkbox"
+                          checked={source.enabled}
+                          onChange={() => void handleToggleMountSourceEnabled(source)}
+                        />
+                        <span className="toggle-slider"></span>
+                      </label>
+                    </span>
+                  </div>
+                  {source.approved_paths.length > 0 && (
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      {source.approved_paths.map((p) => (
+                        <code key={p} style={{ fontSize: '0.8rem', padding: '2px 8px', background: 'var(--color-bg-tertiary)', borderRadius: 4, border: '1px solid var(--color-border)' }}>
+                          {p === '.'
+                            ? '/'
+                            : p.split('/').filter(Boolean).map((seg, i) => (
+                              <span key={i}>
+                                <span style={{ opacity: 0.5 }}>/</span>{seg}
+                              </span>
+                            ))
+                          }
+                        </code>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )) : (
+                <p className="muted" style={{ margin: 0 }}>No mount sources configured yet.</p>
+              )}
+            </div>
+
             <button
               type="button"
               className="btn btn-secondary"
-              onClick={() => setShowSandboxModal(true)}
+              style={{ marginTop: 12 }}
+              onClick={() => { setEditingMountSource(null); setShowMountSourceWizard(true); }}
             >
-              Configure Sandbox Flags
+              <Plus size={14} />
+              New Mount Source
             </button>
+          </div>
+
+          <div>
+            <h4 style={{ margin: '0 0 8px' }}>Preview Sandbox</h4>
+            <p className="fieldset-help" style={{ marginBottom: 12 }}>
+              Control which HTML iframe sandbox flags are granted to User Space previews.
+            </p>
+            <div className="form-group">
+              <p className="field-help">
+                <strong>{effectiveUserSpacePreviewSandboxFlags.length}</strong> of{' '}
+                {(userspacePreviewSettings?.userspace_preview_sandbox_flag_options ?? []).length} sandbox flags enabled.
+                Sandbox attribute: <code>{userspacePreviewSandboxAttribute || '(empty)'}</code>
+              </p>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setShowSandboxModal(true)}
+              >
+                Configure Sandbox Flags
+              </button>
+            </div>
           </div>
         </fieldset>
 
@@ -4075,6 +4265,85 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
                 disabled={openapiModelsLoading || openapiAvailableModels.length === 0}
               >
                 Save Filter
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mount Source Wizard Modal */}
+      {showMountSourceWizard && (
+        <div className="modal-overlay" onClick={() => { setShowMountSourceWizard(false); setEditingMountSource(null); }}>
+          <div className="modal-content modal-large" onClick={(e) => e.stopPropagation()}>
+            <MountSourceWizard
+              existingSource={editingMountSource}
+              existingNames={mountSources.map((s) => s.name)}
+              onClose={() => { setShowMountSourceWizard(false); setEditingMountSource(null); }}
+              onSaved={handleMountSourceWizardSaved}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Mount Source Disable Confirmation Modal */}
+      {disableConfirmation && (
+        <div className="modal-overlay" onClick={() => setDisableConfirmation(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Disable Mount Source</h3>
+              <button className="modal-close" onClick={() => setDisableConfirmation(null)}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="modal-body">
+              {disableConfirmation.loading ? (
+                <p className="muted">Loading affected workspaces...</p>
+              ) : (
+                <>
+                  <p>
+                    Disabling <strong>{disableConfirmation.source.name}</strong> will immediately stop
+                    {disableConfirmation.source.source_type === 'ssh' ? ' SFTP sync' : ' mount access'} for
+                    {' '}<strong>{disableConfirmation.affected?.total_mounts ?? disableConfirmation.source.usage_count}</strong> mount{(disableConfirmation.affected?.total_mounts ?? disableConfirmation.source.usage_count) !== 1 ? 's' : ''} across
+                    {' '}<strong>{disableConfirmation.affected?.workspaces.length ?? '?'}</strong> workspace{(disableConfirmation.affected?.workspaces.length ?? 0) !== 1 ? 's' : ''}.
+                  </p>
+                  {disableConfirmation.affected && disableConfirmation.affected.workspaces.length > 0 && (
+                    <div style={{ maxHeight: 200, overflowY: 'auto', margin: '12px 0', border: '1px solid var(--color-border)', borderRadius: 6 }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                        <thead>
+                          <tr style={{ borderBottom: '1px solid var(--color-border)', background: 'var(--color-bg-tertiary)' }}>
+                            <th style={{ padding: '6px 10px', textAlign: 'left' }}>Workspace</th>
+                            <th style={{ padding: '6px 10px', textAlign: 'right' }}>Mounts</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {disableConfirmation.affected.workspaces.map((ws) => (
+                            <tr key={ws.workspace_id} style={{ borderBottom: '1px solid var(--color-border)' }}>
+                              <td style={{ padding: '6px 10px' }}>{ws.workspace_name}</td>
+                              <td style={{ padding: '6px 10px', textAlign: 'right' }}>{ws.mount_count}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                  <p className="field-help" style={{ margin: '8px 0 0' }}>
+                    {disableConfirmation.source.source_type === 'ssh'
+                      ? 'Auto-sync will be stopped for all affected mounts. Re-enabling the source will allow mounts to resume syncing.'
+                      : 'Workspace access to this mount will be interrupted. Re-enabling restores access without reconfiguration.'}
+                  </p>
+                </>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setDisableConfirmation(null)}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-danger"
+                onClick={() => void handleConfirmDisableMountSource()}
+                disabled={disableConfirmation.loading}
+              >
+                Disable Mount Source
               </button>
             </div>
           </div>

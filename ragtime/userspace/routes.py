@@ -5,21 +5,30 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 
 from ragtime.core.logging import get_logger
-from ragtime.core.security import get_current_user, get_current_user_optional
+from ragtime.core.security import (
+    get_current_user,
+    get_current_user_optional,
+    require_admin,
+)
 from ragtime.indexer.repository import repository
 from ragtime.userspace.models import (
+    BrowseUserspaceMountSourceRequest,
     CreateSnapshotRequest,
+    CreateUserspaceMountSourceRequest,
     CreateWorkspaceMountRequest,
     CreateWorkspaceRequest,
+    DeleteUserspaceMountSourceResponse,
     DeleteWorkspaceEnvVarResponse,
     DeleteWorkspaceMountResponse,
     ExecuteComponentRequest,
     ExecuteComponentResponse,
     MountableSource,
+    MountSourceAffectedWorkspacesResponse,
     PaginatedWorkspacesResponse,
     RestoreSnapshotResponse,
     SwitchSnapshotBranchRequest,
     UpdateSnapshotRequest,
+    UpdateUserspaceMountSourceRequest,
     UpdateWorkspaceMembersRequest,
     UpdateWorkspaceMountRequest,
     UpdateWorkspaceRequest,
@@ -32,6 +41,7 @@ from ragtime.userspace.models import (
     UserSpaceChangedFileStateResponse,
     UserSpaceFileInfo,
     UserSpaceFileResponse,
+    UserspaceMountSource,
     UserSpaceSharedPreviewResponse,
     UserSpaceSnapshot,
     UserSpaceSnapshotDiffSummaryResponse,
@@ -91,8 +101,6 @@ async def list_userspace_tools(user: Any = Depends(get_current_user)):
                 description=tool.description,
                 group_id=tool.group_id,
                 group_name=tool.group_name,
-                userspace_mounts_enabled=tool.userspace_mounts_enabled,
-                userspace_mount_paths=tool.userspace_mount_paths,
             )
         )
     return results
@@ -243,6 +251,86 @@ async def delete_workspace_env_var(
 
 
 # ── Workspace Mounts ─────────────────────────────────────────────────
+
+
+@router.get("/mount-sources", response_model=list[UserspaceMountSource])
+async def list_userspace_mount_sources(_user: Any = Depends(require_admin)):
+    return await userspace_service.list_userspace_mount_sources()
+
+
+@router.post("/mount-sources", response_model=UserspaceMountSource)
+async def create_userspace_mount_source(
+    request: CreateUserspaceMountSourceRequest,
+    _user: Any = Depends(require_admin),
+):
+    return await userspace_service.create_userspace_mount_source(request)
+
+
+@router.put("/mount-sources/{mount_source_id}", response_model=UserspaceMountSource)
+async def update_userspace_mount_source(
+    mount_source_id: str,
+    request: UpdateUserspaceMountSourceRequest,
+    _user: Any = Depends(require_admin),
+):
+    return await userspace_service.update_userspace_mount_source(
+        mount_source_id,
+        request,
+    )
+
+
+@router.get(
+    "/mount-sources/{mount_source_id}/affected-workspaces",
+    response_model=MountSourceAffectedWorkspacesResponse,
+)
+async def get_mount_source_affected_workspaces(
+    mount_source_id: str,
+    _user: Any = Depends(require_admin),
+):
+    return await userspace_service.get_mount_source_affected_workspaces(
+        mount_source_id,
+    )
+
+
+@router.delete(
+    "/mount-sources/{mount_source_id}",
+    response_model=DeleteUserspaceMountSourceResponse,
+)
+async def delete_userspace_mount_source(
+    mount_source_id: str,
+    _user: Any = Depends(require_admin),
+):
+    return await userspace_service.delete_userspace_mount_source(mount_source_id)
+
+
+@router.post(
+    "/mount-sources/{mount_source_id}/browse",
+    response_model=WorkspaceMountBrowseResponse,
+)
+async def browse_userspace_mount_source(
+    mount_source_id: str,
+    request: BrowseUserspaceMountSourceRequest,
+    _user: Any = Depends(require_admin),
+):
+    return await userspace_service.browse_userspace_mount_source(
+        mount_source_id,
+        request,
+    )
+
+
+@router.post(
+    "/tool-configs/{tool_config_id}/browse",
+    response_model=WorkspaceMountBrowseResponse,
+)
+async def browse_tool_config(
+    tool_config_id: str,
+    request: BrowseUserspaceMountSourceRequest,
+    _user: Any = Depends(require_admin),
+):
+    """Browse the filesystem of a tool config directly (before a mount source is saved)."""
+    return await userspace_service.browse_tool_config(
+        tool_config_id,
+        request,
+    )
 
 
 @router.get(

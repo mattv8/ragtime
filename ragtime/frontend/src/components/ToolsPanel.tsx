@@ -105,28 +105,6 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
     }
   };
 
-  const getMountPathSummary = (): { label: string; title: string } => {
-    const mountPaths = tool.userspace_mount_paths || [];
-    if (mountPaths.length === 0) {
-      return {
-        label: '.',
-        title: 'Userspace mounts enabled',
-      };
-    }
-
-    if (mountPaths.length === 1) {
-      return {
-        label: mountPaths[0],
-        title: `Allowed mount path: ${mountPaths[0]}`,
-      };
-    }
-
-    return {
-      label: `${mountPaths[0]} +${mountPaths.length - 1}`,
-      title: `Allowed mount paths: ${mountPaths.join(', ')}`,
-    };
-  };
-
   // Determine heartbeat display status
   const getHeartbeatDisplay = () => {
     if (!tool.enabled) {
@@ -143,7 +121,6 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
   };
 
   const heartbeatDisplay = getHeartbeatDisplay();
-  const mountPathSummary = getMountPathSummary();
 
   // Auto-resize textarea to fit content
   const autoResizeTextarea = (textarea: HTMLTextAreaElement | null) => {
@@ -334,7 +311,7 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
         </div>
       )}
 
-      {((tool.allow_write) || tool.userspace_mounts_enabled || ((tool.tool_type === 'ssh_shell' || tool.tool_type === 'odoo_shell') && (tool.connection_config as any)?.working_directory) || activeSchemaJob) && (
+      {((tool.allow_write) || ((tool.tool_type === 'ssh_shell' || tool.tool_type === 'odoo_shell') && (tool.connection_config as any)?.working_directory) || activeSchemaJob) && (
         <div className="tool-card-constraints">
           <IndexingPill
             activeJob={activeSchemaJob}
@@ -344,12 +321,6 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
             <span className="write-enabled-pill">
               <Icon name="alert-triangle" size={12} />
               Write enabled
-            </span>
-          )}
-          {tool.userspace_mounts_enabled && (
-            <span className="constrained-path" title={mountPathSummary.title}>
-              <Icon name="harddrive" size={14} />
-              <span className="path-text">{mountPathSummary.label}</span>
             </span>
           )}
           {((tool.tool_type === 'ssh_shell' || tool.tool_type === 'odoo_shell') && (tool.connection_config as any)?.working_directory) && (

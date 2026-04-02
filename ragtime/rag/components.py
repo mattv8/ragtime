@@ -21,6 +21,7 @@ from typing import Any, List, Optional, Union
 from urllib.parse import quote
 
 import httpx
+from PIL import Image, ImageOps, UnidentifiedImageError
 from fastapi import HTTPException
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.agents.format_scratchpad.tools import format_to_tool_messages
@@ -43,7 +44,6 @@ from langchain_openai.chat_models.base import (
     _construct_responses_api_payload,
     _get_last_messages,
 )
-from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field, field_validator
 
 from ragtime.config import settings
@@ -4409,6 +4409,7 @@ except Exception as e:
                 target_path if target_path.startswith("/") else f"/{target_path}"
             )
             workspace_relative = posixpath.relpath(normalized_target, "/workspace")
+            enabled = bool(getattr(mount, "enabled", True))
             mount_items.append(
                 {
                     "workspace_relative_path": workspace_relative,
@@ -4417,6 +4418,7 @@ except Exception as e:
                     "source_path": source_path,
                     "sync_status": sync_status,
                     "description": str(getattr(mount, "description", "") or "").strip(),
+                    "enabled": "true" if enabled else "false",
                 }
             )
 

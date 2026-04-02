@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { AlertCircle, ArrowRight, Check, ChevronDown, ChevronRight, Copy, Database, ExternalLink, File, HardDrive, History, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
+import { AlertCircle, ArrowRight, Check, ChevronDown, ChevronRight, Copy, Database, Eraser, ExternalLink, File, HardDrive, HardDriveDownload, HardDriveUpload, History, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { python } from '@codemirror/lang-python';
@@ -104,8 +104,8 @@ function resolveMountDirectoryToCreate(
   return requiresCreation ? toRequestPath(normalizedSelectedPath) : null;
 }
 
-function getMountSourceBrowserStageKey(toolConfigId: string, rootSourcePath: string): string {
-  return `${toolConfigId}::${rootSourcePath}`;
+function getMountSourceBrowserStageKey(mountSourceId: string, rootSourcePath: string): string {
+  return `${mountSourceId}::${rootSourcePath}`;
 }
 
 function getExpandedFoldersStorageKey(workspaceId: string): string {
@@ -564,7 +564,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [mounts, setMounts] = useState<WorkspaceMount[]>([]);
   const [mountsLoading, setMountsLoading] = useState(false);
   const [mountableSources, setMountableSources] = useState<MountableSource[]>([]);
-  const [createMountToolConfigId, setCreateMountToolConfigId] = useState('');
+  const [createMountSourceId, setCreateMountSourceId] = useState('');
   const [createMountSourcePath, setCreateMountSourcePath] = useState('');
   const [createMountRootSourcePath, setCreateMountRootSourcePath] = useState('');
   const [createMountBrowserPath, setCreateMountBrowserPath] = useState('');
@@ -572,12 +572,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [createMountTargetPath, setCreateMountTargetPath] = useState('');
   const [createMountStagedSourceDirectories, setCreateMountStagedSourceDirectories] = useState<Record<string, string[]>>({});
   const [createMountStagedTargetDirectories, setCreateMountStagedTargetDirectories] = useState<string[]>([]);
-  const [createMountAutoSyncEnabled, setCreateMountAutoSyncEnabled] = useState(false);
   const [createMountDescription, setCreateMountDescription] = useState('');
+  const [createMountActiveSourceTab, setCreateMountActiveSourceTab] = useState('');
   const [savingMount, setSavingMount] = useState(false);
   const [deletingMountId, setDeletingMountId] = useState<string | null>(null);
+
   const [syncingMountId, setSyncingMountId] = useState<string | null>(null);
-  const [refreshingMountId, setRefreshingMountId] = useState<string | null>(null);
   const [savingMountWatchId, setSavingMountWatchId] = useState<string | null>(null);
   const [editingMountDescriptionId, setEditingMountDescriptionId] = useState<string | null>(null);
   const [editingMountDescriptionDraft, setEditingMountDescriptionDraft] = useState('');
@@ -869,10 +869,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
   /** Repo-relative paths that are mount targets (e.g. "test" for target_path "/workspace/test"). */
   const mountTargetPaths = useMemo(() => {
-    const paths = new Set<string>();
+    const paths = new Map<string, { enabled: boolean }>();
     for (const mount of mounts) {
       const target = mount.target_path?.replace(/^\/workspace\//, '')?.replace(/^\/+|\/+$/g, '');
-      if (target) paths.add(target);
+      if (target) paths.set(target, { enabled: mount.enabled });
     }
     return paths;
   }, [mounts]);
@@ -3357,7 +3357,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     if (!activeWorkspaceId || !isOwner) return;
     setShowMountsModal(true);
     setMountsLoading(true);
-    setCreateMountToolConfigId('');
+    setCreateMountSourceId('');
     setCreateMountSourcePath('');
     setCreateMountRootSourcePath('');
     setCreateMountBrowserPath('');
@@ -3365,8 +3365,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     setCreateMountTargetPath('');
     setCreateMountStagedSourceDirectories({});
     setCreateMountStagedTargetDirectories([]);
-    setCreateMountAutoSyncEnabled(false);
     setCreateMountDescription('');
+    setCreateMountActiveSourceTab('');
     try {
       const [mountList, sources] = await Promise.all([
         api.listWorkspaceMounts(activeWorkspaceId),
@@ -3381,15 +3381,20 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, [activeWorkspaceId, isOwner]);
 
+  const handleCloseMountsModal = useCallback(() => {
+    setShowMountsModal(false);
+    setDeletingMountId(null);
+  }, []);
+
   const createMountEffectiveSourcePath = useMemo(() => {
     if (createMountSourcePath) {
       return createMountSourcePath;
     }
-    if (!createMountToolConfigId || !createMountBrowserPath) {
+    if (!createMountSourceId || !createMountBrowserPath) {
       return '';
     }
     return browserPathToSourcePath(createMountBrowserPath);
-  }, [createMountBrowserPath, createMountSourcePath, createMountToolConfigId]);
+  }, [createMountBrowserPath, createMountSourceId, createMountSourcePath]);
 
   const createMountEffectiveTargetPath = useMemo(() => {
     const trimmedTargetPath = createMountTargetPath.trim();
@@ -3404,24 +3409,24 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
   const isCreateMountDisabled = useMemo(() => (
     savingMount
-    || !createMountToolConfigId
+    || !createMountSourceId
     || !createMountEffectiveSourcePath
     || !createMountEffectiveTargetPath
     || createMountEffectiveTargetPath === '/workspace'
-  ), [createMountEffectiveSourcePath, createMountEffectiveTargetPath, createMountToolConfigId, savingMount]);
+  ), [createMountEffectiveSourcePath, createMountEffectiveTargetPath, createMountSourceId, savingMount]);
 
   const handleCreateMount = useCallback(async () => {
     if (
       !activeWorkspaceId
       || !isOwner
-      || !createMountToolConfigId
+      || !createMountSourceId
       || !createMountEffectiveSourcePath
       || !createMountEffectiveTargetPath
     ) {
       return;
     }
     setSavingMount(true);
-    const sourceStageKey = getMountSourceBrowserStageKey(createMountToolConfigId, createMountRootSourcePath);
+    const sourceStageKey = getMountSourceBrowserStageKey(createMountSourceId, createMountRootSourcePath);
     const sourceDirectoryToCreate = resolveMountDirectoryToCreate(
       createMountBrowserPath,
       createMountStagedSourceDirectories[sourceStageKey] ?? [],
@@ -3434,16 +3439,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     );
     try {
       const created = await api.createWorkspaceMount(activeWorkspaceId, {
-        tool_config_id: createMountToolConfigId,
+        mount_source_id: createMountSourceId,
         source_path: createMountEffectiveSourcePath,
         target_path: createMountEffectiveTargetPath,
         source_directory_to_create: sourceDirectoryToCreate,
         target_directory_to_create: targetDirectoryToCreate,
-        auto_sync_enabled: createMountAutoSyncEnabled,
+        auto_sync_enabled: false,
         description: createMountDescription.trim() || null,
       });
       setMounts((prev) => [...prev, created]);
-      setCreateMountToolConfigId('');
+      setCreateMountSourceId('');
       setCreateMountSourcePath('');
       setCreateMountRootSourcePath('');
       setCreateMountBrowserPath('');
@@ -3451,7 +3456,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       setCreateMountTargetPath('');
       setCreateMountStagedSourceDirectories({});
       setCreateMountStagedTargetDirectories([]);
-      setCreateMountAutoSyncEnabled(false);
       setCreateMountDescription('');
       if (targetDirectoryToCreate) {
         await loadWorkspaceData(activeWorkspaceId);
@@ -3461,7 +3465,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     } finally {
       setSavingMount(false);
     }
-  }, [activeWorkspaceId, createMountAutoSyncEnabled, createMountBrowserPath, createMountDescription, createMountEffectiveSourcePath, createMountEffectiveTargetPath, createMountRootSourcePath, createMountStagedSourceDirectories, createMountStagedTargetDirectories, createMountTargetBrowserPath, createMountToolConfigId, isOwner, loadWorkspaceData]);
+  }, [activeWorkspaceId, createMountBrowserPath, createMountDescription, createMountEffectiveSourcePath, createMountEffectiveTargetPath, createMountRootSourcePath, createMountSourceId, createMountStagedSourceDirectories, createMountStagedTargetDirectories, createMountTargetBrowserPath, isOwner, loadWorkspaceData]);
 
   const handleSaveMountDescription = useCallback(async () => {
     if (!activeWorkspaceId || !isOwner || !editingMountDescriptionId) return;
@@ -3486,12 +3490,47 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     try {
       await api.deleteWorkspaceMount(activeWorkspaceId, mountId);
       setMounts((prev) => prev.filter((m) => m.id !== mountId));
+      void loadWorkspaceData(activeWorkspaceId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete mount');
     } finally {
       setDeletingMountId(null);
     }
-  }, [activeWorkspaceId, isOwner]);
+  }, [activeWorkspaceId, isOwner, loadWorkspaceData]);
+
+  const handleEjectMount = useCallback(async (mount: WorkspaceMount) => {
+    if (!activeWorkspaceId || !isOwner) return;
+    setSavingMountWatchId(mount.id);
+    try {
+      const updated = await api.updateWorkspaceMount(activeWorkspaceId, mount.id, {
+        enabled: false,
+      });
+      setMounts((prev) => prev.map((m) => (m.id === mount.id ? updated : m)));
+      setError(null);
+      void loadWorkspaceData(activeWorkspaceId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to eject mount');
+    } finally {
+      setSavingMountWatchId(null);
+    }
+  }, [activeWorkspaceId, isOwner, loadWorkspaceData]);
+
+  const handleRemount = useCallback(async (mount: WorkspaceMount) => {
+    if (!activeWorkspaceId || !isOwner) return;
+    setSavingMountWatchId(mount.id);
+    try {
+      const updated = await api.updateWorkspaceMount(activeWorkspaceId, mount.id, {
+        enabled: true,
+      });
+      setMounts((prev) => prev.map((m) => (m.id === mount.id ? updated : m)));
+      setError(null);
+      void loadWorkspaceData(activeWorkspaceId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to remount');
+    } finally {
+      setSavingMountWatchId(null);
+    }
+  }, [activeWorkspaceId, isOwner, loadWorkspaceData]);
 
   const handleSyncMount = useCallback(async (mountId: string) => {
     if (!activeWorkspaceId || !isOwner) return;
@@ -3523,19 +3562,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, [activeWorkspaceId, isOwner]);
 
-  const handleRefreshMount = useCallback(async (mountId: string) => {
+  const handleToggleMountSyncDeletes = useCallback(async (mountId: string, enabled: boolean) => {
     if (!activeWorkspaceId || !isOwner) return;
-    setRefreshingMountId(mountId);
+    setSavingMountWatchId(mountId);
     try {
-      await api.refreshUserSpaceRuntimeMount(activeWorkspaceId, mountId);
-      await refreshRuntimeStatus();
+      const updated = await api.updateWorkspaceMount(activeWorkspaceId, mountId, {
+        sync_deletes: enabled,
+      });
+      setMounts((prev) => prev.map((m) => (m.id === mountId ? updated : m)));
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to refresh runtime mount');
+      setError(err instanceof Error ? err.message : 'Failed to update mount sync-deletes setting');
     } finally {
-      setRefreshingMountId(null);
+      setSavingMountWatchId(null);
     }
-  }, [activeWorkspaceId, isOwner, refreshRuntimeStatus]);
+  }, [activeWorkspaceId, isOwner]);
 
   const browseWorkspaceMountTargetPath = useCallback(async (browserPath: string): Promise<BrowseResponse> => {
     const normalizedBrowserPath = normalizeMountBrowserPath(browserPath);
@@ -4004,17 +4045,19 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
             </div>
           );
         } else {
-          const isMount = mountTargetPaths.has(node.path);
+          const mountInfo = mountTargetPaths.get(node.path);
+          const isMount = !!mountInfo;
+          const isMountDisabled = isMount && !mountInfo.enabled;
           const hasChangedFileDescendant = !isExpanded && collectFilePaths(node).some((p) => changedFilePaths.has(p));
           rows.push(
-            <div key={node.path} className={`userspace-file-item userspace-tree-row userspace-tree-folder-row${isMount ? ' userspace-tree-mount-folder' : ''}`}>
+            <div key={node.path} className={`userspace-file-item userspace-tree-row userspace-tree-folder-row${isMount ? ' userspace-tree-mount-folder' : ''}${isMountDisabled ? ' userspace-tree-mount-disabled' : ''}`}>
               <button className="userspace-item-content userspace-tree-content" onClick={() => handleToggleFolder(node.path)} style={indentStyle}>
                 <span className="userspace-tree-chevron" aria-hidden="true">
                   {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                 </span>
                 <span className={`userspace-folder-label${isMount ? ' userspace-tree-mount-label' : ''}`}>{node.name}</span>
                 {hasChangedFileDescendant && <span className="userspace-tree-folder-changed-file-dot" title="Contains changed files" />}
-                {isMount && <span className="userspace-tree-mount-badge">mount</span>}
+                {isMount && <span className={`userspace-tree-mount-badge${isMountDisabled ? ' userspace-tree-mount-badge-disabled' : ''}`} role="button" tabIndex={0} title="Manage mounts" onClick={(e) => { e.stopPropagation(); void handleOpenMountsModal(); }}>{isMountDisabled ? 'unmounted' : 'mounted'}</span>}
               </button>
               {canEditWorkspace && !isMount && (
                 <div className="userspace-item-actions">
@@ -4129,7 +4172,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         </div>,
       ];
     });
-  }, [canEditWorkspace, changedFilePaths, deleteConfirmFileId, deleteConfirmFolderPath, expandedFolders, handleDeleteFile, handleDeleteFolder, handleRenameFile, handleRenameFolder, handleSaveTreeFile, handleSelectFile, handleStartCreateFile, handleToggleFolder, mountTargetPaths, renameValue, renamingFilePath, renamingFolderPath, savingTreeFile, selectedFilePath]);
+  }, [canEditWorkspace, changedFilePaths, deleteConfirmFileId, deleteConfirmFolderPath, expandedFolders, handleDeleteFile, handleDeleteFolder, handleOpenMountsModal, handleRenameFile, handleRenameFolder, handleSaveTreeFile, handleSelectFile, handleStartCreateFile, handleToggleFolder, mountTargetPaths, renameValue, renamingFilePath, renamingFolderPath, savingTreeFile, selectedFilePath]);
 
   const sqliteLiveDataOnlyMode = activeWorkspace?.sqlite_persistence_mode === 'exclude';
   const sqlitePersistenceModeTitle = sqliteLiveDataOnlyMode
@@ -5411,11 +5454,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
       {/* === Mounts modal === */}
       {showMountsModal && activeWorkspaceId && (
-        <div className="modal-overlay" onClick={() => setShowMountsModal(false)}>
+        <div className="modal-overlay" onClick={handleCloseMountsModal}>
           <div className="modal-content modal-large" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h3>Filesystem Mounts</h3>
-              <button className="modal-close" onClick={() => setShowMountsModal(false)}>&times;</button>
+              <button className="modal-close" onClick={handleCloseMountsModal}>&times;</button>
             </div>
             <div className="modal-body">
               <p className="userspace-muted" style={{ marginBottom: 12 }}>
@@ -5431,79 +5474,103 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
               ) : (
                 <>
                   {mounts.length > 0 && (
-                    <div className="userspace-mount-list">
+                    <div style={{ marginBottom: 16 }}>
+                      <strong style={{ display: 'block', marginBottom: 8, fontSize: 13 }}>Active mounts</strong>
+                      <div className="userspace-mount-list">
                       {mounts.map((mount) => {
+                        const isEjected = !mount.enabled;
                         const displaySourcePath = mount.source_path === '.'
                           ? '/'
                           : (mount.source_path.startsWith('/') ? mount.source_path : `/${mount.source_path}`);
                         return (
-                        <div key={mount.id} className="userspace-mount-row">
+                        <div key={mount.id} className="userspace-mount-row" style={isEjected ? { opacity: 0.45, filter: 'grayscale(0.6)' } : undefined}>
                           <div className="userspace-mount-primary-row">
                             <span className="userspace-mount-path-flow">
                               <HardDrive size={13} className="userspace-mount-target-icon" />
                               <span className="userspace-mount-source-path">{displaySourcePath}</span>
                               <ArrowRight size={12} className="userspace-mount-path-arrow" />
                               <span className="userspace-mount-target-path">{mount.target_path}</span>
-                              <span className="userspace-mount-tool-label">({mount.tool_name ?? 'Unknown tool'})</span>
+                              <span className="userspace-mount-tool-label">({mount.source_name ?? 'Unknown source'})</span>
                             </span>
                             <div className="userspace-mount-controls">
                               <span className="userspace-mount-sync-status">
-                                {mount.tool_type === 'ssh_shell' && mount.sync_status === 'synced' && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Synced</span>}
-                                {mount.tool_type === 'ssh_shell' && mount.sync_status === 'pending' && <span className="userspace-status-pill userspace-status-pill-info" style={{ fontSize: 11 }}>Pending</span>}
-                                {mount.tool_type === 'ssh_shell' && mount.sync_status === 'error' && (
+                                {mount.source_type === 'ssh' && mount.sync_status === 'synced' && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Synced</span>}
+                                {mount.source_type === 'ssh' && mount.sync_status === 'pending' && <span className="userspace-status-pill userspace-status-pill-info" style={{ fontSize: 11 }}>Pending</span>}
+                                {mount.source_type === 'ssh' && mount.sync_status === 'error' && (
                                   <span className="userspace-status-pill userspace-status-pill-error" style={{ fontSize: 11 }} title={mount.last_sync_error ?? undefined}>Error</span>
                                 )}
-                                {mount.tool_type !== 'ssh_shell' && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Live</span>}
+                                {mount.source_type !== 'ssh' && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Live</span>}
                               </span>
                               <div className="userspace-mount-actions">
-                                {mount.tool_type === 'ssh_shell' && (
+                                {mount.source_type === 'ssh' && (
                                   <>
                                     <button
                                       className={`btn btn-sm ${mount.auto_sync_enabled ? 'btn-primary' : 'btn-secondary'}`}
                                       onClick={() => handleToggleMountAutoSync(mount.id, !mount.auto_sync_enabled)}
-                                      disabled={savingMountWatchId === mount.id}
+                                      disabled={savingMountWatchId === mount.id || isEjected}
                                       title={mount.auto_sync_enabled ? 'Disable auto-sync watch mode' : 'Enable auto-sync watch mode'}
                                     >
-                                      {savingMountWatchId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : 'Auto'}
+                                      {savingMountWatchId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : (
+                                        <span className="userspace-mount-toggle-icon">
+                                          Auto
+                                          {!mount.auto_sync_enabled && <span className="userspace-mount-toggle-slash"><Slash size={20} /></span>}
+                                        </span>
+                                      )}
                                     </button>
                                     <button
-                                      className="btn btn-secondary btn-sm"
-                                      onClick={() => handleSyncMount(mount.id)}
-                                      disabled={syncingMountId === mount.id}
-                                      title="Sync SFTP mount"
+                                      className={`btn btn-sm ${mount.sync_deletes ? 'btn-primary' : 'btn-secondary'}`}
+                                      onClick={() => handleToggleMountSyncDeletes(mount.id, !mount.sync_deletes)}
+                                      disabled={savingMountWatchId === mount.id || isEjected}
+                                      title={mount.sync_deletes ? 'Sync-deletes enabled: local files removed from remote will be deleted on sync' : 'Sync-deletes disabled: local files are preserved even if removed from remote'}
                                     >
-                                      {syncingMountId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <RefreshCw size={12} />}
+                                      {savingMountWatchId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : (
+                                        <span className="userspace-mount-toggle-icon">
+                                          <Eraser size={10} />
+                                          {!mount.sync_deletes && <span className="userspace-mount-toggle-slash"><Slash size={20} /></span>}
+                                        </span>
+                                      )}
                                     </button>
-                                    <button
-                                      className="btn btn-secondary btn-sm"
-                                      onClick={() => handleRefreshMount(mount.id)}
-                                      disabled={
-                                        refreshingMountId === mount.id
-                                        || syncingMountId === mount.id
-                                        || mount.sync_status !== 'synced'
-                                        || !runtimeStatus
-                                        || (runtimeStatus.session_state !== 'running' && runtimeStatus.session_state !== 'starting')
-                                      }
-                                      title={
-                                        mount.sync_status !== 'synced'
-                                          ? 'Sync this SFTP mount before refreshing runtime'
-                                          : (!runtimeStatus || (runtimeStatus.session_state !== 'running' && runtimeStatus.session_state !== 'starting'))
-                                            ? 'Start the runtime before refreshing this mount'
-                                            : 'Refresh this SFTP mount in the running sandbox'
-                                      }
-                                    >
-                                      {refreshingMountId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <RotateCw size={12} />}
-                                    </button>
+                                    {!mount.auto_sync_enabled && (
+                                      <button
+                                        className="btn btn-secondary btn-sm"
+                                        onClick={() => handleSyncMount(mount.id)}
+                                        disabled={syncingMountId === mount.id || isEjected}
+                                        title="Sync mount now"
+                                      >
+                                        {syncingMountId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <RefreshCw size={12} />}
+                                      </button>
+                                    )}
                                   </>
                                 )}
-                                <button
-                                  className="btn btn-secondary btn-sm"
-                                  onClick={() => handleDeleteMount(mount.id)}
-                                  disabled={deletingMountId === mount.id}
-                                  title="Remove mount"
-                                >
-                                  {deletingMountId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <Trash2 size={12} />}
-                                </button>
+                                {isEjected ? (
+                                  <>
+                                    <button
+                                      className="btn btn-secondary btn-sm"
+                                      onClick={() => void handleRemount(mount)}
+                                      disabled={deletingMountId === mount.id || savingMountWatchId === mount.id}
+                                      title="Remount"
+                                    >
+                                      {savingMountWatchId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <HardDriveDownload size={12} />}
+                                    </button>
+                                    <button
+                                      className="btn btn-secondary btn-sm"
+                                      onClick={() => void handleDeleteMount(mount.id)}
+                                      disabled={deletingMountId === mount.id}
+                                      title="Delete mount permanently"
+                                    >
+                                      {deletingMountId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <Trash2 size={12} />}
+                                    </button>
+                                  </>
+                                ) : (
+                                  <button
+                                    className="btn btn-secondary btn-sm"
+                                    onClick={() => void handleEjectMount(mount)}
+                                    disabled={deletingMountId === mount.id || savingMountWatchId === mount.id}
+                                    title="Unmount"
+                                  >
+                                    {savingMountWatchId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <HardDriveUpload size={12} />}
+                                  </button>
+                                )}
                               </div>
                             </div>
                           </div>
@@ -5573,68 +5640,101 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                       );
                     })}
                     </div>
+                    </div>
                   )}
 
                   {mountableSources.length > 0 ? (
                     <div className="userspace-env-var-form" style={{ marginTop: 12 }}>
                       <strong className="userspace-env-var-form-title">Add mount</strong>
+                      {/* Source + Target in same row */}
                       <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', alignItems: 'start' }}>
                         <div>
-                          <div className="userspace-muted" style={{ marginBottom: 6, fontSize: 12 }}>
-                            <strong>Source</strong>
-                          </div>
-                          <div style={{ display: 'grid', gap: 12 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 0, marginBottom: 6 }}>
+                            <div className="userspace-muted" style={{ fontSize: 12, marginRight: 8 }}>
+                              <strong>Source</strong>
+                            </div>
                             {mountableSources.map((src) => {
-                              const browserRootPath = sourcePathToBrowserPath(src.source_path);
-                              const isSelectedSource = (
-                                src.tool_config_id === createMountToolConfigId
-                                && src.source_path === createMountRootSourcePath
-                                && !!createMountSourcePath
-                              );
+                              const tabKey = `${src.mount_source_id}::${src.source_path}`;
+                              const isActive = createMountActiveSourceTab === tabKey
+                                || (!createMountActiveSourceTab && mountableSources[0] && tabKey === `${mountableSources[0].mount_source_id}::${mountableSources[0].source_path}`);
                               return (
-                                <div key={`${src.tool_config_id}::${src.source_path}`}>
-                                  <ConstrainedPathBrowser
-                                    currentPath={isSelectedSource ? createMountBrowserPath : ''}
-                                    rootPath={browserRootPath}
-                                    rootLabel={src.source_path === '.' ? '/' : `/${src.source_path}`}
-                                    defaultExpanded={isSelectedSource}
-                                    cacheKey={`${src.tool_config_id}:${src.source_path}`}
-                                    stagedDirectories={createMountStagedSourceDirectories[
-                                      getMountSourceBrowserStageKey(src.tool_config_id, src.source_path)
-                                    ] ?? []}
-                                    onStageDirectory={(path) => {
-                                      const stageKey = getMountSourceBrowserStageKey(src.tool_config_id, src.source_path);
-                                      const normalizedPath = normalizeMountBrowserPath(path);
-                                      setCreateMountStagedSourceDirectories((current) => {
-                                        const existingPaths = current[stageKey] ?? [];
-                                        if (existingPaths.includes(normalizedPath)) {
-                                          return current;
-                                        }
-                                        return {
-                                          ...current,
-                                          [stageKey]: [...existingPaths, normalizedPath].sort((left, right) => left.localeCompare(right)),
-                                        };
-                                      });
-                                    }}
-                                    onSelectPath={(selectedPath) => {
-                                      setCreateMountToolConfigId(src.tool_config_id);
-                                      setCreateMountRootSourcePath(src.source_path);
-                                      setCreateMountBrowserPath(normalizeMountBrowserPath(selectedPath));
-                                      setCreateMountSourcePath(browserPathToSourcePath(selectedPath));
-                                    }}
-                                    onBrowsePath={(path) => api.browseWorkspaceMountSource(activeWorkspaceId, {
-                                      tool_config_id: src.tool_config_id,
-                                      root_source_path: src.source_path,
-                                      path,
-                                    })}
-                                  />
-                                </div>
+                                <button
+                                  key={tabKey}
+                                  type="button"
+                                  style={{
+                                    background: 'transparent',
+                                    border: 'none',
+                                    borderBottom: isActive ? '2px solid var(--color-accent)' : '2px solid transparent',
+                                    padding: '4px 10px',
+                                    cursor: 'pointer',
+                                    color: isActive ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+                                    fontSize: 12,
+                                    transition: 'color 0.15s, border-color 0.15s',
+                                  }}
+                                  onClick={() => setCreateMountActiveSourceTab(tabKey)}
+                                >
+                                  <span style={{ marginRight: 5, opacity: 0.5, display: 'inline-flex', verticalAlign: 'middle' }}>
+                                    {src.source_type === 'ssh' ? <Terminal size={11} /> : <HardDrive size={11} />}
+                                  </span>
+                                  {src.source_name}
+                                </button>
                               );
                             })}
                           </div>
+                          {mountableSources.map((src) => {
+                            const tabKey = `${src.mount_source_id}::${src.source_path}`;
+                            const isActiveTab = createMountActiveSourceTab === tabKey
+                              || (!createMountActiveSourceTab && mountableSources[0] && tabKey === `${mountableSources[0].mount_source_id}::${mountableSources[0].source_path}`);
+                            if (!isActiveTab) return null;
+                            const browserRootPath = sourcePathToBrowserPath(src.source_path);
+                            const isSelectedSource = (
+                              src.mount_source_id === createMountSourceId
+                              && src.source_path === createMountRootSourcePath
+                              && !!createMountSourcePath
+                            );
+                            return (
+                              <div key={tabKey}>
+                                <ConstrainedPathBrowser
+                                  currentPath={isSelectedSource ? createMountBrowserPath : ''}
+                                  rootPath={browserRootPath}
+                                  rootLabel={src.source_path === '.' ? '/' : `/${src.source_path}`}
+                                  defaultExpanded={isSelectedSource}
+                                  cacheKey={`${src.mount_source_id}:${src.source_path}`}
+                                  stagedDirectories={createMountStagedSourceDirectories[
+                                    getMountSourceBrowserStageKey(src.mount_source_id, src.source_path)
+                                  ] ?? []}
+                                  onStageDirectory={(path) => {
+                                    const stageKey = getMountSourceBrowserStageKey(src.mount_source_id, src.source_path);
+                                    const normalizedPath = normalizeMountBrowserPath(path);
+                                    setCreateMountStagedSourceDirectories((current) => {
+                                      const existingPaths = current[stageKey] ?? [];
+                                      if (existingPaths.includes(normalizedPath)) {
+                                        return current;
+                                      }
+                                      return {
+                                        ...current,
+                                        [stageKey]: [...existingPaths, normalizedPath].sort((left, right) => left.localeCompare(right)),
+                                      };
+                                    });
+                                  }}
+                                  onSelectPath={(selectedPath) => {
+                                    setCreateMountSourceId(src.mount_source_id);
+                                    setCreateMountRootSourcePath(src.source_path);
+                                    setCreateMountBrowserPath(normalizeMountBrowserPath(selectedPath));
+                                    setCreateMountSourcePath(browserPathToSourcePath(selectedPath));
+                                  }}
+                                  onBrowsePath={(path) => api.browseWorkspaceMountSource(activeWorkspaceId, {
+                                    mount_source_id: src.mount_source_id,
+                                    root_source_path: src.source_path,
+                                    path,
+                                  })}
+                                />
+                              </div>
+                            );
+                          })}
                         </div>
                         <div>
-                          <div className="userspace-muted" style={{ marginBottom: 6, fontSize: 12 }}>
+                          <div className="userspace-muted" style={{ marginBottom: 11, fontSize: 12 }}>
                             <strong>Target in workspace</strong>
                           </div>
                           <ConstrainedPathBrowser
@@ -5644,8 +5744,17 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                             defaultExpanded={false}
                             cacheKey={workspaceMountTargetBrowserCacheKey}
                             emptyMessage="Workspace directory is empty"
-                            canSelectPath={(path) => normalizeMountBrowserPath(path) !== '/'}
-                            cannotSelectPathMessage="Select or create a folder under /workspace"
+                            canSelectPath={(path) => {
+                              const normalized = normalizeMountBrowserPath(path);
+                              if (normalized === '/') return false;
+                              const asTargetPath = `/workspace${normalized}`;
+                              return !mounts.some((m) => m.target_path === asTargetPath);
+                            }}
+                            cannotSelectPathMessage="This path is already mounted"
+                            isPathDisabled={(path) => {
+                              const asTargetPath = `/workspace${normalizeMountBrowserPath(path)}`;
+                              return mounts.some((m) => m.target_path === asTargetPath) ? 'Mounted' : null;
+                            }}
                             stagedDirectories={createMountStagedTargetDirectories}
                             onStageDirectory={(path) => {
                               const normalizedPath = normalizeMountBrowserPath(path);
@@ -5671,14 +5780,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                         value={createMountDescription}
                         onChange={(e) => setCreateMountDescription(e.target.value)}
                       />
-                      <label className="userspace-muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-                        <input
-                          type="checkbox"
-                          checked={createMountAutoSyncEnabled}
-                          onChange={(e) => setCreateMountAutoSyncEnabled(e.target.checked)}
-                        />
-                        Enable auto-sync watch mode
-                      </label>
                       <div className="userspace-env-var-form-actions">
                         <button
                           className="btn btn-primary btn-sm"
@@ -5693,7 +5794,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                     </div>
                   ) : (
                     <p className="userspace-muted" style={{ marginTop: 12 }}>
-                      No tools with filesystem mounts enabled. Enable mounts on an SSH or Filesystem tool in Settings.
+                      No mount sources are configured. Add a source in Settings, then attach it here.
                     </p>
                   )}
                 </>
