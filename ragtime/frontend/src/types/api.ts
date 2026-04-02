@@ -529,6 +529,7 @@ export interface AppSettings {
   default_ocr_mode: 'disabled' | 'tesseract' | 'ollama';
   default_ocr_vision_model?: string | null;
   ocr_concurrency_limit: number;
+  ollama_embedding_timeout_seconds: number;
   // Performance / Memory Configuration
   sequential_index_loading: boolean;
   // API Tool Output Configuration
@@ -613,6 +614,7 @@ export interface UpdateSettingsRequest {
   default_ocr_mode?: 'disabled' | 'tesseract' | 'ollama';
   default_ocr_vision_model?: string | null;
   ocr_concurrency_limit?: number;
+  ollama_embedding_timeout_seconds?: number;
   // API Tool Output settings
   tool_output_mode?: ToolOutputMode;
   // MCP settings

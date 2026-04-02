@@ -28,7 +28,6 @@ function getInitialHighlight(): string | null {
 }
 
 const INDEXER_ACTIVE_POLL_MS = 2000;
-const INDEXER_IDLE_POLL_MS = 5000;
 
 /**
  * Check if URL contains OAuth authorization parameters.
@@ -113,6 +112,7 @@ export function App() {
 
   // Filesystem indexer state
   const [filesystemToolIds, setFilesystemToolIds] = useState<string[]>([]);
+  const [filesystemToolIdsLoaded, setFilesystemToolIdsLoaded] = useState(false);
   const [filesystemJobs, setFilesystemJobs] = useState<FilesystemIndexJob[]>([]);
   const [aggregateSearch, setAggregateSearch] = useState(true);
   const [embeddingDimensions, setEmbeddingDimensions] = useState<number | null>(null);
@@ -353,6 +353,7 @@ export function App() {
         .filter(t => t.tool_type === 'filesystem_indexer')
         .map(t => t.id);
       setFilesystemToolIds(toolIds);
+      setFilesystemToolIdsLoaded(true);
       return toolIds;
     } catch (err) {
       console.warn('Failed to load filesystem tools:', err);
@@ -364,7 +365,7 @@ export function App() {
   const loadFilesystemJobs = useCallback(async (toolIdsOverride?: string[]) => {
     try {
       const toolIds = toolIdsOverride ?? (
-        filesystemToolIds.length > 0 ? filesystemToolIds : await refreshFilesystemToolIds()
+        filesystemToolIdsLoaded ? filesystemToolIds : await refreshFilesystemToolIds()
       );
 
       if (toolIds.length === 0) {
@@ -386,7 +387,7 @@ export function App() {
     } catch (err) {
       console.warn('Failed to load filesystem jobs:', err);
     }
-  }, [filesystemToolIds, refreshFilesystemToolIds]);
+  }, [filesystemToolIds, filesystemToolIdsLoaded, refreshFilesystemToolIds]);
 
   const handleFilesystemToolsChanged = useCallback(async () => {
     const toolIds = await refreshFilesystemToolIds();
@@ -439,7 +440,7 @@ export function App() {
     }
   }, [currentUser, isAdmin, isIndexerView, loadJobs, loadIndexes, loadFilesystemJobs, loadSchemaJobs, loadPdmJobs]);
 
-  // Auto-refresh: fast polling when filesystem jobs are active, slow background refresh otherwise
+  // Auto-refresh only while filesystem jobs are active.
   useEffect(() => {
     if (!currentUser || !isAdmin || !isIndexerView) return;
 
@@ -447,16 +448,16 @@ export function App() {
       j => j.status === 'pending' || j.status === 'indexing'
     );
 
-    const pollInterval = hasActiveFilesystemJob ? INDEXER_ACTIVE_POLL_MS : INDEXER_IDLE_POLL_MS;
+    if (!hasActiveFilesystemJob) return;
 
     const interval = setInterval(() => {
       loadFilesystemJobs();
-    }, pollInterval);
+    }, INDEXER_ACTIVE_POLL_MS);
 
     return () => clearInterval(interval);
   }, [currentUser, isAdmin, isIndexerView, filesystemJobs, loadFilesystemJobs]);
 
-  // Auto-refresh: fast polling when schema jobs are active, slow background refresh otherwise
+  // Auto-refresh only while schema jobs are active.
   useEffect(() => {
     if (!currentUser || !isAdmin || !isIndexerView) return;
 
@@ -464,16 +465,16 @@ export function App() {
       j => j.status === 'pending' || j.status === 'indexing'
     );
 
-    const pollInterval = hasActiveSchemaJob ? INDEXER_ACTIVE_POLL_MS : INDEXER_IDLE_POLL_MS;
+    if (!hasActiveSchemaJob) return;
 
     const interval = setInterval(() => {
       loadSchemaJobs();
-    }, pollInterval);
+    }, INDEXER_ACTIVE_POLL_MS);
 
     return () => clearInterval(interval);
   }, [currentUser, isAdmin, isIndexerView, schemaJobs, loadSchemaJobs]);
 
-  // Auto-refresh: fast polling when PDM jobs are active, slow background refresh otherwise
+  // Auto-refresh only while PDM jobs are active.
   useEffect(() => {
     if (!currentUser || !isAdmin || !isIndexerView) return;
 
@@ -481,30 +482,27 @@ export function App() {
       j => j.status === 'pending' || j.status === 'indexing'
     );
 
-    const pollInterval = hasActivePdmJob ? INDEXER_ACTIVE_POLL_MS : INDEXER_IDLE_POLL_MS;
+    if (!hasActivePdmJob) return;
 
     const interval = setInterval(() => {
       loadPdmJobs();
-    }, pollInterval);
+    }, INDEXER_ACTIVE_POLL_MS);
 
     return () => clearInterval(interval);
   }, [currentUser, isAdmin, isIndexerView, pdmJobs, loadPdmJobs]);
 
-  // Auto-refresh: fast polling when jobs are active, slow background refresh otherwise
+  // Auto-refresh only while document upload/git jobs are active.
   useEffect(() => {
     if (!currentUser || !isAdmin || !isIndexerView) return;
 
     const hasActiveJobs = jobs.some((j) => j.status === 'pending' || j.status === 'processing');
 
-    // Fast polling (2s) when jobs are active, regular polling (5s) while indexer is visible.
-    const pollInterval = hasActiveJobs ? INDEXER_ACTIVE_POLL_MS : INDEXER_IDLE_POLL_MS;
+    if (!hasActiveJobs) return;
 
     const interval = setInterval(() => {
       loadJobs();
-      if (hasActiveJobs) {
-        loadIndexes();
-      }
-    }, pollInterval);
+      loadIndexes();
+    }, INDEXER_ACTIVE_POLL_MS);
 
     return () => clearInterval(interval);
   }, [currentUser, isAdmin, isIndexerView, jobs, loadJobs, loadIndexes]);

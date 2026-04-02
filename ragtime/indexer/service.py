@@ -62,7 +62,6 @@ from ragtime.indexer.vector_utils import (EMBEDDING_SUB_BATCH_SIZE,
                                           append_embedding_dimension_warning,
                                           embed_documents_subbatched,
                                           get_embeddings_model)
-from ragtime.tools.git_history import _is_shallow_repository
 
 logger = get_logger(__name__)
 
@@ -1047,21 +1046,12 @@ class IndexerService:
                 ):
                     return None
 
-            # Calculate size in non-blocking way for responsiveness
-            if path.exists():
-
-                def _calc_size(p=path):
-                    return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
-
-                size_bytes = await asyncio.to_thread(_calc_size)
-            else:
-                size_bytes = 0
-
             # Extract metadata fields
             doc_count = meta.documentCount
             chunk_count = getattr(meta, "chunkCount", 0)
             created_at = meta.createdAt
             last_modified = getattr(meta, "lastModified", None)
+            size_bytes = getattr(meta, "sizeBytes", 0) or 0
             enabled = meta.enabled
             description = getattr(meta, "description", "")
             source_type = getattr(meta, "sourceType", "upload")
@@ -1094,23 +1084,12 @@ class IndexerService:
                     ),
                 )
 
-            # Check for git repo directory (git history)
+            # Keep /indexes request-time work cheap. Git history tooling maintains
+            # the .git_repo clone independently, but we avoid running git commands
+            # or recursive size scans here because this endpoint is hit frequently.
             git_repo_path = path / ".git_repo"
             git_repo_size_mb = None
-            has_git_history = False
-            if git_repo_path.exists() and git_repo_path.is_dir():
-                # Check if it has meaningful history using commit count
-                # Repos with depth > 1 still have useful history to search
-                has_git_history = not await _is_shallow_repository(git_repo_path)
-                if has_git_history:
-
-                    def _calc_git_size(p=git_repo_path):
-                        return sum(
-                            f.stat().st_size for f in p.rglob("*") if f.is_file()
-                        )
-
-                    git_repo_size = await asyncio.to_thread(_calc_git_size)
-                    git_repo_size_mb = round(git_repo_size / (1024 * 1024), 2)
+            has_git_history = source_type == "git" and git_repo_path.exists() and git_repo_path.is_dir()
 
             return IndexInfo(
                 name=meta.name,
@@ -1128,20 +1107,13 @@ class IndexerService:
                 has_stored_token=has_stored_token,
                 config_snapshot=config_snapshot,
                 created_at=created_at,
-                last_modified=last_modified
-                or (
-                    datetime.fromtimestamp(path.stat().st_mtime)
-                    if path.exists()
-                    else datetime.utcnow()
-                ),
+                last_modified=last_modified or created_at,
                 git_repo_size_mb=git_repo_size_mb,
                 has_git_history=has_git_history,
                 vector_store_type=vector_store_type,
             )
 
-        # Process all indexes in parallel to avoid sequential I/O bottleneck.
-        # Each index requires disk size calculation + git history check (subprocess),
-        # which can take seconds per index when done sequentially.
+        # Keep the hot path parallel, but each task should remain metadata-only.
         results = await asyncio.gather(
             *[_build_index_info(meta) for meta in db_metadata],
             return_exceptions=True,

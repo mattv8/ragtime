@@ -120,6 +120,28 @@ function formatModelIdentifierForDisplay(identifier: string | null | undefined, 
   return modelId;
 }
 
+function getEmbeddingSettingsFormData(data: AppSettings): Pick<UpdateSettingsRequest,
+  'embedding_provider'
+  | 'embedding_model'
+  | 'embedding_dimensions'
+  | 'ollama_protocol'
+  | 'ollama_host'
+  | 'ollama_port'
+  | 'ollama_base_url'
+  | 'ollama_embedding_timeout_seconds'
+> {
+  return {
+    embedding_provider: data.embedding_provider,
+    embedding_model: data.embedding_model,
+    embedding_dimensions: data.embedding_dimensions,
+    ollama_protocol: data.ollama_protocol,
+    ollama_host: data.ollama_host,
+    ollama_port: data.ollama_port,
+    ollama_base_url: data.ollama_base_url,
+    ollama_embedding_timeout_seconds: data.ollama_embedding_timeout_seconds,
+  };
+}
+
 interface SettingsPanelProps {
   onServerNameChange?: (name: string) => void;
   /** Setting ID to highlight and scroll to (e.g., 'sequential_index_loading') */
@@ -815,13 +837,7 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         // Server branding
         server_name: data.server_name,
         // Embedding settings
-        embedding_provider: data.embedding_provider,
-        embedding_model: data.embedding_model,
-        embedding_dimensions: data.embedding_dimensions,
-        ollama_protocol: data.ollama_protocol,
-        ollama_host: data.ollama_host,
-        ollama_port: data.ollama_port,
-        ollama_base_url: data.ollama_base_url,
+        ...getEmbeddingSettingsFormData(data),
         // LLM settings
         llm_provider: normalizedLlmProvider,
         llm_model: data.llm_model,
@@ -1189,9 +1205,14 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
         ollama_host: formData.ollama_host,
         ollama_port: formData.ollama_port,
         ollama_base_url: `${formData.ollama_protocol || 'http'}://${formData.ollama_host || 'localhost'}:${formData.ollama_port || 11434}`,
+        ollama_embedding_timeout_seconds: formData.ollama_embedding_timeout_seconds,
       };
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
+      setFormData((prev) => ({
+        ...prev,
+        ...getEmbeddingSettingsFormData(updated),
+      }));
       setSuccess('Embedding configuration saved');
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
@@ -2891,6 +2912,39 @@ export function SettingsPanel({ onServerNameChange, highlightSetting, onHighligh
               )}
             </>
           )}
+
+          {/* Advanced Embedding Settings */}
+          <details style={{ marginBottom: '16px' }} id="setting-embedding_advanced">
+            <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Settings</summary>
+
+            <div className="form-group">
+              <label>Ollama Embedding Timeout (seconds)</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <input
+                  type="range"
+                  min="30"
+                  max="600"
+                  step="10"
+                  style={{ flex: 1 }}
+                  value={formData.ollama_embedding_timeout_seconds ?? settings?.ollama_embedding_timeout_seconds ?? 180}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      ollama_embedding_timeout_seconds: parseInt(e.target.value, 10),
+                    })
+                  }
+                />
+                <span style={{ minWidth: '48px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                  {formData.ollama_embedding_timeout_seconds ?? settings?.ollama_embedding_timeout_seconds ?? 180}s
+                </span>
+              </div>
+              <p className="field-help">
+                Maximum time allowed per embedding sub-batch when using Ollama.
+                If a batch times out, it is automatically retried with a smaller batch size.
+                Increase for slow hardware or large embedding models.
+              </p>
+            </div>
+          </details>
 
           <div className="form-group" style={{ marginTop: '1rem' }}>
             <button

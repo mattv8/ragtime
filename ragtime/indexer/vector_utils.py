@@ -10,6 +10,7 @@ This module centralizes:
 import asyncio
 from typing import Any, Dict, List, Mapping, Optional
 
+from ragtime.core.app_settings import get_app_settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 
@@ -195,6 +196,32 @@ async def ensure_embedding_column(
 
 # Maximum chunks per embedding API call to avoid blocking too long
 EMBEDDING_SUB_BATCH_SIZE = 50
+# Bound individual Ollama embedding requests so a stuck remote call does not
+# pin an indexing background task forever.
+_DEFAULT_OLLAMA_EMBEDDING_TIMEOUT_SECONDS = 180.0
+
+
+async def _get_ollama_embedding_timeout() -> float:
+    """Read the per sub-batch embedding timeout from app settings."""
+    try:
+        settings = await get_app_settings()
+        timeout_seconds = _get_setting(
+            settings,
+            "ollama_embedding_timeout_seconds",
+            _DEFAULT_OLLAMA_EMBEDDING_TIMEOUT_SECONDS,
+        )
+        return max(1.0, float(timeout_seconds))
+    except (TypeError, ValueError) as exc:
+        logger.debug("Invalid ollama_embedding_timeout_seconds: %s", exc)
+    except Exception as exc:
+        logger.debug("Could not read ollama_embedding_timeout_seconds: %s", exc)
+        return _DEFAULT_OLLAMA_EMBEDDING_TIMEOUT_SECONDS
+
+    return _DEFAULT_OLLAMA_EMBEDDING_TIMEOUT_SECONDS
+
+
+class EmbeddingBatchTimeoutError(RuntimeError):
+    """Raised when one embedding sub-batch exceeds the configured timeout."""
 
 
 async def embed_documents_subbatched(
@@ -225,16 +252,43 @@ async def embed_documents_subbatched(
 
     all_embeddings: List[List[float]] = []
     total = len(texts)
+    batch_start = 0
+    current_sub_batch_size = max(1, sub_batch_size)
+    uses_ollama = _uses_ollama_embeddings(embeddings)
+    embedding_timeout = (
+        await _get_ollama_embedding_timeout() if uses_ollama else None
+    )
 
-    for batch_start in range(0, total, sub_batch_size):
-        batch_end = min(batch_start + sub_batch_size, total)
+    while batch_start < total:
+        batch_end = min(batch_start + current_sub_batch_size, total)
         batch_texts = texts[batch_start:batch_end]
 
-        # Generate embeddings for this sub-batch
-        batch_embeddings = await asyncio.to_thread(
-            embeddings.embed_documents, batch_texts
-        )
+        try:
+            batch_embeddings = await _embed_documents_guarded(
+                embeddings,
+                batch_texts,
+                logger_override=log,
+                timeout_seconds=embedding_timeout,
+            )
+        except EmbeddingBatchTimeoutError as exc:
+            if uses_ollama and len(batch_texts) > 1 and current_sub_batch_size > 1:
+                next_batch_size = max(1, current_sub_batch_size // 2)
+                if next_batch_size != current_sub_batch_size:
+                    log.warning(
+                        "Embedding sub-batch timed out for %d chunks; retrying with batch size %d",
+                        len(batch_texts),
+                        next_batch_size,
+                    )
+                    current_sub_batch_size = next_batch_size
+                    await asyncio.sleep(0.5)
+                    continue
+            raise exc
+
         all_embeddings.extend(batch_embeddings)
+        batch_start = batch_end
+
+        if uses_ollama and current_sub_batch_size < sub_batch_size:
+            current_sub_batch_size = min(sub_batch_size, current_sub_batch_size * 2)
 
         # Yield to event loop after each sub-batch with a real time delay.
         # asyncio.sleep(0) only switches to ready coroutines; a small delay
@@ -250,6 +304,47 @@ async def embed_documents_subbatched(
             )
 
     return all_embeddings
+
+
+def _uses_ollama_embeddings(embeddings: Any) -> bool:
+    """Detect Ollama embedding clients so we can apply shared guardrails."""
+    embedding_type = type(embeddings)
+    module_name = getattr(embedding_type, "__module__", "").lower()
+    class_name = getattr(embedding_type, "__name__", "").lower()
+    return "ollama" in module_name or "ollama" in class_name
+
+
+async def _embed_documents_guarded(
+    embeddings,
+    texts: List[str],
+    *,
+    logger_override=None,
+    timeout_seconds: float | None = None,
+) -> List[List[float]]:
+    """Serialize Ollama embedding calls and bound their runtime."""
+    log = logger_override or logger
+
+    async def _run_embed() -> List[List[float]]:
+        embed_call = asyncio.to_thread(embeddings.embed_documents, texts)
+        if timeout_seconds and timeout_seconds > 0:
+            try:
+                return await asyncio.wait_for(embed_call, timeout=timeout_seconds)
+            except asyncio.TimeoutError as exc:
+                raise EmbeddingBatchTimeoutError(
+                    "Embedding provider timed out after "
+                    f"{timeout_seconds:.0f} seconds while processing {len(texts)} chunks"
+                ) from exc
+        return await embed_call
+
+    if _uses_ollama_embeddings(embeddings):
+        from ragtime.core.ollama_concurrency import \
+            get_ollama_embedding_semaphore
+
+        semaphore = await get_ollama_embedding_semaphore()
+        async with semaphore:
+            return await _run_embed()
+
+    return await _run_embed()
 
 
 async def get_embeddings_model(

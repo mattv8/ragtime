@@ -816,6 +816,9 @@ class IndexerRepository:
             default_ocr_mode=getattr(settings, "defaultOcrMode", "disabled"),
             default_ocr_vision_model=getattr(settings, "defaultOcrVisionModel", None),
             ocr_concurrency_limit=getattr(settings, "ocrConcurrencyLimit", 1),
+            ollama_embedding_timeout_seconds=getattr(
+                settings, "ollamaEmbeddingTimeoutSeconds", 180
+            ),
             # User Space configuration
             snapshot_retention_days=getattr(settings, "snapshotRetentionDays", 0),
             userspace_preview_sandbox_flags=userspace_preview_sandbox_flags,
@@ -902,6 +905,7 @@ class IndexerRepository:
             "default_ocr_mode": "defaultOcrMode",
             "default_ocr_vision_model": "defaultOcrVisionModel",
             "ocr_concurrency_limit": "ocrConcurrencyLimit",
+            "ollama_embedding_timeout_seconds": "ollamaEmbeddingTimeoutSeconds",
             # User Space configuration
             "snapshot_retention_days": "snapshotRetentionDays",
             "userspace_preview_sandbox_flags": "userspacePreviewSandboxFlags",

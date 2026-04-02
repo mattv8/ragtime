@@ -767,6 +767,14 @@ class AppSettings(BaseModel):
         description="Max concurrent Ollama vision OCR requests. Higher values use more VRAM.",
     )
 
+    # Ollama Embedding Timeout
+    ollama_embedding_timeout_seconds: int = Field(
+        default=180,
+        ge=30,
+        le=600,
+        description="Per sub-batch timeout in seconds for Ollama embedding API calls. Increase for slow hardware or large models.",
+    )
+
     # User Space Snapshot Retention
     snapshot_retention_days: int = Field(
         default=0,
@@ -1054,6 +1062,12 @@ class UpdateSettingsRequest(BaseModel):
         ge=1,
         le=10,
         description="Max concurrent Ollama vision OCR requests.",
+    )
+    ollama_embedding_timeout_seconds: Optional[int] = Field(
+        default=None,
+        ge=30,
+        le=600,
+        description="Per sub-batch timeout in seconds for Ollama embedding API calls.",
     )
     # User Space
     snapshot_retention_days: Optional[int] = Field(

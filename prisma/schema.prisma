@@ -229,6 +229,9 @@ model AppSettings {
   defaultOcrVisionModel    String?  @map("default_ocr_vision_model") // Default Ollama vision model for OCR (e.g., 'granite3.2-vision:2b')
   ocrConcurrencyLimit      Int      @default(1) @map("ocr_concurrency_limit") // Max concurrent Ollama vision OCR requests
 
+  // Ollama Embedding Timeout
+  ollamaEmbeddingTimeoutSeconds Int @default(180) @map("ollama_embedding_timeout_seconds") // Per sub-batch timeout (seconds) for Ollama embedding calls
+
   // User Space Configuration
   snapshotRetentionDays    Int      @default(0) @map("snapshot_retention_days") // Snapshot retention in days (0 = unlimited)
   userspacePreviewSandboxFlags String[] @default(["allow-scripts", "allow-same-origin", "allow-forms", "allow-popups", "allow-popups-to-escape-sandbox", "allow-modals", "allow-downloads"]) @map("userspace_preview_sandbox_flags") // Allowed iframe sandbox flags for User Space previews

@@ -212,6 +212,9 @@ class SettingsCache:
                 "default_ocr_vision_model": getattr(
                     prisma_settings, "defaultOcrVisionModel", None
                 ),
+                "ollama_embedding_timeout_seconds": getattr(
+                    prisma_settings, "ollamaEmbeddingTimeoutSeconds", 180
+                ),
                 # User Space configuration
                 "userspace_preview_sandbox_flags": userspace_preview_sandbox_flags,
             }
@@ -286,6 +289,7 @@ class SettingsCache:
                 # OCR settings
                 "default_ocr_mode": "disabled",
                 "default_ocr_vision_model": None,
+                "ollama_embedding_timeout_seconds": 180,
                 # User Space configuration
                 "userspace_preview_sandbox_flags": list(
                     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS
