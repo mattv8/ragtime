@@ -5512,14 +5512,18 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
               <button className="modal-close" onClick={handleCloseMountsModal}>&times;</button>
             </div>
             <div className="modal-body">
-              <p className="userspace-muted" style={{ marginBottom: 0 }}>
-                Mount remote directories from configured tools into the runtime sandbox.
-                SSH mounts are synced on demand. Ragtime uses rsync when the remote server has it installed, and automatically falls back to built-in SSH sync otherwise.
-              </p>
-              <p className="userspace-muted" style={{ marginBottom: 12, fontSize: 12 }}>
-                Mounted targets are runtime overlays. Changes made by a running app inside a mounted folder may not be written directly to workspace files and can appear after a sync/refresh cycle.
-                Mount targets under /workspace are excluded from snapshots by default.
-              </p>
+              {!mountsLoading && mounts.length === 0 && (
+                <>
+                  <p className="userspace-muted" style={{ marginBottom: 0 }}>
+                    Mount remote directories from configured tools into the runtime sandbox.
+                    SSH mounts are synced on demand. Ragtime uses rsync when the remote server has it installed, and automatically falls back to built-in SSH sync otherwise.
+                  </p>
+                  <p className="userspace-muted" style={{ marginBottom: 12, fontSize: 12 }}>
+                    Mounted targets are runtime overlays. Changes made by a running app inside a mounted folder may not be written directly to workspace files and can appear after a sync/refresh cycle.
+                    Mount targets under /workspace are excluded from snapshots by default.
+                  </p>
+                </>
+              )}
               {mountsLoading ? (
                 <p className="userspace-muted">Loading...</p>
               ) : (
@@ -5557,7 +5561,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                 {mount.source_type === 'ssh' && (
                                   <>
                                     <button
-                                      className={`btn btn-sm ${mount.auto_sync_enabled ? 'btn-primary' : 'btn-secondary'}`}
+                                      className={`btn btn-sm ${mount.auto_sync_enabled ? 'btn-primary' : 'btn-secondary userspace-mount-toggle-btn-inactive'}`}
                                       onClick={() => handleToggleMountAutoSync(mount.id, !mount.auto_sync_enabled)}
                                       disabled={savingMountWatchId === mount.id || isEjected}
                                       title={mount.auto_sync_enabled ? 'Disable auto-sync watch mode' : 'Enable auto-sync watch mode'}
@@ -5565,12 +5569,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                       {savingMountWatchId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : (
                                         <span className="userspace-mount-toggle-icon">
                                           Auto
-                                          {!mount.auto_sync_enabled && <span className="userspace-mount-toggle-slash"><Slash size={20} /></span>}
                                         </span>
                                       )}
                                     </button>
                                     <button
-                                      className={`btn btn-sm ${mount.sync_deletes ? 'btn-danger' : 'btn-secondary'}`}
+                                      className={`btn btn-sm ${mount.sync_deletes ? 'btn-danger' : 'btn-secondary userspace-mount-toggle-btn-inactive'}`}
                                       onClick={() => handleToggleMountSyncDeletes(mount.id, !mount.sync_deletes)}
                                       disabled={savingMountWatchId === mount.id || isEjected}
                                       title={mount.sync_deletes ? 'Sync-deletes ENABLED: local files removed from remote will be permanently deleted on sync' : 'Sync-deletes disabled: local files are preserved even if removed from remote (bidirectional merge)'}
@@ -5578,7 +5581,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                       {savingMountWatchId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : (
                                         <span className="userspace-mount-toggle-icon">
                                           <Eraser size={10} />
-                                          {!mount.sync_deletes && <span className="userspace-mount-toggle-slash"><Slash size={20} /></span>}
                                         </span>
                                       )}
                                     </button>

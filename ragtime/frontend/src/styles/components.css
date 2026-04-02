@@ -2995,19 +2995,16 @@ textarea:focus {
   justify-content: center;
 }
 
-.userspace-mount-toggle-icon .userspace-mount-toggle-slash {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 20px;
-  height: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  opacity: 0.7;
-  pointer-events: none;
+.userspace-mount-toggle-btn-inactive {
   color: var(--color-text-muted);
+  border-color: var(--color-border-subtle);
+  background: var(--color-surface-secondary);
+}
+
+.userspace-mount-toggle-btn-inactive:hover:not(:disabled) {
+  color: var(--color-text-secondary);
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-hover);
 }
 
 .userspace-mount-controls {
