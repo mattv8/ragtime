@@ -1775,6 +1775,7 @@ export interface WorkspaceMount {
   source_name: string | null;
   source_type: UserspaceMountSourceType | null;
   mount_backend: UserspaceMountBackend | null;
+  source_available: boolean;
   created_at: string;
   updated_at: string;
 }

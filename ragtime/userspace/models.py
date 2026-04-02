@@ -513,6 +513,7 @@ class WorkspaceMount(BaseModel):
     source_name: str | None = None
     source_type: UserspaceMountSourceType | None = None
     mount_backend: UserspaceMountBackend | None = None
+    source_available: bool = True
     created_at: datetime
     updated_at: datetime
 

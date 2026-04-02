@@ -869,10 +869,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
 
   /** Repo-relative paths that are mount targets (e.g. "test" for target_path "/workspace/test"). */
   const mountTargetPaths = useMemo(() => {
-    const paths = new Map<string, { enabled: boolean }>();
+    const paths = new Map<
+      string,
+      { enabled: boolean; sourceType: WorkspaceMount['source_type']; syncStatus: WorkspaceMount['sync_status']; lastSyncError: string | null; sourceAvailable: boolean }
+    >();
     for (const mount of mounts) {
       const target = mount.target_path?.replace(/^\/workspace\//, '')?.replace(/^\/+|\/+$/g, '');
-      if (target) paths.set(target, { enabled: mount.enabled });
+      if (target) {
+        paths.set(target, {
+          enabled: mount.enabled,
+          sourceType: mount.source_type,
+          syncStatus: mount.sync_status,
+          lastSyncError: mount.last_sync_error,
+          sourceAvailable: mount.source_available,
+        });
+      }
     }
     return paths;
   }, [mounts]);
@@ -4048,16 +4059,38 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
           const mountInfo = mountTargetPaths.get(node.path);
           const isMount = !!mountInfo;
           const isMountDisabled = isMount && !mountInfo.enabled;
+          const isMountDisconnected = isMount && !mountInfo.sourceAvailable;
+          const isSshMount = isMount && mountInfo.sourceType === 'ssh';
+          const mountSyncClass = mountInfo?.syncStatus === 'synced'
+            ? 'userspace-status-pill-success'
+            : mountInfo?.syncStatus === 'pending'
+              ? 'userspace-status-pill-info'
+              : 'userspace-status-pill-danger';
+          const mountSyncLabel = mountInfo?.syncStatus === 'synced'
+            ? 'Synced'
+            : mountInfo?.syncStatus === 'pending'
+              ? 'Pending'
+              : 'Error';
           const hasChangedFileDescendant = !isExpanded && collectFilePaths(node).some((p) => changedFilePaths.has(p));
           rows.push(
-            <div key={node.path} className={`userspace-file-item userspace-tree-row userspace-tree-folder-row${isMount ? ' userspace-tree-mount-folder' : ''}${isMountDisabled ? ' userspace-tree-mount-disabled' : ''}`}>
+            <div key={node.path} className={`userspace-file-item userspace-tree-row userspace-tree-folder-row${isMount ? ' userspace-tree-mount-folder' : ''}${isMountDisabled || isMountDisconnected ? ' userspace-tree-mount-disabled' : ''}`}>
               <button className="userspace-item-content userspace-tree-content" onClick={() => handleToggleFolder(node.path)} style={indentStyle}>
                 <span className="userspace-tree-chevron" aria-hidden="true">
                   {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                 </span>
                 <span className={`userspace-folder-label${isMount ? ' userspace-tree-mount-label' : ''}`}>{node.name}</span>
                 {hasChangedFileDescendant && <span className="userspace-tree-folder-changed-file-dot" title="Contains changed files" />}
-                {isMount && <span className={`userspace-tree-mount-badge${isMountDisabled ? ' userspace-tree-mount-badge-disabled' : ''}`} role="button" tabIndex={0} title="Manage mounts" onClick={(e) => { e.stopPropagation(); void handleOpenMountsModal(); }}>{isMountDisabled ? 'unmounted' : 'mounted'}</span>}
+                {isMount && (
+                  <span
+                    className={`userspace-tree-mount-badge${isMountDisconnected ? ' userspace-tree-mount-badge-disconnected' : isMountDisabled ? ' userspace-tree-mount-badge-disabled' : isSshMount && mountInfo?.syncStatus !== 'synced' ? ` userspace-tree-mount-badge-sync ${mountSyncClass}` : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    title={isMountDisconnected ? 'Mount source is no longer available' : isSshMount && mountInfo?.syncStatus === 'error' && mountInfo?.lastSyncError ? mountInfo.lastSyncError : 'Manage mounts'}
+                    onClick={(e) => { e.stopPropagation(); void handleOpenMountsModal(); }}
+                  >
+                    {isMountDisconnected ? 'disconnected' : isMountDisabled ? 'unmounted' : isSshMount ? mountSyncLabel.toLowerCase() : 'mounted'}
+                  </span>
+                )}
               </button>
               {canEditWorkspace && !isMount && (
                 <div className="userspace-item-actions">
@@ -5461,13 +5494,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
               <button className="modal-close" onClick={handleCloseMountsModal}>&times;</button>
             </div>
             <div className="modal-body">
-              <p className="userspace-muted" style={{ marginBottom: 12 }}>
+              <p className="userspace-muted" style={{ marginBottom: 0 }}>
                 Mount remote directories from configured tools into the runtime sandbox.
                 SSH mounts are synced on demand; synced SFTP mounts can then be refreshed into the running sandbox.
               </p>
               <p className="userspace-muted" style={{ marginBottom: 12, fontSize: 12 }}>
-                Mounted targets are runtime overlays. Files created by a running app inside a mounted folder may not appear in the workspace file tree until they are synced back from the source.
-                For mounts under /workspace, target folders are automatically added to .gitignore so snapshots do not capture mounted content by default.
+                Mounted targets are runtime overlays. Changes made by a running app inside a mounted folder may not be written directly to workspace files and can appear after a sync/refresh cycle.
+                Mount targets under /workspace are excluded from snapshots by default.
               </p>
               {mountsLoading ? (
                 <p className="userspace-muted">Loading...</p>
@@ -5494,12 +5527,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                             </span>
                             <div className="userspace-mount-controls">
                               <span className="userspace-mount-sync-status">
-                                {mount.source_type === 'ssh' && mount.sync_status === 'synced' && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Synced</span>}
-                                {mount.source_type === 'ssh' && mount.sync_status === 'pending' && <span className="userspace-status-pill userspace-status-pill-info" style={{ fontSize: 11 }}>Pending</span>}
-                                {mount.source_type === 'ssh' && mount.sync_status === 'error' && (
+                                {!mount.source_available && <span className="userspace-status-pill userspace-status-pill-danger" style={{ fontSize: 11 }} title="Mount source is no longer available">Disconnected</span>}
+                                {mount.source_available && mount.source_type === 'ssh' && mount.sync_status === 'synced' && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Synced</span>}
+                                {mount.source_available && mount.source_type === 'ssh' && mount.sync_status === 'pending' && <span className="userspace-status-pill userspace-status-pill-info" style={{ fontSize: 11 }}>Pending</span>}
+                                {mount.source_available && mount.source_type === 'ssh' && mount.sync_status === 'error' && (
                                   <span className="userspace-status-pill userspace-status-pill-error" style={{ fontSize: 11 }} title={mount.last_sync_error ?? undefined}>Error</span>
                                 )}
-                                {mount.source_type !== 'ssh' && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Live</span>}
+                                {mount.source_available && mount.source_type !== 'ssh' && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Live</span>}
                               </span>
                               <div className="userspace-mount-actions">
                                 {mount.source_type === 'ssh' && (

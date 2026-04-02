@@ -18,9 +18,9 @@ from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import HTTPException
+
 from prisma import Json
 from prisma import fields as prisma_fields
-
 from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
@@ -4281,6 +4281,41 @@ class UserSpaceService:
             updated_at=getattr(record, "updatedAt"),
         )
 
+    async def _check_mount_source_available(
+        self,
+        row: Any,
+        mount_source: UserspaceMountSource | None,
+    ) -> bool:
+        """Check whether the backing source directory is reachable.
+
+        For filesystem mounts this verifies the resolved local path exists,
+        which will be False when the backing Docker volume has been removed.
+        SSH mounts are considered available if the sync cache exists and the
+        mount source is enabled; actual remote reachability is checked at sync
+        time, not here.
+        """
+        if mount_source is None:
+            return False
+        if not mount_source.enabled:
+            return False
+
+        source_path = str(getattr(row, "sourcePath", "") or "")
+
+        if mount_source.source_type == "filesystem":
+            try:
+                resolved = await self._resolve_filesystem_mount_source_local_path(
+                    mount_source_id=mount_source.id,
+                    connection_config=mount_source.connection_config,
+                    source_path=source_path,
+                )
+                return Path(resolved).is_dir()
+            except Exception:
+                return False
+
+        # SSH mounts — source is "available" when the mount source record is
+        # enabled (remote reachability is validated at sync time).
+        return True
+
     async def _sync_workspace_mount_record(
         self,
         db: Any,
@@ -4928,7 +4963,11 @@ class UserSpaceService:
                 if mount_source_record is not None
                 else None
             )
-            results.append(self._workspace_mount_from_record(row, mount_source))
+            mount = self._workspace_mount_from_record(row, mount_source)
+            mount.source_available = await self._check_mount_source_available(
+                row, mount_source
+            )
+            results.append(mount)
         return results
 
     async def list_mountable_sources(

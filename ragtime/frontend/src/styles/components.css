@@ -1493,6 +1493,27 @@ textarea:focus {
   opacity: 0.9;
 }
 
+.userspace-tree-mount-badge-disconnected {
+  border-style: dotted;
+  color: var(--color-error, #e06c75);
+  border-color: var(--color-error, #e06c75);
+  opacity: 0.9;
+}
+
+.userspace-tree-mount-badge-sync {
+  border-style: solid;
+}
+
+.userspace-tree-mount-badge-sync.userspace-status-pill-info {
+  color: var(--color-info, #6cb6ff);
+  border-color: var(--color-info, #6cb6ff);
+}
+
+.userspace-tree-mount-badge-sync.userspace-status-pill-danger {
+  color: var(--color-error, #e06c75);
+  border-color: var(--color-error, #e06c75);
+}
+
 /* Per-file save button in tree row — always visible when file is changed */
 .userspace-tree-save-btn {
   background: none;
