@@ -231,7 +231,7 @@ FAISS indexes are loaded into memory at startup; pgvector indexes stay in Postgr
      ragtime:
        # For older CPUs without X86_V2 support, use the legacy tag:
        # image: hub.docker.visnovsky.us/library/ragtime:legacy
-       image: hub.docker.visnovsky.us/library/ragtime:userspace-mounts
+       image: hub.docker.visnovsky.us/library/ragtime:main
        container_name: ragtime
        restart: unless-stopped
        ports:
@@ -270,7 +270,7 @@ FAISS indexes are loaded into memory at startup; pgvector indexes stay in Postgr
          start_period: 15s
 
      runtime:
-       image: hub.docker.visnovsky.us/library/runtime:userspace-mounts
+       image: hub.docker.visnovsky.us/library/runtime:main
        container_name: runtime
        restart: unless-stopped
        environment:
