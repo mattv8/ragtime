@@ -713,6 +713,20 @@ class SchemaIndexerService:
                 await on_progress(total_discovered, 0, "")
 
             skipped_objects: List[str] = []
+            metadata = await self._get_postgres_metadata_batch(
+                all_rows,
+                host,
+                port,
+                user,
+                password,
+                database,
+                container,
+            )
+            columns_map = metadata["columns"]
+            pk_map = metadata["primary_keys"]
+            fk_map = metadata["foreign_keys"]
+            index_map = metadata["indexes"]
+            check_constraint_map = metadata["check_constraints"]
 
             for idx, row in enumerate(all_rows):
                 schema = row.get("table_schema", "public")
@@ -722,6 +736,7 @@ class SchemaIndexerService:
                 table_comment = row.get("table_comment")
 
                 full_name = f"{schema}.{table_name}"
+                object_key = (schema, table_name)
 
                 # Normalize table type for display
                 if "MATERIALIZED" in table_type_raw.upper():
@@ -732,65 +747,16 @@ class SchemaIndexerService:
                     table_type = "TABLE"
 
                 try:
-                    # Get columns for this table/view
-                    columns = await self._get_postgres_columns(
-                        schema,
-                        table_name,
-                        host,
-                        port,
-                        user,
-                        password,
-                        database,
-                        container,
-                    )
+                    columns = columns_map.get(object_key, [])
+                    if not columns:
+                        raise RuntimeError(
+                            "No column metadata returned for object"
+                        )
 
-                    # Get primary key (not applicable for views, but query is safe)
-                    pk = await self._get_postgres_primary_key(
-                        schema,
-                        table_name,
-                        host,
-                        port,
-                        user,
-                        password,
-                        database,
-                        container,
-                    )
-
-                    # Get foreign keys
-                    fks = await self._get_postgres_foreign_keys(
-                        schema,
-                        table_name,
-                        host,
-                        port,
-                        user,
-                        password,
-                        database,
-                        container,
-                    )
-
-                    # Get indexes (materialized views can have indexes)
-                    indexes = await self._get_postgres_indexes(
-                        schema,
-                        table_name,
-                        host,
-                        port,
-                        user,
-                        password,
-                        database,
-                        container,
-                    )
-
-                    # Get check constraints
-                    check_constraints = await self._get_postgres_check_constraints(
-                        schema,
-                        table_name,
-                        host,
-                        port,
-                        user,
-                        password,
-                        database,
-                        container,
-                    )
+                    pk = pk_map.get(object_key, [])
+                    fks = fk_map.get(object_key, [])
+                    indexes = index_map.get(object_key, [])
+                    check_constraints = check_constraint_map.get(object_key, [])
 
                     tables.append(
                         TableSchemaInfo(
@@ -818,7 +784,11 @@ class SchemaIndexerService:
                     )
 
                 # Report progress after each table
-                if on_progress:
+                if on_progress and (
+                    idx == 0
+                    or idx + 1 == total_discovered
+                    or (idx + 1) % 25 == 0
+                ):
                     await on_progress(total_discovered, idx + 1, full_name)
 
             if skipped_objects:
@@ -836,6 +806,338 @@ class SchemaIndexerService:
         except Exception as e:
             logger.error(f"Error introspecting PostgreSQL schema: {e}")
             raise
+
+    def _build_postgres_target_values(self, all_rows: List[dict]) -> str:
+        """Build a VALUES clause for the discovered PostgreSQL objects."""
+        values: List[str] = []
+
+        for row in all_rows:
+            schema = str(row.get("table_schema", "public")).replace("'", "''")
+            table_name = str(row.get("table_name", "")).replace("'", "''")
+            if not table_name:
+                continue
+            values.append(f"('{schema}', '{table_name}')")
+
+        return ",\n                ".join(values)
+
+    async def _get_postgres_metadata_batch(
+        self,
+        all_rows: List[dict],
+        host: str,
+        port: int,
+        user: str,
+        password: str,
+        database: str,
+        container: str,
+    ) -> Dict[str, Dict[Tuple[str, str], list]]:
+        """Fetch PostgreSQL schema metadata for all discovered objects in bulk."""
+        empty_metadata = {
+            "columns": {},
+            "primary_keys": {},
+            "foreign_keys": {},
+            "indexes": {},
+            "check_constraints": {},
+        }
+        if not all_rows:
+            return empty_metadata
+
+        target_values = self._build_postgres_target_values(all_rows)
+        if not target_values:
+            return empty_metadata
+
+        target_objects_cte = f"""
+        WITH target_objects(table_schema, table_name) AS (
+            VALUES
+                {target_values}
+        )
+        """
+
+        columns_query = f"""
+        {target_objects_cte}
+        SELECT
+            n.nspname AS table_schema,
+            c.relname AS table_name,
+            a.attname AS name,
+            pg_catalog.format_type(a.atttypid, a.atttypmod) AS type,
+            CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END AS nullable,
+            pg_catalog.pg_get_expr(d.adbin, d.adrelid) AS default,
+            pg_catalog.col_description(c.oid, a.attnum) AS comment
+        FROM target_objects t
+        JOIN pg_catalog.pg_namespace n ON n.nspname = t.table_schema
+        JOIN pg_catalog.pg_class c
+            ON c.relnamespace = n.oid
+            AND c.relname = t.table_name
+            AND c.relkind IN ('r', 'p', 'v', 'f', 'm')
+        JOIN pg_catalog.pg_attribute a
+            ON a.attrelid = c.oid
+            AND a.attnum > 0
+            AND NOT a.attisdropped
+        LEFT JOIN pg_catalog.pg_attrdef d
+            ON d.adrelid = c.oid
+            AND d.adnum = a.attnum
+        ORDER BY n.nspname, c.relname, a.attnum
+        """
+
+        primary_keys_query = f"""
+        {target_objects_cte}
+        SELECT
+            n.nspname AS table_schema,
+            c.relname AS table_name,
+            a.attname AS column_name
+        FROM target_objects t
+        JOIN pg_catalog.pg_namespace n ON n.nspname = t.table_schema
+        JOIN pg_catalog.pg_class c
+            ON c.relnamespace = n.oid
+            AND c.relname = t.table_name
+            AND c.relkind IN ('r', 'p', 'v', 'f', 'm')
+        JOIN pg_catalog.pg_constraint con
+            ON con.conrelid = c.oid
+            AND con.contype = 'p'
+        JOIN unnest(con.conkey) WITH ORDINALITY AS cols(attnum, ordinality)
+            ON TRUE
+        JOIN pg_catalog.pg_attribute a
+            ON a.attrelid = c.oid
+            AND a.attnum = cols.attnum
+        ORDER BY n.nspname, c.relname, cols.ordinality
+        """
+
+        foreign_keys_query = f"""
+        {target_objects_cte}
+        SELECT
+            n.nspname AS table_schema,
+            c.relname AS table_name,
+            con.conname AS name,
+            src.attname AS column_name,
+            ref_ns.nspname || '.' || ref_cls.relname AS references_table,
+            ref_att.attname AS references_column,
+            fk.ordinality AS ordinality
+        FROM target_objects t
+        JOIN pg_catalog.pg_namespace n ON n.nspname = t.table_schema
+        JOIN pg_catalog.pg_class c
+            ON c.relnamespace = n.oid
+            AND c.relname = t.table_name
+            AND c.relkind IN ('r', 'p', 'v', 'f', 'm')
+        JOIN pg_catalog.pg_constraint con
+            ON con.conrelid = c.oid
+            AND con.contype = 'f'
+        JOIN unnest(con.conkey, con.confkey) WITH ORDINALITY AS fk(src_attnum, ref_attnum, ordinality)
+            ON TRUE
+        JOIN pg_catalog.pg_attribute src
+            ON src.attrelid = c.oid
+            AND src.attnum = fk.src_attnum
+        JOIN pg_catalog.pg_class ref_cls ON ref_cls.oid = con.confrelid
+        JOIN pg_catalog.pg_namespace ref_ns ON ref_ns.oid = ref_cls.relnamespace
+        JOIN pg_catalog.pg_attribute ref_att
+            ON ref_att.attrelid = ref_cls.oid
+            AND ref_att.attnum = fk.ref_attnum
+        ORDER BY n.nspname, c.relname, con.conname, fk.ordinality
+        """
+
+        indexes_query = f"""
+        {target_objects_cte}
+        SELECT
+            n.nspname AS table_schema,
+            c.relname AS table_name,
+            i.relname AS name,
+            ix.indisunique AS is_unique,
+            COALESCE(
+                json_agg(a.attname ORDER BY indkey_ords.ordinality)
+                    FILTER (WHERE a.attname IS NOT NULL),
+                '[]'::json
+            ) AS columns
+        FROM target_objects t
+        JOIN pg_catalog.pg_namespace n ON n.nspname = t.table_schema
+        JOIN pg_catalog.pg_class c
+            ON c.relnamespace = n.oid
+            AND c.relname = t.table_name
+            AND c.relkind IN ('r', 'p', 'v', 'f', 'm')
+        JOIN pg_catalog.pg_index ix ON ix.indrelid = c.oid
+        JOIN pg_catalog.pg_class i ON i.oid = ix.indexrelid
+        JOIN LATERAL unnest(string_to_array(ix.indkey::text, ' ')::smallint[])
+            WITH ORDINALITY AS indkey_ords(attnum, ordinality)
+            ON indkey_ords.attnum > 0
+        LEFT JOIN pg_catalog.pg_attribute a
+            ON a.attrelid = c.oid
+            AND a.attnum = indkey_ords.attnum
+        WHERE NOT ix.indisprimary
+        GROUP BY n.nspname, c.relname, i.relname, ix.indisunique
+        ORDER BY n.nspname, c.relname, i.relname
+        """
+
+        check_constraints_query = f"""
+        {target_objects_cte}
+        SELECT
+            n.nspname AS table_schema,
+            c.relname AS table_name,
+            con.conname AS name,
+            pg_catalog.pg_get_constraintdef(con.oid) AS definition
+        FROM target_objects t
+        JOIN pg_catalog.pg_namespace n ON n.nspname = t.table_schema
+        JOIN pg_catalog.pg_class c
+            ON c.relnamespace = n.oid
+            AND c.relname = t.table_name
+            AND c.relkind IN ('r', 'p', 'v', 'f', 'm')
+        JOIN pg_catalog.pg_constraint con
+            ON con.conrelid = c.oid
+            AND con.contype = 'c'
+        WHERE pg_catalog.pg_get_constraintdef(con.oid) NOT LIKE '%IS NOT NULL%'
+        ORDER BY n.nspname, c.relname, con.conname
+        """
+
+        # Run all five metadata queries concurrently – they are independent
+        # and each spawns a separate psql subprocess.
+        (
+            column_rows,
+            primary_key_rows,
+            foreign_key_rows,
+            index_rows,
+            check_constraint_rows,
+        ) = await asyncio.gather(
+            self._execute_postgres_json_query(
+                columns_query, host, port, user, password, database, container
+            ),
+            self._execute_postgres_json_query(
+                primary_keys_query, host, port, user, password, database, container
+            ),
+            self._execute_postgres_json_query(
+                foreign_keys_query, host, port, user, password, database, container
+            ),
+            self._execute_postgres_json_query(
+                indexes_query, host, port, user, password, database, container
+            ),
+            self._execute_postgres_json_query(
+                check_constraints_query,
+                host,
+                port,
+                user,
+                password,
+                database,
+                container,
+            ),
+        )
+
+        metadata = {
+            "columns": {},
+            "primary_keys": {},
+            "foreign_keys": {},
+            "indexes": {},
+            "check_constraints": {},
+        }
+
+        for row in column_rows:
+            key = (row["table_schema"], row["table_name"])
+            metadata["columns"].setdefault(key, []).append(
+                {
+                    "name": row["name"],
+                    "type": row["type"],
+                    "nullable": row["nullable"],
+                    "default": row.get("default"),
+                    "comment": row.get("comment") or None,
+                }
+            )
+
+        for row in primary_key_rows:
+            key = (row["table_schema"], row["table_name"])
+            metadata["primary_keys"].setdefault(key, []).append(row["column_name"])
+
+        for row in foreign_key_rows:
+            key = (row["table_schema"], row["table_name"])
+            foreign_keys = metadata["foreign_keys"].setdefault(key, [])
+            if not foreign_keys or foreign_keys[-1]["name"] != row["name"]:
+                foreign_keys.append(
+                    {
+                        "name": row["name"],
+                        "columns": [],
+                        "references_table": row["references_table"],
+                        "references_columns": [],
+                    }
+                )
+            foreign_keys[-1]["columns"].append(row["column_name"])
+            foreign_keys[-1]["references_columns"].append(
+                row["references_column"]
+            )
+
+        for row in index_rows:
+            key = (row["table_schema"], row["table_name"])
+            metadata["indexes"].setdefault(key, []).append(
+                {
+                    "name": row["name"],
+                    "unique": row["is_unique"],
+                    "columns": row.get("columns") or [],
+                }
+            )
+
+        for row in check_constraint_rows:
+            key = (row["table_schema"], row["table_name"])
+            metadata["check_constraints"].setdefault(key, []).append(
+                {"name": row["name"], "definition": row["definition"]}
+            )
+
+        return metadata
+
+    async def _execute_postgres_json_query(
+        self,
+        query: str,
+        host: str,
+        port: int,
+        user: str,
+        password: str,
+        database: str,
+        container: str,
+    ) -> List[dict]:
+        """Execute a PostgreSQL query and parse the JSON row payload."""
+        wrapped_query = (
+            "SELECT COALESCE(json_agg(row_to_json(query_rows)), '[]'::json)::text "
+            f"FROM ({query}) query_rows"
+        )
+        escaped_query = wrapped_query.replace("'", "'\\''")
+
+        if host:
+            cmd = [
+                "psql",
+                "-h",
+                host,
+                "-p",
+                str(port),
+                "-U",
+                user,
+                "-d",
+                database,
+                "-t",
+                "-A",
+                "-c",
+                wrapped_query,
+            ]
+            env = {"PGPASSWORD": password}
+            result = await asyncio.to_thread(
+                subprocess.run,
+                cmd,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=60,
+            )
+        elif container:
+            inner_cmd = (
+                f'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" '
+                f'-d "$POSTGRES_DB" -t -A -c \'{escaped_query}\''
+            )
+            cmd = ["docker", "exec", "-i", container, "bash", "-c", inner_cmd]
+            result = await asyncio.to_thread(
+                subprocess.run, cmd, capture_output=True, text=True, timeout=60
+            )
+        else:
+            raise ValueError("No PostgreSQL connection configured (host or container)")
+
+        if result.returncode != 0:
+            raise RuntimeError(f"PostgreSQL query failed: {result.stderr}")
+
+        payload = result.stdout.strip()
+        if not payload:
+            return []
+
+        rows = json.loads(payload)
+        return rows if isinstance(rows, list) else []
 
     async def _execute_postgres_query(
         self,

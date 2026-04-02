@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/api';
 import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPanel, UserSpacePanel, LoginPage, OAuthLoginPage, MemoryStatus, UserMenu, SecurityBanner, ConfigurationBanner } from '@/components';
 import { AvailableModelsProvider } from '@/contexts/AvailableModelsContext';
-import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob, ToolConfig, ConfigurationWarning } from '@/types';
+import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob, ConfigurationWarning } from '@/types';
 import type { OAuthParams } from '@/components';
 import '@/styles/global.css';
 
@@ -112,7 +112,7 @@ export function App() {
   const [indexesError, setIndexesError] = useState<string | null>(null);
 
   // Filesystem indexer state
-  const [_filesystemTools, setFilesystemTools] = useState<ToolConfig[]>([]);
+  const [filesystemToolIds, setFilesystemToolIds] = useState<string[]>([]);
   const [filesystemJobs, setFilesystemJobs] = useState<FilesystemIndexJob[]>([]);
   const [aggregateSearch, setAggregateSearch] = useState(true);
   const [embeddingDimensions, setEmbeddingDimensions] = useState<number | null>(null);
@@ -346,28 +346,52 @@ export function App() {
     loadIndexes(); // Also refresh indexes to show optimistic metadata immediately
   }, [loadJobs, loadIndexes]);
 
-  // Load filesystem tools and their jobs
-  const loadFilesystemJobs = useCallback(async () => {
+  const refreshFilesystemToolIds = useCallback(async (): Promise<string[]> => {
     try {
       const allTools = await api.listToolConfigs();
-      const fsTools = allTools.filter(t => t.tool_type === 'filesystem_indexer');
-      setFilesystemTools(fsTools);
+      const toolIds = allTools
+        .filter(t => t.tool_type === 'filesystem_indexer')
+        .map(t => t.id);
+      setFilesystemToolIds(toolIds);
+      return toolIds;
+    } catch (err) {
+      console.warn('Failed to load filesystem tools:', err);
+      return [];
+    }
+  }, []);
+
+  // Load filesystem tools and their jobs
+  const loadFilesystemJobs = useCallback(async (toolIdsOverride?: string[]) => {
+    try {
+      const toolIds = toolIdsOverride ?? (
+        filesystemToolIds.length > 0 ? filesystemToolIds : await refreshFilesystemToolIds()
+      );
+
+      if (toolIds.length === 0) {
+        setFilesystemJobs([]);
+        return;
+      }
 
       // Fetch jobs for all filesystem tools
       const allJobs: FilesystemIndexJob[] = [];
-      await Promise.all(fsTools.map(async (tool) => {
+      await Promise.all(toolIds.map(async (toolId) => {
         try {
-          const jobs = await api.getFilesystemJobs(tool.id);
+          const jobs = await api.getFilesystemJobs(toolId);
           allJobs.push(...jobs);
         } catch (err) {
-          console.warn(`Failed to fetch jobs for ${tool.id}:`, err);
+          console.warn(`Failed to fetch jobs for ${toolId}:`, err);
         }
       }));
       setFilesystemJobs(allJobs);
     } catch (err) {
-      console.warn('Failed to load filesystem tools:', err);
+      console.warn('Failed to load filesystem jobs:', err);
     }
-  }, []);
+  }, [filesystemToolIds, refreshFilesystemToolIds]);
+
+  const handleFilesystemToolsChanged = useCallback(async () => {
+    const toolIds = await refreshFilesystemToolIds();
+    await loadFilesystemJobs(toolIds);
+  }, [loadFilesystemJobs, refreshFilesystemToolIds]);
 
   const handleCancelFilesystemJob = useCallback(async (toolId: string, jobId: string) => {
     await api.cancelFilesystemJob(toolId, jobId);
@@ -651,6 +675,7 @@ export function App() {
 
           {/* Filesystem Indexes (pgvector) */}
           <FilesystemIndexPanel
+            onToolsChanged={handleFilesystemToolsChanged}
             onJobsChanged={loadFilesystemJobs}
             embeddingDimensions={embeddingDimensions}
           />
