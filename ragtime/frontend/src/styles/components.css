@@ -1449,19 +1449,35 @@ textarea:focus {
 }
 
 /* Mount folder styling — symlink-like appearance */
-.userspace-tree-mount-icon {
-  color: var(--color-text-muted);
-  flex-shrink: 0;
-  margin-right: 3px;
-}
-
 .userspace-tree-mount-label {
   font-style: italic;
   opacity: 0.85;
 }
 
-.userspace-tree-mount-folder:hover .userspace-tree-mount-icon {
+.userspace-tree-mount-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+  padding: 0 5px;
+  min-height: 16px;
+  border: 1px dashed var(--color-text-muted);
+  border-radius: 999px;
+  font-size: 9px;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-muted);
+  opacity: 0.8;
+  flex-shrink: 0;
+}
+
+.userspace-tree-mount-folder:hover .userspace-tree-mount-badge {
   color: var(--color-text-secondary);
+}
+
+.userspace-tree-mount-folder:hover .userspace-tree-mount-badge {
+  border-color: var(--color-text-secondary);
+  opacity: 1;
 }
 
 /* Per-file save button in tree row — always visible when file is changed */

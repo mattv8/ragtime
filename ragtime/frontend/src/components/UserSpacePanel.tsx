@@ -4012,9 +4012,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                 <span className="userspace-tree-chevron" aria-hidden="true">
                   {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                 </span>
-                {isMount && <Link2 size={12} className="userspace-tree-mount-icon" />}
                 <span className={`userspace-folder-label${isMount ? ' userspace-tree-mount-label' : ''}`}>{node.name}</span>
                 {hasChangedFileDescendant && <span className="userspace-tree-folder-changed-file-dot" title="Contains changed files" />}
+                {isMount && <span className="userspace-tree-mount-badge">mount</span>}
               </button>
               {canEditWorkspace && !isMount && (
                 <div className="userspace-item-actions">
