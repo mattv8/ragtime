@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { AlertCircle, ArrowRight, Check, ChevronDown, ChevronRight, Copy, Database, Eraser, ExternalLink, File, HardDrive, HardDriveDownload, HardDriveUpload, History, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, ChevronRight, Copy, Database, ExternalLink, File, HardDrive, HardDriveDownload, HardDriveUpload, History, Info, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { python } from '@codemirror/lang-python';
@@ -28,7 +28,7 @@ import AdminWorkspaceModal from './shared/AdminWorkspaceModal';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
-import type { BrowseResponse, DirectoryEntry, MountableSource, User, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceWorkspace, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, WorkspaceMount } from '@/types';
+import type { BrowseResponse, DirectoryEntry, MountableSource, User, UserSpaceAvailableTool, UserSpaceCollabMessage, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceWorkspace, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import { ChatPanel } from './ChatPanel';
 import { LdapGroupSelect } from './LdapGroupSelect';
@@ -46,6 +46,8 @@ interface WorkspaceChatState {
   hasLive: boolean;
   hasInterrupted: boolean;
 }
+
+type MountSyncPreviewIntent = 'sync' | 'enable-auto' | 'update-auto-sync-mode';
 
 const DEFAULT_WORKSPACE_CHAT_STATE: WorkspaceChatState = { hasLive: false, hasInterrupted: false };
 
@@ -80,6 +82,53 @@ function browserPathToSourcePath(browserPath: string): string {
 function browserPathToWorkspaceMountTargetPath(browserPath: string): string {
   const normalized = normalizeMountBrowserPath(browserPath);
   return normalized === '/' ? '/workspace' : `/workspace${normalized}`;
+}
+
+const WORKSPACE_MOUNT_SYNC_MODE_OPTIONS: Array<{
+  value: WorkspaceMountSyncMode;
+  label: string;
+  icon: typeof ArrowRight;
+  description: string;
+}> = [
+  {
+    value: 'merge',
+    label: 'Merge',
+    icon: ArrowLeftRight,
+    description: 'Bidirectional merge. Newer files win and nothing is deleted.',
+  },
+  {
+    value: 'source_authoritative',
+    label: 'Source',
+    icon: ArrowRight,
+    description: 'Remote source is authoritative. Target-only files are deleted on sync.',
+  },
+  {
+    value: 'target_authoritative',
+    label: 'Target',
+    icon: ArrowLeft,
+    description: 'Workspace target is authoritative. Source-only files are deleted on sync.',
+  },
+];
+
+function isDestructiveMountSyncMode(syncMode: WorkspaceMountSyncMode): boolean {
+  return syncMode !== 'merge';
+}
+
+function getMountSyncModeLabel(syncMode: WorkspaceMountSyncMode): string {
+  return WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.find((option) => option.value === syncMode)?.label ?? 'Merge';
+}
+
+function getMountSyncModeIcon(syncMode: WorkspaceMountSyncMode): typeof ArrowRight {
+  return WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.find((option) => option.value === syncMode)?.icon ?? ArrowLeftRight;
+}
+
+function getMountSyncModeDescription(syncMode: WorkspaceMountSyncMode): string {
+  return WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.find((option) => option.value === syncMode)?.description
+    ?? WORKSPACE_MOUNT_SYNC_MODE_OPTIONS[0].description;
+}
+
+function formatMountSyncPreviewPath(path: string): string {
+  return path.startsWith('/') ? path : `/${path}`;
 }
 
 function isMountBrowserPathEqualOrDescendant(path: string, candidateAncestorPath: string): boolean {
@@ -573,11 +622,18 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const [createMountStagedSourceDirectories, setCreateMountStagedSourceDirectories] = useState<Record<string, string[]>>({});
   const [createMountStagedTargetDirectories, setCreateMountStagedTargetDirectories] = useState<string[]>([]);
   const [createMountDescription, setCreateMountDescription] = useState('');
+  const [createMountSyncMode, setCreateMountSyncMode] = useState<WorkspaceMountSyncMode>('merge');
   const [createMountActiveSourceTab, setCreateMountActiveSourceTab] = useState('');
   const [savingMount, setSavingMount] = useState(false);
   const [deletingMountId, setDeletingMountId] = useState<string | null>(null);
 
   const [syncingMountId, setSyncingMountId] = useState<string | null>(null);
+  const [previewingMountId, setPreviewingMountId] = useState<string | null>(null);
+  const [mountSyncPreview, setMountSyncPreview] = useState<WorkspaceMountSyncPreviewResponse | null>(null);
+  const [mountSyncPreviewMount, setMountSyncPreviewMount] = useState<WorkspaceMount | null>(null);
+  const [mountSyncPreviewIntent, setMountSyncPreviewIntent] = useState<MountSyncPreviewIntent | null>(null);
+  const [mountSyncPreviewNextSyncMode, setMountSyncPreviewNextSyncMode] = useState<WorkspaceMountSyncMode | null>(null);
+  const [expandedSyncModeInfo, setExpandedSyncModeInfo] = useState<false | 'hover' | 'pinned'>(false);
   const [savingMountWatchId, setSavingMountWatchId] = useState<string | null>(null);
   const [editingMountDescriptionId, setEditingMountDescriptionId] = useState<string | null>(null);
   const [editingMountDescriptionDraft, setEditingMountDescriptionDraft] = useState('');
@@ -3377,7 +3433,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     setCreateMountStagedSourceDirectories({});
     setCreateMountStagedTargetDirectories([]);
     setCreateMountDescription('');
+    setCreateMountSyncMode('merge');
     setCreateMountActiveSourceTab('');
+    setMountSyncPreview(null);
+    setMountSyncPreviewMount(null);
+    setMountSyncPreviewIntent(null);
+    setMountSyncPreviewNextSyncMode(null);
     try {
       const [mountList, sources] = await Promise.all([
         api.listWorkspaceMounts(activeWorkspaceId),
@@ -3395,6 +3456,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
   const handleCloseMountsModal = useCallback(() => {
     setShowMountsModal(false);
     setDeletingMountId(null);
+    setMountSyncPreview(null);
+    setMountSyncPreviewMount(null);
+    setMountSyncPreviewIntent(null);
+    setMountSyncPreviewNextSyncMode(null);
   }, []);
 
   const createMountEffectiveSourcePath = useMemo(() => {
@@ -3417,6 +3482,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
     return browserPathToWorkspaceMountTargetPath(createMountTargetBrowserPath);
   }, [createMountTargetBrowserPath, createMountTargetPath]);
+
+  const createMountSelectedSource = useMemo(() => (
+    mountableSources.find((source) => (
+      source.mount_source_id === createMountSourceId && source.source_path === createMountRootSourcePath
+    )) ?? null
+  ), [createMountRootSourcePath, createMountSourceId, mountableSources]);
 
   const isCreateMountDisabled = useMemo(() => (
     savingMount
@@ -3456,6 +3527,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
         source_directory_to_create: sourceDirectoryToCreate,
         target_directory_to_create: targetDirectoryToCreate,
         auto_sync_enabled: false,
+        sync_mode: createMountSelectedSource?.source_type === 'ssh' ? createMountSyncMode : 'merge',
         description: createMountDescription.trim() || null,
       });
       setMounts((prev) => [...prev, created]);
@@ -3468,6 +3540,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
       setCreateMountStagedSourceDirectories({});
       setCreateMountStagedTargetDirectories([]);
       setCreateMountDescription('');
+      setCreateMountSyncMode('merge');
       setError(created.sync_notice || null);
       if (targetDirectoryToCreate) {
         await loadWorkspaceData(activeWorkspaceId);
@@ -3477,7 +3550,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     } finally {
       setSavingMount(false);
     }
-  }, [activeWorkspaceId, createMountBrowserPath, createMountDescription, createMountEffectiveSourcePath, createMountEffectiveTargetPath, createMountRootSourcePath, createMountSourceId, createMountStagedSourceDirectories, createMountStagedTargetDirectories, createMountTargetBrowserPath, isOwner, loadWorkspaceData]);
+  }, [activeWorkspaceId, createMountBrowserPath, createMountDescription, createMountEffectiveSourcePath, createMountEffectiveTargetPath, createMountRootSourcePath, createMountSelectedSource?.source_type, createMountSourceId, createMountStagedSourceDirectories, createMountStagedTargetDirectories, createMountSyncMode, createMountTargetBrowserPath, isOwner, loadWorkspaceData]);
 
   const handleSaveMountDescription = useCallback(async () => {
     if (!activeWorkspaceId || !isOwner || !editingMountDescriptionId) return;
@@ -3544,13 +3617,31 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, [activeWorkspaceId, isOwner, loadWorkspaceData]);
 
-  const handleSyncMount = useCallback(async (mountId: string) => {
+  const handleSyncMount = useCallback(async (mount: WorkspaceMount) => {
     if (!activeWorkspaceId || !isOwner) return;
-    setSyncingMountId(mountId);
+    if (isDestructiveMountSyncMode(mount.sync_mode)) {
+      setMountSyncPreviewIntent('sync');
+      setMountSyncPreviewNextSyncMode(mount.sync_mode);
+      setPreviewingMountId(mount.id);
+      try {
+        const preview = await api.previewWorkspaceMountSync(activeWorkspaceId, mount.id);
+        setMountSyncPreview(preview);
+        setMountSyncPreviewMount(mount);
+        setError(preview.sync_notice || null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to preview mount sync');
+      } finally {
+        setPreviewingMountId(null);
+      }
+      return;
+    }
+
+    setSyncingMountId(mount.id);
     try {
-      const result = await api.syncWorkspaceMount(activeWorkspaceId, mountId);
-      setMounts((prev) => prev.map((m) => m.id === mountId ? {
+      const result = await api.syncWorkspaceMount(activeWorkspaceId, mount.id);
+      setMounts((prev) => prev.map((m) => m.id === mount.id ? {
         ...m,
+        sync_mode: result.sync_mode,
         sync_status: result.sync_status,
         sync_backend: result.sync_backend,
         sync_notice: result.sync_notice,
@@ -3564,14 +3655,104 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, [activeWorkspaceId, isOwner]);
 
-  const handleToggleMountAutoSync = useCallback(async (mountId: string, enabled: boolean) => {
-    if (!activeWorkspaceId || !isOwner) return;
-    setSavingMountWatchId(mountId);
+  const handleCloseMountSyncPreview = useCallback(() => {
+    setMountSyncPreview(null);
+    setMountSyncPreviewMount(null);
+    setMountSyncPreviewIntent(null);
+    setMountSyncPreviewNextSyncMode(null);
+  }, []);
+
+  const handleConfirmMountSyncPreview = useCallback(async () => {
+    if (!activeWorkspaceId || !isOwner || !mountSyncPreview || !mountSyncPreviewMount || !mountSyncPreviewIntent) return;
+    if (mountSyncPreviewIntent === 'sync') {
+      setSyncingMountId(mountSyncPreviewMount.id);
+      try {
+        const result = await api.syncWorkspaceMount(activeWorkspaceId, mountSyncPreviewMount.id, {
+          preview_token: mountSyncPreview.preview_token,
+        });
+        setMounts((prev) => prev.map((m) => m.id === mountSyncPreviewMount.id ? {
+          ...m,
+          sync_mode: result.sync_mode,
+          sync_status: result.sync_status,
+          sync_backend: result.sync_backend,
+          sync_notice: result.sync_notice,
+          last_sync_error: result.last_sync_error,
+        } : m));
+        handleCloseMountSyncPreview();
+        setError(result.last_sync_error || result.sync_notice || null);
+      } catch (err) {
+        handleCloseMountSyncPreview();
+        setError(err instanceof Error ? err.message : 'Failed to sync mount');
+      } finally {
+        setSyncingMountId(null);
+      }
+      return;
+    }
+
+    if (mountSyncPreviewIntent === 'enable-auto') {
+      setSavingMountWatchId(mountSyncPreviewMount.id);
+      try {
+        const updated = await api.updateWorkspaceMount(activeWorkspaceId, mountSyncPreviewMount.id, {
+          auto_sync_enabled: true,
+          destructive_auto_sync_preview_token: mountSyncPreview.preview_token,
+        });
+        setMounts((prev) => prev.map((m) => (m.id === mountSyncPreviewMount.id ? updated : m)));
+        handleCloseMountSyncPreview();
+        setError(updated.last_sync_error || updated.sync_notice || null);
+      } catch (err) {
+        handleCloseMountSyncPreview();
+        setError(err instanceof Error ? err.message : 'Failed to enable auto-sync');
+      } finally {
+        setSavingMountWatchId(null);
+      }
+      return;
+    }
+
+    if (!mountSyncPreviewNextSyncMode) return;
+    setSavingMountWatchId(mountSyncPreviewMount.id);
     try {
-      const updated = await api.updateWorkspaceMount(activeWorkspaceId, mountId, {
+      const updated = await api.updateWorkspaceMount(activeWorkspaceId, mountSyncPreviewMount.id, {
+        sync_mode: mountSyncPreviewNextSyncMode,
+        destructive_auto_sync_preview_token: mountSyncPreview.preview_token,
+      });
+      setMounts((prev) => prev.map((m) => (m.id === mountSyncPreviewMount.id ? updated : m)));
+      handleCloseMountSyncPreview();
+      setError(updated.last_sync_error || updated.sync_notice || null);
+    } catch (err) {
+      handleCloseMountSyncPreview();
+      setError(err instanceof Error ? err.message : 'Failed to update mount sync mode');
+    } finally {
+      setSavingMountWatchId(null);
+    }
+  }, [activeWorkspaceId, handleCloseMountSyncPreview, isOwner, mountSyncPreview, mountSyncPreviewIntent, mountSyncPreviewMount, mountSyncPreviewNextSyncMode]);
+
+  const handleToggleMountAutoSync = useCallback(async (mount: WorkspaceMount, enabled: boolean) => {
+    if (!activeWorkspaceId || !isOwner) return;
+    if (enabled && isDestructiveMountSyncMode(mount.sync_mode)) {
+      setMountSyncPreviewIntent('enable-auto');
+      setMountSyncPreviewNextSyncMode(mount.sync_mode);
+      setPreviewingMountId(mount.id);
+      try {
+        const preview = await api.previewWorkspaceMountSync(activeWorkspaceId, mount.id);
+        setMountSyncPreview(preview);
+        setMountSyncPreviewMount(mount);
+        setError(preview.sync_notice || null);
+      } catch (err) {
+        setMountSyncPreviewIntent(null);
+        setMountSyncPreviewNextSyncMode(null);
+        setError(err instanceof Error ? err.message : 'Failed to preview auto-sync');
+      } finally {
+        setPreviewingMountId(null);
+      }
+      return;
+    }
+
+    setSavingMountWatchId(mount.id);
+    try {
+      const updated = await api.updateWorkspaceMount(activeWorkspaceId, mount.id, {
         auto_sync_enabled: enabled,
       });
-      setMounts((prev) => prev.map((m) => (m.id === mountId ? updated : m)));
+      setMounts((prev) => prev.map((m) => (m.id === mount.id ? updated : m)));
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update mount watch mode');
@@ -3580,28 +3761,38 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
     }
   }, [activeWorkspaceId, isOwner]);
 
-  const handleToggleMountSyncDeletes = useCallback(async (mountId: string, enabled: boolean) => {
+  const handleUpdateMountSyncMode = useCallback(async (mount: WorkspaceMount, syncMode: WorkspaceMountSyncMode) => {
     if (!activeWorkspaceId || !isOwner) return;
-    // When enabling sync-deletes, require explicit confirmation because local
-    // files absent on remote will be permanently deleted on next sync.
-    if (enabled) {
-      const confirmed = window.confirm(
-        'Enable sync-deletes?\n\n'
-        + 'When enabled, files in the local mount that do not exist on the remote source '
-        + 'will be permanently deleted on the next sync.\n\n'
-        + 'This cannot be undone. Proceed?'
-      );
-      if (!confirmed) return;
+    if (mount.auto_sync_enabled && isDestructiveMountSyncMode(syncMode)) {
+      setMountSyncPreviewIntent('update-auto-sync-mode');
+      setMountSyncPreviewNextSyncMode(syncMode);
+      setPreviewingMountId(mount.id);
+      try {
+        const preview = await api.previewWorkspaceMountSync(activeWorkspaceId, mount.id, {
+          sync_mode: syncMode,
+        });
+        setMountSyncPreview(preview);
+        setMountSyncPreviewMount(mount);
+        setError(preview.sync_notice || null);
+      } catch (err) {
+        setMountSyncPreviewIntent(null);
+        setMountSyncPreviewNextSyncMode(null);
+        setError(err instanceof Error ? err.message : 'Failed to preview mount sync mode');
+      } finally {
+        setPreviewingMountId(null);
+      }
+      return;
     }
-    setSavingMountWatchId(mountId);
+
+    setSavingMountWatchId(mount.id);
     try {
-      const updated = await api.updateWorkspaceMount(activeWorkspaceId, mountId, {
-        sync_deletes: enabled,
+      const updated = await api.updateWorkspaceMount(activeWorkspaceId, mount.id, {
+        sync_mode: syncMode,
       });
-      setMounts((prev) => prev.map((m) => (m.id === mountId ? updated : m)));
+      setMounts((prev) => prev.map((m) => (m.id === mount.id ? updated : m)));
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update mount sync-deletes setting');
+      setError(err instanceof Error ? err.message : 'Failed to update mount sync mode');
     } finally {
       setSavingMountWatchId(null);
     }
@@ -5534,6 +5725,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                       <div className="userspace-mount-list">
                       {mounts.map((mount) => {
                         const isEjected = !mount.enabled;
+                        const SyncModeIcon = getMountSyncModeIcon(mount.sync_mode);
                         const displaySourcePath = mount.source_path === '.'
                           ? '/'
                           : (mount.source_path.startsWith('/') ? mount.source_path : `/${mount.source_path}`);
@@ -5550,10 +5742,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                             <div className="userspace-mount-controls">
                               <span className="userspace-mount-sync-status">
                                 {!mount.source_available && <span className="userspace-status-pill userspace-status-pill-danger" style={{ fontSize: 11 }} title="Mount source is no longer available">Disconnected</span>}
-                                {mount.source_available && mount.source_type === 'ssh' && mount.sync_status === 'synced' && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Synced</span>}
-                                {mount.source_available && mount.source_type === 'ssh' && mount.sync_status === 'pending' && <span className="userspace-status-pill userspace-status-pill-info" style={{ fontSize: 11 }}>Pending</span>}
-                                {mount.source_available && mount.source_type === 'ssh' && mount.sync_status === 'error' && (
-                                  <span className="userspace-status-pill userspace-status-pill-error" style={{ fontSize: 11 }} title={mount.last_sync_error ?? undefined}>Error</span>
+                                {mount.source_available && mount.source_type === 'ssh' && (syncingMountId === mount.id || previewingMountId === mount.id) && <span className="userspace-status-pill userspace-status-pill-warning" style={{ fontSize: 11 }}>In Progress</span>}
+                                {mount.source_available && mount.source_type === 'ssh' && syncingMountId !== mount.id && previewingMountId !== mount.id && mount.sync_status === 'synced' && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Synced</span>}
+                                {mount.source_available && mount.source_type === 'ssh' && syncingMountId !== mount.id && previewingMountId !== mount.id && mount.sync_status === 'pending' && <span className="userspace-status-pill userspace-status-pill-info" style={{ fontSize: 11 }}>Pending</span>}
+                                {mount.source_available && mount.source_type === 'ssh' && syncingMountId !== mount.id && previewingMountId !== mount.id && mount.sync_status === 'error' && (
+                                  <span className="userspace-status-pill userspace-status-pill-danger" style={{ fontSize: 11 }} title={mount.last_sync_error ?? undefined}>Error</span>
                                 )}
                                 {mount.source_available && mount.source_type !== 'ssh' && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Live</span>}
                               </span>
@@ -5561,8 +5754,79 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                 {mount.source_type === 'ssh' && (
                                   <>
                                     <button
+                                      className="btn btn-sm btn-secondary"
+                                      onClick={() => {
+                                        const modes = WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.map((o) => o.value);
+                                        const currentIndex = modes.indexOf(mount.sync_mode);
+                                        const nextMode = modes[(currentIndex + 1) % modes.length];
+                                        void handleUpdateMountSyncMode(mount, nextMode);
+                                      }}
+                                      disabled={savingMountWatchId === mount.id || isEjected}
+                                      title={getMountSyncModeDescription(mount.sync_mode)}
+                                      style={{
+                                        minWidth: 100,
+                                        padding: '4px 8px',
+                                        fontSize: 12,
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: 5,
+                                      }}
+                                    >
+                                      {savingMountWatchId === mount.id
+                                        ? <MiniLoadingSpinner variant="icon" size={12} />
+                                        : <><SyncModeIcon size={12} /> {getMountSyncModeLabel(mount.sync_mode)}</>}
+                                      <span
+                                        role="button"
+                                        onClick={(e) => { e.stopPropagation(); setExpandedSyncModeInfo((v) => v === 'pinned' ? false : 'pinned'); }}
+                                        onMouseEnter={() => setExpandedSyncModeInfo((v) => v === 'pinned' ? v : 'hover')}
+                                        onMouseLeave={() => setExpandedSyncModeInfo((v) => v === 'pinned' ? v : false)}
+                                        title="About sync modes"
+                                        style={{ display: 'inline-flex', alignItems: 'center', marginLeft: 2, cursor: 'pointer', position: 'relative' }}
+                                      >
+                                        <Info size={11} />
+                                        {expandedSyncModeInfo && (
+                                          <>
+                                            {expandedSyncModeInfo === 'pinned' && (
+                                              <div onClick={(e) => { e.stopPropagation(); setExpandedSyncModeInfo(false); }} style={{ position: 'fixed', inset: 0, zIndex: 999 }} />
+                                            )}
+                                            <div
+                                              onMouseEnter={() => setExpandedSyncModeInfo((v) => v === 'pinned' ? v : 'hover')}
+                                              onMouseLeave={() => setExpandedSyncModeInfo((v) => v === 'pinned' ? v : false)}
+                                              style={{
+                                              position: 'absolute',
+                                              top: '100%',
+                                              right: 0,
+                                              marginTop: 8,
+                                              padding: 12,
+                                              background: 'var(--color-bg-primary, #fff)',
+                                              border: '1px solid var(--color-border, #ddd)',
+                                              borderRadius: 8,
+                                              boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+                                              fontSize: 12,
+                                              display: 'grid',
+                                              gap: 8,
+                                              minWidth: 280,
+                                              zIndex: 1000,
+                                              whiteSpace: 'normal',
+                                              textAlign: 'left',
+                                            }}>
+                                              {WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.map((option) => {
+                                                const OptionIcon = option.icon;
+                                                return (
+                                                  <div key={option.value} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                                                    <OptionIcon size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+                                                    <span><strong>{option.label}</strong>: {option.description}</span>
+                                                  </div>
+                                                );
+                                              })}
+                                            </div>
+                                          </>
+                                        )}
+                                      </span>
+                                    </button>
+                                    <button
                                       className={`btn btn-sm ${mount.auto_sync_enabled ? 'btn-primary' : 'btn-secondary userspace-mount-toggle-btn-inactive'}`}
-                                      onClick={() => handleToggleMountAutoSync(mount.id, !mount.auto_sync_enabled)}
+                                      onClick={() => handleToggleMountAutoSync(mount, !mount.auto_sync_enabled)}
                                       disabled={savingMountWatchId === mount.id || isEjected}
                                       title={mount.auto_sync_enabled ? 'Disable auto-sync watch mode' : 'Enable auto-sync watch mode'}
                                     >
@@ -5572,26 +5836,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                                         </span>
                                       )}
                                     </button>
-                                    <button
-                                      className={`btn btn-sm ${mount.sync_deletes ? 'btn-danger' : 'btn-secondary userspace-mount-toggle-btn-inactive'}`}
-                                      onClick={() => handleToggleMountSyncDeletes(mount.id, !mount.sync_deletes)}
-                                      disabled={savingMountWatchId === mount.id || isEjected}
-                                      title={mount.sync_deletes ? 'Sync-deletes ENABLED: local files removed from remote will be permanently deleted on sync' : 'Sync-deletes disabled: local files are preserved even if removed from remote (bidirectional merge)'}
-                                    >
-                                      {savingMountWatchId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : (
-                                        <span className="userspace-mount-toggle-icon">
-                                          <Eraser size={10} />
-                                        </span>
-                                      )}
-                                    </button>
                                     {!mount.auto_sync_enabled && (
                                       <button
                                         className="btn btn-secondary btn-sm"
-                                        onClick={() => handleSyncMount(mount.id)}
-                                        disabled={syncingMountId === mount.id || isEjected}
+                                        onClick={() => handleSyncMount(mount)}
+                                        disabled={syncingMountId === mount.id || previewingMountId === mount.id || isEjected}
                                         title="Sync mount now"
                                       >
-                                        {syncingMountId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <RefreshCw size={12} />}
+                                        {syncingMountId === mount.id || previewingMountId === mount.id
+                                          ? <MiniLoadingSpinner variant="icon" size={12} />
+                                          : <RefreshCw size={12} />}
                                       </button>
                                     )}
                                   </>
@@ -5690,6 +5944,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                               </div>
                             )}
                           </div>
+                          {mount.sync_status === 'error' && mount.last_sync_error && (
+                            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 4, color: 'var(--color-error, #c0392b)', fontSize: 12 }}>
+                              <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
+                              <span>{mount.last_sync_error}</span>
+                            </div>
+                          )}
                           {mount.sync_notice && (
                             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 6, color: 'var(--color-warning, #b26a00)', fontSize: 12 }}>
                               <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
@@ -5840,6 +6100,84 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                         value={createMountDescription}
                         onChange={(e) => setCreateMountDescription(e.target.value)}
                       />
+                      {createMountSelectedSource?.source_type === 'ssh' && (() => {
+                        const CreateSyncModeIcon = getMountSyncModeIcon(createMountSyncMode);
+                        return (
+                        <div style={{ display: 'grid', gap: 6 }}>
+                          <label className="userspace-muted" style={{ fontSize: 12 }}>
+                            <strong>Sync mode</strong>
+                          </label>
+                          <button
+                            className="btn btn-sm btn-secondary"
+                            type="button"
+                            onClick={() => {
+                              const modes = WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.map((o) => o.value);
+                              const currentIndex = modes.indexOf(createMountSyncMode);
+                              setCreateMountSyncMode(modes[(currentIndex + 1) % modes.length]);
+                            }}
+                            title={getMountSyncModeDescription(createMountSyncMode)}
+                            style={{
+                              padding: '8px 10px',
+                              borderRadius: 6,
+                              textAlign: 'left',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 6,
+                            }}
+                          >
+                            <CreateSyncModeIcon size={13} /> {getMountSyncModeLabel(createMountSyncMode)}
+                            <span
+                              role="button"
+                              onClick={(e) => { e.stopPropagation(); setExpandedSyncModeInfo((v) => v === 'pinned' ? false : 'pinned'); }}
+                              onMouseEnter={() => setExpandedSyncModeInfo((v) => v === 'pinned' ? v : 'hover')}
+                              onMouseLeave={() => setExpandedSyncModeInfo((v) => v === 'pinned' ? v : false)}
+                              title="About sync modes"
+                              style={{ display: 'inline-flex', alignItems: 'center', marginLeft: 2, cursor: 'pointer', position: 'relative' }}
+                            >
+                              <Info size={11} />
+                              {expandedSyncModeInfo && (
+                                <>
+                                  {expandedSyncModeInfo === 'pinned' && (
+                                    <div onClick={(e) => { e.stopPropagation(); setExpandedSyncModeInfo(false); }} style={{ position: 'fixed', inset: 0, zIndex: 999 }} />
+                                  )}
+                                  <div
+                                    onMouseEnter={() => setExpandedSyncModeInfo((v) => v === 'pinned' ? v : 'hover')}
+                                    onMouseLeave={() => setExpandedSyncModeInfo((v) => v === 'pinned' ? v : false)}
+                                    style={{
+                                    position: 'absolute',
+                                    top: '100%',
+                                    left: 0,
+                                    marginTop: 8,
+                                    padding: 12,
+                                    background: 'var(--color-bg-primary, #fff)',
+                                    border: '1px solid var(--color-border, #ddd)',
+                                    borderRadius: 8,
+                                    boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+                                    fontSize: 12,
+                                    display: 'grid',
+                                    gap: 8,
+                                    minWidth: 280,
+                                    zIndex: 1000,
+                                    whiteSpace: 'normal',
+                                    textAlign: 'left',
+                                  }}>
+                                    {WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.map((option) => {
+                                      const OptionIcon = option.icon;
+                                      return (
+                                        <div key={option.value} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                                          <OptionIcon size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+                                          <span><strong>{option.label}</strong>: {option.description}</span>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </>
+                              )}
+                            </span>
+                          </button>
+                        </div>
+                        );
+                      })()}
                       <div className="userspace-env-var-form-actions">
                         <button
                           className="btn btn-primary btn-sm"
@@ -5859,6 +6197,149 @@ export function UserSpacePanel({ currentUser, debugMode = false, onFullscreenCha
                   )}
                 </>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {mountSyncPreview && mountSyncPreviewMount && (
+        <div className="modal-overlay" onClick={handleCloseMountSyncPreview}>
+          <div className="modal-content modal-small" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>{mountSyncPreviewIntent === 'sync' ? 'Review Destructive Sync' : 'Confirm Destructive Auto-Sync'}</h3>
+              <button className="modal-close" onClick={handleCloseMountSyncPreview}>&times;</button>
+            </div>
+            <div className="modal-body" style={{ display: 'grid', gap: 14, maxHeight: '70vh', overflowY: 'auto' }}>
+              <div style={{ display: 'grid', gap: 6 }}>
+                <div className="userspace-muted" style={{ fontSize: 12 }}>
+                  <strong>{mountSyncPreviewMount.source_name ?? 'Mount source'}</strong>
+                  {' '}
+                  {mountSyncPreviewMount.source_path === '.' ? '/' : formatMountSyncPreviewPath(mountSyncPreviewMount.source_path)}
+                  {' '}
+                  <ArrowRight size={11} style={{ verticalAlign: 'middle' }} />
+                  {' '}
+                  {mountSyncPreviewMount.target_path}
+                </div>
+                <div className="userspace-muted" style={{ fontSize: 12 }}>
+                  <strong>Mode:</strong> {getMountSyncModeLabel(mountSyncPreview.sync_mode)}
+                </div>
+                {mountSyncPreview.sync_backend && (
+                  <div className="userspace-muted" style={{ fontSize: 12 }}>
+                    <strong>Backend:</strong> {mountSyncPreview.sync_backend}
+                  </div>
+                )}
+                {mountSyncPreview.sync_notice && (
+                  <div style={{ display: 'flex', gap: 6, color: 'var(--color-warning, #b26a00)', fontSize: 12 }}>
+                    <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
+                    <span>{mountSyncPreview.sync_notice}</span>
+                  </div>
+                )}
+                {mountSyncPreviewIntent !== 'sync' && (
+                  <div style={{ display: 'flex', gap: 6, color: 'var(--color-warning, #b26a00)', fontSize: 12 }}>
+                    <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
+                    <span>Auto-sync will keep using this destructive mode until Auto is disabled or the sync mode changes.</span>
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display: 'grid', gap: 10 }}>
+                {/* Source deletions */}
+                <div style={{ padding: 12, borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-bg-tertiary)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                    <strong>Deletes from source: {mountSyncPreview.delete_from_source_count}</strong>
+                    {mountSyncPreview.delete_from_source_count > mountSyncPreview.delete_from_source_paths.length && (
+                      <span className="userspace-muted" style={{ fontSize: 11 }}>
+                        showing {mountSyncPreview.delete_from_source_paths.length} of {mountSyncPreview.delete_from_source_count}
+                      </span>
+                    )}
+                  </div>
+                  {mountSyncPreview.delete_from_source_paths.length > 0 ? (
+                    <>
+                      <div className="userspace-muted" style={{ fontSize: 12, marginTop: 4 }}>
+                        Files or folders that will be removed from the remote source.
+                      </div>
+                      <div style={{ marginTop: 8, maxHeight: 250, overflowY: 'auto', borderRadius: 4, border: '1px solid var(--color-border)' }}>
+                        {mountSyncPreview.delete_from_source_paths.map((path, i) => (
+                          <div
+                            key={`source:${path}`}
+                            title={formatMountSyncPreviewPath(path)}
+                            style={{
+                              fontSize: 12,
+                              fontFamily: 'var(--font-mono)',
+                              padding: '4px 8px',
+                              overflowWrap: 'anywhere',
+                              background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.03)',
+                            }}
+                          >
+                            {formatMountSyncPreviewPath(path)}
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="userspace-muted" style={{ fontSize: 12, marginTop: 4 }}>No source deletions detected.</div>
+                  )}
+                </div>
+
+                {/* Target deletions */}
+                <div style={{ padding: 12, borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-bg-tertiary)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                    <strong>Deletes from target: {mountSyncPreview.delete_from_target_count}</strong>
+                    {mountSyncPreview.delete_from_target_count > mountSyncPreview.delete_from_target_paths.length && (
+                      <span className="userspace-muted" style={{ fontSize: 11 }}>
+                        showing {mountSyncPreview.delete_from_target_paths.length} of {mountSyncPreview.delete_from_target_count}
+                      </span>
+                    )}
+                  </div>
+                  {mountSyncPreview.delete_from_target_paths.length > 0 ? (
+                    <>
+                      <div className="userspace-muted" style={{ fontSize: 12, marginTop: 4 }}>
+                        Files or folders that will be removed from the workspace target.
+                      </div>
+                      <div style={{ marginTop: 8, maxHeight: 250, overflowY: 'auto', borderRadius: 4, border: '1px solid var(--color-border)' }}>
+                        {mountSyncPreview.delete_from_target_paths.map((path, i) => (
+                          <div
+                            key={`target:${path}`}
+                            title={formatMountSyncPreviewPath(path)}
+                            style={{
+                              fontSize: 12,
+                              fontFamily: 'var(--font-mono)',
+                              padding: '4px 8px',
+                              overflowWrap: 'anywhere',
+                              background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.03)',
+                            }}
+                          >
+                            {formatMountSyncPreviewPath(path)}
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="userspace-muted" style={{ fontSize: 12, marginTop: 4 }}>No target deletions detected.</div>
+                  )}
+                </div>
+
+                {(mountSyncPreview.delete_from_source_count > mountSyncPreview.delete_from_source_paths.length
+                  || mountSyncPreview.delete_from_target_count > mountSyncPreview.delete_from_target_paths.length) && (
+                  <div className="userspace-muted" style={{ fontSize: 12 }}>
+                    Full list truncated. Run preview again right before syncing if the source or target changes.
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="modal-footer" style={{ justifyContent: 'space-between' }}>
+              <button className="btn btn-secondary" onClick={handleCloseMountSyncPreview}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-danger"
+                onClick={() => void handleConfirmMountSyncPreview()}
+                disabled={syncingMountId === mountSyncPreviewMount.id || savingMountWatchId === mountSyncPreviewMount.id}
+              >
+                {mountSyncPreviewIntent === 'sync'
+                  ? (syncingMountId === mountSyncPreviewMount.id ? 'Syncing...' : 'Confirm Sync')
+                  : (savingMountWatchId === mountSyncPreviewMount.id ? 'Saving...' : mountSyncPreviewIntent === 'enable-auto' ? 'Enable Auto' : 'Confirm Mode Change')}
+              </button>
             </div>
           </div>
         </div>

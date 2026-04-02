@@ -54,6 +54,9 @@ from ragtime.userspace.models import (
     WorkspaceMount,
     WorkspaceMountBrowseRequest,
     WorkspaceMountBrowseResponse,
+    WorkspaceMountSyncPreviewRequest,
+    WorkspaceMountSyncPreviewResponse,
+    WorkspaceMountSyncRequest,
     WorkspaceMountSyncResponse,
     WorkspaceShareSlugAvailabilityResponse,
 )
@@ -433,18 +436,38 @@ async def delete_workspace_mount(
 
 
 @router.post(
+    "/workspaces/{workspace_id}/mounts/{mount_id}/sync-preview",
+    response_model=WorkspaceMountSyncPreviewResponse,
+)
+async def preview_workspace_mount_sync(
+    workspace_id: str,
+    mount_id: str,
+    request: WorkspaceMountSyncPreviewRequest | None = None,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.preview_workspace_mount_sync(
+        workspace_id,
+        user.id,
+        mount_id,
+        request,
+    )
+
+
+@router.post(
     "/workspaces/{workspace_id}/mounts/{mount_id}/sync",
     response_model=WorkspaceMountSyncResponse,
 )
 async def sync_workspace_mount(
     workspace_id: str,
     mount_id: str,
+    request: WorkspaceMountSyncRequest,
     user: Any = Depends(get_current_user),
 ):
     result = await userspace_service.sync_workspace_mount(
         workspace_id,
         user.id,
         mount_id,
+        request,
     )
     await userspace_runtime_service.bump_workspace_generation(
         workspace_id,

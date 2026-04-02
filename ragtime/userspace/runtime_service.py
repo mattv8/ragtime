@@ -21,17 +21,15 @@ from starlette.websockets import WebSocket
 from ragtime.config import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
-from ragtime.userspace.models import (
-    RuntimeOperationPhase,
-    RuntimeSessionState,
-    UserSpaceCapabilityTokenResponse,
-    UserSpaceCollabSnapshotResponse,
-    UserSpaceFileResponse,
-    UserSpaceRuntimeActionResponse,
-    UserSpaceRuntimeSession,
-    UserSpaceRuntimeSessionResponse,
-    UserSpaceRuntimeStatusResponse,
-)
+from ragtime.userspace.models import (RuntimeOperationPhase,
+                                      RuntimeSessionState,
+                                      UserSpaceCapabilityTokenResponse,
+                                      UserSpaceCollabSnapshotResponse,
+                                      UserSpaceFileResponse,
+                                      UserSpaceRuntimeActionResponse,
+                                      UserSpaceRuntimeSession,
+                                      UserSpaceRuntimeSessionResponse,
+                                      UserSpaceRuntimeStatusResponse)
 from ragtime.userspace.service import userspace_service
 
 logger = get_logger(__name__)
@@ -1294,6 +1292,114 @@ class UserSpaceRuntimeService:
             workspace_env=workspace_env,
         )
 
+    async def _persist_runtime_mount_refresh_result(
+        self,
+        active_session: UserSpaceRuntimeSession,
+        provider_status: dict[str, Any] | None,
+    ) -> tuple[
+        RuntimeSessionState,
+        str | None,
+        RuntimeOperationPhase | None,
+        datetime | None,
+        datetime | None,
+    ]:
+        if provider_status:
+            delta = self._merge_provider_status(active_session, provider_status)
+            delta.update(
+                {
+                    "state": delta.get(
+                        "state",
+                        str(provider_status.get("state") or active_session.state),
+                    ),
+                    "lastHeartbeatAt": self._utc_now(),
+                    "lastError": None,
+                }
+            )
+            db = await get_db()
+            model = self._runtime_session_model(db)
+            await self._runtime_session_update_row(
+                model,
+                active_session.id,
+                delta,
+            )
+            return (
+                cast(
+                    RuntimeSessionState,
+                    provider_status.get("state") or active_session.state,
+                ),
+                cast(str | None, provider_status.get("runtime_operation_id")),
+                cast(
+                    RuntimeOperationPhase | None,
+                    provider_status.get("runtime_operation_phase"),
+                ),
+                cast(
+                    datetime | None,
+                    provider_status.get("runtime_operation_started_at"),
+                ),
+                cast(
+                    datetime | None,
+                    provider_status.get("runtime_operation_updated_at"),
+                ),
+            )
+
+        return active_session.state, None, None, None, None
+
+    async def refresh_workspace_mount_after_sync(
+        self,
+        workspace_id: str,
+        mount_id: str,
+    ) -> str | None:
+        active = await self._get_active_session_row(workspace_id)
+        if not active:
+            return None
+
+        active_session = self._to_runtime_session(active)
+        if active_session.state not in {"running", "starting"}:
+            return None
+
+        resolved_mounts = await userspace_service.resolve_workspace_mounts_for_runtime(
+            workspace_id,
+            mount_ids=[mount_id],
+        )
+        if not resolved_mounts:
+            logger.debug(
+                "Skipping automatic runtime mount refresh for %s/%s because no runtime mount spec was resolved",
+                workspace_id,
+                mount_id,
+            )
+            return None
+
+        try:
+            provider_status = await self._runtime_provider_refresh_mounts(
+                active_session.provider_session_id,
+                resolved_mounts,
+            )
+            await self._persist_runtime_mount_refresh_result(
+                active_session,
+                provider_status,
+            )
+            await self.bump_workspace_generation(workspace_id, "mount_refresh")
+            if provider_status is None:
+                return (
+                    "Sync completed, but the active runtime did not report a mount refresh result."
+                )
+            return None
+        except HTTPException as exc:
+            detail = str(exc.detail).strip() or "runtime mount refresh failed"
+        except Exception as exc:
+            detail = str(exc).strip() or "runtime mount refresh failed"
+
+        logger.warning(
+            "Automatic runtime mount refresh failed for %s/%s: %s",
+            workspace_id,
+            mount_id,
+            detail,
+        )
+        return (
+            "Sync completed, but the active runtime was not refreshed automatically: "
+            f"{detail[:240]}"
+        )
+
     async def refresh_workspace_mount(
         self,
         workspace_id: str,
@@ -1342,39 +1448,16 @@ class UserSpaceRuntimeService:
             active_session.provider_session_id,
             resolved_mounts,
         )
-        if provider_status:
-            delta = self._merge_provider_status(active_session, provider_status)
-            delta.update(
-                {
-                    "state": delta.get(
-                        "state",
-                        str(provider_status.get("state") or active_session.state),
-                    ),
-                    "lastHeartbeatAt": self._utc_now(),
-                    "lastError": None,
-                }
-            )
-            db = await get_db()
-            model = self._runtime_session_model(db)
-            await self._runtime_session_update_row(
-                model,
-                active_session.id,
-                delta,
-            )
-            operation_id = provider_status.get("runtime_operation_id")
-            operation_phase = provider_status.get("runtime_operation_phase")
-            operation_started_at = provider_status.get("runtime_operation_started_at")
-            operation_updated_at = provider_status.get("runtime_operation_updated_at")
-            state = cast(
-                RuntimeSessionState,
-                provider_status.get("state") or active_session.state,
-            )
-        else:
-            operation_id = None
-            operation_phase = None
-            operation_started_at = None
-            operation_updated_at = None
-            state = active_session.state
+        (
+            state,
+            operation_id,
+            operation_phase,
+            operation_started_at,
+            operation_updated_at,
+        ) = await self._persist_runtime_mount_refresh_result(
+            active_session,
+            provider_status,
+        )
 
         await self._audit(
             workspace_id,

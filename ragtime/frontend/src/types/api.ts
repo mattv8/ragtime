@@ -1711,6 +1711,7 @@ export interface DeleteUserSpaceWorkspaceEnvVarResponse {
 // ── Workspace Mounts ──────────────────────────────────────────────────
 
 export type MountSyncStatus = 'pending' | 'synced' | 'error';
+export type WorkspaceMountSyncMode = 'merge' | 'source_authoritative' | 'target_authoritative';
 
 export interface UserspaceMountSource {
   id: string;
@@ -1772,7 +1773,7 @@ export interface WorkspaceMount {
   target_path: string;
   description: string | null;
   enabled: boolean;
-  sync_deletes: boolean;
+  sync_mode: WorkspaceMountSyncMode;
   sync_status: MountSyncStatus;
   sync_backend: string | null;
   sync_notice: string | null;
@@ -1812,7 +1813,7 @@ export interface CreateWorkspaceMountRequest {
   source_directory_to_create?: string | null;
   target_directory_to_create?: string | null;
   auto_sync_enabled?: boolean;
-  sync_deletes?: boolean;
+  sync_mode?: WorkspaceMountSyncMode;
   description?: string | null;
 }
 
@@ -1821,7 +1822,8 @@ export interface UpdateWorkspaceMountRequest {
   description?: string | null;
   enabled?: boolean;
   auto_sync_enabled?: boolean;
-  sync_deletes?: boolean;
+  sync_mode?: WorkspaceMountSyncMode;
+  destructive_auto_sync_preview_token?: string;
 }
 
 export interface DeleteWorkspaceMountResponse {
@@ -1844,10 +1846,35 @@ export interface WorkspaceMountBrowseResponse {
 
 export interface WorkspaceMountSyncResponse {
   mount_id: string;
+  sync_mode: WorkspaceMountSyncMode;
   sync_status: MountSyncStatus;
   files_synced: number;
   sync_backend: string | null;
   sync_notice: string | null;
+  last_sync_error: string | null;
+}
+
+export interface WorkspaceMountSyncRequest {
+  preview_token?: string;
+}
+
+export interface WorkspaceMountSyncPreviewRequest {
+  sync_mode?: WorkspaceMountSyncMode;
+}
+
+export interface WorkspaceMountSyncPreviewResponse {
+  mount_id: string;
+  sync_mode: WorkspaceMountSyncMode;
+  sync_backend: string | null;
+  sync_notice: string | null;
+  requires_confirmation: boolean;
+  preview_token: string;
+  preview_expires_at: string;
+  delete_from_source_count: number;
+  delete_from_target_count: number;
+  delete_from_source_paths: string[];
+  delete_from_target_paths: string[];
+  sample_limit: number;
   last_sync_error: string | null;
 }
 

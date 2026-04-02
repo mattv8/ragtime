@@ -292,6 +292,12 @@ enum UserspaceMountSourceType {
   filesystem
 }
 
+enum WorkspaceMountSyncMode {
+  merge
+  source_authoritative
+  target_authoritative
+}
+
 /// Vector store type for indexes (document and filesystem)
 enum VectorStoreType {
   pgvector  // PostgreSQL pgvector - persistent, scalable
@@ -945,7 +951,9 @@ model WorkspaceMount {
   description  String?  @map("description")
   enabled      Boolean  @default(true) @map("enabled")
   autoSyncEnabled Boolean @default(false) @map("auto_sync_enabled")
-  syncDeletes  Boolean  @default(false) @map("sync_deletes")
+  syncMode     WorkspaceMountSyncMode @default(merge) @map("sync_mode")
+  destructiveAutoSyncConfirmedAt DateTime? @map("destructive_auto_sync_confirmed_at")
+  destructiveAutoSyncConfirmedMode WorkspaceMountSyncMode? @map("destructive_auto_sync_confirmed_mode")
   syncStatus   String   @default("pending") @map("sync_status") // pending | synced | error
   syncBackend  String?  @map("sync_backend") // rsync | paramiko
   syncNotice   String?  @map("sync_notice")

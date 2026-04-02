@@ -11,7 +11,7 @@ import shlex
 import shutil
 import subprocess
 import time as _time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache, partial
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, TypedDict, cast
@@ -19,9 +19,9 @@ from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import HTTPException
-
 from prisma import Json
 from prisma import fields as prisma_fields
+
 from ragtime.config import settings
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.auth import _get_ldap_connection, get_ldap_config
@@ -41,7 +41,8 @@ from ragtime.core.ssh import (USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS,
                               build_ssh_tunnel_config,
                               check_remote_rsync_available,
                               execute_ssh_command, is_rsync_missing_error,
-                              rsync_ssh_directory, ssh_config_from_dict,
+                              preview_ssh_directory_sync, rsync_ssh_directory,
+                              ssh_config_from_dict,
                               ssh_tunnel_config_from_dict, sync_ssh_directory)
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import FilesystemConnectionConfig
@@ -91,6 +92,10 @@ from ragtime.userspace.models import (ArtifactType,
                                       WorkspaceMountBrowseRequest,
                                       WorkspaceMountBrowseResponse,
                                       WorkspaceMountDirectoryEntry,
+                                      WorkspaceMountSyncMode,
+                                      WorkspaceMountSyncPreviewRequest,
+                                      WorkspaceMountSyncPreviewResponse,
+                                      WorkspaceMountSyncRequest,
                                       WorkspaceMountSyncResponse,
                                       WorkspaceShareSlugAvailabilityResponse)
 
@@ -130,6 +135,36 @@ class _GitCommandResult:
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
+
+
+class _WorkspaceMountSyncPreviewRecord:
+    """One-time destructive sync preview token state."""
+
+    __slots__ = (
+        "token",
+        "workspace_id",
+        "mount_id",
+        "sync_mode",
+        "state_fingerprint",
+        "expires_at",
+    )
+
+    def __init__(
+        self,
+        *,
+        token: str,
+        workspace_id: str,
+        mount_id: str,
+        sync_mode: WorkspaceMountSyncMode,
+        state_fingerprint: str,
+        expires_at: datetime,
+    ) -> None:
+        self.token = token
+        self.workspace_id = workspace_id
+        self.mount_id = mount_id
+        self.sync_mode = sync_mode
+        self.state_fingerprint = state_fingerprint
+        self.expires_at = expires_at
 
 
 class _NonUtf8WorkspaceFileError(Exception):
@@ -464,6 +499,8 @@ def _enforce_sqlite_file_path_policy(relative_path: str) -> None:
 
 class UserSpaceService:
     _SSH_RSYNC_MISSING_RECHECK_SECONDS = 300.0
+    _WORKSPACE_MOUNT_SYNC_PREVIEW_TTL_SECONDS = 120
+    _WORKSPACE_MOUNT_SYNC_PREVIEW_SAMPLE_LIMIT = 200
 
     def __init__(self) -> None:
         self._base_dir = Path(settings.index_data_path) / "_userspace"
@@ -487,6 +524,12 @@ class UserSpaceService:
             str, asyncio.Task[WorkspaceMountSyncResponse]
         ] = {}
         self._workspace_mount_sync_tasks_lock = asyncio.Lock()
+        self._workspace_mount_operation_locks: dict[str, asyncio.Lock] = {}
+        self._workspace_mount_operation_locks_lock = asyncio.Lock()
+        self._workspace_mount_sync_previews: dict[
+            str, _WorkspaceMountSyncPreviewRecord
+        ] = {}
+        self._workspace_mount_sync_previews_lock = asyncio.Lock()
         self._workspace_mount_watch_interval_seconds = (
             USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS
         )
@@ -530,6 +573,134 @@ class UserSpaceService:
             "Ragtime's built-in SSH sync for this mount. Sync will still work, "
             "but large trees may be slower until rsync is installed remotely."
         )
+
+    @staticmethod
+    def _normalize_workspace_mount_sync_mode(
+        value: str | None,
+        *,
+        legacy_sync_deletes: bool = False,
+    ) -> WorkspaceMountSyncMode:
+        if value == "source_authoritative":
+            return "source_authoritative"
+        if value == "target_authoritative":
+            return "target_authoritative"
+        if value == "merge":
+            return "merge"
+        return "source_authoritative" if legacy_sync_deletes else "merge"
+
+    @staticmethod
+    def _is_destructive_workspace_mount_sync_mode(
+        sync_mode: WorkspaceMountSyncMode,
+    ) -> bool:
+        return sync_mode != "merge"
+
+    @classmethod
+    def _validate_workspace_mount_sync_configuration(
+        cls,
+        *,
+        source_type: str,
+        sync_mode: WorkspaceMountSyncMode,
+        auto_sync_enabled: bool,
+    ) -> None:
+        if source_type != "ssh" and sync_mode != "merge":
+            raise HTTPException(
+                status_code=400,
+                detail="Non-SSH mounts only support merge sync mode",
+            )
+        # Auto-sync is allowed for all modes; destructive syncs use
+        # the configured mode directly and the user is expected to
+        # preview/dry-run before enabling auto-sync.
+
+    async def _get_workspace_mount_operation_lock(
+        self,
+        mount_id: str,
+    ) -> asyncio.Lock:
+        async with self._workspace_mount_operation_locks_lock:
+            existing = self._workspace_mount_operation_locks.get(mount_id)
+            if existing is None:
+                existing = asyncio.Lock()
+                self._workspace_mount_operation_locks[mount_id] = existing
+            return existing
+
+    async def _store_workspace_mount_sync_preview(
+        self,
+        record: _WorkspaceMountSyncPreviewRecord,
+    ) -> None:
+        async with self._workspace_mount_sync_previews_lock:
+            self._workspace_mount_sync_previews[record.mount_id] = record
+
+    async def _pop_workspace_mount_sync_preview(
+        self,
+        mount_id: str,
+    ) -> _WorkspaceMountSyncPreviewRecord | None:
+        async with self._workspace_mount_sync_previews_lock:
+            return self._workspace_mount_sync_previews.pop(mount_id, None)
+
+    async def _invalidate_workspace_mount_sync_preview(self, mount_id: str) -> None:
+        async with self._workspace_mount_sync_previews_lock:
+            self._workspace_mount_sync_previews.pop(mount_id, None)
+
+    @staticmethod
+    def _has_destructive_auto_sync_approval(
+        mount: Any,
+        sync_mode: WorkspaceMountSyncMode,
+    ) -> bool:
+        approved_mode = getattr(mount, "destructiveAutoSyncConfirmedMode", None)
+        approved_at = getattr(mount, "destructiveAutoSyncConfirmedAt", None)
+        return bool(approved_at) and str(approved_mode or "") == sync_mode
+
+    async def _consume_workspace_mount_sync_preview(
+        self,
+        *,
+        mount_id: str,
+        workspace_id: str,
+        ssh_config: Any,
+        remote_path: str,
+        cache_dir: Path,
+        sync_mode: WorkspaceMountSyncMode,
+        preview_token: str | None,
+    ) -> None:
+        preview_record = await self._pop_workspace_mount_sync_preview(mount_id)
+        if (
+            preview_record is None
+            or preview_record.token != (preview_token or "")
+            or preview_record.workspace_id != workspace_id
+            or preview_record.mount_id != mount_id
+            or preview_record.sync_mode != sync_mode
+            or preview_record.expires_at <= _utc_now()
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Destructive sync preview is missing, expired, or stale. "
+                    "Run preview again before syncing."
+                ),
+            )
+
+        current_preview = await asyncio.to_thread(
+            preview_ssh_directory_sync,
+            ssh_config,
+            remote_path,
+            str(cache_dir),
+            sync_mode=sync_mode,
+            sample_limit=self._WORKSPACE_MOUNT_SYNC_PREVIEW_SAMPLE_LIMIT,
+        )
+        if not current_preview.success:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "; ".join(current_preview.errors[:5])
+                    or "Failed to preview destructive sync"
+                ),
+            )
+        if current_preview.state_fingerprint != preview_record.state_fingerprint:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Sync preview is stale because the source or target changed. "
+                    "Run preview again before syncing."
+                ),
+            )
 
     def _prune_workspace_mount_sync_task(
         self,
@@ -788,6 +959,17 @@ class UserSpaceService:
                 },
             ],
         }
+
+    @staticmethod
+    def _merge_workspace_mount_sync_notices(*notices: str | None) -> str | None:
+        merged: list[str] = []
+        for notice in notices:
+            normalized = str(notice or "").strip()
+            if normalized and normalized not in merged:
+                merged.append(normalized)
+        if not merged:
+            return None
+        return " ".join(merged)
 
     @staticmethod
     def _is_legacy_default_bootstrap(payload: dict[str, Any]) -> bool:
@@ -1189,7 +1371,66 @@ class UserSpaceService:
             ):
                 return
 
-            await self._sync_workspace_mount_record(db, mount)
+            sync_mode = self._normalize_workspace_mount_sync_mode(
+                getattr(mount, "syncMode", None),
+                legacy_sync_deletes=bool(getattr(mount, "syncDeletes", False)),
+            )
+            if self._is_destructive_workspace_mount_sync_mode(sync_mode) and not self._has_destructive_auto_sync_approval(mount, sync_mode):
+                await self._finalize_workspace_mount_sync(
+                    db,
+                    mount_id=mount_id,
+                    workspace_id=workspace_id,
+                    sync_mode=sync_mode,
+                    sync_status="error",
+                    files_synced=0,
+                    sync_backend=str(getattr(mount, "syncBackend", "") or "") or None,
+                    sync_notice=str(getattr(mount, "syncNotice", "") or "") or None,
+                    last_sync_error=(
+                        "Destructive auto-sync requires confirmation. Disable Auto and enable it again to review the dry run."
+                    ),
+                )
+                try:
+                    from ragtime.userspace.runtime_service import \
+                        userspace_runtime_service
+
+                    await userspace_runtime_service.bump_workspace_generation(
+                        workspace_id,
+                        "mount_sync",
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to bump workspace generation after auto-sync status update for %s/%s",
+                        workspace_id,
+                        mount_id,
+                        exc_info=True,
+                    )
+                return
+            logger.debug(
+                "Auto-syncing mount %s/%s in %s mode",
+                workspace_id,
+                mount_id,
+                sync_mode,
+            )
+            await self._sync_workspace_mount_record(
+                db,
+                mount,
+                allow_destructive_auto_sync_approval=True,
+            )
+            try:
+                from ragtime.userspace.runtime_service import \
+                    userspace_runtime_service
+
+                await userspace_runtime_service.bump_workspace_generation(
+                    workspace_id,
+                    "mount_sync",
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to bump workspace generation after auto-sync for %s/%s",
+                    workspace_id,
+                    mount_id,
+                    exc_info=True,
+                )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -3973,6 +4214,10 @@ class UserSpaceService:
     ) -> WorkspaceMount:
         source_type = mount_source.source_type if mount_source else None
         sync_backend = getattr(record, "syncBackend", None)
+        sync_mode = UserSpaceService._normalize_workspace_mount_sync_mode(
+            getattr(record, "syncMode", None),
+            legacy_sync_deletes=bool(getattr(record, "syncDeletes", False)),
+        )
         if source_type == "ssh" and not sync_backend:
             sync_backend = "rsync"
         return WorkspaceMount(
@@ -3983,7 +4228,7 @@ class UserSpaceService:
             target_path=str(getattr(record, "targetPath", "") or ""),
             description=str(getattr(record, "description", "") or "").strip() or None,
             enabled=bool(getattr(record, "enabled", True)),
-            sync_deletes=bool(getattr(record, "syncDeletes", False)),
+            sync_mode=sync_mode,
             sync_status=str(getattr(record, "syncStatus", "pending") or "pending"),  # type: ignore[arg-type]
             sync_backend=str(sync_backend) if sync_backend else None,
             sync_notice=str(getattr(record, "syncNotice", "") or "").strip() or None,
@@ -4038,10 +4283,24 @@ class UserSpaceService:
         mount: Any,
         *,
         force_backend_recheck: bool = False,
+        preview_token: str | None = None,
+        allow_destructive_auto_sync_approval: bool = False,
     ) -> WorkspaceMountSyncResponse:
         mount_id = str(getattr(mount, "id", "") or "")
         if not mount_id:
             raise HTTPException(status_code=400, detail="Mount not found")
+        sync_mode = self._normalize_workspace_mount_sync_mode(
+            getattr(mount, "syncMode", None),
+            legacy_sync_deletes=bool(getattr(mount, "syncDeletes", False)),
+        )
+        if preview_token is not None or self._is_destructive_workspace_mount_sync_mode(sync_mode):
+            return await self._sync_workspace_mount_record_once(
+                db,
+                mount,
+                force_backend_recheck=force_backend_recheck,
+                preview_token=preview_token,
+                allow_destructive_auto_sync_approval=allow_destructive_auto_sync_approval,
+            )
 
         async with self._workspace_mount_sync_tasks_lock:
             existing_task = self._workspace_mount_sync_tasks.get(mount_id)
@@ -4051,6 +4310,8 @@ class UserSpaceService:
                         db,
                         mount,
                         force_backend_recheck=force_backend_recheck,
+                        preview_token=preview_token,
+                        allow_destructive_auto_sync_approval=allow_destructive_auto_sync_approval,
                     ),
                     name=f"userspace-mount-sync:{mount_id}",
                 )
@@ -4072,7 +4333,156 @@ class UserSpaceService:
         mount: Any,
         *,
         force_backend_recheck: bool = False,
+        preview_token: str | None = None,
+        allow_destructive_auto_sync_approval: bool = False,
     ) -> WorkspaceMountSyncResponse:
+        context = await self._build_workspace_mount_sync_context(
+            mount,
+            force_backend_recheck=force_backend_recheck,
+        )
+        mount_id = context["mount_id"]
+        workspace_id = context["workspace_id"]
+        ssh_config = context["ssh_config"]
+        remote_path = context["remote_path"]
+        target_path = context["target_path"]
+        cache_dir = context["cache_dir"]
+        sync_mode = context["sync_mode"]
+        preferred_backend = context["preferred_backend"]
+        preferred_notice = context["preferred_notice"]
+        mount_lock = await self._get_workspace_mount_operation_lock(mount_id)
+
+        try:
+            async with mount_lock:
+                async with self._workspace_mount_sync_semaphore:
+                    await asyncio.to_thread(
+                        self._stage_runtime_mount_into_sync_cache,
+                        workspace_id,
+                        target_path,
+                        cache_dir,
+                    )
+                    if self._is_destructive_workspace_mount_sync_mode(sync_mode):
+                        if preview_token is not None:
+                            await self._consume_workspace_mount_sync_preview(
+                                mount_id=mount_id,
+                                workspace_id=workspace_id,
+                                ssh_config=ssh_config,
+                                remote_path=remote_path,
+                                cache_dir=cache_dir,
+                                sync_mode=sync_mode,
+                                preview_token=preview_token,
+                            )
+                        elif not (
+                            allow_destructive_auto_sync_approval
+                            and self._has_destructive_auto_sync_approval(mount, sync_mode)
+                        ):
+                            raise HTTPException(
+                                status_code=409,
+                                detail=(
+                                    "Destructive sync preview is missing, expired, or stale. "
+                                    "Run preview again before syncing."
+                                ),
+                            )
+
+                    if preferred_backend == "paramiko":
+                        result = await asyncio.to_thread(
+                            sync_ssh_directory,
+                            ssh_config,
+                            remote_path,
+                            str(cache_dir),
+                            sync_mode=sync_mode,
+                        )
+                        result.notice = preferred_notice
+                    else:
+                        result = await asyncio.to_thread(
+                            rsync_ssh_directory,
+                            ssh_config,
+                            remote_path,
+                            str(cache_dir),
+                            sync_mode=sync_mode,
+                        )
+                        if result.success:
+                            self._remember_remote_rsync_available(ssh_config)
+                        elif is_rsync_missing_error("\n".join(result.errors)):
+                            self._remember_remote_rsync_missing(ssh_config)
+                            result = await asyncio.to_thread(
+                                sync_ssh_directory,
+                                ssh_config,
+                                remote_path,
+                                str(cache_dir),
+                                sync_mode=sync_mode,
+                            )
+                            result.notice = self._ssh_rsync_fallback_notice()
+            sync_status = "synced" if result.success else "error"
+            sync_backend = result.backend_used or preferred_backend
+            sync_notice = result.notice
+            if result.success:
+                refresh_notice = await self._maybe_refresh_active_runtime_mount_after_sync(
+                    workspace_id,
+                    mount_id,
+                )
+                sync_notice = self._merge_workspace_mount_sync_notices(
+                    sync_notice,
+                    refresh_notice,
+                )
+            last_error = "; ".join(result.errors[:5]) if result.errors else None
+            return await self._finalize_workspace_mount_sync(
+                db,
+                mount_id=mount_id,
+                workspace_id=workspace_id,
+                sync_mode=sync_mode,
+                sync_status=sync_status,
+                files_synced=result.files_synced,
+                sync_backend=sync_backend,
+                sync_notice=sync_notice,
+                last_sync_error=last_error,
+            )
+        except Exception as exc:
+            logger.error("Mount sync failed for %s/%s: %s", workspace_id, mount_id, exc)
+            return await self._finalize_workspace_mount_sync(
+                db,
+                mount_id=mount_id,
+                workspace_id=workspace_id,
+                sync_mode=sync_mode,
+                sync_status="error",
+                files_synced=0,
+                sync_backend=preferred_backend,
+                sync_notice=preferred_notice,
+                last_sync_error=str(exc)[:500],
+            )
+
+    async def _maybe_refresh_active_runtime_mount_after_sync(
+        self,
+        workspace_id: str,
+        mount_id: str,
+    ) -> str | None:
+        try:
+            from ragtime.userspace.runtime_service import \
+                userspace_runtime_service
+
+            return await userspace_runtime_service.refresh_workspace_mount_after_sync(
+                workspace_id,
+                mount_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Mount sync completed but automatic runtime refresh failed for %s/%s: %s",
+                workspace_id,
+                mount_id,
+                exc,
+            )
+            detail = str(exc).strip() or "unknown error"
+            return (
+                "Sync completed, but the active runtime was not refreshed automatically: "
+                f"{detail[:240]}"
+            )
+
+    async def _build_workspace_mount_sync_context(
+        self,
+        mount: Any,
+        *,
+        force_backend_recheck: bool = False,
+        sync_mode_override: WorkspaceMountSyncMode | None = None,
+    ) -> dict[str, Any]:
         mount_source_record = getattr(mount, "mountSource", None)
         source_type = str(getattr(mount_source_record, "sourceType", "") or "")
         mount_id = str(getattr(mount, "id", "") or "")
@@ -4094,13 +4504,51 @@ class UserSpaceService:
         )
         target_path = str(getattr(mount, "targetPath", "") or "")
         cache_dir = self._base_dir / "mount_cache" / workspace_id / mount_id
-        mount_sync_deletes = bool(getattr(mount, "syncDeletes", False))
+        sync_mode = sync_mode_override or self._normalize_workspace_mount_sync_mode(
+            getattr(mount, "syncMode", None),
+            legacy_sync_deletes=bool(getattr(mount, "syncDeletes", False)),
+        )
         preferred_backend, preferred_notice = await self._resolve_ssh_sync_backend(
             ssh_config,
             force_recheck_missing=force_backend_recheck,
         )
 
-        try:
+        return {
+            "mount_id": mount_id,
+            "workspace_id": workspace_id,
+            "ssh_config": ssh_config,
+            "remote_path": remote_path,
+            "target_path": target_path,
+            "cache_dir": cache_dir,
+            "sync_mode": sync_mode,
+            "preferred_backend": preferred_backend,
+            "preferred_notice": preferred_notice,
+        }
+
+    async def _preview_workspace_mount_record(
+        self,
+        mount: Any,
+        *,
+        force_backend_recheck: bool = False,
+        sync_mode_override: WorkspaceMountSyncMode | None = None,
+    ) -> WorkspaceMountSyncPreviewResponse:
+        context = await self._build_workspace_mount_sync_context(
+            mount,
+            force_backend_recheck=force_backend_recheck,
+            sync_mode_override=sync_mode_override,
+        )
+        mount_id = context["mount_id"]
+        workspace_id = context["workspace_id"]
+        ssh_config = context["ssh_config"]
+        remote_path = context["remote_path"]
+        target_path = context["target_path"]
+        cache_dir = context["cache_dir"]
+        sync_mode = context["sync_mode"]
+        preferred_backend = context["preferred_backend"]
+        preferred_notice = context["preferred_notice"]
+        mount_lock = await self._get_workspace_mount_operation_lock(mount_id)
+
+        async with mount_lock:
             async with self._workspace_mount_sync_semaphore:
                 await asyncio.to_thread(
                     self._stage_runtime_mount_into_sync_cache,
@@ -4108,61 +4556,56 @@ class UserSpaceService:
                     target_path,
                     cache_dir,
                 )
-                if preferred_backend == "paramiko":
-                    result = await asyncio.to_thread(
-                        sync_ssh_directory,
-                        ssh_config,
-                        remote_path,
-                        str(cache_dir),
-                        sync_deletes=mount_sync_deletes,
-                    )
-                    result.notice = preferred_notice
-                else:
-                    result = await asyncio.to_thread(
-                        rsync_ssh_directory,
-                        ssh_config,
-                        remote_path,
-                        str(cache_dir),
-                        sync_deletes=mount_sync_deletes,
-                    )
-                    if result.success:
-                        self._remember_remote_rsync_available(ssh_config)
-                    elif is_rsync_missing_error("\n".join(result.errors)):
-                        self._remember_remote_rsync_missing(ssh_config)
-                        result = await asyncio.to_thread(
-                            sync_ssh_directory,
-                            ssh_config,
-                            remote_path,
-                            str(cache_dir),
-                            sync_deletes=mount_sync_deletes,
-                        )
-                        result.notice = self._ssh_rsync_fallback_notice()
-            sync_status = "synced" if result.success else "error"
-            sync_backend = result.backend_used or preferred_backend
-            sync_notice = result.notice
-            last_error = "; ".join(result.errors[:5]) if result.errors else None
-            return await self._finalize_workspace_mount_sync(
-                db,
-                mount_id=mount_id,
-                workspace_id=workspace_id,
-                sync_status=sync_status,
-                files_synced=result.files_synced,
-                sync_backend=sync_backend,
-                sync_notice=sync_notice,
-                last_sync_error=last_error,
+                preview = await asyncio.to_thread(
+                    preview_ssh_directory_sync,
+                    ssh_config,
+                    remote_path,
+                    str(cache_dir),
+                    sync_mode=sync_mode,
+                    sample_limit=self._WORKSPACE_MOUNT_SYNC_PREVIEW_SAMPLE_LIMIT,
+                )
+
+        if not preview.success:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "; ".join(preview.errors[:5])
+                    or "Failed to preview workspace mount sync"
+                ),
             )
-        except Exception as exc:
-            logger.error("Mount sync failed for %s/%s: %s", workspace_id, mount_id, exc)
-            return await self._finalize_workspace_mount_sync(
-                db,
-                mount_id=mount_id,
+
+        preview_token = secrets.token_urlsafe(24)
+        preview_expires_at = _utc_now() + timedelta(
+            seconds=self._WORKSPACE_MOUNT_SYNC_PREVIEW_TTL_SECONDS
+        )
+        await self._store_workspace_mount_sync_preview(
+            _WorkspaceMountSyncPreviewRecord(
+                token=preview_token,
                 workspace_id=workspace_id,
-                sync_status="error",
-                files_synced=0,
-                sync_backend=preferred_backend,
-                sync_notice=preferred_notice,
-                last_sync_error=str(exc)[:500],
+                mount_id=mount_id,
+                sync_mode=sync_mode,
+                state_fingerprint=preview.state_fingerprint,
+                expires_at=preview_expires_at,
             )
+        )
+
+        return WorkspaceMountSyncPreviewResponse(
+            mount_id=mount_id,
+            sync_mode=sync_mode,
+            sync_backend=preferred_backend,
+            sync_notice=preferred_notice,
+            requires_confirmation=self._is_destructive_workspace_mount_sync_mode(
+                sync_mode
+            ),
+            preview_token=preview_token,
+            preview_expires_at=preview_expires_at,
+            delete_from_source_count=preview.delete_from_source_count,
+            delete_from_target_count=preview.delete_from_target_count,
+            delete_from_source_paths=preview.delete_from_source_paths,
+            delete_from_target_paths=preview.delete_from_target_paths,
+            sample_limit=preview.sample_limit,
+            last_sync_error=None,
+        )
 
     def _stage_runtime_mount_into_sync_cache(
         self,
@@ -4182,7 +4625,7 @@ class UserSpaceService:
             [
                 "rsync",
                 "-a",
-                "--update",
+                "--delete",
                 f"{runtime_dir}/",
                 f"{cache_dir}/",
             ],
@@ -4204,6 +4647,7 @@ class UserSpaceService:
         *,
         mount_id: str,
         workspace_id: str,
+        sync_mode: WorkspaceMountSyncMode,
         sync_status: str,
         files_synced: int,
         sync_backend: str | None,
@@ -4225,6 +4669,7 @@ class UserSpaceService:
         self.invalidate_file_list_cache(workspace_id)
         return WorkspaceMountSyncResponse(
             mount_id=mount_id,
+            sync_mode=sync_mode,
             sync_status=cast(Any, sync_status),
             files_synced=files_synced,
             sync_backend=sync_backend,
@@ -4934,6 +5379,12 @@ class UserSpaceService:
                 target_directory_to_create,
             )
 
+        self._validate_workspace_mount_sync_configuration(
+            source_type=mount_source.source_type,
+            sync_mode=request.sync_mode,
+            auto_sync_enabled=bool(request.auto_sync_enabled),
+        )
+
         now = _utc_now()
         initial_sync_status = (
             "synced" if mount_source.source_type == "filesystem" else "pending"
@@ -4954,7 +5405,7 @@ class UserSpaceService:
                 "sourcePath": normalized_source_path,
                 "targetPath": target_path,
                 "autoSyncEnabled": bool(request.auto_sync_enabled),
-                "syncDeletes": bool(request.sync_deletes),
+                "syncMode": request.sync_mode,
                 "description": self._normalize_mount_description(request.description),
                 "syncStatus": initial_sync_status,
                 "syncBackend": initial_sync_backend,
@@ -4986,6 +5437,46 @@ class UserSpaceService:
         if not existing:
             raise HTTPException(status_code=404, detail="Mount not found")
 
+        mount_source_record = getattr(existing, "mountSource", None)
+        source_type = (
+            str(getattr(mount_source_record, "sourceType", "") or "")
+            if mount_source_record
+            else ""
+        )
+        current_sync_mode = self._normalize_workspace_mount_sync_mode(
+            getattr(existing, "syncMode", None),
+            legacy_sync_deletes=bool(getattr(existing, "syncDeletes", False)),
+        )
+        next_sync_mode = request.sync_mode or current_sync_mode
+        next_auto_sync_enabled = (
+            bool(request.auto_sync_enabled)
+            if request.auto_sync_enabled is not None
+            else bool(getattr(existing, "autoSyncEnabled", False))
+        )
+        if request.enabled is not None and not request.enabled:
+            next_auto_sync_enabled = False
+
+        self._validate_workspace_mount_sync_configuration(
+            source_type=source_type,
+            sync_mode=next_sync_mode,
+            auto_sync_enabled=next_auto_sync_enabled,
+        )
+
+        existing_has_destructive_auto_sync_approval = self._has_destructive_auto_sync_approval(
+            existing,
+            next_sync_mode,
+        )
+        needs_destructive_auto_sync_confirmation = (
+            next_auto_sync_enabled
+            and self._is_destructive_workspace_mount_sync_mode(next_sync_mode)
+            and (
+                not existing_has_destructive_auto_sync_approval
+                or request.auto_sync_enabled is True
+                or request.sync_mode is not None
+                or request.target_path is not None
+            )
+        )
+
         update_data: dict[str, Any] = {"updatedAt": _utc_now()}
         if request.target_path is not None:
             update_data["targetPath"] = self._validate_mount_target_path(
@@ -4996,13 +5487,64 @@ class UserSpaceService:
                 request.description
             )
         if request.auto_sync_enabled is not None:
-            update_data["autoSyncEnabled"] = bool(request.auto_sync_enabled)
-        if request.sync_deletes is not None:
-            update_data["syncDeletes"] = bool(request.sync_deletes)
+            update_data["autoSyncEnabled"] = next_auto_sync_enabled
+        if request.sync_mode is not None:
+            update_data["syncMode"] = request.sync_mode
         if request.enabled is not None:
             update_data["enabled"] = bool(request.enabled)
             if not request.enabled:
                 update_data["autoSyncEnabled"] = False
+
+        clear_destructive_auto_sync_confirmation = (
+            not next_auto_sync_enabled
+            or not self._is_destructive_workspace_mount_sync_mode(next_sync_mode)
+            or request.target_path is not None
+            or request.sync_mode is not None
+            or (request.enabled is not None and not request.enabled)
+        )
+
+        if needs_destructive_auto_sync_confirmation:
+            preview_token = request.destructive_auto_sync_preview_token
+            if not preview_token:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Destructive auto-sync requires a fresh preview confirmation. "
+                        "Run a dry run before enabling Auto."
+                    ),
+                )
+            context = await self._build_workspace_mount_sync_context(
+                existing,
+                force_backend_recheck=True,
+                sync_mode_override=next_sync_mode,
+            )
+            mount_lock = await self._get_workspace_mount_operation_lock(mount_id)
+            async with mount_lock:
+                async with self._workspace_mount_sync_semaphore:
+                    await asyncio.to_thread(
+                        self._stage_runtime_mount_into_sync_cache,
+                        workspace_id,
+                        context["target_path"],
+                        context["cache_dir"],
+                    )
+                    await self._consume_workspace_mount_sync_preview(
+                        mount_id=context["mount_id"],
+                        workspace_id=context["workspace_id"],
+                        ssh_config=context["ssh_config"],
+                        remote_path=context["remote_path"],
+                        cache_dir=context["cache_dir"],
+                        sync_mode=context["sync_mode"],
+                        preview_token=preview_token,
+                    )
+            update_data["destructiveAutoSyncConfirmedAt"] = update_data["updatedAt"]
+            update_data["destructiveAutoSyncConfirmedMode"] = next_sync_mode
+            clear_destructive_auto_sync_confirmation = False
+
+        if clear_destructive_auto_sync_confirmation:
+            update_data["destructiveAutoSyncConfirmedAt"] = None
+            update_data["destructiveAutoSyncConfirmedMode"] = None
+
+        await self._invalidate_workspace_mount_sync_preview(mount_id)
 
         updated = await db.workspacemount.update(
             where={"id": mount_id}, data=update_data
@@ -5016,12 +5558,6 @@ class UserSpaceService:
 
         # Filesystem side-effects when enabled state changes.
         if request.enabled is not None and target_path:
-            mount_source_record = getattr(existing, "mountSource", None)
-            source_type = (
-                str(getattr(mount_source_record, "sourceType", "") or "")
-                if mount_source_record
-                else ""
-            )
             if not request.enabled:
                 if source_type == "ssh":
                     # SSH mounts are sync-mounts: retain files on disable so
@@ -5059,7 +5595,7 @@ class UserSpaceService:
                 # Re-enabling: for SSH mounts, trigger a fresh sync so the
                 # content reappears. Filesystem mounts will re-materialize on
                 # next runtime launch automatically.
-                if source_type == "ssh":
+                if source_type == "ssh" and next_sync_mode == "merge":
                     try:
                         await self._sync_workspace_mount_record(db, existing)
                     except Exception as exc:
@@ -5130,15 +5666,42 @@ class UserSpaceService:
                     mount_id,
                     exc,
                 )
+        await self._invalidate_workspace_mount_sync_preview(mount_id)
         self.invalidate_file_list_cache(workspace_id)
 
         return DeleteWorkspaceMountResponse(success=True, mount_id=mount_id)
+
+    async def preview_workspace_mount_sync(
+        self,
+        workspace_id: str,
+        user_id: str,
+        mount_id: str,
+        request: WorkspaceMountSyncPreviewRequest | None = None,
+    ) -> WorkspaceMountSyncPreviewResponse:
+        await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="editor",
+        )
+        db = await get_db()
+        mount = await db.workspacemount.find_first(
+            where={"id": mount_id, "workspaceId": workspace_id},
+            include={"mountSource": True},
+        )
+        if not mount:
+            raise HTTPException(status_code=404, detail="Mount not found")
+        return await self._preview_workspace_mount_record(
+            mount,
+            force_backend_recheck=True,
+            sync_mode_override=request.sync_mode if request else None,
+        )
 
     async def sync_workspace_mount(
         self,
         workspace_id: str,
         user_id: str,
         mount_id: str,
+        request: WorkspaceMountSyncRequest,
     ) -> WorkspaceMountSyncResponse:
         await self._enforce_workspace_access(
             workspace_id,
@@ -5158,6 +5721,7 @@ class UserSpaceService:
             db,
             mount,
             force_backend_recheck=True,
+            preview_token=request.preview_token,
         )
 
     async def browse_workspace_mount_source(
@@ -7648,7 +8212,7 @@ class UserSpaceService:
 
     def _list_mount_source_files_sync(
         self,
-        workspace_id: str,
+        _workspace_id: str,
         mount_specs: list[dict[str, Any]],
         include_dirs: bool = False,
     ) -> list[UserSpaceFileInfo]:
@@ -7658,7 +8222,6 @@ class UserSpaceService:
         for spec in mount_specs:
             source_local_path = spec.get("source_local_path", "")
             target_path = spec.get("target_path", "")
-            source_type = str(spec.get("source_type", "") or "")
             repo_rel = self._workspace_mount_target_repo_relative_path(target_path)
             if not repo_rel:
                 continue
@@ -7668,21 +8231,6 @@ class UserSpaceService:
                 source_dir = Path(source_local_path)
                 if source_dir.is_dir():
                     source_dirs.append(source_dir)
-
-            # SSH mounts can remain materialized in the runtime sandbox even if
-            # the latest sync failed. Mirror the runtime-visible directory into
-            # the tree so it matches `ls /workspace/...` in the console.
-            if source_type == "ssh":
-                runtime_mount_dir = self._resolve_workspace_mount_runtime_target_dir(
-                    workspace_id,
-                    target_path,
-                )
-                if (
-                    runtime_mount_dir is not None
-                    and runtime_mount_dir.is_dir()
-                    and runtime_mount_dir not in source_dirs
-                ):
-                    source_dirs.append(runtime_mount_dir)
 
             if not source_dirs:
                 continue

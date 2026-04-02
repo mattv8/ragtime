@@ -34,6 +34,11 @@ RuntimeOperationPhase = Literal[
 ]
 UserspaceMountSourceType = Literal["ssh", "filesystem"]
 UserspaceMountBackend = Literal["ssh", "docker_volume", "smb", "nfs", "local"]
+WorkspaceMountSyncMode = Literal[
+    "merge",
+    "source_authoritative",
+    "target_authoritative",
+]
 
 
 class WorkspaceMember(BaseModel):
@@ -521,7 +526,7 @@ class WorkspaceMount(BaseModel):
     target_path: str
     description: str | None = None
     enabled: bool = True
-    sync_deletes: bool = False
+    sync_mode: WorkspaceMountSyncMode = "merge"
     sync_status: MountSyncStatus = "pending"
     sync_backend: str | None = None
     sync_notice: str | None = None
@@ -592,9 +597,13 @@ class CreateWorkspaceMountRequest(BaseModel):
         default=False,
         description="Enable background watch mode that periodically auto-syncs this mount",
     )
-    sync_deletes: bool = Field(
-        default=False,
-        description="When true, SSH sync removes local files that no longer exist on the remote source",
+    sync_mode: WorkspaceMountSyncMode = Field(
+        default="merge",
+        description=(
+            "Sync policy for SSH-backed mounts: merge keeps both sides, "
+            "source_authoritative makes the remote source authoritative, and "
+            "target_authoritative makes the workspace target authoritative."
+        ),
     )
     description: str | None = Field(default=None, max_length=1000)
 
@@ -604,10 +613,49 @@ class UpdateWorkspaceMountRequest(BaseModel):
     description: str | None = Field(default=None, max_length=1000)
     enabled: bool | None = Field(default=None)
     auto_sync_enabled: bool | None = Field(default=None)
-    sync_deletes: bool | None = Field(
+    sync_mode: WorkspaceMountSyncMode | None = Field(
         default=None,
-        description="When true, SSH sync removes local files that no longer exist on the remote source",
+        description="Updated sync policy for SSH-backed mounts.",
     )
+    destructive_auto_sync_preview_token: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Fresh destructive preview token required when enabling auto-sync "
+            "or switching an auto-sync mount into a destructive mode."
+        ),
+    )
+
+
+class WorkspaceMountSyncPreviewRequest(BaseModel):
+    sync_mode: WorkspaceMountSyncMode | None = Field(
+        default=None,
+        description="Optional sync mode override for previewing a pending auto-sync configuration change.",
+    )
+
+
+class WorkspaceMountSyncRequest(BaseModel):
+    preview_token: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Required for destructive sync modes after a successful preview.",
+    )
+
+
+class WorkspaceMountSyncPreviewResponse(BaseModel):
+    mount_id: str
+    sync_mode: WorkspaceMountSyncMode
+    sync_backend: str | None = None
+    sync_notice: str | None = None
+    requires_confirmation: bool = False
+    preview_token: str
+    preview_expires_at: datetime
+    delete_from_source_count: int = 0
+    delete_from_target_count: int = 0
+    delete_from_source_paths: list[str] = Field(default_factory=list)
+    delete_from_target_paths: list[str] = Field(default_factory=list)
+    sample_limit: int = 0
+    last_sync_error: str | None = None
 
 
 class DeleteWorkspaceMountResponse(BaseModel):
@@ -617,6 +665,7 @@ class DeleteWorkspaceMountResponse(BaseModel):
 
 class WorkspaceMountSyncResponse(BaseModel):
     mount_id: str
+    sync_mode: WorkspaceMountSyncMode
     sync_status: MountSyncStatus
     files_synced: int = 0
     sync_backend: str | None = None

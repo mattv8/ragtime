@@ -7,6 +7,7 @@ Supports:
 - Key + passphrase authentication
 """
 
+import hashlib
 import io
 import os as _os
 import shlex
@@ -22,13 +23,16 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path as _Path
 from pathlib import PurePosixPath
-from typing import Optional
+from typing import Literal, Optional
 
 import paramiko
 
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+SSHSyncMode = Literal["merge", "source_authoritative", "target_authoritative"]
+SSH_SYNC_PREVIEW_SAMPLE_LIMIT = 200
 
 # Default scheduler values for userspace SSH mount auto-sync watch mode.
 USERSPACE_MOUNT_WATCH_INTERVAL_SECONDS = 5.0
@@ -638,6 +642,131 @@ class SSHSyncResult:
     notice: str | None = None
 
 
+@dataclass
+class SSHSyncPreviewResult:
+    """Dry-run preview of a pending SSH directory sync."""
+
+    sync_mode: SSHSyncMode
+    delete_from_source_count: int
+    delete_from_target_count: int
+    delete_from_source_paths: list[str]
+    delete_from_target_paths: list[str]
+    state_fingerprint: str
+    errors: list[str]
+    success: bool
+    backend_used: str = "paramiko"
+    notice: str | None = None
+    sample_limit: int = SSH_SYNC_PREVIEW_SAMPLE_LIMIT
+
+
+def _normalize_sync_mode(sync_mode: str | None) -> SSHSyncMode:
+    if sync_mode == "source_authoritative":
+        return "source_authoritative"
+    if sync_mode == "target_authoritative":
+        return "target_authoritative"
+    return "merge"
+
+
+def _leaf_delete_directories(
+    directories: set[str],
+    files: set[str],
+) -> list[str]:
+    """Return only top-level directory deletions to avoid noisy nested lists."""
+    if not directories:
+        return []
+
+    leaf_dirs: list[str] = []
+    for directory in sorted(path for path in directories if path):
+        directory_prefix = f"{directory}/"
+        has_nested_dir = any(
+            other != directory and other.startswith(directory_prefix)
+            for other in directories
+        )
+        has_nested_file = any(path.startswith(directory_prefix) for path in files)
+        if not has_nested_dir and not has_nested_file:
+            leaf_dirs.append(f"{directory}/")
+    return leaf_dirs
+
+
+def _collect_delete_paths(
+    files: set[str],
+    directories: set[str],
+) -> list[str]:
+    delete_paths = sorted(files)
+    delete_paths.extend(_leaf_delete_directories(directories, files))
+    return delete_paths
+
+
+def _build_tree_state_fingerprint(
+    remote_files: dict[str, tuple[int, int]],
+    remote_dirs: set[str],
+    local_files: dict[str, tuple[int, int]],
+    local_dirs: set[str],
+) -> str:
+    digest = hashlib.sha256()
+    for prefix, files, directories in (
+        ("remote", remote_files, remote_dirs),
+        ("local", local_files, local_dirs),
+    ):
+        digest.update(prefix.encode("ascii"))
+        digest.update(b"\0")
+        for directory in sorted(directories):
+            digest.update(b"d\0")
+            digest.update(directory.encode("utf-8", errors="ignore"))
+            digest.update(b"\0")
+        for path, (size_bytes, mtime_seconds) in sorted(files.items()):
+            digest.update(b"f\0")
+            digest.update(path.encode("utf-8", errors="ignore"))
+            digest.update(b"\0")
+            digest.update(f"{size_bytes}:{mtime_seconds}".encode("ascii"))
+            digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _preview_ssh_sync_from_metadata(
+    remote_files: dict[str, tuple[int, int]],
+    remote_dirs: set[str],
+    local_files: dict[str, tuple[int, int]],
+    local_dirs: set[str],
+    *,
+    sync_mode: SSHSyncMode,
+    sample_limit: int,
+    errors: list[str],
+) -> SSHSyncPreviewResult:
+    delete_from_source_paths: list[str] = []
+    delete_from_target_paths: list[str] = []
+
+    if sync_mode == "source_authoritative":
+        delete_from_target_paths = _collect_delete_paths(
+            set(local_files) - set(remote_files),
+            local_dirs - remote_dirs,
+        )
+    elif sync_mode == "target_authoritative":
+        delete_from_source_paths = _collect_delete_paths(
+            set(remote_files) - set(local_files),
+            remote_dirs - local_dirs,
+        )
+
+    fingerprint = _build_tree_state_fingerprint(
+        remote_files,
+        remote_dirs,
+        local_files,
+        local_dirs,
+    )
+    return SSHSyncPreviewResult(
+        sync_mode=sync_mode,
+        delete_from_source_count=len(delete_from_source_paths),
+        delete_from_target_count=len(delete_from_target_paths),
+        delete_from_source_paths=delete_from_source_paths[:sample_limit],
+        delete_from_target_paths=delete_from_target_paths[:sample_limit],
+        state_fingerprint=fingerprint,
+        errors=errors,
+        success=len(errors) == 0,
+        backend_used="paramiko",
+        sample_limit=sample_limit,
+    )
+
+
 def _remote_join(root: str, relative_path: str) -> str:
     normalized_root = root.rstrip("/") or "/"
     if not relative_path:
@@ -799,6 +928,24 @@ def _upload_sftp_file(
         _ensure_remote_directory(sftp, remote_root, remote_parent_str, created_remote_dirs)
     sftp.put(str(local_file), remote_file)
     _set_remote_mtime(sftp, remote_file, int(local_file.stat().st_mtime))
+
+
+def _delete_remote_file(
+    sftp: paramiko.SFTPClient,
+    remote_root: str,
+    relative_path: str,
+) -> None:
+    sftp.remove(_remote_join(remote_root, relative_path))
+
+
+def _delete_remote_directory(
+    sftp: paramiko.SFTPClient,
+    remote_root: str,
+    relative_dir: str,
+) -> None:
+    if not relative_dir:
+        return
+    sftp.rmdir(_remote_join(remote_root, relative_dir))
 
 
 def _sync_ssh_directory_merge(
@@ -971,6 +1118,160 @@ def _sync_ssh_directory_delete(
     )
 
 
+def _sync_ssh_directory_target_authoritative(
+    sftp: paramiko.SFTPClient,
+    remote_root: str,
+    local_root: _Path,
+    *,
+    max_files: int,
+    max_file_size_bytes: int,
+) -> SSHSyncResult:
+    """Target-wins sync that deletes remote files absent on the local target."""
+    errors: list[str] = []
+    files_synced = 0
+    remote_files, remote_dirs, remote_errors = _scan_remote_tree(
+        sftp,
+        remote_root,
+        max_files=max_files,
+        max_file_size_bytes=max_file_size_bytes,
+    )
+    local_files, local_dirs, local_errors = _scan_local_tree(
+        local_root,
+        max_files=max_files,
+        max_file_size_bytes=max_file_size_bytes,
+    )
+    errors.extend(remote_errors)
+    errors.extend(local_errors)
+
+    local_root.mkdir(parents=True, exist_ok=True)
+    created_remote_dirs = set(remote_dirs)
+
+    for relative_dir in sorted(local_dirs - remote_dirs):
+        if not relative_dir:
+            continue
+        try:
+            _ensure_remote_directory(
+                sftp,
+                remote_root,
+                relative_dir,
+                created_remote_dirs,
+            )
+        except Exception as exc:
+            errors.append(f"mkdir {relative_dir}: {exc}")
+
+    for relative_path in sorted(local_files):
+        local_meta = local_files.get(relative_path)
+        remote_meta = remote_files.get(relative_path)
+        if local_meta is None:
+            continue
+        try:
+            if remote_meta is None or remote_meta != local_meta:
+                _upload_sftp_file(
+                    sftp,
+                    remote_root,
+                    local_root,
+                    relative_path,
+                    created_remote_dirs,
+                )
+                files_synced += 1
+        except Exception as exc:
+            errors.append(f"sync {relative_path}: {exc}")
+
+    for relative_path in sorted(set(remote_files) - set(local_files)):
+        try:
+            _delete_remote_file(sftp, remote_root, relative_path)
+            files_synced += 1
+        except Exception as exc:
+            errors.append(f"delete {relative_path}: {exc}")
+
+    remote_only_dirs = sorted(
+        (path for path in remote_dirs - local_dirs if path),
+        key=lambda path: (path.count("/"), path),
+        reverse=True,
+    )
+    for relative_dir in remote_only_dirs:
+        try:
+            _delete_remote_directory(sftp, remote_root, relative_dir)
+        except Exception as exc:
+            errors.append(f"rmdir {relative_dir}: {exc}")
+
+    return SSHSyncResult(
+        files_synced=files_synced,
+        errors=errors,
+        success=len(errors) == 0,
+        backend_used="paramiko",
+    )
+
+
+def preview_ssh_directory_sync(
+    config: SSHConfig,
+    remote_path: str,
+    local_path: str,
+    *,
+    sync_mode: SSHSyncMode = "merge",
+    sample_limit: int = SSH_SYNC_PREVIEW_SAMPLE_LIMIT,
+    max_files: int = 5000,
+    max_file_size_bytes: int = 50 * 1024 * 1024,
+) -> SSHSyncPreviewResult:
+    """Preview destructive changes for an SSH directory sync using shared metadata scans."""
+    config.validate()
+    local_root = _Path(local_path)
+    client: Optional[paramiko.SSHClient] = None
+    sftp: Optional[paramiko.SFTPClient] = None
+    normalized_mode = _normalize_sync_mode(sync_mode)
+
+    try:
+        client = _create_ssh_client(config)
+        sftp = client.open_sftp()
+        remote_files, remote_dirs, remote_errors = _scan_remote_tree(
+            sftp,
+            remote_path,
+            max_files=max_files,
+            max_file_size_bytes=max_file_size_bytes,
+        )
+        local_files, local_dirs, local_errors = _scan_local_tree(
+            local_root,
+            max_files=max_files,
+            max_file_size_bytes=max_file_size_bytes,
+        )
+        return _preview_ssh_sync_from_metadata(
+            remote_files,
+            remote_dirs,
+            local_files,
+            local_dirs,
+            sync_mode=normalized_mode,
+            sample_limit=max(1, sample_limit),
+            errors=[*remote_errors, *local_errors],
+        )
+    except paramiko.AuthenticationException as exc:
+        return SSHSyncPreviewResult(
+            sync_mode=normalized_mode,
+            delete_from_source_count=0,
+            delete_from_target_count=0,
+            delete_from_source_paths=[],
+            delete_from_target_paths=[],
+            state_fingerprint="",
+            errors=[f"SSH auth failed: {exc}"],
+            success=False,
+        )
+    except Exception as exc:
+        return SSHSyncPreviewResult(
+            sync_mode=normalized_mode,
+            delete_from_source_count=0,
+            delete_from_target_count=0,
+            delete_from_source_paths=[],
+            delete_from_target_paths=[],
+            state_fingerprint="",
+            errors=[f"SSH sync preview error: {exc}"],
+            success=False,
+        )
+    finally:
+        if sftp:
+            sftp.close()
+        if client:
+            client.close()
+
+
 def is_rsync_missing_error(output: str | None) -> bool:
     """Return True when stderr/stdout clearly shows remote rsync is unavailable."""
     normalized = (output or "").lower()
@@ -1071,40 +1372,49 @@ def sync_ssh_directory(
     *,
     max_files: int = 5000,
     max_file_size_bytes: int = 50 * 1024 * 1024,
-    sync_deletes: bool = False,
+    sync_mode: SSHSyncMode = "merge",
 ) -> SSHSyncResult:
     """Sync a remote directory to a local path via Paramiko/SFTP.
 
     This is the built-in fallback for SSH mounts when the remote server does
     not have ``rsync`` installed. It mirrors the userspace rsync semantics:
-    - ``sync_deletes=True``: remote wins and local-only files are deleted
-    - ``sync_deletes=False``: two-way merge where newest mtime wins
+    - ``merge``: two-way merge where newest mtime wins
+    - ``source_authoritative``: remote wins and local-only files are deleted
+    - ``target_authoritative``: local cache wins and remote-only files are deleted
     """
     config.validate()
     local_root = _Path(local_path)
     client: Optional[paramiko.SSHClient] = None
     sftp: Optional[paramiko.SFTPClient] = None
+    normalized_mode = _normalize_sync_mode(sync_mode)
 
     try:
         client = _create_ssh_client(config)
         sftp = client.open_sftp()
-        result = (
-            _sync_ssh_directory_delete(
+        if normalized_mode == "source_authoritative":
+            result = _sync_ssh_directory_delete(
                 sftp,
                 remote_path,
                 local_root,
                 max_files=max_files,
                 max_file_size_bytes=max_file_size_bytes,
             )
-            if sync_deletes
-            else _sync_ssh_directory_merge(
+        elif normalized_mode == "target_authoritative":
+            result = _sync_ssh_directory_target_authoritative(
                 sftp,
                 remote_path,
                 local_root,
                 max_files=max_files,
                 max_file_size_bytes=max_file_size_bytes,
             )
-        )
+        else:
+            result = _sync_ssh_directory_merge(
+                sftp,
+                remote_path,
+                local_root,
+                max_files=max_files,
+                max_file_size_bytes=max_file_size_bytes,
+            )
         return result
     except paramiko.AuthenticationException as exc:
         return SSHSyncResult(
@@ -1268,19 +1578,15 @@ def rsync_ssh_directory(
     remote_path: str,
     local_path: str,
     *,
-    sync_deletes: bool = False,
+    sync_mode: SSHSyncMode = "merge",
     timeout_seconds: int = 300,
 ) -> SSHSyncResult:
     """Sync a remote directory to a local path using the ``rsync`` binary over SSH.
 
-    When *sync_deletes* is True a single rsync pass with ``--delete`` is
-    executed (remote wins, local-only files are removed).
-
-    When *sync_deletes* is False two rsync passes run:
-      1. remote -> local  (merge, no delete — picks up remote changes)
-      2. local  -> remote (merge, no delete, ``--update`` — pushes local-only
-         or newer-mtime local files back to the remote)
-    This implements "newest mtime wins" bidirectional merge.
+    Supported modes:
+    - ``merge``: bidirectional newest-mtime-wins merge via pull + update push
+    - ``source_authoritative``: remote -> local with ``--delete``
+    - ``target_authoritative``: local -> remote with ``--delete``
 
     Returns:
         SSHSyncResult with a best-effort ``files_synced`` count.
@@ -1288,6 +1594,7 @@ def rsync_ssh_directory(
     config.validate()
     local_root = _Path(local_path)
     local_root.mkdir(parents=True, exist_ok=True)
+    normalized_mode = _normalize_sync_mode(sync_mode)
 
     normalized_remote = remote_path.rstrip("/") + "/"
     remote_spec = f"{config.user}@{config.host}:{normalized_remote}"
@@ -1360,25 +1667,45 @@ def rsync_ssh_directory(
                     count += 1
             return count
 
-        # --- Pass 1: remote -> local ---
-        pull_args = list(base_flags) + ["-e", ssh_wrapper_path or "ssh"]
-        if sync_deletes:
-            pull_args.append("--delete")
-        pull_args.extend([remote_spec, str(local_root) + "/"])
+        if normalized_mode == "source_authoritative":
+            pull_args = list(base_flags) + ["-e", ssh_wrapper_path or "ssh", "--delete"]
+            pull_args.extend([remote_spec, str(local_root) + "/"])
+            rc, stdout, stderr = _run_rsync(pull_args)
+            files_synced += _count_transferred(stdout)
+            if rc != 0:
+                if rc in (23, 24):
+                    errors.append(f"rsync pull partial error (exit {rc}): {stderr.strip()[:300]}")
+                else:
+                    errors.append(f"rsync pull failed (exit {rc}): {stderr.strip()[:300]}")
+                    return SSHSyncResult(files_synced=files_synced, errors=errors, success=False)
+        elif normalized_mode == "target_authoritative":
+            push_args = list(base_flags) + ["-e", ssh_wrapper_path or "ssh", "--delete"]
+            push_args.extend([str(local_root) + "/", remote_spec])
+            rc, stdout, stderr = _run_rsync(push_args)
+            files_synced += _count_transferred(stdout)
+            if rc != 0:
+                if rc in (23, 24):
+                    errors.append(f"rsync push partial error (exit {rc}): {stderr.strip()[:300]}")
+                else:
+                    errors.append(f"rsync push failed (exit {rc}): {stderr.strip()[:300]}")
+                    return SSHSyncResult(files_synced=files_synced, errors=errors, success=False)
+        else:
+            # --- Pass 1: remote -> local ---
+            pull_args = list(base_flags) + ["-e", ssh_wrapper_path or "ssh"]
+            pull_args.extend([remote_spec, str(local_root) + "/"])
 
-        rc, stdout, stderr = _run_rsync(pull_args)
-        files_synced += _count_transferred(stdout)
-        if rc != 0:
-            # rsync exit code 23 = partial transfer (some files couldn't be read)
-            # rsync exit code 24 = partial transfer (source files vanished)
-            if rc in (23, 24):
-                errors.append(f"rsync pull partial error (exit {rc}): {stderr.strip()[:300]}")
-            else:
-                errors.append(f"rsync pull failed (exit {rc}): {stderr.strip()[:300]}")
-                return SSHSyncResult(files_synced=files_synced, errors=errors, success=False)
+            rc, stdout, stderr = _run_rsync(pull_args)
+            files_synced += _count_transferred(stdout)
+            if rc != 0:
+                # rsync exit code 23 = partial transfer (some files couldn't be read)
+                # rsync exit code 24 = partial transfer (source files vanished)
+                if rc in (23, 24):
+                    errors.append(f"rsync pull partial error (exit {rc}): {stderr.strip()[:300]}")
+                else:
+                    errors.append(f"rsync pull failed (exit {rc}): {stderr.strip()[:300]}")
+                    return SSHSyncResult(files_synced=files_synced, errors=errors, success=False)
 
-        # --- Pass 2: local -> remote (bidirectional merge, only when not deleting) ---
-        if not sync_deletes:
+            # --- Pass 2: local -> remote (bidirectional merge) ---
             push_args = list(base_flags) + ["-e", ssh_wrapper_path or "ssh", "--update"]
             push_args.extend([str(local_root) + "/", remote_spec])
             rc2, stdout2, stderr2 = _run_rsync(push_args)
