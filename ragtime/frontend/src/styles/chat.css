@@ -392,10 +392,20 @@
 .chat-workspace-conversation-trigger {
   width: 100%;
   max-width: 100%;
-  justify-content: space-between;
-  padding: 6px 32px 6px 12px;
+  justify-content: flex-start;
+  padding: 6px 12px;
   background: var(--color-surface);
   font-size: var(--text-sm);
+}
+
+.chat-workspace-conversation-trigger .chat-workspace-conversation-trigger-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-workspace-conversation-trigger > .userspace-icon-spin,
+.chat-workspace-conversation-trigger > .chat-workspace-interrupt-dismiss {
+  margin-left: auto;
 }
 .chat-workspace-conversation-icon {
   display: none;
